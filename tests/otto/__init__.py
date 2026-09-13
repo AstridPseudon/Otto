@@ -1,1 +1,0 @@
-"""Otto adapter test package."""
