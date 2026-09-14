@@ -132,6 +132,14 @@ class FiniteWorkOperations:
         return metadata
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if operation == "work.project.export":
+            return self._export_project(payload, request_id=request_id)
+        if operation == "work.project.import":
+            return self._import_project(payload, request_id=request_id, actor=actor)
+        if operation == "work.responsibility.fence":
+            return self._fence_assignment(payload, request_id=request_id)
+        if operation == "work.responsibility.dispatch":
+            return self._dispatch_assignment(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and payload.get("open"):
             return self._create_and_open(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and isinstance(payload.get("template"), Mapping):
@@ -214,6 +222,198 @@ class FiniteWorkOperations:
         }
         result.update(values)
         return result
+
+    def _export_project(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
+        """Export a typed pending project through the read-only Herzchen reader.
+
+        The snapshot is deliberately a portable representation of public
+        records.  It contains no Store, writer, SQLite path, or callback.  A
+        consumer can pass it to another owner bootstrap's ``work.project.import``
+        endpoint for passive adoption and later comparison.
+        """
+
+        from herzchen.contracts import ResourceRef
+
+        try:
+            project_ref = ResourceRef.from_dict(payload["project_ref"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"outcome": "error", "error": {"code": "invalid_project_ref", "message": str(exc)}, "event_ids": []}
+        record = self.reader.get_record(project_ref)
+        if record is None:
+            return {"outcome": "error", "error": {"code": "project_not_found", "message": "project is not admitted"}, "event_ids": []}
+        source = _record_dict(record)
+        raw_payload = dict(source.get("payload", {}))
+        tasks = []
+        for raw_ref in raw_payload.get("tasks", ()):
+            try:
+                task = self.reader.get_record(self._record_ref(raw_ref))
+            except Exception:
+                task = None
+            if task is not None:
+                tasks.append(_record_dict(task))
+        documents = []
+        requested_documents = payload.get("document_refs", raw_payload.get("documents", ()))
+        if not isinstance(requested_documents, (list, tuple)):
+            return {"outcome": "error", "error": {"code": "invalid_document_refs", "message": "document_refs must be an array", "operation": "work.project.export"}, "event_ids": []}
+        for raw_ref in requested_documents:
+            try:
+                document = self.reader.get_record(self._record_ref(raw_ref))
+            except Exception:
+                document = None
+            if document is not None:
+                documents.append(_record_dict(document))
+        snapshot = {
+            "schema": "otto.project-transfer.v1",
+            "source_ref": _json_value(record.ref),
+            "project": source,
+            "tasks": tasks,
+            "documents": documents,
+            "transfer_limits": {
+                "assignments": "provenance-only; source assignment identity and generation are not cloned",
+                "sessions": "not cloned",
+                "dispatch": "not cloned",
+                "execution": "not cloned",
+                "manager_launch": "not cloned",
+                "budget_reserved": "not cloned",
+            },
+            "dispatch": False,
+            "execution": False,
+            "manager_launch": False,
+            "budget_reserved": False,
+        }
+        digest = sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        snapshot["snapshot_digest"] = digest
+        return {"outcome": "exported", "snapshot": snapshot, "snapshot_digest": digest, "request_id": request_id, "event_ids": []}
+
+    def _import_project(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Passively import a project snapshot through ProjectSheet adoption.
+
+        Import creates one new pending project in the destination authority,
+        records the source identity and exact snapshot digest, and adopts the
+        source's task/observation payload through the accepted ProjectSheet
+        command port.  It never clones a source identity, assignment, session,
+        dispatch, or budget authority and therefore cannot create a second
+        writer graph.
+        """
+
+        if self.sheet_port is None:
+            return self._unsupported("work.project.import", request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet command port was not injected")
+        snapshot = payload.get("snapshot")
+        if not isinstance(snapshot, Mapping) or snapshot.get("schema") != "otto.project-transfer.v1":
+            return {"outcome": "error", "error": {"code": "invalid_transfer_snapshot", "message": "snapshot must be an otto.project-transfer.v1 object", "operation": "work.project.import"}, "event_ids": []}
+        source = snapshot.get("project")
+        if not isinstance(source, Mapping):
+            return {"outcome": "error", "error": {"code": "invalid_transfer_snapshot", "message": "snapshot.project must be an object", "operation": "work.project.import"}, "event_ids": []}
+        canonical = dict(snapshot)
+        supplied_digest = canonical.pop("snapshot_digest", None)
+        computed_digest = sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        if supplied_digest != computed_digest:
+            return {"outcome": "error", "error": {"code": "transfer_digest_mismatch", "message": "snapshot digest does not match its public records", "operation": "work.project.import"}, "event_ids": []}
+        before = self._receipt(request_id)
+        edit_payload = source.get("payload") if isinstance(source.get("payload"), Mapping) else source
+        title = edit_payload.get("title") or edit_payload.get("name") or "Imported pending project"
+        outcome = edit_payload.get("outcome", "")
+        metadata = dict(edit_payload.get("metadata", {})) if isinstance(edit_payload.get("metadata"), Mapping) else {}
+        metadata["otto_transfer"] = {"source_ref": _json_value(snapshot.get("source_ref")), "snapshot_digest": computed_digest, "mode": "passive-adoption"}
+        actor_value = self._actor(actor)
+        try:
+            created = self.port.create_pending_project(
+                title=title,
+                outcome=outcome,
+                logical_request_key=request_id,
+                actor=actor_value,
+                creator=actor_value,
+                curator=actor_value,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
+            raise
+        target_ref = created.ref
+        adopted_source = dict(edit_payload)
+        adopted_source["tasks"] = list(snapshot.get("tasks", ()))
+        if snapshot.get("documents"):
+            adopted_source["documents"] = list(snapshot["documents"])
+        try:
+            adopted = self.sheet_port.adopt_existing_effort(
+                adopted_source,
+                project=target_ref,
+                logical_request_key=request_id + ":adoption",
+                actor=actor_value,
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
+            raise
+        receipt = self._receipt(request_id)
+        adoption_receipt = self._receipt(request_id + ":adoption")
+        observed = self.reader.get_record(target_ref)
+        tasks = list(observed.payload.get("tasks", ())) if observed is not None else []
+        return {
+            "outcome": "replayed" if before is not None else "imported",
+            "project_ref": _json_value(target_ref),
+            "source_ref": _json_value(snapshot.get("source_ref")),
+            "snapshot_digest": computed_digest,
+            "record": None if observed is None else _record_dict(observed),
+            "adoption": _json_value(adopted),
+            "receipt": _receipt_dict(receipt),
+            "adoption_receipt": _receipt_dict(adoption_receipt),
+            "task_refs": _json_value(tasks),
+            "dispatch": False,
+            "execution": False,
+            "manager_launch": False,
+            "budget_reserved": False,
+            "replayed": before is not None,
+            "event_ids": self._events_for(receipt) + [item for item in self._events_for(adoption_receipt) if item not in self._events_for(receipt)],
+        }
+
+    def _fence_assignment(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
+        """Validate the current generation before a manager handoff.
+
+        Herzchen's assignment owner performs the generation check.  The finite
+        endpoint returns the typed current assignment and never exposes the
+        Store or a dispatch callback to the consumer.
+        """
+
+        if self.assignments_port is None:
+            return self._unsupported("work.responsibility.fence", request_id=request_id, code="canonical_assignments_port_unavailable", message="accepted ResponsibilityAssignments command port was not injected")
+        try:
+            assignment_ref = self._record_ref(payload["manager_assignment_ref"])
+            generation = int(payload["expected_generation"])
+            assignment = self.assignments_port.fence(assignment_ref, generation)
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": "stale_assignment_fence", "message": str(exc), "operation": "work.responsibility.fence"}, "replayed": False, "event_ids": [], "dispatch": False}
+        return {"outcome": "fenced", "manager_assignment_ref": _json_value(getattr(assignment, "ref", assignment_ref)), "assignment": self._assignment_dict(assignment), "expected_generation": generation, "dispatch": False, "execution": False, "request_id": request_id, "event_ids": []}
+
+    def _dispatch_assignment(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Attempt a typed dispatch through the public assignment command port.
+
+        The generation fence is evaluated by Herzchen after a consumer reopens
+        the owner store.  This endpoint deliberately returns no dispatch or
+        execution side effect when an old owner presents a stale generation.
+        """
+
+        if self.assignments_port is None:
+            return self._unsupported("work.responsibility.dispatch", request_id=request_id, code="canonical_assignments_port_unavailable", message="accepted ResponsibilityAssignments command port was not injected")
+        try:
+            assignment_ref = self._record_ref(payload["manager_assignment_ref"])
+            generation = int(payload["expected_generation"])
+            input_refs = tuple(self._record_ref(item) for item in payload.get("input_refs", ()))
+            dispatch = self.assignments_port.dispatch(
+                assignment_ref,
+                input_refs=input_refs,
+                action=payload.get("action"),
+                expected_generation=generation,
+                logical_request_key=request_id,
+                actor=self._actor(actor),
+            )
+        except Exception as exc:
+            error_name = type(exc).__name__
+            code = "stale_assignment_dispatch" if error_name in {"StaleAssignmentError", "WorkNotFoundError"} else "assignment_dispatch_rejected"
+            return {"outcome": "error", "error": {"code": code, "message": str(exc), "operation": "work.responsibility.dispatch"}, "replayed": False, "event_ids": [], "dispatch": False, "execution": False}
+        receipt = self._receipt(request_id)
+        return {"outcome": "dispatched", "dispatch": _json_value(dispatch), "receipt": _receipt_dict(receipt), "replayed": False, "event_ids": self._events_for(receipt), "execution": False}
 
     def _create_and_open(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         if self.create_open_port is None:
