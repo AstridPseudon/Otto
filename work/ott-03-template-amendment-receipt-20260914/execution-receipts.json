@@ -1,0 +1,179 @@
+[
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/pytest",
+      "-c",
+      "/dev/null",
+      "-q",
+      "tests/otto/test_adapters.py",
+      "tests/otto/test_host_adapter_usage.py",
+      "tests/otto/test_intake_roles.py",
+      "tests/otto/test_owner_bootstrap.py",
+      "tests/otto/test_handoff.py",
+      "tests/otto/test_handoff_continuity.py",
+      "tests/otto/test_selected_template.py"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:38:45.711025+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/src"
+    },
+    "exit_code": 0,
+    "label": "source-final-36",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/source-final-36.txt",
+    "process_id": 63363,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:38:44.800165+00:00",
+    "test_count": 36,
+    "write_mode": "isolated-checkout-owned-paths"
+  },
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/pytest",
+      "-c",
+      "/dev/null",
+      "-q",
+      "tests/otto/test_adapters.py",
+      "tests/otto/test_host_adapter_usage.py",
+      "tests/otto/test_intake_roles.py",
+      "tests/otto/test_owner_bootstrap.py",
+      "tests/otto/test_handoff.py",
+      "tests/otto/test_handoff_continuity.py",
+      "tests/otto/test_selected_template.py"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:38:54.099360+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "unset"
+    },
+    "exit_code": 0,
+    "label": "installed-final-36",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/installed-final-36.txt",
+    "process_id": 63372,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:38:53.429441+00:00",
+    "test_count": 36,
+    "write_mode": "isolated-checkout-owned-paths"
+  },
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+      "work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py",
+      "work/ott-03-template-amendment-receipt-20260914/selected-template-observations-source.json"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:39:00.697840+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/src"
+    },
+    "exit_code": 1,
+    "label": "source-template-harness",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/source-template-harness.txt",
+    "process_id": 63381,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:39:00.674301+00:00",
+    "test_count": null,
+    "write_mode": "isolated-checkout-owned-paths"
+  },
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+      "work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py",
+      "work/ott-03-template-amendment-receipt-20260914/selected-template-observations-source.json"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:39:31.362761+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/src"
+    },
+    "exit_code": 1,
+    "label": "source-template-harness-retry",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/source-template-harness-retry.txt",
+    "process_id": 63430,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:39:31.118036+00:00",
+    "test_count": null,
+    "write_mode": "isolated-checkout-owned-paths"
+  },
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+      "work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py",
+      "work/ott-03-template-amendment-receipt-20260914/selected-template-observations-source.json"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:39:58.664821+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/src"
+    },
+    "exit_code": 1,
+    "label": "source-template-harness-final",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/source-template-harness-final.txt",
+    "process_id": 63458,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:39:58.552962+00:00",
+    "test_count": null,
+    "write_mode": "isolated-checkout-owned-paths"
+  },
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+      "work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py",
+      "work/ott-03-template-amendment-receipt-20260914/selected-template-observations-source.json"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:40:20.078650+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/src"
+    },
+    "exit_code": 0,
+    "label": "source-template-harness-final2",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/source-template-harness-final2.txt",
+    "process_id": 63507,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:40:19.905509+00:00",
+    "test_count": null,
+    "write_mode": "isolated-checkout-owned-paths"
+  },
+  {
+    "command": [
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+      "work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py",
+      "work/ott-03-template-amendment-receipt-20260914/selected-template-observations.json"
+    ],
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "end": "2026-09-14T17:40:26.998570+00:00",
+    "environment": {
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "unset"
+    },
+    "exit_code": 0,
+    "label": "installed-template-harness",
+    "model": "gpt-5.6-luna",
+    "output": "work/ott-03-template-amendment-receipt-20260914/installed-template-harness.txt",
+    "process_id": 63513,
+    "reasoning": "high",
+    "session_id": null,
+    "start": "2026-09-14T17:40:26.826467+00:00",
+    "test_count": null,
+    "write_mode": "isolated-checkout-owned-paths"
+  }
+]

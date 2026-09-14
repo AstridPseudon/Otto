@@ -1,0 +1,14 @@
+{
+  "checkout": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+  "starting_commit": "528aa4dea810584d5c1794df6bd602f8c89abde7",
+  "starting_tree": "5ed5ad9d2be4764286376867d49d91f9131e2ee3",
+  "historical_v2_source_commit": "23727a15f1d2300ca617082570545f787c2d082a",
+  "historical_v2_source_tree": "2336691fb729c8e1e447e26af2633a5b706abd5f",
+  "current_source_commit": "3237701d21470380cbe471880d793449b5f40d9b",
+  "current_source_tree": "669d3af0e65bea36f4349f6374c4d7073f3a605a",
+  "accepted_herzchen_source_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+  "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+  "requested_model": "gpt-5.6-luna",
+  "reasoning": "high",
+  "write_mode": "isolated-checkout-owned-paths"
+}

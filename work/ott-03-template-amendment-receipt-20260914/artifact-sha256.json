@@ -1,0 +1,95 @@
+{
+  "artifacts": [
+    {
+      "bytes": 22016,
+      "path": "dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+      "sha256": "3078664891c97f3fa61fab897bf3cc9ee192ba619ef7ec2c602c74ccc736fe49"
+    },
+    {
+      "bytes": 8540,
+      "path": "execution-receipts.json",
+      "sha256": "6238374ac06115bb720956995a3f93c249f7cdecce90fd744c8f378eff3f93e4"
+    },
+    {
+      "bytes": 7706,
+      "path": "execution-receipts.jsonl",
+      "sha256": "9d63f5e59ea66cee38d9c7d8801d7792d3d81a263d46e4bb0ba43e2cb39325ac"
+    },
+    {
+      "bytes": 836,
+      "path": "installed-final-36.txt",
+      "sha256": "15addd95e463b001a132444c760fd2c3df208b30a769123538110d1b3fd969ae"
+    },
+    {
+      "bytes": 2512,
+      "path": "installed-origins.json",
+      "sha256": "7276522e47b1e6434b27a956fec694e1abc446bbe38499986fe4129366b66a68"
+    },
+    {
+      "bytes": 218,
+      "path": "installed-template-harness.txt",
+      "sha256": "13d54737a5fab8fb87587c8776f81b87559fb728deea69e307bd47f97ea51aa2"
+    },
+    {
+      "bytes": 868,
+      "path": "lineage.json",
+      "sha256": "0a6183b93d6ed565d36bd6b96caf9fe58eff4cb2d0a920aa4a8b4540b711efb9"
+    },
+    {
+      "bytes": 7034,
+      "path": "result.md",
+      "sha256": "b9a008e424825e331b058ce04330e0f36dd1a62908ee1034116e30e0a6532dbe"
+    },
+    {
+      "bytes": 2090,
+      "path": "run_receipt_amendment.py",
+      "sha256": "85ace9887e77f1c34e4e272e1f4f7d6cd6e3f9afce74f2a65cf7843be9241c6e"
+    },
+    {
+      "bytes": 57754,
+      "path": "selected-template-observations-source.json",
+      "sha256": "15e615b7091c054ab6bd37e6f3a2d879b2e905e7b615613b69b2ae146add4b51"
+    },
+    {
+      "bytes": 57754,
+      "path": "selected-template-observations.json",
+      "sha256": "c9dcaa84dd540b50d21a1e79a55773e3f9bbbab48ae63cf4760f2512032ed77e"
+    },
+    {
+      "bytes": 5642,
+      "path": "selected_template_harness.py",
+      "sha256": "a01a6070b949a1ed409d41738c158d50d865a6242270d833cf2c8f5a37de5e3f"
+    },
+    {
+      "bytes": 836,
+      "path": "source-final-36.txt",
+      "sha256": "5ab1ff9d388ad554a70e0e16165bcb4a9e1f2d639f059d708073c685fd11fbe7"
+    },
+    {
+      "bytes": 1534,
+      "path": "source-template-harness-final.txt",
+      "sha256": "420511052a24422dfa4c15193cf918fc9b8e92c108a3e69c870ea3cc8fa75411"
+    },
+    {
+      "bytes": 218,
+      "path": "source-template-harness-final2.txt",
+      "sha256": "13d54737a5fab8fb87587c8776f81b87559fb728deea69e307bd47f97ea51aa2"
+    },
+    {
+      "bytes": 1852,
+      "path": "source-template-harness-retry.txt",
+      "sha256": "94c26f06e9244c5f694dd726a5b8cd81ed2a7d57ebad9067abe642efbf8da707"
+    },
+    {
+      "bytes": 436,
+      "path": "source-template-harness.txt",
+      "sha256": "b8b7eec8aa5a8d131308eefcddca78c48542a2a3db8ad89010e2165a2cb51fb9"
+    },
+    {
+      "bytes": 5068,
+      "path": "surface-matrix.json",
+      "sha256": "bd1672e39afb04a21f771391372b937aa4d6e87eef05bb957b91580c4958f912"
+    }
+  ],
+  "root": "work/ott-03-template-amendment-receipt-20260914"
+}

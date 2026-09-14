@@ -1,0 +1,60 @@
+{
+  "matrix": "OTT-03 selected-template amendment supplement",
+  "prior_matrix": "../ott-03-handoff-worker-receipt-20260914-v2/surface-matrix.json",
+  "scope": "Only selected-template applicability is amended. The complete prior OTT-03 matrix and its 35-test v2 proof remain historical and unchanged.",
+  "source_commit": "3237701d21470380cbe471880d793449b5f40d9b",
+  "surfaces": [
+    {
+      "surface": "selected-template create/edit/reopen",
+      "status": "supported and proven in this Otto candidate",
+      "owner": "Otto FiniteWorkOperations -> accepted ProjectSheet.command_port.instantiate_new_template",
+      "request_shape": "JSON resource mapping {id, revision|version, parameters, seed}; typed herzchen.packs.templates.WorkTemplate constructed before writes",
+      "evidence": ["src/otto/portfolio/herzchen_binding.py", "tests/otto/test_selected_template.py", "work/ott-03-template-amendment-receipt-20260914/selected-template-observations.json", "work/ott-03-template-amendment-receipt-20260914/installed-template-harness.txt"],
+      "proof": ["template ref pack/ott03.selected.template@template-rev-7", "template-defined project fields", "typed work.task with content", "edit and fresh restart read retain the same project/task identities", "pending and executable=false"]
+    },
+    {
+      "surface": "selected-template exact replay and changed conflict",
+      "status": "supported and proven in this Otto candidate",
+      "owner": "accepted WorkGraph project create receipt plus accepted ProjectSheet batch receipt",
+      "evidence": ["src/otto/portfolio/herzchen_binding.py", "tests/otto/test_selected_template.py", "work/ott-03-template-amendment-receipt-20260914/selected-template-observations.json"],
+      "proof": ["same project/task identity on retry", "same receipt linkage", "zero new events", "changed parameters produce replay_conflict with zero delta"]
+    },
+    {
+      "surface": "invalid/unknown selected-template resource",
+      "status": "supported and proven in this Otto candidate",
+      "owner": "Otto pre-write WorkTemplate construction, accepted validate_template and render_template",
+      "evidence": ["src/otto/portfolio/herzchen_binding.py", "tests/otto/test_selected_template.py", "work/ott-03-template-amendment-receipt-20260914/selected-template-observations.json"],
+      "proof": ["missing id/revision/parameters/seed is invalid_template_resource", "validation precedes project creation", "zero events and no project identity"]
+    },
+    {
+      "surface": "selected-template create-and-open",
+      "status": "pending; explicit accepted capability gap",
+      "owner": "existing trusted owner bridge only exposes create_pending_and_open(title, outcome, metadata)",
+      "evidence": ["src/otto/portfolio/owner_bootstrap.py", "src/otto/portfolio/herzchen_binding.py", "tests/otto/test_selected_template.py", "work/ott-03-template-amendment-receipt-20260914/selected-template-observations.json"],
+      "proof": ["valid selected request returns canonical_selected_template_create_and_open_unavailable", "zero project/event delta", "default blank create-and-open path remains covered by historical v2 tests"],
+      "gap": "No accepted atomic owner endpoint accepts a typed WorkTemplate and performs template instantiation inside the existing authoring transaction. Extending the bridge here would change its accepted transaction contract; this row is not claimed."
+    },
+    {
+      "surface": "default blank create/create-and-open",
+      "status": "unchanged; prior v2 proof retained",
+      "owner": "prior accepted Otto XHARD owner/bootstrap increment",
+      "evidence": ["../ott-03-handoff-worker-receipt-20260914-v2/result.md", "../ott-03-handoff-worker-receipt-20260914-v2/surface-matrix.json", "work/ott-03-template-amendment-receipt-20260914/installed-final-36.txt"],
+      "proof": ["no selected-template branch is used for blank/default input", "prior 35-test v2 evidence remains byte-for-byte unchanged"]
+    },
+    {
+      "surface": "all other OTT-03 surfaces",
+      "status": "unchanged; refer to prior complete matrix",
+      "owner": "prior accepted v2 Otto/Herzchen lineage",
+      "evidence": ["../ott-03-handoff-worker-receipt-20260914-v2/surface-matrix.json", "work/ott-03-template-amendment-receipt-20260914/source-final-36.txt", "work/ott-03-template-amendment-receipt-20260914/installed-final-36.txt"],
+      "proof": ["retained tests remain green", "no v2 evidence file was edited"]
+    },
+    {
+      "surface": "G-OTTO, EX-HOST, live Astrid, OTT-06, programme completion",
+      "status": "not claimed",
+      "owner": "outside this amendment",
+      "evidence": ["work/ott-03-template-amendment-receipt-20260914/result.md"],
+      "proof": ["explicit boundary only"]
+    }
+  ],
+  "acceptance_claim": "This supplement accepts only real selected-template pending instantiation, typed task/content projection, edit/reopen, replay/conflict, validation, and inertness in the Otto candidate. Selected create-and-open remains pending at the named owner-bridge capability boundary."
+}

@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py", line 10, in <module>
+    from tests.otto.test_selected_template import AUTHORITY, CREDENTIAL, _owner_api, _events, _receipt, _template
+ModuleNotFoundError: No module named 'tests'

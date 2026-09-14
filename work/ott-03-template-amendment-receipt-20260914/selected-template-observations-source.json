@@ -1,0 +1,1861 @@
+{
+  "before": {
+    "event_count": 0,
+    "event_ids": []
+  },
+  "conflict": {
+    "event_delta": 0,
+    "result": {
+      "error": {
+        "code": "replay_conflict",
+        "message": "logical request key was reused with a changed request digest",
+        "operation": "work.pending.create"
+      },
+      "event_ids": [],
+      "executable": false,
+      "outcome": "error",
+      "replayed": false
+    }
+  },
+  "create": {
+    "after": {
+      "event_count": 2,
+      "event_ids": [
+        "event-4e8716bed7914f0213c6cc524648c8e5",
+        "event-c23dec6986139d35dc3bb33c2216a6c8"
+      ],
+      "project_payload": {
+        "acceptance": {},
+        "alias": "project-15c39804e4",
+        "aliases": [
+          "project-15c39804e4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "template-task": {
+                "authority": "ott03-selected-template-harness",
+                "id": "task-4d9505f775b7b02342e6c112f091",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "template-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "custom": {
+          "selected": true
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "template-task": {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "template-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "harness-template",
+            "payload": {
+              "edit": {},
+              "open": false,
+              "template": {
+                "id": "ott03.selected.template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                },
+                "revision": "template-rev-7",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "selected": true
+                    },
+                    "outcome": "Template-defined outcome",
+                    "title": "Selected template project"
+                  },
+                  "tasks": [
+                    {
+                      "body": "Typed task content",
+                      "local_id": "template-task",
+                      "metadata": {
+                        "origin": "selected-template"
+                      },
+                      "title": "Template-defined task"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.selected.template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {},
+              "type": "object"
+            },
+            "revision": "template-rev-7",
+            "seed": {
+              "project": {
+                "custom": {
+                  "selected": true
+                },
+                "outcome": "Template-defined outcome",
+                "title": "Selected template project"
+              },
+              "tasks": [
+                {
+                  "body": "Typed task content",
+                  "local_id": "template-task",
+                  "metadata": {
+                    "origin": "selected-template"
+                  },
+                  "title": "Template-defined task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {},
+            "template_id": "ott03.selected.template"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Template-defined outcome",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-template-harness",
+            "credential_ref": "ott03-selected-template-harness-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-template-harness",
+            "credential_ref": "ott03-selected-template-harness-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-template-harness",
+            "id": "task-4d9505f775b7b02342e6c112f091",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Selected template project",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      }
+    },
+    "result": {
+      "activation": false,
+      "budget_reserved": false,
+      "dispatch": false,
+      "event_ids": [
+        "event-c23dec6986139d35dc3bb33c2216a6c8",
+        "event-4e8716bed7914f0213c6cc524648c8e5"
+      ],
+      "executable": false,
+      "outcome": "created",
+      "project_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-4e8716bed7914f0213c6cc524648c8e5"
+        ],
+        "logical_request_key": "harness-template-project",
+        "observed_revision": "rev-1",
+        "operation": "work.create",
+        "replayed": false,
+        "request_digest": "3b1dedcfc68bc135bcfdbb24fd1b1a56939aaa722a671c2bad9ffce3f1c1b830",
+        "result_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "4bfb59bee64fb972659a2e3edea7f34a",
+        "unknown_reason": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-c23dec6986139d35dc3bb33c2216a6c8"
+        ],
+        "logical_request_key": "harness-template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "3b94610c4ebd7386f30043201db005194095e6d07cf9aa42414dd78351bbd1b5",
+        "result_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "14c25d020c2f55586ccd6c77a0a9eeb8",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Untitled project",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-15c39804e4",
+          "aliases": [
+            "project-15c39804e4"
+          ],
+          "approach": "",
+          "batch_history": [
+            {
+              "decision_ref": null,
+              "manager_action": null,
+              "mapping": {
+                "template-task": {
+                  "authority": "ott03-selected-template-harness",
+                  "id": "task-4d9505f775b7b02342e6c112f091",
+                  "kind": "work.task",
+                  "revision": null
+                }
+              },
+              "task_keys": [
+                "template-task"
+              ]
+            }
+          ],
+          "budget": null,
+          "custom": {
+            "selected": true
+          },
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "project",
+          "last_batch": {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "template-task": {
+                "authority": "ott03-selected-template-harness",
+                "id": "task-4d9505f775b7b02342e6c112f091",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "request_context": {
+              "causation_id": null,
+              "correlation_id": null,
+              "edit_token": null,
+              "expected_revision": "rev-1",
+              "expected_version": 1
+            },
+            "task_keys": [
+              "template-task"
+            ]
+          },
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "harness-template",
+              "payload": {
+                "edit": {},
+                "open": false,
+                "template": {
+                  "id": "ott03.selected.template",
+                  "parameters": {
+                    "additionalProperties": false,
+                    "properties": {},
+                    "type": "object"
+                  },
+                  "revision": "template-rev-7",
+                  "seed": {
+                    "project": {
+                      "custom": {
+                        "selected": true
+                      },
+                      "outcome": "Template-defined outcome",
+                      "title": "Selected template project"
+                    },
+                    "tasks": [
+                      {
+                        "body": "Typed task content",
+                        "local_id": "template-task",
+                        "metadata": {
+                          "origin": "selected-template"
+                        },
+                        "title": "Template-defined task"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "template": {
+              "id": "ott03.selected.template",
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "revision": "template-rev-7",
+              "seed": {
+                "project": {
+                  "custom": {
+                    "selected": true
+                  },
+                  "outcome": "Template-defined outcome",
+                  "title": "Selected template project"
+                },
+                "tasks": [
+                  {
+                    "body": "Typed task content",
+                    "local_id": "template-task",
+                    "metadata": {
+                      "origin": "selected-template"
+                    },
+                    "title": "Template-defined task"
+                  }
+                ]
+              }
+            }
+          },
+          "metadata_namespaces": {
+            "work.template": {
+              "auto_dispatch": false,
+              "criteria": [],
+              "parameters": {},
+              "template_id": "ott03.selected.template"
+            }
+          },
+          "name": "Untitled project",
+          "outcome": "Template-defined outcome",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "owner",
+              "authenticated": true,
+              "authority": "ott03-selected-template-harness",
+              "credential_ref": "ott03-selected-template-harness-credential"
+            },
+            "curator": {
+              "actor": "owner",
+              "authenticated": true,
+              "authority": "ott03-selected-template-harness",
+              "credential_ref": "ott03-selected-template-harness-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [
+            {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          ],
+          "title": "Selected template project",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-2",
+        "title": "Selected template project",
+        "version": 2
+      },
+      "replayed": false,
+      "session_created": false,
+      "task_created": false,
+      "task_refs": [
+        {
+          "authority": "ott03-selected-template-harness",
+          "id": "task-4d9505f775b7b02342e6c112f091",
+          "kind": "work.task",
+          "revision": null
+        }
+      ],
+      "tasks": [
+        {
+          "local_id": "template-task",
+          "record": {
+            "kind": "task",
+            "lifecycle": "pending",
+            "name": "Template-defined task",
+            "payload": {
+              "alias": "task-4d9505f775b7b02342e6c112f091",
+              "aliases": [
+                "task-4d9505f775b7b02342e6c112f091"
+              ],
+              "body": "Typed task content",
+              "custom": {},
+              "dependencies": [],
+              "documents": [],
+              "fields": {},
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "task",
+              "lifecycle": "pending",
+              "metadata": {
+                "origin": "selected-template"
+              },
+              "name": "Template-defined task",
+              "order": 0,
+              "parent": {
+                "authority": "ott03-selected-template-harness",
+                "id": "project-10d827ea923da2942515c39804e4",
+                "kind": "work.project",
+                "revision": "rev-1"
+              },
+              "project_ref": {
+                "authority": "ott03-selected-template-harness",
+                "id": "project-10d827ea923da2942515c39804e4",
+                "kind": "work.project",
+                "revision": "rev-1"
+              },
+              "readiness": {
+                "dispatch": false,
+                "ready": false,
+                "status": "not-evaluated"
+              },
+              "results": [],
+              "schema_revision": "work.v1",
+              "title": "Template-defined task"
+            },
+            "project_ref": {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": "rev-1"
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "revision": "rev-1",
+            "title": "Template-defined task",
+            "version": 1
+          },
+          "ref": {
+            "authority": "ott03-selected-template-harness",
+            "id": "task-4d9505f775b7b02342e6c112f091",
+            "kind": "work.task",
+            "revision": null
+          }
+        }
+      ],
+      "template": {
+        "id": "ott03.selected.template",
+        "kind": "work_template",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "revision": "template-rev-7",
+        "seed": {
+          "project": {
+            "custom": {
+              "selected": true
+            },
+            "outcome": "Template-defined outcome",
+            "title": "Selected template project"
+          },
+          "tasks": [
+            {
+              "body": "Typed task content",
+              "local_id": "template-task",
+              "metadata": {
+                "origin": "selected-template"
+              },
+              "title": "Template-defined task"
+            }
+          ]
+        }
+      },
+      "template_ref": {
+        "authority": "pack",
+        "id": "ott03.selected.template",
+        "kind": "work_template",
+        "revision": "template-rev-7"
+      },
+      "template_revision": "template-rev-7"
+    }
+  },
+  "edit": {
+    "after": {
+      "event_count": 3,
+      "event_ids": [
+        "event-4e8716bed7914f0213c6cc524648c8e5",
+        "event-c23dec6986139d35dc3bb33c2216a6c8",
+        "event-b7183ea045f9b5124b2a11ea7f994a44"
+      ],
+      "project_payload": {
+        "acceptance": {},
+        "alias": "project-15c39804e4",
+        "aliases": [
+          "project-15c39804e4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "template-task": {
+                "authority": "ott03-selected-template-harness",
+                "id": "task-4d9505f775b7b02342e6c112f091",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "template-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "custom": {
+          "selected": true
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "fields": {},
+        "gate": null,
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "template-task": {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "template-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "harness-template",
+            "payload": {
+              "edit": {},
+              "open": false,
+              "template": {
+                "id": "ott03.selected.template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                },
+                "revision": "template-rev-7",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "selected": true
+                    },
+                    "outcome": "Template-defined outcome",
+                    "title": "Selected template project"
+                  },
+                  "tasks": [
+                    {
+                      "body": "Typed task content",
+                      "local_id": "template-task",
+                      "metadata": {
+                        "origin": "selected-template"
+                      },
+                      "title": "Template-defined task"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.selected.template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {},
+              "type": "object"
+            },
+            "revision": "template-rev-7",
+            "seed": {
+              "project": {
+                "custom": {
+                  "selected": true
+                },
+                "outcome": "Template-defined outcome",
+                "title": "Selected template project"
+              },
+              "tasks": [
+                {
+                  "body": "Typed task content",
+                  "local_id": "template-task",
+                  "metadata": {
+                    "origin": "selected-template"
+                  },
+                  "title": "Template-defined task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {},
+            "template_id": "ott03.selected.template"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Edited",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-template-harness",
+            "credential_ref": "ott03-selected-template-harness-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-template-harness",
+            "credential_ref": "ott03-selected-template-harness-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-template-harness",
+            "id": "task-4d9505f775b7b02342e6c112f091",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Harness edited",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-3"
+      }
+    },
+    "result": {
+      "event_ids": [
+        "event-b7183ea045f9b5124b2a11ea7f994a44"
+      ],
+      "executable": false,
+      "outcome": "edited",
+      "project_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-3"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-b7183ea045f9b5124b2a11ea7f994a44"
+        ],
+        "logical_request_key": "harness-edit",
+        "observed_revision": "rev-3",
+        "operation": "work.revise",
+        "replayed": false,
+        "request_digest": "4c9932186310809221dbbdbac26001ca755f8e965ce779ea90ae454659803844",
+        "result_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-3"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "transaction_id": "55b270fc80d5957c726e1b036430e521",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Untitled project",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-15c39804e4",
+          "aliases": [
+            "project-15c39804e4"
+          ],
+          "approach": "",
+          "batch_history": [
+            {
+              "decision_ref": null,
+              "manager_action": null,
+              "mapping": {
+                "template-task": {
+                  "authority": "ott03-selected-template-harness",
+                  "id": "task-4d9505f775b7b02342e6c112f091",
+                  "kind": "work.task",
+                  "revision": null
+                }
+              },
+              "task_keys": [
+                "template-task"
+              ]
+            }
+          ],
+          "budget": null,
+          "custom": {
+            "selected": true
+          },
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "fields": {},
+          "gate": null,
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "project",
+          "last_batch": {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "template-task": {
+                "authority": "ott03-selected-template-harness",
+                "id": "task-4d9505f775b7b02342e6c112f091",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "request_context": {
+              "causation_id": null,
+              "correlation_id": null,
+              "edit_token": null,
+              "expected_revision": "rev-1",
+              "expected_version": 1
+            },
+            "task_keys": [
+              "template-task"
+            ]
+          },
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "harness-template",
+              "payload": {
+                "edit": {},
+                "open": false,
+                "template": {
+                  "id": "ott03.selected.template",
+                  "parameters": {
+                    "additionalProperties": false,
+                    "properties": {},
+                    "type": "object"
+                  },
+                  "revision": "template-rev-7",
+                  "seed": {
+                    "project": {
+                      "custom": {
+                        "selected": true
+                      },
+                      "outcome": "Template-defined outcome",
+                      "title": "Selected template project"
+                    },
+                    "tasks": [
+                      {
+                        "body": "Typed task content",
+                        "local_id": "template-task",
+                        "metadata": {
+                          "origin": "selected-template"
+                        },
+                        "title": "Template-defined task"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "template": {
+              "id": "ott03.selected.template",
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "revision": "template-rev-7",
+              "seed": {
+                "project": {
+                  "custom": {
+                    "selected": true
+                  },
+                  "outcome": "Template-defined outcome",
+                  "title": "Selected template project"
+                },
+                "tasks": [
+                  {
+                    "body": "Typed task content",
+                    "local_id": "template-task",
+                    "metadata": {
+                      "origin": "selected-template"
+                    },
+                    "title": "Template-defined task"
+                  }
+                ]
+              }
+            }
+          },
+          "metadata_namespaces": {
+            "work.template": {
+              "auto_dispatch": false,
+              "criteria": [],
+              "parameters": {},
+              "template_id": "ott03.selected.template"
+            }
+          },
+          "name": "Untitled project",
+          "outcome": "Edited",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "owner",
+              "authenticated": true,
+              "authority": "ott03-selected-template-harness",
+              "credential_ref": "ott03-selected-template-harness-credential"
+            },
+            "curator": {
+              "actor": "owner",
+              "authenticated": true,
+              "authority": "ott03-selected-template-harness",
+              "credential_ref": "ott03-selected-template-harness-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [
+            {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          ],
+          "title": "Harness edited",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-3"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-3",
+        "title": "Harness edited",
+        "version": 3
+      },
+      "replayed": false
+    }
+  },
+  "fresh_after_restart": {
+    "event_count": 5,
+    "event_ids": [
+      "event-b045d8dd7ad6bfc24ba62045cb9654cd",
+      "event-21c43bf21eb700e1517c1bb618162640",
+      "event-4e8716bed7914f0213c6cc524648c8e5",
+      "event-c23dec6986139d35dc3bb33c2216a6c8",
+      "event-b7183ea045f9b5124b2a11ea7f994a44"
+    ],
+    "project_payload": {
+      "acceptance": {},
+      "alias": "project-15c39804e4",
+      "aliases": [
+        "project-15c39804e4"
+      ],
+      "approach": "",
+      "batch_history": [
+        {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "template-task": {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "task_keys": [
+            "template-task"
+          ]
+        }
+      ],
+      "budget": null,
+      "custom": {
+        "selected": true
+      },
+      "dependencies": [],
+      "documents": [],
+      "execution": null,
+      "external_action": null,
+      "fields": {},
+      "gate": null,
+      "id": "project-10d827ea923da2942515c39804e4",
+      "kind": "project",
+      "last_batch": {
+        "decision_ref": null,
+        "manager_action": null,
+        "mapping": {
+          "template-task": {
+            "authority": "ott03-selected-template-harness",
+            "id": "task-4d9505f775b7b02342e6c112f091",
+            "kind": "work.task",
+            "revision": null
+          }
+        },
+        "request_context": {
+          "causation_id": null,
+          "correlation_id": null,
+          "edit_token": null,
+          "expected_revision": "rev-1",
+          "expected_version": 1
+        },
+        "task_keys": [
+          "template-task"
+        ]
+      },
+      "lifecycle": "pending",
+      "manager": null,
+      "metadata": {
+        "otto_request": {
+          "logical_request_key": "harness-template",
+          "payload": {
+            "edit": {},
+            "open": false,
+            "template": {
+              "id": "ott03.selected.template",
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "revision": "template-rev-7",
+              "seed": {
+                "project": {
+                  "custom": {
+                    "selected": true
+                  },
+                  "outcome": "Template-defined outcome",
+                  "title": "Selected template project"
+                },
+                "tasks": [
+                  {
+                    "body": "Typed task content",
+                    "local_id": "template-task",
+                    "metadata": {
+                      "origin": "selected-template"
+                    },
+                    "title": "Template-defined task"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "template": {
+          "id": "ott03.selected.template",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {},
+            "type": "object"
+          },
+          "revision": "template-rev-7",
+          "seed": {
+            "project": {
+              "custom": {
+                "selected": true
+              },
+              "outcome": "Template-defined outcome",
+              "title": "Selected template project"
+            },
+            "tasks": [
+              {
+                "body": "Typed task content",
+                "local_id": "template-task",
+                "metadata": {
+                  "origin": "selected-template"
+                },
+                "title": "Template-defined task"
+              }
+            ]
+          }
+        }
+      },
+      "metadata_namespaces": {
+        "work.template": {
+          "auto_dispatch": false,
+          "criteria": [],
+          "parameters": {},
+          "template_id": "ott03.selected.template"
+        }
+      },
+      "name": "Untitled project",
+      "outcome": "Edited",
+      "parent": null,
+      "project_ref": null,
+      "protocol": null,
+      "provenance": {
+        "creator": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-template-harness",
+          "credential_ref": "ott03-selected-template-harness-credential"
+        },
+        "curator": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-template-harness",
+          "credential_ref": "ott03-selected-template-harness-credential"
+        }
+      },
+      "readiness": {
+        "dispatch": false,
+        "ready": false,
+        "status": "not-evaluated"
+      },
+      "schema_revision": "work.v1",
+      "scope": "",
+      "tasks": [
+        {
+          "authority": "ott03-selected-template-harness",
+          "id": "task-4d9505f775b7b02342e6c112f091",
+          "kind": "work.task",
+          "revision": null
+        }
+      ],
+      "title": "Harness edited",
+      "worker": null
+    },
+    "project_ref": {
+      "authority": "ott03-selected-template-harness",
+      "id": "project-10d827ea923da2942515c39804e4",
+      "kind": "work.project",
+      "revision": "rev-3"
+    }
+  },
+  "invalid": {
+    "event_delta": 0,
+    "result": {
+      "error": {
+        "code": "invalid_template_resource",
+        "message": "template.revision or template.version must be non-blank text",
+        "operation": "work.project-sheet.instantiate-template"
+      },
+      "event_ids": [],
+      "executable": false,
+      "outcome": "error",
+      "replayed": false
+    }
+  },
+  "persisted_event_count": 5,
+  "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "receipt": {
+    "error_code": null,
+    "event_ids": [
+      "event-c23dec6986139d35dc3bb33c2216a6c8"
+    ],
+    "logical_request_key": "harness-template",
+    "observed_revision": "rev-2",
+    "operation": "work.project-sheet.apply",
+    "replayed": false,
+    "request_digest": "3b94610c4ebd7386f30043201db005194095e6d07cf9aa42414dd78351bbd1b5",
+    "result_ref": {
+      "authority": "ott03-selected-template-harness",
+      "id": "project-10d827ea923da2942515c39804e4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "status": "committed",
+    "target": {
+      "authority": "ott03-selected-template-harness",
+      "id": "project-10d827ea923da2942515c39804e4",
+      "kind": "work.project",
+      "revision": "rev-1"
+    },
+    "transaction_id": "14c25d020c2f55586ccd6c77a0a9eeb8",
+    "unknown_reason": null
+  },
+  "reopen": {
+    "event_ids": [
+      "event-21c43bf21eb700e1517c1bb618162640"
+    ],
+    "opened": {
+      "base_revision": "rev-2",
+      "error": null,
+      "project_ref": null,
+      "recovery_pending": false,
+      "recovery_status": "not_requested",
+      "scope": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "session_id": "session-e5da040e22c8e2fd3aa330d7",
+      "status": "opened",
+      "target_kind": "project"
+    },
+    "outcome": "opened",
+    "project_ref": {
+      "authority": "ott03-selected-template-harness",
+      "id": "project-10d827ea923da2942515c39804e4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-21c43bf21eb700e1517c1bb618162640"
+      ],
+      "logical_request_key": "harness-reopen",
+      "observed_revision": "rev-1",
+      "operation": "open",
+      "replayed": false,
+      "request_digest": "2d8fab6be5d03ca307ed5708b62adf1f06e8a95535cc3a3e85aa16a69d408cb0",
+      "result_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "authoring-scope",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "authoring-scope",
+        "revision": null
+      },
+      "transaction_id": "8b1575969691da58c4f083a085357a78",
+      "unknown_reason": null
+    },
+    "replayed": false
+  },
+  "replay": {
+    "after": {
+      "event_count": 5,
+      "event_ids": [
+        "event-b045d8dd7ad6bfc24ba62045cb9654cd",
+        "event-21c43bf21eb700e1517c1bb618162640",
+        "event-4e8716bed7914f0213c6cc524648c8e5",
+        "event-c23dec6986139d35dc3bb33c2216a6c8",
+        "event-b7183ea045f9b5124b2a11ea7f994a44"
+      ],
+      "project_payload": {
+        "acceptance": {},
+        "alias": "project-15c39804e4",
+        "aliases": [
+          "project-15c39804e4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "template-task": {
+                "authority": "ott03-selected-template-harness",
+                "id": "task-4d9505f775b7b02342e6c112f091",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "template-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "custom": {
+          "selected": true
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "fields": {},
+        "gate": null,
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "template-task": {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "template-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "harness-template",
+            "payload": {
+              "edit": {},
+              "open": false,
+              "template": {
+                "id": "ott03.selected.template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                },
+                "revision": "template-rev-7",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "selected": true
+                    },
+                    "outcome": "Template-defined outcome",
+                    "title": "Selected template project"
+                  },
+                  "tasks": [
+                    {
+                      "body": "Typed task content",
+                      "local_id": "template-task",
+                      "metadata": {
+                        "origin": "selected-template"
+                      },
+                      "title": "Template-defined task"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.selected.template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {},
+              "type": "object"
+            },
+            "revision": "template-rev-7",
+            "seed": {
+              "project": {
+                "custom": {
+                  "selected": true
+                },
+                "outcome": "Template-defined outcome",
+                "title": "Selected template project"
+              },
+              "tasks": [
+                {
+                  "body": "Typed task content",
+                  "local_id": "template-task",
+                  "metadata": {
+                    "origin": "selected-template"
+                  },
+                  "title": "Template-defined task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {},
+            "template_id": "ott03.selected.template"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Edited",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-template-harness",
+            "credential_ref": "ott03-selected-template-harness-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-template-harness",
+            "credential_ref": "ott03-selected-template-harness-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-template-harness",
+            "id": "task-4d9505f775b7b02342e6c112f091",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Harness edited",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-3"
+      }
+    },
+    "event_delta": 0,
+    "result": {
+      "activation": false,
+      "budget_reserved": false,
+      "dispatch": false,
+      "event_ids": [
+        "event-c23dec6986139d35dc3bb33c2216a6c8",
+        "event-4e8716bed7914f0213c6cc524648c8e5"
+      ],
+      "executable": false,
+      "outcome": "replayed",
+      "project_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-4e8716bed7914f0213c6cc524648c8e5"
+        ],
+        "logical_request_key": "harness-template-project",
+        "observed_revision": "rev-1",
+        "operation": "work.create",
+        "replayed": false,
+        "request_digest": "3b1dedcfc68bc135bcfdbb24fd1b1a56939aaa722a671c2bad9ffce3f1c1b830",
+        "result_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "4bfb59bee64fb972659a2e3edea7f34a",
+        "unknown_reason": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-template-harness",
+        "id": "project-10d827ea923da2942515c39804e4",
+        "kind": "work.project",
+        "revision": "rev-3"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-c23dec6986139d35dc3bb33c2216a6c8"
+        ],
+        "logical_request_key": "harness-template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "3b94610c4ebd7386f30043201db005194095e6d07cf9aa42414dd78351bbd1b5",
+        "result_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "14c25d020c2f55586ccd6c77a0a9eeb8",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Untitled project",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-15c39804e4",
+          "aliases": [
+            "project-15c39804e4"
+          ],
+          "approach": "",
+          "batch_history": [
+            {
+              "decision_ref": null,
+              "manager_action": null,
+              "mapping": {
+                "template-task": {
+                  "authority": "ott03-selected-template-harness",
+                  "id": "task-4d9505f775b7b02342e6c112f091",
+                  "kind": "work.task",
+                  "revision": null
+                }
+              },
+              "task_keys": [
+                "template-task"
+              ]
+            }
+          ],
+          "budget": null,
+          "custom": {
+            "selected": true
+          },
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "fields": {},
+          "gate": null,
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "project",
+          "last_batch": {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "template-task": {
+                "authority": "ott03-selected-template-harness",
+                "id": "task-4d9505f775b7b02342e6c112f091",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "request_context": {
+              "causation_id": null,
+              "correlation_id": null,
+              "edit_token": null,
+              "expected_revision": "rev-1",
+              "expected_version": 1
+            },
+            "task_keys": [
+              "template-task"
+            ]
+          },
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "harness-template",
+              "payload": {
+                "edit": {},
+                "open": false,
+                "template": {
+                  "id": "ott03.selected.template",
+                  "parameters": {
+                    "additionalProperties": false,
+                    "properties": {},
+                    "type": "object"
+                  },
+                  "revision": "template-rev-7",
+                  "seed": {
+                    "project": {
+                      "custom": {
+                        "selected": true
+                      },
+                      "outcome": "Template-defined outcome",
+                      "title": "Selected template project"
+                    },
+                    "tasks": [
+                      {
+                        "body": "Typed task content",
+                        "local_id": "template-task",
+                        "metadata": {
+                          "origin": "selected-template"
+                        },
+                        "title": "Template-defined task"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "template": {
+              "id": "ott03.selected.template",
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "revision": "template-rev-7",
+              "seed": {
+                "project": {
+                  "custom": {
+                    "selected": true
+                  },
+                  "outcome": "Template-defined outcome",
+                  "title": "Selected template project"
+                },
+                "tasks": [
+                  {
+                    "body": "Typed task content",
+                    "local_id": "template-task",
+                    "metadata": {
+                      "origin": "selected-template"
+                    },
+                    "title": "Template-defined task"
+                  }
+                ]
+              }
+            }
+          },
+          "metadata_namespaces": {
+            "work.template": {
+              "auto_dispatch": false,
+              "criteria": [],
+              "parameters": {},
+              "template_id": "ott03.selected.template"
+            }
+          },
+          "name": "Untitled project",
+          "outcome": "Edited",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "owner",
+              "authenticated": true,
+              "authority": "ott03-selected-template-harness",
+              "credential_ref": "ott03-selected-template-harness-credential"
+            },
+            "curator": {
+              "actor": "owner",
+              "authenticated": true,
+              "authority": "ott03-selected-template-harness",
+              "credential_ref": "ott03-selected-template-harness-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [
+            {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": null
+            }
+          ],
+          "title": "Harness edited",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-selected-template-harness",
+          "id": "project-10d827ea923da2942515c39804e4",
+          "kind": "work.project",
+          "revision": "rev-3"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-3",
+        "title": "Harness edited",
+        "version": 3
+      },
+      "replayed": true,
+      "session_created": false,
+      "task_created": false,
+      "task_refs": [
+        {
+          "authority": "ott03-selected-template-harness",
+          "id": "task-4d9505f775b7b02342e6c112f091",
+          "kind": "work.task",
+          "revision": null
+        }
+      ],
+      "tasks": [
+        {
+          "local_id": "template-task",
+          "record": {
+            "kind": "task",
+            "lifecycle": "pending",
+            "name": "Template-defined task",
+            "payload": {
+              "alias": "task-4d9505f775b7b02342e6c112f091",
+              "aliases": [
+                "task-4d9505f775b7b02342e6c112f091"
+              ],
+              "body": "Typed task content",
+              "custom": {},
+              "dependencies": [],
+              "documents": [],
+              "fields": {},
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "task",
+              "lifecycle": "pending",
+              "metadata": {
+                "origin": "selected-template"
+              },
+              "name": "Template-defined task",
+              "order": 0,
+              "parent": {
+                "authority": "ott03-selected-template-harness",
+                "id": "project-10d827ea923da2942515c39804e4",
+                "kind": "work.project",
+                "revision": "rev-1"
+              },
+              "project_ref": {
+                "authority": "ott03-selected-template-harness",
+                "id": "project-10d827ea923da2942515c39804e4",
+                "kind": "work.project",
+                "revision": "rev-1"
+              },
+              "readiness": {
+                "dispatch": false,
+                "ready": false,
+                "status": "not-evaluated"
+              },
+              "results": [],
+              "schema_revision": "work.v1",
+              "title": "Template-defined task"
+            },
+            "project_ref": {
+              "authority": "ott03-selected-template-harness",
+              "id": "task-4d9505f775b7b02342e6c112f091",
+              "kind": "work.task",
+              "revision": "rev-1"
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "revision": "rev-1",
+            "title": "Template-defined task",
+            "version": 1
+          },
+          "ref": {
+            "authority": "ott03-selected-template-harness",
+            "id": "task-4d9505f775b7b02342e6c112f091",
+            "kind": "work.task",
+            "revision": null
+          }
+        }
+      ],
+      "template": {
+        "id": "ott03.selected.template",
+        "kind": "work_template",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "revision": "template-rev-7",
+        "seed": {
+          "project": {
+            "custom": {
+              "selected": true
+            },
+            "outcome": "Template-defined outcome",
+            "title": "Selected template project"
+          },
+          "tasks": [
+            {
+              "body": "Typed task content",
+              "local_id": "template-task",
+              "metadata": {
+                "origin": "selected-template"
+              },
+              "title": "Template-defined task"
+            }
+          ]
+        }
+      },
+      "template_ref": {
+        "authority": "pack",
+        "id": "ott03.selected.template",
+        "kind": "work_template",
+        "revision": "template-rev-7"
+      },
+      "template_revision": "template-rev-7"
+    }
+  },
+  "selected_create_and_open": {
+    "error": {
+      "code": "canonical_selected_template_create_and_open_unavailable",
+      "message": "the accepted owner create-and-open bridge supports the blank starter only; selected template instantiation has no atomic owner endpoint",
+      "operation": "work.pending.create"
+    },
+    "event_ids": [],
+    "executable": false,
+    "open": {
+      "recovery_pending": false,
+      "recovery_status": "not_requested",
+      "status": "unsupported"
+    },
+    "outcome": "unavailable",
+    "replayed": false,
+    "template_ref": {
+      "authority": "pack",
+      "id": "ott03.selected.template",
+      "kind": "work_template",
+      "revision": "template-rev-7"
+    },
+    "template_revision": "template-rev-7"
+  }
+}

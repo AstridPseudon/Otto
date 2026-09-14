@@ -1,0 +1,1 @@
+{"conflict": "replay_conflict", "create": "created", "fresh_revision": "rev-3", "invalid": "invalid_template_resource", "replay": "replayed", "selected_open": "canonical_selected_template_create_and_open_unavailable"}

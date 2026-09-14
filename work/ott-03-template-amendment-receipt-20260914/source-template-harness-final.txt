@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py", line 115, in <module>
+    main(sys.argv[1] if len(sys.argv) == 2 else "selected-template-observations.json")
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py", line 71, in main
+    store, owner, graph, api, path, binding = _owner_api(Path(output).parent)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-template-amendment-receipt-20260914/selected_template_harness.py", line 35, in _owner_api
+    store = Store.create(path, authority=AUTHORITY)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/herzchen/kernel/store.py", line 371, in create
+    raise StoreExistsError("database already contains a user composition")
+herzchen.kernel.store.StoreExistsError: database already contains a user composition
