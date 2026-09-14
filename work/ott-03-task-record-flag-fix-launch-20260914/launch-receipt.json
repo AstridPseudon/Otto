@@ -1,0 +1,16 @@
+{
+  "schema": "ott03.task-record-flag-fix.launch.v1",
+  "thread_id": "01a0a11c-f8ea-7912-ab2d-8019e44a06d4",
+  "pty_session_id": 11466,
+  "pid": 66177,
+  "started_at_utc": "2026-09-14T18:10:25.700164Z",
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "high",
+  "command": "/Users/hannahomalley/.local/bin/codex exec -m gpt-5.6-luna -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox --json -o work/ott-03-task-record-flag-fix-launch-20260914/worker-last-message.md - < work/ott-03-task-record-flag-fix-brief-20260914.md",
+  "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+  "write_mode": "isolated-checkout-owned-paths",
+  "base_commit": "ccec6edc059721bfcb9ea8e1e0a31215a777cb2",
+  "base_tree": "b28c7f1b3977130924840b06c1b1fdb2137529ed",
+  "brief": "work/ott-03-task-record-flag-fix-brief-20260914.md",
+  "brief_sha256": "777ff7dc0079e33abffe3e0763af8b16ba87b6b8d8be954f19958d6d451679a0"
+}

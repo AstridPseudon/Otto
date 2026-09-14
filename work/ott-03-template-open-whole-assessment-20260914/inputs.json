@@ -1,0 +1,20 @@
+{
+  "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+  "current_flag_correction": "task_created=bool(task_records) for selected pending response",
+  "current_focused_installed_tests": 18,
+  "current_focused_source_tests": 18,
+  "current_origin_receipt": "work/ott-03-task-record-flag-fix-receipt-20260914-v1/installed-origins.json",
+  "current_otto_wheel_sha256": "e0e4cfa7f2c8d194ad4863a4e8eb26452704f25eaac415c20c9460508caee595",
+  "current_v3_matrix": "work/ott-03-template-open-receipt-20260914-v3/capability-coverage-matrix.json",
+  "evidence_commit": "759c733877706ec9042a0b194284263a0181dbe7",
+  "evidence_tree": "213c0550fcd473a378b90d2cd4c2d1276f706417",
+  "origin_supplement_commit": "ccec6edc059721bfcb9ea8ae1e0a31215a777cb2",
+  "prior_v2_matrix": "work/ott-03-handoff-worker-receipt-20260914-v2/surface-matrix.json",
+  "product_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+  "product_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+  "same_process_focused_tests": 18,
+  "same_process_full_tests": 47,
+  "same_process_observation_return_code": 0,
+  "schema": "ott03.whole-assessment-inputs.v1",
+  "whole_bounded_status": "ready for root task-acceptance decision; later EX-HOST/G-OTTO and OTT-06 remain pending by catalog boundary"
+}
