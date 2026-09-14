@@ -266,22 +266,48 @@ def due_record_contribution() -> Any:
     )
 
 
-class StoreDueRecordPort:
-    """Owner-side DueRecordPort backed by Herzchen's public mutation API.
+def _wire_json(value: Any) -> JSONValue:
+    """Convert accepted Herzchen value objects to finite JSON data."""
 
-    Only a trusted host constructs this adapter with the exact domain handler
-    issued by ``Store.register_domain_handler``.  Otto receives the finite
-    ``DueRecordPort`` shape, never the handler, Store, connection, path, or a
-    generic writer.  The due record itself is the public mutation payload, so
-    Store persists the complete JSON record and emits its receipt/event in the
-    same transaction.
-    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _wire_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_wire_json(item) for item in value]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _wire_json(to_dict())
+    if hasattr(value, "value"):
+        return _wire_json(value.value)
+    raise TypeError("owner service returned a non-serialized value")
 
-    __slots__ = ("_writer", "_actor")
+
+def _receipt_json(receipt: Any, *, result_payload: Mapping[str, JSONValue], result_version: int, replayed: bool) -> dict[str, JSONValue]:
+    result_ref = getattr(receipt, "result_ref", None)
+    status = getattr(getattr(receipt, "status", None), "value", getattr(receipt, "status", None))
+    return {
+        "logical_request_key": receipt.logical_request_key,
+        "request_digest": receipt.request_digest,
+        "status": status,
+        "event_ids": list(receipt.event_ids),
+        "result_ref": None if result_ref is None else _wire_json(result_ref),
+        "result_payload": _wire_json(result_payload),
+        "result_version": result_version,
+        "replayed": replayed,
+    }
+
+
+class _DueRecordOwnerEngine:
+    """Trusted owner implementation used behind Herzchen's command port."""
 
     def __init__(self, writer: Any, actor: Any) -> None:
+        from herzchen.contracts import AuthenticatedActor
+
         if not hasattr(writer, "mutate") or not hasattr(writer, "get_identity"):
             raise TypeError("writer must be an issued Herzchen domain handler")
+        if not isinstance(actor, AuthenticatedActor):
+            raise TypeError("actor must be an FND AuthenticatedActor")
         self._writer = writer
         self._actor = actor
 
@@ -308,7 +334,7 @@ class StoreDueRecordPort:
         request_id: str,
         expected_version: int,
     ) -> Mapping[str, JSONValue]:
-        from herzchen.contracts import AuthenticatedActor, CommandEnvelope, TransactionContext
+        from herzchen.contracts import CommandEnvelope, TransactionContext
 
         _required_text(schedule_id, "schedule_id")
         _required_text(request_id, "request_id")
@@ -343,12 +369,9 @@ class StoreDueRecordPort:
             replay_expected_version = expected_version
             replay_expected_revision = None if current is None else current.ref.revision
         value["version"] = next_version
-        actor = self._actor
-        if not isinstance(actor, AuthenticatedActor):
-            raise TypeError("actor must be an FND AuthenticatedActor")
         digest = _digest({"request_id": request_id, "record": value})
         context = TransactionContext(
-            actor, request_id, digest,
+            self._actor, request_id, digest,
             expected_revision=replay_expected_revision,
             expected_version=replay_expected_version,
         )
@@ -356,7 +379,7 @@ class StoreDueRecordPort:
             "otto.due-record.save", "otto.due-record.v1", target, context, value,
         )
         try:
-            self._writer.mutate(
+            receipt = self._writer.mutate(
                 envelope,
                 event_type="otto.due-record.changed",
                 result_ref=self._ref(self._writer.authority, schedule_id, f"rev-{next_version}"),
@@ -372,12 +395,84 @@ class StoreDueRecordPort:
             if name in {"VersionConflictError", "TargetMismatchError"}:
                 raise StateConflictError(str(exc)) from exc
             raise
-        fresh = self._writer.get_identity(current_ref)
-        if fresh is None:
-            raise StateConflictError("durable mutation returned without a due-record identity")
-        result = dict(_json_copy(fresh.payload, "due record"))
-        result["version"] = int(fresh.version)
+        # A replay is a historical result, not a read of the current
+        # projection.  The live projection remains available through
+        # read_due, while this response retains the original result ref,
+        # version, payload, and event/receipt linkage.
+        result = dict(_json_copy(value, "due record"))
+        result["mutation_receipt"] = _receipt_json(
+            prior if prior is not None else receipt,
+            result_payload=value,
+            result_version=next_version,
+            replayed=prior is not None,
+        )
         return result
+
+
+_DUE_OWNER_SERVICE_TYPE: Any = None
+
+
+def _due_owner_service_type() -> Any:
+    global _DUE_OWNER_SERVICE_TYPE
+    if _DUE_OWNER_SERVICE_TYPE is None:
+        from herzchen.command_ports import command_facade
+
+        _DUE_OWNER_SERVICE_TYPE = command_facade(_DueRecordOwnerEngine, "otto.attention.due-record")
+    return _DUE_OWNER_SERVICE_TYPE
+
+
+class StoreDueRecordPort:
+    """Finite serialized consumer client for an owner-side due-record service.
+
+    The client stores only Herzchen's authenticated serialized command
+    transport.  The Store/DomainHandler remains behind the owner service and
+    is never reachable through this object or through DurableAttention.
+    """
+
+    __slots__ = ("_client",)
+
+    def __init__(self, client: Any) -> None:
+        from herzchen.command_ports import SerializedCommandClient
+
+        if not isinstance(client, SerializedCommandClient):
+            raise TypeError("client must be an issued Herzchen SerializedCommandClient")
+        if tuple(client.endpoints) != ("read_due", "save_due"):
+            raise TypeError("due-record client endpoints must be exactly read_due and save_due")
+        self._client = client
+
+    @property
+    def transport(self) -> Any:
+        """Return the finite transport descriptor for owner shutdown/audit."""
+
+        return self._client.transport
+
+    def __dir__(self) -> list[str]:
+        return ["read_due", "save_due", "transport"]
+
+    def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
+        value = self._client.call("read_due", schedule_id)
+        return None if value is None else dict(_json_copy(value, "due record"))
+
+    def save_due(
+        self,
+        schedule_id: str,
+        record: Mapping[str, JSONValue],
+        *,
+        request_id: str,
+        expected_version: int,
+    ) -> Mapping[str, JSONValue]:
+        value = self._client.call(
+            "save_due", schedule_id, _json_copy(record, "record"),
+            request_id=request_id, expected_version=expected_version,
+        )
+        return dict(_json_copy(value, "due record"))
+
+
+def issue_store_due_record_port(writer: Any, actor: Any) -> StoreDueRecordPort:
+    """Issue the finite client while retaining Herzchen custody in the host."""
+
+    service = _due_owner_service_type()(writer, actor)
+    return StoreDueRecordPort(service.command_port)
 
 
 class SerializedAttentionPort:
@@ -394,14 +489,142 @@ class SerializedAttentionPort:
         return tuple(dict(_json_copy(item, "attention item")) for item in self._read(recipient))
 
 
-class SerializedAmendmentPort:
-    """Finite JSON adapter for a trusted host's public amendment composition."""
+class _AmendmentOwnerEngine:
+    """Trusted owner composition over accepted Herzchen public facades."""
 
-    def __init__(self, apply: Callable[[Mapping[str, JSONValue]], Mapping[str, JSONValue]]) -> None:
-        self._apply = apply
+    def __init__(self, store: Any, actor: Any, project: Any, assignment: Any, subject: Any, amended_revision: Any) -> None:
+        from herzchen.content.packets import ContextPacketService
+        from herzchen.domains.work.assignments import ResponsibilityAssignments
+        from herzchen.domains.work.sheet import ProjectSheet
+
+        self._actor = actor
+        self._project = project
+        self._assignment = assignment
+        self._subject = subject
+        self._amended_revision = amended_revision
+        self._sheet = ProjectSheet(store, actor=actor)
+        self._assignments = ResponsibilityAssignments(store, actor=actor)
+        self._packets = ContextPacketService(store)
+        current = self._assignments.get(assignment)
+        self._task = current.scope
+
+    def _views(self) -> dict[str, JSONValue]:
+        fresh_project = self._sheet.graph.get(self._project)
+        fresh_assignment = self._assignments.get(self._assignment)
+        fresh_sheet = self._sheet.export(fresh_project, task_refs=[self._task])
+        usage_budget = fresh_project.payload.get("metadata", {}).get("ott04_usage_budget", {})
+        return _wire_json({
+            "plan": {"task": fresh_sheet.tasks[0]["authored"].get("body")},
+            "next_dispatch": fresh_project.payload.get("last_batch", {}).get("manager_action"),
+            "attention": self._packets.list_attention(fresh_assignment.principal),
+            "assignment": {
+                "route_binding": fresh_assignment.payload.get("route_binding"),
+                "principal": fresh_assignment.principal,
+                "agent": fresh_assignment.agent,
+                "session": fresh_assignment.session,
+            },
+            "current_owner": fresh_assignment.principal,
+            "usage": {
+                "budget": fresh_project.payload.get("budget"),
+                "spent": usage_budget.get("spent"),
+                "limit": usage_budget.get("limit"),
+            },
+            "running_input_pins": [pin.to_dict() for pin in fresh_assignment.pins],
+        })
+
+    def read_views(self) -> Mapping[str, JSONValue]:
+        return self._views()
 
     def apply_amendment(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
-        return dict(_json_copy(self._apply(_json_copy(request, "amendment request")), "amendment response"))
+        request = _json_copy(request, "amendment request")
+        if request.get("manager_decision") != "implement":
+            raise AttentionError("a manager decision of implement is required")
+        amendment = request.get("amendment")
+        if not isinstance(amendment, Mapping):
+            raise TypeError("amendment must be a JSON object")
+        instruction = _required_text(amendment.get("instruction"), "amendment.instruction")
+        next_dispatch = _required_text(amendment.get("next_dispatch"), "amendment.next_dispatch")
+        route = _required_text(amendment.get("route"), "amendment.route")
+        request_id = _required_text(request.get("request_id"), "request_id")
+        plan = self._sheet.apply(
+            self._project,
+            {"tasks": [{"id": self._task.id, "body": {"instructions": instruction}}]},
+            logical_request_key=request_id + ":plan", next_action=next_dispatch, actor=self._actor,
+        )
+        route_result = self._sheet.pin_assignment_route(
+            self._assignment,
+            {"name": route, "reason": "manager-selected amendment"},
+            logical_request_key=request_id + ":route", actor=self._actor,
+        )
+        from herzchen.contracts import TransactionContext
+
+        attention_context = TransactionContext(
+            self._actor, request_id + ":attention", _digest(request),
+        )
+        notices = self._packets.notify_amendment(
+            self._subject, self._amended_revision, (self._assignments.get(self._assignment).principal,),
+            attention_context, reason="manager-selected amendment: " + instruction,
+        )
+        return _wire_json({
+            "event_ids": list(_wire_json(plan.receipt).get("event_ids", ())) +
+            list(_wire_json(route_result.receipt).get("event_ids", ())) +
+            [event_id for notice in notices for event_id in _wire_json(notice["receipt"]).get("event_ids", ())],
+            "receipts": {
+                "plan": _wire_json(plan.receipt),
+                "assignment": _wire_json(route_result.receipt),
+                "attention": [_wire_json(notice["receipt"]) for notice in notices],
+            },
+            "incomplete": False,
+            "automatic_action": False,
+            "dispatch": False,
+        })
+
+
+_AMENDMENT_OWNER_SERVICE_TYPE: Any = None
+
+
+def _amendment_owner_service_type() -> Any:
+    global _AMENDMENT_OWNER_SERVICE_TYPE
+    if _AMENDMENT_OWNER_SERVICE_TYPE is None:
+        from herzchen.command_ports import command_facade
+
+        _AMENDMENT_OWNER_SERVICE_TYPE = command_facade(_AmendmentOwnerEngine, "otto.attention.amendment")
+    return _AMENDMENT_OWNER_SERVICE_TYPE
+
+
+class SerializedAmendmentPort:
+    """Finite serialized client for the shipped owner amendment service."""
+
+    __slots__ = ("_client",)
+
+    def __init__(self, client: Any) -> None:
+        from herzchen.command_ports import SerializedCommandClient
+
+        if not isinstance(client, SerializedCommandClient):
+            raise TypeError("client must be an issued Herzchen SerializedCommandClient")
+        if tuple(client.endpoints) != ("apply_amendment", "read_views"):
+            raise TypeError("amendment client endpoints must be exactly apply_amendment and read_views")
+        self._client = client
+
+    @property
+    def transport(self) -> Any:
+        return self._client.transport
+
+    def __dir__(self) -> list[str]:
+        return ["apply_amendment", "read_views", "transport"]
+
+    def apply_amendment(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
+        return dict(_json_copy(self._client.call("apply_amendment", _json_copy(request, "amendment request")), "amendment response"))
+
+    def read_views(self) -> Mapping[str, JSONValue]:
+        return dict(_json_copy(self._client.call("read_views"), "amendment views"))
+
+
+def issue_store_amendment_port(store: Any, actor: Any, project: Any, assignment: Any, subject: Any, amended_revision: Any) -> SerializedAmendmentPort:
+    """Issue a finite client; all Herzchen service objects stay owner-side."""
+
+    service = _amendment_owner_service_type()(store, actor, project, assignment, subject, amended_revision)
+    return SerializedAmendmentPort(service.command_port)
 
 
 class RecordingAttentionPort:
@@ -430,8 +653,12 @@ class RecordingAttentionPort:
 class ImprovementPropagation:
     """Keep review notification, manager choice, and implementation distinct."""
 
-    def __init__(self, amendment: AmendmentPort, read_views: Callable[[], Mapping[str, JSONValue]]) -> None:
+    def __init__(self, amendment: AmendmentPort, read_views: Optional[Callable[[], Mapping[str, JSONValue]]] = None) -> None:
         self.amendment = amendment
+        if read_views is None:
+            read_views = getattr(amendment, "read_views", None)
+        if not callable(read_views):
+            raise TypeError("a finite amendment client must provide read_views")
         self.read_views = read_views
 
     def handle_review(self, review_id: str, *, recipient: str, return_condition: str) -> dict[str, JSONValue]:
@@ -707,5 +934,5 @@ __all__ = [
     "AmendmentPort", "AttentionError", "AttentionScheduler", "CursorContinuity", "CursorContinuityError", "DueRecord", "DueRecordPort",
     "DurableAttention", "DurableAttentionService", "EventCursorReaderAdapter", "HostUnavailableError", "InMemoryDueRecordPort",
     "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "SerializedAmendmentPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
-    "StoreDueRecordPort", "due_record_contribution",
+    "StoreDueRecordPort", "due_record_contribution", "issue_store_amendment_port", "issue_store_due_record_port",
 ]
