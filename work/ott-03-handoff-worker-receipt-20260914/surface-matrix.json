@@ -1,0 +1,162 @@
+{
+  "candidate": {
+    "implementation_commit": "f3ccc1d0bd96576259783ac2279d0027d3ab895f",
+    "implementation_tree": "87b52a06365ebfa19c465e3ada2941204363068e",
+    "base_commit": "a09532940e500de6b9ef43f8a6f5c710f6c6e0aa",
+    "base_tree": "eb4369a03513ffab83df58be45b3283a0ce17b3c"
+  },
+  "consumer_retention": {
+    "port": "SerializedCommandClient",
+    "reader": "SerializedReaderClient",
+    "binding": "HerzchenBindingConfig",
+    "sheet_port": "SerializedCommandClient",
+    "content_port": "SerializedCommandClient",
+    "assignments_port": "SerializedCommandClient",
+    "authoring_port": "SerializedCommandClient",
+    "create_open_port": "SerializedCommandClient",
+    "handoff_target": "typed manager_assignment_ref from assign_roles; public assignments_port.get/resolve"
+  },
+  "surfaces": [
+    {
+      "surface": "pending create/read/edit",
+      "status": "supported",
+      "owner": "accepted Herzchen WorkGraph",
+      "consumer_entrypoints": [
+        "work.pending.create",
+        "work.pending.read",
+        "work.pending.edit"
+      ],
+      "invariants": [
+        "pending",
+        "dispatch=false",
+        "sparse unknown metadata preserved",
+        "canonical replay/conflict"
+      ]
+    },
+    {
+      "surface": "revisit/prerequisite observation",
+      "status": "supported",
+      "owner": "accepted Herzchen WorkGraph",
+      "consumer_entrypoints": [
+        "work.pending.revisit",
+        "work.pending.prerequisite-satisfied"
+      ],
+      "invariants": [
+        "attention/readiness only",
+        "no auto-dispatch",
+        "executable=false"
+      ]
+    },
+    {
+      "surface": "ProjectSheet admission",
+      "status": "supported",
+      "owner": "accepted Herzchen ProjectSheet.apply",
+      "consumer_entrypoints": [
+        "work.pending.admission"
+      ],
+      "invariants": [
+        "explicit manager choice",
+        "executable=false"
+      ]
+    },
+    {
+      "surface": "parent/manager/executor assignment",
+      "status": "supported",
+      "owner": "accepted Herzchen ResponsibilityAssignments.assign",
+      "consumer_entrypoints": [
+        "work.responsibility.assign"
+      ],
+      "invariants": [
+        "one parent",
+        "one manager",
+        "one to sixteen executors",
+        "canonical replay"
+      ]
+    },
+    {
+      "surface": "content document create/link",
+      "status": "supported",
+      "owner": "accepted Herzchen ContentCommandHandler",
+      "consumer_entrypoints": [
+        "work.pending.document.create",
+        "work.pending.document.link"
+      ],
+      "invariants": [
+        "typed document and association",
+        "canonical receipt/event"
+      ]
+    },
+    {
+      "surface": "authoring open/reopen/occupied/replay",
+      "status": "supported",
+      "owner": "accepted Herzchen AuthoringSessionService.open",
+      "consumer_entrypoints": [
+        "work.pending.open"
+      ],
+      "invariants": [
+        "same durable project",
+        "exclusive actor/scope",
+        "same session on replay"
+      ]
+    },
+    {
+      "surface": "atomic pending create-and-open",
+      "status": "supported with trusted owner bootstrap",
+      "owner": "PortfolioOwnerBootstrap -> finite create_pending_and_open -> AuthoringSessionService.create_and_open -> fixed ProjectSheet.create_pending callback",
+      "consumer_entrypoints": [
+        "work.pending.create with open=true"
+      ],
+      "consumer_endpoint_set": [
+        "create_pending_and_open"
+      ],
+      "owner_only_endpoint_not_transported": "AuthoringSessionService.create_and_open",
+      "invariants": [
+        "occupation checked before ProjectSheet callback",
+        "logical request bound into authoring digest",
+        "project key is request_id:project",
+        "project link survives materialization failure",
+        "identical replay creates no events",
+        "changed same-key input returns replay_conflict with zero delta",
+        "consumer receives no Callable or owner service"
+      ],
+      "observed_success_events": 5,
+      "observed_failure_events_before_reopen": 6,
+      "materialization_failure_status": "saved_project_edit_not_opened"
+    },
+    {
+      "surface": "safe responsibility handoff",
+      "status": "supported in bounded Otto finite binding",
+      "owner": "Otto FiniteWorkOperations -> accepted ResponsibilityAssignments command port",
+      "consumer_entrypoints": [
+        "work.responsibility.handoff"
+      ],
+      "target_resolution": "explicit typed manager_assignment_ref returned by assign_roles; assignments_port.get",
+      "mutation": "assignments_port.reassign with expected_generation and exact logical_request_key",
+      "preserved": [
+        "project_ref",
+        "evidence_refs",
+        "consumption_refs",
+        "parent_obligation",
+        "assignment identity",
+        "history",
+        "receipt/event linkage"
+      ],
+      "invariants": [
+        "manager role and project scope verified",
+        "from_manager matches current principal and manager attribution before mutation",
+        "generation increments",
+        "same-key replay returns original durable assignment/receipt with zero delta",
+        "changed same-key input is replay_conflict with zero delta",
+        "unknown/stale/wrong target rejected with zero delta",
+        "pending remains executable=false; no activation/dispatch/budget/task/session side effects"
+      ]
+    },
+    {
+      "surface": "live host/Astrid launch/session/AST",
+      "status": "out of scope",
+      "reason": "This worker changed only the OTT-03 portfolio owner/bootstrap composition."
+    }
+  ],
+  "required_xhard_gaps": [],
+  "acceptance_claim": "Bounded OTT-03 safe responsibility handoff is implemented and evidenced. This does not claim whole OTT-03, G-OTTO, G-FINAL, or live host/Astrid behavior. EX-HOST remains the only later boundary reported here."
+}

@@ -1,0 +1,3716 @@
+{
+  "action": {
+    "after": {
+      "assignment": {
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "manager-old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "manager-new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+            "session": null
+          }
+        ],
+        "payload": {
+          "agent": null,
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "launcher": null,
+          "manager": "manager-old",
+          "pins": [],
+          "principal": "manager-new",
+          "record_type": "work.responsibility-assignment",
+          "reporter": null,
+          "responsibility_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.responsibility",
+            "revision": null
+          },
+          "role": "manager",
+          "schema_revision": "work.assignment.v1",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "session": null,
+          "status": "reassigned"
+        },
+        "principal": "manager-new",
+        "ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "role": "manager",
+        "scope": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "reassigned"
+      },
+      "captured_at": "2026-09-14T16:58:26.626877+00:00",
+      "event_count": 6,
+      "event_ids": [
+        "event-7c5515b12292efcb4198fec7ccfd7a07",
+        "event-6137151076908febb16b8775025cc5d3",
+        "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+        "event-ee2860237477c3e27e5d09bfea064437",
+        "event-1749127152a309851187e24d498720fc",
+        "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+      ],
+      "project": {
+        "lifecycle": "pending",
+        "manager": null,
+        "payload": {
+          "acceptance": {},
+          "alias": "project-9cb6521daa",
+          "aliases": [
+            "project-9cb6521daa"
+          ],
+          "approach": "",
+          "budget": null,
+          "custom": {},
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "project",
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "project",
+              "payload": {
+                "edit": {
+                  "title": "Pending project",
+                  "why_pending": "await manager"
+                },
+                "open": false,
+                "template": "blank"
+              }
+            },
+            "template": "blank",
+            "why_pending": "await manager"
+          },
+          "name": "Pending project",
+          "outcome": "",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "parent",
+              "authenticated": true,
+              "authority": "ott03-handoff-harness",
+              "credential_ref": "ott03-harness-credential"
+            },
+            "curator": {
+              "actor": "parent",
+              "authenticated": true,
+              "authority": "ott03-handoff-harness",
+              "credential_ref": "ott03-harness-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [],
+          "title": "Pending project",
+          "worker": null
+        },
+        "ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "tasks": []
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+        ],
+        "logical_request_key": "handoff",
+        "observed_revision": "rev-2",
+        "operation": "work.assignment.reassign",
+        "replayed": false,
+        "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+        "result_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        },
+        "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+        "unknown_reason": null
+      }
+    },
+    "delta": {
+      "events": 1,
+      "new_event_ids": [
+        "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+      ],
+      "receipt_changed": true
+    },
+    "result": {
+      "activation": false,
+      "assignment": {
+        "assignment_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "manager-old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "manager-new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+            "session": null
+          }
+        ],
+        "manager": "manager-new",
+        "payload": {
+          "agent": null,
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "launcher": null,
+          "manager": "manager-old",
+          "pins": [],
+          "principal": "manager-new",
+          "record_type": "work.responsibility-assignment",
+          "reporter": null,
+          "responsibility_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.responsibility",
+            "revision": null
+          },
+          "role": "manager",
+          "schema_revision": "work.assignment.v1",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "session": null,
+          "status": "reassigned"
+        },
+        "principal": "manager-new",
+        "ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "role": "manager",
+        "scope": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "reassigned",
+        "stored_manager": "manager-old"
+      },
+      "budget_reserved": false,
+      "dispatch": false,
+      "event_ids": [
+        "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+      ],
+      "executable": false,
+      "handoff": {
+        "consumption_refs": [
+          {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-048f3c015c21669846c5257388f3",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          }
+        ],
+        "evidence_refs": [
+          {
+            "authority": "ott03-handoff-harness",
+            "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "from_generation": 1,
+        "from_manager": "manager-old",
+        "kind": "otto.safe-responsibility-handoff",
+        "manager_assignment_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        },
+        "parent_obligation": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "project_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "to_manager": "manager-new"
+      },
+      "manager_assignment_ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "assignment-530d653c4eb6f2616171bdaadde8",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "outcome": "handed-off",
+      "project_ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+        ],
+        "logical_request_key": "handoff",
+        "observed_revision": "rev-2",
+        "operation": "work.assignment.reassign",
+        "replayed": false,
+        "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+        "result_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        },
+        "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+        "unknown_reason": null
+      },
+      "replayed": false,
+      "safe_handoff": true,
+      "session_created": false,
+      "task_created": false
+    }
+  },
+  "before": {
+    "assignment": {
+      "generation": 1,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "manager-old",
+          "reason": "initial",
+          "session": null
+        }
+      ],
+      "payload": {
+        "agent": null,
+        "generation": 1,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "manager-old",
+            "reason": "initial",
+            "session": null
+          }
+        ],
+        "launcher": null,
+        "manager": "manager-old",
+        "pins": [],
+        "principal": "manager-old",
+        "record_type": "work.responsibility-assignment",
+        "reporter": null,
+        "responsibility_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.responsibility",
+          "revision": null
+        },
+        "role": "manager",
+        "schema_revision": "work.assignment.v1",
+        "scope": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "session": null,
+        "status": "queued"
+      },
+      "principal": "manager-old",
+      "ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "assignment-530d653c4eb6f2616171bdaadde8",
+        "kind": "wrk.assignment",
+        "revision": "rev-1"
+      },
+      "role": "manager",
+      "scope": {
+        "authority": "ott03-handoff-harness",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "queued"
+    },
+    "captured_at": "2026-09-14T16:58:26.624134+00:00",
+    "event_count": 5,
+    "event_ids": [
+      "event-7c5515b12292efcb4198fec7ccfd7a07",
+      "event-6137151076908febb16b8775025cc5d3",
+      "event-ee2860237477c3e27e5d09bfea064437",
+      "event-1749127152a309851187e24d498720fc",
+      "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+    ],
+    "project": {
+      "lifecycle": "pending",
+      "manager": null,
+      "payload": {
+        "acceptance": {},
+        "alias": "project-9cb6521daa",
+        "aliases": [
+          "project-9cb6521daa"
+        ],
+        "approach": "",
+        "budget": null,
+        "custom": {},
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "project",
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "project",
+            "payload": {
+              "edit": {
+                "title": "Pending project",
+                "why_pending": "await manager"
+              },
+              "open": false,
+              "template": "blank"
+            }
+          },
+          "template": "blank",
+          "why_pending": "await manager"
+        },
+        "name": "Pending project",
+        "outcome": "",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "parent",
+            "authenticated": true,
+            "authority": "ott03-handoff-harness",
+            "credential_ref": "ott03-harness-credential"
+          },
+          "curator": {
+            "actor": "parent",
+            "authenticated": true,
+            "authority": "ott03-handoff-harness",
+            "credential_ref": "ott03-harness-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [],
+        "title": "Pending project",
+        "worker": null
+      },
+      "ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "tasks": []
+    },
+    "receipt": null
+  },
+  "conflicts": [
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.634291+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.633552+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "case": "manager",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "replay_conflict",
+          "message": "same handoff request key was reused with changed input",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    },
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.635618+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.634866+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "case": "evidence",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "replay_conflict",
+          "message": "same handoff request key was reused with changed input",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    },
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.636919+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.636186+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "case": "consumption",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "replay_conflict",
+          "message": "same handoff request key was reused with changed input",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    },
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.638232+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.637504+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": {
+          "error_code": null,
+          "event_ids": [
+            "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+          ],
+          "logical_request_key": "handoff",
+          "observed_revision": "rev-2",
+          "operation": "work.assignment.reassign",
+          "replayed": false,
+          "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+          "result_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          },
+          "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+          "unknown_reason": null
+        }
+      },
+      "case": "parent",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "replay_conflict",
+          "message": "same handoff request key was reused with changed input",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    }
+  ],
+  "event_persistence": {
+    "after_reopen_count": 6,
+    "before_close_count": 6,
+    "equal": true
+  },
+  "fresh_after": {
+    "assignment": {
+      "generation": 2,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "manager-old",
+          "reason": "initial",
+          "session": null
+        },
+        {
+          "agent": null,
+          "generation": 2,
+          "principal": "manager-new",
+          "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+          "session": null
+        }
+      ],
+      "payload": {
+        "agent": null,
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "manager-old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "manager-new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+            "session": null
+          }
+        ],
+        "launcher": null,
+        "manager": "manager-old",
+        "pins": [],
+        "principal": "manager-new",
+        "record_type": "work.responsibility-assignment",
+        "reporter": null,
+        "responsibility_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.responsibility",
+          "revision": null
+        },
+        "role": "manager",
+        "schema_revision": "work.assignment.v1",
+        "scope": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "session": null,
+        "status": "reassigned"
+      },
+      "principal": "manager-new",
+      "ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "assignment-530d653c4eb6f2616171bdaadde8",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "role": "manager",
+      "scope": {
+        "authority": "ott03-handoff-harness",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "reassigned"
+    },
+    "captured_at": "2026-09-14T16:58:26.631446+00:00",
+    "event_count": 6,
+    "event_ids": [
+      "event-7c5515b12292efcb4198fec7ccfd7a07",
+      "event-6137151076908febb16b8775025cc5d3",
+      "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+      "event-ee2860237477c3e27e5d09bfea064437",
+      "event-1749127152a309851187e24d498720fc",
+      "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+    ],
+    "project": {
+      "lifecycle": "pending",
+      "manager": null,
+      "payload": {
+        "acceptance": {},
+        "alias": "project-9cb6521daa",
+        "aliases": [
+          "project-9cb6521daa"
+        ],
+        "approach": "",
+        "budget": null,
+        "custom": {},
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "project",
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "project",
+            "payload": {
+              "edit": {
+                "title": "Pending project",
+                "why_pending": "await manager"
+              },
+              "open": false,
+              "template": "blank"
+            }
+          },
+          "template": "blank",
+          "why_pending": "await manager"
+        },
+        "name": "Pending project",
+        "outcome": "",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "parent",
+            "authenticated": true,
+            "authority": "ott03-handoff-harness",
+            "credential_ref": "ott03-harness-credential"
+          },
+          "curator": {
+            "actor": "parent",
+            "authenticated": true,
+            "authority": "ott03-handoff-harness",
+            "credential_ref": "ott03-harness-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [],
+        "title": "Pending project",
+        "worker": null
+      },
+      "ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "tasks": []
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+      ],
+      "logical_request_key": "handoff",
+      "observed_revision": "rev-2",
+      "operation": "work.assignment.reassign",
+      "replayed": false,
+      "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+      "result_ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "assignment-530d653c4eb6f2616171bdaadde8",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-handoff-harness",
+        "id": "assignment-530d653c4eb6f2616171bdaadde8",
+        "kind": "wrk.assignment",
+        "revision": "rev-1"
+      },
+      "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+      "unknown_reason": null
+    }
+  },
+  "harness": {
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker",
+    "ended": "2026-09-14T16:58:26.642462+00:00",
+    "herzchen_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+    "otto_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/__init__.py",
+    "pid": 59664,
+    "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+    "sqlite_path": "/var/folders/0n/hj_vqrps2bz8pnbyvgd58k740000gn/T/ott03-handoff-u46beosc.sqlite",
+    "started": "2026-09-14T16:58:26.585921+00:00"
+  },
+  "rejections": [
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.639457+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": null
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.638813+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": null
+      },
+      "case": "wrong_from_manager",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "stale_manager_assignment",
+          "message": "from_manager does not match the current assignment principal/manager",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    },
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.640644+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": null
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.640002+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": null
+      },
+      "case": "unknown_target",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "unknown_manager_assignment_target",
+          "message": "assignment not found: ResourceRef(authority='ott03-handoff-harness', kind='wrk.assignment', id='missing', revision=None)",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    },
+    {
+      "after": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.641861+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": null
+      },
+      "before": {
+        "assignment": {
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "payload": {
+            "agent": null,
+            "generation": 2,
+            "history": [
+              {
+                "agent": null,
+                "generation": 1,
+                "principal": "manager-old",
+                "reason": "initial",
+                "session": null
+              },
+              {
+                "agent": null,
+                "generation": 2,
+                "principal": "manager-new",
+                "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+                "session": null
+              }
+            ],
+            "launcher": null,
+            "manager": "manager-old",
+            "pins": [],
+            "principal": "manager-new",
+            "record_type": "work.responsibility-assignment",
+            "reporter": null,
+            "responsibility_ref": {
+              "authority": "ott03-handoff-harness",
+              "id": "assignment-530d653c4eb6f2616171bdaadde8",
+              "kind": "wrk.responsibility",
+              "revision": null
+            },
+            "role": "manager",
+            "schema_revision": "work.assignment.v1",
+            "scope": {
+              "authority": "ott03-handoff-harness",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "session": null,
+            "status": "reassigned"
+          },
+          "principal": "manager-new",
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.assignment",
+            "revision": "rev-2"
+          },
+          "role": "manager",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "reassigned"
+        },
+        "captured_at": "2026-09-14T16:58:26.641197+00:00",
+        "event_count": 6,
+        "event_ids": [
+          "event-7c5515b12292efcb4198fec7ccfd7a07",
+          "event-6137151076908febb16b8775025cc5d3",
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+          "event-ee2860237477c3e27e5d09bfea064437",
+          "event-1749127152a309851187e24d498720fc",
+          "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+        ],
+        "project": {
+          "lifecycle": "pending",
+          "manager": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-9cb6521daa",
+            "aliases": [
+              "project-9cb6521daa"
+            ],
+            "approach": "",
+            "budget": null,
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "project",
+                "payload": {
+                  "edit": {
+                    "title": "Pending project",
+                    "why_pending": "await manager"
+                  },
+                  "open": false,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await manager"
+            },
+            "name": "Pending project",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              },
+              "curator": {
+                "actor": "parent",
+                "authenticated": true,
+                "authority": "ott03-handoff-harness",
+                "credential_ref": "ott03-harness-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Pending project",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "tasks": []
+        },
+        "receipt": null
+      },
+      "case": "wrong_role_target",
+      "delta": {
+        "events": 0,
+        "new_event_ids": [],
+        "receipt_changed": false
+      },
+      "result": {
+        "error": {
+          "code": "invalid_manager_assignment_target",
+          "message": "assignment is not the current manager assignment for this project",
+          "operation": "work.responsibility.handoff"
+        },
+        "event_ids": [],
+        "executable": false,
+        "outcome": "error",
+        "replayed": false
+      }
+    }
+  ],
+  "replay": {
+    "after": {
+      "assignment": {
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "manager-old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "manager-new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+            "session": null
+          }
+        ],
+        "payload": {
+          "agent": null,
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "launcher": null,
+          "manager": "manager-old",
+          "pins": [],
+          "principal": "manager-new",
+          "record_type": "work.responsibility-assignment",
+          "reporter": null,
+          "responsibility_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.responsibility",
+            "revision": null
+          },
+          "role": "manager",
+          "schema_revision": "work.assignment.v1",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "session": null,
+          "status": "reassigned"
+        },
+        "principal": "manager-new",
+        "ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "role": "manager",
+        "scope": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "reassigned"
+      },
+      "captured_at": "2026-09-14T16:58:26.632968+00:00",
+      "event_count": 6,
+      "event_ids": [
+        "event-7c5515b12292efcb4198fec7ccfd7a07",
+        "event-6137151076908febb16b8775025cc5d3",
+        "event-b78e3aaeb5a14f7c2e0b67fedef22341",
+        "event-ee2860237477c3e27e5d09bfea064437",
+        "event-1749127152a309851187e24d498720fc",
+        "event-c4bbe4e332248c2e9e9179ff67cfa1dd"
+      ],
+      "project": {
+        "lifecycle": "pending",
+        "manager": null,
+        "payload": {
+          "acceptance": {},
+          "alias": "project-9cb6521daa",
+          "aliases": [
+            "project-9cb6521daa"
+          ],
+          "approach": "",
+          "budget": null,
+          "custom": {},
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "project",
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "project",
+              "payload": {
+                "edit": {
+                  "title": "Pending project",
+                  "why_pending": "await manager"
+                },
+                "open": false,
+                "template": "blank"
+              }
+            },
+            "template": "blank",
+            "why_pending": "await manager"
+          },
+          "name": "Pending project",
+          "outcome": "",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "parent",
+              "authenticated": true,
+              "authority": "ott03-handoff-harness",
+              "credential_ref": "ott03-harness-credential"
+            },
+            "curator": {
+              "actor": "parent",
+              "authenticated": true,
+              "authority": "ott03-handoff-harness",
+              "credential_ref": "ott03-harness-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [],
+          "title": "Pending project",
+          "worker": null
+        },
+        "ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "tasks": []
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+        ],
+        "logical_request_key": "handoff",
+        "observed_revision": "rev-2",
+        "operation": "work.assignment.reassign",
+        "replayed": false,
+        "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+        "result_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        },
+        "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+        "unknown_reason": null
+      }
+    },
+    "delta": {
+      "events": 0,
+      "new_event_ids": [],
+      "receipt_changed": false
+    },
+    "result": {
+      "activation": false,
+      "assignment": {
+        "assignment_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "manager-old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "manager-new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+            "session": null
+          }
+        ],
+        "manager": "manager-new",
+        "payload": {
+          "agent": null,
+          "generation": 2,
+          "history": [
+            {
+              "agent": null,
+              "generation": 1,
+              "principal": "manager-old",
+              "reason": "initial",
+              "session": null
+            },
+            {
+              "agent": null,
+              "generation": 2,
+              "principal": "manager-new",
+              "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6ImFzc2lnbm1lbnQtMDQ4ZjNjMDE1YzIxNjY5ODQ2YzUyNTczODhmMyIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifV0sImV2aWRlbmNlX3JlZnMiOlt7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifV0sImZyb21fZ2VuZXJhdGlvbiI6MSwiZnJvbV9tYW5hZ2VyIjoibWFuYWdlci1vbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoiYXNzaWdubWVudC01MzBkNjUzYzRlYjZmMjYxNjE3MWJkYWFkZGU4Iiwia2luZCI6Indyay5hc3NpZ25tZW50IiwicmV2aXNpb24iOiJyZXYtMSJ9LCJwYXJlbnRfb2JsaWdhdGlvbiI6eyJhdXRob3JpdHkiOiJvdHQwMy1oYW5kb2ZmLWhhcm5lc3MiLCJpZCI6InByb2plY3QtOTNhNWExZGU3ZTViMjg0ZGI3ZjkzYTdiOTFjYSIsImtpbmQiOiJ3b3JrLnByb2plY3QiLCJyZXZpc2lvbiI6InJldi0xIn0sInByb2plY3RfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWhhbmRvZmYtaGFybmVzcyIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im1hbmFnZXItbmV3In0",
+              "session": null
+            }
+          ],
+          "launcher": null,
+          "manager": "manager-old",
+          "pins": [],
+          "principal": "manager-new",
+          "record_type": "work.responsibility-assignment",
+          "reporter": null,
+          "responsibility_ref": {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-530d653c4eb6f2616171bdaadde8",
+            "kind": "wrk.responsibility",
+            "revision": null
+          },
+          "role": "manager",
+          "schema_revision": "work.assignment.v1",
+          "scope": {
+            "authority": "ott03-handoff-harness",
+            "id": "project-6cbe23bf27e2d442109cb6521daa",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "session": null,
+          "status": "reassigned"
+        },
+        "principal": "manager-new",
+        "ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "role": "manager",
+        "scope": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "reassigned",
+        "stored_manager": "manager-old"
+      },
+      "budget_reserved": false,
+      "dispatch": false,
+      "event_ids": [
+        "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+      ],
+      "executable": false,
+      "handoff": {
+        "consumption_refs": [
+          {
+            "authority": "ott03-handoff-harness",
+            "id": "assignment-048f3c015c21669846c5257388f3",
+            "kind": "wrk.assignment",
+            "revision": "rev-1"
+          }
+        ],
+        "evidence_refs": [
+          {
+            "authority": "ott03-handoff-harness",
+            "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "from_generation": 1,
+        "from_manager": "manager-old",
+        "kind": "otto.safe-responsibility-handoff",
+        "manager_assignment_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        },
+        "parent_obligation": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "project_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "to_manager": "manager-new"
+      },
+      "manager_assignment_ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "assignment-530d653c4eb6f2616171bdaadde8",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "outcome": "replayed",
+      "project_ref": {
+        "authority": "ott03-handoff-harness",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-b78e3aaeb5a14f7c2e0b67fedef22341"
+        ],
+        "logical_request_key": "handoff",
+        "observed_revision": "rev-2",
+        "operation": "work.assignment.reassign",
+        "replayed": false,
+        "request_digest": "ea1d4cd1a41410d17804dadb8f50c6aebe987bb8570915085d19493c96c69ac8",
+        "result_ref": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-handoff-harness",
+          "id": "assignment-530d653c4eb6f2616171bdaadde8",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        },
+        "transaction_id": "15d9bb51b0c6fe186164443942941e7d",
+        "unknown_reason": null
+      },
+      "replayed": true,
+      "safe_handoff": true,
+      "session_created": false,
+      "task_created": false
+    }
+  }
+}

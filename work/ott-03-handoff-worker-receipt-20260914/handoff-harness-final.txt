@@ -1,0 +1,1 @@
+{"action": "handed-off", "action_delta": {"events": 1, "new_event_ids": ["event-b78e3aaeb5a14f7c2e0b67fedef22341"], "receipt_changed": true}, "conflict_count": 4, "event_persistence": {"after_reopen_count": 6, "before_close_count": 6, "equal": true}, "rejection_count": 3, "replay_delta": {"events": 0, "new_event_ids": [], "receipt_changed": false}}

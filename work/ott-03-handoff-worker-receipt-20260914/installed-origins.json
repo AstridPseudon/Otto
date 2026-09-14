@@ -1,0 +1,23 @@
+{
+  "executable": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+  "herzchen": {
+    "origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+    "version": "0.1.0"
+  },
+  "otto": {
+    "origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/__init__.py",
+    "portfolio_binding_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/portfolio/herzchen_binding.py",
+    "version": "0.0.0"
+  },
+  "pytest": {
+    "version": "9.1.1"
+  },
+  "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "sys_path": [
+    "",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload",
+    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages"
+  ]
+}

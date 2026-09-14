@@ -1,0 +1,76 @@
+{
+  "artifacts": [
+    {
+      "bytes": 20530,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+      "sha256": "44ecacb2f3b479edb94fa4871a3f7d4aa672509961e55b12252d606d7cb2c4d7"
+    },
+    {
+      "bytes": 9907,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/execution-receipts.json",
+      "sha256": "c7e5bda3ee181cb7a4f1b118d5c7e980488dc0c9cb5c828bd6915cf3cd2fd2d0"
+    },
+    {
+      "bytes": 9142,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/execution-receipts.jsonl",
+      "sha256": "ec0f27df52f3d6aab39e5419baa73614301f5319ab61496582d8e03ab15ce9c4"
+    },
+    {
+      "bytes": 351,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/handoff-harness-final.txt",
+      "sha256": "0d14178c0052b8e2477cc8cbe543b7979f36ef1d3cee14c274e726f4ed7354db"
+    },
+    {
+      "bytes": 161281,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/handoff-observations.json",
+      "sha256": "cf803c3fc9d5bc1ac17f0de98433e09ad6f477922bc49a2d3d4df80a18bec202"
+    },
+    {
+      "bytes": 8120,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/handoff_harness.py",
+      "sha256": "ea05f991d4d4f9ed8ee215607f997ca20c17a147c8fa88f223ad818f8d90e045"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/installed-31.txt",
+      "sha256": "ec2336d0a3f8a2ef449a0073d1235eeca13a18c224c0e31dfa2b43e3c76e758a"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/installed-34.txt",
+      "sha256": "b426660f08d5cd03776d65cceb082cf4274784945cbf64f3d903ced381536245"
+    },
+    {
+      "bytes": 1784,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/installed-origins.json",
+      "sha256": "ecbe04086ebacbbbdb4b75d721e06523fbb7c4aa6eb2b4dada148199b098cfb4"
+    },
+    {
+      "bytes": 9639,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/result.md",
+      "sha256": "c5870b929337ae5b047ff6638d6ba7fbb4a4c18a84381bee7ee54f8b35f90f1b"
+    },
+    {
+      "bytes": 2254,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/run_receipt.py",
+      "sha256": "6818e332407e412e68c053957cb9d0285bec2ace0cf0e0f6d3d7e01b995fe2a8"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/source-31.txt",
+      "sha256": "f839db1b4aeacaf202f47550027b79605ee5f6c904f7609abda148e35d42ea1d"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/source-34.txt",
+      "sha256": "12234ff30573cf055341d7fdbe18d2e9d725e4edf41e61ccfa4277adba47d75c"
+    },
+    {
+      "bytes": 5863,
+      "path": "work/ott-03-handoff-worker-receipt-20260914/surface-matrix.json",
+      "sha256": "86e42f6fdb69c614369af75beba2529273c85d262f9018e97146746a0588408f"
+    }
+  ],
+  "format": "otto-artifact-sha256/v1",
+  "scope": "dated evidence files and final wheel; preserved venv is pinned as a directory and excluded from this file"
+}
