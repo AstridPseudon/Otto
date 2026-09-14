@@ -137,8 +137,8 @@ def test_selected_template_instantiates_typed_pending_project_and_replays(tmp_pa
     assert _events(store) == invalid_before
 
     selected_open = api.create_and_open(actor="owner", request_id="selected-open", template=template)
-    assert selected_open["outcome"] == "unavailable"
-    assert selected_open["error"]["code"] == "canonical_selected_template_create_and_open_unavailable"
+    assert selected_open["outcome"] == "occupied"
+    assert selected_open["open"]["status"] == "actor_occupied"
     assert selected_open.get("project_ref") is None
     assert selected_open["event_ids"] == []
     assert _events(store) == invalid_before

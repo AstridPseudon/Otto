@@ -216,25 +216,6 @@ class FiniteWorkOperations:
         return result
 
     def _create_and_open(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
-        if isinstance(payload.get("template"), Mapping):
-            try:
-                template = self._typed_template(payload["template"])
-            except Exception as exc:
-                return self._template_error(exc)
-            return {
-                "outcome": "unavailable",
-                "error": {
-                    "code": "canonical_selected_template_create_and_open_unavailable",
-                    "message": "the accepted owner create-and-open bridge supports the blank starter only; selected template instantiation has no atomic owner endpoint",
-                    "operation": "work.pending.create",
-                },
-                "template_ref": _json_value(template.ref),
-                "template_revision": template.revision,
-                "replayed": False,
-                "event_ids": [],
-                "executable": False,
-                "open": {"status": "unsupported", "recovery_pending": False, "recovery_status": "not_requested"},
-            }
         if self.create_open_port is None:
             result = self._unsupported(
                 "work.pending.create",
@@ -253,6 +234,8 @@ class FiniteWorkOperations:
 
         edit = payload.get("edit", {})
         before = self.reader.get_receipt(request_id)
+        selected_resource = payload.get("template") if isinstance(payload.get("template"), Mapping) else None
+        selected_parameters = payload.get("template_parameters", {})
         try:
             opened = self.create_open_port.create_pending_and_open(
                 actor=self._actor(actor),
@@ -260,6 +243,8 @@ class FiniteWorkOperations:
                 title=edit.get("title"),
                 outcome=edit.get("outcome", ""),
                 metadata=self._metadata(payload, request_id, payload.get("template", "blank")),
+                template_resource=selected_resource,
+                template_parameters=selected_parameters,
             )
         except Exception as exc:
             if type(exc).__name__ == "ReplayConflictError":
@@ -269,6 +254,17 @@ class FiniteWorkOperations:
                     "replayed": False,
                     "event_ids": [],
                 }
+            if selected_resource is not None and type(exc).__name__ in {
+                "TemplateError", "TemplateValidationError", "TemplateParameterError",
+                "TemplateReferenceError", "SheetError", "ValueError", "TypeError",
+            }:
+                result = dict(self._template_error(exc))
+                result["open"] = {
+                    "status": "not_requested",
+                    "recovery_pending": False,
+                    "recovery_status": "not_requested",
+                }
+                return result
             raise
 
         status = opened.get("status", "unknown")
@@ -290,6 +286,7 @@ class FiniteWorkOperations:
             request_id,
             request_id + ":project",
             request_id + ":project-created",
+            request_id + ":template",
             request_id + ":materialized",
             request_id + ":materialize-failure",
             request_id + ":materialize-failure:actor",
@@ -302,12 +299,37 @@ class FiniteWorkOperations:
         record = None
         if project_ref is not None:
             record = self.reader.get_record(self._record_ref(project_ref))
+        template = opened.get("template")
+        task_refs = opened.get("task_refs", [])
+        task_records = []
+        if isinstance(task_refs, (list, tuple)):
+            seed_tasks = []
+            if isinstance(selected_resource, Mapping):
+                seed = selected_resource.get("seed", {})
+                if isinstance(seed, Mapping):
+                    raw_tasks = seed.get("tasks", seed.get("task_bundle", ()))
+                    if isinstance(raw_tasks, (list, tuple)):
+                        seed_tasks = list(raw_tasks)
+            for index, task_ref in enumerate(task_refs):
+                task_record = self.reader.get_record(self._record_ref(task_ref))
+                raw = seed_tasks[index] if index < len(seed_tasks) and isinstance(seed_tasks[index], Mapping) else {}
+                task_records.append({
+                    "local_id": str(raw.get("local_id", raw.get("id", raw.get("key", "task-" + str(index))))),
+                    "ref": _json_value(task_ref),
+                    "record": None if task_record is None else _record_dict(task_record),
+                })
         return {
             "outcome": "replayed" if before is not None else ("created" if status == "opened" else status),
             "project_ref": _json_value(project_ref),
             "record": None if record is None else _record_dict(record),
             "receipt": _receipt_dict(self.reader.get_receipt(request_id)),
             "project_receipt": _receipt_dict(self.reader.get_receipt(request_id + ":project")),
+            "template_receipt": _receipt_dict(opened.get("template_receipt")),
+            "template": _json_value(template),
+            "template_ref": None if template is None else _json_value(getattr(template, "ref", None)),
+            "template_revision": None if template is None else getattr(template, "revision", None),
+            "tasks": task_records,
+            "task_refs": [_json_value(item["ref"]) for item in task_records],
             "replayed": before is not None,
             "event_ids": [
                 event.event_id
@@ -315,11 +337,17 @@ class FiniteWorkOperations:
                 if getattr(event, "event_id", None) in event_ids
             ],
             "executable": False,
+            "activation": False,
+            "dispatch": False,
+            "manager_launch": False,
+            "budget_reserved": False,
+            "session_task_created": False,
+            "execution": False,
             "open": _json_value(opened),
         }
 
     @staticmethod
-    def _typed_template(value: Mapping[str, Any]) -> Any:
+    def _typed_template(value: Mapping[str, Any], parameters: Optional[Mapping[str, Any]] = None) -> Any:
         """Construct and validate the declared WorkTemplate before any write."""
 
         from herzchen.packs.templates import WorkTemplate, render_template, validate_template
@@ -334,16 +362,16 @@ class FiniteWorkOperations:
             raise ValueError("template.id must be non-blank text")
         if not isinstance(revision, str) or not revision.strip():
             raise ValueError("template.revision or template.version must be non-blank text")
-        parameters = value.get("parameters")
+        parameter_schema = value.get("parameters")
         seed = value.get("seed")
-        if not isinstance(parameters, Mapping):
+        if not isinstance(parameter_schema, Mapping):
             raise ValueError("template.parameters must be an object")
         if not isinstance(seed, Mapping):
             raise ValueError("template.seed must be an object")
-        template = validate_template(WorkTemplate(template_id, revision, dict(parameters), dict(seed)))
+        template = validate_template(WorkTemplate(template_id, revision, dict(parameter_schema), dict(seed)))
         # Render once before the canonical project create so malformed seed
         # markers or missing declared defaults cannot leave a project behind.
-        render_template(template)
+        render_template(template, parameters)
         return template
 
     @staticmethod
@@ -360,7 +388,7 @@ class FiniteWorkOperations:
         if self.sheet_port is None:
             return self._unsupported("work.pending.create", request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet template command port was not injected")
         try:
-            template = self._typed_template(payload["template"])
+            template = self._typed_template(payload["template"], payload.get("template_parameters"))
         except Exception as exc:
             return self._template_error(exc)
         prior = self._receipt(request_id)
@@ -383,6 +411,7 @@ class FiniteWorkOperations:
         try:
             batch = self.sheet_port.instantiate_new_template(
                 template,
+                payload.get("template_parameters"),
                 project=project_ref,
                 logical_request_key=request_id,
                 actor=self._actor(actor),

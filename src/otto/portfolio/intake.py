@@ -196,8 +196,8 @@ class OttoPortfolio:
             "surface": "otto.portfolio",
             "purpose": "capture and explicitly admit pending projects through canonical work operations",
             "operations": {
-                "create_pending": "create an inert pending project; optional edit, template, and open request",
-                "create_and_open": "create_pending with open requested, using the blank starter by default",
+                "create_pending": "create an inert pending project; optional edit, selected template resource/parameters, and open request",
+                "create_and_open": "create_pending with open requested, using the blank starter by default or a selected template resource",
                 "create_document": "create a typed canonical content document for a pending project",
                 "link_document": "link a typed canonical document association to a project",
                 "read_pending": "read one durable project reference",
@@ -244,6 +244,7 @@ class OttoPortfolio:
         request_id: str,
         edit: Optional[Mapping[str, Any]] = None,
         template: Any = None,
+        template_parameters: Optional[Mapping[str, Any]] = None,
         open_project: bool = False,
         open: Optional[bool] = None,
     ) -> dict[str, Any]:
@@ -260,9 +261,18 @@ class OttoPortfolio:
             _text(template_value, "template")
         elif not isinstance(template_value, Mapping):
             raise PortfolioError("template must be a name or object")
+        if template_parameters is not None and not isinstance(template_parameters, Mapping):
+            raise PortfolioError("template_parameters must be an object")
+        if template_parameters is not None and not isinstance(template_value, Mapping):
+            raise PortfolioError("template_parameters require a selected template object")
+        payload = {"edit": edit_value, "template": template_value, "open": bool(open_project)}
+        if template_parameters is not None:
+            payload["template_parameters"] = _json_copy(
+                dict(template_parameters), field="template_parameters"
+            )
         return self._execute(
             "work.pending.create",
-            {"edit": edit_value, "template": template_value, "open": bool(open_project)},
+            payload,
             request_id=request_id,
             actor=actor,
         )
