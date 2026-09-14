@@ -1,0 +1,144 @@
+{
+  "matrix": "OTT-03 selected-template create-and-open continuation",
+  "evidence_version": "v3",
+  "scope": "This matrix changes only the formerly pending selected-template create-and-open row and its direct regression obligations. The sealed v2 evidence and historical selected-template amendment remain unchanged.",
+  "prior_matrix": "../ott-03-template-amendment-receipt-20260914/surface-matrix.json",
+  "product_commit": "14510f49514587ecda265fb3e38c632f9ebe3179",
+  "surfaces": [
+    {
+      "id": "OTT03-TOPEN-01",
+      "surface": "selected-template create-and-open (formerly pending)",
+      "prior_status": "pending; canonical_selected_template_create_and_open_unavailable",
+      "status": "supported and proven in this Otto candidate",
+      "owner_layer": "FiniteWorkOperations -> finite PortfolioOwnerBootstrap bridge -> AuthoringSessionService.create_and_open -> ProjectSheet.command_port.instantiate_new_template",
+      "evidence": [
+        "src/otto/portfolio/owner_bootstrap.py",
+        "src/otto/portfolio/herzchen_binding.py",
+        "tests/otto/test_selected_template_create_open.py",
+        "selected-create-open-observation.json",
+        "installed-focused-18.txt"
+      ],
+      "coverage": [
+        "occupation precedes any project creation",
+        "one durable pending project is created",
+        "template fields and typed tasks are applied by accepted ProjectSheet transaction",
+        "real scope, checkout, handle and session are returned",
+        "open, project and template receipts are linked",
+        "no dispatch, manager launch, budget reservation, session-created task, or execution"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-02",
+      "surface": "finite JSON resource and invocation parameters",
+      "status": "supported and proven",
+      "request_shape": "template_resource JSON object plus template_parameters JSON object; no Store, DB descriptor, SQL, writer, callback, pickle, or callable crosses the consumer boundary",
+      "evidence": [
+        "src/otto/portfolio/intake.py",
+        "src/otto/portfolio/owner_bootstrap.py",
+        "tests/otto/test_owner_bootstrap.py",
+        "tests/otto/test_selected_template_create_open.py"
+      ],
+      "coverage": [
+        "owner reconstructs WorkTemplate",
+        "public validate_template and render_template validate before lifecycle writes",
+        "accepted instantiate_new_template receives typed resource and parameters"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-03",
+      "surface": "canonical replay and changed same-key conflict",
+      "status": "supported and proven",
+      "evidence": [
+        "tests/otto/test_selected_template_create_open.py",
+        "selected-create-open-observation.json"
+      ],
+      "coverage": [
+        "exact replay returns original project/task/session/open result",
+        "template resource participates in authoring request digest",
+        "template parameters participate in authoring request digest",
+        "changed resource and changed parameters each return replay_conflict with zero durable delta"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-04",
+      "surface": "invalid resource, seed, and parameters",
+      "status": "supported and proven",
+      "evidence": [
+        "tests/otto/test_selected_template_create_open.py",
+        "selected-create-open-observation.json"
+      ],
+      "coverage": [
+        "invalid JSON resource envelope is rejected",
+        "invalid seed shape is rejected",
+        "missing or wrong typed invocation parameters are rejected",
+        "validation failure has zero project/event/receipt delta"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-05",
+      "surface": "fresh owner reopen and authoring scope",
+      "status": "supported and proven",
+      "evidence": [
+        "tests/otto/test_selected_template_create_open.py",
+        "selected-create-open-observation.json"
+      ],
+      "coverage": [
+        "fresh Store.open and PortfolioOwnerBootstrap read selected project fields/tasks",
+        "fresh authoring scope retains open checkout and selected project ref",
+        "fresh exact replay returns original session with zero events"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-06",
+      "surface": "occupied and materialization-failure continuity",
+      "status": "supported and proven",
+      "evidence": [
+        "tests/otto/test_selected_template_create_open.py",
+        "tests/otto/test_owner_bootstrap.py"
+      ],
+      "coverage": [
+        "occupied selected request creates no project or template receipt",
+        "owner materializer failure retains exactly one fully selected pending project",
+        "released saved-project recovery scope is truthful",
+        "same-key retry does not re-run materialization or create a second project",
+        "ordinary reopen uses the saved project"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-07",
+      "surface": "blank/default create-and-open regression",
+      "status": "supported and preserved",
+      "evidence": [
+        "tests/otto/test_selected_template_create_open.py",
+        "tests/otto/test_owner_bootstrap.py",
+        "source-final-47.txt",
+        "installed-final-47.txt"
+      ],
+      "coverage": [
+        "original blank request payload remains edit/template/open only",
+        "original five-event create-and-open lifecycle remains",
+        "no template application receipt or task is created"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-08",
+      "surface": "sealed v2 and historical selected-template evidence",
+      "status": "preserved unchanged",
+      "evidence": [
+        "../ott-03-handoff-worker-receipt-20260914-v2",
+        "../ott-03-template-amendment-receipt-20260914"
+      ],
+      "coverage": [
+        "no existing evidence file was edited",
+        "this v3 receipt supersedes only the formerly pending selected create-and-open row"
+      ]
+    },
+    {
+      "id": "OTT03-TOPEN-09",
+      "surface": "OTT-06, G-OTTO, EX-HOST, live Astrid, and programme claims",
+      "status": "outside scope and not claimed",
+      "evidence": ["result.md"]
+    }
+  ],
+  "acceptance_claim": "The formerly pending selected-template create-and-open row is supported and proven only for this bounded Otto candidate over the immutable accepted Herzchen wheel. No later gate, host, Astrid, OTT-06, or programme claim is made."
+}

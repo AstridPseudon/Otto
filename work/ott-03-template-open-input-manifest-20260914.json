@@ -1,0 +1,14 @@
+{
+  "accepted_herzchen_source": "b68d8f59712275229c24757664ca30d807d39e4a",
+  "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+  "base_commit": "74645e6aeb0f9dbd9d992aefc542c91e80624f94",
+  "base_tree": "684e4b6f9cb306e426f547aee208b4770ec450c5",
+  "brief": "work/ott-03-template-open-brief-20260914.md",
+  "brief_sha256": "72a96d3e4ba1dbd403e74dfd4259b7260d7b9805301259f41b404bcbe9059d8d",
+  "requested_model": "gpt-5.6-sol",
+  "requested_reasoning": "high",
+  "source_parent": "3237701d21470380cbe471880d793449b5f40d9b",
+  "source_tree": "669d3af0e65bea36f4349f6374c4d7073f3a605a",
+  "worker_checkout": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+  "write_mode": "isolated-checkout-owned-paths"
+}

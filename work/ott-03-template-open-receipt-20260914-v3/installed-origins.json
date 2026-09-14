@@ -1,0 +1,17 @@
+{
+  "executable": "/private/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+  "herzchen_import_origin": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+  "herzchen_version": "0.1.0",
+  "otto_import_origin": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/__init__.py",
+  "otto_version": "0.0.0",
+  "owner_bootstrap_origin": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/portfolio/owner_bootstrap.py",
+  "pytest_version": "9.1.1",
+  "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "sys_path": [
+    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-receipt-20260914-v3",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload",
+    "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages"
+  ]
+}

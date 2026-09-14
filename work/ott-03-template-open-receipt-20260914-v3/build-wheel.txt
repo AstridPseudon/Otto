@@ -1,0 +1,9 @@
+Processing /tmp/ott03-template-open.o3HzxD/source
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: otto-local-candidate
+  Building wheel for otto-local-candidate (pyproject.toml): started
+  Building wheel for otto-local-candidate (pyproject.toml): finished with status 'done'
+  Created wheel for otto-local-candidate: filename=otto_local_candidate-0.0.0-py3-none-any.whl size=23537 sha256=578c72f042a915510dc4dd1a10d78f82350231ac5029d2bf10f7a55b2febdf19
+  Stored in directory: /private/var/folders/0n/hj_vqrps2bz8pnbyvgd58k740000gn/T/pip-ephem-wheel-cache-h5re6zrd/wheels/8e/03/87/d3eb0046ace3a996b652aba935c6a23aab521ffffd10385b49
+Successfully built otto-local-candidate

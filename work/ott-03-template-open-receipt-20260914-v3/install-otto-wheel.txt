@@ -1,0 +1,3 @@
+Processing ./work/ott-03-template-open-receipt-20260914-v3/dist/otto_local_candidate-0.0.0-py3-none-any.whl
+Installing collected packages: otto-local-candidate
+Successfully installed otto-local-candidate-0.0.0

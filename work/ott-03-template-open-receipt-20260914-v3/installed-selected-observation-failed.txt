@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-receipt-20260914-v3/selected_create_open_observation.py", line 181, in <module>
+    "fresh_scope": None if fresh_scope is None else fresh_scope.to_dict(),
+                                                    ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'IdentityRecord' object has no attribute 'to_dict'
