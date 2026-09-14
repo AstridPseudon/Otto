@@ -1,0 +1,21 @@
+# Installed-origin supplement receipt
+
+- Candidate HEAD/tree: f66ab70b8d3f772975e384760b96bafb1e957f4a / 3620ea3a42873b5851aaf7da27db93dbde862c60
+- Source archive: git archive of candidate HEAD only.
+- Otto wheel: otto_local_candidate-0.0.0-py3-none-any.whl
+- Otto wheel SHA-256: 51afd6b2f70b836f921d63e8485087007dcc139728719b0929658a088884d0cf
+- Accepted Herzchen wheel SHA-256: 2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc
+- Fresh venv: work/ott-03-installed-venv-20260914
+- Python: 3.11.16
+- Source-path variables: PYTHONPATH unset; PYTHONHOME unset
+- Installed test command: pytest -q test_intake_roles.py test_adapters.py test_host_adapter_usage.py from /tmp
+- Installed test result/return code: 18 passed in 0.14s / 0
+- Installed Otto origin: venv/lib/python3.11/site-packages/otto/__init__.py
+- Installed Herzchen origin: venv/lib/python3.11/site-packages/herzchen/__init__.py
+- Facade fixture: deterministic execute/read-only canonical-port fixture; no persistence claim
+- Herzchen probe: WorkGraph, ProjectSheet, ProjectBatches, ContentCommandHandler, ResponsibilityAssignments, AuthoringSessionService, and IdleCloseService present; direct content.commands.link_document absent; ContentCommandHandler.build_link present.
+- Immutable launch manifest cited: manager-input-manifest.json, SHA-256 25977fd81f942e2e25856917390de3a05762f4f187f227451865f94b6839f731
+- P01 exact profile SHA-256: 9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726
+- Earlier injected representative retained as fixture-only historical evidence.
+- No gate, acceptance, Astrid cutover, Runtime change, control DB write, remote write, publication, or license/output grant claimed.
+
