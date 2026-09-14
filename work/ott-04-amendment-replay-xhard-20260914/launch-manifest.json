@@ -1,0 +1,54 @@
+{
+  "task": "OTT-04 amendment replay and interrupted-stage correction",
+  "created_at": "2026-09-14T21:37:36+02:00",
+  "checkout": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker",
+  "base": {
+    "expected_commit": "5d7175ea12d16448baa1e3c6c73a82db6f38b5b5",
+    "observed_commit": "5d7175ea12d16448baa1e3c6c73a82db6f38b5b5",
+    "expected_tree": "935a6ce5d2baf255fdd2ebef05e4fbddcaa7de0a",
+    "observed_tree": "935a6ce5d2baf255fdd2ebef05e4fbddcaa7de0a",
+    "matched": true
+  },
+  "route": {
+    "requested_model": "gpt-5.6-sol",
+    "requested_reasoning": "high",
+    "worker_mode": "existing-thread-only",
+    "host_model_switch_available": false,
+    "route_note": "The active host fixes the model for this session; no substitute worker, review, or AST task was launched."
+  },
+  "immutable_inputs": {
+    "input_manifest_sha256": "65dc2f0476043a91ea8e9f86657794b25fef30e7946bab4cd13daa33f178d89f",
+    "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726",
+    "brief_sha256": "7f7c2e05e18fcec07cbad7e7afff9e5130cf419e10ca976ded45396a679864df",
+    "accepted_herzchen_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "accepted_herzchen_tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
+    "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+    "prior_otto_wheel_sha256": "1284ef086294fabd7afd539938cf3fecc9bd2581d02d403edce61886936440e3",
+    "prior_installed_observation_sha256": "6adf116477e4e4795ea148962a44f3d894ecaf94e142814ed0201be098cea5ec"
+  },
+  "owned_source_before": {
+    "src/otto/attention.py": "f6edf02121956fbfa0faa17f4f1a13ce5ab43d13be3139590821a6780d67496f",
+    "tests/otto/test_continuity.py": "e7c61bd0120c7214a28146f8c4607b4ba14e0d15d02b65859082a7a252f7bfcc"
+  },
+  "public_api_inspection": {
+    "ProjectSheet.apply": "public staged plan mutation with logical_request_key and receipt",
+    "ProjectSheet.pin_assignment_route": "public staged assignment mutation with logical_request_key and receipt",
+    "ResponsibilityAssignments.get": "public fresh assignment read",
+    "ContextPacketService.notify_amendment": "public attention mutation with logical request context and receipt",
+    "Store.get_receipt": "public persisted receipt lookup by logical request key",
+    "Store.list_events": "public persisted event observation",
+    "Store.mutate": "public receipt-backed mutation whose canonical digest includes complete context and payload",
+    "SerializedCommandClient": "finite endpoint client with no owner Store or callable crossing the consumer boundary"
+  },
+  "scope": {
+    "allowed": [
+      "src/otto/attention.py",
+      "tests/otto/test_continuity.py",
+      "work/ott-04-*"
+    ],
+    "broad_suite": false,
+    "review_or_oracle": false,
+    "ast_work": false,
+    "ott06_rehearsal": false
+  }
+}

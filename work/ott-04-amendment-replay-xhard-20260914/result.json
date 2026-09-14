@@ -1,0 +1,143 @@
+{
+  "task": "OTT-04 amendment replay and interrupted-stage correction",
+  "status": "bounded product correction proven",
+  "base": {
+    "commit": "5d7175ea12d16448baa1e3c6c73a82db6f38b5b5",
+    "tree": "935a6ce5d2baf255fdd2ebef05e4fbddcaa7de0a"
+  },
+  "source": {
+    "commit": "5332885d6dfba8af89c3f10d3311714d744b9c42",
+    "tree": "66db6877fb490850bc05723d782fcee3eabbd722",
+    "files": {
+      "src/otto/attention.py": "62681417b744afa406667850aa36360e75256c3f1e7971143c395e9da2739a41",
+      "tests/otto/test_continuity.py": "565ac007927d3ffa8718654279e67a392fe1bd167d0ab42d77dbbdb1c512dff0"
+    }
+  },
+  "route": {
+    "requested_model": "gpt-5.6-sol",
+    "requested_reasoning": "high",
+    "host_model_switch_available": false,
+    "worker_or_review_launched": false,
+    "note": "The host-fixed active model could not be changed inside this thread; this is reported rather than silently substituted."
+  },
+  "accepted_inputs": {
+    "manifest_sha256": "65dc2f0476043a91ea8e9f86657794b25fef30e7946bab4cd13daa33f178d89f",
+    "herzchen_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "herzchen_tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
+    "herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+    "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726"
+  },
+  "wheel": {
+    "path": "work/ott-04-amendment-replay-xhard-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "sha256": "f2fffb0d51a0e38a674dd04171d4df20a2bbca3a6bc21bbe84d043db1826aee4"
+  },
+  "product_behavior": {
+    "full_request_binding": "ContextPacketService.register_decision persists the complete manager-selected amendment before plan, assignment, or attention stages",
+    "first": {
+      "outcome": "improvement-implemented",
+      "event_delta": 4,
+      "stage_status": {
+        "decision": "committed",
+        "plan": "committed",
+        "assignment": "committed",
+        "attention": "committed"
+      },
+      "dispatch": false,
+      "automatic_action": false
+    },
+    "exact_retry": {
+      "outcome": "improvement-already-applied",
+      "event_delta": 0,
+      "unchanged_views_reported_as_changes": false,
+      "requirements_satisfied_from_public_receipts": true,
+      "stage_status": {
+        "decision": "replayed",
+        "plan": "replayed",
+        "assignment": "replayed",
+        "attention": "replayed"
+      },
+      "dispatch": false,
+      "automatic_action": false
+    },
+    "changed_input": {
+      "error": "InputChangedError",
+      "event_delta": 0,
+      "state_delta": false
+    },
+    "interruption": {
+      "error": "AmendmentInterruptedError",
+      "after_stage": "plan",
+      "partial_event_delta": 2,
+      "partial_receipts": ["decision", "plan"],
+      "absent_receipts": ["assignment", "attention"]
+    },
+    "recovery": {
+      "outcome": "improvement-recovered",
+      "event_delta": 2,
+      "stage_status": {
+        "decision": "replayed",
+        "plan": "replayed",
+        "assignment": "committed",
+        "attention": "committed"
+      },
+      "final_stage_event_counts": {
+        "work.project-sheet.applied": 1,
+        "work.assignment.route-pinned": 1,
+        "dat.context.attention.created": 1,
+        "work.assignment.dispatched": 0
+      },
+      "owner_preserved": true,
+      "usage_preserved": true,
+      "running_input_pins_preserved": true,
+      "dispatch": false,
+      "automatic_action": false
+    },
+    "finite_boundary": {
+      "endpoints": ["apply_amendment", "read_views"],
+      "store_reachable": false,
+      "callback_reachable": false,
+      "connection_reachable": false,
+      "db_path_exposed": false
+    }
+  },
+  "installed_receipt_lineage": {
+    "first_and_retry": {
+      "decision": ["amendment-xhard:decision", "event-a7d955052d141ea4bf3b34b8cdca05c6", "fa1f66a7a34cd520e149e11964a12716"],
+      "plan": ["amendment-xhard:plan", "event-94df90d73d3eff7d68fa3ff27a673dff", "44e259498d524807b3041fdc1244b107"],
+      "assignment": ["amendment-xhard:route", "event-b20dfe721decc36bb89445201e97d41d", "f27b703f75f5fc48b0f9f6b347c0ea40"],
+      "attention": ["amendment-xhard:attention:owner-1", "event-ca669940cc688180168fa0c89f32aa71", "31d077686050a22081a183124f795b14"]
+    },
+    "interrupted_and_recovered": {
+      "decision": ["amendment-interrupted:decision", "event-a33f4b9bbafdcaf5ad44f75114c0798a", "e770729c5c38f4d7f90b11ecfe8c1929"],
+      "plan": ["amendment-interrupted:plan", "event-d2d4c464d101cdf54daf203837e68346", "6832e8c3e061544ef27b653c9cda4d31"],
+      "assignment": ["amendment-interrupted:route", "event-5638f202036283b02e6500e605650f0c", "15321ed1fdf09a216e46a8f37fd48293"],
+      "attention": ["amendment-interrupted:attention:owner-2", "event-cf3aac3f209239d656db119c1b42c399", "cdf0f8105ed07ec5df3fa48ffa64e179"]
+    }
+  },
+  "observations": {
+    "source": {
+      "path": "work/ott-04-amendment-replay-xhard-20260914/observation-source.json",
+      "sha256": "870a27a28b361b077d72ecb9db6a620e32c33ef0e994e67197f708d1d5bdf751"
+    },
+    "installed": {
+      "path": "work/ott-04-amendment-replay-xhard-20260914/observation-installed.json",
+      "sha256": "1143aac32f10d5045847501bc1ecc59e315102347236deab4f9d800dad3d9690"
+    },
+    "generator": {
+      "path": "work/ott-04-amendment-replay-xhard-20260914/observation.py",
+      "sha256": "28e70ec70baafe80b1466a0672ea6a2d513d04440eedfb44054cadb58fba01f3"
+    },
+    "launch_manifest": {
+      "path": "work/ott-04-amendment-replay-xhard-20260914/launch-manifest.json",
+      "sha256": "7e0d50dfb10ce85b3bb51dd46903d0dfe13974d2cc169e0ff0319f497755d678"
+    }
+  },
+  "validation": {
+    "source": "3 focused tests passed, return code 0",
+    "installed": "2 real-product tests passed, return code 0, PYTHONPATH/PYTHONHOME unset",
+    "historical_53_53_rerun": false,
+    "expected_cas": "preserved by the focused installed due-record test and prior raw observation SHA-256 6adf116477e4e4795ea148962a44f3d894ecaf94e142814ed0201be098cea5ec"
+  },
+  "unresolved_public_capability_gaps": [],
+  "out_of_scope": "No OTT-06 rehearsal, review/oracle, AST task, scheduler, private inbox, side ledger, or Herzchen source change was performed."
+}

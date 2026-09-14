@@ -1,0 +1,591 @@
+{
+  "expected_cas_base": {
+    "installed_observation": "work/ott-04-correction-20260914/observation-installed-final2.json",
+    "installed_observation_sha256": "6adf116477e4e4795ea148962a44f3d894ecaf94e142814ed0201be098cea5ec",
+    "source_commit": "54c3776b1dc466656df527724db5daa0b60f9dca"
+  },
+  "first_retry_changed": {
+    "before": {
+      "assignment": {
+        "agent": "agent-1",
+        "principal": "owner-1",
+        "route_binding": null,
+        "session": "session-1"
+      },
+      "attention": [],
+      "current_owner": "owner-1",
+      "next_dispatch": null,
+      "plan": {
+        "task": null
+      },
+      "running_input_pins": [
+        {
+          "authority": "ott04-xhard-first",
+          "id": "task-23e340e328b513f038e9ea9ccc8c",
+          "kind": "work.task",
+          "revision": "rev-1"
+        }
+      ],
+      "usage": {
+        "budget": null,
+        "limit": 12,
+        "spent": 4
+      }
+    },
+    "boundary": {
+      "client_dir": [
+        "apply_amendment",
+        "read_views",
+        "transport"
+      ],
+      "has_callback": false,
+      "has_store": false,
+      "transport_endpoints": [
+        "apply_amendment",
+        "read_views"
+      ],
+      "transport_has_connection": false,
+      "transport_path_is_db": false
+    },
+    "changed_input": {
+      "error": {
+        "message": "amendment request key was reused with changed logical input",
+        "type": "InputChangedError"
+      },
+      "event_delta": 0,
+      "state_delta": false
+    },
+    "dispatch_event_present": false,
+    "event_types": [
+      "work.assignment.created",
+      "work.assignment.route-pinned",
+      "dat.content.document.created",
+      "dat.context.attention.created",
+      "dat.content.document.created",
+      "work.created",
+      "work.project-sheet.applied",
+      "work.created"
+    ],
+    "exact_retry": {
+      "automatic_action": false,
+      "dispatch": false,
+      "event_delta": 0,
+      "fresh_after": {
+        "assignment": {
+          "agent": "agent-1",
+          "principal": "owner-1",
+          "route_binding": {
+            "name": "owner-review-route",
+            "reason": "manager-selected amendment"
+          },
+          "session": "session-1"
+        },
+        "attention": [
+          {
+            "event_id": "event-88bae49f94619cfcdae3ad798da999db",
+            "recipient": "owner-1",
+            "state": "open"
+          }
+        ],
+        "current_owner": "owner-1",
+        "next_dispatch": "owner-review",
+        "plan": {
+          "task": {
+            "instructions": "apply the replay-safe amendment"
+          }
+        },
+        "running_input_pins": [
+          {
+            "authority": "ott04-xhard-first",
+            "id": "task-23e340e328b513f038e9ea9ccc8c",
+            "kind": "work.task",
+            "revision": "rev-1"
+          }
+        ],
+        "usage": {
+          "budget": null,
+          "limit": 12,
+          "spent": 4
+        }
+      },
+      "outcome": "improvement-already-applied",
+      "replayed": true,
+      "required_changes": {
+        "assignment_view_changed": false,
+        "attention_view_changed": false,
+        "next_dispatch_changed": false,
+        "plan_changed": false
+      },
+      "requirements_satisfied": {
+        "assignment": true,
+        "attention": true,
+        "next_dispatch": true,
+        "plan": true
+      },
+      "stages": {
+        "assignment": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-91f85e2aec0a5515574557eaa6b408a7"
+              ],
+              "logical_request_key": "amendment-xhard:route",
+              "request_digest": "29f6c831a4e28e035ce35fc831f22a89f61e2601f3394a7ba603becaa367f1cf",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "assignment-07378464c2d42d9f3ff33fb1ff5f",
+                "kind": "wrk.assignment",
+                "revision": "rev-2"
+              },
+              "status": "committed",
+              "transaction_id": "ab06dc8a6cf0256d6ddb91ef96ba6da4"
+            }
+          ],
+          "replayed": true,
+          "status": "replayed"
+        },
+        "attention": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-88bae49f94619cfcdae3ad798da999db"
+              ],
+              "logical_request_key": "amendment-xhard:attention:owner-1",
+              "request_digest": "e21dbb4b4ffb2c862b11f2d4dba4411ceb843c5812a7d3811170f5057fd01f96",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "attention-c8ea9ce7d4a4ee6ff2365de6",
+                "kind": "dat.context.attention",
+                "revision": "attention-1"
+              },
+              "status": "committed",
+              "transaction_id": "eb46e00378233b07ad8d397e988ba6f4"
+            }
+          ],
+          "replayed": true,
+          "status": "replayed"
+        },
+        "decision": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-9302f0021e53a088ff7a0cddedaaa5f5"
+              ],
+              "logical_request_key": "amendment-xhard:decision",
+              "request_digest": "4e4e6e9ad288a736a53b99bc88bb4e429d1746aa79ae8768c9eb32601480ead3",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "decision-manifest:manager-decision-xhard",
+                "kind": "dat.content.document",
+                "revision": "1"
+              },
+              "status": "committed",
+              "transaction_id": "543d20c858315ef417a5c5ba892c0aee"
+            }
+          ],
+          "replayed": true,
+          "status": "replayed"
+        },
+        "plan": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-c91c5ee7490c5a989f4268c3f68cd48d"
+              ],
+              "logical_request_key": "amendment-xhard:plan",
+              "request_digest": "15b31bc4d980c4d390f7f8f5b3e4337962b9aca8293a608c5e4735bcb1a06c7f",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "project-9f5808aa4ca0b35908562e11ab31",
+                "kind": "work.project",
+                "revision": "rev-2"
+              },
+              "status": "committed",
+              "transaction_id": "a4654d621eb00b185412cc7407faeffe"
+            }
+          ],
+          "replayed": true,
+          "status": "replayed"
+        }
+      }
+    },
+    "first": {
+      "action": {
+        "amendment": {
+          "instruction": "apply the replay-safe amendment",
+          "next_dispatch": "owner-review",
+          "route": "owner-review-route"
+        },
+        "decision_id": "manager-decision-xhard",
+        "manager_decision": "implement",
+        "request_id": "amendment-xhard",
+        "review_id": "review-xhard"
+      },
+      "automatic_action": false,
+      "dispatch": false,
+      "event_delta": 4,
+      "fresh_after": {
+        "assignment": {
+          "agent": "agent-1",
+          "principal": "owner-1",
+          "route_binding": {
+            "name": "owner-review-route",
+            "reason": "manager-selected amendment"
+          },
+          "session": "session-1"
+        },
+        "attention": [
+          {
+            "event_id": "event-88bae49f94619cfcdae3ad798da999db",
+            "recipient": "owner-1",
+            "state": "open"
+          }
+        ],
+        "current_owner": "owner-1",
+        "next_dispatch": "owner-review",
+        "plan": {
+          "task": {
+            "instructions": "apply the replay-safe amendment"
+          }
+        },
+        "running_input_pins": [
+          {
+            "authority": "ott04-xhard-first",
+            "id": "task-23e340e328b513f038e9ea9ccc8c",
+            "kind": "work.task",
+            "revision": "rev-1"
+          }
+        ],
+        "usage": {
+          "budget": null,
+          "limit": 12,
+          "spent": 4
+        }
+      },
+      "manager_decision": "implement",
+      "outcome": "improvement-implemented",
+      "preserved": {
+        "current_owner": true,
+        "running_input_pins": true,
+        "usage": true
+      },
+      "stages": {
+        "assignment": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-91f85e2aec0a5515574557eaa6b408a7"
+              ],
+              "logical_request_key": "amendment-xhard:route",
+              "request_digest": "29f6c831a4e28e035ce35fc831f22a89f61e2601f3394a7ba603becaa367f1cf",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "assignment-07378464c2d42d9f3ff33fb1ff5f",
+                "kind": "wrk.assignment",
+                "revision": "rev-2"
+              },
+              "status": "committed",
+              "transaction_id": "ab06dc8a6cf0256d6ddb91ef96ba6da4"
+            }
+          ],
+          "replayed": false,
+          "status": "committed"
+        },
+        "attention": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-88bae49f94619cfcdae3ad798da999db"
+              ],
+              "logical_request_key": "amendment-xhard:attention:owner-1",
+              "request_digest": "e21dbb4b4ffb2c862b11f2d4dba4411ceb843c5812a7d3811170f5057fd01f96",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "attention-c8ea9ce7d4a4ee6ff2365de6",
+                "kind": "dat.context.attention",
+                "revision": "attention-1"
+              },
+              "status": "committed",
+              "transaction_id": "eb46e00378233b07ad8d397e988ba6f4"
+            }
+          ],
+          "replayed": false,
+          "status": "committed"
+        },
+        "decision": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-9302f0021e53a088ff7a0cddedaaa5f5"
+              ],
+              "logical_request_key": "amendment-xhard:decision",
+              "request_digest": "4e4e6e9ad288a736a53b99bc88bb4e429d1746aa79ae8768c9eb32601480ead3",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "decision-manifest:manager-decision-xhard",
+                "kind": "dat.content.document",
+                "revision": "1"
+              },
+              "status": "committed",
+              "transaction_id": "543d20c858315ef417a5c5ba892c0aee"
+            }
+          ],
+          "replayed": false,
+          "status": "committed"
+        },
+        "plan": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-c91c5ee7490c5a989f4268c3f68cd48d"
+              ],
+              "logical_request_key": "amendment-xhard:plan",
+              "request_digest": "15b31bc4d980c4d390f7f8f5b3e4337962b9aca8293a608c5e4735bcb1a06c7f",
+              "result_ref": {
+                "authority": "ott04-xhard-first",
+                "id": "project-9f5808aa4ca0b35908562e11ab31",
+                "kind": "work.project",
+                "revision": "rev-2"
+              },
+              "status": "committed",
+              "transaction_id": "a4654d621eb00b185412cc7407faeffe"
+            }
+          ],
+          "replayed": false,
+          "status": "committed"
+        }
+      }
+    }
+  },
+  "interrupted_recovery": {
+    "interruption": {
+      "message": "trusted owner interrupted after committed plan stage",
+      "type": "AmendmentInterruptedError"
+    },
+    "partial_event_delta": 2,
+    "partial_receipts": {
+      "assignment": null,
+      "attention": null,
+      "decision": {
+        "event_ids": [
+          "event-9e152a6149b6c10c55f1b2af3ba43bc9"
+        ],
+        "logical_request_key": "amendment-interrupted:decision",
+        "request_digest": "ac9245863ac69b295513fe59209508dc7a68a549047429bc5a875709cfc083fe",
+        "result_ref": {
+          "authority": "ott04-xhard-interrupted",
+          "id": "decision-manifest:manager-decision-interrupted",
+          "kind": "dat.content.document",
+          "revision": "1"
+        },
+        "status": "committed",
+        "transaction_id": "6fd8cd68a113b34c293b28456ca8a27c"
+      },
+      "plan": {
+        "event_ids": [
+          "event-bd19adb5dce9039216903c3861ee8970"
+        ],
+        "logical_request_key": "amendment-interrupted:plan",
+        "request_digest": "2a14daced79703b7a58419d91c06791fff44e10c5c254e0ce08395fd20feb24e",
+        "result_ref": {
+          "authority": "ott04-xhard-interrupted",
+          "id": "project-9f5808aa4ca0b35908562e11ab31",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "transaction_id": "754468ad19b5ba094c57c4acaade26e9"
+      }
+    },
+    "partial_views": {
+      "assignment": {
+        "agent": "agent-1",
+        "principal": "owner-2",
+        "route_binding": null,
+        "session": "session-1"
+      },
+      "attention": [],
+      "current_owner": "owner-2",
+      "next_dispatch": "owner-2-review",
+      "plan": {
+        "task": {
+          "instructions": "resume the interrupted amendment"
+        }
+      },
+      "running_input_pins": [
+        {
+          "authority": "ott04-xhard-interrupted",
+          "id": "task-23e340e328b513f038e9ea9ccc8c",
+          "kind": "work.task",
+          "revision": "rev-1"
+        }
+      ],
+      "usage": {
+        "budget": null,
+        "limit": 12,
+        "spent": 4
+      }
+    },
+    "recovery": {
+      "automatic_action": false,
+      "dispatch": false,
+      "event_delta": 2,
+      "fresh_after": {
+        "assignment": {
+          "agent": "agent-1",
+          "principal": "owner-2",
+          "route_binding": {
+            "name": "owner-2-route",
+            "reason": "manager-selected amendment"
+          },
+          "session": "session-1"
+        },
+        "attention": [
+          {
+            "event_id": "event-46c017ec0b2f8dda1ee03a0c73765555",
+            "recipient": "owner-2",
+            "state": "open"
+          }
+        ],
+        "current_owner": "owner-2",
+        "next_dispatch": "owner-2-review",
+        "plan": {
+          "task": {
+            "instructions": "resume the interrupted amendment"
+          }
+        },
+        "running_input_pins": [
+          {
+            "authority": "ott04-xhard-interrupted",
+            "id": "task-23e340e328b513f038e9ea9ccc8c",
+            "kind": "work.task",
+            "revision": "rev-1"
+          }
+        ],
+        "usage": {
+          "budget": null,
+          "limit": 12,
+          "spent": 4
+        }
+      },
+      "outcome": "improvement-recovered",
+      "preserved_from_initial": {
+        "current_owner": true,
+        "running_input_pins": true,
+        "usage": true
+      },
+      "recovered": true,
+      "replayed": false,
+      "required_changes": {
+        "assignment_view_changed": true,
+        "attention_view_changed": true,
+        "next_dispatch_changed": false,
+        "plan_changed": false
+      },
+      "requirements_satisfied": {
+        "assignment": true,
+        "attention": true,
+        "next_dispatch": true,
+        "plan": true
+      },
+      "stages": {
+        "assignment": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-1a76596797c871f898d31d123ea2152d"
+              ],
+              "logical_request_key": "amendment-interrupted:route",
+              "request_digest": "ab56d3564d2fbabfb9fb246cd02a795d94d12e89230d1c812c728780ae6d6d25",
+              "result_ref": {
+                "authority": "ott04-xhard-interrupted",
+                "id": "assignment-67701e849089bd3d92f0c6096afc",
+                "kind": "wrk.assignment",
+                "revision": "rev-2"
+              },
+              "status": "committed",
+              "transaction_id": "fcb71607125a2c184b8da8561d6b0c07"
+            }
+          ],
+          "replayed": false,
+          "status": "committed"
+        },
+        "attention": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-46c017ec0b2f8dda1ee03a0c73765555"
+              ],
+              "logical_request_key": "amendment-interrupted:attention:owner-2",
+              "request_digest": "da68b93064cbfc4e1233a0f5971b241b2574259a283278ae071014a26727b69b",
+              "result_ref": {
+                "authority": "ott04-xhard-interrupted",
+                "id": "attention-b2ca238f8762a1b909fb6652",
+                "kind": "dat.context.attention",
+                "revision": "attention-1"
+              },
+              "status": "committed",
+              "transaction_id": "dc6d8b2396df174902794c61076a61e1"
+            }
+          ],
+          "replayed": false,
+          "status": "committed"
+        },
+        "decision": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-9e152a6149b6c10c55f1b2af3ba43bc9"
+              ],
+              "logical_request_key": "amendment-interrupted:decision",
+              "request_digest": "ac9245863ac69b295513fe59209508dc7a68a549047429bc5a875709cfc083fe",
+              "result_ref": {
+                "authority": "ott04-xhard-interrupted",
+                "id": "decision-manifest:manager-decision-interrupted",
+                "kind": "dat.content.document",
+                "revision": "1"
+              },
+              "status": "committed",
+              "transaction_id": "6fd8cd68a113b34c293b28456ca8a27c"
+            }
+          ],
+          "replayed": true,
+          "status": "replayed"
+        },
+        "plan": {
+          "receipts": [
+            {
+              "event_ids": [
+                "event-bd19adb5dce9039216903c3861ee8970"
+              ],
+              "logical_request_key": "amendment-interrupted:plan",
+              "request_digest": "2a14daced79703b7a58419d91c06791fff44e10c5c254e0ce08395fd20feb24e",
+              "result_ref": {
+                "authority": "ott04-xhard-interrupted",
+                "id": "project-9f5808aa4ca0b35908562e11ab31",
+                "kind": "work.project",
+                "revision": "rev-2"
+              },
+              "status": "committed",
+              "transaction_id": "754468ad19b5ba094c57c4acaade26e9"
+            }
+          ],
+          "replayed": true,
+          "status": "replayed"
+        }
+      }
+    },
+    "stage_event_counts": {
+      "dat.context.attention.created": 1,
+      "work.assignment.dispatched": 0,
+      "work.assignment.route-pinned": 1,
+      "work.project-sheet.applied": 1
+    }
+  },
+  "origins": {
+    "herzchen": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/__init__.py",
+    "herzchen_command_ports": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/command_ports.py",
+    "otto": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/src/otto/__init__.py",
+    "otto_attention": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/src/otto/attention.py"
+  }
+}

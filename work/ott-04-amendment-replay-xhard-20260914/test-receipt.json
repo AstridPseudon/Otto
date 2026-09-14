@@ -1,0 +1,39 @@
+{
+  "source": {
+    "command": "PYTHONPATH=src work/ott-04-real-milestone-20260914/venv/bin/python -m pytest -q tests/otto/test_continuity.py::test_real_store_due_record_binding_replays_cas_and_reopens tests/otto/test_continuity.py::test_real_public_amendment_composes_plan_attention_and_assignment_views tests/otto/test_continuity.py::test_review_handling_is_distinct_and_amendment_propagation_preserves_pins",
+    "result": "3 passed in 0.15s",
+    "return_code": 0
+  },
+  "build": {
+    "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-04-real-milestone-20260914/venv/bin/python -m pip wheel . --no-deps --no-build-isolation --wheel-dir work/ott-04-amendment-replay-xhard-20260914/dist",
+    "return_code": 0,
+    "wheel": "work/ott-04-amendment-replay-xhard-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "wheel_sha256": "f2fffb0d51a0e38a674dd04171d4df20a2bbca3a6bc21bbe84d043db1826aee4"
+  },
+  "install": {
+    "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-04-real-milestone-20260914/venv/bin/python -m pip install --force-reinstall /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl work/ott-04-amendment-replay-xhard-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "return_code": 0,
+    "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
+  },
+  "installed": {
+    "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-04-real-milestone-20260914/venv/bin/python -c <python_code>",
+    "python_code": "import json, os, pytest, herzchen, herzchen.command_ports, otto, otto.attention; print(json.dumps({'environment':{'PYTHONPATH':os.environ.get('PYTHONPATH'),'PYTHONHOME':os.environ.get('PYTHONHOME')},'origins':{'otto':otto.__file__,'otto_attention':otto.attention.__file__,'herzchen':herzchen.__file__,'herzchen_command_ports':herzchen.command_ports.__file__}},sort_keys=True)); rc=pytest.main(['-q','tests/otto/test_continuity.py::test_real_store_due_record_binding_replays_cas_and_reopens','tests/otto/test_continuity.py::test_real_public_amendment_composes_plan_attention_and_assignment_views']); print(json.dumps({'pytest_return_code':rc})); raise SystemExit(rc)",
+    "selection": [
+      "tests/otto/test_continuity.py::test_real_store_due_record_binding_replays_cas_and_reopens",
+      "tests/otto/test_continuity.py::test_real_public_amendment_composes_plan_attention_and_assignment_views"
+    ],
+    "result": "2 passed in 0.16s",
+    "return_code": 0,
+    "environment": {
+      "PYTHONPATH": null,
+      "PYTHONHOME": null
+    },
+    "origins": {
+      "otto": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/otto/__init__.py",
+      "otto_attention": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/otto/attention.py",
+      "herzchen": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/__init__.py",
+      "herzchen_command_ports": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/command_ports.py"
+    }
+  },
+  "broad_historical_suite_rerun": false
+}
