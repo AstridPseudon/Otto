@@ -134,6 +134,8 @@ class FiniteWorkOperations:
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         if operation == "work.pending.create" and payload.get("open"):
             return self._create_and_open(payload, request_id=request_id, actor=actor)
+        if operation == "work.pending.create" and isinstance(payload.get("template"), Mapping):
+            return self._create_from_template(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.open":
             return self._open_existing(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.edit":
@@ -214,6 +216,25 @@ class FiniteWorkOperations:
         return result
 
     def _create_and_open(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if isinstance(payload.get("template"), Mapping):
+            try:
+                template = self._typed_template(payload["template"])
+            except Exception as exc:
+                return self._template_error(exc)
+            return {
+                "outcome": "unavailable",
+                "error": {
+                    "code": "canonical_selected_template_create_and_open_unavailable",
+                    "message": "the accepted owner create-and-open bridge supports the blank starter only; selected template instantiation has no atomic owner endpoint",
+                    "operation": "work.pending.create",
+                },
+                "template_ref": _json_value(template.ref),
+                "template_revision": template.revision,
+                "replayed": False,
+                "event_ids": [],
+                "executable": False,
+                "open": {"status": "unsupported", "recovery_pending": False, "recovery_status": "not_requested"},
+            }
         if self.create_open_port is None:
             result = self._unsupported(
                 "work.pending.create",
@@ -295,6 +316,127 @@ class FiniteWorkOperations:
             ],
             "executable": False,
             "open": _json_value(opened),
+        }
+
+    @staticmethod
+    def _typed_template(value: Mapping[str, Any]) -> Any:
+        """Construct and validate the declared WorkTemplate before any write."""
+
+        from herzchen.packs.templates import WorkTemplate, render_template, validate_template
+
+        if not isinstance(value, Mapping):
+            raise ValueError("template must be a JSON resource object")
+        template_id = value.get("id")
+        revision = value.get("revision", value.get("version"))
+        if "revision" in value and "version" in value and value["revision"] != value["version"]:
+            raise ValueError("template revision and version must agree")
+        if not isinstance(template_id, str) or not template_id.strip():
+            raise ValueError("template.id must be non-blank text")
+        if not isinstance(revision, str) or not revision.strip():
+            raise ValueError("template.revision or template.version must be non-blank text")
+        parameters = value.get("parameters")
+        seed = value.get("seed")
+        if not isinstance(parameters, Mapping):
+            raise ValueError("template.parameters must be an object")
+        if not isinstance(seed, Mapping):
+            raise ValueError("template.seed must be an object")
+        template = validate_template(WorkTemplate(template_id, revision, dict(parameters), dict(seed)))
+        # Render once before the canonical project create so malformed seed
+        # markers or missing declared defaults cannot leave a project behind.
+        render_template(template)
+        return template
+
+    @staticmethod
+    def _template_error(exc: Exception) -> Mapping[str, Any]:
+        return {
+            "outcome": "error",
+            "error": {"code": "invalid_template_resource", "message": str(exc), "operation": "work.project-sheet.instantiate-template"},
+            "replayed": False,
+            "event_ids": [],
+            "executable": False,
+        }
+
+    def _create_from_template(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self.sheet_port is None:
+            return self._unsupported("work.pending.create", request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet template command port was not injected")
+        try:
+            template = self._typed_template(payload["template"])
+        except Exception as exc:
+            return self._template_error(exc)
+        prior = self._receipt(request_id)
+        edit = payload.get("edit", {})
+        try:
+            project = self.port.create_pending_project(
+                title=edit.get("title"),
+                outcome=edit.get("outcome", ""),
+                logical_request_key=request_id + "-project",
+                actor=self._actor(actor),
+                creator=self._actor(actor),
+                curator=self._actor(actor),
+                metadata=self._metadata(payload, request_id, payload["template"]),
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.create"}, "replayed": False, "event_ids": [], "executable": False}
+            raise
+        project_ref = getattr(project, "ref", None)
+        try:
+            batch = self.sheet_port.instantiate_new_template(
+                template,
+                project=project_ref,
+                logical_request_key=request_id,
+                actor=self._actor(actor),
+            )
+        except Exception as exc:
+            if type(exc).__name__ in {"ReplayConflictError", "TemplateError", "TemplateValidationError", "UnknownTemplateError", "SheetError"}:
+                if type(exc).__name__ == "ReplayConflictError":
+                    return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project-sheet.instantiate-template"}, "replayed": False, "event_ids": [], "executable": False}
+                return self._template_error(exc)
+            raise
+        batch_project = getattr(batch, "project", None)
+        if project_ref is None:
+            project_ref = getattr(batch_project, "ref", None)
+        if project_ref is None and isinstance(batch, Mapping):
+            project_ref = batch.get("project_ref")
+        fresh = None if project_ref is None else self.reader.get_record(project_ref)
+        returned_project_ref = getattr(fresh, "ref", project_ref)
+        mappings = getattr(batch, "mappings", {})
+        if not isinstance(mappings, Mapping) and isinstance(batch, Mapping):
+            mappings = batch.get("mappings", {})
+        task_records = []
+        if isinstance(mappings, Mapping):
+            for local_id, task_ref in mappings.items():
+                record = self.reader.get_record(task_ref)
+                task_records.append({
+                    "local_id": str(local_id),
+                    "ref": _json_value(task_ref),
+                    "record": None if record is None else _record_dict(record),
+                })
+        receipt = getattr(batch, "receipt", None)
+        if receipt is None and isinstance(batch, Mapping):
+            receipt = batch.get("receipt")
+        receipt = receipt or self._receipt(request_id)
+        project_receipt = self.reader.get_receipt(request_id + "-project")
+        event_ids = self._events_for(receipt) + [event_id for event_id in self._events_for(project_receipt) if event_id not in self._events_for(receipt)]
+        return {
+            "outcome": "replayed" if prior is not None else "created",
+            "project_ref": _json_value(returned_project_ref),
+            "record": None if fresh is None else _record_dict(fresh),
+            "template": _json_value(template),
+            "template_ref": _json_value(template.ref),
+            "template_revision": template.revision,
+            "tasks": task_records,
+            "task_refs": [_json_value(item["ref"]) for item in task_records],
+            "receipt": _receipt_dict(receipt),
+            "project_receipt": _receipt_dict(project_receipt),
+            "replayed": prior is not None,
+            "event_ids": event_ids,
+            "executable": False,
+            "activation": False,
+            "dispatch": False,
+            "budget_reserved": False,
+            "task_created": False,
+            "session_created": False,
         }
 
     @staticmethod
