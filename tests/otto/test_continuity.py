@@ -139,6 +139,221 @@ def test_real_installed_shared_attention_survives_reopen(tmp_path):
     reopened.close()
 
 
+def test_real_store_due_record_binding_replays_cas_and_reopens(tmp_path):
+    """A trusted durable host persists the complete record through Store."""
+
+    from herzchen.content import ContentCommandHandler, ContentDocument, ContentRevision
+    from herzchen.content.model import domain_contribution as content_contribution
+    from herzchen.content.packets import ContextPacketService, domain_contribution as packet_contribution
+    from herzchen.contracts import AuthenticatedActor, ResourceRef, TransactionContext
+    from herzchen.kernel import Store
+    from otto.attention import (
+        DueRecord, DurableAttention, InputChangedError, SerializedAttentionPort,
+        StateConflictError, StoreDueRecordPort, due_record_contribution,
+    )
+
+    authority = "ott04-durable-host"
+    path = tmp_path / "durable-due.sqlite"
+    store = Store.create(path, authority=authority)
+    due_domain = due_record_contribution()
+    handler = store.register_domain_handler((content_contribution(), packet_contribution(), due_domain))
+    actor = AuthenticatedActor(authority, "manager", "credential-manager")
+    content = ContentCommandHandler(store)
+    subject = ContentDocument(ResourceRef(authority, "document", "subject"), "brief", "public", "read", "manager")
+    revision = ContentRevision(subject.ref, "rev-1", {"title": "durable attention subject"}, actor, initial=True)
+    content.execute(content.build_create_document(TransactionContext(actor, "setup-durable", hashlib.sha256(b"setup-durable").hexdigest()), subject, revision))
+    packets = ContextPacketService(store)
+
+    def create_attention(request):
+        request = dict(request)
+        tx = TransactionContext(actor, request["request_id"], hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest())
+        notice = packets.notify_amendment(subject.ref, revision.ref, (request["recipient"],), tx, reason=request["instruction"])[0]
+        return {"outcome": "created", "receipt": _json_value(notice["receipt"]), "event_ids": list(_json_value(notice["receipt"]).get("event_ids", ()))}
+
+    shared = SerializedAttentionPort(create_attention, lambda recipient: [_json_value(item) for item in packets.list_attention(recipient)])
+    clock = _Clock(datetime(2026, 9, 14, 9, tzinfo=timezone.utc))
+    port = StoreDueRecordPort(handler, actor)
+    scheduler = DurableAttention(shared, due_port=port, clock=clock, host_mode="durable-host")
+    record = DueRecord(
+        schedule_id="real-due", recipient="owner-1", instruction="inspect durable state", profile="normal",
+        anchor="2026-09-14T00:00:00Z", interval_seconds=3 * 60 * 60, last_covered_slot=0,
+        invocation_identity="invocation-real-durable", owner="owner-1",
+        return_condition="owner-1 returns the same recorded request receipt",
+    )
+
+    before_events = len(store.list_events())
+    scheduled = scheduler.schedule(record, request_id="schedule-real-durable")
+    after_schedule_events = len(store.list_events())
+    assert scheduled["outcome"] == "scheduled"
+    assert scheduled["capability"] == {"mode": "durable-host", "available": True, "durable": True, "owner": "trusted-host", "automatic_action": False}
+    assert after_schedule_events == before_events + 1
+    schedule_receipt = store.get_receipt("schedule-real-durable")
+    assert schedule_receipt is not None and schedule_receipt.event_ids
+
+    # Exercise the public mutation's exact replay and changed-input rejection
+    # directly; the scheduler's idempotent schedule path is a separate proof.
+    direct = port.save_due("real-due", record.to_dict(), request_id="schedule-real-durable", expected_version=0)
+    assert direct["version"] == scheduled["record"]["version"]
+    assert len(store.list_events()) == after_schedule_events
+    changed = record.to_dict()
+    changed["instruction"] = "changed input must reject"
+    with pytest.raises(InputChangedError):
+        port.save_due("real-due", changed, request_id="schedule-real-durable", expected_version=0)
+    assert len(store.list_events()) == after_schedule_events
+    with pytest.raises(StateConflictError):
+        port.save_due("real-due", record.to_dict(), request_id="stale-cas", expected_version=0)
+    assert len(store.list_events()) == after_schedule_events
+
+    decision = scheduler.record_decision("real-due", decision_id="manager-wait", decision="wait", request_id="decision-real")
+    assert decision["manager_created"] is False and decision["dispatch"] is False
+    ready = scheduler.check("real-due")
+    assert ready["outcome"] == "attention-ready"
+    assert ready["missed_slots"] == 2
+    request_id = ready["request_id"]
+    assert ready["notification"]["event_ids"]
+    persisted_before_restart = port.read_due("real-due")
+    assert persisted_before_restart["anchor"] == record.anchor
+    assert persisted_before_restart["invocation_identity"] == record.invocation_identity
+    assert persisted_before_restart["outstanding_decisions"] == [{"decision": "wait", "decision_id": "manager-wait", "recorded": True}]
+    assert persisted_before_restart["in_flight_request"] == request_id
+
+    domains = store.registered_domains()
+    events_before_restart = [_json_value(item) for item in store.list_events()]
+    store.close()
+    reopened = Store.open(path, authority=authority, expected_domains=domains)
+    reopened_handler = reopened.domain_handler((due_domain,))
+    reopened_port = StoreDueRecordPort(reopened_handler, actor)
+    reopened_scheduler = DurableAttention(shared, due_port=reopened_port, clock=clock, host_mode="durable-host")
+    resumed = reopened_scheduler.resume("real-due")
+    assert resumed["outcome"] == "resume-same-request"
+    assert resumed["request_id"] == request_id
+    reopened_record = reopened_port.read_due("real-due")
+    assert reopened_record["anchor"] == record.anchor
+    assert reopened_record["invocation_identity"] == record.invocation_identity
+    assert reopened_record["outstanding_decisions"] == persisted_before_restart["outstanding_decisions"]
+    assert reopened_record["in_flight_request"] == request_id
+    assert [_json_value(item) for item in reopened.list_events()] == events_before_restart
+    returned = reopened_scheduler.complete("real-due", request_id, receipt=ready["notification"]["receipt"])
+    assert returned["outcome"] == "returned"
+    assert reopened_scheduler.complete("real-due", request_id)["outcome"] == "replayed"
+    reopened.close()
+
+
+def test_real_public_amendment_composes_plan_attention_and_assignment_views(tmp_path):
+    """A manager decision propagates through accepted public Herzchen APIs."""
+
+    from herzchen.content import ContentCommandHandler, ContentDocument, ContentRevision
+    from herzchen.content.model import domain_contribution as content_contribution
+    from herzchen.content.packets import ContextPacketService, domain_contribution as packet_contribution
+    from herzchen.contracts import AuthenticatedActor, ResourceRef, TransactionContext
+    from herzchen.domains.work import WorkGraph
+    from herzchen.domains.work.assignments import ResponsibilityAssignments
+    from herzchen.domains.work.sheet import ProjectSheet
+    from herzchen.kernel import Store
+    from otto.attention import ImprovementPropagation, SerializedAmendmentPort
+
+    authority = "ott04-real-amendment"
+    path = tmp_path / "real-amendment.sqlite"
+    store = Store.create(path, authority=authority)
+    actor = AuthenticatedActor(authority, "manager", "credential-manager")
+    store.register_domain_handler((content_contribution(), packet_contribution()))
+    graph = WorkGraph(store, actor=actor)
+    graph.register()
+    project = graph.create_project(
+        title="continuity plan", metadata={"ott04_usage_budget": {"spent": 3, "limit": 10}},
+        logical_request_key="project-amendment",
+    )
+    task = graph.create_task(project, title="inspect source", logical_request_key="task-amendment")
+    assignments = ResponsibilityAssignments(store, actor=actor)
+    assignment = assignments.assign(
+        task, role="execution", principal="owner-1", agent="agent-1", session="session-1",
+        pins=(task.ref,), logical_request_key="assignment-amendment",
+    )
+    sheet = ProjectSheet(store, actor=actor)
+    content = ContentCommandHandler(store)
+    subject = ContentDocument(ResourceRef(authority, "document", "amendment-subject"), "brief", "public", "read", "owner-1")
+    revision = ContentRevision(subject.ref, "rev-1", {"title": "amendment subject"}, actor, initial=True)
+    content.execute(content.build_create_document(TransactionContext(actor, "setup-amendment", hashlib.sha256(b"setup-amendment").hexdigest()), subject, revision))
+    packets = ContextPacketService(store)
+
+    def views():
+        fresh_project = graph.get(project.ref)
+        fresh_assignment = assignments.get(assignment.ref)
+        fresh_sheet = sheet.export(fresh_project, task_refs=[task.ref])
+        authored_task = fresh_sheet.tasks[0]["authored"]
+        usage_budget = fresh_project.payload.get("metadata", {}).get("ott04_usage_budget", {})
+        return _json_value({
+            "plan": {"task": authored_task.get("body")},
+            "next_dispatch": fresh_project.payload.get("last_batch", {}).get("manager_action"),
+            "attention": packets.list_attention("owner-1"),
+            "assignment": {
+                "route_binding": fresh_assignment.payload.get("route_binding"),
+                "principal": fresh_assignment.principal,
+                "agent": fresh_assignment.agent,
+                "session": fresh_assignment.session,
+            },
+            "current_owner": fresh_assignment.principal,
+            "usage": {"budget": fresh_project.payload.get("budget"), "spent": usage_budget.get("spent"), "limit": usage_budget.get("limit")},
+            "running_input_pins": [pin.to_dict() for pin in fresh_assignment.pins],
+        })
+
+    def apply_real(request):
+        amendment = request["amendment"]
+        plan_result = sheet.apply(
+            project, {"tasks": [{"id": task.id, "body": {"instructions": amendment["instruction"]}}]},
+            logical_request_key=request["request_id"] + ":plan", next_action=amendment["next_dispatch"], actor=actor,
+        )
+        route_result = sheet.pin_assignment_route(
+            assignment, {"name": amendment["route"], "reason": "manager-selected amendment"},
+            logical_request_key=request["request_id"] + ":route", actor=actor,
+        )
+        attention_context = TransactionContext(
+            actor, request["request_id"] + ":attention",
+            hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest(),
+        )
+        notices = packets.notify_amendment(
+            subject.ref, revision.ref, ("owner-1",), attention_context,
+            reason="manager-selected amendment: " + amendment["instruction"],
+        )
+        return {
+            "event_ids": [event_id for event_id in list(_json_value(plan_result.receipt).get("event_ids", ())) + list(_json_value(route_result.receipt).get("event_ids", ())) + [event_id for notice in notices for event_id in _json_value(notice["receipt"]).get("event_ids", ())]],
+            "receipts": {
+                "plan": _json_value(plan_result.receipt),
+                "assignment": _json_value(route_result.receipt),
+                "attention": [_json_value(notice["receipt"]) for notice in notices],
+            },
+            "incomplete": False,
+            "automatic_action": False,
+            "dispatch": False,
+        }
+
+    # The adapter exposes only finite request/response JSON to the consumer;
+    # the closures remain on the trusted host side and hold the public APIs.
+    amendment = SerializedAmendmentPort(apply_real)
+    propagation = ImprovementPropagation(amendment, views)
+    handled = propagation.handle_review("review-real-1", recipient="owner-1", return_condition="manager selects an amendment")
+    assert handled["implemented_improvement"] is False
+    before_events = len(store.list_events())
+    implemented = propagation.apply(
+        "review-real-1", decision_id="manager-decision-real-1",
+        amendment={"instruction": "inspect the amended source", "next_dispatch": "owner-review", "route": "owner-review-route"},
+        request_id="amendment-real-1",
+    )
+    assert implemented["outcome"] == "improvement-implemented", implemented
+    assert implemented["implemented_improvement"] is True
+    assert all(implemented["required_changes"].values())
+    assert all(implemented["preserved"].values())
+    assert implemented["preserved"]["current_owner"] is True
+    assert implemented["preserved"]["running_input_pins"] is True
+    assert implemented["response"]["event_ids"]
+    assert len(store.list_events()) > before_events
+    assert not any(event.event_type == "work.assignment.dispatched" for event in store.list_events())
+    assert implemented["fresh_after"]["next_dispatch"] == "owner-review"
+    assert implemented["fresh_after"]["assignment"]["route_binding"]["name"] == "owner-review-route"
+    assert implemented["fresh_after"]["attention"][0]["state"] == "open"
+    store.close()
+
+
 class _Clock:
     def __init__(self, value: datetime):
         self.value = value

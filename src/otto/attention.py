@@ -240,6 +240,146 @@ class InMemoryDueRecordPort:
         return _json_copy(value, "record")
 
 
+def due_record_contribution() -> Any:
+    """Return the public Herzchen domain declaration for the owner adapter.
+
+    The import is intentionally lazy: the Otto state machine remains usable
+    with the fixture port when no Herzchen wheel is installed.  A durable host
+    composes this declaration with ``Store.register_domain_handler`` and keeps
+    the resulting handler on the owner side of the finite DueRecordPort.
+    """
+
+    from herzchen.contracts import DomainContribution
+
+    schema = "otto.due-record.v1"
+    operation = "otto.due-record.save"
+    kind = "otto.due-record"
+    event = "otto.due-record.changed"
+    return DomainContribution(
+        "otto.attention", "1.0", "otto", (kind,), (), ("otto.attention",),
+        (operation,), (event,), schema,
+        (
+            "fnd-03.identities", "fnd-03.record_references", "fnd-03.transaction",
+            "handler-required",
+            f"mutation-port:{schema}|{operation}|{kind}|{event}",
+        ),
+    )
+
+
+class StoreDueRecordPort:
+    """Owner-side DueRecordPort backed by Herzchen's public mutation API.
+
+    Only a trusted host constructs this adapter with the exact domain handler
+    issued by ``Store.register_domain_handler``.  Otto receives the finite
+    ``DueRecordPort`` shape, never the handler, Store, connection, path, or a
+    generic writer.  The due record itself is the public mutation payload, so
+    Store persists the complete JSON record and emits its receipt/event in the
+    same transaction.
+    """
+
+    __slots__ = ("_writer", "_actor")
+
+    def __init__(self, writer: Any, actor: Any) -> None:
+        if not hasattr(writer, "mutate") or not hasattr(writer, "get_identity"):
+            raise TypeError("writer must be an issued Herzchen domain handler")
+        self._writer = writer
+        self._actor = actor
+
+    @staticmethod
+    def _ref(authority: str, schedule_id: str, revision: Optional[str] = None) -> Any:
+        from herzchen.contracts import ResourceRef
+
+        return ResourceRef(authority, "otto.due-record", schedule_id, revision)
+
+    def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
+        _required_text(schedule_id, "schedule_id")
+        identity = self._writer.get_identity(self._ref(self._writer.authority, schedule_id))
+        if identity is None:
+            return None
+        value = _json_copy(identity.payload, "due record")
+        value["version"] = int(identity.version)
+        return value
+
+    def save_due(
+        self,
+        schedule_id: str,
+        record: Mapping[str, JSONValue],
+        *,
+        request_id: str,
+        expected_version: int,
+    ) -> Mapping[str, JSONValue]:
+        from herzchen.contracts import AuthenticatedActor, CommandEnvelope, TransactionContext
+
+        _required_text(schedule_id, "schedule_id")
+        _required_text(request_id, "request_id")
+        if not isinstance(expected_version, int) or isinstance(expected_version, bool) or expected_version < 0:
+            raise ValueError("expected_version must be a non-negative integer")
+        value = dict(_json_copy(record, "record"))
+        if value.get("schedule_id") != schedule_id:
+            raise InputChangedError("schedule_id does not match the durable record")
+        current_ref = self._ref(self._writer.authority, schedule_id)
+        current = self._writer.get_identity(current_ref)
+        prior = self._writer.get_receipt(request_id)
+        if prior is None:
+            observed = 0 if current is None else int(current.version)
+            if observed != expected_version:
+                raise StateConflictError(f"expected durable version {expected_version}, observed {observed}")
+        if prior is not None:
+            # Store replay identity includes the original unpinned target and
+            # request payload.  Reconstruct those exact values before asking
+            # the public mutation API to replay; otherwise a later revision
+            # would be mistaken for changed input.
+            target = prior.target
+            result_revision = None if prior.result_ref is None else prior.result_ref.revision
+            try:
+                next_version = int(str(result_revision).removeprefix("rev-"))
+            except (TypeError, ValueError):
+                next_version = 1 if current is None else int(current.version)
+            replay_expected_version = max(0, next_version - 1)
+            replay_expected_revision = target.revision
+        else:
+            target = current_ref if current is None else current.ref
+            next_version = (0 if current is None else int(current.version)) + 1
+            replay_expected_version = expected_version
+            replay_expected_revision = None if current is None else current.ref.revision
+        value["version"] = next_version
+        actor = self._actor
+        if not isinstance(actor, AuthenticatedActor):
+            raise TypeError("actor must be an FND AuthenticatedActor")
+        digest = _digest({"request_id": request_id, "record": value})
+        context = TransactionContext(
+            actor, request_id, digest,
+            expected_revision=replay_expected_revision,
+            expected_version=replay_expected_version,
+        )
+        envelope = CommandEnvelope(
+            "otto.due-record.save", "otto.due-record.v1", target, context, value,
+        )
+        try:
+            self._writer.mutate(
+                envelope,
+                event_type="otto.due-record.changed",
+                result_ref=self._ref(self._writer.authority, schedule_id, f"rev-{next_version}"),
+                before_refs=() if current is None else (current.ref,),
+                after_refs=(self._ref(self._writer.authority, schedule_id, f"rev-{next_version}"),),
+                effects={"schedule_id": schedule_id, "version": next_version, "record": value},
+                stream="otto.due-record:" + schedule_id,
+            )
+        except Exception as exc:
+            name = type(exc).__name__
+            if name == "ReplayConflictError":
+                raise InputChangedError("request id was reused with changed durable input") from exc
+            if name in {"VersionConflictError", "TargetMismatchError"}:
+                raise StateConflictError(str(exc)) from exc
+            raise
+        fresh = self._writer.get_identity(current_ref)
+        if fresh is None:
+            raise StateConflictError("durable mutation returned without a due-record identity")
+        result = dict(_json_copy(fresh.payload, "due record"))
+        result["version"] = int(fresh.version)
+        return result
+
+
 class SerializedAttentionPort:
     """Adapt trusted public Herzchen methods without exposing their owner."""
 
@@ -252,6 +392,16 @@ class SerializedAttentionPort:
 
     def list_attention(self, recipient: Optional[str] = None) -> Sequence[Mapping[str, JSONValue]]:
         return tuple(dict(_json_copy(item, "attention item")) for item in self._read(recipient))
+
+
+class SerializedAmendmentPort:
+    """Finite JSON adapter for a trusted host's public amendment composition."""
+
+    def __init__(self, apply: Callable[[Mapping[str, JSONValue]], Mapping[str, JSONValue]]) -> None:
+        self._apply = apply
+
+    def apply_amendment(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
+        return dict(_json_copy(self._apply(_json_copy(request, "amendment request")), "amendment response"))
 
 
 class RecordingAttentionPort:
@@ -556,5 +706,6 @@ DurableAttentionService = DurableAttention
 __all__ = [
     "AmendmentPort", "AttentionError", "AttentionScheduler", "CursorContinuity", "CursorContinuityError", "DueRecord", "DueRecordPort",
     "DurableAttention", "DurableAttentionService", "EventCursorReaderAdapter", "HostUnavailableError", "InMemoryDueRecordPort",
-    "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
+    "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "SerializedAmendmentPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
+    "StoreDueRecordPort", "due_record_contribution",
 ]
