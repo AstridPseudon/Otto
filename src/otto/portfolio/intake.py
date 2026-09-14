@@ -208,7 +208,7 @@ class OttoPortfolio:
                 "satisfied_prerequisite": "record attention/readiness only for a dependency change",
                 "admit": "manager decision: admit, investigate, merge, park, or drop",
                 "assign_roles": "bind one parent, one accountable manager, and bounded executor(s)",
-                "handoff": "fence replacement and preserve identity, evidence, consumption, and parent obligation",
+                "handoff": "fence a returned manager assignment reference and preserve identity, evidence, consumption, and parent obligation",
             },
             "invariants": [
                 "pending creation does not create a manager, tasklist, allowance, session, or accepted result",
@@ -431,6 +431,7 @@ class OttoPortfolio:
         parent_obligation: Any,
         actor: str,
         request_id: str,
+        manager_assignment_ref: Any = None,
     ) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         from_manager, to_manager = _text(from_manager, "from_manager"), _text(to_manager, "to_manager")
@@ -449,6 +450,13 @@ class OttoPortfolio:
             "parent_obligation": _ref(parent_obligation, "parent_obligation"),
             "safe_handoff": True,
         }
+        if manager_assignment_ref is not None:
+            if not isinstance(manager_assignment_ref, Mapping):
+                raise PortfolioError("manager_assignment_ref must be the typed reference returned by assign_roles")
+            assignment_ref = _ref(manager_assignment_ref, "manager_assignment_ref")
+            if assignment_ref.get("kind") != "wrk.assignment" or not isinstance(assignment_ref.get("authority"), str) or not assignment_ref["authority"].strip():
+                raise PortfolioError("manager_assignment_ref.kind must be wrk.assignment")
+            payload["manager_assignment_ref"] = assignment_ref
         return self._execute("work.responsibility.handoff", payload, request_id=request_id, actor=actor)
 
 

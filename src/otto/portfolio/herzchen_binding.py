@@ -7,8 +7,10 @@ storage nor a second command/event implementation.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from typing import Any, Mapping, Optional
 
 
@@ -142,6 +144,8 @@ class FiniteWorkOperations:
             return self._admit(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.assign":
             return self._assign_roles(payload, request_id=request_id, actor=actor)
+        if operation == "work.responsibility.handoff":
+            return self._handoff(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.document.create":
             return self._create_document(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.document.link":
@@ -182,6 +186,18 @@ class FiniteWorkOperations:
         from herzchen.contracts import ResourceRef
 
         return ResourceRef.from_dict(value) if isinstance(value, Mapping) else value
+
+    @staticmethod
+    def _same_identity(left: Any, right: Any) -> bool:
+        return (
+            getattr(left, "authority", None),
+            getattr(left, "kind", None),
+            getattr(left, "id", None),
+        ) == (
+            getattr(right, "authority", None),
+            getattr(right, "kind", None),
+            getattr(right, "id", None),
+        )
 
     def _receipt(self, request_id: str) -> Any:
         return self.reader.get_receipt(request_id)
@@ -368,7 +384,155 @@ class FiniteWorkOperations:
                 event_ids.extend(self._events_for(receipt))
                 if role == "parent":
                     parent_receipt = receipt
-        return {"outcome": "assigned", "project_ref": _json_value(ref), "roles": assignments, "parent_receipt": _receipt_dict(parent_receipt), "event_ids": event_ids, "replayed": all(item["replayed"] for item in assignments.values()) if assignments else False, "executable": False}
+        manager_assignment_ref = next(
+            (item["ref"] for item in assignments.values() if item["role"] == "manager"),
+            None,
+        )
+        return {"outcome": "assigned", "project_ref": _json_value(ref), "roles": assignments, "manager_assignment_ref": manager_assignment_ref, "parent_receipt": _receipt_dict(parent_receipt), "event_ids": event_ids, "replayed": all(item["replayed"] for item in assignments.values()) if assignments else False, "executable": False}
+
+    @staticmethod
+    def _assignment_dict(assignment: Any) -> dict[str, Any]:
+        """Return only the declared assignment value, including durable history."""
+
+        payload = _json_value(getattr(assignment, "payload", {}))
+        return {
+            "ref": _json_value(getattr(assignment, "ref", None)),
+            "assignment_ref": _json_value(getattr(assignment, "assignment_ref", getattr(assignment, "ref", None))),
+            "scope": _json_value(getattr(assignment, "scope", None)),
+            "role": getattr(assignment, "role", None),
+            "principal": _json_value(getattr(assignment, "principal", None)),
+            # The accepted reassignment operation changes the typed principal;
+            # retain the raw payload as well because its manager attribution is
+            # historical metadata owned by Herzchen.
+            "manager": _json_value(getattr(assignment, "principal", payload.get("manager") if isinstance(payload, Mapping) else None)),
+            "stored_manager": payload.get("manager") if isinstance(payload, Mapping) else None,
+            "generation": getattr(assignment, "generation", None),
+            "status": _json_value(getattr(assignment, "status", None)),
+            "history": _json_value(getattr(assignment, "history", ())),
+            "payload": payload,
+        }
+
+    @staticmethod
+    def _handoff_context_token(context: Mapping[str, Any]) -> str:
+        """Encode typed context in the accepted assignment history reason field."""
+
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(dict(context), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        return "otto-handoff-context-" + encoded
+
+    @staticmethod
+    def _handoff_context_from_assignment(assignment: Any) -> Optional[dict[str, Any]]:
+        history = getattr(assignment, "history", ())
+        if not history:
+            return None
+        reason = history[-1].get("reason") if isinstance(history[-1], Mapping) else None
+        prefix = "otto-handoff-context-"
+        if not isinstance(reason, str) or not reason.startswith(prefix):
+            return None
+        value = reason[len(prefix):]
+        try:
+            padded = value + "=" * (-len(value) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+        return dict(decoded) if isinstance(decoded, Mapping) else None
+
+    def _handoff(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self.assignments_port is None:
+            return self._unsupported("work.responsibility.handoff", request_id=request_id, code="canonical_assignments_port_unavailable", message="accepted ResponsibilityAssignments command port was not injected")
+        assignment_value = payload.get("manager_assignment_ref")
+        if not isinstance(assignment_value, Mapping):
+            return {
+                "outcome": "error",
+                "error": {"code": "manager_assignment_ref_required", "message": "real handoff requires the typed manager assignment reference returned by assign_roles", "operation": "work.responsibility.handoff"},
+                "replayed": False,
+                "event_ids": [],
+                "executable": False,
+            }
+        from herzchen.contracts import ResourceRef
+
+        project_ref = self._record_ref(payload["project_ref"])
+        try:
+            assignment_ref = ResourceRef.from_dict(assignment_value)
+        except (TypeError, ValueError) as exc:
+            return {"outcome": "error", "error": {"code": "malformed_manager_assignment_ref", "message": str(exc), "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+        if assignment_ref.kind != "wrk.assignment":
+            return {"outcome": "error", "error": {"code": "invalid_manager_assignment_ref", "message": "manager_assignment_ref must name a wrk.assignment", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+        if assignment_ref.authority != self.binding.authority:
+            return {"outcome": "error", "error": {"code": "foreign_manager_assignment_ref", "message": "manager assignment belongs to another authority", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+
+        # The bounded lookup is the accepted public assignment API.  There is
+        # no manager-name inference, scope scan, private SQL, or side mirror.
+        try:
+            current = self.assignments_port.get(assignment_ref)
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": "unknown_manager_assignment_target", "message": str(exc), "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+        if getattr(current, "role", None) != "manager" or not self._same_identity(getattr(current, "scope", None), project_ref):
+            return {"outcome": "error", "error": {"code": "invalid_manager_assignment_target", "message": "assignment is not the current manager assignment for this project", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+        from_manager = payload["from_manager"]
+        current_principal = getattr(current, "principal", None)
+        current_payload = getattr(current, "payload", {})
+        current_manager = current_payload.get("manager") if isinstance(current_payload, Mapping) else None
+        prior = self._receipt(request_id)
+        stored_context = self._handoff_context_from_assignment(current) if prior is not None else None
+        if prior is None and (current_principal != from_manager or (current_manager is not None and current_manager != from_manager)):
+            return {"outcome": "error", "error": {"code": "stale_manager_assignment", "message": "from_manager does not match the current assignment principal/manager", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+
+        context = {
+            "kind": "otto.safe-responsibility-handoff",
+            "project_ref": _json_value(project_ref),
+            "manager_assignment_ref": _json_value(assignment_ref),
+            "from_manager": from_manager,
+            "to_manager": payload["to_manager"],
+            "evidence_refs": _json_value(payload["evidence_refs"]),
+            "consumption_refs": _json_value(payload["consumption_refs"]),
+            "parent_obligation": _json_value(payload["parent_obligation"]),
+            "from_generation": getattr(current, "generation", None),
+        }
+        if prior is not None:
+            if not isinstance(stored_context, Mapping):
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": "prior handoff receipt has no durable typed context", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+            for key in ("kind", "project_ref", "manager_assignment_ref", "from_manager", "to_manager", "evidence_refs", "consumption_refs", "parent_obligation"):
+                if stored_context.get(key) != context.get(key):
+                    return {"outcome": "error", "error": {"code": "replay_conflict", "message": "same handoff request key was reused with changed input", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+            if current_principal != stored_context.get("to_manager"):
+                return {"outcome": "error", "error": {"code": "stale_manager_assignment", "message": "durable handoff target no longer matches the original replacement", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+            context = dict(stored_context)
+        try:
+            replacement = self.assignments_port.reassign(
+                assignment_ref,
+                principal=context["to_manager"],
+                reason=self._handoff_context_token(context),
+                expected_generation=context["from_generation"],
+                logical_request_key=request_id,
+                actor=self._actor(actor),
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+            if type(exc).__name__ in {"StaleAssignmentError", "WorkNotFoundError"}:
+                return {"outcome": "error", "error": {"code": "stale_or_unknown_manager_assignment", "message": str(exc), "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
+            raise
+        receipt = self._receipt(request_id)
+        observed_context = self._handoff_context_from_assignment(replacement) or context
+        return {
+            "outcome": "replayed" if prior is not None else "handed-off",
+            "safe_handoff": True,
+            "project_ref": _json_value(project_ref),
+            "manager_assignment_ref": _json_value(getattr(replacement, "ref", assignment_ref)),
+            "assignment": self._assignment_dict(replacement),
+            "handoff": observed_context,
+            "receipt": _receipt_dict(receipt),
+            "replayed": prior is not None,
+            "event_ids": self._events_for(receipt),
+            "executable": False,
+            "activation": False,
+            "dispatch": False,
+            "budget_reserved": False,
+            "task_created": False,
+            "session_created": False,
+        }
 
     def _content_context(self, operation: str, target: Any, request_id: str, actor: Any, payload: Mapping[str, Any], schema_revision: str) -> Any:
         from herzchen.contracts import TransactionContext, canonical_request_digest
