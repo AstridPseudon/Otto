@@ -1,0 +1,43 @@
+{
+  "task": "OTT-04",
+  "status": "bounded-incomplete",
+  "route": {"model": "gpt-5.6-luna", "reasoning_effort": "high", "review": false, "ast": false},
+  "source": {
+    "launch_commit": "a5b9c5fad33f52bcd7f155cf84571c1c1a221953",
+    "launch_tree": "14dc21521d3221d6ef8c6151848be8de9f83154b",
+    "manifest_base_commit": "1abfa7ffcebf6bc356545167c7dd8dade86b042b",
+    "manifest_base_tree": "7dc5499e3f1577695019a18dfd793bef0f43233d",
+    "otto_custody_ancestor": "0806be099eecdc9b861677ef7e71f7b54d2789a6",
+    "otto_custody_tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec",
+    "product_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+    "product_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+    "herzchen_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "herzchen_tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
+    "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726",
+    "herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+    "otto_wheel_sha256": "dc9f51338119bd4ff91caef1f535b0f5a4145177cdefcbced94d4100eb6a5a87",
+    "owned_sha256": {
+      "src/otto/attention.py": "e5ef398185242a833f4f2a5d5d66648f86828a815f8015a2fe7993268c5c0c8d",
+      "tests/otto/test_continuity.py": "836892f96b5ce72e12911282b44e47fca8514d6c0544ae785d9ebdeadabfbe13"
+    }
+  },
+  "process_receipts": {
+    "aborted_stale_launch": "work/ott-04-preflight-aborted-20260914/launch-receipt.json",
+    "corrected_launch": "work/ott-04-launch-corrected-20260914/launch-receipt.json",
+    "installed_campaign_pid": 70056,
+    "source_campaign_pid": 70061
+  },
+  "commands": {
+    "source": "PYTHONPATH=src <venv>/bin/python -c 'import herzchen, otto, pytest; pytest.main([\"-q\", \"tests/otto\"])'",
+    "installed": "env -u PYTHONPATH -u PYTHONHOME <venv>/bin/python -c 'import herzchen, otto, pytest; pytest.main([\"-q\", \"tests/otto\"])'",
+    "real_observation": "env -u PYTHONPATH -u PYTHONHOME <venv>/bin/python work/ott-04-real-milestone-20260914/representative_observation.py"
+  },
+  "results": {"source_tests": 53, "source_return_code": 0, "installed_tests": 53, "installed_return_code": 0, "focused_tests": 6, "focused_return_code": 0},
+  "product_proof": "representative-observation-final-v2.json",
+  "fixture_proof": ["durable intervals", "restart/coalescing", "unknown launch", "no-auto-action", "amendment propagation", "non-normal cursor recovery"],
+  "unresolved": [
+    "No accepted finite Herzchen endpoint persists the complete Otto due record for durable-host mode.",
+    "No accepted plan/next-dispatch/current-assignment amendment endpoint was supplied for real propagation proof.",
+    "No real agent host launch or OTT-06 rehearsal was performed."
+  ]
+}

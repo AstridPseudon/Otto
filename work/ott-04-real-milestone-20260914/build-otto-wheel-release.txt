@@ -1,0 +1,9 @@
+Processing /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker
+    Preparing wheel metadata: started
+    Preparing wheel metadata: finished with status 'done'
+Building wheels for collected packages: otto-local-candidate
+  Building wheel for otto-local-candidate (PEP 517): started
+  Building wheel for otto-local-candidate (PEP 517): finished with status 'done'
+  Created wheel for otto-local-candidate: filename=otto_local_candidate-0.0.0-py3-none-any.whl size=31055 sha256=dc9f51338119bd4ff91caef1f535b0f5a4145177cdefcbced94d4100eb6a5a87
+  Stored in directory: /Users/hannahomalley/Library/Caches/pip/wheels/3e/f0/fd/3c6c379351b2c3178206b6047010966540a823039ddbb6a5a3
+Successfully built otto-local-candidate

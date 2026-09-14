@@ -1,0 +1,10 @@
+process_pid 70061
+python /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/bin/python
+herzchen_origin /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/__init__.py
+otto_origin /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/src/otto/__init__.py
+attention_origin /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/src/otto/attention.py
+PYTHONPATH 'src'
+PYTHONHOME None
+.....................................................                    [100%]
+53 passed in 0.75s
+source_return_code=0
