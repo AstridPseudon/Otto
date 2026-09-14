@@ -32,17 +32,17 @@
     "catalog_sha256": "075f0301129f57e46003d518372747df4a68e6e086e5a63a1200ae333b53b013",
     "extraction_map_sha256": "bea51be5e6721e20a21e6befc0cd75dd340af103f722f0d154a671721520e413"
   },
-  "corrected_source_commit": {"commit": "fcd24c187b9cc45a77f19041f5b211f0713e9f36", "tree": "65b723091b64ec53d7b82350dcfa0e2e284bc63d"},
-  "candidate_otto_wheel": {"path": "work/ott-05-shared-dist-20260914-final/otto_local_candidate-0.0.0-py3-none-any.whl", "sha256": "27961fe2a36dc248b5c91b96e5d1356c19de46ff61a313e9688c1b30a77652f0"},
+  "corrected_source_commit": {"commit": "26aa4f3151694a06a9b713e439e873065f4d718a", "tree": "81e3b39602c7764eaea405f663c3ed4db1e56f28"},
+  "candidate_otto_wheel": {"path": "work/ott-05-shared-dist-20260914-final2/otto_local_candidate-0.0.0-py3-none-any.whl", "sha256": "87605a1395d891979d99a0ac20fd4657f7cbb77feddb7142755bb72529eba01"},
   "fresh_environments": {
     "source": {"venv": "work/ott-05-shared-source-venv-20260914", "command": "env -u PYTHONHOME PYTHONPATH=src work/ott-05-shared-source-venv-20260914/bin/python - <<'PY' ... focused tests ... PY", "return_code": 0, "tests": 3, "otto_origin": "src/otto/__init__.py", "herzchen_origin": "work/ott-05-shared-source-venv-20260914/lib/python3.9/site-packages/herzchen/__init__.py"},
-    "installed": {"venv": "work/ott-05-shared-installed-venv-20260914", "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914/bin/python - <<'PY' ... focused tests ... PY", "return_code": 0, "tests": 3, "otto_origin": "work/ott-05-shared-installed-venv-20260914/lib/python3.9/site-packages/otto/__init__.py", "herzchen_origin": "work/ott-05-shared-installed-venv-20260914/lib/python3.9/site-packages/herzchen/__init__.py", "pythonpath": null, "pythonhome": null},
-    "representative": {"script": "work/ott-05-shared-representative-installed-20260914.py", "script_sha256": "ef28781f64d0fd269c4b84ac9bc77b004143d30c0964d0d247fd0be407d3e570", "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914/bin/python work/ott-05-shared-representative-installed-20260914.py", "return_code": 0, "pythonpath": null, "pythonhome": null}
+    "installed": {"venv": "work/ott-05-shared-installed-venv-20260914-final", "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914-final/bin/python - <<'PY' ... focused tests ... PY", "return_code": 0, "tests": 3, "otto_origin": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/otto/__init__.py", "herzchen_origin": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/herzchen/__init__.py", "pythonpath": null, "pythonhome": null},
+    "representative": {"script": "work/ott-05-shared-representative-installed-20260914.py", "script_sha256": "ef28781f64d0fd269c4b84ac9bc77b004143d30c0964d0d247fd0be407d3e570", "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914-final/bin/python work/ott-05-shared-representative-installed-20260914.py", "return_code": 0, "pythonpath": null, "pythonhome": null}
   },
   "representative_observations": {
     "source_set_digest": "81813ff9ec97fa0d0c1f8ce6c18c0c2a6a26482197b5a1795938b8c2d7c16f6d",
-    "origins": {"otto": "work/ott-05-shared-installed-venv-20260914/lib/python3.9/site-packages/otto/__init__.py", "herzchen": "work/ott-05-shared-installed-venv-20260914/lib/python3.9/site-packages/herzchen/__init__.py"},
-    "repository_events": ["event-94a6a77c5283a53a54ff7633856de9ba", "event-3f7839b79c3c67f57d26a4c97024032b", "event-aa5de945a8a51af7e16be2ee7f98bf14", "event-1e4ab50fd6073a3f61fd5b55a8ceac30"],
+    "origins": {"otto": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/otto/__init__.py", "herzchen": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/herzchen/__init__.py"},
+    "repository_events": ["event-a2d8703258996817b240de826452a530", "event-5529a9ee9d8e790d27f3b7038d0cb7b8", "event-ebef9df2496b49f896e02bd3a383520e", "event-50e2a8aafe69d2004210cf703915fad4"],
     "actual_public_refs": {"candidate_kind": "wrk.candidate", "decision_kind": "wrk.decision", "candidate_revision": "rev-1", "decision_revision": "rev-1"},
     "close_reopen": {"same_typed_repository": true, "candidate_read": true, "decision_read": true, "repository_event_count_after_reopen": 4},
     "merge_observation": {"unknown_runner_status": "unknown", "target_head_unchanged": true, "observed_revision": "rev-6"},

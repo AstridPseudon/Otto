@@ -15,8 +15,8 @@ incomplete evidence, not an acceptance claim.
   events and JSON persistence, recreated Herzchen contracts, and imported no
   Herzchen public command/contribution. It is not used by the corrected tests
   or representative.
-- Corrected source: `fcd24c187b9cc45a77f19041f5b211f0713e9f36`, tree
-  `65b723091b64ec53d7b82350dcfa0e2e284bc63d`.
+- Corrected source: `26aa4f3151694a06a9b713e439e873065f4d718a`, tree
+  `81e3b39602c7764eaea405f663c3ed4db1e56f28`.
 - Separate evidence commit: the commit containing this supplement and
   `ott-05-shared-test-receipt-20260914.json` (reported separately with its
   final tree).
@@ -49,14 +49,14 @@ auto-publication, or deployment.
 The fresh installed representative command was:
 
 ```text
-env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914/bin/python work/ott-05-shared-representative-installed-20260914.py
+env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914-final/bin/python work/ott-05-shared-representative-installed-20260914.py
 ```
 
 Return code was 0. `otto` and `herzchen` both originated from the installed
 venv site-packages. The accepted Herzchen wheel hash was
 `2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc`; the
 candidate Otto wheel hash was
-`27961fe2a36dc248b5c91b96e5d1356c19de46ff61a313e9688c1b30a77652f0`.
+`87605a1395d891979d99a0ac20fd4657f7cbb77feddb7142755bb72529eba01`.
 Both `PYTHONPATH` and `PYTHONHOME` were absent.
 
 The path created and read an actual `wrk.candidate` and `wrk.decision`,
