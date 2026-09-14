@@ -99,7 +99,7 @@
               "revision": "attention-1"
             },
             "cause": "manager-selected amendment: updated",
-            "event_id": "event-4c34a757c7e88357c4ee3d1224a0c9bb",
+            "event_id": "event-ca1ce1f9e048fc276128e044422bf42b",
             "packet_refs": [],
             "recipient": "owner-1",
             "state": "open",
@@ -149,16 +149,16 @@
         "automatic_action": false,
         "dispatch": false,
         "event_ids": [
-          "event-099da6ea825d6a4970e1f0577439fe83",
-          "event-c03cd220df8a1943cb9019a87e5549e7",
-          "event-4c34a757c7e88357c4ee3d1224a0c9bb"
+          "event-a856cc0df3a0dbf62e60cd3c0e7c5dfb",
+          "event-53bf764ae1595d2f999b730d85849d27",
+          "event-ca1ce1f9e048fc276128e044422bf42b"
         ],
         "incomplete": false,
         "receipts": {
           "assignment": {
             "error_code": null,
             "event_ids": [
-              "event-c03cd220df8a1943cb9019a87e5549e7"
+              "event-53bf764ae1595d2f999b730d85849d27"
             ],
             "logical_request_key": "amendment:route",
             "observed_revision": "rev-2",
@@ -178,14 +178,14 @@
               "kind": "wrk.assignment",
               "revision": "rev-1"
             },
-            "transaction_id": "5f469fa141cf4603cb9885a08920521d",
+            "transaction_id": "31bcedd680a16308a68cea0ea2aa5ce1",
             "unknown_reason": null
           },
           "attention": [
             {
               "error_code": null,
               "event_ids": [
-                "event-4c34a757c7e88357c4ee3d1224a0c9bb"
+                "event-ca1ce1f9e048fc276128e044422bf42b"
               ],
               "logical_request_key": "amendment:attention:owner-1",
               "observed_revision": "attention-1",
@@ -205,14 +205,14 @@
                 "kind": "dat.context.attention",
                 "revision": null
               },
-              "transaction_id": "30617d409aca47c57c0d7aecd1dbd55e",
+              "transaction_id": "ad10d804519bf8168743a24eccbf7c31",
               "unknown_reason": null
             }
           ],
           "plan": {
             "error_code": null,
             "event_ids": [
-              "event-099da6ea825d6a4970e1f0577439fe83"
+              "event-a856cc0df3a0dbf62e60cd3c0e7c5dfb"
             ],
             "logical_request_key": "amendment:plan",
             "observed_revision": "rev-2",
@@ -232,7 +232,7 @@
               "kind": "work.project",
               "revision": "rev-1"
             },
-            "transaction_id": "148ae354505e40887044ad4dcf73c2cd",
+            "transaction_id": "2a2e686a0a4ac4d6e1036cbf246dacda",
             "unknown_reason": null
           }
         }
@@ -245,7 +245,7 @@
       "receipt": {
         "error_code": null,
         "event_ids": [
-          "event-71ee94f5e1f9ccf0719072a4d3d5df44"
+          "event-834643bb9d735c247624a246aea7e3a5"
         ],
         "logical_request_key": "request-A",
         "observed_revision": "rev-1",
@@ -265,7 +265,7 @@
           "kind": "otto.due-record",
           "revision": null
         },
-        "transaction_id": "35165ac120e8d827b228a562d25887f1",
+        "transaction_id": "62c9d6bca685f1419c81ea5a0a0af47d",
         "unknown_reason": null
       },
       "scheduled": {
@@ -392,7 +392,7 @@
         "missing_handoff": null,
         "mutation_receipt": {
           "event_ids": [
-            "event-c37cdb46cbb279ea2d1c9ff5d48312af"
+            "event-35c3a99104bf3d214580aa4ca6569fa1"
           ],
           "logical_request_key": "request-B",
           "replayed": false,
@@ -532,7 +532,7 @@
         "missing_handoff": null,
         "mutation_receipt": {
           "event_ids": [
-            "event-71ee94f5e1f9ccf0719072a4d3d5df44"
+            "event-834643bb9d735c247624a246aea7e3a5"
           ],
           "logical_request_key": "request-A",
           "replayed": true,
@@ -614,7 +614,7 @@
         "automatic_action": false,
         "delivery_state": "ready",
         "event_ids": [
-          "event-acd28eb548900143f9a11aa9d777850d"
+          "event-2db9412d841fb5342786a94a3369d16b"
         ],
         "expected_delta": {
           "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
@@ -709,13 +709,13 @@
         },
         "notification": {
           "event_ids": [
-            "event-acd28eb548900143f9a11aa9d777850d"
+            "event-2db9412d841fb5342786a94a3369d16b"
           ],
           "outcome": "created",
           "receipt": {
             "error_code": null,
             "event_ids": [
-              "event-acd28eb548900143f9a11aa9d777850d"
+              "event-2db9412d841fb5342786a94a3369d16b"
             ],
             "logical_request_key": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a:owner-1",
             "observed_revision": "attention-1",
@@ -735,7 +735,7 @@
               "kind": "dat.context.attention",
               "revision": null
             },
-            "transaction_id": "96dc64c80e7e3329460ae48f39aad712",
+            "transaction_id": "2b4d2580d8a4b6e37f351671b19abea8",
             "unknown_reason": null
           }
         },
