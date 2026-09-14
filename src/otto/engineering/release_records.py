@@ -245,8 +245,8 @@ class _OwnerService:
         return RepositoryRecord(identity.ref, identity.version, identity.edit_token, identity.payload)
 
 
-class ReleaseOperations:
-    """Finite Otto consumer boundary backed by a trusted owner bootstrap."""
+class _LocalOperations:
+    """Owner-side implementation used only behind the serialized facade."""
 
     def __init__(self, owner: _OwnerService) -> None:
         self._owner = owner
@@ -255,7 +255,7 @@ class ReleaseOperations:
         self._is_open = True
 
     @classmethod
-    def bootstrap(cls, database_path: str | Path, *, authority: str = "otto", actor_id: str = "otto-owner", credential_ref: str = "otto-owner-credential") -> "ReleaseOperations":
+    def bootstrap(cls, database_path: str | Path, *, authority: str = "otto", actor_id: str = "otto-owner", credential_ref: str = "otto-owner-credential") -> "_LocalOperations":
         return cls(_OwnerService.create(Path(database_path), authority=authority, actor_id=actor_id, credential_ref=credential_ref))
 
     def close(self) -> None:
@@ -386,6 +386,178 @@ class ReleaseOperations:
     @property
     def registered_domains(self) -> tuple[str, ...]:
         return tuple(item.domain_id for item in self._owner.store.consumer().registered_domains())
+
+
+class _ReleaseEngine:
+    """Trusted engine retained by Herzchen's owner-side command service."""
+
+    def __init__(self, store: Any, *, authority: str = "otto", actor_id: str = "otto-owner", credential_ref: str = "otto-owner-credential") -> None:
+        self._local = _LocalOperations(_OwnerService(store, authority=authority, actor_id=actor_id, credential_ref=credential_ref))
+        self.reader = self._local._owner.store.consumer()
+        self._database_path = Path(store.path)
+        self._expected_domains = store.registered_domains()
+
+    def _wire(self, action: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            result = action(*args, **kwargs)
+        except ReleaseError as error:
+            return {"$otto_error": error.to_dict()}
+        if isinstance(result, RepositoryRecord):
+            return {"$otto_result": "repository", "value": result.to_dict()}
+        if isinstance(result, CandidateObservation):
+            return {"$otto_result": "candidate", "candidate": result.candidate, "receipt": result.receipt, "source_set_digest": result.source_set_digest}
+        return result
+
+    def close_store(self) -> bool:
+        self._local._owner.close()
+        return True
+
+    def reopen_store(self) -> bool:
+        self._local._owner.close()
+        self._local._owner = _OwnerService.reopen(self._database_path, authority=self._local._owner.authority, actor_id=self._local._owner.actor.actor, credential_ref=self._local._owner.actor.credential_ref, expected_domains=self._expected_domains)
+        self._local._is_open = True
+        self.reader = self._local._owner.store.consumer()
+        return True
+
+    def register_repository(self, **kwargs: Any) -> Any:
+        return self._wire(self._local.register_repository, **kwargs)
+
+    def get_repository(self, repository_id: str) -> Any:
+        return self._wire(self._local.get_repository, repository_id)
+
+    def select_candidate(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.select_candidate, repository_id, **kwargs)
+
+    def record_required_check(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.record_required_check, repository_id, **kwargs)
+
+    def record_manager_decision(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.record_manager_decision, repository_id, **kwargs)
+
+    def record_merge(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.record_merge, repository_id, **kwargs)
+
+    def record_promotion(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.record_promotion, repository_id, **kwargs)
+
+    def record_publication(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.record_publication, repository_id, **kwargs)
+
+    def record_deployment(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._wire(self._local.record_deployment, repository_id, **kwargs)
+
+    def get_candidate(self, candidate_ref: Any) -> Any:
+        return self._wire(self._local.get_candidate, candidate_ref)
+
+    def get_decision(self, decision_ref: Any) -> Any:
+        return self._wire(self._local.get_decision, decision_ref)
+
+    def get_receipt(self, logical_request_key: str) -> Any:
+        return self._wire(self._local.get_receipt, logical_request_key)
+
+    def list_events(self, repository_id: str) -> Any:
+        return self._wire(self._local.list_events, repository_id)
+
+    def snapshot_counts(self) -> Any:
+        return self._wire(self._local.snapshot_counts)
+
+    @property
+    def registered_domains(self) -> tuple[str, ...]:
+        return self._local.registered_domains
+
+
+from herzchen.command_ports import command_facade
+
+_ReleaseCommandFacade = command_facade(_ReleaseEngine, RELEASE_DOMAIN_ID)
+
+
+def _decode_consumer(value: Any) -> Any:
+    if isinstance(value, Mapping) and value.get("$otto_error") is not None:
+        detail = value["$otto_error"]
+        raise ReleaseError(detail.get("code", "remote_error"), detail.get("message", "remote release error"), **{key: item for key, item in detail.items() if key not in {"code", "message"}})
+    if isinstance(value, Mapping) and value.get("$otto_result") == "repository":
+        item = value["value"]
+        from herzchen.contracts import ResourceRef
+        return RepositoryRecord(ResourceRef.from_dict(item["ref"]), item["version"], item.get("edit_token"), item["payload"], None)
+    if isinstance(value, Mapping) and value.get("$otto_result") == "candidate":
+        return CandidateObservation(value["candidate"], value["receipt"], value["source_set_digest"])
+    return value
+
+
+class ReleaseOperations:
+    """Finite serialized consumer; owner objects never cross this boundary."""
+
+    def __init__(self, client: Any, reader: Any, authority: str) -> None:
+        from herzchen.command_ports import SerializedCommandClient, SerializedReaderClient
+        if not isinstance(client, SerializedCommandClient) or not isinstance(reader, SerializedReaderClient):
+            raise TypeError("ReleaseOperations requires serialized Herzchen clients")
+        self._client = client
+        self._reader = reader
+        self._authority = authority
+
+    @classmethod
+    def bootstrap(cls, database_path: str | Path, *, authority: str = "otto", actor_id: str = "otto-owner", credential_ref: str = "otto-owner-credential") -> "ReleaseOperations":
+        from herzchen.kernel import Store
+        from herzchen.domains.work.module import register_work
+        store = Store.create(str(database_path), authority=authority)
+        register_work(store)
+        facade = _ReleaseCommandFacade(store, authority=authority, actor_id=actor_id, credential_ref=credential_ref)
+        return cls(facade.command_port, facade.reader, authority)
+
+    def _call(self, endpoint: str, *args: Any, **kwargs: Any) -> Any:
+        return _decode_consumer(self._client.call(endpoint, *args, **kwargs))
+
+    def close(self) -> None:
+        self._call("close_store")
+
+    def reopen(self) -> None:
+        self._call("reopen_store")
+
+    def register_repository(self, **kwargs: Any) -> Any:
+        return self._call("register_repository", **kwargs)
+
+    def get_repository(self, repository_id: str) -> RepositoryRecord:
+        return self._call("get_repository", repository_id)
+
+    def select_candidate(self, repository_id: str, **kwargs: Any) -> CandidateObservation:
+        return self._call("select_candidate", repository_id, **kwargs)
+
+    def record_required_check(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._call("record_required_check", repository_id, **kwargs)
+
+    def record_manager_decision(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._call("record_manager_decision", repository_id, **kwargs)
+
+    def record_merge(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._call("record_merge", repository_id, **kwargs)
+
+    def record_promotion(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._call("record_promotion", repository_id, **kwargs)
+
+    def record_publication(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._call("record_publication", repository_id, **kwargs)
+
+    def record_deployment(self, repository_id: str, **kwargs: Any) -> Any:
+        return self._call("record_deployment", repository_id, **kwargs)
+
+    def get_candidate(self, candidate_ref: Any) -> Any:
+        return self._call("get_candidate", candidate_ref)
+
+    def get_decision(self, decision_ref: Any) -> Any:
+        return self._call("get_decision", decision_ref)
+
+    def get_receipt(self, logical_request_key: str) -> Any:
+        return self._call("get_receipt", logical_request_key)
+
+    def list_events(self, repository_id: str) -> tuple[Any, ...]:
+        return self._call("list_events", repository_id)
+
+    def snapshot_counts(self) -> Mapping[str, int]:
+        return self._call("snapshot_counts")
+
+    @property
+    def registered_domains(self) -> tuple[str, ...]:
+        return self._call("registered_domains")
 
 
 def _ref(authority: str, repository_id: str) -> Any:

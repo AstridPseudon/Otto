@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 from otto.engineering import ProcessProfile, ReleaseError, ReleaseOperations, SourceSetEntry
 
@@ -101,4 +102,54 @@ def test_separate_rights_profile_and_no_duplicate_repository() -> None:
             operations.register_repository(repository_id="delivery", remote_id="other", target_id="other", baseline_head="b", target_head="h", source_set=SOURCE_SET, owner=OWNER, process_profile=ProcessProfile.hourly("manager-1"), logical_request_key="repository-register-duplicate")
         except ReleaseError as error:
             assert error.code == "duplicate_repository"
+        operations.close()
+
+
+def test_serialized_consumer_has_no_owner_object_graph() -> None:
+    """The consumer retains only Herzchen's finite command/read transports."""
+    from herzchen.command_ports import SerializedCommandClient, SerializedReaderClient
+
+    forbidden_names = {"store", "domainhandler", "domain_handler", "transaction", "connection", "writer", "release_handler", "database", "sqlite"}
+    forbidden_types = {"Store", "DomainHandler", "Transaction", "ConsumerStore", "DomainCommandPort"}
+
+    def walk(value: Any, depth: int = 0, seen: set[int] | None = None) -> list[str]:
+        if seen is None:
+            seen = set()
+        if value is None or isinstance(value, (str, bytes, int, float, bool, type)) or depth > 4 or id(value) in seen:
+            return []
+        seen.add(id(value))
+        kind = type(value)
+        found: list[str] = []
+        if kind.__name__ in forbidden_types:
+            found.append("type:" + kind.__name__)
+        for name in getattr(kind, "__slots__", ()):
+            if not isinstance(name, str):
+                continue
+            lowered = name.lstrip("_").lower()
+            if lowered in forbidden_names or any(token in lowered for token in forbidden_names if token in {"release_handler", "database", "sqlite"}):
+                found.append("name:" + name)
+            try:
+                found.extend(walk(getattr(value, name), depth + 1, seen))
+            except AttributeError:
+                pass
+        if hasattr(value, "__dict__"):
+            for name, item in vars(value).items():
+                lowered = name.lstrip("_").lower()
+                if lowered in forbidden_names or any(token in lowered for token in forbidden_names if token in {"release_handler", "database", "sqlite"}):
+                    found.append("name:" + name)
+                found.extend(walk(item, depth + 1, seen))
+        return found
+
+    with TemporaryDirectory() as directory:
+        operations = ReleaseOperations.bootstrap(Path(directory) / "shared.sqlite")
+        instance_names = set(vars(operations))
+        assert instance_names == {"_client", "_reader", "_authority"}
+        assert isinstance(operations._client, SerializedCommandClient)
+        assert isinstance(operations._reader, SerializedReaderClient)
+        expected_endpoints = {"close_store", "reopen_store", "register_repository", "get_repository", "select_candidate", "record_required_check", "record_manager_decision", "record_merge", "record_promotion", "record_publication", "record_deployment", "get_candidate", "get_decision", "get_receipt", "list_events", "snapshot_counts", "registered_domains"}
+        assert set(operations._client.endpoints) == expected_endpoints
+        assert not walk(operations)
+        socket_path = operations._client.transport.socket_path
+        assert socket_path.endswith("owner.sock")
+        assert not any(socket_path.endswith(suffix) for suffix in (".sqlite", ".sqlite3", ".db"))
         operations.close()
