@@ -1286,6 +1286,48 @@ class FiniteWorkOperations:
             "event_ids": self._events_for(receipt),
         }
 
+    def _pending_projects(self, parent_ref: Any = None) -> list[Any]:
+        """Read pending projects through the sealed consumer reader.
+
+        The consumer reader exposes event history and record lookup, but no
+        generic query or SQL surface.  Reconstructing the finite project index
+        from public work subjects keeps listing read-only and preserves the
+        owner/consumer boundary.
+        """
+
+        from herzchen.contracts import ResourceRef
+
+        latest: dict[tuple[str, str, str], ResourceRef] = {}
+        for event in self.reader.list_events():
+            subject = getattr(event, "subject", None)
+            if subject is None or getattr(subject, "kind", None) != "work.project":
+                continue
+            key = (subject.authority, subject.kind, subject.id)
+            latest[key] = ResourceRef(subject.authority, subject.kind, subject.id)
+
+        parent_identity = None
+        if parent_ref is not None:
+            parent = self._record_ref(parent_ref)
+            parent_identity = (parent.authority, parent.kind, parent.id)
+
+        records = []
+        for ref in latest.values():
+            record = self.reader.get_record(ref)
+            if record is None:
+                continue
+            payload = getattr(record, "payload", {}) or {}
+            if payload.get("lifecycle") != "pending":
+                continue
+            if parent_identity is not None:
+                value = payload.get("parent")
+                if value is None:
+                    continue
+                parent_value = self._record_ref(value)
+                if (parent_value.authority, parent_value.kind, parent_value.id) != parent_identity:
+                    continue
+            records.append(record)
+        return sorted(records, key=lambda record: (getattr(record, "id", ""), getattr(record, "version", 0)))
+
     def _revise(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         from herzchen.contracts import ResourceRef
 
@@ -1321,11 +1363,23 @@ class FiniteWorkOperations:
         }
 
     def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        if operation == "work.pending.list":
+            records = self._pending_projects(payload.get("parent_ref"))
+            return {
+                "outcome": "listed",
+                "records": [_record_dict(record) for record in records],
+                "project_refs": [_json_value(getattr(record, "ref", None)) for record in records],
+                "count": len(records),
+                "receipt": None,
+                "replayed": False,
+                "event_ids": [],
+                "executable": False,
+            }
         if operation != "work.pending.read":
             return {
                 "outcome": "unavailable",
                 "operation": operation,
-                "error": {"code": "canonical_operation_unavailable", "message": "this binding currently exposes pending create and read only"},
+                "error": {"code": "canonical_operation_unavailable", "message": "this binding exposes only the finite pending list and read operations"},
             }
         from herzchen.contracts import ResourceRef
 
