@@ -280,7 +280,11 @@ def test_real_public_amendment_composes_plan_attention_and_assignment_views(tmp_
     from herzchen.domains.work import WorkGraph
     from herzchen.domains.work.assignments import ResponsibilityAssignments
     from herzchen.kernel import Store
-    from otto.attention import AttentionError, ImprovementPropagation, issue_store_amendment_port
+    from herzchen.command_ports import close_consumer_facade
+    from otto.attention import (
+        AmendmentInterruptedError, AttentionError, ImprovementPropagation,
+        InputChangedError, issue_store_amendment_port,
+    )
 
     authority = "ott04-real-amendment"
     path = tmp_path / "real-amendment.sqlite"
@@ -307,6 +311,8 @@ def test_real_public_amendment_composes_plan_attention_and_assignment_views(tmp_
     assert not hasattr(amendment, "_apply")
     assert not hasattr(amendment, "store")
     assert tuple(amendment.transport.endpoints) == ("apply_amendment", "read_views")
+    assert not hasattr(amendment.transport, "connection")
+    assert not str(amendment.transport.socket_path).endswith((".sqlite", ".sqlite3", ".db"))
     before_decision_events = len(store.list_events())
     with pytest.raises(AttentionError):
         amendment.apply_amendment({"request_id": "unauthorized", "manager_decision": "seen", "amendment": {}})
@@ -332,9 +338,140 @@ def test_real_public_amendment_composes_plan_attention_and_assignment_views(tmp_
     assert implemented["fresh_after"]["next_dispatch"] == "owner-review"
     assert implemented["fresh_after"]["assignment"]["route_binding"]["name"] == "owner-review-route"
     assert implemented["fresh_after"]["attention"][0]["state"] == "open"
-    from herzchen.command_ports import close_consumer_facade
+    assert implemented["response"]["status"] == "completed"
+    assert implemented["response"]["replayed"] is False
+    assert all(stage["status"] == "committed" for stage in implemented["response"]["stages"].values())
+
+    # Exact retry is a completed historical replay.  Unchanged views remain
+    # honestly unchanged and are satisfied by the persisted stage receipts.
+    after_first_events = len(store.list_events())
+    exact_retry = propagation.apply(
+        "review-real-1", decision_id="manager-decision-real-1",
+        amendment={"instruction": "inspect the amended source", "next_dispatch": "owner-review", "route": "owner-review-route"},
+        request_id="amendment-real-1",
+    )
+    assert len(store.list_events()) == after_first_events
+    assert exact_retry["outcome"] == "improvement-already-applied", exact_retry
+    assert exact_retry["implemented_improvement"] is True
+    assert exact_retry["replayed"] is True
+    assert not any(exact_retry["required_changes"].values())
+    assert all(exact_retry["requirements_satisfied"].values())
+    assert all(stage["status"] == "replayed" for stage in exact_retry["response"]["stages"].values())
+    assert exact_retry["fresh_after"] == implemented["fresh_after"]
+    assert exact_retry["dispatch"] is False and exact_retry["automatic_action"] is False
+
+    # The full shared decision binding rejects changed same-key input before
+    # any downstream stage and therefore before any durable delta.
+    before_changed = amendment.read_views()
+    before_changed_events = len(store.list_events())
+    with pytest.raises(InputChangedError):
+        propagation.apply(
+            "review-real-1", decision_id="manager-decision-real-1",
+            amendment={"instruction": "inspect the amended source", "next_dispatch": "owner-review", "route": "changed-route"},
+            request_id="amendment-real-1",
+        )
+    assert len(store.list_events()) == before_changed_events
+    assert amendment.read_views() == before_changed
     close_consumer_facade(amendment.transport)
     store.close()
+
+    # A second real Store proves interrupted-stage recovery across close and
+    # reopen.  The first owner commits the decision binding and plan, then a
+    # fresh issued service uses public receipts to skip those exact stages.
+    interrupted_authority = "ott04-interrupted-amendment"
+    interrupted_path = tmp_path / "interrupted-amendment.sqlite"
+    interrupted_store = Store.create(interrupted_path, authority=interrupted_authority)
+    interrupted_actor = AuthenticatedActor(interrupted_authority, "manager", "credential-manager")
+    interrupted_store.register_domain_handler((content_contribution(), packet_contribution()))
+    interrupted_graph = WorkGraph(interrupted_store, actor=interrupted_actor)
+    interrupted_graph.register()
+    interrupted_project = interrupted_graph.create_project(
+        title="interrupted continuity plan", metadata={"ott04_usage_budget": {"spent": 4, "limit": 12}},
+        logical_request_key="project-interrupted",
+    )
+    interrupted_task = interrupted_graph.create_task(
+        interrupted_project, title="inspect interrupted source", logical_request_key="task-interrupted",
+    )
+    interrupted_assignments = ResponsibilityAssignments(interrupted_store, actor=interrupted_actor)
+    interrupted_assignment = interrupted_assignments.assign(
+        interrupted_task, role="execution", principal="owner-2", agent="agent-2", session="session-2",
+        pins=(interrupted_task.ref,), logical_request_key="assignment-interrupted",
+    )
+    interrupted_content = ContentCommandHandler(interrupted_store)
+    interrupted_subject = ContentDocument(
+        ResourceRef(interrupted_authority, "document", "interrupted-subject"),
+        "brief", "public", "read", "owner-2",
+    )
+    interrupted_revision = ContentRevision(
+        interrupted_subject.ref, "rev-1", {"title": "interrupted amendment subject"},
+        interrupted_actor, initial=True,
+    )
+    interrupted_content.execute(interrupted_content.build_create_document(
+        TransactionContext(interrupted_actor, "setup-interrupted", hashlib.sha256(b"setup-interrupted").hexdigest()),
+        interrupted_subject, interrupted_revision,
+    ))
+    interrupted_port = issue_store_amendment_port(
+        interrupted_store, interrupted_actor, interrupted_project, interrupted_assignment,
+        interrupted_subject.ref, interrupted_revision.ref, interrupt_after_stage="plan",
+    )
+    interrupted_propagation = ImprovementPropagation(interrupted_port)
+    interrupted_before = interrupted_port.read_views()
+    interrupted_input = {
+        "instruction": "resume the exact interrupted amendment",
+        "next_dispatch": "owner-2-review",
+        "route": "owner-2-route",
+    }
+    with pytest.raises(AmendmentInterruptedError):
+        interrupted_propagation.apply(
+            "review-interrupted", decision_id="manager-decision-interrupted",
+            amendment=interrupted_input, request_id="amendment-interrupted",
+        )
+    assert interrupted_store.get_receipt("amendment-interrupted:decision") is not None
+    assert interrupted_store.get_receipt("amendment-interrupted:plan") is not None
+    assert interrupted_store.get_receipt("amendment-interrupted:route") is None
+    assert interrupted_store.get_receipt("amendment-interrupted:attention:owner-2") is None
+    partial_event_count = len(interrupted_store.list_events())
+    interrupted_domains = interrupted_store.registered_domains()
+    close_consumer_facade(interrupted_port.transport)
+    interrupted_store.close()
+
+    reopened = Store.open(
+        interrupted_path, authority=interrupted_authority, expected_domains=interrupted_domains,
+    )
+    resumed_port = issue_store_amendment_port(
+        reopened, interrupted_actor, interrupted_project, interrupted_assignment,
+        interrupted_subject.ref, interrupted_revision.ref,
+    )
+    resumed = ImprovementPropagation(resumed_port).apply(
+        "review-interrupted", decision_id="manager-decision-interrupted",
+        amendment=interrupted_input, request_id="amendment-interrupted",
+    )
+    assert resumed["outcome"] == "improvement-recovered", resumed
+    assert resumed["implemented_improvement"] is True
+    assert resumed["recovered"] is True and resumed["replayed"] is False
+    assert resumed["response"]["stages"]["decision"]["status"] == "replayed"
+    assert resumed["response"]["stages"]["plan"]["status"] == "replayed"
+    assert resumed["response"]["stages"]["assignment"]["status"] == "committed"
+    assert resumed["response"]["stages"]["attention"]["status"] == "committed"
+    assert resumed["required_changes"] == {
+        "plan_changed": False,
+        "next_dispatch_changed": False,
+        "attention_view_changed": True,
+        "assignment_view_changed": True,
+    }
+    assert all(resumed["requirements_satisfied"].values())
+    assert len(reopened.list_events()) == partial_event_count + 2
+    event_types = [event.event_type for event in reopened.list_events()]
+    assert event_types.count("work.project-sheet.applied") == 1
+    assert event_types.count("work.assignment.route-pinned") == 1
+    assert event_types.count("dat.context.attention.created") == 1
+    assert not any(event_type == "work.assignment.dispatched" for event_type in event_types)
+    assert resumed["fresh_after"]["current_owner"] == interrupted_before["current_owner"]
+    assert resumed["fresh_after"]["usage"] == interrupted_before["usage"]
+    assert resumed["fresh_after"]["running_input_pins"] == interrupted_before["running_input_pins"]
+    assert resumed["dispatch"] is False and resumed["automatic_action"] is False
+    close_consumer_facade(resumed_port.transport)
+    reopened.close()
 
 
 class _Clock:

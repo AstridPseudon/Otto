@@ -48,6 +48,10 @@ class HostUnavailableError(AttentionError):
     """Durable-host capability is not available."""
 
 
+class AmendmentInterruptedError(AttentionError):
+    """The trusted owner stopped after one durably committed amendment stage."""
+
+
 def _json_copy(value: Any, field_name: str = "value") -> JSONValue:
     """Return a canonical JSON-shaped copy and reject descriptors/callables."""
 
@@ -497,16 +501,31 @@ class SerializedAttentionPort:
 class _AmendmentOwnerEngine:
     """Trusted owner composition over accepted Herzchen public facades."""
 
-    def __init__(self, store: Any, actor: Any, project: Any, assignment: Any, subject: Any, amended_revision: Any) -> None:
+    _STAGES = ("decision", "plan", "assignment", "attention")
+
+    def __init__(
+        self,
+        store: Any,
+        actor: Any,
+        project: Any,
+        assignment: Any,
+        subject: Any,
+        amended_revision: Any,
+        interrupt_after_stage: Optional[str] = None,
+    ) -> None:
         from herzchen.content.packets import ContextPacketService
         from herzchen.domains.work.assignments import ResponsibilityAssignments
         from herzchen.domains.work.sheet import ProjectSheet
 
+        if interrupt_after_stage is not None and interrupt_after_stage not in self._STAGES:
+            raise ValueError("interrupt_after_stage must name decision, plan, assignment, or attention")
         self._actor = actor
         self._project = project
         self._assignment = assignment
         self._subject = subject
         self._amended_revision = amended_revision
+        self._receipts = store.consumer()
+        self._interrupt_after_stage = interrupt_after_stage
         self._sheet = ProjectSheet(store, actor=actor)
         self._assignments = ResponsibilityAssignments(store, actor=actor)
         self._packets = ContextPacketService(store)
@@ -540,6 +559,45 @@ class _AmendmentOwnerEngine:
     def read_views(self) -> Mapping[str, JSONValue]:
         return self._views()
 
+    def _stage_from_receipt(self, receipt: Any, *, replayed: bool) -> dict[str, JSONValue]:
+        return {
+            "status": "replayed" if replayed else "committed",
+            "replayed": replayed,
+            "receipt": _wire_json(receipt),
+        }
+
+    def _interrupt_if_selected(self, stage: str, *, committed: bool) -> None:
+        if committed and self._interrupt_after_stage == stage:
+            raise AmendmentInterruptedError(f"trusted owner interrupted after committed {stage} stage")
+
+    def _decision_stage(self, request: Mapping[str, JSONValue], request_id: str) -> dict[str, JSONValue]:
+        """Bind the complete logical amendment before any partial stage write."""
+
+        from herzchen.contracts import TransactionContext
+
+        key = request_id + ":decision"
+        prior = self._receipts.get_receipt(key)
+        decision = self._packets.register_decision(
+            {
+                "decision_id": request["decision_id"],
+                "subject": self._amended_revision,
+                "author": self._actor.actor,
+                "authority": self._amended_revision,
+                "question": "implement the manager-selected amendment",
+                "rationale": "bind the complete amendment before staged propagation",
+                "return_condition": "all public amendment stages are committed or replayed",
+                "amendment_request": request,
+            },
+            TransactionContext(self._actor, key, _digest(request)),
+        )
+        stage = self._stage_from_receipt(decision["receipt"], replayed=prior is not None)
+        self._interrupt_if_selected("decision", committed=prior is None)
+        return stage
+
+    def _existing_stage(self, key: str) -> Optional[dict[str, JSONValue]]:
+        receipt = self._receipts.get_receipt(key)
+        return None if receipt is None else self._stage_from_receipt(receipt, replayed=True)
+
     def apply_amendment(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
         request = _json_copy(request, "amendment request")
         if request.get("manager_decision") != "implement":
@@ -551,34 +609,92 @@ class _AmendmentOwnerEngine:
         next_dispatch = _required_text(amendment.get("next_dispatch"), "amendment.next_dispatch")
         route = _required_text(amendment.get("route"), "amendment.route")
         request_id = _required_text(request.get("request_id"), "request_id")
-        plan = self._sheet.apply(
-            self._project,
-            {"tasks": [{"id": self._task.id, "body": {"instructions": instruction}}]},
-            logical_request_key=request_id + ":plan", next_action=next_dispatch, actor=self._actor,
-        )
-        route_result = self._sheet.pin_assignment_route(
-            self._assignment,
-            {"name": route, "reason": "manager-selected amendment"},
-            logical_request_key=request_id + ":route", actor=self._actor,
-        )
-        from herzchen.contracts import TransactionContext
+        try:
+            # The shared decision manifest is the authoritative full-request
+            # binding.  A changed same-key retry is rejected here before any
+            # plan, route, or attention mutation can run.
+            stages: dict[str, JSONValue] = {
+                "decision": self._decision_stage(request, request_id),
+            }
 
-        attention_context = TransactionContext(
-            self._actor, request_id + ":attention", _digest(request),
-        )
-        notices = self._packets.notify_amendment(
-            self._subject, self._amended_revision, (self._assignments.get(self._assignment).principal,),
-            attention_context, reason="manager-selected amendment: " + instruction,
-        )
+            plan_key = request_id + ":plan"
+            plan_stage = self._existing_stage(plan_key)
+            if plan_stage is None:
+                plan = self._sheet.apply(
+                    self._project,
+                    {"tasks": [{"id": self._task.id, "body": {"instructions": instruction}}]},
+                    logical_request_key=plan_key, next_action=next_dispatch, actor=self._actor,
+                )
+                plan_stage = self._stage_from_receipt(plan.receipt, replayed=False)
+                self._interrupt_if_selected("plan", committed=True)
+            stages["plan"] = plan_stage
+
+            route_key = request_id + ":route"
+            assignment_stage = self._existing_stage(route_key)
+            if assignment_stage is None:
+                route_result = self._sheet.pin_assignment_route(
+                    self._assignment,
+                    {"name": route, "reason": "manager-selected amendment"},
+                    logical_request_key=route_key, actor=self._actor,
+                )
+                assignment_stage = self._stage_from_receipt(route_result.receipt, replayed=False)
+                self._interrupt_if_selected("assignment", committed=True)
+            stages["assignment"] = assignment_stage
+
+            from herzchen.contracts import TransactionContext
+
+            owner = self._assignments.get(self._assignment).principal
+            attention_key = request_id + ":attention:" + owner
+            attention_stage = self._existing_stage(attention_key)
+            if attention_stage is None:
+                notices = self._packets.notify_amendment(
+                    self._subject,
+                    self._amended_revision,
+                    (owner,),
+                    TransactionContext(self._actor, request_id + ":attention", _digest(request)),
+                    reason="manager-selected amendment: " + instruction,
+                )
+                attention_stage = {
+                    "status": "committed",
+                    "replayed": False,
+                    "receipts": [_wire_json(notice["receipt"]) for notice in notices],
+                }
+                self._interrupt_if_selected("attention", committed=True)
+            else:
+                attention_stage = {
+                    "status": "replayed",
+                    "replayed": True,
+                    "receipts": [attention_stage["receipt"]],
+                }
+            stages["attention"] = attention_stage
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                raise InputChangedError("amendment request key was reused with changed logical input") from exc
+            raise
+
+        receipts = {
+            "decision": stages["decision"]["receipt"],
+            "plan": stages["plan"]["receipt"],
+            "assignment": stages["assignment"]["receipt"],
+            "attention": stages["attention"]["receipts"],
+        }
+        stage_values = tuple(stages.values())
+        replayed = all(bool(stage.get("replayed")) for stage in stage_values)
+        recovered = any(bool(stage.get("replayed")) for stage in stage_values) and not replayed
+        event_ids = [
+            event_id
+            for value in receipts.values()
+            for receipt in (value if isinstance(value, list) else [value])
+            for event_id in receipt.get("event_ids", ())
+        ]
         return _wire_json({
-            "event_ids": list(_wire_json(plan.receipt).get("event_ids", ())) +
-            list(_wire_json(route_result.receipt).get("event_ids", ())) +
-            [event_id for notice in notices for event_id in _wire_json(notice["receipt"]).get("event_ids", ())],
-            "receipts": {
-                "plan": _wire_json(plan.receipt),
-                "assignment": _wire_json(route_result.receipt),
-                "attention": [_wire_json(notice["receipt"]) for notice in notices],
-            },
+            "status": "already-applied" if replayed else "completed",
+            "completed": True,
+            "replayed": replayed,
+            "recovered": recovered,
+            "event_ids": event_ids,
+            "stages": stages,
+            "receipts": receipts,
             "incomplete": False,
             "automatic_action": False,
             "dispatch": False,
@@ -625,10 +741,21 @@ class SerializedAmendmentPort:
         return dict(_json_copy(self._client.call("read_views"), "amendment views"))
 
 
-def issue_store_amendment_port(store: Any, actor: Any, project: Any, assignment: Any, subject: Any, amended_revision: Any) -> SerializedAmendmentPort:
+def issue_store_amendment_port(
+    store: Any,
+    actor: Any,
+    project: Any,
+    assignment: Any,
+    subject: Any,
+    amended_revision: Any,
+    *,
+    interrupt_after_stage: Optional[str] = None,
+) -> SerializedAmendmentPort:
     """Issue a finite client; all Herzchen service objects stay owner-side."""
 
-    service = _amendment_owner_service_type()(store, actor, project, assignment, subject, amended_revision)
+    service = _amendment_owner_service_type()(
+        store, actor, project, assignment, subject, amended_revision, interrupt_after_stage,
+    )
     return SerializedAmendmentPort(service.command_port)
 
 
@@ -698,22 +825,44 @@ class ImprovementPropagation:
             "attention_view_changed": before.get("attention") != after.get("attention"),
             "assignment_view_changed": before.get("assignment") != after.get("assignment"),
         }
+        stages = response.get("stages", {})
+        stage_satisfaction = {
+            "plan": isinstance(stages, Mapping) and isinstance(stages.get("plan"), Mapping) and stages["plan"].get("status") in {"committed", "replayed"},
+            "next_dispatch": isinstance(stages, Mapping) and isinstance(stages.get("plan"), Mapping) and stages["plan"].get("status") in {"committed", "replayed"},
+            "attention": isinstance(stages, Mapping) and isinstance(stages.get("attention"), Mapping) and stages["attention"].get("status") in {"committed", "replayed"},
+            "assignment": isinstance(stages, Mapping) and isinstance(stages.get("assignment"), Mapping) and stages["assignment"].get("status") in {"committed", "replayed"},
+        }
+        requirements_satisfied = {
+            "plan": required_changes["plan_changed"] or stage_satisfaction["plan"],
+            "next_dispatch": required_changes["next_dispatch_changed"] or stage_satisfaction["next_dispatch"],
+            "attention": required_changes["attention_view_changed"] or stage_satisfaction["attention"],
+            "assignment": required_changes["assignment_view_changed"] or stage_satisfaction["assignment"],
+        }
         preserved = {
             key: before.get(key) == after.get(key)
             for key in ("current_owner", "usage", "running_input_pins")
         }
-        incomplete = bool(response.get("incomplete", False)) or not all(required_changes.values()) or not all(preserved.values())
+        incomplete = bool(response.get("incomplete", False)) or not all(requirements_satisfied.values()) or not all(preserved.values())
+        replayed = bool(response.get("replayed", False))
+        recovered = bool(response.get("recovered", False))
+        outcome = "incomplete-propagation"
+        if not incomplete:
+            outcome = "improvement-already-applied" if replayed else ("improvement-recovered" if recovered else "improvement-implemented")
         return {
-            "outcome": "incomplete-propagation" if incomplete else "improvement-implemented",
+            "outcome": outcome,
             "review_id": review_id,
             "decision_id": decision_id,
             "implemented_improvement": not incomplete,
             "required_changes": required_changes,
+            "stage_satisfaction": stage_satisfaction,
+            "requirements_satisfied": requirements_satisfied,
             "preserved": preserved,
             "before": before,
             "action": request,
             "response": response,
             "fresh_after": after,
+            "replayed": replayed,
+            "recovered": recovered,
             "dispatch": False,
             "automatic_action": False,
         }
@@ -936,7 +1085,7 @@ DurableAttentionService = DurableAttention
 
 
 __all__ = [
-    "AmendmentPort", "AttentionError", "AttentionScheduler", "CursorContinuity", "CursorContinuityError", "DueRecord", "DueRecordPort",
+    "AmendmentInterruptedError", "AmendmentPort", "AttentionError", "AttentionScheduler", "CursorContinuity", "CursorContinuityError", "DueRecord", "DueRecordPort",
     "DurableAttention", "DurableAttentionService", "EventCursorReaderAdapter", "HostUnavailableError", "InMemoryDueRecordPort",
     "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "SerializedAmendmentPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
     "StoreDueRecordPort", "due_record_contribution", "issue_store_amendment_port", "issue_store_due_record_port",
