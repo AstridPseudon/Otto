@@ -1,0 +1,1 @@
+{"final_event_count": 7, "first": "handed-off", "first_retry": "replayed", "output": "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-observations.json", "second": "handed-off", "second_retry": "replayed"}

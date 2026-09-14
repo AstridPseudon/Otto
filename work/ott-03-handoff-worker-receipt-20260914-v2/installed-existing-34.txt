@@ -1,0 +1,8 @@
+..................................                                       [100%]
+=============================== warnings summary ===============================
+work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/_pytest/cacheprovider.py:469
+  /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/_pytest/cacheprovider.py:469: PytestCacheWarning: could not create cache path /dev/.pytest_cache/v/cache/nodeids: [Errno 1] Operation not permitted: '/dev/pytest-cache-files-n_3v85fm'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+34 passed, 1 warning in 0.59s

@@ -1,0 +1,23 @@
+{
+  "accepted_herzchen_wheel": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+  "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+  "executable": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/bin/python",
+  "final_otto_wheel": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914-v2/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+  "final_otto_wheel_sha256": "b7ca895ba6ea492efd9cf38162e9cbe35a700e17f70fcf9e43ebdd93fa14bdd5",
+  "herzchen_distribution": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages",
+  "herzchen_import_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+  "herzchen_version": "0.1.0",
+  "otto_distribution": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages",
+  "otto_import_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/__init__.py",
+  "otto_version": "0.0.0",
+  "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "source_head": "23727a15f1d2300ca617082570545f787c2d082a",
+  "source_tree": "2336691fb729c8e1e447e26af2633a5b706abd5f",
+  "sys_path": [
+    "",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload",
+    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-handoff-worker/work/ott-03-handoff-worker-receipt-20260914/venv/lib/python3.11/site-packages"
+  ]
+}

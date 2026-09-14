@@ -1,0 +1,173 @@
+{
+  "matrix": "OTT-03 complete bounded candidate continuation",
+  "candidate": {
+    "accepted_base": "a09532940e500de6b9ef43f8a6f5c710f6c6e0aa",
+    "historical_source_commit": "f3ccc1d0bd96576259783ac2279d0027d3ab895f",
+    "historical_evidence_commit": "15cb3155cf81a3e4eb30cb86819363dc41849498",
+    "current_source_commit": "23727a15f1d2300ca617082570545f787c2d082a",
+    "current_source_tree": "2336691fb729c8e1e447e26af2633a5b706abd5f",
+    "evidence_directory": "work/ott-03-handoff-worker-receipt-20260914-v2"
+  },
+  "interpretation": "supported/proven rows are bounded Otto candidate claims with the cited tests or harness. Prior accepted Herzchen evidence is identified separately; later OTT-06 and EX-HOST work are not claimed.",
+  "consumer_boundary": {
+    "retained": ["SerializedCommandClient", "SerializedReaderClient", "HerzchenBindingConfig", "typed values"],
+    "excluded": ["Store", "WorkGraph", "ProjectSheet", "ResponsibilityAssignments", "AuthoringSessionService", "DB paths/descriptors", "raw SQL", "arbitrary callbacks", "pickle", "generic writer authority"],
+    "evidence": ["src/otto/portfolio/herzchen_binding.py", "tests/otto/test_handoff.py", "tests/otto/test_handoff_continuity.py", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"]
+  },
+  "surfaces": [
+    {
+      "id": "OTT03-01",
+      "surface": "pending create/read/edit",
+      "status": "supported and preserved",
+      "owner_layer": "Otto candidate over prior accepted Herzchen WorkGraph",
+      "entrypoints": ["OttoPortfolio.create_pending", "read_pending", "edit_pending"],
+      "evidence": ["src/otto/portfolio/intake.py", "tests/otto/test_intake_roles.py", "work/ott-03-handoff-worker-receipt-20260914-v2/source-final-35.txt", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["durable pending identity", "sparse metadata retained", "executable=false", "canonical replay/conflict"]
+    },
+    {
+      "id": "OTT03-02",
+      "surface": "revisit/prerequisite observation",
+      "status": "supported and preserved",
+      "owner_layer": "Otto candidate over prior accepted Herzchen WorkGraph",
+      "entrypoints": ["OttoPortfolio.revisit", "satisfied_prerequisite"],
+      "evidence": ["src/otto/portfolio/intake.py:344", "tests/otto/test_intake_roles.py:194", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["attention/readiness only", "no activation", "no dispatch", "executable=false"]
+    },
+    {
+      "id": "OTT03-03",
+      "surface": "ProjectSheet admission",
+      "status": "supported and preserved",
+      "owner_layer": "Otto candidate through accepted ProjectSheet command port",
+      "entrypoints": ["OttoPortfolio.admit"],
+      "evidence": ["src/otto/portfolio/intake.py:389", "src/otto/portfolio/herzchen_binding.py", "tests/otto/test_intake_roles.py:208", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["explicit manager choice", "assignment remains canonical", "no implicit dispatch"]
+    },
+    {
+      "id": "OTT03-04",
+      "surface": "parent/manager/executor assignment",
+      "status": "supported and proven",
+      "owner_layer": "Otto candidate through accepted ResponsibilityAssignments.assign",
+      "entrypoints": ["OttoPortfolio.assign_roles"],
+      "evidence": ["src/otto/portfolio/herzchen_binding.py:366", "tests/otto/test_intake_roles.py:516", "tests/otto/test_handoff_continuity.py:75", "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-observations.json"],
+      "invariants": ["parent/manager/executor refs are typed", "manager_assignment_ref is returned", "bounded executor set", "canonical receipts"]
+    },
+    {
+      "id": "OTT03-05",
+      "surface": "content document create/link",
+      "status": "supported and preserved",
+      "owner_layer": "Otto candidate through accepted content command port",
+      "entrypoints": ["OttoPortfolio.create_document", "link_document"],
+      "evidence": ["src/otto/portfolio/intake.py:276", "tests/otto/test_intake_roles.py:465", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["typed document and association", "canonical receipt/event", "custom metadata remains sparse"]
+    },
+    {
+      "id": "OTT03-06",
+      "surface": "authoring open/reopen/occupied/replay",
+      "status": "supported and preserved",
+      "owner_layer": "prior accepted owner/bootstrap increment and Otto candidate",
+      "entrypoints": ["OttoPortfolio.reopen", "create_and_open"],
+      "evidence": ["src/otto/portfolio/owner_bootstrap.py", "tests/otto/test_owner_bootstrap.py", "tests/otto/test_intake_roles.py:437", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["same project identity", "occupied is explicit", "replay is canonical", "no replacement project"]
+    },
+    {
+      "id": "OTT03-07",
+      "surface": "atomic pending create-and-open",
+      "status": "supported with trusted owner bootstrap",
+      "owner_layer": "prior accepted XHARD source/evidence retained byte-for-byte",
+      "entrypoints": ["work.pending.create with open=true"],
+      "evidence": ["src/otto/portfolio/owner_bootstrap.py", "tests/otto/test_owner_bootstrap.py", "../ott-03-handoff-worker-receipt-20260914/result.md", "../ott-03-handoff-worker-receipt-20260914/handoff-observations.json", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["occupation precedes materialization", "partial failure is truthful", "repeat is idempotent", "no callable crosses consumer boundary"]
+    },
+    {
+      "id": "OTT03-08",
+      "surface": "safe responsibility handoff",
+      "status": "supported and proven in this bounded Otto candidate",
+      "owner_layer": "Otto FiniteWorkOperations through accepted ResponsibilityAssignments public port",
+      "entrypoints": ["OttoPortfolio.handoff", "work.responsibility.handoff"],
+      "evidence": ["src/otto/portfolio/intake.py:426", "src/otto/portfolio/herzchen_binding.py:425", "tests/otto/test_handoff.py", "tests/otto/test_handoff_continuity.py", "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-observations.json", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-harness-v2.txt"],
+      "invariants": ["typed ref lookup only", "manager role/project scope/status validated", "current principal and generation fenced", "identity/history preserved", "evidence/consumption/parent refs durable", "sequential generations 1/2/3", "exact replay and changed-key conflict are zero-delta", "no activation/dispatch/budget/task/session"]
+    },
+    {
+      "id": "OTT03-09",
+      "surface": "live host/Astrid launch/session/AST",
+      "status": "pending; EX-HOST boundary",
+      "owner_layer": "later host/AST work, not this Otto candidate",
+      "entrypoints": [],
+      "evidence": ["work/ott-03-handoff-worker-receipt-20260914-v2/result.md"],
+      "invariants": ["not claimed", "no live host/Astrid/G-OTTO acceptance"]
+    },
+    {
+      "id": "OTT03-10",
+      "surface": "shipped help/default blank starter",
+      "status": "supported and proven in this Otto candidate",
+      "owner_layer": "Otto candidate",
+      "entrypoints": ["OttoPortfolio.help", "create_pending", "create_and_open"],
+      "evidence": ["src/otto/portfolio/intake.py:194", "tests/otto/test_intake_roles.py:141", "tests/otto/test_intake_roles.py:250", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["blank is default", "empty project is saved immediately", "help exposes create-and-open", "default remains inert"]
+    },
+    {
+      "id": "OTT03-11",
+      "surface": "selected-template create/edit/reopen",
+      "status": "supported and proven in this Otto candidate",
+      "owner_layer": "Otto candidate over prior accepted WorkGraph persistence",
+      "entrypoints": ["create_pending(template=...)", "edit_pending", "reopen"],
+      "evidence": ["src/otto/portfolio/intake.py:246", "tests/otto/test_intake_roles.py:239", "tests/otto/test_intake_roles.py:327", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["explicit template only", "same durable project ref", "edits preserve unknown metadata", "no cloned task/allowance/session"]
+    },
+    {
+      "id": "OTT03-12",
+      "surface": "pending read/edit/reopen after restart",
+      "status": "supported and proven in this Otto candidate",
+      "owner_layer": "Otto candidate with fresh accepted Herzchen readers",
+      "entrypoints": ["read_pending", "edit_pending", "reopen"],
+      "evidence": ["tests/otto/test_intake_roles.py:327", "tests/otto/test_owner_bootstrap.py:183", "tests/otto/test_handoff_continuity.py:157", "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-observations.json"],
+      "invariants": ["same project identity after close/open", "pending remains non-executable", "fresh read sees assignment generation 3 and third manager"]
+    },
+    {
+      "id": "OTT03-13",
+      "surface": "no-auto-action for revisit/satisfied prerequisite/template cloning/protocol edits",
+      "status": "supported and proven for bounded candidate paths",
+      "owner_layer": "Otto candidate; deeper workflow language deferred",
+      "entrypoints": ["revisit", "satisfied_prerequisite", "template/edit metadata"],
+      "evidence": ["src/otto/portfolio/intake.py:344", "tests/otto/test_intake_roles.py:194", "tests/otto/test_intake_roles.py:141", "tests/otto/test_intake_roles.py:239", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["attention only", "protocol/edit data is preserved", "no manager launch", "no task/session/budget creation"]
+    },
+    {
+      "id": "OTT03-14",
+      "surface": "parent-manager-executor assignment plus sequential safe handoff",
+      "status": "supported and proven in this Otto candidate",
+      "owner_layer": "Otto candidate through one finite assignment command client",
+      "entrypoints": ["assign_roles", "handoff"],
+      "evidence": ["tests/otto/test_handoff_continuity.py:65", "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-observations.json", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["returned refs rev-1/rev-2/rev-3", "generations 1/2/3", "same assignment identity", "first and second exact retries do not revert current third principal"]
+    },
+    {
+      "id": "OTT03-15",
+      "surface": "durable document links/custom metadata",
+      "status": "supported and preserved",
+      "owner_layer": "Otto candidate over accepted content/WorkGraph records",
+      "entrypoints": ["create_document", "link_document", "create_pending(edit=...)"],
+      "evidence": ["tests/otto/test_intake_roles.py:327", "tests/otto/test_intake_roles.py:465", "tests/otto/test_owner_bootstrap.py:63", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["typed links are durable", "custom/unknown metadata retained", "reopen sees same references"]
+    },
+    {
+      "id": "OTT03-16",
+      "surface": "create-and-open partial/repeat outcomes",
+      "status": "supported and proven in retained owner/bootstrap increment",
+      "owner_layer": "prior accepted XHARD source/evidence; candidate regression retained",
+      "entrypoints": ["create_and_open", "reopen"],
+      "evidence": ["tests/otto/test_owner_bootstrap.py:183", "tests/otto/test_owner_bootstrap.py:266", "../ott-03-handoff-worker-receipt-20260914/result.md", "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt"],
+      "invariants": ["occupied has no hidden second project", "materialization failure preserves project", "same-key repeat has no duplicate identity/event"]
+    },
+    {
+      "id": "OTT03-17",
+      "surface": "later OTT-06 real-agent/two-project rehearsal",
+      "status": "pending; later OTT-06 boundary",
+      "owner_layer": "OTT-06, not this bounded Otto candidate",
+      "entrypoints": [],
+      "evidence": ["/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/package/otto_herzchen_delivery_v11_2/implementation-criteria.md:205", "work/ott-03-handoff-worker-receipt-20260914-v2/result.md"],
+      "invariants": ["not claimed", "no real-agent/two-project rehearsal", "no G-OTTO/live host/Astrid acceptance"]
+    }
+  ],
+  "acceptance_claim": "Only the bounded safe-handoff continuity correction and the explicitly cited OTT-03 candidate rows are reported. This matrix does not accept OTT-06, EX-HOST, G-OTTO, live host/Astrid, or the whole programme."
+}

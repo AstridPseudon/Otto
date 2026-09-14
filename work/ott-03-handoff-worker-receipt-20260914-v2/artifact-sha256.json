@@ -1,0 +1,90 @@
+{
+  "algorithm": "SHA-256",
+  "artifacts": [
+    {
+      "bytes": 24643,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/continuity-before.txt",
+      "sha256": "ac17ca2157d3d1c3d94376f2d6a6fef5fb0b3006995b9e7d1a8732f3ac65e05c"
+    },
+    {
+      "bytes": 4190,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/continuity_probe.py",
+      "sha256": "87a9d2fcf44d33e0b19d751b21c23b1e45f633d4e48b1d102c33c3e42db1f78d"
+    },
+    {
+      "bytes": 20875,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+      "sha256": "b7ca895ba6ea492efd9cf38162e9cbe35a700e17f70fcf9e43ebdd93fa14bdd5"
+    },
+    {
+      "bytes": 5924,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/execution-receipts.json",
+      "sha256": "34728f16a737bb88cb3c1893478af9186be4abed520227d2384a77ad49e6989d"
+    },
+    {
+      "bytes": 5240,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/execution-receipts.jsonl",
+      "sha256": "d904307ad8119bfcf77450fa2ee44c1aa8e194b89cf57b149bd94750cc3b93fa"
+    },
+    {
+      "bytes": 213,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-harness-v2.txt",
+      "sha256": "58701840b1bde5fc46c6316f697ffc9f7aecc7160b3ed4c7d2e394b0f3955ba8"
+    },
+    {
+      "bytes": 169973,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/handoff-observations.json",
+      "sha256": "f9c8a842dadc597a3dbbf691185af7ff03cf9c430e353a78e92bc2e86166d5a8"
+    },
+    {
+      "bytes": 9643,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/handoff_harness_v2.py",
+      "sha256": "82c5910158eb2989c660ceef5d98a30b9e27f0a861efecad59a355d343f06aa7"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/installed-existing-34.txt",
+      "sha256": "105ec0d5b223a5a2066c4cd094892e6a42b3a5d4fa128d1ae0395095c00fbbf2"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/installed-final-35.txt",
+      "sha256": "70b8fdac930fe62ac11cc98727276d2f00ccba30788220aa6a0a4fe763d96139"
+    },
+    {
+      "bytes": 213,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/installed-harness-v2.txt",
+      "sha256": "58701840b1bde5fc46c6316f697ffc9f7aecc7160b3ed4c7d2e394b0f3955ba8"
+    },
+    {
+      "bytes": 2805,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/installed-origins.json",
+      "sha256": "bff640502bf8fe879b27adb2ec677a5559c3b0916d73beb6ef89960dcf4fc91a"
+    },
+    {
+      "bytes": 9834,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/result.md",
+      "sha256": "e8bc8a4f48a6cf257178a868212882970fd1d78e063b1f7eec04371d9ff4f0c5"
+    },
+    {
+      "bytes": 2274,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/run_receipt_v2.py",
+      "sha256": "b9e7e6f10d6aee9d5cc262bf46d76d08cbd4407bfaadf1c2db5bc4068c71c58d"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/source-existing-34.txt",
+      "sha256": "3ab089326f1a106520cf2c324b9b41ef266741d04fd18bb1b62ebb30a83fb4e8"
+    },
+    {
+      "bytes": 836,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/source-final-35.txt",
+      "sha256": "cf8451406b27636e0f856371fdb71a351acc37af5ae96a4815d2776e9c9e0564"
+    },
+    {
+      "bytes": 12616,
+      "path": "work/ott-03-handoff-worker-receipt-20260914-v2/surface-matrix.json",
+      "sha256": "8051a9a5a0c459e59fb833c8f7b13f930fdb9cfc9abad6aab19f67d0c74ef2b5"
+    }
+  ]
+}

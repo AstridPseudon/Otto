@@ -1,0 +1,569 @@
+{
+  "after_first": {
+    "generation": 2,
+    "history": [
+      {
+        "agent": null,
+        "generation": 1,
+        "principal": "old",
+        "reason": "initial",
+        "session": null
+      },
+      {
+        "agent": null,
+        "generation": 2,
+        "principal": "new",
+        "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+        "session": null
+      }
+    ],
+    "payload": {
+      "agent": null,
+      "generation": 2,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "old",
+          "reason": "initial",
+          "session": null
+        },
+        {
+          "agent": null,
+          "generation": 2,
+          "principal": "new",
+          "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+          "session": null
+        }
+      ],
+      "launcher": null,
+      "manager": "old",
+      "pins": [],
+      "principal": "new",
+      "record_type": "work.responsibility-assignment",
+      "reporter": null,
+      "responsibility_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.responsibility",
+        "revision": null
+      },
+      "role": "manager",
+      "schema_revision": "work.assignment.v1",
+      "scope": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "session": null,
+      "status": "reassigned"
+    },
+    "principal": "new",
+    "ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "assignment-d8671f81462713c6380b7df30535",
+      "kind": "wrk.assignment",
+      "revision": "rev-2"
+    },
+    "status": "reassigned"
+  },
+  "after_second": {
+    "generation": 2,
+    "history": [
+      {
+        "agent": null,
+        "generation": 1,
+        "principal": "old",
+        "reason": "initial",
+        "session": null
+      },
+      {
+        "agent": null,
+        "generation": 2,
+        "principal": "new",
+        "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+        "session": null
+      }
+    ],
+    "payload": {
+      "agent": null,
+      "generation": 2,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "old",
+          "reason": "initial",
+          "session": null
+        },
+        {
+          "agent": null,
+          "generation": 2,
+          "principal": "new",
+          "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+          "session": null
+        }
+      ],
+      "launcher": null,
+      "manager": "old",
+      "pins": [],
+      "principal": "new",
+      "record_type": "work.responsibility-assignment",
+      "reporter": null,
+      "responsibility_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.responsibility",
+        "revision": null
+      },
+      "role": "manager",
+      "schema_revision": "work.assignment.v1",
+      "scope": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "session": null,
+      "status": "reassigned"
+    },
+    "principal": "new",
+    "ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "assignment-d8671f81462713c6380b7df30535",
+      "kind": "wrk.assignment",
+      "revision": "rev-2"
+    },
+    "status": "reassigned"
+  },
+  "before_first": {
+    "generation": 1,
+    "history": [
+      {
+        "agent": null,
+        "generation": 1,
+        "principal": "old",
+        "reason": "initial",
+        "session": null
+      }
+    ],
+    "payload": {
+      "agent": null,
+      "generation": 1,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "old",
+          "reason": "initial",
+          "session": null
+        }
+      ],
+      "launcher": null,
+      "manager": "old",
+      "pins": [],
+      "principal": "old",
+      "record_type": "work.responsibility-assignment",
+      "reporter": null,
+      "responsibility_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.responsibility",
+        "revision": null
+      },
+      "role": "manager",
+      "schema_revision": "work.assignment.v1",
+      "scope": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "session": null,
+      "status": "queued"
+    },
+    "principal": "old",
+    "ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "assignment-d8671f81462713c6380b7df30535",
+      "kind": "wrk.assignment",
+      "revision": "rev-1"
+    },
+    "status": "queued"
+  },
+  "delta_after_first_to_second_replay": 0,
+  "events_after_first_count": 6,
+  "events_after_second_count": 6,
+  "first": {
+    "activation": false,
+    "assignment": {
+      "assignment_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "generation": 2,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "old",
+          "reason": "initial",
+          "session": null
+        },
+        {
+          "agent": null,
+          "generation": 2,
+          "principal": "new",
+          "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+          "session": null
+        }
+      ],
+      "manager": "new",
+      "payload": {
+        "agent": null,
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+            "session": null
+          }
+        ],
+        "launcher": null,
+        "manager": "old",
+        "pins": [],
+        "principal": "new",
+        "record_type": "work.responsibility-assignment",
+        "reporter": null,
+        "responsibility_ref": {
+          "authority": "ott03-continuity-probe",
+          "id": "assignment-d8671f81462713c6380b7df30535",
+          "kind": "wrk.responsibility",
+          "revision": null
+        },
+        "role": "manager",
+        "schema_revision": "work.assignment.v1",
+        "scope": {
+          "authority": "ott03-continuity-probe",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "session": null,
+        "status": "reassigned"
+      },
+      "principal": "new",
+      "ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "role": "manager",
+      "scope": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "reassigned",
+      "stored_manager": "old"
+    },
+    "budget_reserved": false,
+    "dispatch": false,
+    "event_ids": [
+      "event-9ca5d1c5f674a15c816b908330525ff5"
+    ],
+    "executable": false,
+    "handoff": {
+      "consumption_refs": [
+        {
+          "authority": "ott03-continuity-probe",
+          "id": "assignment-dadabaa6effbbc484fd34624c618",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        }
+      ],
+      "evidence_refs": [
+        {
+          "authority": "ott03-continuity-probe",
+          "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      ],
+      "from_generation": 1,
+      "from_manager": "old",
+      "kind": "otto.safe-responsibility-handoff",
+      "manager_assignment_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-1"
+      },
+      "parent_obligation": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "project_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "to_manager": "new"
+    },
+    "manager_assignment_ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "assignment-d8671f81462713c6380b7df30535",
+      "kind": "wrk.assignment",
+      "revision": "rev-2"
+    },
+    "outcome": "handed-off",
+    "project_ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "project-6cbe23bf27e2d442109cb6521daa",
+      "kind": "work.project",
+      "revision": "rev-1"
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-9ca5d1c5f674a15c816b908330525ff5"
+      ],
+      "logical_request_key": "handoff-1",
+      "observed_revision": "rev-2",
+      "operation": "work.assignment.reassign",
+      "replayed": false,
+      "request_digest": "2c4be1ebab5b6970f5be0414a6555882a39648021e67f6b8bf296af0def162f4",
+      "result_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-1"
+      },
+      "transaction_id": "89afb9367025bd26b26c9e1abe6a159b",
+      "unknown_reason": null
+    },
+    "replayed": false,
+    "safe_handoff": true,
+    "session_created": false,
+    "task_created": false
+  },
+  "first_replay_after_second": {
+    "activation": false,
+    "assignment": {
+      "assignment_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "generation": 2,
+      "history": [
+        {
+          "agent": null,
+          "generation": 1,
+          "principal": "old",
+          "reason": "initial",
+          "session": null
+        },
+        {
+          "agent": null,
+          "generation": 2,
+          "principal": "new",
+          "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+          "session": null
+        }
+      ],
+      "manager": "new",
+      "payload": {
+        "agent": null,
+        "generation": 2,
+        "history": [
+          {
+            "agent": null,
+            "generation": 1,
+            "principal": "old",
+            "reason": "initial",
+            "session": null
+          },
+          {
+            "agent": null,
+            "generation": 2,
+            "principal": "new",
+            "reason": "otto-handoff-context-eyJjb25zdW1wdGlvbl9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJhc3NpZ25tZW50LWRhZGFiYWE2ZWZmYmJjNDg0ZmQzNDYyNGM2MTgiLCJraW5kIjoid3JrLmFzc2lnbm1lbnQiLCJyZXZpc2lvbiI6InJldi0xIn1dLCJldmlkZW5jZV9yZWZzIjpbeyJhdXRob3JpdHkiOiJvdHQwMy1jb250aW51aXR5LXByb2JlIiwiaWQiOiJwcm9qZWN0LTkzYTVhMWRlN2U1YjI4NGRiN2Y5M2E3YjkxY2EiLCJraW5kIjoid29yay5wcm9qZWN0IiwicmV2aXNpb24iOiJyZXYtMSJ9XSwiZnJvbV9nZW5lcmF0aW9uIjoxLCJmcm9tX21hbmFnZXIiOiJvbGQiLCJraW5kIjoib3R0by5zYWZlLXJlc3BvbnNpYmlsaXR5LWhhbmRvZmYiLCJtYW5hZ2VyX2Fzc2lnbm1lbnRfcmVmIjp7ImF1dGhvcml0eSI6Im90dDAzLWNvbnRpbnVpdHktcHJvYmUiLCJpZCI6ImFzc2lnbm1lbnQtZDg2NzFmODE0NjI3MTNjNjM4MGI3ZGYzMDUzNSIsImtpbmQiOiJ3cmsuYXNzaWdubWVudCIsInJldmlzaW9uIjoicmV2LTEifSwicGFyZW50X29ibGlnYXRpb24iOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC05M2E1YTFkZTdlNWIyODRkYjdmOTNhN2I5MWNhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwicHJvamVjdF9yZWYiOnsiYXV0aG9yaXR5Ijoib3R0MDMtY29udGludWl0eS1wcm9iZSIsImlkIjoicHJvamVjdC02Y2JlMjNiZjI3ZTJkNDQyMTA5Y2I2NTIxZGFhIiwia2luZCI6IndvcmsucHJvamVjdCIsInJldmlzaW9uIjoicmV2LTEifSwidG9fbWFuYWdlciI6Im5ldyJ9",
+            "session": null
+          }
+        ],
+        "launcher": null,
+        "manager": "old",
+        "pins": [],
+        "principal": "new",
+        "record_type": "work.responsibility-assignment",
+        "reporter": null,
+        "responsibility_ref": {
+          "authority": "ott03-continuity-probe",
+          "id": "assignment-d8671f81462713c6380b7df30535",
+          "kind": "wrk.responsibility",
+          "revision": null
+        },
+        "role": "manager",
+        "schema_revision": "work.assignment.v1",
+        "scope": {
+          "authority": "ott03-continuity-probe",
+          "id": "project-6cbe23bf27e2d442109cb6521daa",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "session": null,
+        "status": "reassigned"
+      },
+      "principal": "new",
+      "ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "role": "manager",
+      "scope": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "reassigned",
+      "stored_manager": "old"
+    },
+    "budget_reserved": false,
+    "dispatch": false,
+    "event_ids": [
+      "event-9ca5d1c5f674a15c816b908330525ff5"
+    ],
+    "executable": false,
+    "handoff": {
+      "consumption_refs": [
+        {
+          "authority": "ott03-continuity-probe",
+          "id": "assignment-dadabaa6effbbc484fd34624c618",
+          "kind": "wrk.assignment",
+          "revision": "rev-1"
+        }
+      ],
+      "evidence_refs": [
+        {
+          "authority": "ott03-continuity-probe",
+          "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      ],
+      "from_generation": 1,
+      "from_manager": "old",
+      "kind": "otto.safe-responsibility-handoff",
+      "manager_assignment_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-1"
+      },
+      "parent_obligation": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-93a5a1de7e5b284db7f93a7b91ca",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "project_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "to_manager": "new"
+    },
+    "manager_assignment_ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "assignment-d8671f81462713c6380b7df30535",
+      "kind": "wrk.assignment",
+      "revision": "rev-2"
+    },
+    "outcome": "replayed",
+    "project_ref": {
+      "authority": "ott03-continuity-probe",
+      "id": "project-6cbe23bf27e2d442109cb6521daa",
+      "kind": "work.project",
+      "revision": "rev-1"
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-9ca5d1c5f674a15c816b908330525ff5"
+      ],
+      "logical_request_key": "handoff-1",
+      "observed_revision": "rev-2",
+      "operation": "work.assignment.reassign",
+      "replayed": false,
+      "request_digest": "2c4be1ebab5b6970f5be0414a6555882a39648021e67f6b8bf296af0def162f4",
+      "result_ref": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-continuity-probe",
+        "id": "assignment-d8671f81462713c6380b7df30535",
+        "kind": "wrk.assignment",
+        "revision": "rev-1"
+      },
+      "transaction_id": "89afb9367025bd26b26c9e1abe6a159b",
+      "unknown_reason": null
+    },
+    "replayed": true,
+    "safe_handoff": true,
+    "session_created": false,
+    "task_created": false
+  },
+  "pid": 60566,
+  "project_ref": {
+    "authority": "ott03-continuity-probe",
+    "id": "project-6cbe23bf27e2d442109cb6521daa",
+    "kind": "work.project",
+    "revision": "rev-1"
+  },
+  "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "second": {
+    "error": {
+      "code": "stale_manager_assignment",
+      "message": "from_manager does not match the current assignment principal/manager",
+      "operation": "work.responsibility.handoff"
+    },
+    "event_ids": [],
+    "executable": false,
+    "outcome": "error",
+    "replayed": false
+  }
+}
