@@ -1,27 +1,11 @@
 """Public OTT-05 repository/integration responsibility boundary."""
 
 from .release_records import (
-    COMMANDS,
-    RIGHTS,
-    CommandEnvelope,
-    CommandReceipt,
-    ProcessProfile,
-    ReleaseError,
-    ReleaseEvent,
-    ReleaseLedger,
-    RepositoryRecord,
-    SourceSetEntry,
+    COMMANDS, RIGHTS, CandidateObservation, ProcessProfile, ReleaseError,
+    ReleaseOperations, RepositoryRecord, SourceSetEntry,
 )
 
 __all__ = [
-    "COMMANDS",
-    "RIGHTS",
-    "CommandEnvelope",
-    "CommandReceipt",
-    "ProcessProfile",
-    "ReleaseError",
-    "ReleaseEvent",
-    "ReleaseLedger",
-    "RepositoryRecord",
-    "SourceSetEntry",
+    "COMMANDS", "RIGHTS", "CandidateObservation", "ProcessProfile",
+    "ReleaseError", "ReleaseOperations", "RepositoryRecord", "SourceSetEntry",
 ]

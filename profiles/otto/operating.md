@@ -89,22 +89,25 @@ Adoption is verified in the existing planned work: OTT-02 `src/otto/cli.py`, `sr
 
 ## OTT-05 repository and release boundary
 
-The shipped `otto.engineering` boundary records repository custody and exact
-candidate source sets as explicit typed records. A repository has one stable
-custodian and a selected process profile; the profile carries only `hourly` or
-`12-hour` cadence data. It does not create a scheduler, queue, allowance,
-automatic promotion, publication, or deployment.
+The shipped `otto.engineering` boundary is an owner-side adapter over the
+accepted Herzchen `Store`, `TransactionContext`, `CommandEnvelope`,
+`CommandReceipt`, event, `WorkGraph`, and candidate/decision APIs. It owns no
+ledger, database, parallel receipt/event model, or private JSON snapshot. The
+Store is created by the trusted bootstrap; the returned consumer has only the
+finite typed Otto operations.
 
-Candidate selection, required checks, manager decision, merge observation,
-source promotion, package publication, and deployment are separate public
-commands. Their authorities and receipts are distinct. A completed merge only
-records the observed target-head change; publication and deployment remain
-`not_performed` until their own commands are explicitly authorised.
+The shared Store persists repository custody, remote/target identity, exact
+source sets, actual Herzchen candidate and decision references, required
+checks, merge/promotion observations, and separate publication/deployment
+states. Candidate selection, checks, manager decision, merge/source
+promotion, package publication, and deployment are distinct commands and
+authorities. A merge observation never implies publication or deployment.
 
-Every mutation carries the expected target head, record version, edit token,
-and (when applicable) the exact source-set digest. Stale, changed, duplicate,
-conflicting, and unknown outcomes are typed and do not claim a release. A
-partial promotion names completed, pending, and unknown steps and may only be
-resumed by the same repository owner. The JSON snapshot is an explicit caller
-choice for persistence; importing or constructing the boundary performs no
-release action.
+Every repository mutation checks expected head, version, edit token, and exact
+source-set digest at the Otto boundary and uses Herzchen's expected
+revision/version transaction checks. Stale, changed, duplicate, conflicting,
+and unknown outcomes produce typed evidence without unintended promotion.
+Partial promotion explicitly names completed, pending, and unknown steps and
+is recoverable only by the registered owner. Hourly and 12-hour behavior is
+selected profile data only; no scheduler, queue, allowance, auto-promotion,
+publication, or deployment is created.

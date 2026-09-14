@@ -1,50 +1,43 @@
-"""Typed, explicit repository and release records for Otto.
+"""OTT-05 repository responsibility over the accepted Herzchen Store.
 
-This module is a record boundary, not a Git client.  It keeps repository
-custody, candidate/check/decision evidence, and explicitly requested release
-operations together while leaving remote writes, package publication, and
-deployment to their separately authorised owners.
-
-The ledger is deliberately an explicit in-process repository of records.  A
-caller may persist and restore its JSON snapshot with :meth:`save` and
-:meth:`load`; construction never creates a scheduler, queue, allowance, or
-automatic release action.
+Otto is a finite consumer of the accepted Herzchen public contracts.  This
+module deliberately contains no database, ledger, receipt, event, scheduler,
+or release executor.  The trusted bootstrap owns a Herzchen ``Store`` and
+domain handlers; the returned consumer exposes only typed data and finite
+operations.  All durable mutations therefore use Herzchen's public
+``TransactionContext``, ``CommandEnvelope``, ``CommandReceipt`` and event
+identity.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence, Union
+from typing import Any, Mapping, Optional, Sequence
 
 
 COMMANDS = (
-    "repository.register",
-    "candidate.select",
-    "check.record",
-    "decision.record",
-    "merge.record",
-    "promotion.record",
-    "publication.record",
-    "deployment.record",
+    "repository.register", "candidate.select", "check.record",
+    "decision.record", "merge.record", "promotion.record",
+    "publication.record", "deployment.record",
 )
-
 RIGHTS = {
-    "repository.register": "repository_owner",
-    "candidate.select": "repository_owner",
-    "check.record": "check_authority",
-    "decision.record": "manager_authority",
-    "merge.record": "merge_authority",
-    "promotion.record": "promotion_authority",
-    "publication.record": "publication_authority",
-    "deployment.record": "deployment_authority",
+    "repository.register": "repository_owner", "candidate.select": "repository_owner",
+    "check.record": "check_authority", "decision.record": "manager_authority",
+    "merge.record": "merge_authority", "promotion.record": "promotion_authority",
+    "publication.record": "publication_authority", "deployment.record": "deployment_authority",
 }
-
 _CADENCES = (1, 12)
 _RUNNER_OUTCOMES = ("completed", "failed", "unknown")
 _CHECK_OUTCOMES = ("pass", "fail", "unknown")
+_PROMOTION_OUTCOMES = ("completed", "pending", "unknown", "failed")
+_PUBLICATION_OUTCOMES = ("not_performed", "performed", "unknown")
 _DECISIONS = ("approve", "reject", "hold")
+RELEASE_DOMAIN_ID = "otto.engineering.release"
+RELEASE_SCHEMA_REVISION = "otto.engineering.release.v1"
+RELEASE_OWNER = "otto"
+REPOSITORY_KIND = "otto.repository"
 
 
 def _json(value: Any) -> Any:
@@ -52,9 +45,7 @@ def _json(value: Any) -> Any:
 
 
 def _digest(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _text(value: Any, name: str) -> str:
@@ -64,7 +55,7 @@ def _text(value: Any, name: str) -> str:
 
 
 class ReleaseError(ValueError):
-    """A typed, side-effect-free rejection from the public release boundary."""
+    """Typed, side-effect-free boundary rejection."""
 
     def __init__(self, code: str, message: str, **details: Any) -> None:
         super().__init__(message)
@@ -80,7 +71,7 @@ class ReleaseError(ValueError):
 
 @dataclass(frozen=True)
 class SourceSetEntry:
-    """One exact, named input in a candidate source set."""
+    """One exact, named input in a repository source set."""
 
     key: str
     source_ref: str
@@ -90,23 +81,13 @@ class SourceSetEntry:
     role: str = "source"
 
     def __post_init__(self) -> None:
-        _text(self.key, "source_set.key")
-        _text(self.source_ref, "source_set.source_ref")
-        _text(self.commit, "source_set.commit")
-        _text(self.tree, "source_set.tree")
+        for field_name, value in (("key", self.key), ("source_ref", self.source_ref), ("commit", self.commit), ("tree", self.tree), ("role", self.role)):
+            _text(value, "source_set." + field_name)
         if self.artifact_sha256 is not None:
             _text(self.artifact_sha256, "source_set.artifact_sha256")
-        _text(self.role, "source_set.role")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "key": self.key,
-            "source_ref": self.source_ref,
-            "commit": self.commit,
-            "tree": self.tree,
-            "artifact_sha256": self.artifact_sha256,
-            "role": self.role,
-        }
+        return {"key": self.key, "source_ref": self.source_ref, "commit": self.commit, "tree": self.tree, "artifact_sha256": self.artifact_sha256, "role": self.role}
 
     @classmethod
     def from_value(cls, value: Any) -> "SourceSetEntry":
@@ -114,19 +95,12 @@ class SourceSetEntry:
             return value
         if not isinstance(value, Mapping):
             raise ReleaseError("invalid_source_set", "source-set entries must be objects")
-        return cls(
-            key=_text(value.get("key"), "source_set.key"),
-            source_ref=_text(value.get("source_ref"), "source_set.source_ref"),
-            commit=_text(value.get("commit"), "source_set.commit"),
-            tree=_text(value.get("tree"), "source_set.tree"),
-            artifact_sha256=value.get("artifact_sha256"),
-            role=value.get("role", "source"),
-        )
+        return cls(value.get("key"), value.get("source_ref"), value.get("commit"), value.get("tree"), value.get("artifact_sha256"), value.get("role", "source"))
 
 
 @dataclass(frozen=True)
 class ProcessProfile:
-    """Selected process guidance; it is not a scheduler or an allowance."""
+    """Selected cadence data, never a scheduler, queue, or allowance."""
 
     profile_id: str
     manager_id: str
@@ -141,29 +115,16 @@ class ProcessProfile:
         _text(self.profile_id, "process_profile.profile_id")
         _text(self.manager_id, "process_profile.manager_id")
         if self.cadence_hours not in _CADENCES:
-            raise ReleaseError("invalid_process_profile", "cadence must be hourly or 12-hour", cadence_hours=self.cadence_hours)
+            raise ReleaseError("invalid_process_profile", "cadence must be hourly or 12-hour")
         if self.scheduler != "none" or self.queue or self.periodic_allowance != "none" or self.automatic_deployment:
-            raise ReleaseError(
-                "unsupported_process_profile",
-                "profiles carry selected cadence data only; scheduler, queue, allowance and automatic deployment are disabled",
-            )
+            raise ReleaseError("unsupported_process_profile", "selected profile data cannot create scheduling or automatic deployment")
 
     @property
     def cadence(self) -> str:
         return "hourly" if self.cadence_hours == 1 else "12-hour"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "profile_id": self.profile_id,
-            "manager_id": self.manager_id,
-            "cadence_hours": self.cadence_hours,
-            "cadence": self.cadence,
-            "selected": self.selected,
-            "scheduler": self.scheduler,
-            "queue": self.queue,
-            "periodic_allowance": self.periodic_allowance,
-            "automatic_deployment": self.automatic_deployment,
-        }
+        return {"profile_id": self.profile_id, "manager_id": self.manager_id, "cadence_hours": self.cadence_hours, "cadence": self.cadence, "selected": self.selected, "scheduler": self.scheduler, "queue": self.queue, "periodic_allowance": self.periodic_allowance, "automatic_deployment": self.automatic_deployment}
 
     @classmethod
     def hourly(cls, manager_id: str, profile_id: str = "otto-hourly") -> "ProcessProfile":
@@ -179,465 +140,296 @@ class ProcessProfile:
             return value
         if not isinstance(value, Mapping):
             raise ReleaseError("invalid_process_profile", "process profile must be an object")
-        return cls(
-            profile_id=_text(value.get("profile_id"), "process_profile.profile_id"),
-            manager_id=_text(value.get("manager_id"), "process_profile.manager_id"),
-            cadence_hours=value.get("cadence_hours"),
-            selected=value.get("selected", True),
-            scheduler=value.get("scheduler", "none"),
-            queue=value.get("queue", False),
-            periodic_allowance=value.get("periodic_allowance", "none"),
-            automatic_deployment=value.get("automatic_deployment", False),
-        )
+        return cls(value.get("profile_id"), value.get("manager_id"), value.get("cadence_hours"), value.get("selected", True), value.get("scheduler", "none"), value.get("queue", False), value.get("periodic_allowance", "none"), value.get("automatic_deployment", False))
 
 
 @dataclass(frozen=True)
-class CommandEnvelope:
-    operation: str
-    logical_key: str
-    actor: str
-    authority: str
-    payload_digest: str
-    expected_version: Optional[int] = None
-    expected_head: Optional[str] = None
-    expected_edit_token: Optional[str] = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "operation": self.operation,
-            "logical_key": self.logical_key,
-            "actor": self.actor,
-            "authority": self.authority,
-            "payload_digest": self.payload_digest,
-            "expected_version": self.expected_version,
-            "expected_head": self.expected_head,
-            "expected_edit_token": self.expected_edit_token,
-        }
-
-
-@dataclass(frozen=True)
-class CommandReceipt:
-    receipt_id: str
-    envelope: CommandEnvelope
-    outcome: str
-    event_ids: tuple[str, ...]
-    effects: Mapping[str, Any]
-    error: Optional[Mapping[str, Any]] = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "receipt_id": self.receipt_id,
-            "envelope": self.envelope.to_dict(),
-            "outcome": self.outcome,
-            "event_ids": list(self.event_ids),
-            "effects": _json(self.effects),
-            "error": None if self.error is None else _json(self.error),
-        }
-
-
-@dataclass(frozen=True)
-class ReleaseEvent:
-    event_id: str
-    operation: str
-    logical_key: str
-    subject: str
-    outcome: str
-    payload_digest: str
-    details: Mapping[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "event_id": self.event_id,
-            "operation": self.operation,
-            "logical_key": self.logical_key,
-            "subject": self.subject,
-            "outcome": self.outcome,
-            "payload_digest": self.payload_digest,
-            "details": _json(self.details),
-        }
-
-
-@dataclass
 class RepositoryRecord:
-    repository_id: str
-    remote_id: str
-    target_id: str
-    baseline_head: str
-    target_head: str
-    source_set: tuple[SourceSetEntry, ...]
-    owner: str
-    authorities: dict[str, str]
-    process_profile: ProcessProfile
-    version: int = 1
-    edit_token: str = ""
-    candidate_ref: Optional[str] = None
-    decision_ref: Optional[str] = None
-    checks: dict[str, dict[str, Any]] = field(default_factory=dict)
-    manager_decision: Optional[dict[str, Any]] = None
-    merge: Optional[dict[str, Any]] = None
-    promotion: dict[str, Any] = field(default_factory=lambda: {
-        "status": "not_started", "owner": None, "completed_steps": [], "pending_steps": [], "unknown_steps": []
-    })
-    publication: dict[str, Any] = field(default_factory=lambda: {"status": "not_performed"})
-    deployment: dict[str, Any] = field(default_factory=lambda: {"status": "not_performed"})
-    receipt_ids: list[str] = field(default_factory=list)
-    event_ids: list[str] = field(default_factory=list)
+    """Typed view of a Herzchen Store identity; receipt is Herzchen's type."""
+
+    ref: Any
+    version: int
+    edit_token: Optional[str]
+    payload: Mapping[str, Any]
+    receipt: Any = None
 
     @property
-    def source_set_digest(self) -> str:
-        return _digest([entry.to_dict() for entry in self.source_set])
+    def repository_id(self) -> str:
+        return str(self.payload["repository_id"])
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "repository_id": self.repository_id,
-            "remote_id": self.remote_id,
-            "target_id": self.target_id,
-            "baseline_head": self.baseline_head,
-            "target_head": self.target_head,
-            "source_set": [entry.to_dict() for entry in self.source_set],
-            "source_set_digest": self.source_set_digest,
-            "owner": self.owner,
-            "authorities": _json(self.authorities),
-            "process_profile": self.process_profile.to_dict(),
-            "version": self.version,
-            "edit_token": self.edit_token,
-            "candidate_ref": self.candidate_ref,
-            "decision_ref": self.decision_ref,
-            "checks": _json(self.checks),
-            "manager_decision": _json(self.manager_decision),
-            "merge": _json(self.merge),
-            "promotion": _json(self.promotion),
-            "publication": _json(self.publication),
-            "deployment": _json(self.deployment),
-            "receipt_ids": list(self.receipt_ids),
-            "event_ids": list(self.event_ids),
-        }
+        return {"ref": self.ref.to_dict(), "version": self.version, "edit_token": self.edit_token, "payload": _json(self.payload), "receipt": None if self.receipt is None else self.receipt.to_dict()}
+
+
+@dataclass(frozen=True)
+class CandidateObservation:
+    """Actual Herzchen candidate record plus Otto's source-set observation."""
+
+    candidate: Any
+    receipt: Any
+    source_set_digest: str
+
+
+class _OwnerService:
+    """Trusted owner-side composition; never passed to an ordinary consumer."""
+
+    def __init__(self, store: Any, *, authority: str, actor_id: str, credential_ref: str) -> None:
+        from herzchen.contracts import AuthenticatedActor
+        from herzchen.domains.work import WorkGraph
+        from herzchen.domains.work.decisions import DecisionsModule
+
+        self.store = store
+        self.authority = authority
+        self.actor = AuthenticatedActor(authority, actor_id, credential_ref)
+        self.release_contribution = _release_contribution()
+        if RELEASE_DOMAIN_ID not in {item.domain_id for item in store.registered_domains()}:
+            store.register_domain_handler((self.release_contribution,))
+        self.release_handler = store.domain_handler((self.release_contribution,))
+        self.graph = WorkGraph(store, actor=self.actor)
+        self.decisions = DecisionsModule(store, actor=self.actor)
+        self._context: Optional[tuple[Any, Any, Any, Any, Any]] = None
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "RepositoryRecord":
-        return cls(
-            repository_id=value["repository_id"], remote_id=value["remote_id"], target_id=value["target_id"],
-            baseline_head=value["baseline_head"], target_head=value["target_head"],
-            source_set=tuple(SourceSetEntry.from_value(item) for item in value["source_set"]),
-            owner=value["owner"], authorities=dict(value["authorities"]),
-            process_profile=ProcessProfile.from_value(value["process_profile"]), version=value["version"],
-            edit_token=value["edit_token"], candidate_ref=value.get("candidate_ref"), decision_ref=value.get("decision_ref"),
-            checks=dict(value.get("checks", {})), manager_decision=value.get("manager_decision"),
-            merge=value.get("merge"), promotion=dict(value.get("promotion", {})),
-            publication=dict(value.get("publication", {})), deployment=dict(value.get("deployment", {})),
-            receipt_ids=list(value.get("receipt_ids", [])), event_ids=list(value.get("event_ids", [])),
-        )
+    def create(cls, database_path: Path, *, authority: str, actor_id: str, credential_ref: str) -> "_OwnerService":
+        from herzchen.kernel import Store
+        from herzchen.domains.work.module import register_work
+        store = Store.create(str(database_path), authority=authority)
+        register_work(store)
+        return cls(store, authority=authority, actor_id=actor_id, credential_ref=credential_ref)
 
+    @classmethod
+    def reopen(cls, database_path: Path, *, authority: str, actor_id: str, credential_ref: str, expected_domains: Sequence[Any]) -> "_OwnerService":
+        from herzchen.kernel import Store
+        store = Store.open(str(database_path), authority=authority, expected_domains=tuple(expected_domains))
+        return cls(store, authority=authority, actor_id=actor_id, credential_ref=credential_ref)
 
-class ReleaseLedger:
-    """Explicit public command boundary for repository/release records."""
+    def close(self) -> None:
+        self.store.close()
 
-    def __init__(self) -> None:
-        self._repositories: dict[str, RepositoryRecord] = {}
-        self._receipts: dict[str, CommandReceipt] = {}
-        self._events: dict[str, ReleaseEvent] = {}
-        self._next_receipt = 1
-        self._next_event = 1
-        self._manager_profiles: dict[str, str] = {}
+    def context(self) -> tuple[Any, Any, Any, Any, Any]:
+        if self._context is not None:
+            return self._context
+        project = self.graph.create_project(title="OTT-05 repository integration", logical_request_key="otto-ott05-project", actor=self.actor)
+        artifact = self.graph.create_task(project, title="Otto candidate artifact", logical_request_key="otto-ott05-artifact", actor=self.actor)
+        source = self.graph.create_task(project, title="Otto candidate source", logical_request_key="otto-ott05-source", actor=self.actor)
+        spec = self.graph.create_task(project, title="OTT-05 source-set specification", logical_request_key="otto-ott05-spec", actor=self.actor)
+        criterion = self.graph.create_criterion(project, title="C20 C21 C27 C31", logical_request_key="otto-ott05-criterion", actor=self.actor)
+        self._context = (project, artifact, source, spec, criterion)
+        return self._context
 
-    def _ids(self) -> tuple[str, str]:
-        receipt_id = f"release-receipt-{self._next_receipt}"
-        event_id = f"release-event-{self._next_event}"
-        self._next_receipt += 1
-        self._next_event += 1
-        return receipt_id, event_id
-
-    def _envelope(self, operation: str, logical_key: str, actor: str, authority: str, payload: Any, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str]) -> CommandEnvelope:
-        return CommandEnvelope(operation, _text(logical_key, "logical_key"), _text(actor, "actor"), _text(authority, "authority"), _digest(payload), expected_version, expected_head, expected_edit_token)
-
-    def _replay(self, envelope: CommandEnvelope) -> Optional[dict[str, Any]]:
-        prior = self._receipts.get(envelope.logical_key)
-        if prior is None:
-            return None
-        if prior.envelope.payload_digest == envelope.payload_digest and prior.envelope.operation == envelope.operation:
-            return {"outcome": "replayed", "receipt": prior.to_dict(), "event_ids": list(prior.event_ids), "effects": _json(prior.effects)}
-        return self._rejection("replay_conflict", "logical key was already used with a different command or payload", envelope=envelope, prior=prior)
-
-    def _rejection(self, code: str, message: str, *, envelope: Optional[CommandEnvelope] = None, prior: Optional[CommandReceipt] = None, **details: Any) -> dict[str, Any]:
-        error = {"code": code, "message": message}
-        error.update(_json(details))
-        return {"outcome": "rejected", "error": error, "event_ids": [], "receipt": None, "effects": self._zero_effects()}
-
-    @staticmethod
-    def _zero_effects() -> dict[str, Any]:
-        return {"target_head_changed": False, "promotion_steps_completed": 0, "publication": False, "deployment": False}
-
-    def _record(self, record: RepositoryRecord, envelope: CommandEnvelope, outcome: str, details: Mapping[str, Any], effects: Mapping[str, Any]) -> dict[str, Any]:
-        receipt_id, event_id = self._ids()
-        event = ReleaseEvent(event_id, envelope.operation, envelope.logical_key, record.repository_id, outcome, envelope.payload_digest, details)
-        receipt = CommandReceipt(receipt_id, envelope, outcome, (event_id,), effects)
-        self._events[event_id] = event
-        self._receipts[envelope.logical_key] = receipt
-        record.receipt_ids.append(receipt_id)
-        record.event_ids.append(event_id)
-        return {"outcome": outcome, "repository": record.to_dict(), "receipt": receipt.to_dict(), "event_ids": [event_id], "effects": _json(effects)}
-
-    def _commit(self, record: RepositoryRecord, envelope: CommandEnvelope, outcome: str, details: Mapping[str, Any], effects: Mapping[str, Any]) -> dict[str, Any]:
-        record.version += 1
-        record.edit_token = _digest({"repository_id": record.repository_id, "version": record.version, "target_head": record.target_head})[:32]
-        return self._record(record, envelope, outcome, details, effects)
-
-    def _get(self, repository_id: str) -> RepositoryRecord:
+    def record(self, operation: str, repository: RepositoryRecord, payload: Mapping[str, Any], *, logical_key: str, actor: Any) -> Any:
+        from herzchen.contracts import CommandEnvelope, ResourceRef, TransactionContext
+        expected_revision, expected_version = repository.ref.revision, repository.version
+        prior = self.store.get_receipt(logical_key)
+        if prior is not None and prior.event_ids:
+            for event in self.store.list_events(stream="otto.repository:" + repository.repository_id):
+                if event.event_id == prior.event_ids[0] and event.before_refs:
+                    expected_revision = event.before_refs[0].revision
+                    if isinstance(expected_revision, str) and expected_revision.startswith("rev-"):
+                        expected_version = int(expected_revision.removeprefix("rev-"))
+                    break
+        context = TransactionContext(actor, logical_key, "0" * 64, expected_revision=expected_revision, expected_version=expected_version)
+        target = ResourceRef(self.authority, REPOSITORY_KIND, repository.repository_id)
+        envelope = CommandEnvelope(operation, RELEASE_SCHEMA_REVISION, target, context, dict(payload))
+        result_ref = ResourceRef(self.authority, REPOSITORY_KIND, repository.repository_id, "rev-" + str(repository.version + 1))
         try:
-            return self._repositories[_text(repository_id, "repository_id")]
-        except KeyError:
-            raise ReleaseError("unknown_repository", "repository identity is not registered", repository_id=repository_id)
+            return self.release_handler.mutate(envelope, event_type=operation + ".recorded", result_ref=result_ref, before_refs=(repository.ref,), effects={"repository_id": repository.repository_id, "operation": operation}, stream="otto.repository:" + repository.repository_id)
+        except Exception as exc:
+            _translate_public_error(exc)
 
-    def _guard(self, record: RepositoryRecord, envelope: CommandEnvelope, *, expected_owner: Optional[str] = None, source_set_digest: Optional[str] = None) -> Optional[dict[str, Any]]:
-        required_right = RIGHTS[envelope.operation]
-        if record.authorities.get(required_right) != envelope.authority:
-            return self._rejection("authority_mismatch", "command authority is not authorised for this repository", required_right=required_right)
-        if expected_owner is not None and record.owner != expected_owner:
-            return self._rejection("owner_mismatch", "repository custody belongs to another owner", owner=record.owner)
-        if envelope.expected_version is None or envelope.expected_version != record.version:
-            return self._rejection("stale_version", "expected repository version does not match", expected_version=envelope.expected_version, actual_version=record.version)
-        if envelope.expected_head is None or envelope.expected_head != record.target_head:
-            return self._rejection("stale_head", "expected target head does not match current target head", expected_head=envelope.expected_head, actual_head=record.target_head)
-        if envelope.expected_edit_token is None or envelope.expected_edit_token != record.edit_token:
-            return self._rejection("stale_edit_token", "expected edit token does not match current repository token")
-        if source_set_digest is not None and source_set_digest != record.source_set_digest:
-            return self._rejection("changed_source_set", "candidate source set is no longer the current exact source set", expected_source_set_digest=source_set_digest, actual_source_set_digest=record.source_set_digest)
-        return None
+    def read(self, repository_id: str) -> RepositoryRecord:
+        from herzchen.contracts import ResourceRef
+        identity = self.store.get_identity(ResourceRef(self.authority, REPOSITORY_KIND, repository_id))
+        if identity is None:
+            raise ReleaseError("not_found", "repository is not registered", repository_id=repository_id)
+        return RepositoryRecord(identity.ref, identity.version, identity.edit_token, identity.payload)
 
-    def register_repository(self, *, repository_id: str, remote_id: str, target_id: str, baseline_head: str, target_head: str, source_set: Iterable[Any], owner: str, process_profile: Any, authorities: Optional[Mapping[str, str]] = None, logical_key: str, actor: str, authority: Optional[str] = None) -> dict[str, Any]:
-        profile = ProcessProfile.from_value(process_profile)
-        entries = tuple(SourceSetEntry.from_value(item) for item in source_set)
-        keys = [entry.key for entry in entries]
-        if len(keys) != len(set(keys)):
-            return self._rejection("duplicate_source_set_key", "source-set keys must be unique", duplicate_keys=sorted({key for key in keys if keys.count(key) > 1}))
-        owner = _text(owner, "owner")
-        repo_id = _text(repository_id, "repository_id")
-        if repo_id in self._repositories:
-            return self._rejection("duplicate_repository_identity", "repository identity is already registered", repository_id=repo_id)
-        if profile.manager_id in self._manager_profiles and self._manager_profiles[profile.manager_id] != profile.profile_id:
-            return self._rejection("duplicate_periodic_allowance", "manager already has one selected process profile", manager_id=profile.manager_id)
-        rights = {
-            "repository_owner": owner,
-            "check_authority": "check-authority",
-            "manager_authority": profile.manager_id,
-            "merge_authority": owner,
-            "promotion_authority": owner,
-            "publication_authority": "publication-authority",
-            "deployment_authority": "deployment-authority",
-        }
-        if authorities:
-            rights.update({str(key): _text(value, f"authorities.{key}") for key, value in authorities.items()})
-        command_authority = authority or owner
-        envelope = self._envelope("repository.register", logical_key, actor, command_authority, {"repository_id": repo_id, "remote_id": remote_id, "target_id": target_id, "baseline_head": baseline_head, "target_head": target_head, "source_set": [e.to_dict() for e in entries], "owner": owner, "process_profile": profile.to_dict(), "authorities": rights}, None, None, None)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        if command_authority != owner or actor != owner:
-            return self._rejection("authority_mismatch", "repository registration requires the repository owner")
-        record = RepositoryRecord(repo_id, _text(remote_id, "remote_id"), _text(target_id, "target_id"), _text(baseline_head, "baseline_head"), _text(target_head, "target_head"), entries, owner, rights, profile)
-        record.edit_token = _digest({"repository_id": repo_id, "version": record.version, "target_head": record.target_head})[:32]
-        self._repositories[repo_id] = record
-        self._manager_profiles[profile.manager_id] = profile.profile_id
-        return self._record(record, envelope, "recorded", {"command": "repository custody registered"}, self._zero_effects())
 
-    def select_candidate(self, repository_id: str, *, candidate_ref: str, decision_ref: str, source_set: Optional[Iterable[Any]] = None, owner: str, logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str]) -> dict[str, Any]:
-        record = self._get(repository_id)
-        entries = tuple(SourceSetEntry.from_value(item) for item in (record.source_set if source_set is None else source_set))
-        keys = [entry.key for entry in entries]
-        if len(keys) != len(set(keys)):
-            return self._rejection("duplicate_source_set_key", "source-set keys must be unique", duplicate_keys=sorted({key for key in keys if keys.count(key) > 1}))
-        auth = authority or owner
-        payload = {"repository_id": repository_id, "candidate_ref": candidate_ref, "decision_ref": decision_ref, "source_set": [e.to_dict() for e in entries]}
-        envelope = self._envelope("candidate.select", logical_key, actor, auth, payload, expected_version, expected_head, expected_edit_token)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        guard = self._guard(record, envelope, expected_owner=owner)
-        if guard:
-            return guard
-        if _text(candidate_ref, "candidate_ref") == _text(decision_ref, "decision_ref"):
-            return self._rejection("candidate_decision_identity_collision", "candidate and decision references must remain distinct")
-        record.source_set = entries
-        record.candidate_ref = _text(candidate_ref, "candidate_ref")
-        record.decision_ref = _text(decision_ref, "decision_ref")
-        record.manager_decision = None
-        record.checks = {}
-        record.merge = None
-        record.promotion = {"status": "not_started", "owner": None, "completed_steps": [], "pending_steps": [], "unknown_steps": []}
-        return self._commit(record, envelope, "recorded", {"candidate_ref": record.candidate_ref, "source_set_digest": record.source_set_digest}, self._zero_effects())
+class ReleaseOperations:
+    """Finite Otto consumer boundary backed by a trusted owner bootstrap."""
 
-    def record_required_check(self, repository_id: str, *, check_id: str, candidate_ref: str, result: str, evidence_ref: str, owner: str, logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str] = None) -> dict[str, Any]:
-        record = self._get(repository_id)
-        auth = authority or record.authorities["check_authority"]
-        payload = {"repository_id": repository_id, "check_id": check_id, "candidate_ref": candidate_ref, "result": result, "evidence_ref": evidence_ref}
-        envelope = self._envelope("check.record", logical_key, actor, auth, payload, expected_version, expected_head, expected_edit_token)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        guard = self._guard(record, envelope, expected_owner=owner, source_set_digest=source_set_digest)
-        if guard:
-            return guard
-        if record.candidate_ref != _text(candidate_ref, "candidate_ref"):
-            return self._rejection("candidate_mismatch", "required check is not bound to the current candidate")
-        if result not in _CHECK_OUTCOMES:
-            return self._rejection("invalid_check_result", "check result must be pass, fail, or unknown")
-        record.checks[_text(check_id, "check_id")] = {"candidate_ref": candidate_ref, "result": result, "evidence_ref": _text(evidence_ref, "evidence_ref"), "authority": auth}
-        return self._commit(record, envelope, "recorded", {"check_id": check_id, "result": result}, self._zero_effects())
-
-    def record_manager_decision(self, repository_id: str, *, decision_ref: str, candidate_ref: str, disposition: str, rationale: str, owner: str, logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str] = None) -> dict[str, Any]:
-        record = self._get(repository_id)
-        auth = authority or record.authorities["manager_authority"]
-        payload = {"repository_id": repository_id, "decision_ref": decision_ref, "candidate_ref": candidate_ref, "disposition": disposition, "rationale": rationale}
-        envelope = self._envelope("decision.record", logical_key, actor, auth, payload, expected_version, expected_head, expected_edit_token)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        guard = self._guard(record, envelope, expected_owner=owner, source_set_digest=source_set_digest)
-        if guard:
-            return guard
-        if record.candidate_ref != _text(candidate_ref, "candidate_ref") or record.decision_ref != _text(decision_ref, "decision_ref"):
-            return self._rejection("candidate_decision_mismatch", "decision must reference the selected candidate and decision identity")
-        if disposition not in _DECISIONS:
-            return self._rejection("invalid_decision", "disposition must be approve, reject, or hold")
-        if disposition == "approve" and (not record.checks or any(item["result"] != "pass" for item in record.checks.values())):
-            return self._rejection("required_checks_incomplete", "approval requires every recorded check to pass")
-        record.manager_decision = {"decision_ref": decision_ref, "candidate_ref": candidate_ref, "disposition": disposition, "rationale": _text(rationale, "rationale"), "manager": actor, "authority": auth}
-        return self._commit(record, envelope, "recorded", {"decision_ref": decision_ref, "disposition": disposition}, self._zero_effects())
-
-    def record_merge(self, repository_id: str, *, owner: str, target_head_after: str, runner_outcome: str, logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str] = None) -> dict[str, Any]:
-        record = self._get(repository_id)
-        auth = authority or owner
-        payload = {"repository_id": repository_id, "target_head_after": target_head_after, "runner_outcome": runner_outcome}
-        envelope = self._envelope("merge.record", logical_key, actor, auth, payload, expected_version, expected_head, expected_edit_token)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        guard = self._guard(record, envelope, expected_owner=owner, source_set_digest=source_set_digest)
-        if guard:
-            return guard
-        if runner_outcome not in _RUNNER_OUTCOMES:
-            return self._rejection("invalid_runner_outcome", "runner outcome must be completed, failed, or unknown")
-        if record.manager_decision is None or record.manager_decision.get("disposition") != "approve":
-            return self._rejection("decision_required", "an approved manager decision is required before merge")
-        changed = runner_outcome == "completed" and record.target_head != _text(target_head_after, "target_head_after")
-        if changed:
-            record.target_head = _text(target_head_after, "target_head_after")
-        record.merge = {"status": runner_outcome, "target_head_after": target_head_after, "candidate_ref": record.candidate_ref, "source_set_digest": record.source_set_digest}
-        effects = self._zero_effects()
-        effects["target_head_changed"] = changed
-        return self._commit(record, envelope, "recorded", {"merge_status": runner_outcome, "publication_status": record.publication["status"], "deployment_status": record.deployment["status"]}, effects)
-
-    def record_promotion(self, repository_id: str, *, owner: str, steps: Sequence[str], step_outcomes: Mapping[str, str], logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str] = None) -> dict[str, Any]:
-        record = self._get(repository_id)
-        auth = authority or owner
-        payload = {"repository_id": repository_id, "steps": list(steps), "step_outcomes": dict(step_outcomes)}
-        envelope = self._envelope("promotion.record", logical_key, actor, auth, payload, expected_version, expected_head, expected_edit_token)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        guard = self._guard(record, envelope, expected_owner=owner, source_set_digest=source_set_digest)
-        if guard:
-            return guard
-        normalized_steps = [_text(step, "steps") for step in steps]
-        if len(normalized_steps) != len(set(normalized_steps)):
-            return self._rejection("duplicate_promotion_step", "promotion step keys must be unique")
-        if record.promotion.get("status") == "partial" and record.promotion.get("owner") != owner:
-            return self._rejection("promotion_owner_mismatch", "partial promotion is recoverable only by its existing owner")
-        if record.merge is None or record.merge.get("status") != "completed":
-            return self._rejection("merge_required", "source promotion requires a completed merge observation")
-        completed = list(record.promotion.get("completed_steps", []))
-        pending: list[str] = []
-        unknown: list[str] = []
-        for step in normalized_steps:
-            outcome = step_outcomes.get(step, "pending")
-            if outcome == "completed":
-                if step not in completed:
-                    completed.append(step)
-            elif outcome == "pending":
-                pending.append(step)
-            elif outcome == "unknown":
-                unknown.append(step)
-            else:
-                return self._rejection("invalid_promotion_outcome", "promotion steps may be completed, pending, or unknown", step=step)
-        completed_set = set(completed)
-        pending = [step for step in pending if step not in completed_set]
-        record.promotion = {"status": "completed" if not pending and not unknown else ("unknown" if unknown and not pending else "partial"), "owner": owner, "completed_steps": completed, "pending_steps": pending, "unknown_steps": unknown, "source_set_digest": record.source_set_digest}
-        effects = self._zero_effects()
-        effects["promotion_steps_completed"] = len([step for step in normalized_steps if step in completed_set])
-        return self._commit(record, envelope, "recorded", {"promotion_status": record.promotion["status"], "completed_steps": completed, "pending_steps": pending, "unknown_steps": unknown, "publication_status": record.publication["status"], "deployment_status": record.deployment["status"]}, effects)
-
-    def record_publication(self, repository_id: str, *, owner: str, runner_outcome: str, logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str] = None) -> dict[str, Any]:
-        return self._record_separate_operation(repository_id, "publication.record", "publication", owner, runner_outcome, logical_key, actor, authority, expected_version, expected_head, expected_edit_token, source_set_digest)
-
-    def record_deployment(self, repository_id: str, *, owner: str, runner_outcome: str, logical_key: str, actor: str, authority: Optional[str] = None, expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str] = None) -> dict[str, Any]:
-        return self._record_separate_operation(repository_id, "deployment.record", "deployment", owner, runner_outcome, logical_key, actor, authority, expected_version, expected_head, expected_edit_token, source_set_digest)
-
-    def _record_separate_operation(self, repository_id: str, operation: str, field_name: str, owner: str, runner_outcome: str, logical_key: str, actor: str, authority: Optional[str], expected_version: Optional[int], expected_head: Optional[str], expected_edit_token: Optional[str], source_set_digest: Optional[str]) -> dict[str, Any]:
-        record = self._get(repository_id)
-        auth = authority or record.authorities[RIGHTS[operation]]
-        payload = {"repository_id": repository_id, "runner_outcome": runner_outcome}
-        envelope = self._envelope(operation, logical_key, actor, auth, payload, expected_version, expected_head, expected_edit_token)
-        replay = self._replay(envelope)
-        if replay:
-            return replay
-        guard = self._guard(record, envelope, expected_owner=owner, source_set_digest=source_set_digest)
-        if guard:
-            return guard
-        if runner_outcome not in _RUNNER_OUTCOMES:
-            return self._rejection("invalid_runner_outcome", "runner outcome must be completed, failed, or unknown")
-        record_state = {"status": runner_outcome, "candidate_ref": record.candidate_ref, "source_set_digest": record.source_set_digest}
-        setattr(record, field_name, record_state)
-        effects = self._zero_effects()
-        effects[field_name] = runner_outcome == "completed"
-        return self._commit(record, envelope, "recorded", {"operation": operation, "promotion_status": record.promotion["status"]}, effects)
-
-    def get_repository(self, repository_id: str) -> dict[str, Any]:
-        return self._get(repository_id).to_dict()
-
-    def list_repositories(self) -> list[dict[str, Any]]:
-        return [self._repositories[key].to_dict() for key in sorted(self._repositories)]
-
-    def get_receipt(self, logical_key: str) -> Optional[dict[str, Any]]:
-        receipt = self._receipts.get(logical_key)
-        return None if receipt is None else receipt.to_dict()
-
-    def list_events(self) -> list[dict[str, Any]]:
-        return [self._events[key].to_dict() for key in sorted(self._events)]
-
-    def snapshot(self) -> dict[str, Any]:
-        return {
-            "schema": "otto.release-ledger.v1",
-            "repositories": self.list_repositories(),
-            "receipts": [self._receipts[key].to_dict() for key in sorted(self._receipts)],
-            "events": self.list_events(),
-            "manager_profiles": dict(self._manager_profiles),
-            "next_receipt": self._next_receipt,
-            "next_event": self._next_event,
-        }
-
-    def save(self, file_name: Union[str, Path]) -> None:
-        Path(file_name).write_text(json.dumps(self.snapshot(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    def __init__(self, owner: _OwnerService) -> None:
+        self._owner = owner
+        self._database_path = Path(owner.store.path)
+        self._expected_domains = owner.store.registered_domains()
+        self._is_open = True
 
     @classmethod
-    def load(cls, file_name: Union[str, Path]) -> "ReleaseLedger":
-        value = json.loads(Path(file_name).read_text(encoding="utf-8"))
-        if value.get("schema") != "otto.release-ledger.v1":
-            raise ReleaseError("invalid_snapshot", "unsupported release ledger snapshot")
-        ledger = cls()
-        ledger._repositories = {item["repository_id"]: RepositoryRecord.from_dict(item) for item in value.get("repositories", [])}
-        ledger._manager_profiles = dict(value.get("manager_profiles", {}))
-        ledger._next_receipt = value.get("next_receipt", 1)
-        ledger._next_event = value.get("next_event", 1)
-        for item in value.get("events", []):
-            ledger._events[item["event_id"]] = ReleaseEvent(item["event_id"], item["operation"], item["logical_key"], item["subject"], item["outcome"], item["payload_digest"], item.get("details", {}))
-        for item in value.get("receipts", []):
-            env = item["envelope"]
-            envelope = CommandEnvelope(env["operation"], env["logical_key"], env["actor"], env["authority"], env["payload_digest"], env.get("expected_version"), env.get("expected_head"), env.get("expected_edit_token"))
-            ledger._receipts[envelope.logical_key] = CommandReceipt(item["receipt_id"], envelope, item["outcome"], tuple(item["event_ids"]), item.get("effects", {}), item.get("error"))
-        return ledger
+    def bootstrap(cls, database_path: str | Path, *, authority: str = "otto", actor_id: str = "otto-owner", credential_ref: str = "otto-owner-credential") -> "ReleaseOperations":
+        return cls(_OwnerService.create(Path(database_path), authority=authority, actor_id=actor_id, credential_ref=credential_ref))
+
+    def close(self) -> None:
+        self._expected_domains = self._owner.store.registered_domains()
+        self._owner.close()
+        self._is_open = False
+
+    def reopen(self) -> None:
+        old = self._owner
+        authority, actor_id, credential_ref = old.authority, old.actor.actor, old.actor.credential_ref
+        if self._is_open:
+            self.close()
+        self._owner = _OwnerService.reopen(self._database_path, authority=authority, actor_id=actor_id, credential_ref=credential_ref, expected_domains=self._expected_domains)
+        self._is_open = True
+
+    def register_repository(self, *, repository_id: str, remote_id: str, target_id: str, baseline_head: str, target_head: str, source_set: Sequence[Any], owner: str, process_profile: ProcessProfile, logical_request_key: str, actor: Optional[str] = None) -> Any:
+        source = _source_set(source_set)
+        if owner != self._owner.actor.actor:
+            raise ReleaseError("authority_mismatch", "repository custody belongs to its single registered owner", owner=owner)
+        from herzchen.contracts import CommandEnvelope, ResourceRef, TransactionContext
+        repository_id = _text(repository_id, "repository_id")
+        if self._owner.store.get_identity(ResourceRef(self._owner.authority, REPOSITORY_KIND, repository_id)) is not None:
+            raise ReleaseError("duplicate_repository", "repository identity is already registered", repository_id=repository_id)
+        payload = _initial_payload(repository_id, remote_id, target_id, baseline_head, target_head, source, owner, ProcessProfile.from_value(process_profile))
+        target = ResourceRef(self._owner.authority, REPOSITORY_KIND, repository_id)
+        envelope = CommandEnvelope("otto.repository.register", RELEASE_SCHEMA_REVISION, target, TransactionContext(self._owner.actor, logical_request_key, "0" * 64, expected_version=0), payload)
+        return self._owner.release_handler.mutate(envelope, event_type="otto.repository.register.recorded", result_ref=ResourceRef(self._owner.authority, REPOSITORY_KIND, repository_id, "rev-1"), effects={"repository_id": repository_id}, stream="otto.repository:" + repository_id)
+
+    def get_repository(self, repository_id: str) -> RepositoryRecord:
+        return self._owner.read(_text(repository_id, "repository_id"))
+
+    def select_candidate(self, repository_id: str, *, source_set: Sequence[Any], owner: str, logical_request_key: str, actor: Optional[str] = None) -> CandidateObservation:
+        record = self.get_repository(repository_id)
+        source = _source_set(source_set)
+        _guard_owner(record, owner); _guard_source_set(record, source)
+        project, artifact, source_ref, spec, criterion = self._owner.context()
+        try:
+            candidate = self._owner.decisions.create_candidate(parent_obligation=project, artifact=artifact, source=source_ref, spec=spec, criteria=(criterion,), owner=owner, role="repository-candidate", provenance={"otto_source_set": [item.to_dict() for item in source]}, logical_request_key="candidate:" + logical_request_key, actor=self._owner.actor)
+        except Exception as exc:
+            _translate_public_error(exc)
+        payload = dict(record.payload)
+        payload.update({"candidate_ref": candidate.ref.to_dict(), "source_set": [item.to_dict() for item in source], "source_set_digest": _source_digest(source)})
+        receipt = self._owner.record("otto.candidate.select", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+        return CandidateObservation(candidate, receipt, payload["source_set_digest"])
+
+    def record_required_check(self, repository_id: str, *, check_id: str, result: str, evidence_ref: str, owner: str, authority: str, logical_request_key: str, candidate_ref: Optional[Any] = None, source_set_digest: Optional[str] = None, expected_version: Optional[int] = None, expected_head: Optional[str] = None, expected_edit_token: Optional[str] = None) -> Any:
+        record = self.get_repository(repository_id); _guard_expected(record, expected_version, expected_head, expected_edit_token); _guard_owner(record, owner)
+        if authority != RIGHTS["check.record"]: raise ReleaseError("authority_mismatch", "required checks require the check authority", authority=authority)
+        if result not in _CHECK_OUTCOMES: raise ReleaseError("invalid_check", "check result is not typed", result=result)
+        _guard_source_digest(record, source_set_digest)
+        payload = dict(record.payload); checks = dict(payload.get("checks", {})); check_id = _text(check_id, "check_id")
+        checks[check_id] = {"result": result, "evidence_ref": _text(evidence_ref, "evidence_ref"), "authority": authority, "candidate_ref": candidate_ref or payload.get("candidate_ref")}; payload["checks"] = checks
+        return self._owner.record("otto.check.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+
+    def record_manager_decision(self, repository_id: str, *, disposition: str, rationale: str, owner: str, authority: str, logical_request_key: str, candidate_ref: Optional[Any] = None, decision_ref: Optional[Any] = None, source_set_digest: Optional[str] = None, expected_version: Optional[int] = None, expected_head: Optional[str] = None, expected_edit_token: Optional[str] = None) -> Any:
+        record = self.get_repository(repository_id); _guard_expected(record, expected_version, expected_head, expected_edit_token); _guard_owner(record, owner)
+        if authority != RIGHTS["decision.record"]: raise ReleaseError("authority_mismatch", "manager decisions require the manager authority", authority=authority)
+        if disposition not in _DECISIONS: raise ReleaseError("invalid_decision", "decision disposition is not typed", disposition=disposition)
+        candidate_value = candidate_ref or record.payload.get("candidate_ref")
+        if not isinstance(candidate_value, Mapping): raise ReleaseError("missing_candidate", "a decision must reference the actual public candidate")
+        try:
+            candidate = self._owner.decisions.get_candidate(candidate_value)
+            project, _artifact, _source, _spec, criterion = self._owner.context()
+            decision = self._owner.decisions.record_decision(project, candidate=candidate, criterion=criterion, authority=authority, author=authority, rationale=rationale, disposition=disposition, logical_request_key="decision:" + logical_request_key, actor=self._owner.actor)
+        except Exception as exc:
+            _translate_public_error(exc)
+        _guard_source_digest(record, source_set_digest)
+        payload = dict(record.payload); payload["decision_ref"] = decision.ref.to_dict(); payload["manager_decision"] = {"disposition": disposition, "rationale": _text(rationale, "rationale"), "authority": authority, "candidate_ref": candidate.ref.to_dict()}
+        return self._owner.record("otto.decision.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+
+    def record_merge(self, repository_id: str, *, target_head_after: str, runner_outcome: str, owner: str, logical_request_key: str, expected_version: Optional[int] = None, expected_head: Optional[str] = None, expected_edit_token: Optional[str] = None) -> Any:
+        record = self.get_repository(repository_id); _guard_expected(record, expected_version, expected_head, expected_edit_token); _guard_owner(record, owner)
+        if runner_outcome not in _RUNNER_OUTCOMES: raise ReleaseError("unknown_runner_outcome", "runner outcome must be completed, failed, or unknown")
+        payload = dict(record.payload); payload["merge"] = {"status": runner_outcome, "target_head_after": _text(target_head_after, "target_head_after"), "owner": owner}
+        if runner_outcome == "completed": payload["target_head"] = _text(target_head_after, "target_head_after")
+        return self._owner.record("otto.merge.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+
+    def record_promotion(self, repository_id: str, *, steps: Sequence[str], step_outcomes: Mapping[str, str], owner: str, logical_request_key: str, source_set_digest: Optional[str] = None, expected_version: Optional[int] = None, expected_head: Optional[str] = None, expected_edit_token: Optional[str] = None) -> Any:
+        record = self.get_repository(repository_id); _guard_expected(record, expected_version, expected_head, expected_edit_token); _guard_owner(record, owner); _guard_source_digest(record, source_set_digest)
+        prior = dict(record.payload.get("promotion", {})); groups = [list(prior.get(name + "_steps", [])) for name in ("completed", "pending", "unknown")]
+        for step in steps:
+            step = _text(step, "promotion.step"); outcome = step_outcomes.get(step)
+            if outcome not in _PROMOTION_OUTCOMES: raise ReleaseError("unknown_runner_outcome", "promotion step outcome is not typed", step=step)
+            for group in groups:
+                while step in group: group.remove(step)
+            groups[0 if outcome == "completed" else 2 if outcome == "unknown" else 1].append(step)
+        completed, pending, unknown = [sorted(set(group)) for group in groups]
+        state = "completed" if not pending and not unknown else ("unknown" if unknown else "partial")
+        payload = dict(record.payload); payload["promotion"] = {"status": state, "owner": owner, "completed_steps": completed, "pending_steps": pending, "unknown_steps": unknown, "source_set_digest": payload["source_set_digest"]}
+        return self._owner.record("otto.promotion.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+
+    def record_publication(self, repository_id: str, *, status: str, authority: str, logical_request_key: str) -> Any:
+        if status not in _PUBLICATION_OUTCOMES: raise ReleaseError("invalid_publication", "publication status is not typed")
+        record = self.get_repository(repository_id)
+        if authority != RIGHTS["publication.record"]: raise ReleaseError("authority_mismatch", "publication authority is separate")
+        payload = dict(record.payload); payload["publication"] = {"status": status, "authority": authority}
+        return self._owner.record("otto.publication.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+
+    def record_deployment(self, repository_id: str, *, status: str, authority: str, logical_request_key: str) -> Any:
+        if status not in _PUBLICATION_OUTCOMES: raise ReleaseError("invalid_deployment", "deployment status is not typed")
+        record = self.get_repository(repository_id)
+        if authority != RIGHTS["deployment.record"]: raise ReleaseError("authority_mismatch", "deployment authority is separate")
+        payload = dict(record.payload); payload["deployment"] = {"status": status, "authority": authority}
+        return self._owner.record("otto.deployment.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
+
+    def get_candidate(self, candidate_ref: Any) -> Any:
+        return self._owner.decisions.get_candidate(candidate_ref)
+
+    def get_decision(self, decision_ref: Any) -> Any:
+        return self._owner.decisions.get_decision(decision_ref)
+
+    def get_receipt(self, logical_request_key: str) -> Any:
+        return self._owner.store.get_receipt(logical_request_key)
+
+    def list_events(self, repository_id: str) -> tuple[Any, ...]:
+        return self._owner.store.consumer().list_events(stream="otto.repository:" + repository_id)
+
+    def snapshot_counts(self) -> Mapping[str, int]:
+        return self._owner.store.consumer().snapshot_counts()
+
+    @property
+    def registered_domains(self) -> tuple[str, ...]:
+        return tuple(item.domain_id for item in self._owner.store.consumer().registered_domains())
 
 
-__all__ = [
-    "COMMANDS", "RIGHTS", "CommandEnvelope", "CommandReceipt", "ProcessProfile", "ReleaseError",
-    "ReleaseEvent", "ReleaseLedger", "RepositoryRecord", "SourceSetEntry",
-]
+def _ref(authority: str, repository_id: str) -> Any:
+    from herzchen.contracts import ResourceRef
+    return ResourceRef(authority, REPOSITORY_KIND, repository_id)
+
+
+def _release_contribution() -> Any:
+    from herzchen.contracts import DomainContribution
+    operations = ("otto.repository.register", "otto.candidate.select", "otto.check.record", "otto.decision.record", "otto.merge.record", "otto.promotion.record", "otto.publication.record", "otto.deployment.record")
+    events = tuple(item + ".recorded" for item in operations)
+    return DomainContribution(domain_id=RELEASE_DOMAIN_ID, version="1.0", owner=RELEASE_OWNER, resource_types=(REPOSITORY_KIND,), document_types=(), namespace_types=("otto.engineering",), operation_types=operations, event_types=events, schema_revision=RELEASE_SCHEMA_REVISION, composition_bindings=("fnd-03.identities", "fnd-03.record_references", "fnd-03.transaction", "handler-required") + tuple("mutation-port:{}|{}|{}|{}".format(RELEASE_SCHEMA_REVISION, operation, REPOSITORY_KIND, event) for operation, event in zip(operations, events)))
+
+
+def _source_set(values: Sequence[Any]) -> tuple[SourceSetEntry, ...]:
+    entries = tuple(SourceSetEntry.from_value(value) for value in values); keys = [entry.key for entry in entries]
+    if len(keys) != len(set(keys)): raise ReleaseError("duplicate_source_set_key", "source-set keys must be unique", keys=keys)
+    return entries
+
+
+def _source_digest(values: Sequence[SourceSetEntry]) -> str:
+    return _digest([entry.to_dict() for entry in values])
+
+
+def _initial_payload(repository_id: str, remote_id: str, target_id: str, baseline_head: str, target_head: str, source: Sequence[SourceSetEntry], owner: str, profile: ProcessProfile) -> dict[str, Any]:
+    source_digest = _source_digest(source)
+    return {"record_type": REPOSITORY_KIND, "schema_revision": RELEASE_SCHEMA_REVISION, "repository_id": _text(repository_id, "repository_id"), "remote_id": _text(remote_id, "remote_id"), "target_id": _text(target_id, "target_id"), "baseline_head": _text(baseline_head, "baseline_head"), "target_head": _text(target_head, "target_head"), "source_set": [entry.to_dict() for entry in source], "source_set_digest": source_digest, "owner": _text(owner, "owner"), "process_profile": profile.to_dict(), "rights": dict(RIGHTS), "candidate_ref": None, "decision_ref": None, "checks": {}, "merge": {"status": "not_performed"}, "promotion": {"status": "not_performed", "owner": owner, "completed_steps": [], "pending_steps": [], "unknown_steps": [], "source_set_digest": source_digest}, "publication": {"status": "not_performed"}, "deployment": {"status": "not_performed"}, "edit_token": _digest({"repository_id": repository_id, "source_set_digest": source_digest})}
+
+
+def _guard_owner(record: RepositoryRecord, owner: str) -> None:
+    if owner != record.payload.get("owner"): raise ReleaseError("authority_mismatch", "only the registered repository owner may recover this state", owner=owner)
+
+
+def _guard_source_set(record: RepositoryRecord, source: Sequence[SourceSetEntry]) -> None:
+    if _source_digest(source) != record.payload.get("source_set_digest"): raise ReleaseError("changed_source_set", "source set differs from the registered repository source set")
+
+
+def _guard_source_digest(record: RepositoryRecord, supplied: Optional[str]) -> None:
+    if supplied is not None and supplied != record.payload.get("source_set_digest"): raise ReleaseError("changed_source_set", "source set digest no longer matches the repository")
+
+
+def _guard_expected(record: RepositoryRecord, version: Optional[int], head: Optional[str], token: Optional[str]) -> None:
+    if version is not None and version != record.version: raise ReleaseError("version_conflict", "expected repository version is stale", expected_version=version, observed_version=record.version)
+    if head is not None and head != record.payload.get("target_head"): raise ReleaseError("stale_head", "expected target head is stale", expected_head=head, observed_head=record.payload.get("target_head"))
+    if token is not None and token != record.payload.get("edit_token"): raise ReleaseError("edit_token_conflict", "expected edit token is stale")
+
+
+def _translate_public_error(exc: Exception) -> None:
+    if type(exc).__name__ == "ReplayConflictError": raise ReleaseError("replay_conflict", "same logical key carries changed input; no new event was written") from exc
+    if type(exc).__name__ in {"VersionConflictError", "TargetMismatchError"}: raise ReleaseError("version_conflict", str(exc)) from exc
+    raise exc
+
+
+__all__ = ["COMMANDS", "RIGHTS", "CandidateObservation", "ProcessProfile", "ReleaseError", "ReleaseOperations", "RepositoryRecord", "SourceSetEntry", "RELEASE_DOMAIN_ID", "RELEASE_SCHEMA_REVISION"]
