@@ -1,0 +1,85 @@
+{
+  "accepted_foundation": {
+    "candidate_sha256": "a8e727809c397184b5a5625f8a9fa7323a84853c11d4fb804bdc3c5fb12f95b7",
+    "commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "coverage_sha256": "bf02b3840afcda90b2363ad7b48360e6c203c5273d73aa1bc3d0af5cf19ee2c6",
+    "installed_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+    "packet_metadata_commit": "6fcc690de7ebfa4a1891f8a4a898547c86e0dffc",
+    "packet_metadata_tree": "1d8a4a51dd708a468161f80d10323913c9d17f2c",
+    "tree": "ee1614fc37fdd096fb9640702e124e28a391d170"
+  },
+  "accepted_herzchen_ott02": {
+    "commit": "e1b72a85326451319c71c07e8007e5cb664c349c",
+    "tree": "2eeb390884d1d3eaff16282d4e589361df7826d6"
+  },
+  "amendment": {
+    "kind": "post-launch-current-input",
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/ott-03-consumer-assembly-brief-v5-20260914.md",
+    "sha256": "e5455511372a8bb59038f0827f375c358b1c1f1ba734ed856ee8f570f5d1463c",
+    "supersedes": "v4"
+  },
+  "astrid": {
+    "commit": "96e5664237eb35adeb4cad08bddd8cd6df0a2ae1",
+    "consumer_cutover": "not_started",
+    "orchestrator": "held",
+    "tree": "19f7539a266618a797559eedbda48e2752b30fa3",
+    "wheel_sha256": "74e8e22fb8fe6b9be6e47b87683fc0827460eebbfa6e484d2a4e37d4b9969508"
+  },
+  "authoritative_inputs": {
+    "architecture/AST-IN-OTTO.md": "efa9be6d5f6a5c7f01a79ef36fe0973160379d06fe1f63af8bf8a79c5311971a",
+    "architecture/BLANK-PROJECT.md": "8ff0f18e3e69ee529518ffacab955b605514269ba873152502305255a5fa7008",
+    "architecture/TASKS-AND-MANAGER-LOGIC.md": "70b3777d45dd9155ce7a50ad4036e101fb1163c12b919fda24a185e850a72139",
+    "plan/PENDING-WORK.md": "94d74d3c170261e03743c5bcba615c956da0626e2cac6326c9e2966b7e157ac6",
+    "projects/OTT/implementation-criteria.md": "ae007f9d4fa476457918c02a520dc538dbaa21ea105a9a3efd8eda0325981c56",
+    "projects/OTT/plan.md": "d384c2416d4ea763b61c963ff392207ec98b37eb3d1d8d0555230e613958e6c2",
+    "projects/OTT/tasklist.md": "1c5978b4ea254831457d498ec3221f0d2b659a67ea4ad904b5dc2317af6fdd4c"
+  },
+  "base": {
+    "commit": "d0e9b8dca0e0d455c059b09014f191cacd69a925",
+    "tree": "f8987e3cb3b4e66a0dbcd29a8dff354f486ca207",
+    "worker_current_commit_before_amendment": "c93349aeb2353ae1b4cfb0b30d4bcf14d381eae0",
+    "worker_current_tree_before_amendment": "4dd9c53720816804ea8030358d6c930470925513",
+    "worker_initial_commit": "d0e9b8dca0e0d455c059b09014f191cacd69a925"
+  },
+  "catalog": {
+    "criteria": [
+      "C18",
+      "C20",
+      "C34",
+      "C38"
+    ],
+    "package_root": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/package/otto_herzchen_delivery_v11_2",
+    "row_digest": "dcb617c9e93e4641cf35dfd03e99e40b20d7ec42ff0c76e8efa3df601e319ab5",
+    "sha256": "075f0301129f57e46003d518372747df4a68e6e086e5a63a1200ae333b53b013"
+  },
+  "constraints": {
+    "allowed_paths": [
+      "src/otto/portfolio/",
+      "profiles/otto/",
+      "tests/otto/test_intake_roles.py",
+      "work/ott-03-result.md",
+      "work/ott-03-worker-receipt-20260914/"
+    ],
+    "astrid_mutation": false,
+    "foundation_mutation": false,
+    "remote_writes": false,
+    "requested_model": "gpt-5.6-luna",
+    "requested_reasoning": "high",
+    "requested_route": "normal",
+    "write_mode": "dangerously-bypass-approvals-and-sandbox"
+  },
+  "extraction_map": {
+    "ex_host": "intended Otto-owned boundary; no host cutover here",
+    "live_sha256": "bea51be5e6721e20a21e6befc0cd75dd340af103f722f0d154a671721520e413",
+    "package_sha256": "c08d94ea32f394596578a3c908e35dc037c1297194d3d5994945a88093101c59"
+  },
+  "p01": {
+    "commit": "5482198b004375310d4fec33204e8fb71763a369",
+    "is_ancestor_of_base": false,
+    "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726",
+    "profile_source": "Otto@5482198b004375310d4fec33204e8fb71763a369:profiles/otto/operating.md",
+    "tree": "a3515b8ba1ae45293a74e451be2061f1a7a00827"
+  },
+  "schema": "ott03-input-manifest/v5",
+  "task": "OTT-03"
+}
