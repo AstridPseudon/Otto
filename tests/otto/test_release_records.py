@@ -60,6 +60,11 @@ def test_stale_changed_duplicate_unknown_and_partial_have_zero_unintended_delta(
             assert error.code == "changed_source_set"
         assert operations.get_repository("delivery").version == before.version
         try:
+            operations.select_candidate("delivery", source_set=(SOURCE_SET[0], SOURCE_SET[0]), owner=OWNER, logical_request_key="duplicate-source")
+        except ReleaseError as error:
+            assert error.code == "duplicate_source_set_key"
+        assert operations.get_repository("delivery").version == before.version
+        try:
             operations.record_required_check("delivery", check_id="tests", result="fail", evidence_ref="changed", owner=OWNER, authority="check_authority", logical_request_key="check-record", source_set_digest=digest)
         except ReleaseError as error:
             assert error.code == "replay_conflict"
