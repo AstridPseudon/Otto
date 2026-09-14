@@ -5,12 +5,12 @@ Date: 2026-09-14. This is the manager assessment for the complete bounded OTT-03
 ## Current custody
 
 - Current Otto product source: commit `aea1ac6471784256a408daaef324dab9f5cba571`, tree `0f2246eefb5e5996355a8c31d3cc7a8f76655875`.
-- Product commit parent: v3/evidence custody `ccec6edc059721bfcb9ea8e1e0a31215a777cb2`; the unchanged selected-template product increment is `14510f49514587ecda265fb3e38c632f9ebe3179`, followed by this narrow response correction.
+- Product commit parent: v3/evidence custody `ccec6edc059721bfcb9ea8ae1e0a31215a777cb2`; the unchanged selected-template product increment is `14510f49514587ecda265fb3e38c632f9ebe3179`, followed by this narrow response correction.
 - Current focused correction evidence: commit `759c733877706ec9042a0b194284263a0181dbe7`, tree `213c0550fcd473a378b90d2cd4c2d1276f706417`; selected create-and-open v3 remains the historical implementation evidence at commit `012b77efa1d939b0100f69972fe318e4d6ba7827`.
-- Same-process installed-origin supplement: commit `ccec6edc059721bfcb9ea8e1e0a31215a777cb2`, tree `b28c7f1b3977130924840b06c1b1fdb2137529ed`.
+- Same-process installed-origin supplement: commit `ccec6edc059721bfcb9ea8ae1e0a31215a777cb2`, tree `b28c7f1b3977130924840b06c1b1fdb2137529ed`.
 - Accepted Herzchen wheel SHA-256: `2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc`.
 - Current Otto correction wheel SHA-256: `e0e4cfa7f2c8d194ad4863a4e8eb26452704f25eaac415c20c9460508caee595`; selected create-and-open v3 wheel remains historical SHA `578c72f042a915510dc4dd1a10d78f82350231ac5029d2bf10f7a55b2febdf19`.
-- Current narrow correction proof: selected source and installed suites each 18 passed, with both Otto and Herzchen imported from the disposable venv `site-packages`; the prior same-process full Otto-owned suite 47 and selected create-and-open observation remain historical v3 proof. See `work/ott-03-task-record-flag-fix-receipt-20260914-v1/` and `work/ott-03-template-open-installed-origin-supplement-20260914/`.
+- Current narrow correction proof: selected source and installed suites each 18 passed, with both Otto and Herzchen imported from the disposable venv `site-packages`; the prior same-process full Otto-owned suite 47 and selected create-and-open observation remain historical v3 proof. See `work/ott-03-task-record-flag-fix-receipt-20260914-v1/` and `work/ott-03-template-open-installed-origin-supplement-20260914/`. The corrected wheel path and test-path audit are in `work/ott-03-task-record-flag-fix-metadata-supplement-20260914/`; the original receipt manifest is preserved.
 - The prior v2 evidence is retained as the source for the unchanged broader surfaces: `work/ott-03-handoff-worker-receipt-20260914-v2/surface-matrix.json` and `result.md`. The v3 packet extends that matrix with selected create-and-open; it does not rewrite v2.
 
 ## Whole OTT-03 matrix

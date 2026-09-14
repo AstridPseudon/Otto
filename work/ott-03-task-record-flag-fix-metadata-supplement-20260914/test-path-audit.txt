@@ -1,0 +1,10 @@
+Command: rg -n -S 'sys\\.path|PYTHONPATH|PYTHONHOME|conftest|importlib\\.util|insert\\(' tests/otto
+Output: no matches
+
+Command: find tests/otto -maxdepth 1 -name conftest.py -print
+Output: no files
+
+Command: Python audit over tests/otto/*.py
+Output: test_files=8; conftest_exists=False; path_injection_matches=0
+
+Conclusion: the focused installed pytest invocation did not have a test conftest or test-file source-path injection. The installed-origin command separately recorded Otto and Herzchen from the disposable venv site-packages. The original receipt and its artifact manifest remain unchanged; this file is a metadata-only supplement.

@@ -1,0 +1,23 @@
+{
+  "schema": "ott03.task-record-flag-fix.metadata-correction.v1",
+  "purpose": "Correct only custody metadata; preserve original sealed receipt and evidence bytes.",
+  "original_receipt": {
+    "path": "work/ott-03-task-record-flag-fix-receipt-20260914-v1/artifact-sha256.json",
+    "sha256": "eebdf9defad73e86d1ba5557329d2005313fac5a4fcd6da633fa1ae817a93189",
+    "accepted_herzchen_wheel_path_was": "../../../../Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "accepted_herzchen_wheel_path_issue": "The relative path contains one excess parent traversal for resolution from the receipt directory."
+  },
+  "corrected_accepted_herzchen_wheel": {
+    "workspace_relative_path": ".otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "absolute_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+    "verified_command": "shasum -a 256 /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl"
+  },
+  "product_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+  "product_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+  "prior_evidence_commit": "759c733877706ec9042a0b194284263a0181dbe7",
+  "prior_evidence_tree": "213c0550fcd473a378b90d2cd4c2d1276f706417",
+  "prior_origin_supplement_commit": "ccec6edc059721bfcb9ea8ae1e0a31215a777cb2",
+  "prior_origin_supplement_tree": "b28c7f1b3977130924840b06c1b1fdb2137529ed",
+  "sealed_artifacts_modified": false
+}
