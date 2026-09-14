@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from otto.portfolio import HerzchenWorkOperations, OttoPortfolio, PortfolioError
+from otto.portfolio import HerzchenBindingConfig, HerzchenWorkOperations, OttoPortfolio, PortfolioError
 from otto.portfolio.cli import main as portfolio_cli
 
 
@@ -256,3 +256,104 @@ def test_shipped_help_and_cli_diagnose_missing_host_binding(capsys):
     assert portfolio_cli(["create-pending", "--actor", "manager", "--request-id", "cli-1"]) == 0
     observed = json.loads(capsys.readouterr().out)
     assert observed["error"]["code"] == "canonical_work_port_unavailable"
+
+
+def _real_portfolio(tmp_path):
+    """Build the accepted public Store/WorkGraph path for one disposable file."""
+
+    from herzchen.domains.work import WorkGraph, register_work
+    from herzchen.kernel.store import Store
+    from herzchen.contracts import AuthenticatedActor
+
+    path = tmp_path / "ott03-work.sqlite"
+    store = Store.create(path, authority="ott03-test-authority")
+    register_work(store)
+    authenticated = AuthenticatedActor("ott03-test-authority", "manager", "ott03-test-credential")
+    graph = WorkGraph(store, actor=authenticated)
+    binding = HerzchenBindingConfig("ott03-test-authority", "ott03-test-credential")
+    return store, graph, OttoPortfolio(HerzchenWorkOperations(store=store, graph=graph, binding=binding)), path
+
+
+def _public_counts(store, request_id, ref=None):
+    from herzchen.contracts import ResourceRef
+
+    receipt = store.get_receipt(request_id)
+    identity = store.get_identity(ResourceRef.from_dict(ref)) if ref is not None else None
+    return {
+        "events": len(list(store.list_events())),
+        "receipt": receipt.to_dict() if receipt is not None else None,
+        "identity_present": identity is not None,
+    }
+
+
+def test_real_workgraph_create_read_reopen_and_replay_are_durable(tmp_path):
+    from herzchen.domains.work import WorkGraph, contributions
+    from herzchen.kernel.store import Store
+    from herzchen.contracts import AuthenticatedActor
+
+    store, graph, api, path = _real_portfolio(tmp_path)
+    first = api.create_pending(
+        actor="manager",
+        request_id="real-create-1",
+        edit={"title": "Canonical idea", "outcome": "evidence", "why_pending": "await review", "unknown_field": {"keep": [1, 2]}},
+    )
+    assert first["outcome"] == "created"
+    assert first["replayed"] is False
+    assert first["event_ids"] == first["receipt"]["event_ids"]
+    assert first["record"]["payload"]["lifecycle"] == "pending"
+    assert first["record"]["payload"]["readiness"]["dispatch"] is False
+    assert first["record"]["payload"]["metadata"]["unknown_field"] == {"keep": [1, 2]}
+    assert first["record"]["payload"]["metadata"]["otto_request"]["logical_request_key"] == "real-create-1"
+    ref = first["project_ref"]
+    before = _public_counts(store, "real-create-1", ref)
+
+    replay = api.create_pending(
+        actor="manager",
+        request_id="real-create-1",
+        edit={"title": "Canonical idea", "outcome": "evidence", "why_pending": "await review", "unknown_field": {"keep": [1, 2]}},
+    )
+    after_replay = _public_counts(store, "real-create-1", ref)
+    assert replay["outcome"] == "replayed"
+    assert replay["project_ref"] == ref
+    assert after_replay["events"] == before["events"]
+    assert after_replay["receipt"] == before["receipt"]
+
+    changed = api.create_pending(
+        actor="manager",
+        request_id="real-create-1",
+        edit={"title": "Changed logical payload"},
+    )
+    after_conflict = _public_counts(store, "real-create-1", ref)
+    assert changed["error"]["code"] == "replay_conflict"
+    assert after_conflict == before
+
+    store.close()
+    reopened = Store.open(
+        path,
+        authority="ott03-test-authority",
+        expected_domains=tuple(sorted(contributions(), key=lambda descriptor: descriptor.domain_id)),
+    )
+    reopened_graph = WorkGraph(reopened, actor=AuthenticatedActor("ott03-test-authority", "manager", "ott03-test-credential"))
+    reopened_api = OttoPortfolio(HerzchenWorkOperations(
+        store=reopened,
+        graph=reopened_graph,
+        binding=HerzchenBindingConfig("ott03-test-authority", "ott03-test-credential"),
+    ))
+    observed = reopened_api.read_pending(ref, actor="manager")
+    assert observed["outcome"] == "read"
+    assert observed["project_ref"] == ref
+    assert observed["record"]["payload"]["metadata"]["unknown_field"] == {"keep": [1, 2]}
+    assert observed["record"]["payload"]["lifecycle"] == "pending"
+    reopened.close()
+
+
+def test_real_binding_rejects_protected_or_malformed_edit_before_store_mutation(tmp_path):
+    store, _graph, api, _path = _real_portfolio(tmp_path)
+    with pytest.raises(PortfolioError):
+        api.create_pending(actor="manager", request_id="real-invalid-1", edit={"manager": "forged"})
+    with pytest.raises(PortfolioError):
+        api.create_pending(actor="manager", request_id="real-invalid-2", edit="not-an-object")
+    assert list(store.list_events()) == []
+    assert store.get_receipt("real-invalid-1") is None
+    assert store.get_receipt("real-invalid-2") is None
+    store.close()

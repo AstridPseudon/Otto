@@ -14,12 +14,15 @@ from .intake import (
     HerzchenWorkOperations,
     unavailable_operations,
 )
+from .herzchen_binding import HerzchenBindingConfig, StoreWorkOperations
 
 __all__ = [
     "ADMISSION_CHOICES",
     "EDITABLE_FIELDS",
     "HerzchenWorkOperations",
+    "HerzchenBindingConfig",
     "OttoPortfolio",
     "PortfolioError",
     "unavailable_operations",
+    "StoreWorkOperations",
 ]

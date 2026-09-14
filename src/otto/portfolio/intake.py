@@ -159,8 +159,15 @@ class HerzchenWorkOperations:
     checkout or reaches through a private store.
     """
 
-    def __init__(self, canonical: Any = None) -> None:
+    def __init__(self, canonical: Any = None, *, store: Any = None, graph: Any = None, binding: Any = None) -> None:
         self.canonical = canonical
+        self._real = None
+        if store is not None or graph is not None or binding is not None:
+            from .herzchen_binding import HerzchenBindingConfig, StoreWorkOperations
+
+            if not isinstance(binding, HerzchenBindingConfig):
+                raise TypeError("binding must be HerzchenBindingConfig")
+            self._real = StoreWorkOperations(store=store, graph=graph, binding=binding)
 
     def _bound(self) -> Any:
         if self.canonical is None:
@@ -170,9 +177,13 @@ class HerzchenWorkOperations:
         return self.canonical
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self._real is not None:
+            return self._real.execute(operation, payload, request_id=request_id, actor=actor)
         return self._bound().execute(operation, payload, request_id=request_id, actor=actor)
 
     def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        if self._real is not None:
+            return self._real.read(operation, payload, actor=actor)
         return self._bound().read(operation, payload, actor=actor)
 
 
