@@ -422,21 +422,32 @@ class FiniteWorkOperations:
         return "otto-handoff-context-" + encoded
 
     @staticmethod
-    def _handoff_context_from_assignment(assignment: Any) -> Optional[dict[str, Any]]:
+    def _handoff_context_from_assignment(assignment: Any, *, request_id: Optional[str] = None) -> Optional[dict[str, Any]]:
         history = getattr(assignment, "history", ())
         if not history:
             return None
-        reason = history[-1].get("reason") if isinstance(history[-1], Mapping) else None
         prefix = "otto-handoff-context-"
-        if not isinstance(reason, str) or not reason.startswith(prefix):
-            return None
-        value = reason[len(prefix):]
-        try:
-            padded = value + "=" * (-len(value) % 4)
-            decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        except (ValueError, TypeError, json.JSONDecodeError):
-            return None
-        return dict(decoded) if isinstance(decoded, Mapping) else None
+        fallback = None
+        for item in reversed(history):
+            reason = item.get("reason") if isinstance(item, Mapping) else None
+            if not isinstance(reason, str) or not reason.startswith(prefix):
+                continue
+            value = reason[len(prefix):]
+            try:
+                padded = value + "=" * (-len(value) % 4)
+                decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(decoded, Mapping):
+                continue
+            decoded_context = dict(decoded)
+            fallback = fallback or decoded_context
+            if request_id is None or decoded_context.get("request_id") == request_id:
+                return decoded_context
+        # Contexts written by the accepted pre-v2 implementation have no
+        # request_id.  They are still replayable when they are the only
+        # durable handoff context on the assignment.
+        return fallback
 
     def _handoff(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         if self.assignments_port is None:
@@ -472,11 +483,13 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "invalid_manager_assignment_target", "message": "assignment is not the current manager assignment for this project", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
         from_manager = payload["from_manager"]
         current_principal = getattr(current, "principal", None)
-        current_payload = getattr(current, "payload", {})
-        current_manager = current_payload.get("manager") if isinstance(current_payload, Mapping) else None
+        current_status = getattr(current, "status", None)
+        current_status = getattr(current_status, "value", current_status)
+        if current_status not in {"queued", "reassigned"}:
+            return {"outcome": "error", "error": {"code": "invalid_manager_assignment_status", "message": "manager assignment is not available for handoff", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
         prior = self._receipt(request_id)
-        stored_context = self._handoff_context_from_assignment(current) if prior is not None else None
-        if prior is None and (current_principal != from_manager or (current_manager is not None and current_manager != from_manager)):
+        stored_context = self._handoff_context_from_assignment(current, request_id=request_id) if prior is not None else None
+        if prior is None and current_principal != from_manager:
             return {"outcome": "error", "error": {"code": "stale_manager_assignment", "message": "from_manager does not match the current assignment principal/manager", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
 
         context = {
@@ -489,6 +502,7 @@ class FiniteWorkOperations:
             "consumption_refs": _json_value(payload["consumption_refs"]),
             "parent_obligation": _json_value(payload["parent_obligation"]),
             "from_generation": getattr(current, "generation", None),
+            "request_id": request_id,
         }
         if prior is not None:
             if not isinstance(stored_context, Mapping):
@@ -496,7 +510,13 @@ class FiniteWorkOperations:
             for key in ("kind", "project_ref", "manager_assignment_ref", "from_manager", "to_manager", "evidence_refs", "consumption_refs", "parent_obligation"):
                 if stored_context.get(key) != context.get(key):
                     return {"outcome": "error", "error": {"code": "replay_conflict", "message": "same handoff request key was reused with changed input", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
-            if current_principal != stored_context.get("to_manager"):
+            latest_context = self._handoff_context_from_assignment(current)
+            # A retry of the latest handoff must still observe its current
+            # replacement.  An older exact request may be retried after a
+            # later valid handoff: its durable context is in assignment
+            # history, and replaying Herzchen's original receipt must not
+            # revert the newer principal.
+            if current_principal != stored_context.get("to_manager") and stored_context == latest_context:
                 return {"outcome": "error", "error": {"code": "stale_manager_assignment", "message": "durable handoff target no longer matches the original replacement", "operation": "work.responsibility.handoff"}, "replayed": False, "event_ids": [], "executable": False}
             context = dict(stored_context)
         try:
