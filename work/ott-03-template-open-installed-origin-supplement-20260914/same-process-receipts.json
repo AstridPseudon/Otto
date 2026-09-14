@@ -1,0 +1,67 @@
+[
+  {
+    "command": [
+      "/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914/run_pytest_same_process.py",
+      "full",
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker"
+    ],
+    "cwd": "/tmp/ott03-template-open.o3HzxD/installed-origin-campaign",
+    "end": "2026-09-14T18:06:53.451246+00:00",
+    "environment": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "unset"
+    },
+    "label": "installed-full-47-same-process",
+    "output": "work/ott-03-template-open-installed-origin-supplement-20260914/installed-full-47-same-process.txt",
+    "pid": null,
+    "return_code": 0,
+    "start": "2026-09-14T18:06:52.156792+00:00",
+    "stderr_tail": "",
+    "stdout_tail": "tfolio/owner_bootstrap.py\",\n  \"pid\": 65731,\n  \"python\": \"/private/tmp/ott03-template-open.o3HzxD/venv/bin/python\",\n  \"pythonhome\": null,\n  \"pythonpath\": null,\n  \"sys_path\": [\n    \"/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload\",\n    \"/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages\"\n  ]\n}\nORIGINS_END\n...............................................                          [100%]\n47 passed in 0.89s\n{\"elapsed_seconds\": 0.9587728977203369, \"mode\": \"full\", \"pid\": 65731, \"return_code\": 0}\n"
+  },
+  {
+    "command": [
+      "/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914/run_pytest_same_process.py",
+      "focused",
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker"
+    ],
+    "cwd": "/tmp/ott03-template-open.o3HzxD/installed-origin-campaign",
+    "end": "2026-09-14T18:06:54.046240+00:00",
+    "environment": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "unset"
+    },
+    "label": "installed-focused-18-same-process",
+    "output": "work/ott-03-template-open-installed-origin-supplement-20260914/installed-focused-18-same-process.txt",
+    "pid": null,
+    "return_code": 0,
+    "start": "2026-09-14T18:06:53.451634+00:00",
+    "stderr_tail": "",
+    "stdout_tail": "lio/owner_bootstrap.py\",\n  \"pid\": 65732,\n  \"python\": \"/private/tmp/ott03-template-open.o3HzxD/venv/bin/python\",\n  \"pythonhome\": null,\n  \"pythonpath\": null,\n  \"sys_path\": [\n    \"/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload\",\n    \"/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages\"\n  ]\n}\nORIGINS_END\n..................                                                       [100%]\n18 passed in 0.48s\n{\"elapsed_seconds\": 0.5043251514434814, \"mode\": \"focused\", \"pid\": 65732, \"return_code\": 0}\n"
+  },
+  {
+    "command": [
+      "/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914/run_observation_same_process.py",
+      "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-receipt-20260914-v3/selected_create_open_observation.py"
+    ],
+    "cwd": "/tmp/ott03-template-open.o3HzxD/installed-origin-campaign",
+    "end": "2026-09-14T18:06:54.172972+00:00",
+    "environment": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHOME": "unset",
+      "PYTHONPATH": "unset"
+    },
+    "label": "installed-selected-observation-same-process",
+    "output": "work/ott-03-template-open-installed-origin-supplement-20260914/installed-selected-observation-same-process.txt",
+    "pid": null,
+    "return_code": 0,
+    "start": "2026-09-14T18:06:54.046551+00:00",
+    "stderr_tail": "",
+    "stdout_tail": "     \"title\",\n          \"body\"\n        ],\n        \"type\": \"object\"\n      },\n      \"revision\": \"observed-v1\",\n      \"seed\": {\n        \"project\": {\n          \"custom\": {\n            \"observation\": \"selected-create-open\"\n          },\n          \"outcome\": \"Observed selected outcome\",\n          \"title\": {\n            \"$param\": \"title\"\n          }\n        },\n        \"tasks\": [\n          {\n            \"body\": {\n              \"$param\": \"body\"\n            },\n            \"local_id\": \"observed-task\",\n            \"metadata\": {\n              \"origin\": \"installed-observation\"\n            },\n            \"title\": \"Observed typed task\"\n          }\n        ]\n      }\n    }\n  },\n  \"resource_conflict\": {\n    \"error\": {\n      \"code\": \"replay_conflict\",\n      \"message\": \"logical request key was reused with a changed request digest\",\n      \"operation\": \"work.pending.create\"\n    },\n    \"event_ids\": [],\n    \"outcome\": \"error\",\n    \"replayed\": false\n  },\n  \"schema\": \"ott03.selected-create-open.observation.v1\"\n}\n"
+  }
+]

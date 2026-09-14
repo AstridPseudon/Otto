@@ -1,0 +1,95 @@
+{
+  "herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+  "observation": {
+    "conflicts_zero_delta": true,
+    "created_event_delta": 6,
+    "exact_replay_zero_delta": true,
+    "fresh_replay_zero_delta": true,
+    "inert": {
+      "budget_reserved": false,
+      "dispatch": false,
+      "execution": false,
+      "manager_launch": false,
+      "session_task_created": false
+    },
+    "invalid_zero_delta": true,
+    "open_status": "opened",
+    "origins": {
+      "herzchen": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+      "herzchen_version": "0.1.0",
+      "otto": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/__init__.py",
+      "otto_version": "0.0.0",
+      "owner_bootstrap": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/portfolio/owner_bootstrap.py"
+    },
+    "outcome": "created",
+    "project_ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "task_refs": [
+      {
+        "authority": "ott03-selected-open-observation",
+        "id": "task-6dd8626381ab90945b4436b894b2",
+        "kind": "work.task",
+        "revision": null
+      }
+    ]
+  },
+  "origin_requirement": {
+    "PYTHONHOME": null,
+    "PYTHONPATH": null,
+    "cwd": "/tmp/ott03-template-open.o3HzxD/installed-origin-campaign"
+  },
+  "otto_wheel_sha256": "578c72f042a915510dc4dd1a10d78f82350231ac5029d2bf10f7a55b2febdf19",
+  "product_commit": "14510f49514587ecda265fb3e38c632f9ebe3179",
+  "product_tree": "2d213ad75bb3a730bfed8c31eff9c4d2597ec4df",
+  "schema": "ott03.installed-origin-supplement.v1",
+  "test_receipts": [
+    {
+      "command": [
+        "/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+        "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914/run_pytest_same_process.py",
+        "full",
+        "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker"
+      ],
+      "cwd": "/tmp/ott03-template-open.o3HzxD/installed-origin-campaign",
+      "end": "2026-09-14T18:06:53.451246+00:00",
+      "environment": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONHOME": "unset",
+        "PYTHONPATH": "unset"
+      },
+      "label": "installed-full-47-same-process",
+      "output": "work/ott-03-template-open-installed-origin-supplement-20260914/installed-full-47-same-process.txt",
+      "pid": null,
+      "return_code": 0,
+      "start": "2026-09-14T18:06:52.156792+00:00",
+      "stderr_tail": "",
+      "stdout_tail": "tfolio/owner_bootstrap.py\",\n  \"pid\": 65731,\n  \"python\": \"/private/tmp/ott03-template-open.o3HzxD/venv/bin/python\",\n  \"pythonhome\": null,\n  \"pythonpath\": null,\n  \"sys_path\": [\n    \"/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload\",\n    \"/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages\"\n  ]\n}\nORIGINS_END\n...............................................                          [100%]\n47 passed in 0.89s\n{\"elapsed_seconds\": 0.9587728977203369, \"mode\": \"full\", \"pid\": 65731, \"return_code\": 0}\n"
+    },
+    {
+      "command": [
+        "/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+        "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914/run_pytest_same_process.py",
+        "focused",
+        "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker"
+      ],
+      "cwd": "/tmp/ott03-template-open.o3HzxD/installed-origin-campaign",
+      "end": "2026-09-14T18:06:54.046240+00:00",
+      "environment": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONHOME": "unset",
+        "PYTHONPATH": "unset"
+      },
+      "label": "installed-focused-18-same-process",
+      "output": "work/ott-03-template-open-installed-origin-supplement-20260914/installed-focused-18-same-process.txt",
+      "pid": null,
+      "return_code": 0,
+      "start": "2026-09-14T18:06:53.451634+00:00",
+      "stderr_tail": "",
+      "stdout_tail": "lio/owner_bootstrap.py\",\n  \"pid\": 65732,\n  \"python\": \"/private/tmp/ott03-template-open.o3HzxD/venv/bin/python\",\n  \"pythonhome\": null,\n  \"pythonpath\": null,\n  \"sys_path\": [\n    \"/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11\",\n    \"/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload\",\n    \"/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages\"\n  ]\n}\nORIGINS_END\n..................                                                       [100%]\n18 passed in 0.48s\n{\"elapsed_seconds\": 0.5043251514434814, \"mode\": \"focused\", \"pid\": 65732, \"return_code\": 0}\n"
+    }
+  ]
+}

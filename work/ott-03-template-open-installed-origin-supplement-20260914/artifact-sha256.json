@@ -1,0 +1,17 @@
+{
+  "algorithm": "sha256",
+  "artifacts": {
+    "work/ott-03-template-open-installed-origin-supplement-20260914/README.md": "a196a00bf768a886df199ec4fc2063b029469578c3b961588775fdf87be1775a",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/installed-focused-18-same-process.txt": "3a6b56e0789aa746ced1a382a58517885050c0a77491dd77e71825f34eb93405",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/installed-full-47-same-process.txt": "5fb177034c6caf354c8d27d59806381df0ada44f32b89812d1224887b5237785",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/installed-selected-observation-same-process.txt": "d1cd06de1ae0c9fbf35945f311d6a7450e54c89afff49510aa7fbf26baa99263",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/run_campaigns.py": "ed14b29bf6669c27c2cb8e00d0297585e68ab09681a0f50ae6b6de37bac6eee1",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/run_observation_same_process.py": "b14670b9201cda0d7e3d7509207e5a583e03ac2fecb43f15523d15204b26ae9c",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/run_pytest_same_process.py": "49e99221de23141d0597aca4e1a46f97b3814d7e4c59ca7f4cc34a7197c04f68",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/same-process-receipts.json": "4ca5ab7a7ccd7bfea2b78e4d0dc9db694ec7f40bfee4acac3c7b10046052e97e",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/same-process-summary.json": "6b9f0e4cbdc4f06a72e1cae75a15cf417a51973c0edb4d6ff97001e66b953408",
+    "work/ott-03-template-open-installed-origin-supplement-20260914/worker-last-message.md": "2e158f44b1c5e5f7376cea692259c05b1500ecb80a5fbc560b009147a9b9f3a2"
+  },
+  "schema": "ott03.same-process-artifact-sha256.v1",
+  "self_excluded": "artifact-sha256.json"
+}

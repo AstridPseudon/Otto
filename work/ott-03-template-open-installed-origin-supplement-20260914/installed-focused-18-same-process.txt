@@ -1,0 +1,24 @@
+ORIGINS_BEGIN
+{
+  "herzchen": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+  "herzchen_version": "0.1.0",
+  "mode": "focused",
+  "otto": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/__init__.py",
+  "otto_version": "0.0.0",
+  "owner_bootstrap": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/portfolio/owner_bootstrap.py",
+  "pid": 65732,
+  "python": "/private/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+  "pythonhome": null,
+  "pythonpath": null,
+  "sys_path": [
+    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-template-open-installed-origin-supplement-20260914",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload",
+    "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages"
+  ]
+}
+ORIGINS_END
+..................                                                       [100%]
+18 passed in 0.48s
+{"elapsed_seconds": 0.5043251514434814, "mode": "focused", "pid": 65732, "return_code": 0}

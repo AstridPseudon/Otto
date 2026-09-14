@@ -1,0 +1,4030 @@
+WRAPPER_ORIGINS_BEGIN
+{
+  "herzchen": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+  "otto": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/__init__.py",
+  "owner_bootstrap": "otto.portfolio.owner_bootstrap",
+  "pid": 65733,
+  "python": "/private/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+  "pythonhome": null,
+  "pythonpath": null
+}
+WRAPPER_ORIGINS_END
+{
+  "after_conflicts": {
+    "counts": {
+      "command_receipts": 6,
+      "event_sequences": 3,
+      "events": 6,
+      "identities": 12,
+      "record_references": 18
+    },
+    "events": [
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "f5c7c8399e3aaab73a109acd410b473a",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "scope": "project-15384ab8984c18eb304d1af79bc4",
+          "session_id": "session-55b311526ea08eb6420effed"
+        },
+        "event_id": "event-57e3ac0f511896b7c65a7446dc41d292",
+        "event_type": "authoring.actor.open",
+        "occurred_at": null,
+        "operation": "actor.open",
+        "recorded_at": "2026-09-14T18:06:54.136648Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:f5c7c8399e3aaab73a109acd410b473a",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "scope": "project-15384ab8984c18eb304d1af79bc4",
+          "session_id": "session-55b311526ea08eb6420effed"
+        },
+        "event_id": "event-82a6b69f2511d4ea148d2d01a93a1b80",
+        "event_type": "authoring.open",
+        "occurred_at": null,
+        "operation": "open",
+        "recorded_at": "2026-09-14T18:06:54.137694Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "metadata": true
+        },
+        "event_id": "event-ff2fe72c7723a9182098d6a9e2161508",
+        "event_type": "authoring.metadata",
+        "occurred_at": null,
+        "operation": "metadata",
+        "recorded_at": "2026-09-14T18:06:54.142214Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 2,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "metadata": true
+        },
+        "event_id": "event-0644cc266a3cbddb7107221a4607956a",
+        "event_type": "authoring.metadata",
+        "occurred_at": null,
+        "operation": "metadata",
+        "recorded_at": "2026-09-14T18:06:54.143420Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 3,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "authoring_reservation": null,
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "pending": true,
+          "tasks": []
+        },
+        "event_id": "event-c15e72749601215c2e8bd8ec8913db99",
+        "event_type": "work.project.created",
+        "occurred_at": null,
+        "operation": "work.project.create",
+        "recorded_at": "2026-09-14T18:06:54.138967Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-2"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "child_refs": [
+            {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          ],
+          "document_refs": [],
+          "logical_batch": true,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "next_action": null,
+          "parent": {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          }
+        },
+        "event_id": "event-a7726b35f2cfb4ecdf800e28b4ffa2a8",
+        "event_type": "work.project-sheet.applied",
+        "occurred_at": null,
+        "operation": "work.project-sheet.apply",
+        "recorded_at": "2026-09-14T18:06:54.140511Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 2,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        }
+      }
+    ],
+    "receipts": {
+      "observation": {
+        "error_code": null,
+        "event_ids": [
+          "event-82a6b69f2511d4ea148d2d01a93a1b80"
+        ],
+        "logical_request_key": "observation",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "b049353ca20e803519811c266171481771846c8d978239d842bce81d4b88f245",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "2976fbd2d9a6cecae45bd49f71ec057f",
+        "unknown_reason": null
+      },
+      "observation:actor": {
+        "error_code": null,
+        "event_ids": [
+          "event-57e3ac0f511896b7c65a7446dc41d292"
+        ],
+        "logical_request_key": "observation:actor",
+        "observed_revision": "rev-1",
+        "operation": "actor.open",
+        "replayed": false,
+        "request_digest": "3c928c4cd7898c75720c97c915b0c38eec7f631a7f77fae3807cf5b664552737",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": null
+        },
+        "transaction_id": "4451f045cbb6639675feb86c70c43b91",
+        "unknown_reason": null
+      },
+      "observation:materialized": {
+        "error_code": null,
+        "event_ids": [
+          "event-0644cc266a3cbddb7107221a4607956a"
+        ],
+        "logical_request_key": "observation:materialized",
+        "observed_revision": "rev-3",
+        "operation": "metadata",
+        "replayed": false,
+        "request_digest": "85c7df20fd45daf41b6477ab14552f1ba584ada057d931fb16b74e7014f25781",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "6ce5ca3d8b382d77d66f4e6709a73512",
+        "unknown_reason": null
+      },
+      "observation:project": {
+        "error_code": null,
+        "event_ids": [
+          "event-c15e72749601215c2e8bd8ec8913db99"
+        ],
+        "logical_request_key": "observation:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "681662c55e5a7a4ce934d03134b5864ee583c249e1b2ac068e72066f3d0202a3",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "6bea252dfaae4c98439c6665a6fd399c",
+        "unknown_reason": null
+      },
+      "observation:project-created": {
+        "error_code": null,
+        "event_ids": [
+          "event-ff2fe72c7723a9182098d6a9e2161508"
+        ],
+        "logical_request_key": "observation:project-created",
+        "observed_revision": "rev-2",
+        "operation": "metadata",
+        "replayed": false,
+        "request_digest": "cc8201e311a0e0e7e6d890d861e091a08bb1560147c73ac58aa863e67533f768",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "0f056c56fc47a00d9117d82f44a6c062",
+        "unknown_reason": null
+      },
+      "observation:template": {
+        "error_code": null,
+        "event_ids": [
+          "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+        ],
+        "logical_request_key": "observation:template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+        "unknown_reason": null
+      }
+    }
+  },
+  "after_create": {
+    "counts": {
+      "command_receipts": 6,
+      "event_sequences": 3,
+      "events": 6,
+      "identities": 12,
+      "record_references": 18
+    },
+    "events": [
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "f5c7c8399e3aaab73a109acd410b473a",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "scope": "project-15384ab8984c18eb304d1af79bc4",
+          "session_id": "session-55b311526ea08eb6420effed"
+        },
+        "event_id": "event-57e3ac0f511896b7c65a7446dc41d292",
+        "event_type": "authoring.actor.open",
+        "occurred_at": null,
+        "operation": "actor.open",
+        "recorded_at": "2026-09-14T18:06:54.136648Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:f5c7c8399e3aaab73a109acd410b473a",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "scope": "project-15384ab8984c18eb304d1af79bc4",
+          "session_id": "session-55b311526ea08eb6420effed"
+        },
+        "event_id": "event-82a6b69f2511d4ea148d2d01a93a1b80",
+        "event_type": "authoring.open",
+        "occurred_at": null,
+        "operation": "open",
+        "recorded_at": "2026-09-14T18:06:54.137694Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "metadata": true
+        },
+        "event_id": "event-ff2fe72c7723a9182098d6a9e2161508",
+        "event_type": "authoring.metadata",
+        "occurred_at": null,
+        "operation": "metadata",
+        "recorded_at": "2026-09-14T18:06:54.142214Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 2,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "metadata": true
+        },
+        "event_id": "event-0644cc266a3cbddb7107221a4607956a",
+        "event_type": "authoring.metadata",
+        "occurred_at": null,
+        "operation": "metadata",
+        "recorded_at": "2026-09-14T18:06:54.143420Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 3,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "authoring_reservation": null,
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "pending": true,
+          "tasks": []
+        },
+        "event_id": "event-c15e72749601215c2e8bd8ec8913db99",
+        "event_type": "work.project.created",
+        "occurred_at": null,
+        "operation": "work.project.create",
+        "recorded_at": "2026-09-14T18:06:54.138967Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-2"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "child_refs": [
+            {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          ],
+          "document_refs": [],
+          "logical_batch": true,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "next_action": null,
+          "parent": {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          }
+        },
+        "event_id": "event-a7726b35f2cfb4ecdf800e28b4ffa2a8",
+        "event_type": "work.project-sheet.applied",
+        "occurred_at": null,
+        "operation": "work.project-sheet.apply",
+        "recorded_at": "2026-09-14T18:06:54.140511Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 2,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        }
+      }
+    ],
+    "receipts": {
+      "observation": {
+        "error_code": null,
+        "event_ids": [
+          "event-82a6b69f2511d4ea148d2d01a93a1b80"
+        ],
+        "logical_request_key": "observation",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "b049353ca20e803519811c266171481771846c8d978239d842bce81d4b88f245",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "2976fbd2d9a6cecae45bd49f71ec057f",
+        "unknown_reason": null
+      },
+      "observation:actor": {
+        "error_code": null,
+        "event_ids": [
+          "event-57e3ac0f511896b7c65a7446dc41d292"
+        ],
+        "logical_request_key": "observation:actor",
+        "observed_revision": "rev-1",
+        "operation": "actor.open",
+        "replayed": false,
+        "request_digest": "3c928c4cd7898c75720c97c915b0c38eec7f631a7f77fae3807cf5b664552737",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": null
+        },
+        "transaction_id": "4451f045cbb6639675feb86c70c43b91",
+        "unknown_reason": null
+      },
+      "observation:materialized": {
+        "error_code": null,
+        "event_ids": [
+          "event-0644cc266a3cbddb7107221a4607956a"
+        ],
+        "logical_request_key": "observation:materialized",
+        "observed_revision": "rev-3",
+        "operation": "metadata",
+        "replayed": false,
+        "request_digest": "85c7df20fd45daf41b6477ab14552f1ba584ada057d931fb16b74e7014f25781",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "6ce5ca3d8b382d77d66f4e6709a73512",
+        "unknown_reason": null
+      },
+      "observation:project": {
+        "error_code": null,
+        "event_ids": [
+          "event-c15e72749601215c2e8bd8ec8913db99"
+        ],
+        "logical_request_key": "observation:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "681662c55e5a7a4ce934d03134b5864ee583c249e1b2ac068e72066f3d0202a3",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "6bea252dfaae4c98439c6665a6fd399c",
+        "unknown_reason": null
+      },
+      "observation:project-created": {
+        "error_code": null,
+        "event_ids": [
+          "event-ff2fe72c7723a9182098d6a9e2161508"
+        ],
+        "logical_request_key": "observation:project-created",
+        "observed_revision": "rev-2",
+        "operation": "metadata",
+        "replayed": false,
+        "request_digest": "cc8201e311a0e0e7e6d890d861e091a08bb1560147c73ac58aa863e67533f768",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "0f056c56fc47a00d9117d82f44a6c062",
+        "unknown_reason": null
+      },
+      "observation:template": {
+        "error_code": null,
+        "event_ids": [
+          "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+        ],
+        "logical_request_key": "observation:template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+        "unknown_reason": null
+      }
+    }
+  },
+  "after_replay": {
+    "counts": {
+      "command_receipts": 6,
+      "event_sequences": 3,
+      "events": 6,
+      "identities": 12,
+      "record_references": 18
+    },
+    "events": [
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "f5c7c8399e3aaab73a109acd410b473a",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "scope": "project-15384ab8984c18eb304d1af79bc4",
+          "session_id": "session-55b311526ea08eb6420effed"
+        },
+        "event_id": "event-57e3ac0f511896b7c65a7446dc41d292",
+        "event_type": "authoring.actor.open",
+        "occurred_at": null,
+        "operation": "actor.open",
+        "recorded_at": "2026-09-14T18:06:54.136648Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:f5c7c8399e3aaab73a109acd410b473a",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "scope": "project-15384ab8984c18eb304d1af79bc4",
+          "session_id": "session-55b311526ea08eb6420effed"
+        },
+        "event_id": "event-82a6b69f2511d4ea148d2d01a93a1b80",
+        "event_type": "authoring.open",
+        "occurred_at": null,
+        "operation": "open",
+        "recorded_at": "2026-09-14T18:06:54.137694Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "metadata": true
+        },
+        "event_id": "event-ff2fe72c7723a9182098d6a9e2161508",
+        "event_type": "authoring.metadata",
+        "occurred_at": null,
+        "operation": "metadata",
+        "recorded_at": "2026-09-14T18:06:54.142214Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 2,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "metadata": true
+        },
+        "event_id": "event-0644cc266a3cbddb7107221a4607956a",
+        "event_type": "authoring.metadata",
+        "occurred_at": null,
+        "operation": "metadata",
+        "recorded_at": "2026-09-14T18:06:54.143420Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 3,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "before_refs": [],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "authoring_reservation": null,
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "pending": true,
+          "tasks": []
+        },
+        "event_id": "event-c15e72749601215c2e8bd8ec8913db99",
+        "event_type": "work.project.created",
+        "occurred_at": null,
+        "operation": "work.project.create",
+        "recorded_at": "2026-09-14T18:06:54.138967Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 1,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      },
+      {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "after_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-2"
+          }
+        ],
+        "before_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        ],
+        "causation_id": null,
+        "correlation_id": null,
+        "effects": {
+          "child_refs": [
+            {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          ],
+          "document_refs": [],
+          "logical_batch": true,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "next_action": null,
+          "parent": {
+            "authority": "ott03-selected-open-observation",
+            "id": "project-15384ab8984c18eb304d1af79bc4",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          }
+        },
+        "event_id": "event-a7726b35f2cfb4ecdf800e28b4ffa2a8",
+        "event_type": "work.project-sheet.applied",
+        "occurred_at": null,
+        "operation": "work.project-sheet.apply",
+        "recorded_at": "2026-09-14T18:06:54.140511Z",
+        "schema_revision": "fnd-03.event.v1",
+        "sequence": 2,
+        "store_authority": "ott03-selected-open-observation",
+        "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+        "subject": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        }
+      }
+    ],
+    "receipts": {
+      "observation": {
+        "error_code": null,
+        "event_ids": [
+          "event-82a6b69f2511d4ea148d2d01a93a1b80"
+        ],
+        "logical_request_key": "observation",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "b049353ca20e803519811c266171481771846c8d978239d842bce81d4b88f245",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "2976fbd2d9a6cecae45bd49f71ec057f",
+        "unknown_reason": null
+      },
+      "observation:actor": {
+        "error_code": null,
+        "event_ids": [
+          "event-57e3ac0f511896b7c65a7446dc41d292"
+        ],
+        "logical_request_key": "observation:actor",
+        "observed_revision": "rev-1",
+        "operation": "actor.open",
+        "replayed": false,
+        "request_digest": "3c928c4cd7898c75720c97c915b0c38eec7f631a7f77fae3807cf5b664552737",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": null
+        },
+        "transaction_id": "4451f045cbb6639675feb86c70c43b91",
+        "unknown_reason": null
+      },
+      "observation:materialized": {
+        "error_code": null,
+        "event_ids": [
+          "event-0644cc266a3cbddb7107221a4607956a"
+        ],
+        "logical_request_key": "observation:materialized",
+        "observed_revision": "rev-3",
+        "operation": "metadata",
+        "replayed": false,
+        "request_digest": "85c7df20fd45daf41b6477ab14552f1ba584ada057d931fb16b74e7014f25781",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "6ce5ca3d8b382d77d66f4e6709a73512",
+        "unknown_reason": null
+      },
+      "observation:project": {
+        "error_code": null,
+        "event_ids": [
+          "event-c15e72749601215c2e8bd8ec8913db99"
+        ],
+        "logical_request_key": "observation:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "681662c55e5a7a4ce934d03134b5864ee583c249e1b2ac068e72066f3d0202a3",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "6bea252dfaae4c98439c6665a6fd399c",
+        "unknown_reason": null
+      },
+      "observation:project-created": {
+        "error_code": null,
+        "event_ids": [
+          "event-ff2fe72c7723a9182098d6a9e2161508"
+        ],
+        "logical_request_key": "observation:project-created",
+        "observed_revision": "rev-2",
+        "operation": "metadata",
+        "replayed": false,
+        "request_digest": "cc8201e311a0e0e7e6d890d861e091a08bb1560147c73ac58aa863e67533f768",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "0f056c56fc47a00d9117d82f44a6c062",
+        "unknown_reason": null
+      },
+      "observation:template": {
+        "error_code": null,
+        "event_ids": [
+          "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+        ],
+        "logical_request_key": "observation:template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+        "unknown_reason": null
+      }
+    }
+  },
+  "before": {
+    "counts": {
+      "command_receipts": 0,
+      "event_sequences": 0,
+      "events": 0,
+      "identities": 7,
+      "record_references": 7
+    },
+    "events": [],
+    "receipts": {
+      "observation": null,
+      "observation:actor": null,
+      "observation:materialized": null,
+      "observation:project": null,
+      "observation:project-created": null,
+      "observation:template": null
+    }
+  },
+  "created": {
+    "activation": false,
+    "budget_reserved": false,
+    "dispatch": false,
+    "event_ids": [
+      "event-57e3ac0f511896b7c65a7446dc41d292",
+      "event-82a6b69f2511d4ea148d2d01a93a1b80",
+      "event-ff2fe72c7723a9182098d6a9e2161508",
+      "event-0644cc266a3cbddb7107221a4607956a",
+      "event-c15e72749601215c2e8bd8ec8913db99",
+      "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+    ],
+    "executable": false,
+    "execution": false,
+    "manager_launch": false,
+    "open": {
+      "base_revision": "initial",
+      "checkout": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "allowed_fields": [],
+        "base_revision": "initial",
+        "cleanup": "not_requested",
+        "draft_snapshot_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "draft-session-55b311526ea08eb6420effed",
+          "kind": "authoring-snapshot",
+          "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "final_snapshot_ref": null,
+        "finish_claim": null,
+        "session_id": "session-55b311526ea08eb6420effed",
+        "state": "open",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7",
+        "unmanaged_writers": false
+      },
+      "error": null,
+      "handle": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "base_revision": "initial",
+        "checkout_path": null,
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "session_id": "session-55b311526ea08eb6420effed",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7"
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "recovery_pending": false,
+      "recovery_status": "not_requested",
+      "scope": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "session_id": "session-55b311526ea08eb6420effed",
+      "status": "opened",
+      "target_kind": "project-sheet",
+      "task_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "task-6dd8626381ab90945b4436b894b2",
+          "kind": "work.task",
+          "revision": null
+        }
+      ],
+      "template": {
+        "id": "ott03.observed.selected-open",
+        "kind": "work_template",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        "revision": "observed-v1",
+        "seed": {
+          "project": {
+            "custom": {
+              "observation": "selected-create-open"
+            },
+            "outcome": "Observed selected outcome",
+            "title": {
+              "$param": "title"
+            }
+          },
+          "tasks": [
+            {
+              "body": {
+                "$param": "body"
+              },
+              "local_id": "observed-task",
+              "metadata": {
+                "origin": "installed-observation"
+              },
+              "title": "Observed typed task"
+            }
+          ]
+        }
+      },
+      "template_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+        ],
+        "logical_request_key": "observation:template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+        "unknown_reason": null
+      }
+    },
+    "outcome": "created",
+    "project_receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-c15e72749601215c2e8bd8ec8913db99"
+      ],
+      "logical_request_key": "observation:project",
+      "observed_revision": "rev-1",
+      "operation": "work.project.create",
+      "replayed": false,
+      "request_digest": "681662c55e5a7a4ce934d03134b5864ee583c249e1b2ac068e72066f3d0202a3",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "transaction_id": "6bea252dfaae4c98439c6665a6fd399c",
+      "unknown_reason": null
+    },
+    "project_ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-82a6b69f2511d4ea148d2d01a93a1b80"
+      ],
+      "logical_request_key": "observation",
+      "observed_revision": "rev-1",
+      "operation": "open",
+      "replayed": false,
+      "request_digest": "b049353ca20e803519811c266171481771846c8d978239d842bce81d4b88f245",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": null
+      },
+      "transaction_id": "2976fbd2d9a6cecae45bd49f71ec057f",
+      "unknown_reason": null
+    },
+    "record": {
+      "kind": "project",
+      "lifecycle": "pending",
+      "name": "Untitled project",
+      "payload": {
+        "acceptance": {},
+        "alias": "project-15384ab8984c18eb304d1af79bc4",
+        "aliases": [
+          "project-15384ab8984c18eb304d1af79bc4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "observed-task": {
+                "authority": "ott03-selected-open-observation",
+                "id": "task-6dd8626381ab90945b4436b894b2",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "observed-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "creation_request": "observation:project",
+        "custom": {
+          "observation": "selected-create-open"
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "observed-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "observation",
+            "payload": {
+              "edit": {},
+              "open": true,
+              "template": {
+                "id": "ott03.observed.selected-open",
+                "kind": "work_template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "body": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "title": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "body"
+                  ],
+                  "type": "object"
+                },
+                "revision": "observed-v1",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "observation": "selected-create-open"
+                    },
+                    "outcome": "Observed selected outcome",
+                    "title": {
+                      "$param": "title"
+                    }
+                  },
+                  "tasks": [
+                    {
+                      "body": {
+                        "$param": "body"
+                      },
+                      "local_id": "observed-task",
+                      "metadata": {
+                        "origin": "installed-observation"
+                      },
+                      "title": "Observed typed task"
+                    }
+                  ]
+                }
+              },
+              "template_parameters": {
+                "body": "Observed typed content",
+                "title": "Observed selected project"
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.observed.selected-open",
+            "kind": "work_template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "title": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "body"
+              ],
+              "type": "object"
+            },
+            "revision": "observed-v1",
+            "seed": {
+              "project": {
+                "custom": {
+                  "observation": "selected-create-open"
+                },
+                "outcome": "Observed selected outcome",
+                "title": {
+                  "$param": "title"
+                }
+              },
+              "tasks": [
+                {
+                  "body": {
+                    "$param": "body"
+                  },
+                  "local_id": "observed-task",
+                  "metadata": {
+                    "origin": "installed-observation"
+                  },
+                  "title": "Observed typed task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {
+              "body": "Observed typed content",
+              "title": "Observed selected project"
+            },
+            "template_id": "ott03.observed.selected-open"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Observed selected outcome",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Observed selected project",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "readiness": {
+        "dispatch": false,
+        "ready": false,
+        "status": "not-evaluated"
+      },
+      "revision": "rev-2",
+      "title": "Observed selected project",
+      "version": 2
+    },
+    "replayed": false,
+    "session_task_created": false,
+    "task_refs": [
+      {
+        "authority": "ott03-selected-open-observation",
+        "id": "task-6dd8626381ab90945b4436b894b2",
+        "kind": "work.task",
+        "revision": null
+      }
+    ],
+    "tasks": [
+      {
+        "local_id": "observed-task",
+        "record": {
+          "kind": "task",
+          "lifecycle": "pending",
+          "name": "Observed typed task",
+          "payload": {
+            "alias": "task-6dd8626381ab90945b4436b894b2",
+            "aliases": [
+              "task-6dd8626381ab90945b4436b894b2"
+            ],
+            "body": "Observed typed content",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "fields": {},
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "task",
+            "lifecycle": "pending",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "name": "Observed typed task",
+            "order": 0,
+            "parent": {
+              "authority": "ott03-selected-open-observation",
+              "id": "project-15384ab8984c18eb304d1af79bc4",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "project_ref": {
+              "authority": "ott03-selected-open-observation",
+              "id": "project-15384ab8984c18eb304d1af79bc4",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "results": [],
+            "schema_revision": "work.v1",
+            "title": "Observed typed task"
+          },
+          "project_ref": {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": "rev-1"
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "revision": "rev-1",
+          "title": "Observed typed task",
+          "version": 1
+        },
+        "ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "task-6dd8626381ab90945b4436b894b2",
+          "kind": "work.task",
+          "revision": null
+        }
+      }
+    ],
+    "template": {
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "type": "object"
+      },
+      "revision": "observed-v1",
+      "seed": {
+        "project": {
+          "custom": {
+            "observation": "selected-create-open"
+          },
+          "outcome": "Observed selected outcome",
+          "title": {
+            "$param": "title"
+          }
+        },
+        "tasks": [
+          {
+            "body": {
+              "$param": "body"
+            },
+            "local_id": "observed-task",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "title": "Observed typed task"
+          }
+        ]
+      }
+    },
+    "template_receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+      ],
+      "logical_request_key": "observation:template",
+      "observed_revision": "rev-2",
+      "operation": "work.project-sheet.apply",
+      "replayed": false,
+      "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+      "unknown_reason": null
+    },
+    "template_ref": {
+      "authority": "pack",
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "revision": "observed-v1"
+    },
+    "template_revision": "observed-v1"
+  },
+  "exact_replay": {
+    "activation": false,
+    "budget_reserved": false,
+    "dispatch": false,
+    "event_ids": [
+      "event-57e3ac0f511896b7c65a7446dc41d292",
+      "event-82a6b69f2511d4ea148d2d01a93a1b80",
+      "event-ff2fe72c7723a9182098d6a9e2161508",
+      "event-0644cc266a3cbddb7107221a4607956a",
+      "event-c15e72749601215c2e8bd8ec8913db99",
+      "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+    ],
+    "executable": false,
+    "execution": false,
+    "manager_launch": false,
+    "open": {
+      "base_revision": "initial",
+      "checkout": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "allowed_fields": [],
+        "base_revision": "initial",
+        "cleanup": "not_requested",
+        "draft_snapshot_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "draft-session-55b311526ea08eb6420effed",
+          "kind": "authoring-snapshot",
+          "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "final_snapshot_ref": null,
+        "finish_claim": null,
+        "session_id": "session-55b311526ea08eb6420effed",
+        "state": "open",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7",
+        "unmanaged_writers": false
+      },
+      "error": null,
+      "handle": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "base_revision": "initial",
+        "checkout_path": null,
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "session_id": "session-55b311526ea08eb6420effed",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7"
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "recovery_pending": false,
+      "recovery_status": "not_requested",
+      "scope": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "session_id": "session-55b311526ea08eb6420effed",
+      "status": "replayed",
+      "target_kind": "project-sheet",
+      "task_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "task-6dd8626381ab90945b4436b894b2",
+          "kind": "work.task",
+          "revision": null
+        }
+      ],
+      "template": {
+        "id": "ott03.observed.selected-open",
+        "kind": "work_template",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        "revision": "observed-v1",
+        "seed": {
+          "project": {
+            "custom": {
+              "observation": "selected-create-open"
+            },
+            "outcome": "Observed selected outcome",
+            "title": {
+              "$param": "title"
+            }
+          },
+          "tasks": [
+            {
+              "body": {
+                "$param": "body"
+              },
+              "local_id": "observed-task",
+              "metadata": {
+                "origin": "installed-observation"
+              },
+              "title": "Observed typed task"
+            }
+          ]
+        }
+      },
+      "template_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+        ],
+        "logical_request_key": "observation:template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+        "unknown_reason": null
+      }
+    },
+    "outcome": "replayed",
+    "project_receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-c15e72749601215c2e8bd8ec8913db99"
+      ],
+      "logical_request_key": "observation:project",
+      "observed_revision": "rev-1",
+      "operation": "work.project.create",
+      "replayed": false,
+      "request_digest": "681662c55e5a7a4ce934d03134b5864ee583c249e1b2ac068e72066f3d0202a3",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "transaction_id": "6bea252dfaae4c98439c6665a6fd399c",
+      "unknown_reason": null
+    },
+    "project_ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-82a6b69f2511d4ea148d2d01a93a1b80"
+      ],
+      "logical_request_key": "observation",
+      "observed_revision": "rev-1",
+      "operation": "open",
+      "replayed": false,
+      "request_digest": "b049353ca20e803519811c266171481771846c8d978239d842bce81d4b88f245",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": null
+      },
+      "transaction_id": "2976fbd2d9a6cecae45bd49f71ec057f",
+      "unknown_reason": null
+    },
+    "record": {
+      "kind": "project",
+      "lifecycle": "pending",
+      "name": "Untitled project",
+      "payload": {
+        "acceptance": {},
+        "alias": "project-15384ab8984c18eb304d1af79bc4",
+        "aliases": [
+          "project-15384ab8984c18eb304d1af79bc4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "observed-task": {
+                "authority": "ott03-selected-open-observation",
+                "id": "task-6dd8626381ab90945b4436b894b2",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "observed-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "creation_request": "observation:project",
+        "custom": {
+          "observation": "selected-create-open"
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "observed-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "observation",
+            "payload": {
+              "edit": {},
+              "open": true,
+              "template": {
+                "id": "ott03.observed.selected-open",
+                "kind": "work_template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "body": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "title": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "body"
+                  ],
+                  "type": "object"
+                },
+                "revision": "observed-v1",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "observation": "selected-create-open"
+                    },
+                    "outcome": "Observed selected outcome",
+                    "title": {
+                      "$param": "title"
+                    }
+                  },
+                  "tasks": [
+                    {
+                      "body": {
+                        "$param": "body"
+                      },
+                      "local_id": "observed-task",
+                      "metadata": {
+                        "origin": "installed-observation"
+                      },
+                      "title": "Observed typed task"
+                    }
+                  ]
+                }
+              },
+              "template_parameters": {
+                "body": "Observed typed content",
+                "title": "Observed selected project"
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.observed.selected-open",
+            "kind": "work_template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "title": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "body"
+              ],
+              "type": "object"
+            },
+            "revision": "observed-v1",
+            "seed": {
+              "project": {
+                "custom": {
+                  "observation": "selected-create-open"
+                },
+                "outcome": "Observed selected outcome",
+                "title": {
+                  "$param": "title"
+                }
+              },
+              "tasks": [
+                {
+                  "body": {
+                    "$param": "body"
+                  },
+                  "local_id": "observed-task",
+                  "metadata": {
+                    "origin": "installed-observation"
+                  },
+                  "title": "Observed typed task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {
+              "body": "Observed typed content",
+              "title": "Observed selected project"
+            },
+            "template_id": "ott03.observed.selected-open"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Observed selected outcome",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Observed selected project",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "readiness": {
+        "dispatch": false,
+        "ready": false,
+        "status": "not-evaluated"
+      },
+      "revision": "rev-2",
+      "title": "Observed selected project",
+      "version": 2
+    },
+    "replayed": true,
+    "session_task_created": false,
+    "task_refs": [
+      {
+        "authority": "ott03-selected-open-observation",
+        "id": "task-6dd8626381ab90945b4436b894b2",
+        "kind": "work.task",
+        "revision": null
+      }
+    ],
+    "tasks": [
+      {
+        "local_id": "observed-task",
+        "record": {
+          "kind": "task",
+          "lifecycle": "pending",
+          "name": "Observed typed task",
+          "payload": {
+            "alias": "task-6dd8626381ab90945b4436b894b2",
+            "aliases": [
+              "task-6dd8626381ab90945b4436b894b2"
+            ],
+            "body": "Observed typed content",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "fields": {},
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "task",
+            "lifecycle": "pending",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "name": "Observed typed task",
+            "order": 0,
+            "parent": {
+              "authority": "ott03-selected-open-observation",
+              "id": "project-15384ab8984c18eb304d1af79bc4",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "project_ref": {
+              "authority": "ott03-selected-open-observation",
+              "id": "project-15384ab8984c18eb304d1af79bc4",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "results": [],
+            "schema_revision": "work.v1",
+            "title": "Observed typed task"
+          },
+          "project_ref": {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": "rev-1"
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "revision": "rev-1",
+          "title": "Observed typed task",
+          "version": 1
+        },
+        "ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "task-6dd8626381ab90945b4436b894b2",
+          "kind": "work.task",
+          "revision": null
+        }
+      }
+    ],
+    "template": {
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "type": "object"
+      },
+      "revision": "observed-v1",
+      "seed": {
+        "project": {
+          "custom": {
+            "observation": "selected-create-open"
+          },
+          "outcome": "Observed selected outcome",
+          "title": {
+            "$param": "title"
+          }
+        },
+        "tasks": [
+          {
+            "body": {
+              "$param": "body"
+            },
+            "local_id": "observed-task",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "title": "Observed typed task"
+          }
+        ]
+      }
+    },
+    "template_receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+      ],
+      "logical_request_key": "observation:template",
+      "observed_revision": "rev-2",
+      "operation": "work.project-sheet.apply",
+      "replayed": false,
+      "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+      "unknown_reason": null
+    },
+    "template_ref": {
+      "authority": "pack",
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "revision": "observed-v1"
+    },
+    "template_revision": "observed-v1"
+  },
+  "final_events": [
+    {
+      "actor": {
+        "actor": "owner",
+        "authenticated": true,
+        "authority": "ott03-selected-open-observation",
+        "credential_ref": "ott03-selected-open-observation-credential"
+      },
+      "after_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "f5c7c8399e3aaab73a109acd410b473a",
+          "kind": "authoring-actor",
+          "revision": "rev-1"
+        }
+      ],
+      "before_refs": [],
+      "causation_id": null,
+      "correlation_id": null,
+      "effects": {
+        "scope": "project-15384ab8984c18eb304d1af79bc4",
+        "session_id": "session-55b311526ea08eb6420effed"
+      },
+      "event_id": "event-57e3ac0f511896b7c65a7446dc41d292",
+      "event_type": "authoring.actor.open",
+      "occurred_at": null,
+      "operation": "actor.open",
+      "recorded_at": "2026-09-14T18:06:54.136648Z",
+      "schema_revision": "fnd-03.event.v1",
+      "sequence": 1,
+      "store_authority": "ott03-selected-open-observation",
+      "stream": "authoring:f5c7c8399e3aaab73a109acd410b473a",
+      "subject": {
+        "authority": "ott03-selected-open-observation",
+        "id": "f5c7c8399e3aaab73a109acd410b473a",
+        "kind": "authoring-actor",
+        "revision": "rev-1"
+      }
+    },
+    {
+      "actor": {
+        "actor": "owner",
+        "authenticated": true,
+        "authority": "ott03-selected-open-observation",
+        "credential_ref": "ott03-selected-open-observation-credential"
+      },
+      "after_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        }
+      ],
+      "before_refs": [],
+      "causation_id": null,
+      "correlation_id": null,
+      "effects": {
+        "scope": "project-15384ab8984c18eb304d1af79bc4",
+        "session_id": "session-55b311526ea08eb6420effed"
+      },
+      "event_id": "event-82a6b69f2511d4ea148d2d01a93a1b80",
+      "event_type": "authoring.open",
+      "occurred_at": null,
+      "operation": "open",
+      "recorded_at": "2026-09-14T18:06:54.137694Z",
+      "schema_revision": "fnd-03.event.v1",
+      "sequence": 1,
+      "store_authority": "ott03-selected-open-observation",
+      "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+      "subject": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": "rev-1"
+      }
+    },
+    {
+      "actor": {
+        "actor": "owner",
+        "authenticated": true,
+        "authority": "ott03-selected-open-observation",
+        "credential_ref": "ott03-selected-open-observation-credential"
+      },
+      "after_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        }
+      ],
+      "before_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        }
+      ],
+      "causation_id": null,
+      "correlation_id": null,
+      "effects": {
+        "metadata": true
+      },
+      "event_id": "event-ff2fe72c7723a9182098d6a9e2161508",
+      "event_type": "authoring.metadata",
+      "occurred_at": null,
+      "operation": "metadata",
+      "recorded_at": "2026-09-14T18:06:54.142214Z",
+      "schema_revision": "fnd-03.event.v1",
+      "sequence": 2,
+      "store_authority": "ott03-selected-open-observation",
+      "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+      "subject": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": "rev-2"
+      }
+    },
+    {
+      "actor": {
+        "actor": "owner",
+        "authenticated": true,
+        "authority": "ott03-selected-open-observation",
+        "credential_ref": "ott03-selected-open-observation-credential"
+      },
+      "after_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-3"
+        }
+      ],
+      "before_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": "rev-2"
+        }
+      ],
+      "causation_id": null,
+      "correlation_id": null,
+      "effects": {
+        "metadata": true
+      },
+      "event_id": "event-0644cc266a3cbddb7107221a4607956a",
+      "event_type": "authoring.metadata",
+      "occurred_at": null,
+      "operation": "metadata",
+      "recorded_at": "2026-09-14T18:06:54.143420Z",
+      "schema_revision": "fnd-03.event.v1",
+      "sequence": 3,
+      "store_authority": "ott03-selected-open-observation",
+      "stream": "authoring:project-15384ab8984c18eb304d1af79bc4",
+      "subject": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": "rev-3"
+      }
+    },
+    {
+      "actor": {
+        "actor": "owner",
+        "authenticated": true,
+        "authority": "ott03-selected-open-observation",
+        "credential_ref": "ott03-selected-open-observation-credential"
+      },
+      "after_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      ],
+      "before_refs": [],
+      "causation_id": null,
+      "correlation_id": null,
+      "effects": {
+        "authoring_reservation": null,
+        "curator": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "pending": true,
+        "tasks": []
+      },
+      "event_id": "event-c15e72749601215c2e8bd8ec8913db99",
+      "event_type": "work.project.created",
+      "occurred_at": null,
+      "operation": "work.project.create",
+      "recorded_at": "2026-09-14T18:06:54.138967Z",
+      "schema_revision": "fnd-03.event.v1",
+      "sequence": 1,
+      "store_authority": "ott03-selected-open-observation",
+      "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+      "subject": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      }
+    },
+    {
+      "actor": {
+        "actor": "owner",
+        "authenticated": true,
+        "authority": "ott03-selected-open-observation",
+        "credential_ref": "ott03-selected-open-observation-credential"
+      },
+      "after_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        }
+      ],
+      "before_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        }
+      ],
+      "causation_id": null,
+      "correlation_id": null,
+      "effects": {
+        "child_refs": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "document_refs": [],
+        "logical_batch": true,
+        "mapping": {
+          "observed-task": {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": null
+          }
+        },
+        "next_action": null,
+        "parent": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "request_context": {
+          "causation_id": null,
+          "correlation_id": null,
+          "edit_token": null,
+          "expected_revision": "rev-1",
+          "expected_version": 1
+        }
+      },
+      "event_id": "event-a7726b35f2cfb4ecdf800e28b4ffa2a8",
+      "event_type": "work.project-sheet.applied",
+      "occurred_at": null,
+      "operation": "work.project-sheet.apply",
+      "recorded_at": "2026-09-14T18:06:54.140511Z",
+      "schema_revision": "fnd-03.event.v1",
+      "sequence": 2,
+      "store_authority": "ott03-selected-open-observation",
+      "stream": "work:project-15384ab8984c18eb304d1af79bc4",
+      "subject": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      }
+    }
+  ],
+  "fresh_record": {
+    "event_ids": [],
+    "executable": false,
+    "outcome": "read",
+    "project_ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "receipt": null,
+    "record": {
+      "kind": "project",
+      "lifecycle": "pending",
+      "name": "Untitled project",
+      "payload": {
+        "acceptance": {},
+        "alias": "project-15384ab8984c18eb304d1af79bc4",
+        "aliases": [
+          "project-15384ab8984c18eb304d1af79bc4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "observed-task": {
+                "authority": "ott03-selected-open-observation",
+                "id": "task-6dd8626381ab90945b4436b894b2",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "observed-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "creation_request": "observation:project",
+        "custom": {
+          "observation": "selected-create-open"
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "observed-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "observation",
+            "payload": {
+              "edit": {},
+              "open": true,
+              "template": {
+                "id": "ott03.observed.selected-open",
+                "kind": "work_template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "body": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "title": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "body"
+                  ],
+                  "type": "object"
+                },
+                "revision": "observed-v1",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "observation": "selected-create-open"
+                    },
+                    "outcome": "Observed selected outcome",
+                    "title": {
+                      "$param": "title"
+                    }
+                  },
+                  "tasks": [
+                    {
+                      "body": {
+                        "$param": "body"
+                      },
+                      "local_id": "observed-task",
+                      "metadata": {
+                        "origin": "installed-observation"
+                      },
+                      "title": "Observed typed task"
+                    }
+                  ]
+                }
+              },
+              "template_parameters": {
+                "body": "Observed typed content",
+                "title": "Observed selected project"
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.observed.selected-open",
+            "kind": "work_template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "title": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "body"
+              ],
+              "type": "object"
+            },
+            "revision": "observed-v1",
+            "seed": {
+              "project": {
+                "custom": {
+                  "observation": "selected-create-open"
+                },
+                "outcome": "Observed selected outcome",
+                "title": {
+                  "$param": "title"
+                }
+              },
+              "tasks": [
+                {
+                  "body": {
+                    "$param": "body"
+                  },
+                  "local_id": "observed-task",
+                  "metadata": {
+                    "origin": "installed-observation"
+                  },
+                  "title": "Observed typed task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {
+              "body": "Observed typed content",
+              "title": "Observed selected project"
+            },
+            "template_id": "ott03.observed.selected-open"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Observed selected outcome",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Observed selected project",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "readiness": {
+        "dispatch": false,
+        "ready": false,
+        "status": "not-evaluated"
+      },
+      "revision": "rev-2",
+      "title": "Observed selected project",
+      "version": 2
+    },
+    "replayed": false
+  },
+  "fresh_replay": {
+    "activation": false,
+    "budget_reserved": false,
+    "dispatch": false,
+    "event_ids": [
+      "event-57e3ac0f511896b7c65a7446dc41d292",
+      "event-82a6b69f2511d4ea148d2d01a93a1b80",
+      "event-ff2fe72c7723a9182098d6a9e2161508",
+      "event-0644cc266a3cbddb7107221a4607956a",
+      "event-c15e72749601215c2e8bd8ec8913db99",
+      "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+    ],
+    "executable": false,
+    "execution": false,
+    "manager_launch": false,
+    "open": {
+      "base_revision": "initial",
+      "checkout": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "allowed_fields": [],
+        "base_revision": "initial",
+        "cleanup": "not_requested",
+        "draft_snapshot_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "draft-session-55b311526ea08eb6420effed",
+          "kind": "authoring-snapshot",
+          "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "final_snapshot_ref": null,
+        "finish_claim": null,
+        "session_id": "session-55b311526ea08eb6420effed",
+        "state": "open",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7",
+        "unmanaged_writers": false
+      },
+      "error": null,
+      "handle": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "base_revision": "initial",
+        "checkout_path": null,
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "session_id": "session-55b311526ea08eb6420effed",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7"
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "recovery_pending": false,
+      "recovery_status": "not_requested",
+      "scope": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "session_id": "session-55b311526ea08eb6420effed",
+      "status": "replayed",
+      "target_kind": "project-sheet",
+      "task_refs": [
+        {
+          "authority": "ott03-selected-open-observation",
+          "id": "task-6dd8626381ab90945b4436b894b2",
+          "kind": "work.task",
+          "revision": null
+        }
+      ],
+      "template": {
+        "id": "ott03.observed.selected-open",
+        "kind": "work_template",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        "revision": "observed-v1",
+        "seed": {
+          "project": {
+            "custom": {
+              "observation": "selected-create-open"
+            },
+            "outcome": "Observed selected outcome",
+            "title": {
+              "$param": "title"
+            }
+          },
+          "tasks": [
+            {
+              "body": {
+                "$param": "body"
+              },
+              "local_id": "observed-task",
+              "metadata": {
+                "origin": "installed-observation"
+              },
+              "title": "Observed typed task"
+            }
+          ]
+        }
+      },
+      "template_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+        ],
+        "logical_request_key": "observation:template",
+        "observed_revision": "rev-2",
+        "operation": "work.project-sheet.apply",
+        "replayed": false,
+        "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+        "result_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-2"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+        "unknown_reason": null
+      }
+    },
+    "outcome": "replayed",
+    "project_receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-c15e72749601215c2e8bd8ec8913db99"
+      ],
+      "logical_request_key": "observation:project",
+      "observed_revision": "rev-1",
+      "operation": "work.project.create",
+      "replayed": false,
+      "request_digest": "681662c55e5a7a4ce934d03134b5864ee583c249e1b2ac068e72066f3d0202a3",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "transaction_id": "6bea252dfaae4c98439c6665a6fd399c",
+      "unknown_reason": null
+    },
+    "project_ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-82a6b69f2511d4ea148d2d01a93a1b80"
+      ],
+      "logical_request_key": "observation",
+      "observed_revision": "rev-1",
+      "operation": "open",
+      "replayed": false,
+      "request_digest": "b049353ca20e803519811c266171481771846c8d978239d842bce81d4b88f245",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": "rev-1"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "authoring-scope",
+        "revision": null
+      },
+      "transaction_id": "2976fbd2d9a6cecae45bd49f71ec057f",
+      "unknown_reason": null
+    },
+    "record": {
+      "kind": "project",
+      "lifecycle": "pending",
+      "name": "Untitled project",
+      "payload": {
+        "acceptance": {},
+        "alias": "project-15384ab8984c18eb304d1af79bc4",
+        "aliases": [
+          "project-15384ab8984c18eb304d1af79bc4"
+        ],
+        "approach": "",
+        "batch_history": [
+          {
+            "decision_ref": null,
+            "manager_action": null,
+            "mapping": {
+              "observed-task": {
+                "authority": "ott03-selected-open-observation",
+                "id": "task-6dd8626381ab90945b4436b894b2",
+                "kind": "work.task",
+                "revision": null
+              }
+            },
+            "task_keys": [
+              "observed-task"
+            ]
+          }
+        ],
+        "budget": null,
+        "creation_request": "observation:project",
+        "custom": {
+          "observation": "selected-create-open"
+        },
+        "dependencies": [],
+        "documents": [],
+        "execution": null,
+        "external_action": null,
+        "gate": null,
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "project",
+        "last_batch": {
+          "decision_ref": null,
+          "manager_action": null,
+          "mapping": {
+            "observed-task": {
+              "authority": "ott03-selected-open-observation",
+              "id": "task-6dd8626381ab90945b4436b894b2",
+              "kind": "work.task",
+              "revision": null
+            }
+          },
+          "request_context": {
+            "causation_id": null,
+            "correlation_id": null,
+            "edit_token": null,
+            "expected_revision": "rev-1",
+            "expected_version": 1
+          },
+          "task_keys": [
+            "observed-task"
+          ]
+        },
+        "lifecycle": "pending",
+        "manager": null,
+        "metadata": {
+          "otto_request": {
+            "logical_request_key": "observation",
+            "payload": {
+              "edit": {},
+              "open": true,
+              "template": {
+                "id": "ott03.observed.selected-open",
+                "kind": "work_template",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "body": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "title": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "body"
+                  ],
+                  "type": "object"
+                },
+                "revision": "observed-v1",
+                "seed": {
+                  "project": {
+                    "custom": {
+                      "observation": "selected-create-open"
+                    },
+                    "outcome": "Observed selected outcome",
+                    "title": {
+                      "$param": "title"
+                    }
+                  },
+                  "tasks": [
+                    {
+                      "body": {
+                        "$param": "body"
+                      },
+                      "local_id": "observed-task",
+                      "metadata": {
+                        "origin": "installed-observation"
+                      },
+                      "title": "Observed typed task"
+                    }
+                  ]
+                }
+              },
+              "template_parameters": {
+                "body": "Observed typed content",
+                "title": "Observed selected project"
+              }
+            }
+          },
+          "template": {
+            "id": "ott03.observed.selected-open",
+            "kind": "work_template",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "title": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "body"
+              ],
+              "type": "object"
+            },
+            "revision": "observed-v1",
+            "seed": {
+              "project": {
+                "custom": {
+                  "observation": "selected-create-open"
+                },
+                "outcome": "Observed selected outcome",
+                "title": {
+                  "$param": "title"
+                }
+              },
+              "tasks": [
+                {
+                  "body": {
+                    "$param": "body"
+                  },
+                  "local_id": "observed-task",
+                  "metadata": {
+                    "origin": "installed-observation"
+                  },
+                  "title": "Observed typed task"
+                }
+              ]
+            }
+          }
+        },
+        "metadata_namespaces": {
+          "work.template": {
+            "auto_dispatch": false,
+            "criteria": [],
+            "parameters": {
+              "body": "Observed typed content",
+              "title": "Observed selected project"
+            },
+            "template_id": "ott03.observed.selected-open"
+          }
+        },
+        "name": "Untitled project",
+        "outcome": "Observed selected outcome",
+        "parent": null,
+        "project_ref": null,
+        "protocol": null,
+        "provenance": {
+          "creator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          },
+          "curator": {
+            "actor": "owner",
+            "authenticated": true,
+            "authority": "ott03-selected-open-observation",
+            "credential_ref": "ott03-selected-open-observation-credential"
+          }
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "schema_revision": "work.v1",
+        "scope": "",
+        "tasks": [
+          {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": null
+          }
+        ],
+        "title": "Observed selected project",
+        "worker": null
+      },
+      "project_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "readiness": {
+        "dispatch": false,
+        "ready": false,
+        "status": "not-evaluated"
+      },
+      "revision": "rev-2",
+      "title": "Observed selected project",
+      "version": 2
+    },
+    "replayed": true,
+    "session_task_created": false,
+    "task_refs": [
+      {
+        "authority": "ott03-selected-open-observation",
+        "id": "task-6dd8626381ab90945b4436b894b2",
+        "kind": "work.task",
+        "revision": null
+      }
+    ],
+    "tasks": [
+      {
+        "local_id": "observed-task",
+        "record": {
+          "kind": "task",
+          "lifecycle": "pending",
+          "name": "Observed typed task",
+          "payload": {
+            "alias": "task-6dd8626381ab90945b4436b894b2",
+            "aliases": [
+              "task-6dd8626381ab90945b4436b894b2"
+            ],
+            "body": "Observed typed content",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "fields": {},
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "task",
+            "lifecycle": "pending",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "name": "Observed typed task",
+            "order": 0,
+            "parent": {
+              "authority": "ott03-selected-open-observation",
+              "id": "project-15384ab8984c18eb304d1af79bc4",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "project_ref": {
+              "authority": "ott03-selected-open-observation",
+              "id": "project-15384ab8984c18eb304d1af79bc4",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "results": [],
+            "schema_revision": "work.v1",
+            "title": "Observed typed task"
+          },
+          "project_ref": {
+            "authority": "ott03-selected-open-observation",
+            "id": "task-6dd8626381ab90945b4436b894b2",
+            "kind": "work.task",
+            "revision": "rev-1"
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "revision": "rev-1",
+          "title": "Observed typed task",
+          "version": 1
+        },
+        "ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "task-6dd8626381ab90945b4436b894b2",
+          "kind": "work.task",
+          "revision": null
+        }
+      }
+    ],
+    "template": {
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "type": "object"
+      },
+      "revision": "observed-v1",
+      "seed": {
+        "project": {
+          "custom": {
+            "observation": "selected-create-open"
+          },
+          "outcome": "Observed selected outcome",
+          "title": {
+            "$param": "title"
+          }
+        },
+        "tasks": [
+          {
+            "body": {
+              "$param": "body"
+            },
+            "local_id": "observed-task",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "title": "Observed typed task"
+          }
+        ]
+      }
+    },
+    "template_receipt": {
+      "error_code": null,
+      "event_ids": [
+        "event-a7726b35f2cfb4ecdf800e28b4ffa2a8"
+      ],
+      "logical_request_key": "observation:template",
+      "observed_revision": "rev-2",
+      "operation": "work.project-sheet.apply",
+      "replayed": false,
+      "request_digest": "182f118aaa5ece1e1a40d817992c9d2d7849e6beb42bf69b58e1bcdfd6bec998",
+      "result_ref": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "status": "committed",
+      "target": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "transaction_id": "074f22d85f03b8a9ae2c41caa566e733",
+      "unknown_reason": null
+    },
+    "template_ref": {
+      "authority": "pack",
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "revision": "observed-v1"
+    },
+    "template_revision": "observed-v1"
+  },
+  "fresh_scope": {
+    "created_at": "2026-09-14T18:06:54.137584Z",
+    "edit_token": null,
+    "payload": {
+      "activity": "editing",
+      "checkout": {
+        "actor": {
+          "actor": "owner",
+          "authenticated": true,
+          "authority": "ott03-selected-open-observation",
+          "credential_ref": "ott03-selected-open-observation-credential"
+        },
+        "allowed_fields": [],
+        "base_revision": "initial",
+        "cleanup": "not_requested",
+        "draft_snapshot_ref": {
+          "authority": "ott03-selected-open-observation",
+          "id": "draft-session-55b311526ea08eb6420effed",
+          "kind": "authoring-snapshot",
+          "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "fence": "fence-3ef89b71ab4c31bb721b87c2",
+        "final_snapshot_ref": null,
+        "finish_claim": null,
+        "session_id": "session-55b311526ea08eb6420effed",
+        "state": "open",
+        "target_kind": "project-sheet",
+        "target_scope": {
+          "authority": "ott03-selected-open-observation",
+          "id": "project-15384ab8984c18eb304d1af79bc4",
+          "kind": "work.project",
+          "revision": null
+        },
+        "token": "token-2179f992fea151e1866c1ca7",
+        "unmanaged_writers": false
+      },
+      "checkout_path": null,
+      "draft_bytes_b64": "",
+      "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "final_bytes_b64": null,
+      "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+      "fnd_contract_revision": "fnd-02.v1.1",
+      "pending": true,
+      "project": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": "rev-2"
+      },
+      "purpose": "otto",
+      "registered_files": [],
+      "scope": {
+        "authority": "ott03-selected-open-observation",
+        "id": "project-15384ab8984c18eb304d1af79bc4",
+        "kind": "work.project",
+        "revision": null
+      },
+      "type": "authoring_scope"
+    },
+    "ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "authoring-scope",
+      "revision": "rev-3"
+    },
+    "updated_at": "2026-09-14T18:06:54.143216Z",
+    "version": 3
+  },
+  "invalid": {
+    "error": {
+      "code": "invalid_template_resource",
+      "message": "template_resource.revision or version must be non-blank text",
+      "operation": "work.project-sheet.instantiate-template"
+    },
+    "event_ids": [],
+    "executable": false,
+    "open": {
+      "recovery_pending": false,
+      "recovery_status": "not_requested",
+      "status": "not_requested"
+    },
+    "outcome": "error",
+    "replayed": false
+  },
+  "invalid_after_counts": {
+    "command_receipts": 6,
+    "event_sequences": 3,
+    "events": 6,
+    "identities": 12,
+    "record_references": 18
+  },
+  "invalid_before_counts": {
+    "command_receipts": 6,
+    "event_sequences": 3,
+    "events": 6,
+    "identities": 12,
+    "record_references": 18
+  },
+  "observations": {
+    "conflicts_zero_delta": true,
+    "created_event_delta": 6,
+    "event_types": [
+      "authoring.actor.open",
+      "authoring.open",
+      "authoring.metadata",
+      "authoring.metadata",
+      "work.project.created",
+      "work.project-sheet.applied"
+    ],
+    "exact_replay_zero_delta": true,
+    "fresh_replay_zero_delta": true,
+    "fresh_scope_state": "open",
+    "fresh_tasks": [
+      {
+        "authority": "ott03-selected-open-observation",
+        "id": "task-6dd8626381ab90945b4436b894b2",
+        "kind": "work.task",
+        "revision": null
+      }
+    ],
+    "fresh_title": "Observed selected project",
+    "inert": {
+      "budget_reserved": false,
+      "dispatch": false,
+      "execution": false,
+      "manager_launch": false,
+      "session_task_created": false
+    },
+    "invalid_zero_delta": true,
+    "open_status": "opened",
+    "project_ref": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": "rev-2"
+    },
+    "scope": {
+      "authority": "ott03-selected-open-observation",
+      "id": "project-15384ab8984c18eb304d1af79bc4",
+      "kind": "work.project",
+      "revision": null
+    },
+    "session_id": "session-55b311526ea08eb6420effed",
+    "task_refs": [
+      {
+        "authority": "ott03-selected-open-observation",
+        "id": "task-6dd8626381ab90945b4436b894b2",
+        "kind": "work.task",
+        "revision": null
+      }
+    ],
+    "template_ref": {
+      "authority": "pack",
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "revision": "observed-v1"
+    }
+  },
+  "origins": {
+    "herzchen": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+    "herzchen_version": "0.1.0",
+    "otto": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/__init__.py",
+    "otto_version": "0.0.0",
+    "owner_bootstrap": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/portfolio/owner_bootstrap.py"
+  },
+  "parameter_conflict": {
+    "error": {
+      "code": "replay_conflict",
+      "message": "logical request key was reused with a changed request digest",
+      "operation": "work.pending.create"
+    },
+    "event_ids": [],
+    "outcome": "error",
+    "replayed": false
+  },
+  "request": {
+    "actor": "owner",
+    "request_id": "observation",
+    "template_parameters": {
+      "body": "Observed typed content",
+      "title": "Observed selected project"
+    },
+    "template_resource": {
+      "id": "ott03.observed.selected-open",
+      "kind": "work_template",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "type": "object"
+      },
+      "revision": "observed-v1",
+      "seed": {
+        "project": {
+          "custom": {
+            "observation": "selected-create-open"
+          },
+          "outcome": "Observed selected outcome",
+          "title": {
+            "$param": "title"
+          }
+        },
+        "tasks": [
+          {
+            "body": {
+              "$param": "body"
+            },
+            "local_id": "observed-task",
+            "metadata": {
+              "origin": "installed-observation"
+            },
+            "title": "Observed typed task"
+          }
+        ]
+      }
+    }
+  },
+  "resource_conflict": {
+    "error": {
+      "code": "replay_conflict",
+      "message": "logical request key was reused with a changed request digest",
+      "operation": "work.pending.create"
+    },
+    "event_ids": [],
+    "outcome": "error",
+    "replayed": false
+  },
+  "schema": "ott03.selected-create-open.observation.v1"
+}
