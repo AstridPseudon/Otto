@@ -195,6 +195,13 @@ class OttoPortfolio:
         return {
             "surface": "otto.portfolio",
             "purpose": "capture and explicitly admit pending projects through canonical work operations",
+            "bootstrap": {
+                "owner": "PortfolioOwnerBootstrap(store, binding=HerzchenBindingConfig(authority, credential_ref), owner_actor=actor)",
+                "consumer": "OttoPortfolio(owner.consumer_operations())",
+                "required_owner_registration": ["register_work(store)", "content.domain_contribution()", "register_authoring(store)"],
+                "consumer_boundary": "finite serialized operations and reader only; no Store, DomainHandler, database path, SQL, callback, or generic writer",
+                "restart": "close the owner Store and reopen it through the same owner bootstrap before restart/read evidence",
+            },
             "operations": {
                 "create_pending": "create an inert pending project; optional edit, selected template resource/parameters, and open request",
                 "create_and_open": "create_pending with open requested, using the blank starter by default or a selected template resource",

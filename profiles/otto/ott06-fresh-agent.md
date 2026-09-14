@@ -28,6 +28,41 @@ The supported command sequence is:
    prevents an old dispatch from being reused after a replacement manager is
    recorded.
 
+## Public bootstrap and discovery path
+
+The host creates the Herzchen owner graph once and gives the manager only the
+finite consumer operations. The supported setup is:
+
+```python
+from herzchen.authoring import register_authoring
+from herzchen.content import domain_contribution as content_contribution
+from herzchen.domains.work import register_work
+from herzchen.kernel.store import Store
+from otto.portfolio import HerzchenBindingConfig, OttoPortfolio, PortfolioOwnerBootstrap
+
+store = Store.create(path, authority=authority)
+register_work(store)
+store.register_domain_handler((content_contribution(),))
+register_authoring(store)
+binding = HerzchenBindingConfig(authority, credential_ref)
+owner = PortfolioOwnerBootstrap(store, binding=binding, owner_actor=actor)
+portfolio = OttoPortfolio(owner.consumer_operations())
+```
+
+`owner` retains the Store and trusted domain services. A manager uses only
+`portfolio` and its finite public methods (`create_pending`, `create_and_open`,
+`edit_pending`, `read_pending`, `create_document`, `link_document`,
+`revisit`, `satisfied_prerequisite`, `admit`, `assign_roles`, and `handoff`).
+The host must close the Store after the journey and reopen it through the same
+owner bootstrap for restart evidence. Do not construct `Store`, a domain
+handler, a database path, SQL, or an owner callback inside the consumer.
+
+For command-shape discovery, call `portfolio.help()` first. It returns the
+operation names, their inert/read/admission semantics, and the replay and
+no-auto-action invariants. Use the returned typed references and receipts as
+the next command's inputs; do not inspect implementation modules to infer
+private constructor or engine details.
+
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or
 create an execution session. Transfer deliberately adopts task and observation
