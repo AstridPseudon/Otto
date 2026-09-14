@@ -1,0 +1,20 @@
+{
+  "kind": "ott05-controlled-resume-launch-receipt",
+  "logical_thread_id": "01a0a181-e38c-7c01-a655-ca5eb3d191ab",
+  "previous_attempt": "01a0a181-e38c-7c01-a655-ca5eb3d191ab",
+  "previous_attempt_outcome": "stopped after confirmed repeated manager-status polling; no product files or child tests; original launch and manifest preserved",
+  "resume_brief_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker/work/ott-05-recovery-brief-20260914.md",
+  "resume_brief_sha256": "534c77cdcd3f2d0a225fbc3f1263aa7320690abc017c41040fd76ea66ba80dcf",
+  "input_manifest_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker/work/ott-05-input-manifest-20260914.json",
+  "input_manifest_sha256": "4b9ae6d83d9e5912fb2e31082db2ec1415a5c3599bfd4ebf8f252449d155d19e",
+  "command": "/Users/hannahomalley/.local/bin/codex exec resume 01a0a181-e38c-7c01-a655-ca5eb3d191ab -m gpt-5.6-luna -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox --json -o work/ott-05-recovery-20260914/worker-last-message.md - < work/ott-05-recovery-brief-20260914.md",
+  "cli_session_id": 1844,
+  "cli_pid": 81178,
+  "observed_start_utc": "2026-09-14T20:15:51.492281Z",
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "high",
+  "route": "normal",
+  "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker",
+  "write_mode": "--dangerously-bypass-approvals-and-sandbox; existing isolated worktree",
+  "status": "running"
+}

@@ -1,0 +1,98 @@
+{
+  "allowed_paths": [
+    "src/otto/engineering/",
+    "profiles/otto/operating.md",
+    "tests/otto/test_release_records.py",
+    "documented package exports needed by those paths",
+    "work/ott-05-*"
+  ],
+  "api_preflight": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/ott05-public-api-preflight.md",
+    "sha256": "81bd26d3daa76fa4ff307c1aeb194992df7d56eb82947e29488225d080c793dd"
+  },
+  "brief": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/ott-05-implementation-brief-v2-20260914.md",
+    "sha256": "86b6fc9755f20d84bf7580a2a520f2f6f00e738f0a3d7481bd874aa266650977"
+  },
+  "catalog": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/package/otto_herzchen_delivery_v11_2/plan/catalog.json",
+    "sha256": "075f0301129f57e46003d518372747df4a68e6e086e5a63a1200ae333b53b013"
+  },
+  "checkout": {
+    "branch": "ott-05-worker",
+    "commit": "7316b55e679bb391075d90f66a48078b0dd8f31a",
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker",
+    "tree": "c3a1058500c02103b137a3a1f9b1baa123cd4ba4",
+    "write_mode": "isolated worktree; local only"
+  },
+  "control_root": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20",
+  "created_utc": "2026-09-14T20:00:24.300Z",
+  "extraction_map": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/plan/extraction-map.json",
+    "sha256": "bea51be5e6721e20a21e6befc0cd75dd340af103f722f0d154a671721520e413"
+  },
+  "forbidden": [
+    "Herzchen source",
+    "control/database",
+    "package seed",
+    "extraction map",
+    "other project source",
+    "remote writes",
+    "publication",
+    "deployment",
+    "AST transfer",
+    "OTT06 rehearsal"
+  ],
+  "herzchen": {
+    "source_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker",
+    "source_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "source_tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
+    "wheel_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
+  },
+  "kind": "ott05-input-manifest",
+  "ott04_acceptance": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/ott04-final-root-verification.json",
+    "sha256": "836d0fc9100477926d1ff0f86b4950ff1f1edeeaeabd9fe420ed851d16f50069"
+  },
+  "p01": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/periodic01-adopted-process-amendment-20260914.md",
+    "sha256": "d5e6f6ee114913a31f8fce4fed7a1f835f089e0859ccd5ce7941e9f094951503"
+  },
+  "product": {
+    "source_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto",
+    "evidence_commit": "6f9099ba54e5b866c1f4c0ea5f6b17405748b6aa",
+    "evidence_tree": "c6120ad219a2eae4a3f39fa441c679f6be4fab41",
+    "source_commit": "5332885d6dfba8af89c3f10d3311714d744b9c42",
+    "source_tree": "66db6877fb490850bc05723d782fcee3eabbd722",
+    "wheel_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-amendment-replay-xhard-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "wheel_sha256": "f2fffb0d51a0e38a674dd04171d4df20a2bbca3a6bc21bbe84d043db1826aee4"
+  },
+  "accepted_baseline_lineage": {
+    "commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+    "tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+    "repository": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto"
+  },
+  "profile": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker/profiles/otto/operating.md",
+    "sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726"
+  },
+  "proof_requirements": [
+    "installed representative first",
+    "PYTHONPATH/PYTHONHOME unset",
+    "module origins recorded",
+    "stale-head typed rejection",
+    "changed source-set zero unintended delta",
+    "duplicate/replay",
+    "partial/unknown promotion",
+    "separate publication/deployment rights",
+    "exact test return codes"
+  ],
+  "requested_route": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "high",
+    "task_route": "normal"
+  },
+  "status": "released_after_ott04_acceptance",
+  "task": "OTT-05"
+}

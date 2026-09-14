@@ -1,0 +1,28 @@
+{
+  "kind": "ott05-controlled-continuation-reconciliation",
+  "version": 2,
+  "logical_thread_id": "01a0a181-e38c-7c01-a655-ca5eb3d191ab",
+  "original_launch_receipt": "work/ott-05-launch-20260914/launch-receipt.json",
+  "original_launch_receipt_preserved": true,
+  "previous_attempt_status": "stopped after confirmed repeated manager-status polling; no product source or child tests were written",
+  "resume_receipt": "work/ott-05-recovery-20260914/recovery-launch-receipt.json",
+  "resume_receipt_status_at_capture": "running",
+  "final_manifest": {
+    "path": "work/ott-05-input-manifest-20260914.json",
+    "sha256": "5f027bb4e1f8f9f6b3db98147f98aa06e2dd3e881c3ba458411122ebb5e721d2"
+  },
+  "base": {
+    "commit": "7316b55e679bb391075d90f66a48078b0dd8f31a",
+    "tree": "c3a1058500c02103b137a3a1f9b1baa123cd4ba4"
+  },
+  "route": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "high",
+    "task_route": "normal"
+  },
+  "write_mode": "existing isolated worktree; local only",
+  "scope": "OTT-05 product and versioned work evidence only",
+  "remote_writes": false,
+  "publication": false,
+  "deployment": false
+}

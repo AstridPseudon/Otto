@@ -1,0 +1,62 @@
+{
+  "kind": "ott05-source-and-installed-test-receipt",
+  "source_commit": "5b0607dd83b7723fc19faa6ad5e525b94afe22e7",
+  "source_tree": "51edce88eb7a25fd2e36d69c9d2051fa81b1b715",
+  "affected_test": "tests/otto/test_release_records.py",
+  "test_count": 4,
+  "pytest_available": false,
+  "source": {
+    "command": "PYTHONPATH=src python3 - <<'PY' ... load tests/otto/test_release_records.py and call all test_* functions ... PY",
+    "return_code": 0,
+    "passed": [
+      "test_partial_promotion_is_visible_and_resumable_only_by_same_owner",
+      "test_real_typed_path_records_candidate_check_decision_and_persists",
+      "test_rights_and_profiles_are_separate_and_do_not_create_extra_allowance",
+      "test_stale_changed_duplicate_and_unknown_cases_have_no_release_delta"
+    ],
+    "environment": {"PYTHONPATH": "src", "PYTHONHOME": null}
+  },
+  "installed": {
+    "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-installed-venv-v2/bin/python - <<'PY' ... load tests/otto/test_release_records.py and call all test_* functions ... PY",
+    "return_code": 0,
+    "passed": [
+      "test_partial_promotion_is_visible_and_resumable_only_by_same_owner",
+      "test_real_typed_path_records_candidate_check_decision_and_persists",
+      "test_rights_and_profiles_are_separate_and_do_not_create_extra_allowance",
+      "test_stale_changed_duplicate_and_unknown_cases_have_no_release_delta"
+    ],
+    "environment": {"PYTHONPATH": "unset", "PYTHONHOME": "unset", "python": "work/ott-05-installed-venv-v2/bin/python"}
+  },
+  "representative": {
+    "script": "work/ott-05-representative-installed-20260914.py",
+    "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-installed-venv-v2/bin/python work/ott-05-representative-installed-20260914.py",
+    "return_code": 0,
+    "candidate": {"outcome": "recorded", "source_set_digest": "81813ff9ec97fa0d0c1f8ce6c18c0c2a6a26482197b5a1795938b8c2d7c16f6d"},
+    "check": {"stale": "stale_head", "recorded": "pass"},
+    "decision": "approve",
+    "merge": {"status": "unknown", "target_head_changed": false},
+    "promotion": {"status": "merge_required"},
+    "publication": "not_performed",
+    "deployment": "not_performed",
+    "event_count": 5,
+    "origins": {
+      "otto": "work/ott-05-installed-venv-v2/lib/python3.9/site-packages/otto/__init__.py",
+      "otto.engineering": "work/ott-05-installed-venv-v2/lib/python3.9/site-packages/otto/engineering/__init__.py",
+      "herzchen": "work/ott-05-installed-venv-v2/lib/python3.9/site-packages/herzchen/__init__.py"
+    }
+  },
+  "wheels": {
+    "accepted_otto_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-amendment-replay-xhard-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "accepted_otto_sha256": "f2fffb0d51a0e38a674dd04171d4df20a2bbca3a6bc21bbe84d043db1826aee4",
+    "candidate_otto_path": "work/ott-05-candidate-dist-v2/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "candidate_otto_sha256": "c22288982c7a26903865ab8527dd43fcf410acb73d21f026b3bd68fe7f99543e",
+    "accepted_herzchen_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "accepted_herzchen_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
+  },
+  "receipts": {
+    "input_manifest": {"path": "work/ott-05-input-manifest-20260914.json", "sha256": "5f027bb4e1f8f9f6b3db98147f98aa06e2dd3e881c3ba458411122ebb5e721d2"},
+    "original_launch": {"path": "work/ott-05-launch-20260914/launch-receipt.json", "sha256": "d6818c7d83ba8dacc7cbc47839b81de8951e672b2edb78aea95254446fad1ec0", "preserved": true},
+    "controlled_resume": {"path": "work/ott-05-recovery-20260914/recovery-launch-receipt.json", "sha256": "94d474c6821486f2a8a7217faac5f847190f329a8157b97478a3124efd5b1d6d"},
+    "reconciliation": {"path": "work/ott-05-reconciliation-20260914.json"}
+  }
+}

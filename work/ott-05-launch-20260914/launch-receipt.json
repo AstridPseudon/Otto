@@ -1,0 +1,22 @@
+{
+  "base_commit": "7316b55e679bb391075d90f66a48078b0dd8f31a",
+  "base_tree": "c3a1058500c02103b137a3a1f9b1baa123cd4ba4",
+  "brief_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/ott-05-implementation-brief-v2-20260914.md",
+  "brief_sha256": "86b6fc9755f20d84bf7580a2a520f2f6f00e738f0a3d7481bd874aa266650977",
+  "cli_pid": 78383,
+  "command": "/Users/hannahomalley/.local/bin/codex exec -m gpt-5.6-luna -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox --json -o work/ott-05-launch-20260914/worker-last-message.md - < /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/ott-05-implementation-brief-v2-20260914.md",
+  "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker",
+  "exec_session_id": 25447,
+  "kind": "ott05-launch-receipt",
+  "launcher": "/Users/hannahomalley/.local/bin/codex",
+  "manager_thread_id": "01a09c66-a6df-7140-a7b4-63dad5082d45",
+  "manifest_path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker/work/ott-05-input-manifest-20260914.json",
+  "manifest_sha256": "53d42106b8aadc7915c50dbf63c6972a8a66a127acded0b7146b74a70ba473aa",
+  "model": "gpt-5.6-luna",
+  "observed_start_utc": "2026-09-14T20:00:39.377298Z",
+  "reasoning_effort": "high",
+  "route": "normal",
+  "status": "running",
+  "thread_id": "01a0a181-e38c-7c01-a655-ca5eb3d191ab",
+  "write_mode": "--dangerously-bypass-approvals-and-sandbox; isolated worktree"
+}
