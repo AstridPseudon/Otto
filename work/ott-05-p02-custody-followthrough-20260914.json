@@ -1,5 +1,40 @@
 {
   "acceptance_claim": false,
+  "current_proof": {
+    "installed_harness": {
+      "herzchen_origin": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/herzchen/__init__.py",
+      "otto_origin": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/otto/__init__.py",
+      "pythonhome": null,
+      "pythonpath": null,
+      "return_code": 0,
+      "tests": 3,
+      "venv": "work/ott-05-shared-installed-venv-20260914-final"
+    },
+    "representative": {
+      "deployment": "not_performed",
+      "herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+      "otto_wheel_sha256": "87605a1395d891979d99a0ac20fd4657f7cbb77feddb7142755bb72529eba01",
+      "partial_promotion_visible": true,
+      "public_candidate_kind": "wrk.candidate",
+      "public_decision_kind": "wrk.decision",
+      "publication": "not_performed",
+      "pythonhome": null,
+      "pythonpath": null,
+      "return_code": 0,
+      "script": "work/ott-05-shared-representative-installed-20260914.py",
+      "shared_store_close_reopen": true,
+      "stale_head_typed_rejection": true,
+      "unknown_merge_visible": true,
+      "venv": "work/ott-05-shared-installed-venv-20260914-final"
+    },
+    "source_harness": {
+      "herzchen_origin": "work/ott-05-shared-source-venv-20260914/lib/python3.9/site-packages/herzchen/__init__.py",
+      "otto_origin": "src/otto/__init__.py",
+      "return_code": 0,
+      "tests": 3,
+      "venv": "work/ott-05-shared-source-venv-20260914"
+    }
+  },
   "historical_manifest": {
     "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker/work/ott-05-input-manifest-20260914.json",
     "preserved": true,
@@ -42,163 +77,6 @@
     "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker/profiles/otto/operating.md",
     "sha256": "b4547453dce1fe57f1c175d7e4486f820ddad1481965924aaae5cc8487578208",
     "verified_statement": "profile now describes the shared Herzchen Store and finite typed owner/consumer boundary; it contains no private JSON snapshot authority claim."
-  },
-  "proof_summary": {
-    "accepted_pins": {
-      "accepted_evidence": {
-        "commit": "6f9099ba54e5b866c1f4c0ea5f6b17405748b6aa",
-        "tree": "c6120ad219a2eae4a3f39fa441c679f6be4fab41"
-      },
-      "catalog_sha256": "075f0301129f57e46003d518372747df4a68e6e086e5a63a1200ae333b53b013",
-      "extraction_map_sha256": "bea51be5e6721e20a21e6befc0cd75dd340af103f722f0d154a671721520e413",
-      "herzchen_accepted_source": {
-        "commit": "b68d8f59712275229c24757664ca30d807d39e4a",
-        "tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
-        "wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
-      },
-      "metadata_base": {
-        "commit": "7316b55e679bb391075d90f66a48078b0dd8f31a",
-        "tree": "c3a1058500c02103b137a3a1f9b1baa123cd4ba4"
-      },
-      "otto_accepted_source": {
-        "commit": "5332885d6dfba8af89c3f10d3311714d744b9c42",
-        "tree": "66db6877fb490850bc05723d782fcee3eabbd722",
-        "wheel_sha256": "f2fffb0d51a0e38a674dd04171d4df20a2bbca3a6bc21bbe84d043db1826aee"
-      },
-      "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726",
-      "public_api_preflight_sha256": "81bd26d3daa76fa4ff307c1aeb194992df7d56eb82947e29488225d080c793dd"
-    },
-    "candidate_otto_wheel": {
-      "path": "work/ott-05-shared-dist-20260914-final2/otto_local_candidate-0.0.0-py3-none-any.whl",
-      "sha256": "87605a1395d891979d99a0ac20fd4657f7cbb77feddb7142755bb72529eba01"
-    },
-    "checkout": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott05-worker",
-    "corrected_source_commit": {
-      "commit": "26aa4f3151694a06a9b713e439e873065f4d718a",
-      "tree": "81e3b39602c7764eaea405f663c3ed4db1e56f28"
-    },
-    "focused_cases": {
-      "changed_same_key": "Herzchen ReplayConflictError translated to typed replay_conflict; no new event",
-      "changed_source_set": "ReleaseError code changed_source_set; repository version unchanged",
-      "duplicate_source_set_key": "ReleaseError code duplicate_source_set_key; repository version unchanged",
-      "exact_same_key": "same Herzchen CommandReceipt/event identity returned on immediate retry",
-      "no_auto_publication_or_deployment": "merge and promotion paths leave both states not_performed",
-      "stale_head": "ReleaseError code stale_head; repository version unchanged",
-      "unknown_runner": "unknown merge is durably visible and target head is unchanged",
-      "wrong_partial_owner": "ReleaseError code authority_mismatch; no promotion delta"
-    },
-    "fresh_environments": {
-      "installed": {
-        "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914-final/bin/python - <<'PY' ... focused tests ... PY",
-        "herzchen_origin": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/herzchen/__init__.py",
-        "otto_origin": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/otto/__init__.py",
-        "pythonhome": null,
-        "pythonpath": null,
-        "return_code": 0,
-        "tests": 3,
-        "venv": "work/ott-05-shared-installed-venv-20260914-final"
-      },
-      "representative": {
-        "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-05-shared-installed-venv-20260914-final/bin/python work/ott-05-shared-representative-installed-20260914.py",
-        "pythonhome": null,
-        "pythonpath": null,
-        "return_code": 0,
-        "script": "work/ott-05-shared-representative-installed-20260914.py",
-        "script_sha256": "ef28781f64d0fd269c4b84ac9bc77b004143d30c0964d0d247fd0be407d3e570"
-      },
-      "source": {
-        "command": "env -u PYTHONHOME PYTHONPATH=src work/ott-05-shared-source-venv-20260914/bin/python - <<'PY' ... focused tests ... PY",
-        "herzchen_origin": "work/ott-05-shared-source-venv-20260914/lib/python3.9/site-packages/herzchen/__init__.py",
-        "otto_origin": "src/otto/__init__.py",
-        "return_code": 0,
-        "tests": 3,
-        "venv": "work/ott-05-shared-source-venv-20260914"
-      }
-    },
-    "input_manifest": {
-      "path": "work/ott-05-input-manifest-20260914.json",
-      "sha256": "5f027bb4e1f8f9f6b3db98147f98aa06e2dd3e881c3ba458411122ebb5e721d2"
-    },
-    "kind": "ott-05-shared-integration-correction-receipt",
-    "logical_worker_thread": "01a0a181-e38c-7c01-a655-ca5eb3d191ab",
-    "model_reasoning_effort": "high",
-    "preserved_launch_and_reconciliation": {
-      "original_launch_receipt_sha256": "d6818c7d83ba8dacc7cbc47839b81de8951e672b2edb78aea95254446fad1ec0",
-      "reconciliation_sha256": "2f056334606b94b4efa3d0e17076d60ebdcddc5851642d3a7900b709696d898a",
-      "resume_receipt_sha256": "94d474c6821486f2a8a7217faac5f847190f329a8157b97478a3124efd5b1d6d",
-      "stopped_worker_status": "previous turn stopped after manager-status polling; no prior source/test edit was used as corrected proof"
-    },
-    "prior_incomplete_increment": {
-      "evidence_commit": "aef4ca00483bb42aae2ab598cbe9571bb6692b9f",
-      "evidence_tree": "991d34faf111caac1b9f72293692701307b84103",
-      "finding": "ReleaseLedger privately owned repository state, counters, receipts, events and a JSON snapshot, recreated parallel contract types, and imported no Herzchen public contribution or command. It remains historical and is not acceptance evidence.",
-      "source_commit": "5b0607dd83b7723fc19faa6ad5e525b94afe22e7",
-      "source_tree": "51edce88eb7a25fd2e36d69c9d2051fa81b1b715"
-    },
-    "representative_observations": {
-      "actual_public_refs": {
-        "candidate_kind": "wrk.candidate",
-        "candidate_revision": "rev-1",
-        "decision_kind": "wrk.decision",
-        "decision_revision": "rev-1"
-      },
-      "close_reopen": {
-        "candidate_read": true,
-        "decision_read": true,
-        "repository_event_count_after_reopen": 4,
-        "same_typed_repository": true
-      },
-      "deployment": {
-        "status": "not_performed"
-      },
-      "merge_observation": {
-        "observed_revision": "rev-6",
-        "target_head_unchanged": true,
-        "unknown_runner_status": "unknown"
-      },
-      "origins": {
-        "herzchen": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/herzchen/__init__.py",
-        "otto": "work/ott-05-shared-installed-venv-20260914-final/lib/python3.9/site-packages/otto/__init__.py"
-      },
-      "partial_promotion": {
-        "completed_steps": [
-          "source"
-        ],
-        "owner": "otto-owner",
-        "pending_steps": [
-          "integration"
-        ],
-        "status": "partial",
-        "unknown_steps": []
-      },
-      "publication": {
-        "status": "not_performed"
-      },
-      "repository_events": [
-        "event-a2d8703258996817b240de826452a530",
-        "event-5529a9ee9d8e790d27f3b7038d0cb7b8",
-        "event-ebef9df2496b49f896e02bd3a383520e",
-        "event-50e2a8aafe69d2004210cf703915fad4"
-      ],
-      "source_set_digest": "81813ff9ec97fa0d0c1f8ce6c18c0c2a6a26482197b5a1795938b8c2d7c16f6d"
-    },
-    "requested_route": "gpt-5.6-luna",
-    "rights": {
-      "candidate.select": "repository_owner",
-      "check.record": "check_authority",
-      "decision.record": "manager_authority",
-      "deployment.record": "deployment_authority",
-      "merge.record": "merge_authority",
-      "promotion.record": "promotion_authority",
-      "publication.record": "publication_authority",
-      "repository.register": "repository_owner"
-    },
-    "unresolved_gaps": [
-      "The accepted Herzchen Store mutate path does not update IdentityRecord.edit_token; Otto therefore enforces its stable expected edit token from the persisted repository payload while passing Herzchen expected revision/version checks. No parallel token or receipt system was introduced.",
-      "No real Git merge, source promotion, package publication, or deployment was attempted by scope; the product records observations and leaves those actions to their separate authorities.",
-      "This receipt is implementation evidence for C20/C21/C27/C31, not a catalog acceptance or gate decision."
-    ],
-    "write_mode": "local isolated checkout only"
   },
   "shared_path_inspection": {
     "observations": [
