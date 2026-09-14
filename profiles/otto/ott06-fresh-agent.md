@@ -63,6 +63,36 @@ no-auto-action invariants. Use the returned typed references and receipts as
 the next command's inputs; do not inspect implementation modules to infer
 private constructor or engine details.
 
+Pending edits intentionally reject protected fields such as `tasks`,
+`documents`, assignments, and receipts. To add typed tasks or dependencies,
+use the finite ProjectSheet command port issued with the consumer operations:
+
+```python
+from herzchen.contracts import ResourceRef
+
+operations = owner.consumer_operations()
+actor_ref = operations.binding.authenticated_actor(actor)
+batch = operations.sheet_port.apply(
+    ResourceRef.from_dict(project_ref),
+    {"tasks": [
+        {"id": "foundation", "title": "Capture the baseline", "order": 0},
+        {"id": "follow-up", "title": "Review the baseline", "order": 1,
+         "dependencies": ["foundation"]},
+    ]},
+    logical_request_key="task-batch-1",
+    actor=actor_ref,
+    base_revision=project_ref["revision"],
+)
+```
+
+This is a finite serialized public port; it does not expose Store, a domain
+handler, a database descriptor, SQL, or a generic writer. The batch result
+contains typed task mappings and a canonical receipt. Read the returned
+project reference before a same-key retry and preserve the original target
+reference for exact replay. A binding that reports `work.pending.list` as
+unavailable must record that public-surface gap; do not substitute a private
+reader or infer a list from implementation state.
+
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or
 create an execution session. Transfer deliberately adopts task and observation

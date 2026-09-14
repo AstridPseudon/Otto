@@ -201,6 +201,8 @@ class OttoPortfolio:
                 "required_owner_registration": ["register_work(store)", "content.domain_contribution()", "register_authoring(store)"],
                 "consumer_boundary": "finite serialized operations and reader only; no Store, DomainHandler, database path, SQL, callback, or generic writer",
                 "restart": "close the owner Store and reopen it through the same owner bootstrap before restart/read evidence",
+                "typed_task_batch": "use the finite operations.sheet_port.apply(project_ref, {tasks: [...]}, logical_request_key=..., actor=operations.binding.authenticated_actor(actor), base_revision=project_ref['revision'])",
+                "protected_pending_fields": "edit_pending rejects tasks, documents, assignments, and receipts; use their typed finite ports",
             },
             "operations": {
                 "create_pending": "create an inert pending project; optional edit, selected template resource/parameters, and open request",
