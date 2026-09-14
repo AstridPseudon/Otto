@@ -15,6 +15,7 @@ from .intake import (
     unavailable_operations,
 )
 from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig
+from .owner_bootstrap import CreateAndOpenCommandPort, PortfolioOwnerBootstrap
 
 __all__ = [
     "ADMISSION_CHOICES",
@@ -25,4 +26,6 @@ __all__ = [
     "PortfolioError",
     "unavailable_operations",
     "FiniteWorkOperations",
+    "CreateAndOpenCommandPort",
+    "PortfolioOwnerBootstrap",
 ]

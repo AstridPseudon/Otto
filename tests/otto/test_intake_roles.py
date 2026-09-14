@@ -333,7 +333,7 @@ def test_real_workgraph_create_read_reopen_and_replay_are_durable(tmp_path):
     finite = api.operations
     assert finite.port is graph.command_port
     assert finite.reader is graph.reader
-    assert sorted(vars(finite)) == ["assignments_port", "authoring_port", "binding", "content_port", "port", "reader", "sheet_port"]
+    assert sorted(vars(finite)) == ["assignments_port", "authoring_port", "binding", "content_port", "create_open_port", "port", "reader", "sheet_port"]
     first = api.create_pending(
         actor="manager",
         request_id="real-create-1",
@@ -559,6 +559,7 @@ def test_multi_port_adapter_retains_only_finite_ports_and_reader(tmp_path):
         "authoring_port",
         "binding",
         "content_port",
+        "create_open_port",
         "port",
         "reader",
         "sheet_port",

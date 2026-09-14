@@ -166,6 +166,7 @@ class HerzchenWorkOperations(FiniteWorkOperations):
         content_port: Any = None,
         assignments_port: Any = None,
         authoring_port: Any = None,
+        create_open_port: Any = None,
     ) -> None:
         from .herzchen_binding import HerzchenBindingConfig
 
@@ -179,6 +180,7 @@ class HerzchenWorkOperations(FiniteWorkOperations):
             content_port=content_port,
             assignments_port=assignments_port,
             authoring_port=authoring_port,
+            create_open_port=create_open_port,
         )
 
 

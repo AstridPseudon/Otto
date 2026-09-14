@@ -82,6 +82,7 @@ class FiniteWorkOperations:
         content_port: Any = None,
         assignments_port: Any = None,
         authoring_port: Any = None,
+        create_open_port: Any = None,
     ) -> None:
         if port is None or reader is None:
             raise ValueError("port and reader are required for the canonical binding")
@@ -92,6 +93,7 @@ class FiniteWorkOperations:
         self.content_port = content_port
         self.assignments_port = assignments_port
         self.authoring_port = authoring_port
+        self.create_open_port = create_open_port
 
     def _actor(self, actor: str) -> Any:
         return self.binding.authenticated_actor(actor)
@@ -196,27 +198,88 @@ class FiniteWorkOperations:
         return result
 
     def _create_and_open(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
-        # The accepted AuthoringSessionService facade has create_and_open, but
-        # its public signature requires a create_project callback.  The finite
-        # command port exposes only open; retaining a service or injecting an
-        # arbitrary callback would violate GF01.  Sequentially creating first
-        # would also leave an orphan pending project when open reports actor
-        # occupancy, so this boundary is deliberately explicit and inert.
-        result = self._unsupported(
-            "work.pending.create",
-            request_id=request_id,
-            code="canonical_create_and_open_finite_endpoint_unavailable",
-            message=(
-                "AuthoringSessionService.create_and_open(create_project=...) "
-                "requires an owner callback; the injected finite command port "
-                "exposes open only, so Otto cannot safely compose create-and-open"
-            ),
+        if self.create_open_port is None:
+            result = self._unsupported(
+                "work.pending.create",
+                request_id=request_id,
+                code="canonical_create_and_open_finite_endpoint_unavailable",
+                message=(
+                    "the trusted owner create-and-open bridge was not injected; "
+                    "sequential consumer create then open is forbidden"
+                ),
+            )
+            result.update({
+                "open": {"status": "unsupported", "recovery_pending": False, "recovery_status": "not_requested"},
+                "executable": False,
+            })
+            return result
+
+        edit = payload.get("edit", {})
+        before = self.reader.get_receipt(request_id)
+        try:
+            opened = self.create_open_port.create_pending_and_open(
+                actor=self._actor(actor),
+                request_id=request_id,
+                title=edit.get("title"),
+                outcome=edit.get("outcome", ""),
+                metadata=self._metadata(payload, request_id, payload.get("template", "blank")),
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {
+                    "outcome": "error",
+                    "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.create"},
+                    "replayed": False,
+                    "event_ids": [],
+                }
+            raise
+
+        status = opened.get("status", "unknown")
+        project_ref = opened.get("project_ref")
+        if status in {"occupied", "actor_occupied"}:
+            return {
+                "outcome": "occupied",
+                "project_ref": None,
+                "receipt": None,
+                "project_receipt": None,
+                "replayed": False,
+                "event_ids": [],
+                "executable": False,
+                "open": _json_value(opened),
+            }
+
+        receipt_keys = (
+            request_id + ":actor",
+            request_id,
+            request_id + ":project",
+            request_id + ":project-created",
+            request_id + ":materialized",
+            request_id + ":materialize-failure",
+            request_id + ":materialize-failure:actor",
         )
-        result.update({
-            "open": {"status": "unsupported", "recovery_pending": False, "recovery_status": "not_requested"},
+        event_ids = {
+            event_id
+            for key in receipt_keys
+            for event_id in ((_receipt_dict(self.reader.get_receipt(key)) or {}).get("event_ids", []))
+        }
+        record = None
+        if project_ref is not None:
+            record = self.reader.get_record(self._record_ref(project_ref))
+        return {
+            "outcome": "replayed" if before is not None else ("created" if status == "opened" else status),
+            "project_ref": _json_value(project_ref),
+            "record": None if record is None else _record_dict(record),
+            "receipt": _receipt_dict(self.reader.get_receipt(request_id)),
+            "project_receipt": _receipt_dict(self.reader.get_receipt(request_id + ":project")),
+            "replayed": before is not None,
+            "event_ids": [
+                event.event_id
+                for event in self.reader.list_events()
+                if getattr(event, "event_id", None) in event_ids
+            ],
             "executable": False,
-        })
-        return result
+            "open": _json_value(opened),
+        }
 
     @staticmethod
     def _open_dict(result: Any) -> dict[str, Any]:
