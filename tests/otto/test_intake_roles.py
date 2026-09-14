@@ -298,7 +298,7 @@ def test_real_workgraph_create_read_reopen_and_replay_are_durable(tmp_path):
     finite = api.operations
     assert finite.port is graph.command_port
     assert finite.reader is graph.reader
-    assert "store" not in vars(finite) and "graph" not in vars(finite)
+    assert sorted(vars(finite)) == ["binding", "port", "reader"]
     first = api.create_pending(
         actor="manager",
         request_id="real-create-1",

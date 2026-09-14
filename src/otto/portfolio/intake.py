@@ -19,6 +19,8 @@ from copy import deepcopy
 import json
 from typing import Any, Mapping, Optional, Protocol, Sequence
 
+from .herzchen_binding import FiniteWorkOperations
+
 
 ADMISSION_CHOICES = ("admit", "investigate", "merge", "park", "drop")
 EDITABLE_FIELDS = frozenset(
@@ -151,24 +153,15 @@ class UnavailableWorkOperations:
         return self.execute(operation, payload, request_id="read-only", actor=actor)
 
 
-class HerzchenWorkOperations:
+class HerzchenWorkOperations(FiniteWorkOperations):
     """Finite accepted Herzchen command/read adapter consumed by Otto."""
 
     def __init__(self, *, port: Any, reader: Any, binding: Any) -> None:
-        from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig
+        from .herzchen_binding import HerzchenBindingConfig
 
         if not isinstance(binding, HerzchenBindingConfig):
             raise TypeError("binding must be HerzchenBindingConfig")
-        self.port = port
-        self.reader = reader
-        self.binding = binding
-        self._finite = FiniteWorkOperations(port=port, reader=reader, binding=binding)
-
-    def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
-        return self._finite.execute(operation, payload, request_id=request_id, actor=actor)
-
-    def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
-        return self._finite.read(operation, payload, actor=actor)
+        super().__init__(port=port, reader=reader, binding=binding)
 
 
 class OttoPortfolio:
