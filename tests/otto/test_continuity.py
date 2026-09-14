@@ -216,6 +216,11 @@ def test_real_store_due_record_binding_replays_cas_and_reopens(tmp_path):
     assert live["version"] == 2
     assert live["last_covered_slot"] == 0
     assert live["outstanding_decisions"] == [{"decision": "wait", "decision_id": "later", "recorded": True}]
+    before_changed_precondition_events = len(store.list_events())
+    with pytest.raises(InputChangedError):
+        port.save_due("real-due", record.to_dict(), request_id="schedule-real-durable", expected_version=99)
+    assert len(store.list_events()) == before_changed_precondition_events
+    assert port.read_due("real-due")["version"] == 2
     changed = record.to_dict()
     changed["instruction"] = "changed input must reject"
     with pytest.raises(InputChangedError):

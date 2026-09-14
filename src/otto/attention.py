@@ -361,7 +361,12 @@ class _DueRecordOwnerEngine:
                 next_version = int(str(result_revision).removeprefix("rev-"))
             except (TypeError, ValueError):
                 next_version = 1 if current is None else int(current.version)
-            replay_expected_version = max(0, next_version - 1)
+            # Preserve the caller's supplied precondition in the replay
+            # envelope.  Store's public replay validator hashes the complete
+            # TransactionContext, so a retry with a different expected
+            # version must fail before mutation rather than inheriting A's
+            # historical precondition silently.
+            replay_expected_version = expected_version
             replay_expected_revision = target.revision
         else:
             target = current_ref if current is None else current.ref
@@ -369,7 +374,7 @@ class _DueRecordOwnerEngine:
             replay_expected_version = expected_version
             replay_expected_revision = None if current is None else current.ref.revision
         value["version"] = next_version
-        digest = _digest({"request_id": request_id, "record": value})
+        digest = _digest({"request_id": request_id, "expected_version": expected_version, "record": value})
         context = TransactionContext(
             self._actor, request_id, digest,
             expected_revision=replay_expected_revision,
