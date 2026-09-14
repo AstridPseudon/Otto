@@ -318,6 +318,74 @@ class FiniteWorkOperations:
         snapshot["snapshot_digest"] = digest
         return {"outcome": "exported", "snapshot": snapshot, "snapshot_digest": digest, "request_id": request_id, "event_ids": []}
 
+    def _replay_import(self, *, before: Any, computed_digest: str, request_id: str) -> Mapping[str, Any]:
+        """Return the original import result without re-running its writes.
+
+        Import has several child commands (adoption, document creation, and
+        document linking).  Re-entering those commands on an exact retry is
+        wrong once the destination project has since been admitted or edited:
+        the parent receipt is still the same logical command, while the live
+        project revision is newer.  The first import stores a compact result
+        manifest in the destination project's public metadata.  An exact
+        retry validates the original snapshot digest and reads that manifest,
+        preserving the original receipt/event set and producing no new delta.
+        """
+
+        from herzchen.contracts import ResourceRef
+
+        target = getattr(before, "target", None) or getattr(before, "result_ref", None)
+        if target is None:
+            return {
+                "outcome": "error",
+                "error": {"code": "replay_state_unavailable", "message": "import receipt has no target project", "operation": "work.project.import"},
+                "replayed": False,
+                "event_ids": [],
+            }
+        target_ref = ResourceRef(
+            getattr(target, "authority", self.binding.authority),
+            getattr(target, "kind", "work.project"),
+            getattr(target, "id"),
+        )
+        record = self.reader.get_record(target_ref)
+        if record is None:
+            return {
+                "outcome": "error",
+                "error": {"code": "replay_state_unavailable", "message": "import target project is no longer readable", "operation": "work.project.import"},
+                "replayed": False,
+                "event_ids": [],
+            }
+        payload = getattr(record, "payload", {})
+        metadata = payload.get("metadata", {}) if isinstance(payload, Mapping) else {}
+        transfer = metadata.get("otto_transfer", {}) if isinstance(metadata, Mapping) else {}
+        if not isinstance(transfer, Mapping) or transfer.get("snapshot_digest") != computed_digest:
+            return {
+                "outcome": "error",
+                "error": {"code": "replay_conflict", "message": "logical request key was reused with a changed request digest", "operation": "work.project.import"},
+                "replayed": False,
+                "event_ids": [],
+            }
+        saved = metadata.get("otto_transfer_result") if isinstance(metadata, Mapping) else None
+        if not isinstance(saved, Mapping):
+            return {
+                "outcome": "error",
+                "error": {"code": "replay_state_unavailable", "message": "original import result manifest is missing", "operation": "work.project.import"},
+                "replayed": False,
+                "event_ids": [],
+            }
+        result = dict(saved)
+        result["outcome"] = "replayed"
+        result["replayed"] = True
+        result["project_ref"] = _json_value(getattr(record, "ref", target_ref))
+        result["record"] = _record_dict(record)
+        result["receipt"] = _receipt_dict(before)
+        event_ids = list(result.get("event_ids", ()))
+        result_receipt = self._receipt(request_id + ":result")
+        for event_id in self._events_for(result_receipt):
+            if event_id not in event_ids:
+                event_ids.append(event_id)
+        result["event_ids"] = event_ids
+        return result
+
     def _import_project(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Passively import a project snapshot through ProjectSheet adoption.
 
@@ -343,6 +411,8 @@ class FiniteWorkOperations:
         if supplied_digest != computed_digest:
             return {"outcome": "error", "error": {"code": "transfer_digest_mismatch", "message": "snapshot digest does not match its public records", "operation": "work.project.import"}, "event_ids": []}
         before = self._receipt(request_id)
+        if before is not None:
+            return self._replay_import(before=before, computed_digest=computed_digest, request_id=request_id)
         edit_payload = source.get("payload") if isinstance(source.get("payload"), Mapping) else source
         title = edit_payload.get("title") or edit_payload.get("name") or "Imported pending project"
         outcome = edit_payload.get("outcome", "")
@@ -522,9 +592,47 @@ class FiniteWorkOperations:
             for event_id in item.get("event_ids", ()):
                 if event_id not in event_ids:
                     event_ids.append(event_id)
-        return {
-            "outcome": "replayed" if before is not None else "imported",
+        content_provenance = {
+            "documents": len(snapshot.get("documents", ())),
+            "document_links": len(snapshot.get("document_links", ())),
+            "destination_content_identity_created": bool(restored_documents),
+            "restored_documents": restored_documents,
+            "restored_document_links": restored_links,
+            "source_records_retained_in_adoption_metadata": True,
+        }
+        # Persist the result manifest through the public ProjectSheet port so
+        # exact retries can return the original child receipts/event IDs even
+        # after a later admission or edit has advanced the live project.
+        saved_result = {
             "project_ref": _json_value(target_ref),
+            "source_ref": _json_value(snapshot.get("source_ref")),
+            "snapshot_digest": computed_digest,
+            "adoption": _json_value(adopted),
+            "receipt": _receipt_dict(receipt),
+            "adoption_receipt": _receipt_dict(adoption_receipt),
+            "task_refs": _json_value(tasks),
+            "content_provenance": content_provenance,
+            "dispatch": False,
+            "execution": False,
+            "manager_launch": False,
+            "budget_reserved": False,
+            "event_ids": event_ids,
+        }
+        try:
+            self.sheet_port.apply(
+                target_ref,
+                {"metadata": {"otto_transfer_result": saved_result}},
+                logical_request_key=request_id + ":result",
+                actor=actor_value,
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
+            raise
+        observed = self.reader.get_record(target_ref)
+        return {
+            "outcome": "imported",
+            "project_ref": _json_value(getattr(observed, "ref", target_ref)),
             "source_ref": _json_value(snapshot.get("source_ref")),
             "snapshot_digest": computed_digest,
             "record": None if observed is None else _record_dict(observed),
@@ -532,20 +640,13 @@ class FiniteWorkOperations:
             "receipt": _receipt_dict(receipt),
             "adoption_receipt": _receipt_dict(adoption_receipt),
             "task_refs": _json_value(tasks),
-            "content_provenance": {
-                "documents": len(snapshot.get("documents", ())),
-                "document_links": len(snapshot.get("document_links", ())),
-                "destination_content_identity_created": bool(restored_documents),
-                "restored_documents": restored_documents,
-                "restored_document_links": restored_links,
-                "source_records_retained_in_adoption_metadata": True,
-            },
+            "content_provenance": content_provenance,
             "dispatch": False,
             "execution": False,
             "manager_launch": False,
             "budget_reserved": False,
-            "replayed": before is not None,
-            "event_ids": event_ids,
+            "replayed": False,
+            "event_ids": event_ids + [event_id for event_id in self._events_for(self._receipt(request_id + ":result")) if event_id not in event_ids],
         }
 
     def _fence_assignment(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
