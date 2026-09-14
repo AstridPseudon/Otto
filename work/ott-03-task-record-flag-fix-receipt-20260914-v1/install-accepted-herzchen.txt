@@ -1,0 +1,12 @@
+START_UTC=2026-09-14T18:13:00.809172000Z
+PID=66516
+COMMAND=env -u PYTHONHOME -u PYTHONPATH /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pip install --force-reinstall --no-deps /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl
+Processing /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl
+Installing collected packages: herzchen-contracts
+  Attempting uninstall: herzchen-contracts
+    Found existing installation: herzchen-contracts 0.1.0
+    Uninstalling herzchen-contracts-0.1.0:
+      Successfully uninstalled herzchen-contracts-0.1.0
+Successfully installed herzchen-contracts-0.1.0
+END_UTC=2026-09-14T18:13:01.245427000Z
+EXIT_CODE=0

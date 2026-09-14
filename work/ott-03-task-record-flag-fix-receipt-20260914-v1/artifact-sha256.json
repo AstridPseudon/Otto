@@ -1,0 +1,10 @@
+{
+  "otto_wheel": {
+    "path": "dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "sha256": "e0e4cfa7f2c8d194ad4863a4e8eb26452704f25eaac415c20c9460508caee595"
+  },
+  "accepted_herzchen_wheel": {
+    "path": "../../../../Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
+  }
+}

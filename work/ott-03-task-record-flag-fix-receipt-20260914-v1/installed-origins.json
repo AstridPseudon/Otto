@@ -1,0 +1,21 @@
+{
+  "executable": "/private/tmp/ott03-template-open.o3HzxD/venv/bin/python",
+  "python": "3.11.16 (main, Aug 12 2026, 23:03:19) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "otto_import_origin": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/__init__.py",
+  "otto_owner_bootstrap_origin": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/otto/portfolio/owner_bootstrap.py",
+  "otto_version": "0.0.0",
+  "herzchen_import_origin": "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+  "herzchen_version": "0.1.0",
+  "sys_path": [
+    "",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python311.zip",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload",
+    "/private/tmp/ott03-template-open.o3HzxD/venv/lib/python3.11/site-packages"
+  ],
+  "environment": {
+    "PYTHONHOME": "unset",
+    "PYTHONPATH": "unset"
+  },
+  "probe_timestamp_utc": "2026-09-14T18:13:40.535014000Z"
+}

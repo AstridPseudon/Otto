@@ -1,0 +1,82 @@
+[
+  {
+    "label": "source-focused-18",
+    "command": ["env", "-u", "PYTHONHOME", "PYTHONPATH=src", "/tmp/ott03-template-open.o3HzxD/venv/bin/python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-c", "/dev/null", "tests/otto/test_selected_template_create_open.py", "tests/otto/test_selected_template.py", "tests/otto/test_owner_bootstrap.py"],
+    "command_text": "env -u PYTHONHOME PYTHONPATH=src /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pytest -q -p no:cacheprovider -c /dev/null tests/otto/test_selected_template_create_open.py tests/otto/test_selected_template.py tests/otto/test_owner_bootstrap.py",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+    "start": "2026-09-14T18:12:01.242490000Z",
+    "end": "2026-09-14T18:12:02.321754000Z",
+    "exit_code": 0,
+    "test_count": 18,
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "environment": {"PYTHONHOME": "unset", "PYTHONPATH": "src", "PYTHONDONTWRITEBYTECODE": "not overridden"},
+    "output": "source-focused-18.txt"
+  },
+  {
+    "label": "build-otto-wheel",
+    "command": ["env", "-u", "PYTHONHOME", "-u", "PYTHONPATH", "/tmp/ott03-template-open.o3HzxD/venv/bin/python", "-m", "pip", "wheel", "/tmp/ott03-task-record-flag-fix-v1/source", "--no-deps", "--no-build-isolation", "-w", "work/ott-03-task-record-flag-fix-receipt-20260914-v1/dist"],
+    "command_text": "env -u PYTHONHOME -u PYTHONPATH /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pip wheel /tmp/ott03-task-record-flag-fix-v1/source --no-deps --no-build-isolation -w work/ott-03-task-record-flag-fix-receipt-20260914-v1/dist",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+    "start": "2026-09-14T18:12:40.604758000Z",
+    "end": "2026-09-14T18:12:41.251356000Z",
+    "exit_code": 0,
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "environment": {"PYTHONHOME": "unset", "PYTHONPATH": "unset"},
+    "output": "build-wheel.txt"
+  },
+  {
+    "label": "install-accepted-herzchen",
+    "command": ["env", "-u", "PYTHONHOME", "-u", "PYTHONPATH", "/tmp/ott03-template-open.o3HzxD/venv/bin/python", "-m", "pip", "install", "--force-reinstall", "--no-deps", "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl"],
+    "command_text": "env -u PYTHONHOME -u PYTHONPATH /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pip install --force-reinstall --no-deps /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+    "start": "2026-09-14T18:13:00.809172000Z",
+    "end": "2026-09-14T18:13:01.245427000Z",
+    "exit_code": 0,
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "environment": {"PYTHONHOME": "unset", "PYTHONPATH": "unset"},
+    "output": "install-accepted-herzchen.txt"
+  },
+  {
+    "label": "install-otto-wheel",
+    "command": ["env", "-u", "PYTHONHOME", "-u", "PYTHONPATH", "/tmp/ott03-template-open.o3HzxD/venv/bin/python", "-m", "pip", "install", "--force-reinstall", "--no-deps", "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-task-record-flag-fix-receipt-20260914-v1/dist/otto_local_candidate-0.0.0-py3-none-any.whl"],
+    "command_text": "env -u PYTHONHOME -u PYTHONPATH /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pip install --force-reinstall --no-deps /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker/work/ott-03-task-record-flag-fix-receipt-20260914-v1/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+    "start": "2026-09-14T18:13:10.387618000Z",
+    "end": "2026-09-14T18:13:10.707669000Z",
+    "exit_code": 0,
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "environment": {"PYTHONHOME": "unset", "PYTHONPATH": "unset"},
+    "output": "install-otto-wheel.txt"
+  },
+  {
+    "label": "installed-origins",
+    "command": ["env", "-u", "PYTHONHOME", "-u", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE=1", "/tmp/ott03-template-open.o3HzxD/venv/bin/python", "-c", "import importlib.metadata as md, herzchen, otto, otto.portfolio.owner_bootstrap as ob, sys; print({...})"],
+    "command_text": "env -u PYTHONHOME -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 /tmp/ott03-template-open.o3HzxD/venv/bin/python -c 'import importlib.metadata as md, herzchen, otto, otto.portfolio.owner_bootstrap as ob, sys; print({\"python\":sys.version,\"executable\":sys.executable,\"otto_origin\":otto.__file__,\"otto_owner_bootstrap_origin\":ob.__file__,\"otto_version\":md.version(\"otto-local-candidate\"),\"herzchen_origin\":herzchen.__file__,\"herzchen_version\":md.version(\"herzchen-contracts\"),\"sys_path\":sys.path})'",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+    "start": "2026-09-14T18:13:40.535014000Z",
+    "end": "2026-09-14T18:13:40.653077000Z",
+    "exit_code": 0,
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "environment": {"PYTHONHOME": "unset", "PYTHONPATH": "unset", "PYTHONDONTWRITEBYTECODE": "1"},
+    "output": "installed-origins.json"
+  },
+  {
+    "label": "installed-focused-18",
+    "command": ["env", "-u", "PYTHONHOME", "-u", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE=1", "/tmp/ott03-template-open.o3HzxD/venv/bin/python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-c", "/dev/null", "tests/otto/test_selected_template_create_open.py", "tests/otto/test_selected_template.py", "tests/otto/test_owner_bootstrap.py"],
+    "command_text": "env -u PYTHONHOME -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pytest -q -p no:cacheprovider -c /dev/null tests/otto/test_selected_template_create_open.py tests/otto/test_selected_template.py tests/otto/test_owner_bootstrap.py",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+    "start": "2026-09-14T18:13:48.760510000Z",
+    "end": "2026-09-14T18:13:50.857731000Z",
+    "exit_code": 0,
+    "test_count": 18,
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "environment": {"PYTHONHOME": "unset", "PYTHONPATH": "unset", "PYTHONDONTWRITEBYTECODE": "1"},
+    "output": "installed-focused-18.txt"
+  }
+]

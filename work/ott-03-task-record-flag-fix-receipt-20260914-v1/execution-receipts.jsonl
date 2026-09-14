@@ -1,0 +1,6 @@
+{"label":"source-focused-18","start":"2026-09-14T18:12:01.242490000Z","end":"2026-09-14T18:12:02.321754000Z","exit_code":0,"test_count":18,"model":"gpt-5.6-luna","reasoning":"high","output":"source-focused-18.txt"}
+{"label":"build-otto-wheel","start":"2026-09-14T18:12:40.604758000Z","end":"2026-09-14T18:12:41.251356000Z","exit_code":0,"model":"gpt-5.6-luna","reasoning":"high","output":"build-wheel.txt"}
+{"label":"install-accepted-herzchen","start":"2026-09-14T18:13:00.809172000Z","end":"2026-09-14T18:13:01.245427000Z","exit_code":0,"model":"gpt-5.6-luna","reasoning":"high","output":"install-accepted-herzchen.txt"}
+{"label":"install-otto-wheel","start":"2026-09-14T18:13:10.387618000Z","end":"2026-09-14T18:13:10.707669000Z","exit_code":0,"model":"gpt-5.6-luna","reasoning":"high","output":"install-otto-wheel.txt"}
+{"label":"installed-origins","start":"2026-09-14T18:13:40.535014000Z","end":"2026-09-14T18:13:40.653077000Z","exit_code":0,"model":"gpt-5.6-luna","reasoning":"high","output":"installed-origins.json"}
+{"label":"installed-focused-18","start":"2026-09-14T18:13:48.760510000Z","end":"2026-09-14T18:13:50.857731000Z","exit_code":0,"test_count":18,"model":"gpt-5.6-luna","reasoning":"high","output":"installed-focused-18.txt"}

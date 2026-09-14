@@ -1,0 +1,6 @@
+START_UTC=2026-09-14T18:12:01.242490000Z
+COMMAND=env -u PYTHONHOME PYTHONPATH=src /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pytest -q -p no:cacheprovider -c /dev/null tests/otto/test_selected_template_create_open.py tests/otto/test_selected_template.py tests/otto/test_owner_bootstrap.py
+..................                                                       [100%]
+18 passed in 0.71s
+END_UTC=2026-09-14T18:12:02.321754000Z
+EXIT_CODE=0

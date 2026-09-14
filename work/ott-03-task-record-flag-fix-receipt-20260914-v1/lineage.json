@@ -1,0 +1,24 @@
+{
+  "request": "OTT-03 bounded correction: selected WorkTemplate pending task_created semantics",
+  "requested_model": "gpt-5.6-luna",
+  "requested_reasoning": "high",
+  "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-template-open-worker",
+  "base_head": "ccec6edc059721bfcb9ea8e1e0a31215a777cb2",
+  "base_tree": "b28c7f1b3977130924840b06c1b1fdb2137529ed",
+  "corrected_product_tests_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+  "corrected_product_tests_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+  "accepted_herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+  "otto_wheel_sha256": "e0e4cfa7f2c8d194ad4863a4e8eb26452704f25eaac415c20c9460508caee595",
+  "existing_venv": "/tmp/ott03-template-open.o3HzxD/venv",
+  "wheel_source": {
+    "archive_command": "git archive --format=tar --output=/tmp/ott03-task-record-flag-fix-v1/source.tar aea1ac6471784256a408daaef324dab9f5cba571",
+    "extract_command": "tar -xf /tmp/ott03-task-record-flag-fix-v1/source.tar -C /tmp/ott03-task-record-flag-fix-v1/source",
+    "source_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875"
+  },
+  "historical_evidence_preserved": [
+    "work/ott-03-template-open-receipt-20260914-v3",
+    "work/ott-03-template-open-installed-origin-supplement-20260914",
+    "work/ott-03-template-amendment-receipt-20260914"
+  ],
+  "claims_scope": "No remote writes, review, gate, acceptance, or programme-completion claim."
+}

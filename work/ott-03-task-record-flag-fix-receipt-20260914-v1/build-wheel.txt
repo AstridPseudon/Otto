@@ -1,0 +1,14 @@
+START_UTC=2026-09-14T18:12:40.604758000Z
+PID=66486
+COMMAND=env -u PYTHONHOME -u PYTHONPATH /tmp/ott03-template-open.o3HzxD/venv/bin/python -m pip wheel /tmp/ott03-task-record-flag-fix-v1/source --no-deps --no-build-isolation -w work/ott-03-task-record-flag-fix-receipt-20260914-v1/dist
+Processing /tmp/ott03-task-record-flag-fix-v1/source
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: otto-local-candidate
+  Building wheel for otto-local-candidate (pyproject.toml): started
+  Building wheel for otto-local-candidate (pyproject.toml): finished with status 'done'
+  Created wheel for otto-local-candidate: filename=otto_local_candidate-0.0.0-py3-none-any.whl size=23550 sha256=e0e4cfa7f2c8d194ad4863a4e8eb26452704f25eaac415c20c9460508caee595
+  Stored in directory: /private/var/folders/0n/hj_vqrps2bz8pnbyvgd58k740000gn/T/pip-ephem-wheel-cache-45wnvvo7/wheels/22/d3/74/146d89c2b3f8dc62413514cdf601c5de67139dc93a6587486a
+Successfully built otto-local-candidate
+END_UTC=2026-09-14T18:12:41.251356000Z
+EXIT_CODE=0
