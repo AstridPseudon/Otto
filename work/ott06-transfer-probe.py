@@ -83,6 +83,17 @@ with tempfile.TemporaryDirectory(prefix="ott06-transfer-") as raw:
     conflict = target.execute(
         "work.project.import", {"snapshot": changed}, request_id="import", actor="manager"
     )
+    # The receiving manager must make the next action explicitly.  Import is
+    # passive and leaves the adopted project pending until this decision.
+    target_admission = target.execute(
+        "work.pending.admission",
+        {
+            "project_ref": imported["project_ref"],
+            "choice": "investigate",
+            "frame": {"outcome": "compare restored transfer", "recipient": "manager", "route": "manual", "authority": "ott06-target"},
+        },
+        request_id="target-manager-choice", actor="manager",
+    )
     parent = source.execute(
         "work.pending.create", {"edit": {"title": "Parent obligation"}}, request_id="parent", actor="manager"
     )
@@ -116,6 +127,7 @@ with tempfile.TemporaryDirectory(prefix="ott06-transfer-") as raw:
         },
         request_id="handoff", actor="manager",
     )
+    source_content_read = source_bootstrap.content.read(ResourceRef.from_dict(doc["document_ref"]))
     registered_domains = source_store.registered_domains()
     source_store.close()
     reopened_store = Store.open(source_path, authority="ott06-source", expected_domains=registered_domains)
@@ -132,11 +144,38 @@ with tempfile.TemporaryDirectory(prefix="ott06-transfer-") as raw:
         actor="manager-old",
     )
     reopened_counts = reopened.reader.snapshot_counts()
+    restored_content_reads = []
+    for restored in imported.get("content_provenance", {}).get("restored_documents", ()):
+        target_document_ref = ResourceRef.from_dict(restored["target_ref"])
+        restored_content_reads.append({"ref": restored["target_ref"], "read": target_bootstrap.content.read(target_document_ref)})
+    restored_link_reads = []
+    for restored in imported.get("content_provenance", {}).get("restored_document_links", ()):
+        target_link_ref = ResourceRef.from_dict(restored["association_ref"])
+        restored_link_reads.append({"ref": restored["association_ref"], "read": target_bootstrap.content.read(target_link_ref)})
     imported_task_records = []
     for raw_ref in imported.get("task_refs", ()):
         record = target.reader.get_record(ResourceRef.from_dict(raw_ref))
         if record is not None:
             imported_task_records.append({"ref": record.ref.to_dict(), "payload": record.payload})
+    target_counts_before_reopen = target.reader.snapshot_counts()
+    target_domains = target_store.registered_domains()
+    target_store.close()
+    target_reopened_store = Store.open(target_path, authority="ott06-target", expected_domains=target_domains)
+    target_reopened_bootstrap = PortfolioOwnerBootstrap(
+        target_reopened_store,
+        binding=HerzchenBindingConfig("ott06-target", "ott06-target-credential"),
+        owner_actor="manager",
+    )
+    target_reopened_project = target_reopened_store.get_record(ResourceRef.from_dict(imported["project_ref"]))
+    target_reopened_content = [
+        {"ref": item["ref"], "read": target_reopened_bootstrap.content.read(ResourceRef.from_dict(item["ref"]))}
+        for item in restored_content_reads
+    ]
+    target_reopened_links = [
+        {"ref": item["ref"], "read": target_reopened_bootstrap.content.read(ResourceRef.from_dict(item["ref"]))}
+        for item in restored_link_reads
+    ]
+    target_reopened_counts = target_reopened_bootstrap.consumer_operations().reader.snapshot_counts()
     print(json.dumps({
         "source_project": created["project_ref"],
         "export_digest": exported["snapshot_digest"],
@@ -150,13 +189,23 @@ with tempfile.TemporaryDirectory(prefix="ott06-transfer-") as raw:
         "imported": imported,
         "replay": replay,
         "changed_request": conflict,
+        "target_manager_admission": target_admission,
         "fenced": fenced,
         "handoff": handoff,
         "stale_dispatch_after_reopen": stale_dispatch,
         "reopened_counts": reopened_counts,
-        "target_counts": target.reader.snapshot_counts(),
+        "target_counts": target_counts_before_reopen,
+        "target_reopen": {
+            "project": None if target_reopened_project is None else target_reopened_project.payload,
+            "content_reads": target_reopened_content,
+            "link_reads": target_reopened_links,
+            "counts": target_reopened_counts,
+        },
+        "source_content_read": source_content_read,
+        "restored_content_reads": restored_content_reads,
+        "restored_link_reads": restored_link_reads,
         "transfer_limits": exported["snapshot"].get("transfer_limits"),
         "origins": {"otto": __import__("otto").__file__, "herzchen": __import__("herzchen").__file__},
     }, sort_keys=True, default=str))
     reopened_store.close()
-    target_store.close()
+    target_reopened_store.close()

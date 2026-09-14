@@ -265,11 +265,23 @@ class FiniteWorkOperations:
                 current_revision = document_value.get("payload", {}).get("current_revision")
                 if current_revision is not None:
                     try:
-                        revision = self.reader.get_record(self._record_ref(current_revision))
-                    except Exception:
-                        revision = None
-                    if revision is not None:
-                        document_value["current_revision_record"] = _record_dict(revision)
+                        current_ref = self._record_ref(current_revision)
+                        # DAT's public read resolves the revision's storage
+                        # identity (the neutral reader intentionally does not
+                        # expose revision rows as a second mutable identity).
+                        revision_read = self.content_port.read(current_ref) if self.content_port is not None else {}
+                        revision_payload = dict(revision_read) if isinstance(revision_read, Mapping) else None
+                        if isinstance(revision_payload, Mapping) and isinstance(revision_payload.get("content"), (Mapping, list, tuple, str, int, float, bool, type(None))):
+                            revision_payload["content_digest"] = sha256(
+                                json.dumps(_json_value(revision_payload.get("content")), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                            ).hexdigest()
+                            document_value["current_revision_record"] = {
+                                "payload": _json_value(revision_payload),
+                                "project_ref": _json_value(current_ref),
+                                "revision": revision_payload.get("revision"),
+                            }
+                    except Exception as exc:
+                        document_value["_revision_read_error"] = type(exc).__name__ + ": " + str(exc)
                 documents.append(document_value)
         links = []
         requested_links = payload.get("association_refs", ())
@@ -391,10 +403,125 @@ class FiniteWorkOperations:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
             raise
+        # A deferred seed keeps unknown source fields in the adoption record,
+        # but an existing document must remain usable by the receiving owner.
+        # Recreate each immutable public revision as a new target-owned
+        # document through DAT's command port, then recreate its named links.
+        # This deliberately maps identities instead of cloning the source
+        # document/assignment/session/allowance rows.
+        restored_documents: list[dict[str, Any]] = []
+        document_map: dict[tuple[str, str, str], Any] = {}
+        for index, item in enumerate(snapshot.get("documents", ())):
+            if not isinstance(item, Mapping):
+                continue
+            record_payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
+            document_value = record_payload.get("document") if isinstance(record_payload.get("document"), Mapping) else {}
+            source_ref_value = document_value.get("ref") if isinstance(document_value.get("ref"), Mapping) else item.get("project_ref")
+            if not isinstance(source_ref_value, Mapping):
+                continue
+            source_ref = self._record_ref(source_ref_value)
+            source_key = (source_ref.authority, source_ref.kind, source_ref.id)
+            revision_record = item.get("current_revision_record") if isinstance(item.get("current_revision_record"), Mapping) else {}
+            revision_payload = revision_record.get("payload") if isinstance(revision_record.get("payload"), Mapping) else {}
+            content = revision_payload.get("content", {})
+            restore_request = request_id + ":document:" + str(index)
+            restored = self._create_document(
+                {
+                    "project_ref": _json_value(target_ref),
+                    "document_id": "restored-" + sha256((computed_digest + ":" + ":".join(source_key)).encode("utf-8")).hexdigest()[:28],
+                    "role": document_value.get("role", "supporting"),
+                    "visibility": document_value.get("visibility", "private"),
+                    "access_mode": document_value.get("access_mode", "read"),
+                    "content": content,
+                },
+                request_id=restore_request,
+                actor=actor,
+            )
+            if restored.get("outcome") not in {"created", "replayed"}:
+                return {
+                    "outcome": "error",
+                    "error": {"code": "document_restore_failed", "message": "target-owned document restoration failed", "operation": "work.project.import", "source_ref": _json_value(source_ref), "detail": restored},
+                    "replayed": False,
+                    "event_ids": [],
+                }
+            target_document_ref = restored.get("document_ref")
+            document_map[source_key] = target_document_ref
+            source_content_digest = revision_payload.get("content_digest")
+            target_content_digest = None
+            content_equal = False
+            try:
+                target_content_read = self.content_port.read(self._record_ref(target_document_ref)) if self.content_port is not None else {}
+                target_revision_read = target_content_read.get("revision") if isinstance(target_content_read, Mapping) else None
+                target_content = target_revision_read.get("content") if isinstance(target_revision_read, Mapping) else None
+                target_content_digest = sha256(
+                    json.dumps(_json_value(target_content), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                content_equal = source_content_digest == target_content_digest
+            except Exception:
+                content_equal = False
+            target_record = restored.get("record") if isinstance(restored.get("record"), Mapping) else {}
+            target_payload = target_record.get("payload") if isinstance(target_record.get("payload"), Mapping) else {}
+            restored_documents.append({
+                "source_ref": _json_value(source_ref),
+                "target_ref": target_document_ref,
+                "source_revision": revision_payload.get("revision"),
+                "target_revision": target_payload.get("current_revision"),
+                "content_digest": source_content_digest,
+                "target_content_digest": target_content_digest,
+                "content_equal": content_equal,
+                "receipt": restored.get("receipt"),
+                "event_ids": restored.get("event_ids", []),
+            })
+        restored_links: list[dict[str, Any]] = []
+        for index, item in enumerate(snapshot.get("document_links", ())):
+            if not isinstance(item, Mapping):
+                continue
+            link_payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
+            association = link_payload.get("association") if isinstance(link_payload.get("association"), Mapping) else {}
+            source_document = association.get("document") if isinstance(association.get("document"), Mapping) else {}
+            source_document_ref = source_document.get("ref") if isinstance(source_document.get("ref"), Mapping) else None
+            if not isinstance(source_document_ref, Mapping):
+                continue
+            source_key = (str(source_document_ref.get("authority")), str(source_document_ref.get("kind")), str(source_document_ref.get("id")))
+            target_document_ref = document_map.get(source_key)
+            if target_document_ref is None:
+                continue
+            restored_link = self._link_document(
+                {
+                    "project_ref": _json_value(target_ref),
+                    "document_ref": target_document_ref,
+                    "namespace": association.get("namespace", "project.documents"),
+                    "key": association.get("key", "document"),
+                    "access_mode": association.get("access_mode", "read"),
+                },
+                request_id=request_id + ":document-link:" + str(index),
+                actor=actor,
+            )
+            if restored_link.get("outcome") not in {"linked", "replayed"}:
+                return {
+                    "outcome": "error",
+                    "error": {"code": "document_link_restore_failed", "message": "target-owned document link restoration failed", "operation": "work.project.import", "detail": restored_link},
+                    "replayed": False,
+                    "event_ids": [],
+                }
+            restored_links.append({
+                "source": _json_value(source_document_ref),
+                "target": target_document_ref,
+                "namespace": association.get("namespace"),
+                "key": association.get("key"),
+                "association_ref": restored_link.get("association_ref"),
+                "receipt": restored_link.get("receipt"),
+                "event_ids": restored_link.get("event_ids", []),
+            })
         receipt = self._receipt(request_id)
         adoption_receipt = self._receipt(request_id + ":adoption")
         observed = self.reader.get_record(target_ref)
         tasks = list(observed.payload.get("tasks", ())) if observed is not None else []
+        event_ids = self._events_for(receipt) + [item for item in self._events_for(adoption_receipt) if item not in self._events_for(receipt)]
+        for item in restored_documents + restored_links:
+            for event_id in item.get("event_ids", ()):
+                if event_id not in event_ids:
+                    event_ids.append(event_id)
         return {
             "outcome": "replayed" if before is not None else "imported",
             "project_ref": _json_value(target_ref),
@@ -405,13 +532,20 @@ class FiniteWorkOperations:
             "receipt": _receipt_dict(receipt),
             "adoption_receipt": _receipt_dict(adoption_receipt),
             "task_refs": _json_value(tasks),
-            "content_provenance": {"documents": len(snapshot.get("documents", ())), "document_links": len(snapshot.get("document_links", ())), "destination_content_identity_created": False},
+            "content_provenance": {
+                "documents": len(snapshot.get("documents", ())),
+                "document_links": len(snapshot.get("document_links", ())),
+                "destination_content_identity_created": bool(restored_documents),
+                "restored_documents": restored_documents,
+                "restored_document_links": restored_links,
+                "source_records_retained_in_adoption_metadata": True,
+            },
             "dispatch": False,
             "execution": False,
             "manager_launch": False,
             "budget_reserved": False,
             "replayed": before is not None,
-            "event_ids": self._events_for(receipt) + [item for item in self._events_for(adoption_receipt) if item not in self._events_for(receipt)],
+            "event_ids": event_ids,
         }
 
     def _fence_assignment(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:

@@ -7,7 +7,8 @@ The manager may create or reopen a pending project, export its typed public
 records, and pass the resulting `otto.project-transfer.v1` snapshot to a
 second owner with `work.project.import`. Import is passive adoption: it keeps
 the source reference and snapshot digest, creates a new pending destination
-identity, and never copies a session, assignment, dispatch, budget, or writer.
+identity, restores linked document revisions through the receiving owner's DAT
+command port, and never copies a session, assignment, dispatch, budget, or writer.
 
 The supported command sequence is:
 
@@ -33,8 +34,9 @@ create an execution session. Transfer deliberately adopts task and observation
 payloads into a new pending project and remaps dependencies between transferred
 tasks to the destination task identities. Export also carries the public
 document revision and link records for an independent content comparison;
-deferred seed adoption retains those records in the destination adoption
-metadata instead of cloning a live destination document identity. Assignment,
+import creates new target-owned document/link identities with the same revision
+content and records the source-to-target map in the adoption result. Unknown
+source fields remain in adoption metadata. Assignment,
 session, dispatch, execution, manager-launch, and budget identities remain
 provenance-only and are not cloned, as required by the pending-seed boundary.
 A host owns the Store and writer lease; the consumer never receives a database
