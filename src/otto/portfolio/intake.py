@@ -156,12 +156,30 @@ class UnavailableWorkOperations:
 class HerzchenWorkOperations(FiniteWorkOperations):
     """Finite accepted Herzchen command/read adapter consumed by Otto."""
 
-    def __init__(self, *, port: Any, reader: Any, binding: Any) -> None:
+    def __init__(
+        self,
+        *,
+        port: Any,
+        reader: Any,
+        binding: Any,
+        sheet_port: Any = None,
+        content_port: Any = None,
+        assignments_port: Any = None,
+        authoring_port: Any = None,
+    ) -> None:
         from .herzchen_binding import HerzchenBindingConfig
 
         if not isinstance(binding, HerzchenBindingConfig):
             raise TypeError("binding must be HerzchenBindingConfig")
-        super().__init__(port=port, reader=reader, binding=binding)
+        super().__init__(
+            port=port,
+            reader=reader,
+            binding=binding,
+            sheet_port=sheet_port,
+            content_port=content_port,
+            assignments_port=assignments_port,
+            authoring_port=authoring_port,
+        )
 
 
 class OttoPortfolio:
@@ -178,6 +196,8 @@ class OttoPortfolio:
             "operations": {
                 "create_pending": "create an inert pending project; optional edit, template, and open request",
                 "create_and_open": "create_pending with open requested, using the blank starter by default",
+                "create_document": "create a typed canonical content document for a pending project",
+                "link_document": "link a typed canonical document association to a project",
                 "read_pending": "read one durable project reference",
                 "list_pending": "list pending work records",
                 "edit_pending": "apply a validated sparse edit, preserving unknown fields",
@@ -248,6 +268,58 @@ class OttoPortfolio:
     def create_and_open(self, **kwargs: Any) -> dict[str, Any]:
         kwargs["open_project"] = True
         return self.create_pending(**kwargs)
+
+    def create_document(
+        self,
+        project_ref: Any,
+        *,
+        actor: str,
+        request_id: str,
+        content: Any,
+        role: str = "supporting",
+        visibility: str = "private",
+        access_mode: str = "read",
+        document_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        return self._execute(
+            "work.pending.document.create",
+            {
+                "project_ref": _ref(project_ref),
+                "content": _json_copy(content, field="content"),
+                "role": _text(role, "role"),
+                "visibility": _text(visibility, "visibility"),
+                "access_mode": _text(access_mode, "access_mode"),
+                "document_id": _text(document_id, "document_id") if document_id is not None else None,
+            },
+            request_id=request_id,
+            actor=actor,
+        )
+
+    def link_document(
+        self,
+        project_ref: Any,
+        document_ref: Any,
+        *,
+        actor: str,
+        request_id: str,
+        namespace: str = "project.documents",
+        key: str = "document",
+        access_mode: str = "read",
+    ) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        return self._execute(
+            "work.pending.document.link",
+            {
+                "project_ref": _ref(project_ref),
+                "document_ref": _ref(document_ref, "document_ref"),
+                "namespace": _text(namespace, "namespace"),
+                "key": _text(key, "key"),
+                "access_mode": _text(access_mode, "access_mode"),
+            },
+            request_id=request_id,
+            actor=actor,
+        )
 
     def read_pending(self, project_ref: Any, *, actor: str) -> dict[str, Any]:
         return self._read("work.pending.read", {"project_ref": _ref(project_ref)}, actor=actor)

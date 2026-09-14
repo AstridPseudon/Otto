@@ -277,6 +277,41 @@ def _real_portfolio(tmp_path):
     return store, graph, api, path
 
 
+def _multi_portfolio(tmp_path):
+    """Trusted bootstrap for the finite public ports used by OTT-03 surfaces."""
+
+    from herzchen.authoring import AuthoringSessionService, register_authoring
+    from herzchen.content import ContentCommandHandler, domain_contribution
+    from herzchen.contracts import AuthenticatedActor
+    from herzchen.domains.work import WorkGraph, register_work
+    from herzchen.domains.work.assignments import ResponsibilityAssignments
+    from herzchen.domains.work.sheet import ProjectSheet
+    from herzchen.kernel.store import Store
+
+    path = tmp_path / "ott03-multi.sqlite"
+    store = Store.create(path, authority="ott03-multi-authority")
+    register_work(store)
+    store.register_domain_handler((domain_contribution(),))
+    register_authoring(store)
+    authenticated = AuthenticatedActor("ott03-multi-authority", "manager", "ott03-multi-credential")
+    graph = WorkGraph(store, actor=authenticated)
+    sheet = ProjectSheet(store, actor=authenticated)
+    content = ContentCommandHandler(store)
+    assignments = ResponsibilityAssignments(store, actor=authenticated)
+    authoring = AuthoringSessionService(store)
+    binding = HerzchenBindingConfig("ott03-multi-authority", "ott03-multi-credential")
+    operations = HerzchenWorkOperations(
+        port=graph.command_port,
+        reader=graph.reader,
+        binding=binding,
+        sheet_port=sheet.command_port,
+        content_port=content.command_port,
+        assignments_port=assignments.command_port,
+        authoring_port=authoring.command_port,
+    )
+    return store, graph, OttoPortfolio(operations), path
+
+
 def _public_counts(store, request_id, ref=None):
     from herzchen.contracts import ResourceRef
 
@@ -298,7 +333,7 @@ def test_real_workgraph_create_read_reopen_and_replay_are_durable(tmp_path):
     finite = api.operations
     assert finite.port is graph.command_port
     assert finite.reader is graph.reader
-    assert sorted(vars(finite)) == ["binding", "port", "reader"]
+    assert sorted(vars(finite)) == ["assignments_port", "authoring_port", "binding", "content_port", "port", "reader", "sheet_port"]
     first = api.create_pending(
         actor="manager",
         request_id="real-create-1",
@@ -383,7 +418,7 @@ def test_real_finite_port_revise_and_truthful_open_admission_assignment_gaps(tmp
 
     opened = api.create_and_open(actor="manager", request_id="real-open-1", edit={"title": "No host"})
     assert opened["outcome"] == "unavailable"
-    assert opened["error"]["code"] == "canonical_open_endpoint_unavailable"
+    assert opened["error"]["code"] == "canonical_create_and_open_finite_endpoint_unavailable"
     assert opened["receipt"] is None
     assert opened["event_ids"] == []
 
@@ -392,8 +427,144 @@ def test_real_finite_port_revise_and_truthful_open_admission_assignment_gaps(tmp
     assignment = api.assign_roles(ref, {"parent": {"id": "p"}, "manager": "m", "executor": "e"}, actor="manager", request_id="real-assignment-gap")
     assert admission["outcome"] == "unavailable"
     assert assignment["outcome"] == "unavailable"
-    assert admission["error"]["code"] == "canonical_operation_unavailable"
-    assert assignment["error"]["code"] == "canonical_operation_unavailable"
+    assert admission["error"]["code"] == "canonical_project_sheet_port_unavailable"
+    assert assignment["error"]["code"] == "canonical_assignments_port_unavailable"
     assert admission["receipt"] is None and assignment["receipt"] is None
     assert len(list(store.list_events())) == 2
+    store.close()
+
+
+def test_real_composed_authoring_create_open_occupied_and_replay(tmp_path):
+    store, _graph, api, _path = _multi_portfolio(tmp_path)
+    blocked = api.create_and_open(actor="manager", request_id="multi-create-open-gap", edit={"title": "Blank project"})
+    assert blocked["outcome"] == "unavailable"
+    assert blocked["error"]["code"] == "canonical_create_and_open_finite_endpoint_unavailable"
+    assert blocked["open"]["status"] == "unsupported"
+    assert len(list(store.list_events())) == 0
+    first = api.create_pending(actor="manager", request_id="multi-open-project", edit={"title": "Blank project"})
+    opened = api.reopen(first["project_ref"], actor="manager", request_id="multi-open-1")
+    assert opened["outcome"] == "opened"
+    assert opened["opened"]["status"] == "opened"
+    assert opened["project_ref"]["kind"] == "work.project"
+    assert opened["receipt"]["operation"] == "open"
+    assert opened["opened"]["session_id"]
+    before_events = len(list(store.list_events()))
+    replay = api.reopen(first["project_ref"], actor="manager", request_id="multi-open-1")
+    assert replay["outcome"] == "replayed"
+    assert replay["replayed"] is True
+    assert replay["project_ref"] == first["project_ref"]
+    assert replay["opened"]["session_id"] == opened["opened"]["session_id"]
+    assert len(list(store.list_events())) == before_events
+    occupied = api.reopen(first["project_ref"], actor="other-manager", request_id="multi-open-occupied")
+    assert occupied["outcome"] == "occupied"
+    assert occupied["opened"]["status"] == "occupied"
+    assert occupied["receipt"] is None
+    store.close()
+
+
+def test_real_composed_content_document_and_link_are_typed_and_replayed(tmp_path):
+    store, _graph, api, _path = _multi_portfolio(tmp_path)
+    project = api.create_pending(actor="manager", request_id="multi-content-project", edit={"title": "Content host"})
+    project_ref = project["project_ref"]
+    created = api.create_document(
+        project_ref,
+        actor="manager",
+        request_id="multi-document-1",
+        content={"body": "canonical evidence"},
+        role="evidence",
+        visibility="private",
+        access_mode="read",
+        document_id="doc-1",
+    )
+    assert created["outcome"] == "created"
+    assert created["document_ref"]["kind"] == "dat.content.document"
+    assert created["receipt"]["operation"] == "dat.content.document.create"
+    assert created["record"]["payload"]["document"]["role"] == "evidence"
+    events_after_create = len(list(store.list_events()))
+    replay = api.create_document(
+        project_ref,
+        actor="manager",
+        request_id="multi-document-1",
+        content={"body": "canonical evidence"},
+        role="evidence",
+        document_id="doc-1",
+    )
+    assert replay["outcome"] == "replayed"
+    assert len(list(store.list_events())) == events_after_create
+    conflict = api.create_document(
+        project_ref,
+        actor="manager",
+        request_id="multi-document-1",
+        content={"body": "changed"},
+        role="evidence",
+        document_id="doc-1",
+    )
+    assert conflict["error"]["code"] == "replay_conflict"
+    assert len(list(store.list_events())) == events_after_create
+    linked = api.link_document(project_ref, created["document_ref"], actor="manager", request_id="multi-link-1")
+    assert linked["outcome"] == "linked"
+    assert linked["association_ref"]["kind"] == "document-association"
+    assert linked["receipt"]["operation"] == "dat.content.link"
+    assert linked["record"]["payload"]["association"]["document"]["ref"]["id"] == "doc-1"
+    link_events = len(list(store.list_events()))
+    link_replay = api.link_document(project_ref, created["document_ref"], actor="manager", request_id="multi-link-1")
+    assert link_replay["outcome"] == "replayed"
+    assert len(list(store.list_events())) == link_events
+    store.close()
+
+
+def test_real_composed_attention_admission_parent_and_roles_use_canonical_ports(tmp_path):
+    store, _graph, api, _path = _multi_portfolio(tmp_path)
+    parent = api.create_pending(actor="manager", request_id="multi-parent", edit={"title": "Parent"})
+    child = api.create_pending(actor="manager", request_id="multi-child", edit={"title": "Child", "why_pending": "await evidence"})
+    child_ref = child["project_ref"]
+    revisit = api.revisit(child_ref, {"note": "revisit later"}, actor="manager", request_id="multi-revisit")
+    prerequisite = api.satisfied_prerequisite(child_ref, parent["project_ref"], actor="manager", request_id="multi-prereq")
+    assert revisit["outcome"] == "attention-created"
+    assert prerequisite["outcome"] == "attention-created"
+    assert prerequisite["readiness"]["dispatch"] is False
+    frame = {"outcome": "investigate evidence", "recipient": "parent-owner", "route": "normal", "authority": "manager-mandate"}
+    admitted = api.admit(child_ref, choice="investigate", frame=frame, actor="manager", request_id="multi-admission")
+    assert admitted["outcome"] == "admitted"
+    assert admitted["executable"] is False
+    assert admitted["admission"]["choice"] == "investigate"
+    assert admitted["receipt"]["operation"] == "work.project-sheet.apply"
+    assigned = api.assign_roles(
+        child_ref,
+        {"parent": parent["project_ref"], "manager": "manager", "executor": ["executor-a", "executor-b"]},
+        actor="manager",
+        request_id="multi-roles",
+    )
+    assert assigned["outcome"] == "assigned"
+    assert len(assigned["roles"]) == 4
+    assert assigned["parent_receipt"]["operation"] == "work.assignment.create"
+    assert {item["role"] for item in assigned["roles"].values()} == {"parent", "manager", "executor"}
+    event_count = len(list(store.list_events()))
+    replay = api.assign_roles(
+        child_ref,
+        {"parent": parent["project_ref"], "manager": "manager", "executor": ["executor-a", "executor-b"]},
+        actor="manager",
+        request_id="multi-roles",
+    )
+    assert replay["replayed"] is True
+    assert len(list(store.list_events())) == event_count
+    store.close()
+
+
+def test_multi_port_adapter_retains_only_finite_ports_and_reader(tmp_path):
+    store, _graph, api, _path = _multi_portfolio(tmp_path)
+    finite = api.operations
+    assert sorted(vars(finite)) == [
+        "assignments_port",
+        "authoring_port",
+        "binding",
+        "content_port",
+        "port",
+        "reader",
+        "sheet_port",
+    ]
+    for value in vars(finite).values():
+        name = type(value).__name__
+        assert name not in {"Store", "WorkGraph", "ProjectSheet", "ProjectSheetService", "ContentCommandHandler", "ResponsibilityAssignments", "AuthoringSessionService"}
+        assert "sqlite" not in name.lower()
     store.close()
