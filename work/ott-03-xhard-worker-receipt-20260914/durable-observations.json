@@ -1,0 +1,3597 @@
+{
+  "consumer_surface": {
+    "authoring_endpoints": [
+      "authorize_mutation",
+      "autosave",
+      "cleanup",
+      "finish",
+      "open",
+      "read",
+      "read_snapshot",
+      "record_content_edit",
+      "record_finish_recovery",
+      "reestablish_retirement_fence",
+      "refresh_final_snapshot",
+      "reject_finish",
+      "release",
+      "resolve_scope",
+      "validate_retirement_handoff",
+      "validate_session",
+      "wait"
+    ],
+    "create_open_endpoints": [
+      "create_pending_and_open"
+    ],
+    "create_open_transport": {
+      "domain_id": "otto.portfolio.create-and-open",
+      "endpoints": [
+        "create_pending_and_open"
+      ],
+      "facade": "otto.portfolio.owner_bootstrap.CreateAndOpenOwner",
+      "owner_pid": 57050,
+      "schema_revision": null,
+      "session_id": "d0460aa010e635c5fb7669de",
+      "socket_path": "/var/folders/0n/hj_vqrps2bz8pnbyvgd58k740000gn/T/herzchen-command-jon22bh_/owner.sock",
+      "transport_revision": "herzchen.command-transport.v1"
+    },
+    "retained": {
+      "assignments_port": "SerializedCommandClient",
+      "authoring_port": "SerializedCommandClient",
+      "binding": "HerzchenBindingConfig",
+      "content_port": "SerializedCommandClient",
+      "create_open_port": "SerializedCommandClient",
+      "port": "SerializedCommandClient",
+      "reader": "SerializedReaderClient",
+      "sheet_port": "SerializedCommandClient"
+    }
+  },
+  "materialization_failure": {
+    "action": {
+      "event_ids": [
+        "event-b92ef695bce6abc9b5c516ae884f696a",
+        "event-191162065acae97d252851ed026f9f7f",
+        "event-5e605c115cdd7d54361fa07d430ee5c5",
+        "event-458035092be7f5c2032dbd59455f440e",
+        "event-64bde6acf40985e85be2d67eb10e160a",
+        "event-224f3c0795c170ed573c9cf197976b4c"
+      ],
+      "executable": false,
+      "open": {
+        "base_revision": null,
+        "error": "receipt-forced materialization failure",
+        "project_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "recovery_pending": false,
+        "recovery_status": "saved_project_edit_not_opened",
+        "scope": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": null
+        },
+        "session_id": null,
+        "status": "saved_project_edit_not_opened",
+        "target_kind": null
+      },
+      "outcome": "saved_project_edit_not_opened",
+      "project_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-224f3c0795c170ed573c9cf197976b4c"
+        ],
+        "logical_request_key": "observation-materialize:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "b0fb5d0369d7f039159c8eb6b147cd00105e97848f32b0b8aa9c64979fa8d633",
+        "result_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "acc13a02e8b0ab4c80e56332033f8c87",
+        "unknown_reason": null
+      },
+      "project_ref": {
+        "authority": "ott03-xhard-observation-failure",
+        "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-5e605c115cdd7d54361fa07d430ee5c5"
+        ],
+        "logical_request_key": "observation-materialize",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "3295cb4c4ccc36d8e9b6472e76666bc24b118e4013e3b659a1d473df86689c41",
+        "result_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "0b79734106a8dad8eca258f9acc5a03b",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Saved materialization recovery",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "aliases": [
+            "project-7cdb9e00ca73ad05521e8c9e34f0"
+          ],
+          "approach": "",
+          "budget": null,
+          "creation_request": "observation-materialize:project",
+          "custom": {},
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "project",
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "observation-materialize",
+              "payload": {
+                "edit": {
+                  "title": "Saved materialization recovery"
+                },
+                "open": true,
+                "template": "blank"
+              }
+            },
+            "template": "blank"
+          },
+          "name": "Saved materialization recovery",
+          "outcome": "",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation-failure",
+              "credential_ref": "ott03-xhard-observation-credential"
+            },
+            "curator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation-failure",
+              "credential_ref": "ott03-xhard-observation-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [],
+          "title": "Saved materialization recovery",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-1",
+        "title": "Saved materialization recovery",
+        "version": 1
+      },
+      "replayed": false
+    },
+    "after": {
+      "event_count": 6,
+      "events": [
+        {
+          "event_id": "event-b92ef695bce6abc9b5c516ae884f696a",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-191162065acae97d252851ed026f9f7f",
+          "event_type": "authoring.actor.release",
+          "operation": "actor.release",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-5e605c115cdd7d54361fa07d430ee5c5",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-458035092be7f5c2032dbd59455f440e",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-64bde6acf40985e85be2d67eb10e160a",
+          "event_type": "authoring.release",
+          "operation": "release",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-224f3c0795c170ed573c9cf197976b4c",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-materialize": {
+          "error_code": null,
+          "event_ids": [
+            "event-5e605c115cdd7d54361fa07d430ee5c5"
+          ],
+          "logical_request_key": "observation-materialize",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "3295cb4c4ccc36d8e9b6472e76666bc24b118e4013e3b659a1d473df86689c41",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0b79734106a8dad8eca258f9acc5a03b",
+          "unknown_reason": null
+        },
+        "observation-materialize:materialize-failure": {
+          "error_code": null,
+          "event_ids": [
+            "event-64bde6acf40985e85be2d67eb10e160a"
+          ],
+          "logical_request_key": "observation-materialize:materialize-failure",
+          "observed_revision": "rev-3",
+          "operation": "release",
+          "replayed": false,
+          "request_digest": "acca313b585ad5c5b4baef48feab0476e60c9264b812131e79459dc494b614e4",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "ee46fa924dc085ae61b1f8451a356153",
+          "unknown_reason": null
+        },
+        "observation-materialize:materialize-failure:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-191162065acae97d252851ed026f9f7f"
+          ],
+          "logical_request_key": "observation-materialize:materialize-failure:actor",
+          "observed_revision": "rev-2",
+          "operation": "actor.release",
+          "replayed": false,
+          "request_digest": "01bea50574b57d99fbac28afb1db3bc55a150b3bbf09e0a43d3a149ed8bee727",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "b7f82030419fdcd5be1f3c4bad467f4e",
+          "unknown_reason": null
+        },
+        "observation-materialize:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-224f3c0795c170ed573c9cf197976b4c"
+          ],
+          "logical_request_key": "observation-materialize:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "b0fb5d0369d7f039159c8eb6b147cd00105e97848f32b0b8aa9c64979fa8d633",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "acc13a02e8b0ab4c80e56332033f8c87",
+          "unknown_reason": null
+        },
+        "observation-materialize:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-458035092be7f5c2032dbd59455f440e"
+          ],
+          "logical_request_key": "observation-materialize:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "f9f0ebdf5f0cf36b7565012e5727dc83ed01c10a3a1405718799a879cd433767",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "194d064aba625958daf9bb8474540b09",
+          "unknown_reason": null
+        }
+      },
+      "records": {
+        "authoring_scope": {
+          "created_at": "2026-09-14T16:28:43.729741Z",
+          "edit_token": null,
+          "payload": {
+            "activity": "editing",
+            "checkout": {
+              "actor": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "allowed_fields": [],
+              "base_revision": "initial",
+              "cleanup": "pending",
+              "draft_snapshot_ref": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "draft-session-cfca2b40530ef11499d013a1",
+                "kind": "authoring-snapshot",
+                "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              "fence": "fence-c7a89dff12c1bde12e946f51",
+              "final_snapshot_ref": null,
+              "finish_claim": null,
+              "session_id": "session-cfca2b40530ef11499d013a1",
+              "state": "released",
+              "target_kind": "project-sheet",
+              "target_scope": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+                "kind": "work.project",
+                "revision": null
+              },
+              "token": "token-6f93c307b2cf604df0d4d302",
+              "unmanaged_writers": false
+            },
+            "checkout_path": null,
+            "draft_bytes_b64": "",
+            "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "error": "receipt-forced materialization failure",
+            "final_bytes_b64": null,
+            "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+            "fnd_contract_revision": "fnd-02.v1.1",
+            "pending": true,
+            "project": {
+              "otto_create_and_open_request": {
+                "metadata": {
+                  "otto_request": {
+                    "logical_request_key": "observation-materialize",
+                    "payload": {
+                      "edit": {
+                        "title": "Saved materialization recovery"
+                      },
+                      "open": true,
+                      "template": "blank"
+                    }
+                  },
+                  "template": "blank"
+                },
+                "outcome": "",
+                "title": "Saved materialization recovery"
+              },
+              "ref": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+                "kind": "work.project",
+                "revision": "rev-1"
+              }
+            },
+            "purpose": "otto",
+            "registered_files": [],
+            "scope": {
+              "authority": "ott03-xhard-observation-failure",
+              "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+              "kind": "work.project",
+              "revision": null
+            },
+            "status": "saved_edit_not_opened",
+            "type": "authoring_scope"
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "updated_at": "2026-09-14T16:28:43.733188Z",
+          "version": 3
+        },
+        "project": {
+          "created_at": "2026-09-14T16:28:43.730497Z",
+          "edit_token": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "aliases": [
+              "project-7cdb9e00ca73ad05521e8c9e34f0"
+            ],
+            "approach": "",
+            "budget": null,
+            "creation_request": "observation-materialize:project",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "observation-materialize",
+                "payload": {
+                  "edit": {
+                    "title": "Saved materialization recovery"
+                  },
+                  "open": true,
+                  "template": "blank"
+                }
+              },
+              "template": "blank"
+            },
+            "name": "Saved materialization recovery",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "curator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Saved materialization recovery",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "updated_at": "2026-09-14T16:28:43.730497Z",
+          "version": 1
+        }
+      }
+    },
+    "after_reopen": {
+      "event_count": 8,
+      "events": [
+        {
+          "event_id": "event-b92ef695bce6abc9b5c516ae884f696a",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-191162065acae97d252851ed026f9f7f",
+          "event_type": "authoring.actor.release",
+          "operation": "actor.release",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-5d049c4e1d58d030054111d186a7d5c3",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-5e605c115cdd7d54361fa07d430ee5c5",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-458035092be7f5c2032dbd59455f440e",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-64bde6acf40985e85be2d67eb10e160a",
+          "event_type": "authoring.release",
+          "operation": "release",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-bd776ff31eb3fada795181246e2ac904",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-4"
+          }
+        },
+        {
+          "event_id": "event-224f3c0795c170ed573c9cf197976b4c",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-materialize": {
+          "error_code": null,
+          "event_ids": [
+            "event-5e605c115cdd7d54361fa07d430ee5c5"
+          ],
+          "logical_request_key": "observation-materialize",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "3295cb4c4ccc36d8e9b6472e76666bc24b118e4013e3b659a1d473df86689c41",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0b79734106a8dad8eca258f9acc5a03b",
+          "unknown_reason": null
+        },
+        "observation-materialize-reopen": {
+          "error_code": null,
+          "event_ids": [
+            "event-bd776ff31eb3fada795181246e2ac904"
+          ],
+          "logical_request_key": "observation-materialize-reopen",
+          "observed_revision": "rev-4",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "1ecfa3f80c4a4a6b2c9bbc5281e23bbaae8c87f7c4ed7cfcdad694a0e10de3ba",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-4"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "50014dfee324ae46513cc946991f0afc",
+          "unknown_reason": null
+        },
+        "observation-materialize:materialize-failure": {
+          "error_code": null,
+          "event_ids": [
+            "event-64bde6acf40985e85be2d67eb10e160a"
+          ],
+          "logical_request_key": "observation-materialize:materialize-failure",
+          "observed_revision": "rev-3",
+          "operation": "release",
+          "replayed": false,
+          "request_digest": "acca313b585ad5c5b4baef48feab0476e60c9264b812131e79459dc494b614e4",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "ee46fa924dc085ae61b1f8451a356153",
+          "unknown_reason": null
+        },
+        "observation-materialize:materialize-failure:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-191162065acae97d252851ed026f9f7f"
+          ],
+          "logical_request_key": "observation-materialize:materialize-failure:actor",
+          "observed_revision": "rev-2",
+          "operation": "actor.release",
+          "replayed": false,
+          "request_digest": "01bea50574b57d99fbac28afb1db3bc55a150b3bbf09e0a43d3a149ed8bee727",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "b7f82030419fdcd5be1f3c4bad467f4e",
+          "unknown_reason": null
+        },
+        "observation-materialize:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-224f3c0795c170ed573c9cf197976b4c"
+          ],
+          "logical_request_key": "observation-materialize:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "b0fb5d0369d7f039159c8eb6b147cd00105e97848f32b0b8aa9c64979fa8d633",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "acc13a02e8b0ab4c80e56332033f8c87",
+          "unknown_reason": null
+        },
+        "observation-materialize:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-458035092be7f5c2032dbd59455f440e"
+          ],
+          "logical_request_key": "observation-materialize:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "f9f0ebdf5f0cf36b7565012e5727dc83ed01c10a3a1405718799a879cd433767",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "194d064aba625958daf9bb8474540b09",
+          "unknown_reason": null
+        }
+      },
+      "records": {
+        "authoring_scope": {
+          "created_at": "2026-09-14T16:28:43.729741Z",
+          "edit_token": null,
+          "payload": {
+            "activity": "editing",
+            "checkout": {
+              "actor": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "allowed_fields": [],
+              "base_revision": "rev-1",
+              "cleanup": "not_requested",
+              "draft_snapshot_ref": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "draft-session-17629f69c8b390f67a42ccb2",
+                "kind": "authoring-snapshot",
+                "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              "fence": "fence-8afcce8aeede44f4f0d51a4f",
+              "final_snapshot_ref": null,
+              "finish_claim": null,
+              "session_id": "session-17629f69c8b390f67a42ccb2",
+              "state": "open",
+              "target_kind": "project",
+              "target_scope": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+                "kind": "work.project",
+                "revision": "rev-1"
+              },
+              "token": "token-673de0e862fb86b027791aa3",
+              "unmanaged_writers": false
+            },
+            "checkout_path": null,
+            "draft_bytes_b64": "",
+            "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "final_bytes_b64": null,
+            "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+            "fnd_contract_revision": "fnd-02.v1.1",
+            "pending": true,
+            "project": null,
+            "purpose": "otto",
+            "registered_files": [],
+            "scope": {
+              "authority": "ott03-xhard-observation-failure",
+              "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "type": "authoring_scope"
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-4"
+          },
+          "updated_at": "2026-09-14T16:28:43.739025Z",
+          "version": 4
+        },
+        "project": {
+          "created_at": "2026-09-14T16:28:43.730497Z",
+          "edit_token": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "aliases": [
+              "project-7cdb9e00ca73ad05521e8c9e34f0"
+            ],
+            "approach": "",
+            "budget": null,
+            "creation_request": "observation-materialize:project",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "observation-materialize",
+                "payload": {
+                  "edit": {
+                    "title": "Saved materialization recovery"
+                  },
+                  "open": true,
+                  "template": "blank"
+                }
+              },
+              "template": "blank"
+            },
+            "name": "Saved materialization recovery",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "curator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Saved materialization recovery",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "updated_at": "2026-09-14T16:28:43.730497Z",
+          "version": 1
+        }
+      }
+    },
+    "after_replay": {
+      "event_count": 6,
+      "events": [
+        {
+          "event_id": "event-b92ef695bce6abc9b5c516ae884f696a",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-191162065acae97d252851ed026f9f7f",
+          "event_type": "authoring.actor.release",
+          "operation": "actor.release",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-5e605c115cdd7d54361fa07d430ee5c5",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-458035092be7f5c2032dbd59455f440e",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-64bde6acf40985e85be2d67eb10e160a",
+          "event_type": "authoring.release",
+          "operation": "release",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-224f3c0795c170ed573c9cf197976b4c",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-materialize": {
+          "error_code": null,
+          "event_ids": [
+            "event-5e605c115cdd7d54361fa07d430ee5c5"
+          ],
+          "logical_request_key": "observation-materialize",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "3295cb4c4ccc36d8e9b6472e76666bc24b118e4013e3b659a1d473df86689c41",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0b79734106a8dad8eca258f9acc5a03b",
+          "unknown_reason": null
+        },
+        "observation-materialize:materialize-failure": {
+          "error_code": null,
+          "event_ids": [
+            "event-64bde6acf40985e85be2d67eb10e160a"
+          ],
+          "logical_request_key": "observation-materialize:materialize-failure",
+          "observed_revision": "rev-3",
+          "operation": "release",
+          "replayed": false,
+          "request_digest": "acca313b585ad5c5b4baef48feab0476e60c9264b812131e79459dc494b614e4",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "ee46fa924dc085ae61b1f8451a356153",
+          "unknown_reason": null
+        },
+        "observation-materialize:materialize-failure:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-191162065acae97d252851ed026f9f7f"
+          ],
+          "logical_request_key": "observation-materialize:materialize-failure:actor",
+          "observed_revision": "rev-2",
+          "operation": "actor.release",
+          "replayed": false,
+          "request_digest": "01bea50574b57d99fbac28afb1db3bc55a150b3bbf09e0a43d3a149ed8bee727",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "778109d8149dc91fe5f5d1fee0bb4454",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "b7f82030419fdcd5be1f3c4bad467f4e",
+          "unknown_reason": null
+        },
+        "observation-materialize:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-224f3c0795c170ed573c9cf197976b4c"
+          ],
+          "logical_request_key": "observation-materialize:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "b0fb5d0369d7f039159c8eb6b147cd00105e97848f32b0b8aa9c64979fa8d633",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "acc13a02e8b0ab4c80e56332033f8c87",
+          "unknown_reason": null
+        },
+        "observation-materialize:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-458035092be7f5c2032dbd59455f440e"
+          ],
+          "logical_request_key": "observation-materialize:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "f9f0ebdf5f0cf36b7565012e5727dc83ed01c10a3a1405718799a879cd433767",
+          "result_ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "194d064aba625958daf9bb8474540b09",
+          "unknown_reason": null
+        }
+      },
+      "records": {
+        "authoring_scope": {
+          "created_at": "2026-09-14T16:28:43.729741Z",
+          "edit_token": null,
+          "payload": {
+            "activity": "editing",
+            "checkout": {
+              "actor": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "allowed_fields": [],
+              "base_revision": "initial",
+              "cleanup": "pending",
+              "draft_snapshot_ref": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "draft-session-cfca2b40530ef11499d013a1",
+                "kind": "authoring-snapshot",
+                "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              "fence": "fence-c7a89dff12c1bde12e946f51",
+              "final_snapshot_ref": null,
+              "finish_claim": null,
+              "session_id": "session-cfca2b40530ef11499d013a1",
+              "state": "released",
+              "target_kind": "project-sheet",
+              "target_scope": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+                "kind": "work.project",
+                "revision": null
+              },
+              "token": "token-6f93c307b2cf604df0d4d302",
+              "unmanaged_writers": false
+            },
+            "checkout_path": null,
+            "draft_bytes_b64": "",
+            "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "error": "receipt-forced materialization failure",
+            "final_bytes_b64": null,
+            "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+            "fnd_contract_revision": "fnd-02.v1.1",
+            "pending": true,
+            "project": {
+              "otto_create_and_open_request": {
+                "metadata": {
+                  "otto_request": {
+                    "logical_request_key": "observation-materialize",
+                    "payload": {
+                      "edit": {
+                        "title": "Saved materialization recovery"
+                      },
+                      "open": true,
+                      "template": "blank"
+                    }
+                  },
+                  "template": "blank"
+                },
+                "outcome": "",
+                "title": "Saved materialization recovery"
+              },
+              "ref": {
+                "authority": "ott03-xhard-observation-failure",
+                "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+                "kind": "work.project",
+                "revision": "rev-1"
+              }
+            },
+            "purpose": "otto",
+            "registered_files": [],
+            "scope": {
+              "authority": "ott03-xhard-observation-failure",
+              "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+              "kind": "work.project",
+              "revision": null
+            },
+            "status": "saved_edit_not_opened",
+            "type": "authoring_scope"
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "updated_at": "2026-09-14T16:28:43.733188Z",
+          "version": 3
+        },
+        "project": {
+          "created_at": "2026-09-14T16:28:43.730497Z",
+          "edit_token": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "aliases": [
+              "project-7cdb9e00ca73ad05521e8c9e34f0"
+            ],
+            "approach": "",
+            "budget": null,
+            "creation_request": "observation-materialize:project",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "otto_request": {
+                "logical_request_key": "observation-materialize",
+                "payload": {
+                  "edit": {
+                    "title": "Saved materialization recovery"
+                  },
+                  "open": true,
+                  "template": "blank"
+                }
+              },
+              "template": "blank"
+            },
+            "name": "Saved materialization recovery",
+            "outcome": "",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "curator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation-failure",
+                "credential_ref": "ott03-xhard-observation-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Saved materialization recovery",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation-failure",
+            "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "updated_at": "2026-09-14T16:28:43.730497Z",
+          "version": 1
+        }
+      }
+    },
+    "before": {
+      "event_count": 0,
+      "events": [],
+      "receipts": {
+        "observation-materialize": null,
+        "observation-materialize:materialize-failure": null,
+        "observation-materialize:materialize-failure:actor": null,
+        "observation-materialize:project": null,
+        "observation-materialize:project-created": null
+      },
+      "records": {}
+    },
+    "materializer_calls": [
+      {
+        "authority": "ott03-xhard-observation-failure",
+        "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+        "kind": "work.project",
+        "revision": "rev-1"
+      }
+    ],
+    "reopen_action": {
+      "event_ids": [
+        "event-bd776ff31eb3fada795181246e2ac904"
+      ],
+      "opened": {
+        "base_revision": "rev-1",
+        "error": null,
+        "project_ref": null,
+        "recovery_pending": false,
+        "recovery_status": "not_requested",
+        "scope": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "session_id": "session-17629f69c8b390f67a42ccb2",
+        "status": "opened",
+        "target_kind": "project"
+      },
+      "outcome": "opened",
+      "project_ref": {
+        "authority": "ott03-xhard-observation-failure",
+        "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-bd776ff31eb3fada795181246e2ac904"
+        ],
+        "logical_request_key": "observation-materialize-reopen",
+        "observed_revision": "rev-4",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "1ecfa3f80c4a4a6b2c9bbc5281e23bbaae8c87f7c4ed7cfcdad694a0e10de3ba",
+        "result_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "authoring-scope",
+          "revision": "rev-4"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "50014dfee324ae46513cc946991f0afc",
+        "unknown_reason": null
+      },
+      "replayed": false
+    },
+    "replay_action": {
+      "event_ids": [
+        "event-b92ef695bce6abc9b5c516ae884f696a",
+        "event-191162065acae97d252851ed026f9f7f",
+        "event-5e605c115cdd7d54361fa07d430ee5c5",
+        "event-458035092be7f5c2032dbd59455f440e",
+        "event-64bde6acf40985e85be2d67eb10e160a",
+        "event-224f3c0795c170ed573c9cf197976b4c"
+      ],
+      "executable": false,
+      "open": {
+        "base_revision": null,
+        "error": null,
+        "project_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "recovery_pending": false,
+        "recovery_status": "saved_project_edit_not_opened",
+        "scope": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": null
+        },
+        "session_id": null,
+        "status": "saved_project_edit_not_opened",
+        "target_kind": null
+      },
+      "outcome": "replayed",
+      "project_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-224f3c0795c170ed573c9cf197976b4c"
+        ],
+        "logical_request_key": "observation-materialize:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "b0fb5d0369d7f039159c8eb6b147cd00105e97848f32b0b8aa9c64979fa8d633",
+        "result_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "acc13a02e8b0ab4c80e56332033f8c87",
+        "unknown_reason": null
+      },
+      "project_ref": {
+        "authority": "ott03-xhard-observation-failure",
+        "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-5e605c115cdd7d54361fa07d430ee5c5"
+        ],
+        "logical_request_key": "observation-materialize",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "3295cb4c4ccc36d8e9b6472e76666bc24b118e4013e3b659a1d473df86689c41",
+        "result_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "0b79734106a8dad8eca258f9acc5a03b",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Saved materialization recovery",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "aliases": [
+            "project-7cdb9e00ca73ad05521e8c9e34f0"
+          ],
+          "approach": "",
+          "budget": null,
+          "creation_request": "observation-materialize:project",
+          "custom": {},
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "project",
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "otto_request": {
+              "logical_request_key": "observation-materialize",
+              "payload": {
+                "edit": {
+                  "title": "Saved materialization recovery"
+                },
+                "open": true,
+                "template": "blank"
+              }
+            },
+            "template": "blank"
+          },
+          "name": "Saved materialization recovery",
+          "outcome": "",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation-failure",
+              "credential_ref": "ott03-xhard-observation-credential"
+            },
+            "curator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation-failure",
+              "credential_ref": "ott03-xhard-observation-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [],
+          "title": "Saved materialization recovery",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-xhard-observation-failure",
+          "id": "project-7cdb9e00ca73ad05521e8c9e34f0",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-1",
+        "title": "Saved materialization recovery",
+        "version": 1
+      },
+      "replayed": true
+    }
+  },
+  "process": {
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker",
+    "finished_utc": "2026-09-14T16:28:43.741268+00:00",
+    "herzchen_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+    "otto_origin": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/__init__.py",
+    "pid": 57050,
+    "started_utc": "2026-09-14T16:28:43.663940+00:00"
+  },
+  "success": {
+    "action": {
+      "event_ids": [
+        "event-1747223d1b279ae856a8cc70fa80449f",
+        "event-c2aa1348e08a6dc16b28a491b9a70396",
+        "event-59285308daefea5880b8bb505e5fd875",
+        "event-3d534e6f1ad1da271c7f14db4d256cfe",
+        "event-399a0689fd44b8e54612cf791e02463e"
+      ],
+      "executable": false,
+      "open": {
+        "base_revision": "initial",
+        "error": null,
+        "project_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "recovery_pending": false,
+        "recovery_status": "not_requested",
+        "scope": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": null
+        },
+        "session_id": "session-182f8d7b16b3513e343f9975",
+        "status": "opened",
+        "target_kind": "project-sheet"
+      },
+      "outcome": "created",
+      "project_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-399a0689fd44b8e54612cf791e02463e"
+        ],
+        "logical_request_key": "observation-create-open:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+        "result_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+        "unknown_reason": null
+      },
+      "project_ref": {
+        "authority": "ott03-xhard-observation",
+        "id": "project-8d216156186b4071313a936adb5d",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-c2aa1348e08a6dc16b28a491b9a70396"
+        ],
+        "logical_request_key": "observation-create-open",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+        "result_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Observed owner bridge",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-8d216156186b4071313a936adb5d",
+          "aliases": [
+            "project-8d216156186b4071313a936adb5d"
+          ],
+          "approach": "",
+          "budget": null,
+          "creation_request": "observation-create-open:project",
+          "custom": {},
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "project",
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "custom": {
+              "preserved": [
+                1,
+                2
+              ]
+            },
+            "otto_request": {
+              "logical_request_key": "observation-create-open",
+              "payload": {
+                "edit": {
+                  "custom": {
+                    "preserved": [
+                      1,
+                      2
+                    ]
+                  },
+                  "outcome": "durable proof",
+                  "title": "Observed owner bridge",
+                  "why_pending": "await admission"
+                },
+                "open": true,
+                "template": "blank"
+              }
+            },
+            "template": "blank",
+            "why_pending": "await admission"
+          },
+          "name": "Observed owner bridge",
+          "outcome": "durable proof",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation",
+              "credential_ref": "ott03-xhard-observation-credential"
+            },
+            "curator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation",
+              "credential_ref": "ott03-xhard-observation-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [],
+          "title": "Observed owner bridge",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-1",
+        "title": "Observed owner bridge",
+        "version": 1
+      },
+      "replayed": false
+    },
+    "after": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-create-open": {
+          "error_code": null,
+          "event_ids": [
+            "event-c2aa1348e08a6dc16b28a491b9a70396"
+          ],
+          "logical_request_key": "observation-create-open",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+          "unknown_reason": null
+        },
+        "observation-create-open:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-1747223d1b279ae856a8cc70fa80449f"
+          ],
+          "logical_request_key": "observation-create-open:actor",
+          "observed_revision": "rev-1",
+          "operation": "actor.open",
+          "replayed": false,
+          "request_digest": "5daea221cd21d81665d90b8cb303f4196c2f63e665630925426b67930b762179",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "93ae8a65a47521df45518796bc130c63",
+          "unknown_reason": null
+        },
+        "observation-create-open:materialized": {
+          "error_code": null,
+          "event_ids": [
+            "event-3d534e6f1ad1da271c7f14db4d256cfe"
+          ],
+          "logical_request_key": "observation-create-open:materialized",
+          "observed_revision": "rev-3",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "4ad4ac4d137ae036865eb0d0d08d1a5d95122e3a9dfe6b8d34c4ff045eb6d8b0",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "61938444b1e76ecceb53542a5cd5100f",
+          "unknown_reason": null
+        },
+        "observation-create-open:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-399a0689fd44b8e54612cf791e02463e"
+          ],
+          "logical_request_key": "observation-create-open:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+          "unknown_reason": null
+        },
+        "observation-create-open:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-59285308daefea5880b8bb505e5fd875"
+          ],
+          "logical_request_key": "observation-create-open:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "d0b96bd5cd06a1135960c57c9c6dfc5a7f19b6c7565cd33b4b36218b929b4b47",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0c8500791cbe852d543ed2e8c20bead3",
+          "unknown_reason": null
+        }
+      },
+      "records": {
+        "authoring_scope": {
+          "created_at": "2026-09-14T16:28:43.695180Z",
+          "edit_token": null,
+          "payload": {
+            "activity": "editing",
+            "checkout": {
+              "actor": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "allowed_fields": [],
+              "base_revision": "initial",
+              "cleanup": "not_requested",
+              "draft_snapshot_ref": {
+                "authority": "ott03-xhard-observation",
+                "id": "draft-session-182f8d7b16b3513e343f9975",
+                "kind": "authoring-snapshot",
+                "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              "fence": "fence-2c11e5ae2c94e5a13262f128",
+              "final_snapshot_ref": null,
+              "finish_claim": null,
+              "session_id": "session-182f8d7b16b3513e343f9975",
+              "state": "open",
+              "target_kind": "project-sheet",
+              "target_scope": {
+                "authority": "ott03-xhard-observation",
+                "id": "project-8d216156186b4071313a936adb5d",
+                "kind": "work.project",
+                "revision": null
+              },
+              "token": "token-2bbb46d182e8f5022a4121c3",
+              "unmanaged_writers": false
+            },
+            "checkout_path": null,
+            "draft_bytes_b64": "",
+            "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "final_bytes_b64": null,
+            "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+            "fnd_contract_revision": "fnd-02.v1.1",
+            "pending": true,
+            "project": {
+              "authority": "ott03-xhard-observation",
+              "id": "project-8d216156186b4071313a936adb5d",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "purpose": "otto",
+            "registered_files": [],
+            "scope": {
+              "authority": "ott03-xhard-observation",
+              "id": "project-8d216156186b4071313a936adb5d",
+              "kind": "work.project",
+              "revision": null
+            },
+            "type": "authoring_scope"
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "updated_at": "2026-09-14T16:28:43.699388Z",
+          "version": 3
+        },
+        "project": {
+          "created_at": "2026-09-14T16:28:43.696037Z",
+          "edit_token": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-8d216156186b4071313a936adb5d",
+            "aliases": [
+              "project-8d216156186b4071313a936adb5d"
+            ],
+            "approach": "",
+            "budget": null,
+            "creation_request": "observation-create-open:project",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "custom": {
+                "preserved": [
+                  1,
+                  2
+                ]
+              },
+              "otto_request": {
+                "logical_request_key": "observation-create-open",
+                "payload": {
+                  "edit": {
+                    "custom": {
+                      "preserved": [
+                        1,
+                        2
+                      ]
+                    },
+                    "outcome": "durable proof",
+                    "title": "Observed owner bridge",
+                    "why_pending": "await admission"
+                  },
+                  "open": true,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await admission"
+            },
+            "name": "Observed owner bridge",
+            "outcome": "durable proof",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "curator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Observed owner bridge",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "updated_at": "2026-09-14T16:28:43.696037Z",
+          "version": 1
+        }
+      }
+    },
+    "before": {
+      "event_count": 0,
+      "events": [],
+      "receipts": {
+        "observation-create-open": null,
+        "observation-create-open:actor": null,
+        "observation-create-open:materialized": null,
+        "observation-create-open:project": null,
+        "observation-create-open:project-created": null
+      },
+      "records": {}
+    },
+    "conflict_action": {
+      "error": {
+        "code": "replay_conflict",
+        "message": "logical request key was reused with a changed request digest",
+        "operation": "work.pending.create"
+      },
+      "event_ids": [],
+      "outcome": "error",
+      "replayed": false
+    },
+    "conflict_after": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-create-open": {
+          "error_code": null,
+          "event_ids": [
+            "event-c2aa1348e08a6dc16b28a491b9a70396"
+          ],
+          "logical_request_key": "observation-create-open",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+          "unknown_reason": null
+        },
+        "observation-create-open:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-1747223d1b279ae856a8cc70fa80449f"
+          ],
+          "logical_request_key": "observation-create-open:actor",
+          "observed_revision": "rev-1",
+          "operation": "actor.open",
+          "replayed": false,
+          "request_digest": "5daea221cd21d81665d90b8cb303f4196c2f63e665630925426b67930b762179",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "93ae8a65a47521df45518796bc130c63",
+          "unknown_reason": null
+        },
+        "observation-create-open:materialized": {
+          "error_code": null,
+          "event_ids": [
+            "event-3d534e6f1ad1da271c7f14db4d256cfe"
+          ],
+          "logical_request_key": "observation-create-open:materialized",
+          "observed_revision": "rev-3",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "4ad4ac4d137ae036865eb0d0d08d1a5d95122e3a9dfe6b8d34c4ff045eb6d8b0",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "61938444b1e76ecceb53542a5cd5100f",
+          "unknown_reason": null
+        },
+        "observation-create-open:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-399a0689fd44b8e54612cf791e02463e"
+          ],
+          "logical_request_key": "observation-create-open:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+          "unknown_reason": null
+        },
+        "observation-create-open:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-59285308daefea5880b8bb505e5fd875"
+          ],
+          "logical_request_key": "observation-create-open:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "d0b96bd5cd06a1135960c57c9c6dfc5a7f19b6c7565cd33b4b36218b929b4b47",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0c8500791cbe852d543ed2e8c20bead3",
+          "unknown_reason": null
+        }
+      },
+      "records": {}
+    },
+    "conflict_before": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-create-open": {
+          "error_code": null,
+          "event_ids": [
+            "event-c2aa1348e08a6dc16b28a491b9a70396"
+          ],
+          "logical_request_key": "observation-create-open",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+          "unknown_reason": null
+        },
+        "observation-create-open:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-1747223d1b279ae856a8cc70fa80449f"
+          ],
+          "logical_request_key": "observation-create-open:actor",
+          "observed_revision": "rev-1",
+          "operation": "actor.open",
+          "replayed": false,
+          "request_digest": "5daea221cd21d81665d90b8cb303f4196c2f63e665630925426b67930b762179",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "93ae8a65a47521df45518796bc130c63",
+          "unknown_reason": null
+        },
+        "observation-create-open:materialized": {
+          "error_code": null,
+          "event_ids": [
+            "event-3d534e6f1ad1da271c7f14db4d256cfe"
+          ],
+          "logical_request_key": "observation-create-open:materialized",
+          "observed_revision": "rev-3",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "4ad4ac4d137ae036865eb0d0d08d1a5d95122e3a9dfe6b8d34c4ff045eb6d8b0",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "61938444b1e76ecceb53542a5cd5100f",
+          "unknown_reason": null
+        },
+        "observation-create-open:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-399a0689fd44b8e54612cf791e02463e"
+          ],
+          "logical_request_key": "observation-create-open:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+          "unknown_reason": null
+        },
+        "observation-create-open:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-59285308daefea5880b8bb505e5fd875"
+          ],
+          "logical_request_key": "observation-create-open:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "d0b96bd5cd06a1135960c57c9c6dfc5a7f19b6c7565cd33b4b36218b929b4b47",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0c8500791cbe852d543ed2e8c20bead3",
+          "unknown_reason": null
+        }
+      },
+      "records": {}
+    },
+    "fresh_after_replay": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-create-open": {
+          "error_code": null,
+          "event_ids": [
+            "event-c2aa1348e08a6dc16b28a491b9a70396"
+          ],
+          "logical_request_key": "observation-create-open",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+          "unknown_reason": null
+        },
+        "observation-create-open:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-1747223d1b279ae856a8cc70fa80449f"
+          ],
+          "logical_request_key": "observation-create-open:actor",
+          "observed_revision": "rev-1",
+          "operation": "actor.open",
+          "replayed": false,
+          "request_digest": "5daea221cd21d81665d90b8cb303f4196c2f63e665630925426b67930b762179",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "93ae8a65a47521df45518796bc130c63",
+          "unknown_reason": null
+        },
+        "observation-create-open:materialized": {
+          "error_code": null,
+          "event_ids": [
+            "event-3d534e6f1ad1da271c7f14db4d256cfe"
+          ],
+          "logical_request_key": "observation-create-open:materialized",
+          "observed_revision": "rev-3",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "4ad4ac4d137ae036865eb0d0d08d1a5d95122e3a9dfe6b8d34c4ff045eb6d8b0",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "61938444b1e76ecceb53542a5cd5100f",
+          "unknown_reason": null
+        },
+        "observation-create-open:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-399a0689fd44b8e54612cf791e02463e"
+          ],
+          "logical_request_key": "observation-create-open:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+          "unknown_reason": null
+        },
+        "observation-create-open:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-59285308daefea5880b8bb505e5fd875"
+          ],
+          "logical_request_key": "observation-create-open:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "d0b96bd5cd06a1135960c57c9c6dfc5a7f19b6c7565cd33b4b36218b929b4b47",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0c8500791cbe852d543ed2e8c20bead3",
+          "unknown_reason": null
+        }
+      },
+      "records": {
+        "authoring_scope": {
+          "created_at": "2026-09-14T16:28:43.695180Z",
+          "edit_token": null,
+          "payload": {
+            "activity": "editing",
+            "checkout": {
+              "actor": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "allowed_fields": [],
+              "base_revision": "initial",
+              "cleanup": "not_requested",
+              "draft_snapshot_ref": {
+                "authority": "ott03-xhard-observation",
+                "id": "draft-session-182f8d7b16b3513e343f9975",
+                "kind": "authoring-snapshot",
+                "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              "fence": "fence-2c11e5ae2c94e5a13262f128",
+              "final_snapshot_ref": null,
+              "finish_claim": null,
+              "session_id": "session-182f8d7b16b3513e343f9975",
+              "state": "open",
+              "target_kind": "project-sheet",
+              "target_scope": {
+                "authority": "ott03-xhard-observation",
+                "id": "project-8d216156186b4071313a936adb5d",
+                "kind": "work.project",
+                "revision": null
+              },
+              "token": "token-2bbb46d182e8f5022a4121c3",
+              "unmanaged_writers": false
+            },
+            "checkout_path": null,
+            "draft_bytes_b64": "",
+            "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "final_bytes_b64": null,
+            "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+            "fnd_contract_revision": "fnd-02.v1.1",
+            "pending": true,
+            "project": {
+              "authority": "ott03-xhard-observation",
+              "id": "project-8d216156186b4071313a936adb5d",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "purpose": "otto",
+            "registered_files": [],
+            "scope": {
+              "authority": "ott03-xhard-observation",
+              "id": "project-8d216156186b4071313a936adb5d",
+              "kind": "work.project",
+              "revision": null
+            },
+            "type": "authoring_scope"
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "updated_at": "2026-09-14T16:28:43.699388Z",
+          "version": 3
+        },
+        "project": {
+          "created_at": "2026-09-14T16:28:43.696037Z",
+          "edit_token": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-8d216156186b4071313a936adb5d",
+            "aliases": [
+              "project-8d216156186b4071313a936adb5d"
+            ],
+            "approach": "",
+            "budget": null,
+            "creation_request": "observation-create-open:project",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "custom": {
+                "preserved": [
+                  1,
+                  2
+                ]
+              },
+              "otto_request": {
+                "logical_request_key": "observation-create-open",
+                "payload": {
+                  "edit": {
+                    "custom": {
+                      "preserved": [
+                        1,
+                        2
+                      ]
+                    },
+                    "outcome": "durable proof",
+                    "title": "Observed owner bridge",
+                    "why_pending": "await admission"
+                  },
+                  "open": true,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await admission"
+            },
+            "name": "Observed owner bridge",
+            "outcome": "durable proof",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "curator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Observed owner bridge",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "updated_at": "2026-09-14T16:28:43.696037Z",
+          "version": 1
+        }
+      }
+    },
+    "fresh_before_replay": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-create-open": {
+          "error_code": null,
+          "event_ids": [
+            "event-c2aa1348e08a6dc16b28a491b9a70396"
+          ],
+          "logical_request_key": "observation-create-open",
+          "observed_revision": "rev-1",
+          "operation": "open",
+          "replayed": false,
+          "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+          "unknown_reason": null
+        },
+        "observation-create-open:actor": {
+          "error_code": null,
+          "event_ids": [
+            "event-1747223d1b279ae856a8cc70fa80449f"
+          ],
+          "logical_request_key": "observation-create-open:actor",
+          "observed_revision": "rev-1",
+          "operation": "actor.open",
+          "replayed": false,
+          "request_digest": "5daea221cd21d81665d90b8cb303f4196c2f63e665630925426b67930b762179",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": null
+          },
+          "transaction_id": "93ae8a65a47521df45518796bc130c63",
+          "unknown_reason": null
+        },
+        "observation-create-open:materialized": {
+          "error_code": null,
+          "event_ids": [
+            "event-3d534e6f1ad1da271c7f14db4d256cfe"
+          ],
+          "logical_request_key": "observation-create-open:materialized",
+          "observed_revision": "rev-3",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "4ad4ac4d137ae036865eb0d0d08d1a5d95122e3a9dfe6b8d34c4ff045eb6d8b0",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "61938444b1e76ecceb53542a5cd5100f",
+          "unknown_reason": null
+        },
+        "observation-create-open:project": {
+          "error_code": null,
+          "event_ids": [
+            "event-399a0689fd44b8e54612cf791e02463e"
+          ],
+          "logical_request_key": "observation-create-open:project",
+          "observed_revision": "rev-1",
+          "operation": "work.project.create",
+          "replayed": false,
+          "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": null
+          },
+          "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+          "unknown_reason": null
+        },
+        "observation-create-open:project-created": {
+          "error_code": null,
+          "event_ids": [
+            "event-59285308daefea5880b8bb505e5fd875"
+          ],
+          "logical_request_key": "observation-create-open:project-created",
+          "observed_revision": "rev-2",
+          "operation": "metadata",
+          "replayed": false,
+          "request_digest": "d0b96bd5cd06a1135960c57c9c6dfc5a7f19b6c7565cd33b4b36218b929b4b47",
+          "result_ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          },
+          "status": "committed",
+          "target": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": null
+          },
+          "transaction_id": "0c8500791cbe852d543ed2e8c20bead3",
+          "unknown_reason": null
+        }
+      },
+      "records": {
+        "authoring_scope": {
+          "created_at": "2026-09-14T16:28:43.695180Z",
+          "edit_token": null,
+          "payload": {
+            "activity": "editing",
+            "checkout": {
+              "actor": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "allowed_fields": [],
+              "base_revision": "initial",
+              "cleanup": "not_requested",
+              "draft_snapshot_ref": {
+                "authority": "ott03-xhard-observation",
+                "id": "draft-session-182f8d7b16b3513e343f9975",
+                "kind": "authoring-snapshot",
+                "revision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              "fence": "fence-2c11e5ae2c94e5a13262f128",
+              "final_snapshot_ref": null,
+              "finish_claim": null,
+              "session_id": "session-182f8d7b16b3513e343f9975",
+              "state": "open",
+              "target_kind": "project-sheet",
+              "target_scope": {
+                "authority": "ott03-xhard-observation",
+                "id": "project-8d216156186b4071313a936adb5d",
+                "kind": "work.project",
+                "revision": null
+              },
+              "token": "token-2bbb46d182e8f5022a4121c3",
+              "unmanaged_writers": false
+            },
+            "checkout_path": null,
+            "draft_bytes_b64": "",
+            "draft_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "final_bytes_b64": null,
+            "fnd_contract_digest": "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb8bd300264",
+            "fnd_contract_revision": "fnd-02.v1.1",
+            "pending": true,
+            "project": {
+              "authority": "ott03-xhard-observation",
+              "id": "project-8d216156186b4071313a936adb5d",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "purpose": "otto",
+            "registered_files": [],
+            "scope": {
+              "authority": "ott03-xhard-observation",
+              "id": "project-8d216156186b4071313a936adb5d",
+              "kind": "work.project",
+              "revision": null
+            },
+            "type": "authoring_scope"
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          },
+          "updated_at": "2026-09-14T16:28:43.699388Z",
+          "version": 3
+        },
+        "project": {
+          "created_at": "2026-09-14T16:28:43.696037Z",
+          "edit_token": null,
+          "payload": {
+            "acceptance": {},
+            "alias": "project-8d216156186b4071313a936adb5d",
+            "aliases": [
+              "project-8d216156186b4071313a936adb5d"
+            ],
+            "approach": "",
+            "budget": null,
+            "creation_request": "observation-create-open:project",
+            "custom": {},
+            "dependencies": [],
+            "documents": [],
+            "execution": null,
+            "external_action": null,
+            "gate": null,
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "project",
+            "lifecycle": "pending",
+            "manager": null,
+            "metadata": {
+              "custom": {
+                "preserved": [
+                  1,
+                  2
+                ]
+              },
+              "otto_request": {
+                "logical_request_key": "observation-create-open",
+                "payload": {
+                  "edit": {
+                    "custom": {
+                      "preserved": [
+                        1,
+                        2
+                      ]
+                    },
+                    "outcome": "durable proof",
+                    "title": "Observed owner bridge",
+                    "why_pending": "await admission"
+                  },
+                  "open": true,
+                  "template": "blank"
+                }
+              },
+              "template": "blank",
+              "why_pending": "await admission"
+            },
+            "name": "Observed owner bridge",
+            "outcome": "durable proof",
+            "parent": null,
+            "project_ref": null,
+            "protocol": null,
+            "provenance": {
+              "creator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              },
+              "curator": {
+                "actor": "manager",
+                "authenticated": true,
+                "authority": "ott03-xhard-observation",
+                "credential_ref": "ott03-xhard-observation-credential"
+              }
+            },
+            "readiness": {
+              "dispatch": false,
+              "ready": false,
+              "status": "not-evaluated"
+            },
+            "schema_revision": "work.v1",
+            "scope": "",
+            "tasks": [],
+            "title": "Observed owner bridge",
+            "worker": null
+          },
+          "ref": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          },
+          "updated_at": "2026-09-14T16:28:43.696037Z",
+          "version": 1
+        }
+      }
+    },
+    "occupied_action": {
+      "event_ids": [],
+      "executable": false,
+      "open": {
+        "base_revision": null,
+        "error": "actor already occupies a scope",
+        "project_ref": null,
+        "recovery_pending": false,
+        "recovery_status": "not_requested",
+        "scope": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-9e376e415c37ce78327393903cf0",
+          "kind": "work.project",
+          "revision": null
+        },
+        "session_id": null,
+        "status": "actor_occupied",
+        "target_kind": null
+      },
+      "outcome": "occupied",
+      "project_receipt": null,
+      "project_ref": null,
+      "receipt": null,
+      "replayed": false
+    },
+    "occupied_after": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-occupied": null,
+        "observation-occupied:project": null
+      },
+      "records": {}
+    },
+    "occupied_before": {
+      "event_count": 5,
+      "events": [
+        {
+          "event_id": "event-1747223d1b279ae856a8cc70fa80449f",
+          "event_type": "authoring.actor.open",
+          "operation": "actor.open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "350560b92488e03ba9b086d11c73f578",
+            "kind": "authoring-actor",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-c2aa1348e08a6dc16b28a491b9a70396",
+          "event_type": "authoring.open",
+          "operation": "open",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-1"
+          }
+        },
+        {
+          "event_id": "event-59285308daefea5880b8bb505e5fd875",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-2"
+          }
+        },
+        {
+          "event_id": "event-3d534e6f1ad1da271c7f14db4d256cfe",
+          "event_type": "authoring.metadata",
+          "operation": "metadata",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "authoring-scope",
+            "revision": "rev-3"
+          }
+        },
+        {
+          "event_id": "event-399a0689fd44b8e54612cf791e02463e",
+          "event_type": "work.project.created",
+          "operation": "work.project.create",
+          "subject": {
+            "authority": "ott03-xhard-observation",
+            "id": "project-8d216156186b4071313a936adb5d",
+            "kind": "work.project",
+            "revision": "rev-1"
+          }
+        }
+      ],
+      "receipts": {
+        "observation-occupied": null,
+        "observation-occupied:project": null
+      },
+      "records": {}
+    },
+    "replay_action": {
+      "event_ids": [
+        "event-1747223d1b279ae856a8cc70fa80449f",
+        "event-c2aa1348e08a6dc16b28a491b9a70396",
+        "event-59285308daefea5880b8bb505e5fd875",
+        "event-3d534e6f1ad1da271c7f14db4d256cfe",
+        "event-399a0689fd44b8e54612cf791e02463e"
+      ],
+      "executable": false,
+      "open": {
+        "base_revision": "initial",
+        "error": null,
+        "project_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "recovery_pending": false,
+        "recovery_status": "not_requested",
+        "scope": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": null
+        },
+        "session_id": "session-182f8d7b16b3513e343f9975",
+        "status": "replayed",
+        "target_kind": "project-sheet"
+      },
+      "outcome": "replayed",
+      "project_receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-399a0689fd44b8e54612cf791e02463e"
+        ],
+        "logical_request_key": "observation-create-open:project",
+        "observed_revision": "rev-1",
+        "operation": "work.project.create",
+        "replayed": false,
+        "request_digest": "a8d3acd08829d52db014232ab125873245a734f764cdbbcf75bf09e9ee1cf9a3",
+        "result_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": null
+        },
+        "transaction_id": "2317cac19fafa15dffde57b3eb1ea971",
+        "unknown_reason": null
+      },
+      "project_ref": {
+        "authority": "ott03-xhard-observation",
+        "id": "project-8d216156186b4071313a936adb5d",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-c2aa1348e08a6dc16b28a491b9a70396"
+        ],
+        "logical_request_key": "observation-create-open",
+        "observed_revision": "rev-1",
+        "operation": "open",
+        "replayed": false,
+        "request_digest": "69e3d8e93280fa751bf4ff56bedad6806471b5be3282e6bf8c0970f0a2501c57",
+        "result_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "authoring-scope",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "authoring-scope",
+          "revision": null
+        },
+        "transaction_id": "f2439c46dbbc970504c0a4d37334eb2e",
+        "unknown_reason": null
+      },
+      "record": {
+        "kind": "project",
+        "lifecycle": "pending",
+        "name": "Observed owner bridge",
+        "payload": {
+          "acceptance": {},
+          "alias": "project-8d216156186b4071313a936adb5d",
+          "aliases": [
+            "project-8d216156186b4071313a936adb5d"
+          ],
+          "approach": "",
+          "budget": null,
+          "creation_request": "observation-create-open:project",
+          "custom": {},
+          "dependencies": [],
+          "documents": [],
+          "execution": null,
+          "external_action": null,
+          "gate": null,
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "project",
+          "lifecycle": "pending",
+          "manager": null,
+          "metadata": {
+            "custom": {
+              "preserved": [
+                1,
+                2
+              ]
+            },
+            "otto_request": {
+              "logical_request_key": "observation-create-open",
+              "payload": {
+                "edit": {
+                  "custom": {
+                    "preserved": [
+                      1,
+                      2
+                    ]
+                  },
+                  "outcome": "durable proof",
+                  "title": "Observed owner bridge",
+                  "why_pending": "await admission"
+                },
+                "open": true,
+                "template": "blank"
+              }
+            },
+            "template": "blank",
+            "why_pending": "await admission"
+          },
+          "name": "Observed owner bridge",
+          "outcome": "durable proof",
+          "parent": null,
+          "project_ref": null,
+          "protocol": null,
+          "provenance": {
+            "creator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation",
+              "credential_ref": "ott03-xhard-observation-credential"
+            },
+            "curator": {
+              "actor": "manager",
+              "authenticated": true,
+              "authority": "ott03-xhard-observation",
+              "credential_ref": "ott03-xhard-observation-credential"
+            }
+          },
+          "readiness": {
+            "dispatch": false,
+            "ready": false,
+            "status": "not-evaluated"
+          },
+          "schema_revision": "work.v1",
+          "scope": "",
+          "tasks": [],
+          "title": "Observed owner bridge",
+          "worker": null
+        },
+        "project_ref": {
+          "authority": "ott03-xhard-observation",
+          "id": "project-8d216156186b4071313a936adb5d",
+          "kind": "work.project",
+          "revision": "rev-1"
+        },
+        "readiness": {
+          "dispatch": false,
+          "ready": false,
+          "status": "not-evaluated"
+        },
+        "revision": "rev-1",
+        "title": "Observed owner bridge",
+        "version": 1
+      },
+      "replayed": true
+    }
+  }
+}

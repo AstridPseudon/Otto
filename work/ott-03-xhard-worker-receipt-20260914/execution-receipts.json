@@ -1,0 +1,121 @@
+{
+  "task": "OTT-03-XHARD-owner-bootstrap-bridge",
+  "route": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high",
+    "write_mode": "dangerously-bypass-approvals-and-sandbox",
+    "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker",
+    "thread_id": "01a0a0b2-0857-79c2-8c7d-07776d142c41",
+    "pty_session_id": 31782,
+    "launch_start_utc": "2026-09-14T16:13:36Z",
+    "source": "work/ott-03-xhard-launch-receipt-20260914.json",
+    "source_sha256": "15939fea1175a72640248c3fc8ae0b7c9c71f8c89f1efb4624014b55ae92ea2e"
+  },
+  "inputs": {
+    "brief": {
+      "path": "work/ott-03-xhard-brief-20260914.md",
+      "sha256": "6efc3d8f6e8628a7c86ba8a1f298e126746f403acc6247f5c85e4c4300be07db"
+    },
+    "manifest": {
+      "path": "work/ott-03-xhard-input-manifest-20260914.json",
+      "sha256": "d6ab6dff48170365855232e14670b6173eb5be76df24715341462e24879f23ea"
+    },
+    "accepted_herzchen_wheel": {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+      "sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
+    }
+  },
+  "implementation": {
+    "commit": "b3840b7c4eeaca0590bf9b0def4fd69492b358cd",
+    "tree": "7a8253653451659904fa495aeb1ba325df087086",
+    "commit_subject": "feat(otto): add finite owner create-open bridge"
+  },
+  "artifacts": {
+    "venv": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv",
+    "otto_wheel": {
+      "path": "work/ott-03-xhard-worker-receipt-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+      "sha256": "e82a61179602667ebfa11e82279ec8b4af4edfbb8b39c951d8163fca0109a5d6"
+    },
+    "durable_observations_sha256": "bf5b8bebbb42a8a30042b0c4b33a1343c2ec955d47c0d8a2945c1c3e8074f070",
+    "observation_harness_sha256": "be5acade3cd179fa315e8a291f89a32175bd9db0e4c763b06f5b31649b8eab71",
+    "durable_proof_db_sha256": "f0ccbc0b5079649492b69afc3923b8d84011193cf97f44a8d921c433be203bb0",
+    "materialization_failure_db_sha256": "fb3a0798ce7997320bcfa6d2245fe24ceec4f568dee3310005caadce1e51b135"
+  },
+  "commands": [
+    {
+      "name": "accepted_prior_25_source_baseline",
+      "command": "env -u PYTHONHOME PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 work/ott-03-xhard-worker-receipt-20260914/venv/bin/python -m pytest -q -c /dev/null tests/otto/test_adapters.py tests/otto/test_host_adapter_usage.py tests/otto/test_intake_roles.py",
+      "shell_pid": 56439,
+      "start_utc": "2026-09-14T16:20:13Z",
+      "end_utc": "2026-09-14T16:20:14Z",
+      "exit_code": 0,
+      "result": "25 passed, 1 pytest cache warning"
+    },
+    {
+      "name": "wheel_build",
+      "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-03-xhard-worker-receipt-20260914/venv/bin/python -m pip wheel /tmp/otto-ott03-xhard-build.AbI4kL --no-deps --no-build-isolation -w work/ott-03-xhard-worker-receipt-20260914/dist",
+      "shell_pid": 56894,
+      "process_pid": 56902,
+      "start_utc": "2026-09-14T16:26:59Z",
+      "end_utc": "2026-09-14T16:26:59Z",
+      "exit_code": 0
+    },
+    {
+      "name": "wheel_install",
+      "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-03-xhard-worker-receipt-20260914/venv/bin/python -m pip install --force-reinstall --no-deps work/ott-03-xhard-worker-receipt-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl",
+      "shell_pid": 56929,
+      "process_pid": 56933,
+      "start_utc": "2026-09-14T16:27:06Z",
+      "end_utc": "2026-09-14T16:27:06Z",
+      "exit_code": 0
+    },
+    {
+      "name": "source_focused_suite",
+      "command": "env -u PYTHONHOME PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 work/ott-03-xhard-worker-receipt-20260914/venv/bin/python -m pytest -q -c /dev/null tests/otto/test_adapters.py tests/otto/test_host_adapter_usage.py tests/otto/test_intake_roles.py tests/otto/test_owner_bootstrap.py",
+      "shell_pid": 56948,
+      "process_pid": 56952,
+      "start_utc": "2026-09-14T16:27:16Z",
+      "end_utc": "2026-09-14T16:27:17Z",
+      "exit_code": 0,
+      "result": "31 passed, 1 pytest cache warning"
+    },
+    {
+      "name": "installed_focused_suite",
+      "command": "env -u PYTHONPATH -u PYTHONHOME PYTHONDONTWRITEBYTECODE=1 work/ott-03-xhard-worker-receipt-20260914/venv/bin/python -m pytest -q -c /dev/null tests/otto/test_adapters.py tests/otto/test_host_adapter_usage.py tests/otto/test_intake_roles.py tests/otto/test_owner_bootstrap.py",
+      "shell_pid": 56959,
+      "process_pid": 56963,
+      "start_utc": "2026-09-14T16:27:24Z",
+      "end_utc": "2026-09-14T16:27:24Z",
+      "exit_code": 0,
+      "result": "31 passed, 1 pytest cache warning"
+    },
+    {
+      "name": "installed_origin_probe",
+      "command": "env -u PYTHONPATH -u PYTHONHOME work/ott-03-xhard-worker-receipt-20260914/venv/bin/python - <<'PY' ... import/package origin probe ... PY",
+      "process_pid": 56975,
+      "exit_code": 0
+    },
+    {
+      "name": "installed_durable_observation",
+      "command": "env -u PYTHONPATH -u PYTHONHOME PYTHONDONTWRITEBYTECODE=1 work/ott-03-xhard-worker-receipt-20260914/venv/bin/python work/ott-03-xhard-worker-receipt-20260914/observation_harness.py",
+      "process_pid": 57050,
+      "start_utc": "2026-09-14T16:28:43.663940+00:00",
+      "end_utc": "2026-09-14T16:28:43.741268+00:00",
+      "exit_code": 0
+    }
+  ],
+  "installed_origins": {
+    "probe_pid": 56975,
+    "python": "3.11.16",
+    "executable": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/bin/python",
+    "otto": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/__init__.py",
+    "owner_bootstrap": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/lib/python3.11/site-packages/otto/portfolio/owner_bootstrap.py",
+    "herzchen": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/lib/python3.11/site-packages/herzchen/__init__.py",
+    "pytest": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott03-xhard-worker/work/ott-03-xhard-worker-receipt-20260914/venv/lib/python3.11/site-packages/pytest/__init__.py",
+    "packages": {
+      "otto-local-candidate": "0.0.0",
+      "herzchen-contracts": "0.1.0",
+      "pytest": "9.1.1"
+    }
+  }
+}

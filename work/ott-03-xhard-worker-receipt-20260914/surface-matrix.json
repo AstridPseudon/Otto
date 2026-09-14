@@ -1,0 +1,94 @@
+{
+  "candidate": {
+    "implementation_commit": "b3840b7c4eeaca0590bf9b0def4fd69492b358cd",
+    "implementation_tree": "7a8253653451659904fa495aeb1ba325df087086",
+    "base_commit": "c7c9cff4bf2780e4bb74db028bb6ad29d0d6d03c",
+    "base_tree": "4f7c369c155f7338559bf351b0f82e30bc4523fb"
+  },
+  "consumer_retention": {
+    "port": "SerializedCommandClient",
+    "reader": "SerializedReaderClient",
+    "binding": "HerzchenBindingConfig",
+    "sheet_port": "SerializedCommandClient",
+    "content_port": "SerializedCommandClient",
+    "assignments_port": "SerializedCommandClient",
+    "authoring_port": "SerializedCommandClient",
+    "create_open_port": "SerializedCommandClient"
+  },
+  "surfaces": [
+    {
+      "surface": "pending create/read/edit",
+      "status": "supported",
+      "owner": "accepted Herzchen WorkGraph",
+      "consumer_entrypoints": ["work.pending.create", "work.pending.read", "work.pending.edit"],
+      "invariants": ["pending", "dispatch=false", "sparse unknown metadata preserved", "canonical replay/conflict"]
+    },
+    {
+      "surface": "revisit/prerequisite observation",
+      "status": "supported",
+      "owner": "accepted Herzchen WorkGraph",
+      "consumer_entrypoints": ["work.pending.revisit", "work.pending.prerequisite-satisfied"],
+      "invariants": ["attention/readiness only", "no auto-dispatch", "executable=false"]
+    },
+    {
+      "surface": "ProjectSheet admission",
+      "status": "supported",
+      "owner": "accepted Herzchen ProjectSheet.apply",
+      "consumer_entrypoints": ["work.pending.admission"],
+      "invariants": ["explicit manager choice", "executable=false"]
+    },
+    {
+      "surface": "parent/manager/executor assignment",
+      "status": "supported",
+      "owner": "accepted Herzchen ResponsibilityAssignments.assign",
+      "consumer_entrypoints": ["work.responsibility.assign"],
+      "invariants": ["one parent", "one manager", "one to sixteen executors", "canonical replay"]
+    },
+    {
+      "surface": "content document create/link",
+      "status": "supported",
+      "owner": "accepted Herzchen ContentCommandHandler",
+      "consumer_entrypoints": ["work.pending.document.create", "work.pending.document.link"],
+      "invariants": ["typed document and association", "canonical receipt/event"]
+    },
+    {
+      "surface": "authoring open/reopen/occupied/replay",
+      "status": "supported",
+      "owner": "accepted Herzchen AuthoringSessionService.open",
+      "consumer_entrypoints": ["work.pending.open"],
+      "invariants": ["same durable project", "exclusive actor/scope", "same session on replay"]
+    },
+    {
+      "surface": "atomic pending create-and-open",
+      "status": "supported with trusted owner bootstrap",
+      "owner": "PortfolioOwnerBootstrap -> finite create_pending_and_open -> AuthoringSessionService.create_and_open -> fixed ProjectSheet.create_pending callback",
+      "consumer_entrypoints": ["work.pending.create with open=true"],
+      "consumer_endpoint_set": ["create_pending_and_open"],
+      "owner_only_endpoint_not_transported": "AuthoringSessionService.create_and_open",
+      "invariants": [
+        "occupation checked before ProjectSheet callback",
+        "logical request bound into authoring digest",
+        "project key is request_id:project",
+        "project link survives materialization failure",
+        "identical replay creates no events",
+        "changed same-key input returns replay_conflict with zero delta",
+        "consumer receives no Callable or owner service"
+      ],
+      "observed_success_events": 5,
+      "observed_failure_events_before_reopen": 6,
+      "materialization_failure_status": "saved_project_edit_not_opened"
+    },
+    {
+      "surface": "safe responsibility handoff",
+      "status": "unchanged historical gap; not claimed",
+      "reason": "The accepted finite reader/port still has no bounded lookup from the Otto handoff request to the current assignment target; this continuation did not fabricate one."
+    },
+    {
+      "surface": "live host/Astrid launch/session/AST",
+      "status": "out of scope",
+      "reason": "This worker changed only the OTT-03 portfolio owner/bootstrap composition."
+    }
+  ],
+  "required_xhard_gaps": [],
+  "acceptance_claim": "The XHARD owner/bootstrap create-and-open gap is closed by this continuation. This file does not claim broader OTT-03 program acceptance or close the historical safe-handoff/EX-HOST rows."
+}
