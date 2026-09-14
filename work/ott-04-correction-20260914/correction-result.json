@@ -1,0 +1,61 @@
+{
+  "task": "OTT-04",
+  "status": "correction-proofs-green",
+  "baseline": {
+    "current_head_before_correction": {"commit": "fc800b36864f48acf0c1a12096756c5585ffb76f", "tree": "f24088ee07dce958c8ba82460cac45bca4b110f5"},
+    "historical_implementation": "e69d90f995ff58ed3306e48c1fba28562d608972",
+    "historical_evidence": "ac85ba906cbc5b7a56638bd735a924c6aae2b5a3",
+    "historical_ex_host_supplement": "f44547e7f24c19823dd187e33f52599a81e1af32",
+    "historical_catalog_assessment": "fc800b36864f48acf0c1a12096756c5585ffb76f"
+  },
+  "correction_commit": {"commit": "9dbcc871b7894686c3ee40fd5f9f5245f2db1e4d", "tree": "6694f5dac1a15ab22d03086efa5f57eacc5aea7d"},
+  "custody": {
+    "manifest": {"path": "work/ott-04-input-manifest-20260914.json", "sha256": "65dc2f0476043a91ea8e9f86657794b25fef30e7946bab4cd13daa33f178d89f"},
+    "otto_ancestor": {"commit": "0806be099eecdc9b861677ef7e71f7b54d2789a6", "tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec"},
+    "product": {"commit": "aea1ac6471784256a408daaef324dab9f5cba571", "tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875"},
+    "herzchen": {"commit": "b68d8f59712275229c24757664ca30d807d39e4a", "tree": "ee1614fc37fdd096fb9640702e124e28a391d170", "wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"},
+    "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726"
+  },
+  "route": {"model": "gpt-5.6-luna", "reasoning": "high", "launch_receipt": "work/ott-04-correction-launch-20260914/launch-receipt.json", "exec_session_id": 19245},
+  "fresh_wheels": {"otto_sha256": "3f4193936dec855faff12587f8652f541c52ce9b242b0dbcb2ab0210e84504c5", "herzchen_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"},
+  "owner_boundary": {
+    "shipped_api": ["_DueRecordOwnerEngine", "issue_store_due_record_port", "StoreDueRecordPort"],
+    "finite_endpoints": ["read_due", "save_due"],
+    "owner_operations": ["get_identity", "get_receipt", "mutate"],
+    "consumer_audit": "has_writer=false, has_store=false, no connection, no database transport path; port dir contains only read_due/save_due/transport",
+    "proof": "work/ott-04-correction-20260914/observation-installed.json"
+  },
+  "amendment_composition": {
+    "shipped_api": ["_AmendmentOwnerEngine", "issue_store_amendment_port", "SerializedAmendmentPort"],
+    "finite_endpoints": ["apply_amendment", "read_views"],
+    "owner_public_calls": ["ProjectSheet.apply", "ProjectSheet.pin_assignment_route", "ResponsibilityAssignments.get", "ContextPacketService.notify_amendment"],
+    "consumer_audit": "has_callback=false, has_store=false; finite client endpoint set only",
+    "proof": "work/ott-04-correction-20260914/observation-installed.json"
+  },
+  "historical_replay": {
+    "request_A": "request-A",
+    "request_B": "request-B",
+    "replay_result_version": 1,
+    "replay_result_ref_revision": "rev-1",
+    "live_read_after_B_version": 2,
+    "replay_event_delta": 0,
+    "changed_input_rejection": "InputChangedError; event delta 0",
+    "stale_cas_rejection": "StateConflictError; event delta 0",
+    "proof": "work/ott-04-correction-20260914/observation-installed.json"
+  },
+  "validation": {
+    "source_affected_file": {"command": "PYTHONPATH=src venv/bin/python -m pytest -q tests/otto/test_continuity.py", "passed": 8, "failed": 0, "return_code": 0},
+    "installed_selection": {"command": "env -u PYTHONPATH -u PYTHONHOME venv/bin/python pytest.main(two-real-product-tests)", "passed": 2, "failed": 0, "return_code": 0},
+    "same_process_origins": "work/ott-04-correction-20260914/logs/installed-focused.txt",
+    "raw_source_observation": "work/ott-04-correction-20260914/observation-source.json",
+    "raw_installed_observation": "work/ott-04-correction-20260914/observation-installed.json",
+    "prior_campaign": "53 source / 53 installed preserved; no broad unchanged suite rerun",
+    "wheel_hashes": "work/ott-04-correction-20260914/wheel-sha256.txt"
+  },
+  "remaining_original_ott04_boundary": {
+    "correction_scope": "none; both reported shipped-boundary defects are closed",
+    "fixture_only": "fixture ports remain labeled mechanical coverage and are not used as the durable-host proof",
+    "ott06": "no real-agent rehearsal, launch side effect, scheduler, callback transport, private SQL writer, inbox, or side ledger",
+    "historical_receipts": "preserved; prior evidence was not rewritten or deleted"
+  }
+}

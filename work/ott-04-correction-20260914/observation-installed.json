@@ -1,0 +1,865 @@
+{
+  "amendment": {
+    "boundary": {
+      "client_dir": [
+        "apply_amendment",
+        "read_views",
+        "transport"
+      ],
+      "has_callback": false,
+      "has_store": false,
+      "transport_endpoints": [
+        "apply_amendment",
+        "read_views"
+      ]
+    },
+    "dispatch_event_present": false,
+    "event_types": [
+      "work.assignment.created",
+      "work.assignment.route-pinned",
+      "dat.context.attention.created",
+      "dat.content.document.created",
+      "work.created",
+      "work.project-sheet.applied",
+      "work.created"
+    ],
+    "handled_review": {
+      "automatic_action": false,
+      "dispatch": false,
+      "implemented_improvement": false,
+      "outcome": "review-handled",
+      "recipient": "owner-1",
+      "return_condition": "manager selects an amendment",
+      "review_id": "review"
+    },
+    "result": {
+      "action": {
+        "amendment": {
+          "instruction": "updated",
+          "next_dispatch": "owner-review",
+          "route": "owner-route"
+        },
+        "decision_id": "manager-decision",
+        "manager_decision": "implement",
+        "request_id": "amendment",
+        "review_id": "review"
+      },
+      "automatic_action": false,
+      "before": {
+        "assignment": {
+          "agent": "agent-1",
+          "principal": "owner-1",
+          "route_binding": null,
+          "session": "session-1"
+        },
+        "attention": [],
+        "current_owner": "owner-1",
+        "next_dispatch": null,
+        "plan": {
+          "task": null
+        },
+        "running_input_pins": [
+          {
+            "authority": "ott04-correction-amendment",
+            "id": "task-fda517815e6a55524ab321db2264",
+            "kind": "work.task",
+            "revision": "rev-1"
+          }
+        ],
+        "usage": {
+          "budget": null,
+          "limit": 10,
+          "spent": 3
+        }
+      },
+      "decision_id": "manager-decision",
+      "dispatch": false,
+      "fresh_after": {
+        "assignment": {
+          "agent": "agent-1",
+          "principal": "owner-1",
+          "route_binding": {
+            "name": "owner-route",
+            "reason": "manager-selected amendment"
+          },
+          "session": "session-1"
+        },
+        "attention": [
+          {
+            "amended_revision": {
+              "authority": "ott04-correction-amendment",
+              "id": "subject",
+              "kind": "document",
+              "revision": "rev-1"
+            },
+            "attention_ref": {
+              "authority": "ott04-correction-amendment",
+              "id": "attention-737fdcb86a020633fa4d1815",
+              "kind": "dat.context.attention",
+              "revision": "attention-1"
+            },
+            "cause": "manager-selected amendment: updated",
+            "event_id": "event-6fea298b1883824d219f2462eec626ce",
+            "packet_refs": [],
+            "recipient": "owner-1",
+            "state": "open",
+            "subject": {
+              "authority": "ott04-correction-amendment",
+              "id": "subject",
+              "kind": "document",
+              "revision": null
+            }
+          }
+        ],
+        "current_owner": "owner-1",
+        "next_dispatch": "owner-review",
+        "plan": {
+          "task": {
+            "instructions": "updated"
+          }
+        },
+        "running_input_pins": [
+          {
+            "authority": "ott04-correction-amendment",
+            "id": "task-fda517815e6a55524ab321db2264",
+            "kind": "work.task",
+            "revision": "rev-1"
+          }
+        ],
+        "usage": {
+          "budget": null,
+          "limit": 10,
+          "spent": 3
+        }
+      },
+      "implemented_improvement": true,
+      "outcome": "improvement-implemented",
+      "preserved": {
+        "current_owner": true,
+        "running_input_pins": true,
+        "usage": true
+      },
+      "required_changes": {
+        "assignment_view_changed": true,
+        "attention_view_changed": true,
+        "next_dispatch_changed": true,
+        "plan_changed": true
+      },
+      "response": {
+        "automatic_action": false,
+        "dispatch": false,
+        "event_ids": [
+          "event-513c5cb553c51273068fd2c735fe124e",
+          "event-a250d1398174de37b49e7f288de068f5",
+          "event-6fea298b1883824d219f2462eec626ce"
+        ],
+        "incomplete": false,
+        "receipts": {
+          "assignment": {
+            "error_code": null,
+            "event_ids": [
+              "event-a250d1398174de37b49e7f288de068f5"
+            ],
+            "logical_request_key": "amendment:route",
+            "observed_revision": "rev-2",
+            "operation": "work.assignment.route-pin",
+            "replayed": false,
+            "request_digest": "7542fd9955bbbf0828e7e533bde86005286b85ae9a82b9ea35c4c96864710c8a",
+            "result_ref": {
+              "authority": "ott04-correction-amendment",
+              "id": "assignment-fd9e629fdcc4f6289c76844cdab1",
+              "kind": "wrk.assignment",
+              "revision": "rev-2"
+            },
+            "status": "committed",
+            "target": {
+              "authority": "ott04-correction-amendment",
+              "id": "assignment-fd9e629fdcc4f6289c76844cdab1",
+              "kind": "wrk.assignment",
+              "revision": "rev-1"
+            },
+            "transaction_id": "e6f0115cd4f066efa31f3400ca3b0db9",
+            "unknown_reason": null
+          },
+          "attention": [
+            {
+              "error_code": null,
+              "event_ids": [
+                "event-6fea298b1883824d219f2462eec626ce"
+              ],
+              "logical_request_key": "amendment:attention:owner-1",
+              "observed_revision": "attention-1",
+              "operation": "dat.context.attention.create",
+              "replayed": false,
+              "request_digest": "9b1fe2fd2305349f0ecf8c842e40efbdf50c3d97212e9dc9168ce85b1fd65856",
+              "result_ref": {
+                "authority": "ott04-correction-amendment",
+                "id": "attention-737fdcb86a020633fa4d1815",
+                "kind": "dat.context.attention",
+                "revision": "attention-1"
+              },
+              "status": "committed",
+              "target": {
+                "authority": "ott04-correction-amendment",
+                "id": "attention-737fdcb86a020633fa4d1815",
+                "kind": "dat.context.attention",
+                "revision": null
+              },
+              "transaction_id": "9a2c0387b89611ec3090cc425a46103e",
+              "unknown_reason": null
+            }
+          ],
+          "plan": {
+            "error_code": null,
+            "event_ids": [
+              "event-513c5cb553c51273068fd2c735fe124e"
+            ],
+            "logical_request_key": "amendment:plan",
+            "observed_revision": "rev-2",
+            "operation": "work.project-sheet.apply",
+            "replayed": false,
+            "request_digest": "41f8bba6c5d6d62601ac3b7efe0efa79e7a7948f728ea475189b83a50b1fc527",
+            "result_ref": {
+              "authority": "ott04-correction-amendment",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-2"
+            },
+            "status": "committed",
+            "target": {
+              "authority": "ott04-correction-amendment",
+              "id": "project-6cbe23bf27e2d442109cb6521daa",
+              "kind": "work.project",
+              "revision": "rev-1"
+            },
+            "transaction_id": "7da49b9e5fe3e9e89dba769080468ca1",
+            "unknown_reason": null
+          }
+        }
+      },
+      "review_id": "review"
+    }
+  },
+  "due": {
+    "action_A": {
+      "receipt": {
+        "error_code": null,
+        "event_ids": [
+          "event-9eafda189ad54741ab1efdd3d29f5113"
+        ],
+        "logical_request_key": "request-A",
+        "observed_revision": "rev-1",
+        "operation": "otto.due-record.save",
+        "replayed": false,
+        "request_digest": "c858ab0f6c68bb5552d727380d972124bdc560c8aa8ffb74b7048a37302b8803",
+        "result_ref": {
+          "authority": "ott04-correction-due",
+          "id": "correction-due",
+          "kind": "otto.due-record",
+          "revision": "rev-1"
+        },
+        "status": "committed",
+        "target": {
+          "authority": "ott04-correction-due",
+          "id": "correction-due",
+          "kind": "otto.due-record",
+          "revision": null
+        },
+        "transaction_id": "c58251850794a0381b45a5d4e9d6606f",
+        "unknown_reason": null
+      },
+      "scheduled": {
+        "automatic_action": false,
+        "capability": {
+          "automatic_action": false,
+          "available": true,
+          "durable": true,
+          "mode": "durable-host",
+          "owner": "trusted-host"
+        },
+        "expected_delta": {
+          "record_version": 1
+        },
+        "mutation": {
+          "action": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "delivery_state": "none",
+            "due_at": null,
+            "in_flight_request": null,
+            "instruction": "inspect",
+            "interval_seconds": 10800,
+            "invocation_identity": "invocation-correction",
+            "last_completed_request": null,
+            "last_covered_slot": 0,
+            "last_result": null,
+            "missing_handoff": null,
+            "outstanding_decisions": [],
+            "owner": "owner-1",
+            "profile": "normal",
+            "recipient": "owner-1",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "stop_state": "active",
+            "version": 0
+          },
+          "before": null,
+          "fresh_after": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "delivery_state": "none",
+            "due_at": null,
+            "in_flight_request": null,
+            "instruction": "inspect",
+            "interval_seconds": 10800,
+            "invocation_identity": "invocation-correction",
+            "last_completed_request": null,
+            "last_covered_slot": 0,
+            "last_result": null,
+            "missing_handoff": null,
+            "outstanding_decisions": [],
+            "owner": "owner-1",
+            "profile": "normal",
+            "recipient": "owner-1",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "stop_state": "active",
+            "version": 1
+          }
+        },
+        "outcome": "scheduled",
+        "record": {
+          "anchor": "2026-09-14T00:00:00Z",
+          "delivery_state": "none",
+          "due_at": null,
+          "in_flight_request": null,
+          "instruction": "inspect",
+          "interval_seconds": 10800,
+          "invocation_identity": "invocation-correction",
+          "last_completed_request": null,
+          "last_covered_slot": 0,
+          "last_result": null,
+          "missing_handoff": null,
+          "outstanding_decisions": [],
+          "owner": "owner-1",
+          "profile": "normal",
+          "recipient": "owner-1",
+          "return_condition": "same owner returns the same request receipt",
+          "schedule_id": "correction-due",
+          "stop_state": "active",
+          "version": 1
+        },
+        "replayed": false
+      }
+    },
+    "action_B": {
+      "live_before_replay": {
+        "anchor": "2026-09-14T00:00:00Z",
+        "delivery_state": "none",
+        "due_at": null,
+        "in_flight_request": null,
+        "instruction": "inspect",
+        "interval_seconds": 10800,
+        "invocation_identity": "invocation-correction",
+        "last_completed_request": null,
+        "last_covered_slot": 0,
+        "last_result": null,
+        "missing_handoff": null,
+        "outstanding_decisions": [
+          {
+            "decision": "wait",
+            "decision_id": "later",
+            "recorded": true
+          }
+        ],
+        "owner": "owner-1",
+        "profile": "normal",
+        "recipient": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due",
+        "stop_state": "active",
+        "version": 2
+      },
+      "updated": {
+        "anchor": "2026-09-14T00:00:00Z",
+        "delivery_state": "none",
+        "due_at": null,
+        "in_flight_request": null,
+        "instruction": "inspect",
+        "interval_seconds": 10800,
+        "invocation_identity": "invocation-correction",
+        "last_completed_request": null,
+        "last_covered_slot": 0,
+        "last_result": null,
+        "missing_handoff": null,
+        "mutation_receipt": {
+          "event_ids": [
+            "event-872256b59a925ca5ddbf04a2ebceda2e"
+          ],
+          "logical_request_key": "request-B",
+          "replayed": false,
+          "request_digest": "53bccbd5122703dfdf9b6211a29d5b7c810471bdfbba8c06c75e62325503be20",
+          "result_payload": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "delivery_state": "none",
+            "due_at": null,
+            "in_flight_request": null,
+            "instruction": "inspect",
+            "interval_seconds": 10800,
+            "invocation_identity": "invocation-correction",
+            "last_completed_request": null,
+            "last_covered_slot": 0,
+            "last_result": null,
+            "missing_handoff": null,
+            "outstanding_decisions": [
+              {
+                "decision": "wait",
+                "decision_id": "later",
+                "recorded": true
+              }
+            ],
+            "owner": "owner-1",
+            "profile": "normal",
+            "recipient": "owner-1",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "stop_state": "active",
+            "version": 2
+          },
+          "result_ref": {
+            "authority": "ott04-correction-due",
+            "id": "correction-due",
+            "kind": "otto.due-record",
+            "revision": "rev-2"
+          },
+          "result_version": 2,
+          "status": "committed"
+        },
+        "outstanding_decisions": [
+          {
+            "decision": "wait",
+            "decision_id": "later",
+            "recorded": true
+          }
+        ],
+        "owner": "owner-1",
+        "profile": "normal",
+        "recipient": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due",
+        "stop_state": "active",
+        "version": 2
+      }
+    },
+    "before": {
+      "event_count": 1,
+      "record": null
+    },
+    "boundary": {
+      "has_store": false,
+      "has_writer": false,
+      "port_dir": [
+        "read_due",
+        "save_due",
+        "transport"
+      ],
+      "transport_endpoints": [
+        "read_due",
+        "save_due"
+      ],
+      "transport_has_connection": false,
+      "transport_path_is_db": false
+    },
+    "capability": {
+      "automatic_action": false,
+      "available": true,
+      "durable": true,
+      "mode": "durable-host",
+      "owner": "trusted-host"
+    },
+    "cas_rejection": {
+      "error": {
+        "message": "expected durable version 1, observed 2",
+        "type": "StateConflictError"
+      },
+      "event_delta": 0
+    },
+    "changed_input_rejection": {
+      "error": {
+        "message": "request id was reused with changed durable input",
+        "type": "InputChangedError"
+      },
+      "event_delta": 0
+    },
+    "historical_replay_A": {
+      "event_delta": 0,
+      "fresh_live_read": {
+        "anchor": "2026-09-14T00:00:00Z",
+        "delivery_state": "none",
+        "due_at": null,
+        "in_flight_request": null,
+        "instruction": "inspect",
+        "interval_seconds": 10800,
+        "invocation_identity": "invocation-correction",
+        "last_completed_request": null,
+        "last_covered_slot": 0,
+        "last_result": null,
+        "missing_handoff": null,
+        "outstanding_decisions": [
+          {
+            "decision": "wait",
+            "decision_id": "later",
+            "recorded": true
+          }
+        ],
+        "owner": "owner-1",
+        "profile": "normal",
+        "recipient": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due",
+        "stop_state": "active",
+        "version": 2
+      },
+      "result": {
+        "anchor": "2026-09-14T00:00:00Z",
+        "delivery_state": "none",
+        "due_at": null,
+        "in_flight_request": null,
+        "instruction": "inspect",
+        "interval_seconds": 10800,
+        "invocation_identity": "invocation-correction",
+        "last_completed_request": null,
+        "last_covered_slot": 0,
+        "last_result": null,
+        "missing_handoff": null,
+        "mutation_receipt": {
+          "event_ids": [
+            "event-9eafda189ad54741ab1efdd3d29f5113"
+          ],
+          "logical_request_key": "request-A",
+          "replayed": true,
+          "request_digest": "c858ab0f6c68bb5552d727380d972124bdc560c8aa8ffb74b7048a37302b8803",
+          "result_payload": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "delivery_state": "none",
+            "due_at": null,
+            "in_flight_request": null,
+            "instruction": "inspect",
+            "interval_seconds": 10800,
+            "invocation_identity": "invocation-correction",
+            "last_completed_request": null,
+            "last_covered_slot": 0,
+            "last_result": null,
+            "missing_handoff": null,
+            "outstanding_decisions": [],
+            "owner": "owner-1",
+            "profile": "normal",
+            "recipient": "owner-1",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "stop_state": "active",
+            "version": 1
+          },
+          "result_ref": {
+            "authority": "ott04-correction-due",
+            "id": "correction-due",
+            "kind": "otto.due-record",
+            "revision": "rev-1"
+          },
+          "result_version": 1,
+          "status": "committed"
+        },
+        "outstanding_decisions": [],
+        "owner": "owner-1",
+        "profile": "normal",
+        "recipient": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due",
+        "stop_state": "active",
+        "version": 1
+      }
+    },
+    "ready_and_restart": {
+      "before_restart": {
+        "anchor": "2026-09-14T00:00:00Z",
+        "delivery_state": "ready",
+        "due_at": null,
+        "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+        "instruction": "inspect",
+        "interval_seconds": 10800,
+        "invocation_identity": "invocation-correction",
+        "last_completed_request": null,
+        "last_covered_slot": 3,
+        "last_result": null,
+        "missing_handoff": null,
+        "outstanding_decisions": [
+          {
+            "decision": "wait",
+            "decision_id": "later",
+            "recorded": true
+          },
+          {
+            "decision": "wait",
+            "decision_id": "manager-wait",
+            "recorded": true
+          }
+        ],
+        "owner": "owner-1",
+        "profile": "normal",
+        "recipient": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due",
+        "stop_state": "active",
+        "version": 4
+      },
+      "ready": {
+        "automatic_action": false,
+        "delivery_state": "ready",
+        "event_ids": [
+          "event-cadc291c94fd117e06e3b4d07007c3d9"
+        ],
+        "expected_delta": {
+          "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+          "last_covered_slot": 3
+        },
+        "missed_slots": 2,
+        "missing_handoff": null,
+        "mutation": {
+          "action": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "instruction": "inspect",
+            "invocation_identity": "invocation-correction",
+            "missed_slots": 2,
+            "missing_handoff": null,
+            "owner": "owner-1",
+            "profile": "normal",
+            "readiness": {
+              "dispatch": false,
+              "executable": false,
+              "status": "attention"
+            },
+            "recipient": "owner-1",
+            "request_id": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "slot": 3
+          },
+          "before": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "delivery_state": "none",
+            "due_at": null,
+            "in_flight_request": null,
+            "instruction": "inspect",
+            "interval_seconds": 10800,
+            "invocation_identity": "invocation-correction",
+            "last_completed_request": null,
+            "last_covered_slot": 0,
+            "last_result": null,
+            "missing_handoff": null,
+            "outstanding_decisions": [
+              {
+                "decision": "wait",
+                "decision_id": "later",
+                "recorded": true
+              },
+              {
+                "decision": "wait",
+                "decision_id": "manager-wait",
+                "recorded": true
+              }
+            ],
+            "owner": "owner-1",
+            "profile": "normal",
+            "recipient": "owner-1",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "stop_state": "active",
+            "version": 3
+          },
+          "fresh_after": {
+            "anchor": "2026-09-14T00:00:00Z",
+            "delivery_state": "ready",
+            "due_at": null,
+            "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+            "instruction": "inspect",
+            "interval_seconds": 10800,
+            "invocation_identity": "invocation-correction",
+            "last_completed_request": null,
+            "last_covered_slot": 3,
+            "last_result": null,
+            "missing_handoff": null,
+            "outstanding_decisions": [
+              {
+                "decision": "wait",
+                "decision_id": "later",
+                "recorded": true
+              },
+              {
+                "decision": "wait",
+                "decision_id": "manager-wait",
+                "recorded": true
+              }
+            ],
+            "owner": "owner-1",
+            "profile": "normal",
+            "recipient": "owner-1",
+            "return_condition": "same owner returns the same request receipt",
+            "schedule_id": "correction-due",
+            "stop_state": "active",
+            "version": 4
+          }
+        },
+        "notification": {
+          "event_ids": [
+            "event-cadc291c94fd117e06e3b4d07007c3d9"
+          ],
+          "outcome": "created",
+          "receipt": {
+            "error_code": null,
+            "event_ids": [
+              "event-cadc291c94fd117e06e3b4d07007c3d9"
+            ],
+            "logical_request_key": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a:owner-1",
+            "observed_revision": "attention-1",
+            "operation": "dat.context.attention.create",
+            "replayed": false,
+            "request_digest": "abc97403df0ce64df80df3cf2658c71b7e66f341e6554c7ad696130a28f123ac",
+            "result_ref": {
+              "authority": "ott04-correction-due",
+              "id": "attention-e6bdbac7d43226963109181b",
+              "kind": "dat.context.attention",
+              "revision": "attention-1"
+            },
+            "status": "committed",
+            "target": {
+              "authority": "ott04-correction-due",
+              "id": "attention-e6bdbac7d43226963109181b",
+              "kind": "dat.context.attention",
+              "revision": null
+            },
+            "transaction_id": "6dc9a88c668b454e26edbf3fe7e7c3e2",
+            "unknown_reason": null
+          }
+        },
+        "outcome": "attention-ready",
+        "readiness": {
+          "dispatch": false,
+          "executable": false,
+          "status": "attention"
+        },
+        "record": {
+          "anchor": "2026-09-14T00:00:00Z",
+          "delivery_state": "ready",
+          "due_at": null,
+          "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+          "instruction": "inspect",
+          "interval_seconds": 10800,
+          "invocation_identity": "invocation-correction",
+          "last_completed_request": null,
+          "last_covered_slot": 3,
+          "last_result": null,
+          "missing_handoff": null,
+          "outstanding_decisions": [
+            {
+              "decision": "wait",
+              "decision_id": "later",
+              "recorded": true
+            },
+            {
+              "decision": "wait",
+              "decision_id": "manager-wait",
+              "recorded": true
+            }
+          ],
+          "owner": "owner-1",
+          "profile": "normal",
+          "recipient": "owner-1",
+          "return_condition": "same owner returns the same request receipt",
+          "schedule_id": "correction-due",
+          "stop_state": "active",
+          "version": 4
+        },
+        "replayed": false,
+        "request_id": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+        "responsible_owner": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due"
+      },
+      "reopened_record": {
+        "anchor": "2026-09-14T00:00:00Z",
+        "delivery_state": "ready",
+        "due_at": null,
+        "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+        "instruction": "inspect",
+        "interval_seconds": 10800,
+        "invocation_identity": "invocation-correction",
+        "last_completed_request": null,
+        "last_covered_slot": 3,
+        "last_result": null,
+        "missing_handoff": null,
+        "outstanding_decisions": [
+          {
+            "decision": "wait",
+            "decision_id": "later",
+            "recorded": true
+          },
+          {
+            "decision": "wait",
+            "decision_id": "manager-wait",
+            "recorded": true
+          }
+        ],
+        "owner": "owner-1",
+        "profile": "normal",
+        "recipient": "owner-1",
+        "return_condition": "same owner returns the same request receipt",
+        "schedule_id": "correction-due",
+        "stop_state": "active",
+        "version": 4
+      },
+      "resumed": {
+        "automatic_action": false,
+        "outcome": "resume-same-request",
+        "record": {
+          "anchor": "2026-09-14T00:00:00Z",
+          "delivery_state": "ready",
+          "due_at": null,
+          "in_flight_request": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+          "instruction": "inspect",
+          "interval_seconds": 10800,
+          "invocation_identity": "invocation-correction",
+          "last_completed_request": null,
+          "last_covered_slot": 3,
+          "last_result": null,
+          "missing_handoff": null,
+          "outstanding_decisions": [
+            {
+              "decision": "wait",
+              "decision_id": "later",
+              "recorded": true
+            },
+            {
+              "decision": "wait",
+              "decision_id": "manager-wait",
+              "recorded": true
+            }
+          ],
+          "owner": "owner-1",
+          "profile": "normal",
+          "recipient": "owner-1",
+          "return_condition": "same owner returns the same request receipt",
+          "schedule_id": "correction-due",
+          "stop_state": "active",
+          "version": 4
+        },
+        "relaunch": false,
+        "request_id": "457b135b388e21e8e3ac499b7b8d428ef43fb48483c78fac04ed4b08dd86c09a",
+        "responsible_owner": "owner-1",
+        "return_condition": "same owner returns the same request receipt"
+      }
+    }
+  },
+  "origins": {
+    "herzchen": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/__init__.py",
+    "otto": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/otto/__init__.py",
+    "otto_attention": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/otto/attention.py"
+  }
+}

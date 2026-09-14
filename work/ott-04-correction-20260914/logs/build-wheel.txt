@@ -1,0 +1,13 @@
+Processing /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker
+  DEPRECATION: A future pip version will change local packages to be built in-place without first copying to a temporary directory. We recommend you use --use-feature=in-tree-build to test your packages with this new behavior before it becomes the default.
+   pip 21.3 will remove support for this functionality. You can find discussion regarding this at https://github.com/pypa/pip/issues/7555.
+    Preparing wheel metadata: started
+    Preparing wheel metadata: finished with status 'done'
+Building wheels for collected packages: otto-local-candidate
+  Building wheel for otto-local-candidate (PEP 517): started
+  Building wheel for otto-local-candidate (PEP 517): finished with status 'done'
+  Created wheel for otto-local-candidate: filename=otto_local_candidate-0.0.0-py3-none-any.whl size=34670 sha256=3f4193936dec855faff12587f8652f541c52ce9b242b0dbcb2ab0210e84504c5
+  Stored in directory: /Users/hannahomalley/Library/Caches/pip/wheels/3e/f0/fd/3c6c379351b2c3178206b6047010966540a823039ddbb6a5a3
+Successfully built otto-local-candidate
+WARNING: You are using pip version 21.2.4; however, version 26.0.1 is available.
+You should consider upgrading via the '/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/bin/python -m pip install --upgrade pip' command.
