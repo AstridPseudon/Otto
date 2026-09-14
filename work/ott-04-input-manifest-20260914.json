@@ -1,0 +1,77 @@
+{
+  "schema": "otto-04-input-manifest/v1",
+  "task": "OTT-04",
+  "objective": "Ready events reach the same responsible agent without duplicate sessions or repeated idle work.",
+  "route": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "high",
+    "class": "normal",
+    "review": false,
+    "ast_launch": false
+  },
+  "source": {
+    "otto_base_commit": "0806be099eecdc9b861677ef7e71f7b54d2789a6",
+    "otto_base_tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec",
+    "otto_product_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+    "otto_product_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+    "herzchen_commit": "98430201ff196313df0ac69a701851225c8c31a7",
+    "herzchen_tree": "ddd9eaab56df1b8321443021db8283e4a75910cd",
+    "herzchen_wheel": {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
+      "sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
+    }
+  },
+  "profile": {
+    "path": "profiles/otto/operating.md",
+    "commit": "5482198b004375310d4fec33204e8fb71763a369",
+    "tree": "a3515b8ba1ae45293a74e451be2061f1a7a00827",
+    "sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726"
+  },
+  "package": {
+    "root": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/package/otto_herzchen_delivery_v11_2",
+    "immutable_documents": {
+      "projects/OTT/tasklist.md": "1c5978b4ea254831457d498ec3221f0d2b659a67ea4ad904b5dc2317af6fdd4c",
+      "projects/OTT/plan.md": "d384c2416d4ea763b61c963ff392207ec98b37eb3d1d8d0555230e613958e6c2",
+      "projects/OTT/implementation-criteria.md": "ae007f9d4fa476457918c02a520dc538dbaa21ea105a9a3efd8eda0325981c56",
+      "projects/OTT/manager-message.md": "443a73164acc40c4b99f00a22a90bfa6f29ca1622db972f02efc4959ff781703",
+      "projects/OTT/run.yaml": "46a4317e65cd71589727178aad00889eab38847ca46ced1b7835a9766a696ef8",
+      "projects/OTT/northstar.md": "a50fc1e80221f88dcecce20257e14c7e51c0f4579704ff14e72ec16c96e4d040",
+      "plan/catalog.json": "075f0301129f57e46003d518372747df4a68e6e086e5a63a1200ae333b53b013",
+      "implementation-criteria.md": "f576a4769c9388031b5f01f63aa7c6cc437e8efc4c88aab775f815e93f5f3657",
+      "plan/extraction-map.json": "c08d94ea32f394596578a3c908e35dc037c1297194d3d5994945a88093101c59",
+      "architecture/EXTRACTION-FIRST.md": "07a00703f911e3a232d4cc15d6fd1af9838fef60f701644505919c17be4b3c9b",
+      "architecture/AGENT-OPERATING-CONTRACT.md": "216f978b2838fa66d17de06c945be4a4b50654e3c0572ab5d8da0fb9c68c3a7e",
+      "architecture/TASKS-AND-MANAGER-LOGIC.md": "70b3777d45dd9155ce7a50ad4036e101fb1163c12b919fda24a185e850a72139",
+      "plan/PENDING-WORK.md": "94d74d3c170261e03743c5bcba615c956da0626e2cac6326c9e2966b7e157ac6",
+      "orchestrator-contract.md": "fe990f9e64e0cad9d4825d7516db0eb3aa23f0222558835d552939ca4519159a"
+    }
+  },
+  "allowed_paths": [
+    "src/otto/attention.py",
+    "tests/otto/test_continuity.py",
+    "work/ott-04-*"
+  ],
+  "forbidden_paths": [
+    "src/otto/portfolio/",
+    "src/herzchen/",
+    "profiles/",
+    ".otto/",
+    "control.sqlite"
+  ],
+  "evidence_requirements": [
+    "representative real installed shared attention/event path before propagation",
+    "one-off and 3h plus another interval with durable restart and coalescing",
+    "cursor duplicate/lost/out-of-order/expired/mismatch behavior",
+    "unknown invocation reconciliation without duplicate dispatch",
+    "no-auto-action and manager-decision evidence",
+    "improvement amendment propagation and incomplete propagation visibility",
+    "before/action/fresh-after/event-receipt/replay/rejection or rollback for mutations",
+    "source and installed origins, exact command/model/reasoning/session/PID and return codes"
+  ],
+  "control": {
+    "root_goal_sha256": "9de57900d69d6c7d547b921862cf9b2c49cf55bec3a68691e48be8640ea34c78",
+    "wakeup_loop_skill_sha256": "d5cfd3007f65ff4b417cb6c56333c255aed55c349ee9684dfe5f77d1a1b8bb46",
+    "no_remote_writes": true,
+    "no_new_provider_spend": true
+  }
+}
