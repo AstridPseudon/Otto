@@ -306,8 +306,15 @@ class ReleaseOperations:
         if authority != RIGHTS["check.record"]: raise ReleaseError("authority_mismatch", "required checks require the check authority", authority=authority)
         if result not in _CHECK_OUTCOMES: raise ReleaseError("invalid_check", "check result is not typed", result=result)
         _guard_source_digest(record, source_set_digest)
+        candidate_value = candidate_ref or record.payload.get("candidate_ref")
+        if not isinstance(candidate_value, Mapping): raise ReleaseError("missing_candidate", "a required check must reference the actual public candidate")
+        try:
+            candidate = self._owner.decisions.get_candidate(candidate_value)
+        except Exception as exc:
+            _translate_public_error(exc)
+        if candidate.ref.to_dict() != dict(candidate_value): raise ReleaseError("stale_candidate", "required check candidate reference is not the current public candidate")
         payload = dict(record.payload); checks = dict(payload.get("checks", {})); check_id = _text(check_id, "check_id")
-        checks[check_id] = {"result": result, "evidence_ref": _text(evidence_ref, "evidence_ref"), "authority": authority, "candidate_ref": candidate_ref or payload.get("candidate_ref")}; payload["checks"] = checks
+        checks[check_id] = {"result": result, "evidence_ref": _text(evidence_ref, "evidence_ref"), "authority": authority, "candidate_ref": candidate.ref.to_dict()}; payload["checks"] = checks
         return self._owner.record("otto.check.record", record, payload, logical_key=logical_request_key, actor=self._owner.actor)
 
     def record_manager_decision(self, repository_id: str, *, disposition: str, rationale: str, owner: str, authority: str, logical_request_key: str, candidate_ref: Optional[Any] = None, decision_ref: Optional[Any] = None, source_set_digest: Optional[str] = None, expected_version: Optional[int] = None, expected_head: Optional[str] = None, expected_edit_token: Optional[str] = None) -> Any:
