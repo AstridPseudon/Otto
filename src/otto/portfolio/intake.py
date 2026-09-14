@@ -152,39 +152,23 @@ class UnavailableWorkOperations:
 
 
 class HerzchenWorkOperations:
-    """Thin public adapter around an injected Herzchen work operation object.
+    """Finite accepted Herzchen command/read adapter consumed by Otto."""
 
-    The object may be the installed Herzchen adapter or a neutral fixture.  It
-    must expose ``execute`` and ``read``; Otto never imports a sibling source
-    checkout or reaches through a private store.
-    """
+    def __init__(self, *, port: Any, reader: Any, binding: Any) -> None:
+        from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig
 
-    def __init__(self, canonical: Any = None, *, store: Any = None, graph: Any = None, binding: Any = None) -> None:
-        self.canonical = canonical
-        self._real = None
-        if store is not None or graph is not None or binding is not None:
-            from .herzchen_binding import HerzchenBindingConfig, StoreWorkOperations
-
-            if not isinstance(binding, HerzchenBindingConfig):
-                raise TypeError("binding must be HerzchenBindingConfig")
-            self._real = StoreWorkOperations(store=store, graph=graph, binding=binding)
-
-    def _bound(self) -> Any:
-        if self.canonical is None:
-            return unavailable_operations()
-        if not callable(getattr(self.canonical, "execute", None)) or not callable(getattr(self.canonical, "read", None)):
-            return unavailable_operations()
-        return self.canonical
+        if not isinstance(binding, HerzchenBindingConfig):
+            raise TypeError("binding must be HerzchenBindingConfig")
+        self.port = port
+        self.reader = reader
+        self.binding = binding
+        self._finite = FiniteWorkOperations(port=port, reader=reader, binding=binding)
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
-        if self._real is not None:
-            return self._real.execute(operation, payload, request_id=request_id, actor=actor)
-        return self._bound().execute(operation, payload, request_id=request_id, actor=actor)
+        return self._finite.execute(operation, payload, request_id=request_id, actor=actor)
 
     def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
-        if self._real is not None:
-            return self._real.read(operation, payload, actor=actor)
-        return self._bound().read(operation, payload, actor=actor)
+        return self._finite.read(operation, payload, actor=actor)
 
 
 class OttoPortfolio:

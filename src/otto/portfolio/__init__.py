@@ -14,7 +14,7 @@ from .intake import (
     HerzchenWorkOperations,
     unavailable_operations,
 )
-from .herzchen_binding import HerzchenBindingConfig, StoreWorkOperations
+from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig
 
 __all__ = [
     "ADMISSION_CHOICES",
@@ -24,5 +24,5 @@ __all__ = [
     "OttoPortfolio",
     "PortfolioError",
     "unavailable_operations",
-    "StoreWorkOperations",
+    "FiniteWorkOperations",
 ]

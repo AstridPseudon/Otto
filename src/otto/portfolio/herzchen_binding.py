@@ -1,7 +1,7 @@
-"""Public Store/WorkGraph binding for the OTT-03 portfolio facade.
+"""Public finite Herzchen command/read binding for the OTT-03 facade.
 
-This module is intentionally small. The injected objects are the accepted
-Herzchen public ``Store`` and ``WorkGraph`` instances; Otto owns neither
+The trusted bootstrap constructs the accepted Herzchen graph and injects only
+its finite command port and read-only consumer reader. Otto owns neither
 storage nor a second command/event implementation.
 """
 
@@ -50,11 +50,11 @@ def _record_dict(record: Any) -> dict[str, Any]:
     payload = _json_value(getattr(record, "payload", {}))
     return {
         "project_ref": _json_value(getattr(record, "ref", None)),
-        "kind": _json_value(getattr(record, "kind", None)),
-        "title": _json_value(getattr(record, "title", None)),
-        "name": _json_value(getattr(record, "name", None)),
-        "lifecycle": _json_value(getattr(record, "lifecycle", None)),
-        "readiness": _json_value(getattr(record, "readiness", None)),
+        "kind": _json_value(getattr(record, "kind", None) or payload.get("kind")),
+        "title": _json_value(getattr(record, "title", None) or payload.get("title")),
+        "name": _json_value(getattr(record, "name", None) or payload.get("name")),
+        "lifecycle": _json_value(getattr(record, "lifecycle", None) or payload.get("lifecycle")),
+        "readiness": _json_value(getattr(record, "readiness", None) or payload.get("readiness")),
         "revision": _json_value(getattr(getattr(record, "ref", None), "revision", None)),
         "version": _json_value(getattr(record, "version", None)),
         "payload": payload,
@@ -68,14 +68,14 @@ def _receipt_dict(receipt: Any) -> Optional[dict[str, Any]]:
     return _json_value(to_dict() if callable(to_dict) else receipt)
 
 
-class StoreWorkOperations:
-    """The real OTT-03 operation port over injected public Herzchen objects."""
+class FiniteWorkOperations:
+    """The real OTT-03 operation port over a finite command/read pair."""
 
-    def __init__(self, *, store: Any, graph: Any, binding: HerzchenBindingConfig) -> None:
-        if store is None or graph is None:
-            raise ValueError("store and graph are required for the canonical binding")
-        self.store = store
-        self.graph = graph
+    def __init__(self, *, port: Any, reader: Any, binding: HerzchenBindingConfig) -> None:
+        if port is None or reader is None:
+            raise ValueError("port and reader are required for the canonical binding")
+        self.port = port
+        self.reader = reader
         self.binding = binding
 
     def _actor(self, actor: str) -> Any:
@@ -86,14 +86,15 @@ class StoreWorkOperations:
         wanted = set(receipt_dict.get("event_ids", []))
         if not wanted:
             return []
-        return [event.event_id for event in self.store.list_events() if getattr(event, "event_id", None) in wanted]
+        return [event.event_id for event in self.reader.list_events() if getattr(event, "event_id", None) in wanted]
 
     def _result(self, record: Any, *, request_id: str, replayed: bool) -> dict[str, Any]:
-        receipt = self.store.get_receipt(request_id)
+        receipt = self.reader.get_receipt(request_id)
+        observed = self.reader.get_record(record.ref)
         return {
             "outcome": "replayed" if replayed else "created",
             "project_ref": _json_value(getattr(record, "ref", None)),
-            "record": _record_dict(record),
+            "record": _record_dict(observed),
             "receipt": _receipt_dict(receipt),
             "replayed": replayed,
             "event_ids": self._events_for(receipt),
@@ -112,23 +113,17 @@ class StoreWorkOperations:
         return metadata
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if operation == "work.pending.edit":
+            return self._revise(payload, request_id=request_id, actor=actor)
         if operation != "work.pending.create":
-            return {
-                "outcome": "unavailable",
-                "operation": operation,
-                "error": {"code": "canonical_operation_unavailable", "message": "this binding currently exposes pending create and read only"},
-            }
+            return self._unsupported(operation, request_id=request_id)
         if payload.get("open"):
-            return {
-                "outcome": "unavailable",
-                "operation": operation,
-                "error": {"code": "host_open_unavailable", "message": "canonical WorkGraph creation is pending-only; host/session open is outside this binding"},
-            }
+            return self._unsupported(operation, request_id=request_id, code="canonical_open_endpoint_unavailable", message="the finite accepted work port has no canonical open/session endpoint")
         edit = payload.get("edit", {})
         actor_value = self._actor(actor)
-        before = self.store.get_receipt(request_id)
+        before = self.reader.get_receipt(request_id)
         try:
-            record = self.graph.create_pending_project(
+            record = self.port.create_pending_project(
                 title=edit.get("title"),
                 outcome=edit.get("outcome", ""),
                 logical_request_key=request_id,
@@ -148,6 +143,51 @@ class StoreWorkOperations:
             raise
         return self._result(record, request_id=request_id, replayed=before is not None)
 
+    def _unsupported(self, operation: str, *, request_id: Optional[str] = None, code: str = "canonical_operation_unavailable", message: str = "no accepted finite Herzchen endpoint is available for this Otto operation") -> dict[str, Any]:
+        receipt = self.reader.get_receipt(request_id) if request_id else None
+        return {
+            "outcome": "unavailable",
+            "operation": operation,
+            "error": {"code": code, "message": message},
+            "receipt": _receipt_dict(receipt),
+            "replayed": False,
+            "event_ids": self._events_for(receipt),
+        }
+
+    def _revise(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        from herzchen.contracts import ResourceRef
+
+        edit = payload["edit"]
+        fields = {key: value for key, value in edit.items() if key not in {"title", "outcome"}}
+        actor_value = self._actor(actor)
+        changes: dict[str, Any] = {
+            "logical_request_key": request_id,
+            "actor": actor_value,
+            "fields": fields,
+        }
+        if "title" in edit:
+            changes["title"] = edit["title"]
+        if "outcome" in edit:
+            changes["outcome"] = edit["outcome"]
+        before = self.reader.get_receipt(request_id)
+        try:
+            record = self.port.revise(ResourceRef.from_dict(payload["project_ref"]), **changes)
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.edit"}, "replayed": False, "event_ids": []}
+            raise
+        receipt = self.reader.get_receipt(request_id)
+        observed = self.reader.get_record(record.ref)
+        return {
+            "outcome": "replayed" if before is not None else "edited",
+            "project_ref": _json_value(record.ref),
+            "record": _record_dict(observed),
+            "receipt": _receipt_dict(receipt),
+            "replayed": before is not None,
+            "event_ids": self._events_for(receipt),
+            "executable": False,
+        }
+
     def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
         if operation != "work.pending.read":
             return {
@@ -157,7 +197,7 @@ class StoreWorkOperations:
             }
         from herzchen.contracts import ResourceRef
 
-        record = self.graph.get(ResourceRef.from_dict(payload["project_ref"]))
+        record = self.reader.get_record(ResourceRef.from_dict(payload["project_ref"]))
         return {
             "outcome": "read",
             "project_ref": _json_value(getattr(record, "ref", None)),
@@ -169,4 +209,4 @@ class StoreWorkOperations:
         }
 
 
-__all__ = ["HerzchenBindingConfig", "StoreWorkOperations"]
+__all__ = ["FiniteWorkOperations", "HerzchenBindingConfig"]

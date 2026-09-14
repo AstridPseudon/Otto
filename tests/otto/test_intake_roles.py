@@ -131,7 +131,7 @@ class DisposableCanonicalWork:
 @pytest.fixture
 def portfolio():
     canonical = DisposableCanonicalWork()
-    return OttoPortfolio(HerzchenWorkOperations(canonical)), canonical
+    return OttoPortfolio(canonical), canonical
 
 
 def create(api, *, request_id="create-1", actor="curator", open_project=False, edit=None, template=None):
@@ -148,7 +148,7 @@ def test_blank_and_create_and_open_preserve_sparse_unknown_fields_and_stay_inert
     assert created["project"]["manager"] is None
     assert created["project"]["tasks"] == []
     ref = created["project_ref"]
-    fresh_api = OttoPortfolio(HerzchenWorkOperations(canonical))
+    fresh_api = OttoPortfolio(canonical)
     observed = fresh_api.read_pending(ref, actor="curator")
     assert observed["project"]["unknown_fields"]["custom_unknown"] == {"keep": [1, 2]}
     assert len(canonical.projects) == 1
@@ -271,7 +271,10 @@ def _real_portfolio(tmp_path):
     authenticated = AuthenticatedActor("ott03-test-authority", "manager", "ott03-test-credential")
     graph = WorkGraph(store, actor=authenticated)
     binding = HerzchenBindingConfig("ott03-test-authority", "ott03-test-credential")
-    return store, graph, OttoPortfolio(HerzchenWorkOperations(store=store, graph=graph, binding=binding)), path
+    port = graph.command_port
+    reader = graph.reader
+    api = OttoPortfolio(HerzchenWorkOperations(port=port, reader=reader, binding=binding))
+    return store, graph, api, path
 
 
 def _public_counts(store, request_id, ref=None):
@@ -292,6 +295,10 @@ def test_real_workgraph_create_read_reopen_and_replay_are_durable(tmp_path):
     from herzchen.contracts import AuthenticatedActor
 
     store, graph, api, path = _real_portfolio(tmp_path)
+    finite = api.operations
+    assert finite.port is graph.command_port
+    assert finite.reader is graph.reader
+    assert "store" not in vars(finite) and "graph" not in vars(finite)
     first = api.create_pending(
         actor="manager",
         request_id="real-create-1",
@@ -335,8 +342,8 @@ def test_real_workgraph_create_read_reopen_and_replay_are_durable(tmp_path):
     )
     reopened_graph = WorkGraph(reopened, actor=AuthenticatedActor("ott03-test-authority", "manager", "ott03-test-credential"))
     reopened_api = OttoPortfolio(HerzchenWorkOperations(
-        store=reopened,
-        graph=reopened_graph,
+        port=reopened_graph.command_port,
+        reader=reopened_graph.reader,
         binding=HerzchenBindingConfig("ott03-test-authority", "ott03-test-credential"),
     ))
     observed = reopened_api.read_pending(ref, actor="manager")
@@ -356,4 +363,37 @@ def test_real_binding_rejects_protected_or_malformed_edit_before_store_mutation(
     assert list(store.list_events()) == []
     assert store.get_receipt("real-invalid-1") is None
     assert store.get_receipt("real-invalid-2") is None
+    store.close()
+
+
+def test_real_finite_port_revise_and_truthful_open_admission_assignment_gaps(tmp_path):
+    store, _graph, api, _path = _real_portfolio(tmp_path)
+    created = api.create_pending(actor="manager", request_id="real-edit-create", edit={"title": "Before"})
+    ref = created["project_ref"]
+    edited = api.edit_pending(
+        ref,
+        {"title": "After", "documents": [{"id": "doc-1"}], "unknown_edit": {"keep": True}},
+        actor="manager",
+        request_id="real-edit-1",
+    )
+    assert edited["outcome"] == "edited"
+    assert edited["record"]["payload"]["title"] == "After"
+    assert edited["record"]["payload"]["fields"]["documents"] == [{"id": "doc-1"}]
+    assert edited["record"]["payload"]["fields"]["unknown_edit"] == {"keep": True}
+
+    opened = api.create_and_open(actor="manager", request_id="real-open-1", edit={"title": "No host"})
+    assert opened["outcome"] == "unavailable"
+    assert opened["error"]["code"] == "canonical_open_endpoint_unavailable"
+    assert opened["receipt"] is None
+    assert opened["event_ids"] == []
+
+    frame = {"outcome": "admit", "recipient": "owner", "route": "normal", "authority": "manager"}
+    admission = api.admit(ref, choice="admit", frame=frame, actor="manager", request_id="real-admit-gap")
+    assignment = api.assign_roles(ref, {"parent": {"id": "p"}, "manager": "m", "executor": "e"}, actor="manager", request_id="real-assignment-gap")
+    assert admission["outcome"] == "unavailable"
+    assert assignment["outcome"] == "unavailable"
+    assert admission["error"]["code"] == "canonical_operation_unavailable"
+    assert assignment["error"]["code"] == "canonical_operation_unavailable"
+    assert admission["receipt"] is None and assignment["receipt"] is None
+    assert len(list(store.list_events())) == 2
     store.close()
