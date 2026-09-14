@@ -93,6 +93,45 @@ reference for exact replay. A binding that reports `work.pending.list` as
 unavailable must record that public-surface gap; do not substitute a private
 reader or infer a list from implementation state.
 
+For a manager decision, call `admit` with a complete non-blank decision frame.
+The frame is part of the canonical request and must include all four fields:
+
+```python
+decision = portfolio.admit(
+    project_ref,
+    choice="investigate",
+    frame={
+        "outcome": "Investigate the dependency before any admission or execution step",
+        "recipient": actor,
+        "route": "manual-review",
+        "authority": authority,
+    },
+    actor=actor,
+    request_id="admit-investigate-1",
+)
+```
+
+`outcome`, `recipient`, `route`, and `authority` must each be non-blank text.
+An admission records the typed manager decision only; it must not launch a
+manager, reserve budget, dispatch work, or create an execution session.
+
+To reopen the same pending project after closing the owner Store, use the
+returned reference and a fresh request key:
+
+```python
+reopened = portfolio.reopen(
+    project_ref,
+    actor=actor,
+    request_id="reopen-1",
+)
+```
+
+`reopen` requires exactly the durable `project_ref`, `actor`, and non-blank
+`request_id`; it returns the existing project identity and a typed receipt.
+Retrying the same request with the same reference is an exact replay. A
+different reference or changed logical request under that key must be rejected
+without a durable delta.
+
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or
 create an execution session. Transfer deliberately adopts task and observation

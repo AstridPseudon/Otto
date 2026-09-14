@@ -203,6 +203,7 @@ class OttoPortfolio:
                 "restart": "close the owner Store and reopen it through the same owner bootstrap before restart/read evidence",
                 "typed_task_batch": "use the finite operations.sheet_port.apply(project_ref, {tasks: [...]}, logical_request_key=..., actor=operations.binding.authenticated_actor(actor), base_revision=project_ref['revision'])",
                 "protected_pending_fields": "edit_pending rejects tasks, documents, assignments, and receipts; use their typed finite ports",
+                "admission_frame": "admit requires non-blank outcome, recipient, route, and authority text; records a decision without launching, dispatching, reserving budget, or creating a session",
             },
             "operations": {
                 "create_pending": "create an inert pending project; optional edit, selected template resource/parameters, and open request",
@@ -212,7 +213,7 @@ class OttoPortfolio:
                 "read_pending": "read one durable project reference",
                 "list_pending": "list pending work records",
                 "edit_pending": "apply a validated sparse edit, preserving unknown fields",
-                "reopen": "open the same durable project reference; never create a replacement",
+                "reopen": "reopen(project_ref, actor=..., request_id=...); returns the same durable identity and exact-replays the same request without a new event",
                 "revisit": "record attention/readiness only",
                 "satisfied_prerequisite": "record attention/readiness only for a dependency change",
                 "admit": "manager decision: admit, investigate, merge, park, or drop",
