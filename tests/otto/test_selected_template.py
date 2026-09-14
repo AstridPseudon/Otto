@@ -90,7 +90,8 @@ def test_selected_template_instantiates_typed_pending_project_and_replays(tmp_pa
     assert len(_events(store)) == len(before_events) + 2
     assert created["executable"] is False
     assert created["activation"] is created["dispatch"] is False
-    assert created["budget_reserved"] is created["task_created"] is created["session_created"] is False
+    assert created["task_created"] is True
+    assert created["budget_reserved"] is created["session_created"] is False
 
     edited = api.edit_pending(
         created["project_ref"],

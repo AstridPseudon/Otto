@@ -464,7 +464,7 @@ class FiniteWorkOperations:
             "activation": False,
             "dispatch": False,
             "budget_reserved": False,
-            "task_created": False,
+            "task_created": bool(task_records),
             "session_created": False,
         }
 
