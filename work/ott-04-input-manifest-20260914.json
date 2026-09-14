@@ -10,12 +10,14 @@
     "ast_launch": false
   },
   "source": {
-    "otto_base_commit": "0806be099eecdc9b861677ef7e71f7b54d2789a6",
-    "otto_base_tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec",
+    "otto_base_commit": "1abfa7ffcebf6bc356545167c7dd8dade86b042b",
+    "otto_base_tree": "7dc5499e3f1577695019a18dfd793bef0f43233d",
+    "otto_source_custody_ancestor_commit": "0806be099eecdc9b861677ef7e71f7b54d2789a6",
+    "otto_source_custody_ancestor_tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec",
     "otto_product_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
     "otto_product_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
-    "herzchen_commit": "98430201ff196313df0ac69a701851225c8c31a7",
-    "herzchen_tree": "ddd9eaab56df1b8321443021db8283e4a75910cd",
+    "herzchen_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "herzchen_tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
     "herzchen_wheel": {
       "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl",
       "sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"
@@ -44,6 +46,15 @@
       "architecture/TASKS-AND-MANAGER-LOGIC.md": "70b3777d45dd9155ce7a50ad4036e101fb1163c12b919fda24a185e850a72139",
       "plan/PENDING-WORK.md": "94d74d3c170261e03743c5bcba615c956da0626e2cac6326c9e2966b7e157ac6",
       "orchestrator-contract.md": "fe990f9e64e0cad9d4825d7516db0eb3aa23f0222558835d552939ca4519159a"
+    },
+    "current_adopted_extraction_map": {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/plan/extraction-map.json",
+      "sha256": "bea51be5e6721e20a21e6befc0cd75dd340af103f722f0d154a671721520e413",
+      "role": "current adopted map; lineage references are historical and do not override accepted source identities below"
+    },
+    "periodic_process_amendment": {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/periodic01-adopted-process-amendment-20260914.md",
+      "sha256": "d5e6f6ee114913a31f8fce4fed7a1f835f089e0859ccd5ce7941e9f094951503"
     }
   },
   "allowed_paths": [
@@ -72,6 +83,10 @@
     "root_goal_sha256": "9de57900d69d6c7d547b921862cf9b2c49cf55bec3a68691e48be8640ea34c78",
     "wakeup_loop_skill_sha256": "d5cfd3007f65ff4b417cb6c56333c255aed55c349ee9684dfe5f77d1a1b8bb46",
     "no_remote_writes": true,
-    "no_new_provider_spend": true
+    "no_new_provider_spend": true,
+    "accepted_foundation_receipt": {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/work/g-foundation-objective-closure-20260914.json",
+      "sha256": "6efa3bd4b27c2c06850e9630441cb16e26e2c3b0e4e41396f97dd741b4e1884e"
+    }
   }
 }

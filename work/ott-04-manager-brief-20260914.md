@@ -18,15 +18,18 @@ the immutable package inputs and the accepted OTT-03/Herzchen source pins.
 
 ## Immutable inputs and custody
 
-- Otto source base: commit
+- Otto source custody ancestor: commit
   `0806be099eecdc9b861677ef7e71f7b54d2789a6`, tree
-  `3527a4dd83f32f23bd36fabce591f81fd12e50ec`.
+  `3527a4dd83f32f23bd36fabce591f81fd12e50ec`. The launch checkout includes
+  this manager-owned brief/manifest commit and must start at commit
+  `1abfa7ffcebf6bc356545167c7dd8dade86b042b`, tree
+  `7dc5499e3f1577695019a18dfd793bef0f43233d`.
 - Product source represented by that custody: commit
   `aea1ac6471784256a408daaef324dab9f5cba571`, tree
   `0f2246eefb5e5996355a8c31d3cc7a8f76655875`.
 - Accepted Herzchen source: commit
-  `98430201ff196313df0ac69a701851225c8c31a7`, tree
-  `ddd9eaab56df1b8321443021db8283e4a75910cd`; accepted wheel SHA-256
+  `b68d8f59712275229c24757664ca30d807d39e4a`, tree
+  `ee1614fc37fdd096fb9640702e124e28a391d170`; accepted wheel SHA-256
   `2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc`.
 - P01 profile must remain byte-identical at
   `profiles/otto/operating.md`, commit
@@ -66,6 +69,14 @@ Only after this representative path is green, propagate the narrow adapter to
 the rest of the tests. Use a deterministic injected clock for interval tests;
 never sleep, poll a model, create cron/distributed scheduling, or launch an
 agent as a side effect of a due report.
+
+The implementation must preserve both host modes in the public contract:
+host-compatible **awaited mode** (the current host calls the bounded check and
+returns its receipt) and explicit **durable-host mode** (a trusted host owns the
+persisted due record and later resumes it). Record which mode each proof uses,
+the host capability/availability, and the truthful unavailable-host result.
+Do not treat a fixture callback as durable-host support or claim that a later
+OTT-06 real-agent rehearsal has happened here.
 
 ## Behavior and proof obligations
 
@@ -119,4 +130,3 @@ counts, origins and return codes; and every unresolved gap. Distinguish
 fixture-only results, product proof and later OTT-06 rehearsal. Do not claim
 OTT-04 complete if any required surface remains only a fixture or if a shared
 capability gap is unresolved.
-
