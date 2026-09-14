@@ -1,0 +1,114 @@
+{
+  "task": "OTT-04",
+  "status": "correction-proven; historical OTT-04 evidence preserved",
+  "route": {
+    "model": "gpt-5.6-luna",
+    "reasoning": "high",
+    "worker_mode": "normal"
+  },
+  "custody": {
+    "baseline_commit": "4578dc63be9dee469f0b2765e90751b6086413b4",
+    "baseline_tree": "60425d76f1ebe869ceb713b7b6d1c05973d00059",
+    "final_source_commit": "54c3776b1dc466656df527724db5daa0b60f9dca",
+    "final_source_tree": "624b6fc0ea97e169d2d216e536644a2463d848e7",
+    "historical_implementation": "e69d90f995ff58ed3306e48c1fba28562d608972",
+    "historical_evidence": "ac85ba906cbc5b7a56638bd735a924c6aae2b5a3",
+    "historical_ex_host": "f44547e7f24c19823dd187e33f52599a81e1af32",
+    "historical_catalog": "fc800b36864f48acf0c1a12096756c5585ffb76f5",
+    "prior_campaign": "53 source / 53 installed tests preserved"
+  },
+  "inputs": {
+    "manifest_sha256": "65dc2f0476043a91ea8e9f86657794b25fef30e7946bab4cd13daa33f178d89f",
+    "otto_custody_commit": "0806be099eecdc9b861677ef7e71f7b54d2789a6",
+    "otto_custody_tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec",
+    "product_commit": "aea1ac6471784256a408daaef324dab9f5cba571",
+    "product_tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875",
+    "herzchen_commit": "b68d8f59712275229c24757664ca30d807d39e4a",
+    "herzchen_tree": "ee1614fc37fdd096fb9640702e124e28a391d170",
+    "herzchen_wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc",
+    "profile_sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726"
+  },
+  "final_wheel": {
+    "path": "work/ott-04-correction-20260914/dist-final2/otto_local_candidate-0.0.0-py3-none-any.whl",
+    "sha256": "1284ef086294fabd7afd539938cf3fecc9bd2581d02d403edce61886936440e3"
+  },
+  "replay_cas_sequence": {
+    "request_A_create": {
+      "request_id": "request-A",
+      "expected_version": 0,
+      "result_version": 1,
+      "result_ref_revision": "rev-1",
+      "event_delta": 1
+    },
+    "request_B_update": {
+      "request_id": "request-B",
+      "expected_version": 1,
+      "result_version": 2,
+      "result_ref_revision": "rev-2",
+      "event_delta": 1
+    },
+    "request_A_exact_replay": {
+      "request_id": "request-A",
+      "expected_version": 0,
+      "replayed_result_version": 1,
+      "replayed_result_ref_revision": "rev-1",
+      "event_delta": 0,
+      "fresh_live_version": 2
+    },
+    "request_A_changed_expected_version": {
+      "request_id": "request-A",
+      "expected_version": 99,
+      "error_type": "InputChangedError",
+      "event_delta": 0,
+      "fresh_live_version": 2
+    },
+    "request_A_changed_record": {
+      "request_id": "request-A",
+      "error_type": "InputChangedError",
+      "event_delta": 0
+    },
+    "stale_new_key_cas": {
+      "request_id": "request-C",
+      "expected_version": 1,
+      "error_type": "StateConflictError",
+      "event_delta": 0
+    }
+  },
+  "validation": {
+    "source_command": "PYTHONPATH=src work/ott-04-real-milestone-20260914/venv/bin/python -m pytest -q tests/otto/test_continuity.py",
+    "source_result": "8 passed",
+    "source_return_code": 0,
+    "installed_command": "env -u PYTHONPATH -u PYTHONHOME work/ott-04-real-milestone-20260914/venv/bin/python -m pytest -q tests/otto/test_continuity.py::test_real_store_due_record_binding_replays_cas_and_reopens tests/otto/test_continuity.py::test_real_public_amendment_composes_plan_attention_and_assignment_views",
+    "installed_result": "2 passed",
+    "installed_return_code": 0,
+    "installed_environment": {
+      "PYTHONPATH": null,
+      "PYTHONHOME": null
+    },
+    "installed_origins_log": "work/ott-04-correction-20260914/logs/installed-focused-final2.txt"
+  },
+  "raw_observations": {
+    "source": {
+      "path": "work/ott-04-correction-20260914/observation-source-final2.json",
+      "sha256": "b24a5e474ffe146a649cbd4c44b379890351f323bf2ef0305b707d0a8e6e1ab0"
+    },
+    "installed": {
+      "path": "work/ott-04-correction-20260914/observation-installed-final2.json",
+      "sha256": "6adf116477e4e4795ea148962a44f3d894ecaf94e142814ed0201be098cea5ec"
+    },
+    "installed_test_log": {
+      "path": "work/ott-04-correction-20260914/logs/installed-focused-final2.txt",
+      "sha256": "67d6ac330b803fd8f01d7e207659d281ad6fc47765d95bec5a9778f8608a0d6f"
+    }
+  },
+  "historical_and_scope": {
+    "prior_53_campaign": "preserved and not rewritten",
+    "real_durable_host": "proven through accepted public Store mutation and finite serialized client",
+    "awaited_mode": "explicitly non-durable in the existing proof",
+    "amendment": "real public ProjectSheet, assignment, and ContextPacketService composition preserved in final2 observation",
+    "no_auto_action": "due/readiness and amendment evidence report dispatch false and automatic_action false",
+    "remaining_original_boundary": "no new boundary identified by this replay-CAS correction; later OTT-06 real-agent rehearsal remains out of scope"
+  },
+  "evidence_script": "work/ott-04-correction-20260914/correction_observation.py",
+  "manager_receipt_reference": "work/ott-04-correction-launch-20260914/launch-receipt.json"
+}

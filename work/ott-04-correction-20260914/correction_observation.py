@@ -78,6 +78,14 @@ def due_proof(root):
     before_replay_count = len(store.list_events())
     historical = port.save_due(record.schedule_id, record.to_dict(), request_id="request-A", expected_version=0)
     after_replay_count = len(store.list_events())
+    precondition_error = None
+    before_precondition_count = len(store.list_events())
+    try:
+        port.save_due(record.schedule_id, record.to_dict(), request_id="request-A", expected_version=99)
+    except InputChangedError as exc:
+        precondition_error = {"type": type(exc).__name__, "message": str(exc)}
+    precondition_count = len(store.list_events())
+    live_after_precondition = port.read_due(record.schedule_id)
     changed_error = None
     changed = record.to_dict(); changed["instruction"] = "changed"
     try:
@@ -110,7 +118,8 @@ def due_proof(root):
         "action_A": {"scheduled": scheduled, "receipt": receipt_a},
         "action_B": {"updated": updated, "live_before_replay": live_before_replay},
         "historical_replay_A": {"result": historical, "event_delta": after_replay_count - before_replay_count, "fresh_live_read": live_before_replay},
-        "changed_input_rejection": {"error": changed_error, "event_delta": changed_count - after_replay_count},
+        "changed_expected_version_rejection": {"error": precondition_error, "event_delta": precondition_count - before_precondition_count, "live_version": live_after_precondition["version"]},
+        "changed_input_rejection": {"error": changed_error, "event_delta": changed_count - precondition_count},
         "cas_rejection": {"error": cas_error, "event_delta": cas_count - changed_count},
         "ready_and_restart": {"ready": ready, "before_restart": before_restart, "resumed": resumed, "reopened_record": reopened_record},
     }
