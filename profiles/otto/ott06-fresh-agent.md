@@ -132,6 +132,13 @@ Retrying the same request with the same reference is an exact replay. A
 different reference or changed logical request under that key must be rejected
 without a durable delta.
 
+The complete call sequence, including every required `actor` and
+`request_id`, is available as the shipped executable example
+`profiles/otto/ott06-public-journey.py`. Run it only with a disposable database
+path; it demonstrates the same finite public calls and the correct
+`Store.open(..., expected_domains=...)` restart composition without exposing
+any private implementation surface.
+
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or
 create an execution session. Transfer deliberately adopts task and observation
