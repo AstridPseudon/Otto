@@ -81,6 +81,8 @@ The exact accepted Herzchen wheel was introspected from installed imports, with 
 - AuthoringSessionService is present at herzchen.authoring.sessions. Observed operations include create_and_open, open, read, autosave, record_content_edit, finish, cleanup, release, wait, and recovery/fence validation methods.
 - IdleCloseService is present at herzchen.authoring.idle with close_if_idle, check, record_content_edit, and last_content_edit.
 
+The robust capability inventory command returned 0. A preceding inventory attempt returned 1 only because inspect.signature was applied to an installed builtin exception symbol; it made no mutation and was rerun with signature-error handling. The endpoint findings above are from the successful rerun.
+
 This probe establishes installed module and endpoint availability only. No endpoint was invoked against a real writer/store, no raw SQL was used, and no product persistence or live session qualification is claimed. The earlier injected representative remains fixture evidence and is not reclassified.
 
 ## Limitations and custody
@@ -88,4 +90,3 @@ This probe establishes installed module and endpoint availability only. No endpo
 The installed run proves candidate package origins and public endpoint presence for the accepted wheel. It does not prove an Otto-to-Herzchen WorkGraph composition, a durable pending project, document/link persistence, assignment persistence, authoring checkout materialisation, live host launch, or AST behavior. The current Otto facade still requires an injected canonical operation port; absent bindings remain explicitly unavailable.
 
 EX-HOST remains an intended boundary for host identity/receipt/session behavior, not delivered host cutover. Astrid consumer cutover, Runtime changes, controller transfer, publication, license/output grants, control DB writes, remote writes, and acceptance remain out of scope.
-

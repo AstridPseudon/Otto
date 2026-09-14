@@ -14,8 +14,8 @@
 - Installed Herzchen origin: venv/lib/python3.11/site-packages/herzchen/__init__.py
 - Facade fixture: deterministic execute/read-only canonical-port fixture; no persistence claim
 - Herzchen probe: WorkGraph, ProjectSheet, ProjectBatches, ContentCommandHandler, ResponsibilityAssignments, AuthoringSessionService, and IdleCloseService present; direct content.commands.link_document absent; ContentCommandHandler.build_link present.
+- Robust capability probe return code: 0. An earlier raw signature inventory returned 1 on an introspection-only builtin-signature exception and was rerun with safe signature handling; no product mutation occurred.
 - Immutable launch manifest cited: manager-input-manifest.json, SHA-256 25977fd81f942e2e25856917390de3a05762f4f187f227451865f94b6839f731
 - P01 exact profile SHA-256: 9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726
 - Earlier injected representative retained as fixture-only historical evidence.
 - No gate, acceptance, Astrid cutover, Runtime change, control DB write, remote write, publication, or license/output grant claimed.
-
