@@ -1,0 +1,58 @@
+{
+  "task": "OTT-04",
+  "status": "continuation-gaps-closed",
+  "historical_baseline": {
+    "commit": "6e2a4002622887356417c1d66211ed58c47c36c6",
+    "tree": "afd46c1aad61239815b1351afb03be73146b8721",
+    "prior_campaign": "53 source / 53 installed tests; preserved in work/ott-04-result-20260914.md and work/ott-04-real-milestone-20260914/"
+  },
+  "implementation": {
+    "commit": "e69d90f995ff58ed3306e48c1fba28562d608972",
+    "tree": "27846383db6ec3757996c93430d2c2f69159aa93",
+    "owned_paths": ["src/otto/attention.py", "tests/otto/test_continuity.py", "work/ott-04-*"]
+  },
+  "inputs": {
+    "manifest": "work/ott-04-input-manifest-20260914.json",
+    "manifest_sha256": "65dc2f0476043a91ea8e9f86657794b25fef30e7946bab4cd13daa33f178d89f",
+    "otto_custody_ancestor": {"commit": "0806be099eecdc9b861677ef7e71f7b54d2789a6", "tree": "3527a4dd83f32f23bd36fabce591f81fd12e50ec"},
+    "otto_launch_baseline": {"commit": "1abfa7ffcebf6bc356545167c7dd8dade86b042b", "tree": "7dc5499e3f1577695019a18dfd793bef0f43233d"},
+    "product": {"commit": "aea1ac6471784256a408daaef324dab9f5cba571", "tree": "0f2246eefb5e5996355a8c31d3cc7a8f76655875"},
+    "herzchen": {"commit": "b68d8f59712275229c24757664ca30d807d39e4a", "tree": "ee1614fc37fdd096fb9640702e124e28a391d170", "wheel_sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"},
+    "profile": {"path": "profiles/otto/operating.md", "commit": "5482198b004375310d4fec33204e8fb71763a369", "tree": "a3515b8ba1ae45293a74e451be2061f1a7a00827", "sha256": "9d277b810adcbeac445d5aff2fc31a8052cfa99b844696e11412a90d11744726"}
+  },
+  "route": {"model": "gpt-5.6-luna", "reasoning": "high", "worker": "normal", "review_oracle_or_ast": false, "launch_receipt": "work/ott-04-continuation-launch-20260914/launch-receipt.json"},
+  "fresh_wheels": {
+    "otto": {"path": "work/ott-04-continuation-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl", "sha256": "8e3ad556abb80f6125f79813ceff40203e37e9562223359842c91243f0238642"},
+    "herzchen": {"path": "../Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl", "sha256": "2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc"}
+  },
+  "product_proof": {
+    "durable_host": "work/ott-04-continuation-20260914/real-observation-installed.json",
+    "source_observation": "work/ott-04-continuation-20260914/real-observation-source.json",
+    "real_store": true,
+    "public_operations": ["Store.register_domain_handler", "DomainHandler.mutate", "Store.get_identity", "Store.get_receipt", "Store.open", "ContextPacketService.notify_amendment", "ContextPacketService.list_attention", "WorkGraph", "ProjectSheet.apply", "ProjectSheet.pin_assignment_route", "ResponsibilityAssignments.get"],
+    "durable_record_fields": ["recipient", "instruction", "profile", "anchor", "due_at", "interval_seconds", "last_covered_slot", "invocation_identity", "stop_state", "outstanding_decisions", "in_flight_request", "last_result", "owner", "return_condition"],
+    "receipt_logical_keys": ["schedule-observed", "decision:decision-observed", "check:<request-id>"],
+    "replay_delta": 0,
+    "changed_input_delta": 0,
+    "cas_conflict_delta": 0,
+    "coalesced_missed_slots": 2,
+    "restart": "same in-flight request, anchor, invocation identity and outstanding wait decision reopened from Store; no relaunch",
+    "amendment": "real manager-selected plan/task change + next_dispatch + assignment route + open attention; owner, usage/budget view and running input pins preserved",
+    "no_auto_action": "no work.assignment.dispatched event; readiness and amendment responses set dispatch/automatic_action false"
+  },
+  "validation": {
+    "source_affected_file": {"command": "PYTHONPATH=src venv/bin/python -m pytest -q tests/otto/test_continuity.py", "passed": 8, "failed": 0, "return_code": 0},
+    "installed_focused_selection": {"command": "env -u PYTHONPATH -u PYTHONHOME venv/bin/python pytest.main(two-real-product-tests)", "passed": 2, "failed": 0, "return_code": 0, "origins": "work/ott-04-continuation-20260914/logs/installed-real-selection.txt"},
+    "module_origins_same_installed_process": "venv/lib/python3.9/site-packages/otto and herzchen; PYTHONPATH/PYTHONHOME were unset",
+    "build_return_code": 0,
+    "install_return_code": 0,
+    "raw_commands": ["work/ott-04-continuation-20260914/logs/build-wheel-pip.txt", "work/ott-04-continuation-20260914/logs/install-wheels.txt", "work/ott-04-continuation-20260914/logs/installed-real-selection.txt"]
+  },
+  "mode_boundaries": {
+    "awaited": "prior and current state machine tests; current-host-call capability is explicitly non-durable",
+    "durable_host": "current continuation real Store/DomainHandler binding and restart observation",
+    "fixture_only": "InMemoryDueRecordPort and fixture amendment test remain mechanical coverage only",
+    "ott06_rehearsal": "not run; no agent launch or callback transport was introduced",
+    "unresolved_gaps": []
+  }
+}

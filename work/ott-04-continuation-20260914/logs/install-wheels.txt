@@ -1,0 +1,14 @@
+Processing /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl
+Processing ./work/ott-04-continuation-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl
+Installing collected packages: otto-local-candidate, herzchen-contracts
+  Attempting uninstall: otto-local-candidate
+    Found existing installation: otto-local-candidate 0.0.0
+    Uninstalling otto-local-candidate-0.0.0:
+      Successfully uninstalled otto-local-candidate-0.0.0
+  Attempting uninstall: herzchen-contracts
+    Found existing installation: herzchen-contracts 0.1.0
+    Uninstalling herzchen-contracts-0.1.0:
+      Successfully uninstalled herzchen-contracts-0.1.0
+Successfully installed herzchen-contracts-0.1.0 otto-local-candidate-0.0.0
+WARNING: You are using pip version 21.2.4; however, version 26.0.1 is available.
+You should consider upgrading via the '/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Otto-ott04-worker/work/ott-04-real-milestone-20260914/venv/bin/python -m pip install --upgrade pip' command.

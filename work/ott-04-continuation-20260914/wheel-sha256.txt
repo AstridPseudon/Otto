@@ -1,0 +1,2 @@
+8e3ad556abb80f6125f79813ceff40203e37e9562223359842c91243f0238642  work/ott-04-continuation-20260914/dist/otto_local_candidate-0.0.0-py3-none-any.whl
+2681daaeb673cd636050c3805977a01a670ed6bcfc113fe9d85903af5eeae9bc  /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/portfolios/otto-herzchen-delivery/local/repos/Herzchen-gf01-consumer-separation-worker/work/gf01-consumer-writer-separation-worker-receipt-20260914/dist/herzchen_contracts-0.1.0-py3-none-any.whl

@@ -1,0 +1,13 @@
+{
+  "historical": {"source": 53, "installed": 53, "artifact": "work/ott-04-result-20260914.md"},
+  "continuation": {"source_affected_file": 8, "installed_real_product_selection": 2},
+  "source_return_code": 0,
+  "installed_return_code": 0,
+  "installed_environment": {"PYTHONPATH": null, "PYTHONHOME": null},
+  "installed_origins": {
+    "otto": "work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/otto/__init__.py",
+    "otto_attention": "work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/otto/attention.py",
+    "herzchen": "work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/__init__.py",
+    "herzchen_kernel": "work/ott-04-real-milestone-20260914/venv/lib/python3.9/site-packages/herzchen/kernel/__init__.py"
+  }
+}
