@@ -275,7 +275,7 @@ def test_real_public_amendment_composes_plan_attention_and_assignment_views(tmp_
     from herzchen.domains.work import WorkGraph
     from herzchen.domains.work.assignments import ResponsibilityAssignments
     from herzchen.kernel import Store
-    from otto.attention import ImprovementPropagation, issue_store_amendment_port
+    from otto.attention import AttentionError, ImprovementPropagation, issue_store_amendment_port
 
     authority = "ott04-real-amendment"
     path = tmp_path / "real-amendment.sqlite"
@@ -302,6 +302,10 @@ def test_real_public_amendment_composes_plan_attention_and_assignment_views(tmp_
     assert not hasattr(amendment, "_apply")
     assert not hasattr(amendment, "store")
     assert tuple(amendment.transport.endpoints) == ("apply_amendment", "read_views")
+    before_decision_events = len(store.list_events())
+    with pytest.raises(AttentionError):
+        amendment.apply_amendment({"request_id": "unauthorized", "manager_decision": "seen", "amendment": {}})
+    assert len(store.list_events()) == before_decision_events
     propagation = ImprovementPropagation(amendment)
     handled = propagation.handle_review("review-real-1", recipient="owner-1", return_condition="manager selects an amendment")
     assert handled["implemented_improvement"] is False
