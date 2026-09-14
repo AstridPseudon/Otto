@@ -85,7 +85,7 @@ def main() -> None:
         actor=operations.binding.authenticated_actor(actor),
         base_revision=read_after_edit["project_ref"]["revision"],
     )
-    task_ref = task_batch["project_ref"]
+    task_ref = task_batch.project.ref.to_dict()
     read_after_tasks = portfolio.read_pending(task_ref, actor=actor)
     decision_frame = {
         "outcome": "Investigate the dependency before any admission or execution step",

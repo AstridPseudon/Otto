@@ -201,7 +201,7 @@ class OttoPortfolio:
                 "required_owner_registration": ["register_work(store)", "content.domain_contribution()", "register_authoring(store)"],
                 "consumer_boundary": "finite serialized operations and reader only; no Store, DomainHandler, database path, SQL, callback, or generic writer",
                 "restart": "close the owner Store and reopen it through the same owner bootstrap before restart/read evidence",
-                "typed_task_batch": "use the finite operations.sheet_port.apply(project_ref, {tasks: [...]}, logical_request_key=..., actor=operations.binding.authenticated_actor(actor), base_revision=project_ref['revision'])",
+                "typed_task_batch": "use the finite operations.sheet_port.apply(project_ref, {tasks: [...]}, logical_request_key=..., actor=operations.binding.authenticated_actor(actor), base_revision=project_ref['revision']); read its returned project with batch.project.ref.to_dict()",
                 "protected_pending_fields": "edit_pending rejects tasks, documents, assignments, and receipts; use their typed finite ports",
                 "admission_frame": "admit requires non-blank outcome, recipient, route, and authority text; records a decision without launching, dispatching, reserving budget, or creating a session",
                 "public_journey_example": "profiles/otto/ott06-public-journey.py contains a complete create/edit/read/replay/task-batch/admit/close-open/reopen sequence with every actor and request_id argument",

@@ -87,9 +87,11 @@ batch = operations.sheet_port.apply(
 
 This is a finite serialized public port; it does not expose Store, a domain
 handler, a database descriptor, SQL, or a generic writer. The batch result
-contains typed task mappings and a canonical receipt. Read the returned
-project reference before a same-key retry and preserve the original target
-reference for exact replay. A binding that reports `work.pending.list` as
+contains typed task mappings and a canonical receipt. Its project reference is
+`batch.project.ref.to_dict()`; pass that returned mapping to
+`portfolio.read_pending(project_ref, actor=actor)` before a same-key retry and
+preserve the original target reference for exact replay. A binding that reports
+`work.pending.list` as
 unavailable must record that public-surface gap; do not substitute a private
 reader or infer a list from implementation state.
 
