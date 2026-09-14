@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix="ott06-transfer-") as raw:
         actor="manager",
     )
     exported = source.execute(
-        "work.project.export", {"project_ref": created["project_ref"], "document_refs": [doc["document_ref"]]}, request_id="export", actor="manager"
+        "work.project.export", {"project_ref": created["project_ref"], "document_refs": [doc["document_ref"]], "association_refs": [linked["association_ref"]]}, request_id="export", actor="manager"
     )
     imported = target.execute(
         "work.project.import", {"snapshot": exported["snapshot"]}, request_id="import", actor="manager"
@@ -132,10 +132,19 @@ with tempfile.TemporaryDirectory(prefix="ott06-transfer-") as raw:
         actor="manager-old",
     )
     reopened_counts = reopened.reader.snapshot_counts()
+    imported_task_records = []
+    for raw_ref in imported.get("task_refs", ()):
+        record = target.reader.get_record(ResourceRef.from_dict(raw_ref))
+        if record is not None:
+            imported_task_records.append({"ref": record.ref.to_dict(), "payload": record.payload})
     print(json.dumps({
         "source_project": created["project_ref"],
         "export_digest": exported["snapshot_digest"],
         "seeded_sheet": {"mappings": str(getattr(seeded, "mappings", {})), "project_tasks": len(exported["snapshot"].get("tasks", [])), "project_documents": len(exported["snapshot"].get("documents", []))},
+        "exported_task_summaries": [{"id": item.get("payload", {}).get("id"), "dependencies": item.get("payload", {}).get("dependencies", [])} for item in exported["snapshot"].get("tasks", [])],
+        "exported_document_refs": [item.get("project_ref") for item in exported["snapshot"].get("documents", [])],
+        "exported_document_link_count": len(exported["snapshot"].get("document_links", [])),
+        "imported_task_records": imported_task_records,
         "source_document": doc,
         "source_document_link": linked,
         "imported": imported,

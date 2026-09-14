@@ -30,8 +30,13 @@ The supported command sequence is:
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or
 create an execution session. Transfer deliberately adopts task and observation
-payloads into a new pending project; assignment, session, dispatch, execution,
-manager-launch, and budget identities remain provenance-only and are not cloned.
+payloads into a new pending project and remaps dependencies between transferred
+tasks to the destination task identities. Export also carries the public
+document revision and link records for an independent content comparison;
+deferred seed adoption retains those records in the destination adoption
+metadata instead of cloning a live destination document identity. Assignment,
+session, dispatch, execution, manager-launch, and budget identities remain
+provenance-only and are not cloned, as required by the pending-seed boundary.
 A host owns the Store and writer lease; the consumer never receives a database
 path, Store, DomainHandler, callback, or generic writer. For a real authoring
 close, the owner supplies the managed writer-state callback and the public idle

@@ -261,13 +261,34 @@ class FiniteWorkOperations:
             except Exception:
                 document = None
             if document is not None:
-                documents.append(_record_dict(document))
+                document_value = _record_dict(document)
+                current_revision = document_value.get("payload", {}).get("current_revision")
+                if current_revision is not None:
+                    try:
+                        revision = self.reader.get_record(self._record_ref(current_revision))
+                    except Exception:
+                        revision = None
+                    if revision is not None:
+                        document_value["current_revision_record"] = _record_dict(revision)
+                documents.append(document_value)
+        links = []
+        requested_links = payload.get("association_refs", ())
+        if not isinstance(requested_links, (list, tuple)):
+            return {"outcome": "error", "error": {"code": "invalid_association_refs", "message": "association_refs must be an array", "operation": "work.project.export"}, "event_ids": []}
+        for raw_ref in requested_links:
+            try:
+                association = self.reader.get_record(self._record_ref(raw_ref))
+            except Exception:
+                association = None
+            if association is not None:
+                links.append(_record_dict(association))
         snapshot = {
             "schema": "otto.project-transfer.v1",
             "source_ref": _json_value(record.ref),
             "project": source,
             "tasks": tasks,
             "documents": documents,
+            "document_links": links,
             "transfer_limits": {
                 "assignments": "provenance-only; source assignment identity and generation are not cloned",
                 "sessions": "not cloned",
@@ -331,10 +352,34 @@ class FiniteWorkOperations:
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
             raise
         target_ref = created.ref
+        raw_tasks = list(snapshot.get("tasks", ()))
+        task_ids = {}
+        for item in raw_tasks:
+            value = item.get("payload") if isinstance(item, Mapping) and isinstance(item.get("payload"), Mapping) else item
+            if isinstance(value, Mapping) and value.get("id"):
+                task_ids[str(value["id"])] = str(value["id"])
+        adopted_tasks = []
+        for item in raw_tasks:
+            value = item.get("payload") if isinstance(item, Mapping) and isinstance(item.get("payload"), Mapping) else item
+            if not isinstance(value, Mapping):
+                continue
+            task = dict(value)
+            dependencies = []
+            for dependency in task.get("dependencies", ()):
+                dep_id = dependency.get("id") if isinstance(dependency, Mapping) else dependency
+                if dep_id is not None and str(dep_id) in task_ids:
+                    dependencies.append(task_ids[str(dep_id)])
+            task["dependencies"] = dependencies
+            adopted_tasks.append(task)
         adopted_source = dict(edit_payload)
-        adopted_source["tasks"] = list(snapshot.get("tasks", ()))
-        if snapshot.get("documents"):
-            adopted_source["documents"] = list(snapshot["documents"])
+        adopted_source["tasks"] = adopted_tasks
+        # DAT content remains an independent source-owned identity.  Preserve
+        # its full public record and association under adoption metadata rather
+        # than manufacturing a destination content revision; C38 explicitly
+        # permits deferred seeds to retain unknown fields without cloning live
+        # grants, sessions, or accepted results.
+        adopted_source["documents"] = list(snapshot.get("documents", ()))
+        adopted_source["document_links"] = list(snapshot.get("document_links", ()))
         try:
             adopted = self.sheet_port.adopt_existing_effort(
                 adopted_source,
@@ -360,6 +405,7 @@ class FiniteWorkOperations:
             "receipt": _receipt_dict(receipt),
             "adoption_receipt": _receipt_dict(adoption_receipt),
             "task_refs": _json_value(tasks),
+            "content_provenance": {"documents": len(snapshot.get("documents", ())), "document_links": len(snapshot.get("document_links", ())), "destination_content_identity_created": False},
             "dispatch": False,
             "execution": False,
             "manager_launch": False,
@@ -942,7 +988,20 @@ class FiniteWorkOperations:
         project_ref = self._record_ref(payload["project_ref"])
         doc_id = payload.get("document_id") or "document-" + sha256(request_id.encode()).hexdigest()[:28]
         document_ref = ResourceRef(self.binding.authority, "dat.content.document", doc_id)
-        document = ContentDocument(document_ref, payload.get("role", "supporting"), payload.get("visibility", "private"), payload.get("access_mode", "read"), actor, authoring_scope=project_ref)
+        source_ref = self._record_ref(payload["source_ref"]) if payload.get("source_ref") is not None else None
+        import_mode = payload.get("import_mode", "owned")
+        writable = bool(payload.get("writable", True))
+        document = ContentDocument(
+            document_ref,
+            payload.get("role", "supporting"),
+            payload.get("visibility", "private"),
+            payload.get("access_mode", "read"),
+            actor,
+            authoring_scope=project_ref,
+            source_ref=source_ref,
+            import_mode=import_mode,
+            writable=writable,
+        )
         revision = ContentRevision(document_ref, "rev-1", payload.get("content", {}), actor_value, initial=True)
         command_payload = {"document": document, "revision": revision}
         context = self._content_context("dat.content.document.create", document_ref, request_id, actor_value, command_payload, CONTENT_SCHEMA_REVISION)
