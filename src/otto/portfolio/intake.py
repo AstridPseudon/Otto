@@ -1,0 +1,401 @@
+"""Public OTT-03 intake facade.
+
+This module validates the small product contract and delegates all durable
+work to a supplied canonical Herzchen operation port.  The port is expected to
+be the accepted work-record adapter (or a neutral fixture implementing the
+same public call shape):
+
+``execute(operation, payload, request_id=..., actor=...) -> Mapping``
+``read(operation, payload, actor=...) -> Mapping``
+
+No Otto-owned store is provided as a fallback.  An absent port is reported as
+an explicit unsupported boundary so callers cannot mistake a local no-op for
+durable work.
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+import json
+from typing import Any, Mapping, Optional, Protocol, Sequence
+
+
+ADMISSION_CHOICES = ("admit", "investigate", "merge", "park", "drop")
+EDITABLE_FIELDS = frozenset(
+    {
+        "title",
+        "outcome",
+        "curator",
+        "why_pending",
+        "documents",
+        "links",
+        "revisit",
+        "metadata",
+        "custom",
+    }
+)
+_PROTECTED_FIELDS = frozenset(
+    {
+        "id",
+        "kind",
+        "authority",
+        "revision",
+        "lifecycle",
+        "state",
+        "readiness",
+        "manager",
+        "manager_assignment",
+        "executor",
+        "parent",
+        "tasklist",
+        "tasks",
+        "allowance",
+        "budget",
+        "session",
+        "accepted_result",
+        "dispatch",
+        "admitted",
+    }
+)
+
+
+class PortfolioError(ValueError):
+    """A rejected public request that must have no canonical side effect."""
+
+
+class WorkOperations(Protocol):
+    """The public Herzchen work-operation port consumed by Otto."""
+
+    def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        ...
+
+    def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        ...
+
+
+def _json_copy(value: Any, *, field: str = "value") -> Any:
+    """Return JSON data without allowing opaque Python objects into records."""
+
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    except (TypeError, ValueError) as exc:
+        raise PortfolioError(f"{field} must be JSON-compatible") from exc
+
+
+def _text(value: Any, field: str, *, required: bool = True) -> str:
+    if not isinstance(value, str) or (required and not value.strip()) or "\x00" in value:
+        requirement = "a non-blank" if required else "text"
+        raise PortfolioError(f"{field} must be {requirement} value")
+    return value.strip() if required else value
+
+
+def _ref(value: Any, field: str = "project_ref") -> dict[str, Any]:
+    if isinstance(value, str):
+        return {"id": _text(value, field)}
+    if not isinstance(value, Mapping):
+        raise PortfolioError(f"{field} must be a durable reference object")
+    result = _json_copy(dict(value), field=field)
+    if not isinstance(result.get("id"), str) or not result["id"].strip():
+        raise PortfolioError(f"{field}.id must be non-blank")
+    return result
+
+
+def _edit(value: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise PortfolioError("edit must be an object")
+    result = _json_copy(dict(value), field="edit")
+    if not isinstance(result, dict):
+        raise PortfolioError("edit must be an object")
+    for key in result:
+        if not isinstance(key, str) or not key.strip():
+            raise PortfolioError("edit field names must be non-blank text")
+        if key in _PROTECTED_FIELDS:
+            raise PortfolioError(f"protected field cannot be edited: {key}")
+    for key in ("title", "outcome", "curator", "why_pending"):
+        if key in result and not isinstance(result[key], str):
+            raise PortfolioError(f"{key} must be text")
+    return result
+
+
+def _result(value: Any, *, operation: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {
+            "outcome": "error",
+            "error": {"code": "malformed_canonical_result", "message": f"{operation} returned a non-object"},
+        }
+    return _json_copy(dict(value), field=f"{operation} result")
+
+
+def unavailable_operations() -> "UnavailableWorkOperations":
+    """Create an explicit no-binding port for CLI/readiness diagnostics."""
+
+    return UnavailableWorkOperations()
+
+
+class UnavailableWorkOperations:
+    """No-op boundary used when the accepted Herzchen work binding is absent."""
+
+    def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        return {
+            "outcome": "unavailable",
+            "operation": operation,
+            "error": {
+                "code": "canonical_work_port_unavailable",
+                "message": "accepted Herzchen work operations are not bound in this environment",
+            },
+        }
+
+    def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        return self.execute(operation, payload, request_id="read-only", actor=actor)
+
+
+class HerzchenWorkOperations:
+    """Thin public adapter around an injected Herzchen work operation object.
+
+    The object may be the installed Herzchen adapter or a neutral fixture.  It
+    must expose ``execute`` and ``read``; Otto never imports a sibling source
+    checkout or reaches through a private store.
+    """
+
+    def __init__(self, canonical: Any = None) -> None:
+        self.canonical = canonical
+
+    def _bound(self) -> Any:
+        if self.canonical is None:
+            return unavailable_operations()
+        if not callable(getattr(self.canonical, "execute", None)) or not callable(getattr(self.canonical, "read", None)):
+            return unavailable_operations()
+        return self.canonical
+
+    def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        return self._bound().execute(operation, payload, request_id=request_id, actor=actor)
+
+    def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        return self._bound().read(operation, payload, actor=actor)
+
+
+class OttoPortfolio:
+    """Manager-facing OTT-03 API over canonical Herzchen work records."""
+
+    def __init__(self, operations: Optional[WorkOperations] = None) -> None:
+        self.operations: WorkOperations = operations or unavailable_operations()
+
+    @staticmethod
+    def help() -> dict[str, Any]:
+        return {
+            "surface": "otto.portfolio",
+            "purpose": "capture and explicitly admit pending projects through canonical work operations",
+            "operations": {
+                "create_pending": "create an inert pending project; optional edit, template, and open request",
+                "create_and_open": "create_pending with open requested, using the blank starter by default",
+                "read_pending": "read one durable project reference",
+                "list_pending": "list pending work records",
+                "edit_pending": "apply a validated sparse edit, preserving unknown fields",
+                "reopen": "open the same durable project reference; never create a replacement",
+                "revisit": "record attention/readiness only",
+                "satisfied_prerequisite": "record attention/readiness only for a dependency change",
+                "admit": "manager decision: admit, investigate, merge, park, or drop",
+                "assign_roles": "bind one parent, one accountable manager, and bounded executor(s)",
+                "handoff": "fence replacement and preserve identity, evidence, consumption, and parent obligation",
+            },
+            "invariants": [
+                "pending creation does not create a manager, tasklist, allowance, session, or accepted result",
+                "revisit and prerequisite signals never activate or dispatch work",
+                "same request_id is resolved by the canonical receipt/replay contract",
+                "host launch/session/AST behavior is outside this surface and unavailable bindings fail explicitly",
+            ],
+        }
+
+    def _request(self, request_id: str, actor: str) -> tuple[str, str]:
+        return _text(request_id, "request_id"), _text(actor, "actor")
+
+    def _execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        try:
+            value = self.operations.execute(operation, _json_copy(dict(payload), field="payload"), request_id=request_id, actor=actor)
+        except Exception as exc:  # canonical owner reports its own transaction/rejection details
+            return {"outcome": "error", "error": {"code": "canonical_rejected", "message": str(exc), "operation": operation}}
+        return _result(value, operation=operation)
+
+    def _read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        actor = _text(actor, "actor")
+        try:
+            value = self.operations.read(operation, _json_copy(dict(payload), field="payload"), actor=actor)
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": "canonical_read_failed", "message": str(exc), "operation": operation}}
+        return _result(value, operation=operation)
+
+    def create_pending(
+        self,
+        *,
+        actor: str,
+        request_id: str,
+        edit: Optional[Mapping[str, Any]] = None,
+        template: Any = None,
+        open_project: bool = False,
+        open: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        if open is not None:
+            if not isinstance(open, bool):
+                raise PortfolioError("open must be boolean")
+            open_project = open
+        if not isinstance(open_project, bool):
+            raise PortfolioError("open_project must be boolean")
+        edit_value = _edit(edit)
+        template_value = "blank" if template is None else _json_copy(template, field="template")
+        if isinstance(template_value, str):
+            _text(template_value, "template")
+        elif not isinstance(template_value, Mapping):
+            raise PortfolioError("template must be a name or object")
+        return self._execute(
+            "work.pending.create",
+            {"edit": edit_value, "template": template_value, "open": bool(open_project)},
+            request_id=request_id,
+            actor=actor,
+        )
+
+    def create_and_open(self, **kwargs: Any) -> dict[str, Any]:
+        kwargs["open_project"] = True
+        return self.create_pending(**kwargs)
+
+    def read_pending(self, project_ref: Any, *, actor: str) -> dict[str, Any]:
+        return self._read("work.pending.read", {"project_ref": _ref(project_ref)}, actor=actor)
+
+    def list_pending(self, *, actor: str, parent_ref: Any = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if parent_ref is not None:
+            payload["parent_ref"] = _ref(parent_ref, "parent_ref")
+        return self._read("work.pending.list", payload, actor=actor)
+
+    def edit_pending(self, project_ref: Any, edit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        return self._execute(
+            "work.pending.edit",
+            {"project_ref": _ref(project_ref), "edit": _edit(edit)},
+            request_id=request_id,
+            actor=actor,
+        )
+
+    def reopen(self, project_ref: Any, *, actor: str, request_id: str) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        return self._execute("work.pending.open", {"project_ref": _ref(project_ref)}, request_id=request_id, actor=actor)
+
+    def revisit(self, project_ref: Any, revisit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        if not isinstance(revisit, Mapping) or not revisit:
+            raise PortfolioError("revisit must be a non-empty object")
+        return self._execute(
+            "work.pending.revisit",
+            {"project_ref": _ref(project_ref), "revisit": _json_copy(dict(revisit), field="revisit"), "attention_only": True},
+            request_id=request_id,
+            actor=actor,
+        )
+
+    def satisfied_prerequisite(self, project_ref: Any, prerequisite_ref: Any, *, actor: str, request_id: str) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        return self._execute(
+            "work.pending.prerequisite-satisfied",
+            {"project_ref": _ref(project_ref), "prerequisite_ref": _ref(prerequisite_ref, "prerequisite_ref"), "attention_only": True},
+            request_id=request_id,
+            actor=actor,
+        )
+
+    @staticmethod
+    def _roles(roles: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(roles, Mapping):
+            raise PortfolioError("roles must be an object")
+        parent = _ref(roles.get("parent"), "roles.parent")
+        manager = _text(roles.get("manager"), "roles.manager")
+        executor = roles.get("executor")
+        if isinstance(executor, str):
+            executor_value: Any = [_text(executor, "roles.executor")]
+        elif isinstance(executor, Sequence) and not isinstance(executor, (str, bytes)):
+            executor_value = [_text(value, "roles.executor") for value in executor]
+            if not executor_value:
+                raise PortfolioError("roles.executor must not be empty")
+        else:
+            raise PortfolioError("roles.executor must be text or a bounded list of text")
+        if len(executor_value) > 8:
+            raise PortfolioError("roles.executor exceeds the bounded executor limit")
+        result = {"parent": parent, "manager": manager, "executor": executor_value}
+        if "profile" in roles:
+            result["profile"] = _text(roles["profile"], "roles.profile")
+        return result
+
+    def admit(
+        self,
+        project_ref: Any,
+        *,
+        choice: str,
+        frame: Mapping[str, Any],
+        actor: str,
+        request_id: str,
+        roles: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        choice = _text(choice, "choice")
+        if choice not in ADMISSION_CHOICES:
+            raise PortfolioError("choice must be one of: " + ", ".join(ADMISSION_CHOICES))
+        if not isinstance(frame, Mapping):
+            raise PortfolioError("frame must be an object")
+        frame_value = _json_copy(dict(frame), field="frame")
+        for key in ("outcome", "recipient", "route", "authority"):
+            _text(frame_value.get(key), f"frame.{key}")
+        payload: dict[str, Any] = {"project_ref": _ref(project_ref), "choice": choice, "frame": frame_value}
+        if roles is not None:
+            payload["roles"] = self._roles(roles)
+        return self._execute("work.pending.admission", payload, request_id=request_id, actor=actor)
+
+    def assign_roles(self, project_ref: Any, roles: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        return self._execute(
+            "work.responsibility.assign",
+            {"project_ref": _ref(project_ref), "roles": self._roles(roles)},
+            request_id=request_id,
+            actor=actor,
+        )
+
+    def handoff(
+        self,
+        project_ref: Any,
+        *,
+        from_manager: str,
+        to_manager: str,
+        evidence_refs: Sequence[Any],
+        consumption_refs: Sequence[Any],
+        parent_obligation: Any,
+        actor: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        request_id, actor = self._request(request_id, actor)
+        from_manager, to_manager = _text(from_manager, "from_manager"), _text(to_manager, "to_manager")
+        if from_manager == to_manager:
+            raise PortfolioError("handoff must name a replacement manager")
+        if not isinstance(evidence_refs, Sequence) or isinstance(evidence_refs, (str, bytes)) or not evidence_refs:
+            raise PortfolioError("evidence_refs must be a non-empty list")
+        if not isinstance(consumption_refs, Sequence) or isinstance(consumption_refs, (str, bytes)) or not consumption_refs:
+            raise PortfolioError("consumption_refs must be a non-empty list")
+        payload = {
+            "project_ref": _ref(project_ref),
+            "from_manager": from_manager,
+            "to_manager": to_manager,
+            "evidence_refs": [_ref(value, "evidence_ref") for value in evidence_refs],
+            "consumption_refs": [_ref(value, "consumption_ref") for value in consumption_refs],
+            "parent_obligation": _ref(parent_obligation, "parent_obligation"),
+            "safe_handoff": True,
+        }
+        return self._execute("work.responsibility.handoff", payload, request_id=request_id, actor=actor)
+
+
+__all__ = [
+    "ADMISSION_CHOICES",
+    "EDITABLE_FIELDS",
+    "HerzchenWorkOperations",
+    "OttoPortfolio",
+    "PortfolioError",
+    "UnavailableWorkOperations",
+    "unavailable_operations",
+]
