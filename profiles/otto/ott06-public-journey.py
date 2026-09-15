@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from herzchen.authoring import register_authoring
@@ -18,6 +19,23 @@ from herzchen.contracts import ResourceRef
 from herzchen.domains.work import register_work
 from herzchen.kernel.store import Store
 from otto.portfolio import HerzchenBindingConfig, OttoPortfolio, PortfolioOwnerBootstrap
+
+
+def public(value):
+    """Convert typed public results to JSON without inspecting implementations."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): public(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [public(item) for item in value]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return public(to_dict())
+    if hasattr(value, "value"):
+        return public(value.value)
+    return str(value)
 
 
 def bootstrap(path: Path, authority: str, credential_ref: str, actor: str, *, reopen: bool, domains=()):
@@ -86,6 +104,7 @@ def main() -> None:
         base_revision=read_after_edit["project_ref"]["revision"],
     )
     task_ref = task_batch.project.ref.to_dict()
+    task_view = operations.sheet_port.export(ResourceRef.from_dict(task_ref)).to_dict()
     read_after_tasks = portfolio.read_pending(task_ref, actor=actor)
     decision_frame = {
         "outcome": "Investigate the dependency before any admission or execution step",
@@ -125,7 +144,13 @@ def main() -> None:
                 "edited": edited,
                 "read_after_edit": read_after_edit,
                 "edit_replay": edit_replay,
-                "task_batch": task_batch,
+                "task_batch": {
+                    "status": task_batch.status,
+                    "project_ref": task_ref,
+                    "mappings": public(task_batch.mappings),
+                    "receipt": public(task_batch.receipt),
+                    "view": public(task_view),
+                },
                 "read_after_tasks": read_after_tasks,
                 "admission": admission,
                 "reopened": reopened,
