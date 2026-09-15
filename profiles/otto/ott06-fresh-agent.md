@@ -139,7 +139,11 @@ The complete call sequence, including every required `actor` and
 `profiles/otto/ott06-public-journey.py`. Run it only with a disposable database
 path; it demonstrates the same finite public calls and the correct
 `Store.open(..., expected_domains=...)` restart composition without exposing
-any private implementation surface.
+any private implementation surface. Use `--help` to inspect its usage without
+creating a database, `--db /private/tmp/example.sqlite3` for the disposable
+path, and `--output /private/tmp/example.json` to retain complete JSON without
+terminal truncation. Unknown command-line arguments are rejected before the
+owner Store is created.
 
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or

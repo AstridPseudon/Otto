@@ -8,6 +8,7 @@ read/replay check.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from collections.abc import Mapping
@@ -54,8 +55,18 @@ def bootstrap(path: Path, authority: str, credential_ref: str, actor: str, *, re
     return store, owner, OttoPortfolio(owner.consumer_operations())
 
 
-def main() -> None:
-    path = Path(os.environ.get("OTT06_EXAMPLE_DB", "/private/tmp/ott06-public-example.sqlite3"))
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="Run the public OTT-06 manager journey")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path(os.environ.get("OTT06_EXAMPLE_DB", "/private/tmp/ott06-public-example.sqlite3")),
+        help="disposable SQLite path (default: OTT06_EXAMPLE_DB or /private/tmp/ott06-public-example.sqlite3)",
+    )
+    parser.add_argument("--output", type=Path, help="write the complete JSON result to this file")
+    args = parser.parse_args(argv)
+
+    path = args.db
     if path.exists():
         raise RuntimeError(f"refusing an existing database path: {path}")
     authority = "ott06-public-example"
@@ -135,34 +146,32 @@ def main() -> None:
     after_list = reopened_portfolio.list_pending(actor=actor)
     reopened_store.close()
 
-    print(
-        json.dumps(
-            {
-                "help": help_value,
-                "before_list": before_list,
-                "created": created,
-                "edited": edited,
-                "read_after_edit": read_after_edit,
-                "edit_replay": edit_replay,
-                "task_batch": {
-                    "status": task_batch.status,
-                    "project_ref": task_ref,
-                    "mappings": public(task_batch.mappings),
-                    "receipt": public(task_batch.receipt),
-                    "view": public(task_view),
-                },
-                "read_after_tasks": read_after_tasks,
-                "admission": admission,
-                "reopened": reopened,
-                "reopen_replay": reopen_replay,
-                "reopened_read": reopened_read,
-                "after_list": after_list,
-            },
-            indent=2,
-            sort_keys=True,
-            default=str,
-        )
-    )
+    payload = {
+        "help": help_value,
+        "before_list": before_list,
+        "created": created,
+        "edited": edited,
+        "read_after_edit": read_after_edit,
+        "edit_replay": edit_replay,
+        "task_batch": {
+            "status": task_batch.status,
+            "project_ref": task_ref,
+            "mappings": public(task_batch.mappings),
+            "receipt": public(task_batch.receipt),
+            "view": public(task_view),
+        },
+        "read_after_tasks": read_after_tasks,
+        "admission": admission,
+        "reopened": reopened,
+        "reopen_replay": reopen_replay,
+        "reopened_read": reopened_read,
+        "after_list": after_list,
+    }
+    serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    if args.output is None:
+        print(serialized)
+    else:
+        args.output.write_text(serialized + "\n")
 
 
 if __name__ == "__main__":
