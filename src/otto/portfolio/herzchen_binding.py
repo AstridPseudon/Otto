@@ -455,6 +455,17 @@ class FiniteWorkOperations:
             adopted_tasks.append(task)
         adopted_source = dict(edit_payload)
         adopted_source["tasks"] = adopted_tasks
+        # The Otto transfer schema calls these values ``external_accounting_refs``
+        # because they are source-owned accounting identities.  The public
+        # ProjectSheet adoption contract names the corresponding read-only
+        # census ``external_budget_refs``.  Map the source metadata into that
+        # contract before adoption so the destination's census is backed by
+        # the same typed references; retaining the values only in ordinary
+        # project metadata would make the imported accounting appear empty.
+        source_metadata = edit_payload.get("metadata") if isinstance(edit_payload.get("metadata"), Mapping) else {}
+        accounting_refs = source_metadata.get("external_accounting_refs", source_metadata.get("external_budget_refs", source_metadata.get("budget_refs", ())))
+        if isinstance(accounting_refs, (list, tuple)):
+            adopted_source["external_budget_refs"] = _json_value(list(accounting_refs))
         # DAT content remains an independent source-owned identity.  Preserve
         # its full public record and association under adoption metadata rather
         # than manufacturing a destination content revision; C38 explicitly
