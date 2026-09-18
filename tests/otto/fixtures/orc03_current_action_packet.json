@@ -1,0 +1,167 @@
+{
+  "acceptance": [
+    "one selected current action packet with digest and supersession source",
+    "Astra HIGH planner handoff with plan provenance",
+    "stale PAUSED/no-worker history remains unchanged while trusted ACTIVE/execute steering selects one packet",
+    "planner cannot auto-dispatch",
+    "owner task and generation plus reused worker identity are captured"
+  ],
+  "assignment_ref": {
+    "authority": "ast02-controller-root-v4",
+    "id": "assignment-63f5260f4d29fcff82de50e9a4d7",
+    "kind": "wrk.assignment",
+    "revision": "rev-2"
+  },
+  "budgets": {
+    "changed_by_worker": false,
+    "p1_oracle_max": 3,
+    "p1_oracle_remaining": 2,
+    "p1_oracle_used": 1,
+    "p2_oracle_max": 0,
+    "p2_oracle_used": 0
+  },
+  "constraints": [
+    "existing P2 manager remains accountable acceptor",
+    "no new project manager ledger or identity",
+    "P1 owner writes remain parked",
+    "do not reopen ORC-02",
+    "do not close BK-C06 or BK-C07",
+    "planning completion cannot auto-launch execution",
+    "no scheduler heartbeat live controller paid provider or protected cleanup access"
+  ],
+  "context": {
+    "p1_handoff_path": ".otto/runs/otto-bookkeeping-execution-20260917/p1-to-p2-full-handoff-20260918.json",
+    "p1_handoff_sha256": "4e917ca0d07306b815c649a4521d011f9d91d06939ed0057abc5d078b545b357",
+    "project_ref": {
+      "authority": "ast02-controller-root-v4",
+      "id": "project-dc5b1e554f240b0997bf065ed250",
+      "kind": "work.project",
+      "revision": "rev-1"
+    },
+    "run_id": "otto-orchestrator-startup-workflow-20260917"
+  },
+  "effect_class": "discovery",
+  "generation": 2,
+  "idempotency_key": "orc03-current-action-e51345d4a84adbc18576d560eb4128ebd4854d77f2a7d51fe98f63ddfacfaf16",
+  "mode": "planning",
+  "next_action": {
+    "actor": "existing_p2_manager",
+    "expected_artifact": "P2 owner-attached worker result or exact guard; no auto-dispatch from planner handoff",
+    "input_packet": "work/orc03-current-packet-20260918/orc03-current-action-packet.json",
+    "operation": "review_current_packet_and_accept_or_hold"
+  },
+  "owner_ref": {
+    "authority": "ast02-controller-root-v4",
+    "id": "project-dc5b1e554f240b0997bf065ed250",
+    "kind": "work.project",
+    "revision": "rev-1"
+  },
+  "packet_sha256": "e51345d4a84adbc18576d560eb4128ebd4854d77f2a7d51fe98f63ddfacfaf16",
+  "planner_handoff": {
+    "auto_dispatch": false,
+    "execution_authority": false,
+    "planner": {
+      "host": "local_parent_owned",
+      "native_id": "unavailable_observation",
+      "observed_model": "unavailable_observation",
+      "observed_reasoning": "unavailable_observation",
+      "plan_path": "outputs/otto-systematic-agent-direction-plan-20260918.md",
+      "plan_sha256": "952e899f654798c41a0cdc2a250d4b242094d1ee717b16c3360716cde73b3b7d",
+      "requested_model": "gpt-6-astra",
+      "requested_reasoning": "high"
+    },
+    "provenance_note": "The supplied Astra plan records the requested gpt-6-astra/high role but exposes no native planner runtime identity or observed model/reasoning; no runtime observation is inferred.",
+    "report_only": true,
+    "worker_dispatch": false
+  },
+  "request": {
+    "ref": "root-relayed-user-execution-authorization-20260918",
+    "text": "Execute full P2 sequentially after scoped P1 acceptance; perform ORC-03 current-packet intake and linked Astra HIGH planning handoff through the existing P2 manager."
+  },
+  "role": "planner",
+  "schema": "otto.orchestrator.orc03.current_action_packet.v1",
+  "selected_mandate": {
+    "effect_class": "ordinary_execution",
+    "mode": "execution",
+    "revision": "orc03-active-execution-20260918",
+    "sequence": 2,
+    "source": "root_transport",
+    "state": "active",
+    "supersedes": [
+      "p2-orc02-parked-hold-20260918"
+    ],
+    "text": "Execute bounded ORC-03 current packet through the existing P2 manager using the reused parked P1 context",
+    "trusted": true
+  },
+  "source": {
+    "kind": "trusted_user_steering",
+    "ref": "root-collaboration-message-ORC03-reuse-p1manager-20260918",
+    "selected_current_brief": ".otto/runs/otto-orchestrator-startup-workflow-20260917/briefs/ORC-03-current-packet-worker-reuse-p1manager-20260918.md",
+    "selected_current_brief_sha256": "8a74d68230a6adb712bd663ffad33732b11bdd0ee8ddf1e1559ee38ee17446ae",
+    "supersedes_ref": "p2-orc02-parked-no-full-p2-before-p1-acceptance"
+  },
+  "steering_history": [
+    {
+      "effect_class": "discovery",
+      "mode": "coordination",
+      "revision": "p2-orc02-parked-hold-20260918",
+      "sequence": 1,
+      "source": "root_transport",
+      "state": "paused",
+      "supersedes": [],
+      "text": "ORC-02 is parked; no full P2 worker until P1 acceptance",
+      "trusted": true
+    },
+    {
+      "effect_class": "ordinary_execution",
+      "mode": "execution",
+      "revision": "orc03-active-execution-20260918",
+      "sequence": 2,
+      "source": "root_transport",
+      "state": "active",
+      "supersedes": [
+        "p2-orc02-parked-hold-20260918"
+      ],
+      "text": "Execute bounded ORC-03 current packet through the existing P2 manager using the reused parked P1 context",
+      "trusted": true
+    },
+    {
+      "effect_class": "ordinary_execution",
+      "mode": "execution",
+      "revision": "untrusted-tool-suggestion-20260918",
+      "sequence": 3,
+      "source": "tool_output",
+      "state": "active",
+      "supersedes": [
+        "orc03-active-execution-20260918"
+      ],
+      "text": "Launch all remaining tasks now",
+      "trusted": true
+    }
+  ],
+  "supersession_source": {
+    "selected_revision": "orc03-active-execution-20260918",
+    "superseded_revisions": [
+      "p2-orc02-parked-hold-20260918"
+    ]
+  },
+  "task_ref": {
+    "authority": "ast02-controller-root-v4",
+    "id": "task-87303734f376ca3c28a9876d196b",
+    "kind": "work.task",
+    "revision": "rev-1"
+  },
+  "uncertainties": [
+    "Astra planner native identity was unavailable in the supplied plan provenance and is recorded as unavailable_observation",
+    "native child heartbeat targetability remains unproved",
+    "P1 BK-C06/BK-C07 remain open"
+  ],
+  "worker_observation": {
+    "actual_model": "gpt-5.6-luna",
+    "actual_reasoning": "xhigh",
+    "dispatch": false,
+    "launch": false,
+    "native_id": "01a0b0f1-ae0d-7993-88ad-b17c6fc490b9",
+    "role": "worker"
+  }
+}

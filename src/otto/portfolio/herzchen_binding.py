@@ -154,6 +154,8 @@ class FiniteWorkOperations:
             return self._admit(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.assign":
             return self._assign_roles(payload, request_id=request_id, actor=actor)
+        if operation in {"work.task.complete", "work.project-sheet.complete"}:
+            return self._complete_task(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.handoff":
             return self._handoff(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.document.create":
@@ -1053,6 +1055,59 @@ class FiniteWorkOperations:
         )
         return {"outcome": "assigned", "project_ref": _json_value(ref), "roles": assignments, "manager_assignment_ref": manager_assignment_ref, "parent_receipt": _receipt_dict(parent_receipt), "event_ids": event_ids, "replayed": all(item["replayed"] for item in assignments.values()) if assignments else False, "executable": False}
 
+    def _complete_task(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Forward direct and sheet completion through one owner guard."""
+
+        if self.sheet_port is None and self.assignments_port is None:
+            return self._unsupported(
+                "work.task.complete", request_id=request_id,
+                code="canonical_completion_port_unavailable",
+                message="accepted ProjectSheet/ResponsibilityAssignments completion port was not injected",
+            )
+        required = ("project_ref", "task_ref", "assignment_ref", "expected_generation", "expected_project_revision", "expected_task_revision", "disposition", "evidence_refs", "evidence_hashes", "gate_refs")
+        missing = [field for field in required if field not in payload]
+        if missing:
+            return {"outcome": "held", "status": "unknown", "error": {"code": "completion_prerequisite_missing", "message": "completion requires " + ", ".join(missing), "operation": "work.task.complete"}, "replayed": False, "event_ids": [], "executable": False}
+        try:
+            project_ref = self._record_ref(payload["project_ref"])
+            task_ref = self._record_ref(payload["task_ref"])
+            assignment_ref = self._record_ref(payload["assignment_ref"])
+            evidence_refs = [self._record_ref(value) for value in payload["evidence_refs"]]
+            gate_refs = [self._record_ref(value) for value in payload["gate_refs"]]
+            kwargs = {
+                "project": project_ref,
+                "assignment": assignment_ref,
+                "expected_generation": payload["expected_generation"],
+                "expected_project_revision": payload["expected_project_revision"],
+                "expected_task_revision": payload["expected_task_revision"],
+                "disposition": payload["disposition"],
+                "evidence_refs": evidence_refs,
+                "evidence_hashes": payload["evidence_hashes"],
+                "gate_refs": gate_refs,
+                "candidate_ref": self._record_ref(payload["candidate_ref"]) if payload.get("candidate_ref") is not None else None,
+                "result_ref": self._record_ref(payload["result_ref"]) if payload.get("result_ref") is not None else None,
+                "attempt_ref": self._record_ref(payload["attempt_ref"]) if payload.get("attempt_ref") is not None else None,
+                "source_set_digest": payload.get("source_set_digest"),
+                "logical_request_key": request_id,
+                "actor": self._actor(actor),
+            }
+            # The ProjectSheet endpoint is the canonical governed-task surface;
+            # its implementation delegates to the same owner assignment guard.
+            port = self.sheet_port if self.sheet_port is not None else self.assignments_port
+            result = port.complete_managed_task(task_ref, **kwargs) if self.sheet_port is not None else port.complete(task_ref, **kwargs)
+        except Exception as exc:
+            name = type(exc).__name__
+            if name in {"ReplayConflictError", "StaleAssignmentError", "WorkNotFoundError", "VersionConflictError"}:
+                code = "replay_conflict" if name == "ReplayConflictError" else "stale_completion" if name in {"StaleAssignmentError", "VersionConflictError"} else "completion_target_not_found"
+                return {"outcome": "error", "error": {"code": code, "message": str(exc), "operation": "work.task.complete"}, "replayed": False, "event_ids": [], "executable": False}
+            if name in {"WorkValidationError", "SheetError", "TypeError", "ValueError"}:
+                return {"outcome": "held", "status": "unknown", "error": {"code": "completion_not_eligible", "message": str(exc), "operation": "work.task.complete"}, "replayed": False, "event_ids": [], "executable": False}
+            raise
+        value = _json_value(result)
+        if not isinstance(value, Mapping):
+            return {"outcome": "error", "error": {"code": "malformed_completion_result", "message": "owner completion returned a non-object", "operation": "work.task.complete"}, "replayed": False, "event_ids": []}
+        return dict(value)
+
     @staticmethod
     def _assignment_dict(assignment: Any) -> dict[str, Any]:
         """Return only the declared assignment value, including durable history."""
@@ -1374,6 +1429,8 @@ class FiniteWorkOperations:
         }
 
     def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        if operation == "work.manager.inbox":
+            return self._manager_inbox(payload)
         if operation == "work.pending.list":
             records = self._pending_projects(payload.get("parent_ref"))
             return {
@@ -1404,6 +1461,77 @@ class FiniteWorkOperations:
             "event_ids": [],
             "executable": False,
         }
+
+    def manager_inbox(
+        self,
+        project_ref: Any,
+        *,
+        actor: str,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        safety_scan: bool = True,
+    ) -> Mapping[str, Any]:
+        """Convenience read on the finite binding for manager integrations."""
+        from herzchen.contracts import ResourceRef
+
+        ref = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        return self.read(
+            "work.manager.inbox",
+            {"project_ref": _json_value(ref), "cursor": cursor, "limit": limit, "safety_scan": safety_scan},
+            actor=actor,
+        )
+
+    def _manager_inbox(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Build the bounded read-only manager projection from public ports."""
+        if self.sheet_port is None:
+            return self._unsupported(
+                "work.manager.inbox",
+                request_id="read-only",
+                code="canonical_project_sheet_port_unavailable",
+                message="accepted ProjectSheet read port was not injected",
+            )
+        try:
+            from herzchen.contracts import ResourceRef
+            from .inbox import derive_manager_inbox
+
+            project_ref = ResourceRef.from_dict(payload["project_ref"])
+            view = self.sheet_port.export(project_ref)
+            view_value = _json_value(view.to_dict() if hasattr(view, "to_dict") else view)
+            task_records: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+            if isinstance(view_value, Mapping):
+                for task in view_value.get("tasks", ()):
+                    if not isinstance(task, Mapping):
+                        continue
+                    ref = task.get("ref")
+                    if isinstance(ref, Mapping) and all(ref.get(key) for key in ("authority", "kind", "id")):
+                        record = self.reader.get_record(ResourceRef.from_dict(ref))
+                        if record is not None:
+                            task_records[(ref["authority"], ref["kind"], ref["id"])] = {
+                                "ref": _json_value(record.ref),
+                                "lifecycle": _json_value(record.payload.get("lifecycle")),
+                                "revision": _json_value(record.ref.revision),
+                            }
+            events = [_json_value(item) for item in self.reader.list_events()]
+            return derive_manager_inbox(
+                view_value,
+                events=events,
+                cursor=payload.get("cursor"),
+                dependency_records=task_records,
+                limit=payload.get("limit", 100),
+                safety_scan=payload.get("safety_scan", True),
+            )
+        except Exception as exc:
+            return {
+                "outcome": "error",
+                "error": {
+                    "code": "manager_inbox_read_failed",
+                    "message": str(exc),
+                    "operation": "work.manager.inbox",
+                },
+                "dispatch": False,
+                "launch": False,
+                "acknowledged": False,
+            }
 
 
 __all__ = ["FiniteWorkOperations", "HerzchenBindingConfig"]

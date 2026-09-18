@@ -1,0 +1,103 @@
+{
+  "project": {
+    "ref": {"authority": "ast02-controller-root-v4", "kind": "work.project", "id": "project-redacted-orc02", "revision": "rev-1"},
+    "authored": {},
+    "observed": {"assignments": [], "dispatches": [], "results": [], "reports": []}
+  },
+  "tasks": [],
+  "worker_assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-orc02", "revision": "rev-1"},
+  "worker_generation": 1,
+  "observations": [
+    {
+      "kind": "result",
+      "ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.result", "id": "result-redacted-orc02", "revision": "rev-1"},
+      "assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-orc02", "revision": "rev-1"},
+      "generation": 1,
+      "value": {
+        "schema": "otto.orchestrator.orc02.worker.result.v1",
+        "assignment_ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-orc02", "revision": "rev-1"},
+        "generation": 1,
+        "project_ref": "project-redacted-orc02@rev-1",
+        "task_ref": "task-redacted-orc02@rev-1",
+        "worker_native_id": "native-redacted-orc02",
+        "outcome": "bounded_real_pilot_observation"
+      }
+    },
+    {
+      "kind": "report",
+      "ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.report", "id": "report-redacted-attachment", "revision": "rev-1"},
+      "assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-orc02", "revision": "rev-1"},
+      "generation": 1,
+      "value": {
+        "schema": "otto.orchestrator.orc02.native_attachment.v1",
+        "project_ref": "project-redacted-orc02@rev-1",
+        "task_ref": "task-redacted-orc02@rev-1",
+        "assignment_ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-orc02", "revision": "rev-1"},
+        "assignment_generation": 1,
+        "worker_native_id": "native-redacted-orc02",
+        "outcome": "native_worker_launched_observed"
+      }
+    },
+    {
+      "kind": "report",
+      "ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.report", "id": "report-redacted-verification-original", "revision": "rev-1"},
+      "assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "manager-redacted-orc02", "revision": "rev-1"},
+      "generation": 1,
+      "value": {
+        "schema": "otto.orchestrator.orc02.manager_verification.v1",
+        "project_ref": "project-redacted-orc02@rev-1",
+        "task_ref": "task-redacted-orc02@rev-1",
+        "worker_assignment_ref": "assignment-redacted-orc02@rev-1",
+        "assignment_generation": 1,
+        "result_ref": "result-redacted-orc02@rev-1",
+        "disposition": "unknown",
+        "worker_result_evidence_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "remaining_obligations": ["wake-delivery"]
+      }
+    },
+    {
+      "kind": "report",
+      "ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.report", "id": "report-redacted-verification-corrected", "revision": "rev-1"},
+      "assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "manager-redacted-orc02", "revision": "rev-1"},
+      "generation": 1,
+      "value": {
+        "schema": "otto.orchestrator.orc02.manager_verification_correction.v1",
+        "project_ref": "project-redacted-orc02@rev-1",
+        "task_ref": "task-redacted-orc02@rev-1",
+        "worker_assignment_ref": "assignment-redacted-orc02@rev-1",
+        "assignment_generation": 1,
+        "result_ref": "result-redacted-orc02@rev-1",
+        "correction_of_report_ref": "report-redacted-verification-original@rev-1",
+        "disposition": "held",
+        "worker_result_evidence_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "remaining_obligations": ["wake-delivery", "owner-close"]
+      }
+    },
+    {
+      "kind": "report",
+      "ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.report", "id": "report-redacted-hourly-launch", "revision": "rev-1"},
+      "assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "manager-redacted-orc02", "revision": "rev-1"},
+      "generation": 1,
+      "value": {
+        "schema": "otto.orchestrator.p2_hourly_pipeline_review_launch.v1",
+        "result_ref": "result-redacted-orc02@rev-1",
+        "status": "pending",
+        "findings": "pending",
+        "completion": {"findings": "pending", "review_report": "pending"}
+      }
+    },
+    {
+      "kind": "result",
+      "ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.result", "id": "result-redacted-unknown", "revision": "rev-1"},
+      "assignment": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-other", "revision": "rev-2"},
+      "generation": 1,
+      "value": {
+        "schema": "otto.orchestrator.orc02.worker.result.v1",
+        "assignment_ref": {"authority": "ast02-controller-root-v4", "kind": "wrk.assignment", "id": "assignment-redacted-other", "revision": "rev-2"},
+        "generation": 1,
+        "outcome": "unknown",
+        "reconciliation": "lost response"
+      }
+    }
+  ]
+}

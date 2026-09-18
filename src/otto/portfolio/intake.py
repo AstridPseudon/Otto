@@ -94,6 +94,9 @@ def _text(value: Any, field: str, *, required: bool = True) -> str:
 def _ref(value: Any, field: str = "project_ref") -> dict[str, Any]:
     if isinstance(value, str):
         return {"id": _text(value, field)}
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        value = to_dict()
     if not isinstance(value, Mapping):
         raise PortfolioError(f"{field} must be a durable reference object")
     result = _json_copy(dict(value), field=field)
@@ -220,6 +223,8 @@ class OttoPortfolio:
                 "admit": "manager decision: admit, investigate, merge, park, or drop",
                 "assign_roles": "bind one parent, one accountable manager, and bounded executor(s)",
                 "handoff": "fence a returned manager assignment reference and preserve identity, evidence, consumption, and parent obligation",
+                "complete_task": "manager-only guarded task close; verifies current project/task/assignment pins, disposition, evidence hashes and gates before one owner transaction",
+                "manager_inbox": "read one derived project/subproject scope with tasks, assignments, attempts, reports, decisions, attention and repeat-safe event cursor; read-only",
             },
             "invariants": [
                 "pending creation does not create a manager, tasklist, allowance, session, or accepted result",
@@ -353,6 +358,30 @@ class OttoPortfolio:
             payload["parent_ref"] = _ref(parent_ref, "parent_ref")
         return self._read("work.pending.list", payload, actor=actor)
 
+    def manager_inbox(
+        self,
+        project_ref: Any,
+        *,
+        actor: str,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        safety_scan: bool = True,
+    ) -> dict[str, Any]:
+        """Read one derived manager scope without acknowledging or dispatching."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 0 < limit <= 1000:
+            raise PortfolioError("limit must be between 1 and 1000")
+        if cursor is not None and (not isinstance(cursor, str) or not cursor.strip()):
+            raise PortfolioError("cursor must be non-blank text when supplied")
+        if not isinstance(safety_scan, bool):
+            raise PortfolioError("safety_scan must be boolean")
+        payload: dict[str, Any] = {"project_ref": _ref(project_ref), "limit": limit, "safety_scan": safety_scan}
+        if cursor is not None:
+            payload["cursor"] = cursor
+        return self._read("work.manager.inbox", payload, actor=actor)
+
+    read_manager_inbox = manager_inbox
+    reconcile_inbox = manager_inbox
+
     def edit_pending(self, project_ref: Any, edit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         return self._execute(
@@ -440,6 +469,71 @@ class OttoPortfolio:
             request_id=request_id,
             actor=actor,
         )
+
+    def complete_task(
+        self,
+        project_ref: Any,
+        task_ref: Any,
+        assignment_ref: Any,
+        *,
+        actor: str,
+        request_id: str,
+        expected_generation: int,
+        expected_project_revision: str,
+        expected_task_revision: str,
+        disposition: str,
+        evidence_refs: Sequence[Any] = (),
+        evidence_hashes: Any = (),
+        gate_refs: Sequence[Any] = (),
+        candidate_ref: Any = None,
+        result_ref: Any = None,
+        attempt_ref: Any = None,
+        source_set_digest: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Request a manager-verified close through the existing owner path."""
+
+        request_id, actor = self._request(request_id, actor)
+        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation < 1:
+            raise PortfolioError("expected_generation must be a positive integer")
+        if not isinstance(expected_project_revision, str) or not expected_project_revision.strip():
+            raise PortfolioError("expected_project_revision is required")
+        if not isinstance(expected_task_revision, str) or not expected_task_revision.strip():
+            raise PortfolioError("expected_task_revision is required")
+        if not isinstance(disposition, str) or not disposition.strip():
+            raise PortfolioError("disposition is required")
+        if not isinstance(evidence_refs, Sequence) or isinstance(evidence_refs, (str, bytes)):
+            raise PortfolioError("evidence_refs must be a list")
+        if not isinstance(gate_refs, Sequence) or isinstance(gate_refs, (str, bytes)):
+            raise PortfolioError("gate_refs must be a list")
+        if isinstance(evidence_hashes, Mapping):
+            # Empty evidence is sent to the owner as a held/unknown result so
+            # callers can inspect the missing prerequisite without a mutation.
+            hashes = _json_copy(dict(evidence_hashes), field="evidence_hashes")
+        elif isinstance(evidence_hashes, Sequence) and not isinstance(evidence_hashes, (str, bytes)):
+            # Empty evidence is sent to the owner as a held/unknown result.
+            hashes = _json_copy(list(evidence_hashes), field="evidence_hashes")
+        else:
+            raise PortfolioError("evidence_hashes must be a non-empty mapping or list")
+        payload = {
+            "project_ref": _ref(project_ref),
+            "task_ref": _ref(task_ref, "task_ref"),
+            "assignment_ref": _ref(assignment_ref, "assignment_ref"),
+            "expected_generation": expected_generation,
+            "expected_project_revision": expected_project_revision,
+            "expected_task_revision": expected_task_revision,
+            "disposition": disposition.strip(),
+            "evidence_refs": [_ref(value, "evidence_ref") for value in evidence_refs],
+            "evidence_hashes": hashes,
+            "gate_refs": [_ref(value, "gate_ref") for value in gate_refs],
+        }
+        for name, value in (("candidate_ref", candidate_ref), ("result_ref", result_ref), ("attempt_ref", attempt_ref)):
+            if value is not None:
+                payload[name] = _ref(value, name)
+        if source_set_digest is not None:
+            payload["source_set_digest"] = _text(source_set_digest, "source_set_digest")
+        return self._execute("work.task.complete", payload, request_id=request_id, actor=actor)
+
+    close_task = complete_task
 
     def handoff(
         self,
