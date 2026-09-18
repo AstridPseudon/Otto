@@ -115,6 +115,18 @@ class DueRecord:
     last_completed_request: Optional[str] = None
     last_result: Optional[Mapping[str, JSONValue]] = None
     version: int = 0
+    # BK-06 foundation metadata is additive and remains in the same owner
+    # record.  It makes the wake/check boundary observable without inventing
+    # a scheduler ledger or a second persistence path.
+    project_ref: Optional[str] = None
+    manager_ref: Optional[str] = None
+    generation: int = 1
+    due_reasons: tuple[str, ...] = ()
+    delivered_at: Optional[str] = None
+    delivery_evidence: Optional[Mapping[str, JSONValue]] = None
+    completed_at: Optional[str] = None
+    completion_evidence: Optional[Mapping[str, JSONValue]] = None
+    completion_state: str = "none"
 
     def __post_init__(self) -> None:
         _required_text(self.schedule_id, "schedule_id")
@@ -132,13 +144,30 @@ class DueRecord:
             raise ValueError("interval_seconds must be a positive integer")
         if self.interval_seconds is None and self.due_at is None:
             raise ValueError("one-off records require due_at when interval_seconds is absent")
+        for field_name, value in (("project_ref", self.project_ref), ("manager_ref", self.manager_ref)):
+            if value is not None:
+                _required_text(value, field_name)
+        if isinstance(self.generation, bool) or not isinstance(self.generation, int) or self.generation < 1:
+            raise ValueError("generation must be a positive integer")
+        if any(not isinstance(reason, str) or not reason.strip() for reason in self.due_reasons):
+            raise ValueError("due_reasons must contain non-blank text")
+        if self.delivered_at is not None:
+            _parse_iso(self.delivered_at)
+        if self.completed_at is not None:
+            _parse_iso(self.completed_at)
         if self.stop_state not in {"active", "stopped", "completed"}:
             raise ValueError("stop_state must be active, stopped, or completed")
         if self.delivery_state not in {"none", "ready", "returned", "unknown", "crashed"}:
             raise ValueError("unsupported delivery_state")
+        if self.completion_state not in {"none", "succeeded", "failed", "unknown"}:
+            raise ValueError("unsupported completion_state")
         object.__setattr__(self, "outstanding_decisions", tuple(_json_copy(item, "outstanding_decisions") for item in self.outstanding_decisions))
         if self.last_result is not None:
             object.__setattr__(self, "last_result", _json_copy(self.last_result, "last_result"))
+        if self.delivery_evidence is not None:
+            object.__setattr__(self, "delivery_evidence", _json_copy(self.delivery_evidence, "delivery_evidence"))
+        if self.completion_evidence is not None:
+            object.__setattr__(self, "completion_evidence", _json_copy(self.completion_evidence, "completion_evidence"))
 
     @property
     def immutable_input(self) -> dict[str, JSONValue]:
@@ -152,6 +181,9 @@ class DueRecord:
             "due_at": self.due_at,
             "invocation_identity": self.invocation_identity,
             "owner": self.owner,
+            "project_ref": self.project_ref,
+            "manager_ref": self.manager_ref,
+            "generation": self.generation,
         }
 
     def to_dict(self) -> dict[str, JSONValue]:
@@ -167,6 +199,12 @@ class DueRecord:
             "last_completed_request": self.last_completed_request,
             "last_result": None if self.last_result is None else dict(self.last_result),
             "version": self.version,
+            "due_reasons": list(self.due_reasons),
+            "delivered_at": self.delivered_at,
+            "delivery_evidence": None if self.delivery_evidence is None else dict(self.delivery_evidence),
+            "completed_at": self.completed_at,
+            "completion_evidence": None if self.completion_evidence is None else dict(self.completion_evidence),
+            "completion_state": self.completion_state,
         }
 
     @classmethod
@@ -184,6 +222,11 @@ class DueRecord:
             outstanding_decisions=tuple(value.get("outstanding_decisions", ())),
             last_completed_request=value.get("last_completed_request"), last_result=value.get("last_result"),
             version=int(value.get("version", 0)),
+            project_ref=value.get("project_ref"), manager_ref=value.get("manager_ref"),
+            generation=int(value.get("generation", 1)), due_reasons=tuple(value.get("due_reasons", ())),
+            delivered_at=value.get("delivered_at"), delivery_evidence=value.get("delivery_evidence"),
+            completed_at=value.get("completed_at"), completion_evidence=value.get("completion_evidence"),
+            completion_state=value.get("completion_state", "none"),
         )
 
 
@@ -927,21 +970,86 @@ class DurableAttention:
         elapsed = (current.astimezone(timezone.utc) - _parse_iso(record.anchor)).total_seconds()
         return int(elapsed // record.interval_seconds)
 
-    def check(self, schedule_id: str, *, now: Optional[datetime] = None) -> dict[str, JSONValue]:
+    @staticmethod
+    def _scope_error(
+        record: DueRecord,
+        *,
+        project_ref: Optional[str],
+        manager_ref: Optional[str],
+        generation: Optional[int],
+    ) -> Optional[dict[str, JSONValue]]:
+        if project_ref is not None and project_ref != record.project_ref:
+            return {"code": "scope_mismatch", "message": "project scope does not match the due record"}
+        if manager_ref is not None and manager_ref != record.manager_ref:
+            return {"code": "scope_mismatch", "message": "manager scope does not match the due record"}
+        if generation is not None:
+            if isinstance(generation, bool) or not isinstance(generation, int):
+                return {"code": "stale_generation", "message": "generation must be an integer"}
+            if generation != record.generation:
+                return {"code": "stale_generation", "message": "generation is fenced"}
+        return None
+
+    @staticmethod
+    def _reasons(
+        record: DueRecord,
+        *,
+        due_reason: Optional[str],
+        due_reasons: Optional[Iterable[str]],
+    ) -> tuple[str, ...]:
+        values = list(due_reasons or ())
+        if due_reason is not None:
+            values.append(due_reason)
+        if not values:
+            if record.interval_seconds == 60 * 60:
+                values.append("hourly")
+            elif record.interval_seconds == 3 * 60 * 60:
+                values.append("three-hour-review")
+            else:
+                values.append("scheduled")
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValueError("due reasons must contain non-blank text")
+        return tuple(dict.fromkeys(values))
+
+    def check(
+        self,
+        schedule_id: str,
+        *,
+        now: Optional[datetime] = None,
+        due_reason: Optional[str] = None,
+        due_reasons: Optional[Iterable[str]] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+    ) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "automatic_action": False}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+        if scope_error is not None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "relaunch": False, "automatic_action": False}
         if not self.host_available or (self.host_mode == "durable-host" and self.due_port is None):
             return {"outcome": "unavailable", "schedule_id": schedule_id, "capability": self.capability, "responsible_owner": record.owner, "automatic_action": False}
+        requested_reasons = self._reasons(record, due_reason=due_reason, due_reasons=due_reasons)
         if record.stop_state != "active":
             return self._readiness(record, "stopped", due=False)
         if record.in_flight_request is not None:
+            if any(reason not in record.due_reasons for reason in requested_reasons):
+                merged = tuple(dict.fromkeys((*record.due_reasons, *requested_reasons)))
+                try:
+                    record = self._write(
+                        DueRecord.from_dict({**record.to_dict(), "due_reasons": list(merged)}),
+                        request_id="coalesce:" + record.in_flight_request + ":" + ":".join(merged),
+                        expected_version=record.version,
+                    )
+                except StateConflictError:
+                    record = self._read(schedule_id) or record
             return self._readiness(record, "in-flight", due=True, request_id=record.in_flight_request, delivery_state=record.delivery_state, replayed=True)
-        slot = self._slot(record, now or self.clock())
+        observed_now = now or self.clock()
+        slot = self._slot(record, observed_now)
         if slot is None or slot <= record.last_covered_slot:
             return self._readiness(record, "waiting", due=False)
         request_id = hashlib.sha256(f"{record.schedule_id}:{record.invocation_identity}:{slot}".encode("utf-8")).hexdigest()
-        next_record = DueRecord.from_dict({**record.to_dict(), "last_covered_slot": slot, "in_flight_request": request_id, "delivery_state": "ready"})
+        next_record = DueRecord.from_dict({**record.to_dict(), "last_covered_slot": slot, "in_flight_request": request_id, "delivery_state": "ready", "due_reasons": list(requested_reasons), "delivered_at": None, "delivery_evidence": None, "completed_at": None, "completion_evidence": None, "completion_state": "none"})
         try:
             stored = self._write(next_record, request_id=f"check:{request_id}", expected_version=record.version)
         except StateConflictError:
@@ -955,12 +1063,23 @@ class DurableAttention:
             "slot": slot, "missed_slots": max(0, slot - record.last_covered_slot - 1),
             "invocation_identity": stored.invocation_identity, "owner": stored.owner,
             "missing_handoff": stored.missing_handoff, "return_condition": stored.return_condition,
+            "due_reasons": list(stored.due_reasons), "project_ref": stored.project_ref,
+            "manager_ref": stored.manager_ref, "generation": stored.generation,
             "readiness": {"status": "attention", "dispatch": False, "executable": False},
         }
         try:
             response = dict(_json_copy(self.attention.create_attention(request), "attention response"))
         except Exception as exc:
             return {"outcome": "attention-error", "schedule_id": schedule_id, "request_id": request_id, "error": {"code": "attention_port_error", "message": str(exc)}, "reconcile": True, "relaunch": False, "automatic_action": False}
+        # The owner has now accepted a delivery response.  Persist its time
+        # and evidence separately from the later completion callback.
+        delivered = DueRecord.from_dict({**stored.to_dict(), "delivered_at": _iso(observed_now), "delivery_evidence": response})
+        try:
+            stored = self._write(delivered, request_id="deliver:" + request_id, expected_version=stored.version)
+        except StateConflictError:
+            current = self._read(schedule_id)
+            if current is not None:
+                stored = current
         result = self._readiness(stored, "attention", due=True, request_id=request_id, delivery_state="ready")
         result.update({"notification": response, "event_ids": list(response.get("event_ids", ())), "missed_slots": request["missed_slots"], "replayed": response.get("outcome") == "replayed", "mutation": {"before": record.to_dict(), "action": request, "fresh_after": stored.to_dict()}, "expected_delta": {"last_covered_slot": slot, "in_flight_request": request_id}})
         return result
@@ -973,27 +1092,95 @@ class DurableAttention:
             "readiness": {"status": "attention" if due else state, "dispatch": False, "executable": False},
             "responsible_owner": record.owner or record.recipient, "missing_handoff": record.missing_handoff,
             "return_condition": record.return_condition, "delivery_state": delivery_state or record.delivery_state,
+            "due_reasons": list(record.due_reasons), "project_ref": record.project_ref,
+            "manager_ref": record.manager_ref, "generation": record.generation,
+            "delivered_at": record.delivered_at, "delivery_evidence": record.delivery_evidence,
+            "completed_at": record.completed_at, "completion_evidence": record.completion_evidence,
+            "completion_state": record.completion_state,
             "replayed": replayed, "automatic_action": False,
         }
 
-    def complete(self, schedule_id: str, request_id: str, *, receipt: Optional[Mapping[str, JSONValue]] = None, outcome: str = "returned") -> dict[str, JSONValue]:
+    def complete(
+        self,
+        schedule_id: str,
+        request_id: str,
+        *,
+        receipt: Optional[Mapping[str, JSONValue]] = None,
+        outcome: str = "returned",
+        completed_at: Optional[datetime] = None,
+        completion_evidence: Optional[Mapping[str, JSONValue]] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+    ) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "automatic_action": False}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+        if scope_error is not None:
+            return {"outcome": "rejected", "request_id": request_id, "error": scope_error, "relaunch": False, "automatic_action": False}
         if record.last_completed_request == request_id and record.last_result is not None:
             return {**dict(record.last_result), "outcome": "replayed", "replayed": True, "expected_delta": "none", "automatic_action": False}
         if record.in_flight_request != request_id:
             return {"outcome": "reconcile", "error": {"code": "request_not_in_flight", "message": "only the recorded invocation may complete"}, "relaunch": False, "automatic_action": False}
+        completion_time = _iso(completed_at or self.clock())
+        evidence = completion_evidence if completion_evidence is not None else receipt
         if outcome in {"unknown", "crashed"}:
-            state = DueRecord.from_dict({**record.to_dict(), "delivery_state": outcome})
+            state = DueRecord.from_dict({**record.to_dict(), "delivery_state": outcome, "completed_at": completion_time, "completion_evidence": evidence, "completion_state": "unknown"})
             stored = self._write(state, request_id=f"reconcile:{request_id}:{outcome}", expected_version=record.version)
             return {"outcome": "reconcile", "request_id": request_id, "record": stored.to_dict(), "relaunch": False, "same_request": True, "return_condition": stored.return_condition, "mutation": {"before": record.to_dict(), "action": {"request_id": request_id, "outcome": outcome}, "fresh_after": stored.to_dict()}, "automatic_action": False}
+        if outcome in {"failed", "failure", "error"}:
+            result = {"outcome": "completion-failed", "request_id": request_id, "receipt": None if receipt is None else dict(_json_copy(receipt, "receipt")), "relaunch": False, "same_request": True, "reconcile": True, "automatic_action": False}
+            state = DueRecord.from_dict({**record.to_dict(), "completed_at": completion_time, "completion_evidence": evidence, "completion_state": "failed", "last_result": result})
+            stored = self._write(state, request_id=f"complete-failed:{request_id}", expected_version=record.version)
+            result["record"] = stored.to_dict()
+            result["mutation"] = {"before": record.to_dict(), "action": {"request_id": request_id, "receipt": result["receipt"], "outcome": outcome}, "fresh_after": stored.to_dict()}
+            return result
         result = {"outcome": "returned", "request_id": request_id, "receipt": None if receipt is None else dict(_json_copy(receipt, "receipt")), "relaunch": False, "same_request": True, "automatic_action": False}
-        state = DueRecord.from_dict({**record.to_dict(), "in_flight_request": None, "delivery_state": "returned", "last_completed_request": request_id, "last_result": result, "stop_state": "completed" if record.interval_seconds is None else "active"})
+        state = DueRecord.from_dict({**record.to_dict(), "in_flight_request": None, "delivery_state": "returned", "last_completed_request": request_id, "last_result": result, "completed_at": completion_time, "completion_evidence": evidence, "completion_state": "succeeded", "stop_state": "completed" if record.interval_seconds is None else "active"})
         stored = self._write(state, request_id=f"complete:{request_id}", expected_version=record.version)
         result["record"] = stored.to_dict()
         result["expected_delta"] = {"in_flight_request": None, "last_completed_request": request_id}
         result["mutation"] = {"before": record.to_dict(), "action": {"request_id": request_id, "receipt": result["receipt"], "outcome": outcome}, "fresh_after": stored.to_dict()}
+        return result
+
+    def mark_missed(
+        self,
+        schedule_id: str,
+        *,
+        now: Optional[datetime] = None,
+        reason: str = "offline",
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+    ) -> dict[str, JSONValue]:
+        """Record one bounded missed period while preserving a future cursor."""
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "automatic_action": False}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+        if scope_error is not None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "relaunch": False, "automatic_action": False}
+        slot = self._slot(record, now or self.clock())
+        if slot is None or slot <= record.last_covered_slot:
+            return self._readiness(record, "waiting", due=False)
+        missed = max(0, slot - record.last_covered_slot - 1)
+        state = DueRecord.from_dict({
+            **record.to_dict(),
+            "last_covered_slot": slot,
+            "in_flight_request": None,
+            "delivery_state": "unknown",
+            "due_reasons": list(self._reasons(record, due_reason=reason, due_reasons=None)),
+            "completed_at": _iso(now or self.clock()),
+            "completion_state": "unknown",
+            "completion_evidence": {"reason": reason, "missed_slots": missed},
+        })
+        request_id = "missed:" + schedule_id + ":" + str(slot)
+        stored = self._write(state, request_id=request_id, expected_version=record.version)
+        result = self._readiness(stored, "missed", due=False, delivery_state="unknown")
+        result.update({"outcome": "missed", "missed_slots": missed, "reason": reason, "relaunch": False,
+                       "mutation": {"before": record.to_dict(), "action": {"reason": reason, "slot": slot}, "fresh_after": stored.to_dict()},
+                       "expected_delta": {"last_covered_slot": slot}, "automatic_action": False})
         return result
 
     def resume(self, schedule_id: str) -> dict[str, JSONValue]:
