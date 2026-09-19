@@ -382,6 +382,58 @@ class OttoPortfolio:
     read_manager_inbox = manager_inbox
     reconcile_inbox = manager_inbox
 
+    def transition_project_lifecycle(
+        self,
+        project_ref: Any,
+        task_ref: Any,
+        manager_ref: Any,
+        *,
+        actor: str,
+        request_id: str,
+        expected_generation: int,
+        expected_project_revision: str,
+        expected_task_revision: str,
+        intent: str,
+        evidence: Mapping[str, Any],
+        obligation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one finite owner lifecycle intent; no Otto state is written."""
+
+        request_id, actor = self._request(request_id, actor)
+        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation < 1:
+            raise PortfolioError("expected_generation must be a positive integer")
+        if not isinstance(expected_project_revision, str) or not expected_project_revision.strip():
+            raise PortfolioError("expected_project_revision is required")
+        if not isinstance(expected_task_revision, str) or not expected_task_revision.strip():
+            raise PortfolioError("expected_task_revision is required")
+        if intent not in {"active", "closing", "blocked", "terminal"}:
+            raise PortfolioError("unsupported project lifecycle intent")
+        if not isinstance(evidence, Mapping) or not isinstance(obligation, Mapping):
+            raise PortfolioError("lifecycle evidence and obligation must be objects")
+        return self._execute(
+            "work.project.lifecycle.transition",
+            {
+                "project_ref": _ref(project_ref), "task_ref": _ref(task_ref, "task_ref"),
+                "manager_ref": _ref(manager_ref, "manager_ref"),
+                "expected_generation": expected_generation,
+                "expected_project_revision": expected_project_revision,
+                "expected_task_revision": expected_task_revision,
+                "intent": intent,
+                "evidence": _json_copy(dict(evidence), field="evidence"),
+                "obligation": _json_copy(dict(obligation), field="obligation"),
+            },
+            request_id=request_id, actor=actor,
+        )
+
+    def read_project_lifecycle(self, project_ref: Any, task_ref: Any, manager_ref: Any, *, actor: str) -> dict[str, Any]:
+        """Read the owner lifecycle projection without a durable side effect."""
+
+        return self._read(
+            "work.project.lifecycle.read",
+            {"project_ref": _ref(project_ref), "task_ref": _ref(task_ref, "task_ref"), "manager_ref": _ref(manager_ref, "manager_ref")},
+            actor=actor,
+        )
+
     def edit_pending(self, project_ref: Any, edit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         return self._execute(

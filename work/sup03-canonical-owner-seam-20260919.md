@@ -1,44 +1,38 @@
-# SUP-03 canonical-owner seam (bounded finding)
+# SUP-03 canonical owner seam (isolated implementation record)
 
-Source inspected: published Otto `e6cdd8733529415a278eac2b2869ef33b7ecd17b`.
-Runtime inspected: controller-installed `otto-local-candidate` wheel SHA-256
+Base provenance was Otto `e6cdd8733529415a278eac2b2869ef33b7ecd17b` and the
+controller-installed wheel SHA-256
 `19e8b35822a1bd6c2209cebd36abb5c87df2a0fd08b82aa28c258e7fee723201`.
 
-`PortfolioLifecycleIntegration` currently receives constructor project snapshots
-and changes only its private `_projects` map.  Its existing durable chain is
-limited to `DurableAttention.prepare_host` / `acknowledge_host`, which persists
-the typed schedule effect and host observation through the configured due-record
-port.  It is not a canonical project lifecycle transition.
+The paired Herzchen source now exposes public
+`ResponsibilityAssignments.transition_project(...)` and
+`read_project_lifecycle(...)`.  The transition uses the existing Herzchen
+command facade, transaction, `work.report.append`, and `work.revise` path.  It
+persists the lifecycle intent, current project/task/manager refs, assignment
+generation, evidence, and obligation on the existing project payload.  A
+project remains `active` until a terminal transition verifies the managed task
+is already `completed`; terminal then writes project lifecycle `completed`.
 
-The published public owner surfaces available to Otto are:
+Otto forwards this surface as
+`work.project.lifecycle.transition` / `work.project.lifecycle.read` through
+`FiniteWorkOperations` and `OttoPortfolio`.  When `PortfolioLifecycleIntegration`
+receives that owner client, its project cache is only a schedule projection:
+each mutation first reads current owner refs/generation, submits the fenced owner
+transition, and then records the exact schedule effect/readback acknowledgement
+as a second owner transition.  No private SQL, additional ledger, canonical
+database mutation, or live automation was used.
 
-- `FiniteWorkOperations.read("work.pending.read", ...)` and
-  `FiniteWorkOperations.manager_inbox(...)` for read-only project/task views;
-- `FiniteWorkOperations.execute("work.task.complete", ...)` for a governed
-  task completion; and
-- the `DurableAttention` due-record port for schedule effect persistence.
+Isolated owner-to-host coverage proves: owner intent receipt, persisted typed
+project transition, supported `automation_update` callback, exact readback, and
+owner-persisted host-effect acknowledgement.  Separate owner tests cover stale
+revision, foreign actor, pending task, successful completion, same-key replay,
+changed-key conflict, and owner reopen/readback.
 
-None exposes a command that atomically records a lifecycle intent
-(`active`/`closing`/`blocked`/`terminal`), pins current project/task/manager
-revisions and generation, emits the associated host effect, then accepts the
-exact readback acknowledgement.  Adding that state to Otto or directly mutating
-the owner store would create the prohibited second ledger/private-SQL path.
+The canonical owner experiment is isolated.  Cleanup remains HALTED and no
+acceptance or production closure is claimed.
 
-The required supported owner seam is therefore a serialized, owner-issued
-operation with paired readback, for example
-`work.lifecycle.transition` and `work.lifecycle.read`.  The transition must
-return the Herzchen receipt and persisted typed effect; readback must return the
-current project/task/manager refs, assignment generation, lifecycle state, and
-effect acknowledgement.  SUP-03 should remain HALTED until that owner surface
-is supplied.
+## Follow-up implementation (2026-09-19)
 
-This bounded change strengthens only the pre-existing local terminal gate:
-all four evidence records now require their successful outcomes and nonblank
-refs, while `task_completion` must carry a current project/task-pinned completed
-or replayed result plus a typed logical-request receipt.  It does not claim a
-canonical lifecycle write, owner acknowledgement after owner reopening, or live
-automation execution.
+The bounded seam identified above has now been implemented in the paired Herzchen owner source and routed through Otto. `ResponsibilityAssignments.transition_project()` and `read_project_lifecycle()` use the existing owner transaction path (`work.revise` plus `work.report.append`) and persist lifecycle intent, current refs, manager generation, evidence, and reconciliation obligation on the existing project payload. Otto exposes the finite `work.project.lifecycle.transition/read` operations and uses owner reads/transitions while retaining only a schedule projection locally.
 
-Validated with the source tree plus the controller's installed Herzchen package:
-`pytest -c /dev/null -q tests/otto` completed with `153 passed`.  The focused
-SUP-03, host-bridge, and owner-bootstrap set completed with `29 passed`.
+The paired isolated validation passed 47 Herzchen work tests, 155 Otto tests, and 17 focused owner/SUP-03 tests. The isolated owner-to-host integration persists the intent/receipt, typed effect, exact host readback, and owner acknowledgement. No canonical owner database or live automation was touched. The paired wheels were built for isolated validation; publication/installation of the compatible pair remains a separate release gate.

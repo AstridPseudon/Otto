@@ -71,6 +71,7 @@ class PortfolioLifecycleIntegration:
         projects: Mapping[str, Mapping[str, Any]],
         automation_update: Callable[[Mapping[str, Any]], Mapping[str, Any]],
         read_settings: Callable[[HostEffect, Mapping[str, Any]], Mapping[str, Any]],
+        owner_operations: Any = None,
     ) -> None:
         if not isinstance(attention, DurableAttention):
             raise TypeError("attention must be a DurableAttention")
@@ -83,6 +84,7 @@ class PortfolioLifecycleIntegration:
         self.manager_actor = _text(manager_actor, "manager_actor")
         self.orchestrator_actor = _text(orchestrator_actor, "orchestrator_actor")
         self._generation = _generation(generation)
+        self.owner_operations = owner_operations
         self.orchestrator_binding = self._validate_binding(orchestrator_binding, self._generation)
         if not isinstance(projects, Mapping):
             raise LifecycleIntegrationError("projects must be an object")
@@ -95,8 +97,14 @@ class PortfolioLifecycleIntegration:
             state_value = _text(context.get("state"), f"projects[{key}].state")
             if state_value not in _PROJECT_STATES:
                 raise LifecycleIntegrationError(f"unsupported project state: {state_value}")
-            project_ref = _text(context.get("project_ref"), f"projects[{key}].project_ref")
-            task_ref = _text(context.get("task_ref"), f"projects[{key}].task_ref")
+            if self.owner_operations is None:
+                project_ref = _text(context.get("project_ref"), f"projects[{key}].project_ref")
+                task_ref = _text(context.get("task_ref"), f"projects[{key}].task_ref")
+            else:
+                project_ref = _copy(context.get("project_ref"), f"projects[{key}].project_ref")
+                task_ref = _copy(context.get("task_ref"), f"projects[{key}].task_ref")
+                if not isinstance(project_ref, Mapping) or not isinstance(task_ref, Mapping):
+                    raise LifecycleIntegrationError(f"projects[{key}] canonical refs must be objects")
             owner = _text(context.get("lifecycle_owner", self._lifecycle_owner), f"projects[{key}].lifecycle_owner")
             if owner != self._lifecycle_owner:
                 raise LifecycleIntegrationError(f"projects[{key}] has a different lifecycle owner")
@@ -109,7 +117,10 @@ class PortfolioLifecycleIntegration:
                 "task_ref": task_ref,
                 "lifecycle_owner": owner,
                 "generation": context_generation,
+                "manager_ref": _copy(context.get("manager_ref"), f"projects[{key}].manager_ref") if context.get("manager_ref") is not None else None,
             }
+            if self.owner_operations is not None and self._project_context[key]["manager_ref"] is None:
+                raise LifecycleIntegrationError(f"projects[{key}] must include manager_ref for canonical lifecycle ownership")
         for schedule_id, role in (
             (self.manager_schedule_id, "manager"),
             (self.portfolio_schedule_id, "orchestrator"),
@@ -155,7 +166,13 @@ class PortfolioLifecycleIntegration:
         if _generation(generation) != self._generation:
             raise LifecycleIntegrationError("stale lifecycle generation")
 
-    def _project_guard(self, project_id: str, *, project_ref: str, task_ref: str, lifecycle_owner: str, generation: int) -> dict[str, Any]:
+    @staticmethod
+    def _same_ref(left: Any, right: Any) -> bool:
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            return all(left.get(key) == right.get(key) for key in ("authority", "kind", "id", "revision"))
+        return left == right
+
+    def _project_guard(self, project_id: str, *, project_ref: Any, task_ref: Any, lifecycle_owner: str, generation: int) -> dict[str, Any]:
         project = _text(project_id, "project_id")
         context = self._project_context.get(project)
         if context is None:
@@ -163,11 +180,85 @@ class PortfolioLifecycleIntegration:
         self._check_generation(generation)
         if _text(lifecycle_owner, "lifecycle_owner") != self._lifecycle_owner:
             raise LifecycleIntegrationError("foreign lifecycle owner")
+        if self.owner_operations is not None:
+            current = self._owner_read(project)
+            if not self._same_ref(project_ref, current.get("project_ref")):
+                raise LifecycleIntegrationError("stale project revision")
+            if not self._same_ref(task_ref, current.get("task_ref")):
+                raise LifecycleIntegrationError("stale task revision")
+            return context
         if _text(project_ref, "project_ref") != context["project_ref"]:
             raise LifecycleIntegrationError("stale project revision")
         if _text(task_ref, "task_ref") != context["task_ref"]:
             raise LifecycleIntegrationError("stale task revision")
         return context
+
+    @staticmethod
+    def _revision(ref: Any, field: str) -> str:
+        if isinstance(ref, Mapping):
+            return _text(ref.get("revision"), field + ".revision")
+        value = _text(ref, field)
+        if "@" not in value:
+            raise LifecycleIntegrationError(field + " must carry a pinned revision")
+        return _text(value.rsplit("@", 1)[1], field + ".revision")
+
+    def _owner_read(self, project_id: str) -> Mapping[str, Any]:
+        if self.owner_operations is None:
+            return {}
+        context = self._project_context[project_id]
+        value = self.owner_operations.read_project_lifecycle(
+            context["project_ref"], context["task_ref"], context["manager_ref"], actor=self.manager_actor,
+        )
+        if not isinstance(value, Mapping) or value.get("outcome") != "read":
+            raise LifecycleIntegrationError("canonical lifecycle read was not accepted")
+        if value.get("generation") != self._generation:
+            raise LifecycleIntegrationError("canonical manager generation is stale")
+        return value
+
+    def _owner_transition(self, project_id: str, *, request_id: str, intent: str, evidence: Mapping[str, Any]) -> None:
+        """Use the public owner transition before updating Otto's cache.
+
+        The cache remains only a projection for schedule reconciliation.  A
+        configured canonical owner owns the current refs, lifecycle intent and
+        transaction receipt.
+        """
+
+        if self.owner_operations is None:
+            self._projects[project_id] = "terminal" if intent == "terminal" else intent
+            return
+        context = self._project_context[project_id]
+        current = self._owner_read(project_id)
+        project_ref = current.get("project_ref")
+        task_ref = current.get("task_ref")
+        manager_ref = current.get("manager_ref")
+        value = self.owner_operations.transition_project_lifecycle(
+            project_ref, task_ref, manager_ref,
+            actor=self.manager_actor, request_id=request_id,
+            expected_generation=current["generation"],
+            expected_project_revision=self._revision(project_ref, "canonical project_ref"),
+            expected_task_revision=self._revision(task_ref, "canonical task_ref"),
+            intent=intent, evidence=evidence,
+            obligation={"required_task": task_ref, "lifecycle_owner": self._lifecycle_owner},
+        )
+        if not isinstance(value, Mapping) or value.get("outcome") not in {"transitioned", "replayed"}:
+            raise LifecycleIntegrationError("canonical lifecycle transition was not accepted")
+        state = value.get("state")
+        self._projects[project_id] = "terminal" if state == "completed" else intent
+        context["project_ref"] = value.get("project_ref", project_ref)
+        context["task_ref"] = value.get("task_ref", task_ref)
+        context["manager_ref"] = value.get("manager_ref", manager_ref)
+
+    def _owner_host_acknowledgement(self, project_id: str, result: dict[str, Any], *, request_id: str) -> None:
+        """Attach the durable schedule/readback acknowledgement to its intent."""
+
+        if self.owner_operations is None:
+            return
+        intent = self._projects[project_id]
+        self._owner_transition(
+            project_id, request_id=request_id + ":host-ack", intent=intent,
+            evidence={"host_effects": _copy(result["schedules"], "host effects")},
+        )
+        result["project_context"] = _copy(self._project_context, "project_context")
 
     def _terminal_evidence(self, project_id: str, evidence: Mapping[str, Any], *, project_ref: str, task_ref: str, lifecycle_owner: str, generation: int) -> dict[str, Any]:
         if not isinstance(evidence, Mapping):
@@ -274,6 +365,7 @@ class PortfolioLifecycleIntegration:
             "generation": self._generation,
             "lifecycle_owner": self._lifecycle_owner,
             "projects": dict(self._projects),
+            "project_context": _copy(self._project_context, "project_context"),
             "active_project_ids": sorted(project_id for project_id, state in self._projects.items() if state == "active"),
             "closing_project_ids": sorted(project_id for project_id, state in self._projects.items() if state in {"closing", "blocked"}),
             "desired_states": desired,
@@ -290,8 +382,10 @@ class PortfolioLifecycleIntegration:
             raise LifecycleIntegrationError("activation requires manager or orchestrator authority")
         project = _text(project_id, "project_id")
         self._project_guard(project, project_ref=project_ref, task_ref=task_ref, lifecycle_owner=lifecycle_owner, generation=generation)
-        self._projects[project] = "active"
-        return self._reconcile(request_id=request_id, action="activate", generation=generation)
+        self._owner_transition(project, request_id=request_id, intent="active", evidence={})
+        result = self._reconcile(request_id=request_id, action="activate", generation=generation)
+        self._owner_host_acknowledgement(project, result, request_id=request_id)
+        return result
 
     def resume(self, project_id: str, *, request_id: str, actor: str, generation: int, project_ref: str, task_ref: str, lifecycle_owner: str) -> dict[str, Any]:
         """Resume a project from zero-active state through the same path."""
@@ -309,8 +403,10 @@ class PortfolioLifecycleIntegration:
         self._project_guard(project, project_ref=project_ref, task_ref=task_ref, lifecycle_owner=lifecycle_owner, generation=generation)
         if self._projects.get(project) not in {"active", "closing", "blocked"}:
             raise LifecycleIntegrationError("manager close requires an active or closing project")
-        self._projects[project] = "blocked" if blocked else "closing"
-        return self._reconcile(request_id=request_id, action="manager_close", generation=generation)
+        self._owner_transition(project, request_id=request_id, intent="blocked" if blocked else "closing", evidence={})
+        result = self._reconcile(request_id=request_id, action="manager_close", generation=generation)
+        self._owner_host_acknowledgement(project, result, request_id=request_id)
+        return result
 
     def orchestrator_verify(self, *, actor: str, generation: int) -> dict[str, Any]:
         """Perform the independent orchestrator owner check without mutation."""
@@ -322,6 +418,7 @@ class PortfolioLifecycleIntegration:
             "generation": self._generation,
             "binding": _copy(self.orchestrator_binding),
             "projects": dict(self._projects),
+            "project_context": _copy(self._project_context, "project_context"),
             "manager_record": None if self._record(self.manager_schedule_id) is None else self._record(self.manager_schedule_id).to_dict(),
             "portfolio_record": None if self._record(self.portfolio_schedule_id) is None else self._record(self.portfolio_schedule_id).to_dict(),
             "automatic_action": False,
@@ -347,9 +444,10 @@ class PortfolioLifecycleIntegration:
             if state == "blocked":
                 return {"outcome": "held", "reason": "blocked project requires recovery before terminal close", "project_id": project, "generation": self._generation, "automatic_action": False}
             raise LifecycleIntegrationError("terminal close requires manager state closing")
-        self._projects[project] = "terminal"
+        self._owner_transition(project, request_id=request_id, intent="terminal", evidence=verified_evidence)
         result = self._reconcile(request_id=request_id, action="orchestrator_terminal_close", generation=generation)
         result["terminal_evidence"] = verified_evidence
+        self._owner_host_acknowledgement(project, result, request_id=request_id)
         return result
 
     def rebind_owner(self, *, request_id: str, actor: str, new_lifecycle_owner: str, generation: int) -> dict[str, Any]:

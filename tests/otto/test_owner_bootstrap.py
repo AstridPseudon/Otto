@@ -290,3 +290,43 @@ def test_owner_bootstrap_rejects_wrong_authority_before_issuing_consumer(tmp_pat
         )
     assert list(store.list_events()) == []
     store.close()
+
+
+def test_consumer_lifecycle_transition_and_read_use_the_owner_port_after_reopen(tmp_path):
+    from herzchen.kernel.store import Store
+
+    store, path = _registered_store(tmp_path, "lifecycle-owner.sqlite")
+    owner, api = _bootstrap(store)
+    created = api.create_pending(actor="manager", request_id="lifecycle-project", edit={"title": "Lifecycle owner"})
+    applied = owner.sheet.apply(
+        created["project_ref"], {"tasks": [{"id": "required", "title": "Required"}]},
+        logical_request_key="lifecycle-task", actor=owner.owner_actor,
+    )
+    project = owner.graph.get(applied.project.ref)
+    task = owner.graph.get(next(iter(applied.mappings.values())))
+    manager = owner.assignments.assign(task.ref, role="manager", principal="manager", logical_request_key="lifecycle-manager", actor=owner.owner_actor)
+
+    transitioned = api.transition_project_lifecycle(
+        project.ref, task.ref, manager.ref,
+        actor="manager", request_id="lifecycle-active", expected_generation=manager.generation,
+        expected_project_revision=project.ref.revision, expected_task_revision=task.ref.revision,
+        intent="active", evidence={"acceptance": {"status": "passed", "ref": "proof"}},
+        obligation={"required_task": task.ref.to_dict()},
+    )
+    assert transitioned["outcome"] == "transitioned"
+    assert transitioned["state"] == "active"
+    assert transitioned["receipt"]["logical_request_key"] == "lifecycle-active"
+    read = api.read_project_lifecycle(transitioned["project_ref"], task.ref, manager.ref, actor="manager")
+    assert read["outcome"] == "read"
+    assert read["transition"]["intent"] == "active"
+
+    domains = store.registered_domains()
+    store.close()
+    reopened = Store.open(path, authority=AUTHORITY, expected_domains=domains)
+    try:
+        _fresh_owner, fresh_api = _bootstrap(reopened)
+        observed = fresh_api.read_project_lifecycle(transitioned["project_ref"], task.ref, manager.ref, actor="manager")
+        assert observed["transition"] == read["transition"]
+        assert observed["project_ref"] == read["project_ref"]
+    finally:
+        reopened.close()

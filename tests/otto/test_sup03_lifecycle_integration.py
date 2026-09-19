@@ -6,13 +6,14 @@ import pytest
 
 from otto.attention import DueRecord, DurableAttention, InMemoryDueRecordPort, RecordingAttentionPort
 from otto.host_bridge import automation_update_request
+from otto.portfolio import HerzchenBindingConfig, OttoPortfolio, PortfolioOwnerBootstrap
 from otto.portfolio.lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
 
 
 NOW = datetime(2026, 9, 19, 3, 0, tzinfo=timezone.utc)
 
 
-def _record(schedule_id: str, *, role: str, target_id: str) -> DueRecord:
+def _record(schedule_id: str, *, role: str, target_id: str, generation: int = 2) -> DueRecord:
     return DueRecord(
         schedule_id=schedule_id,
         recipient=role,
@@ -44,7 +45,7 @@ def _record(schedule_id: str, *, role: str, target_id: str) -> DueRecord:
         owner="owner-root",
         project_ref="project-root",
         manager_ref="manager-root",
-        generation=2,
+        generation=generation,
     )
 
 
@@ -277,3 +278,42 @@ def test_rebind_fences_old_generation_and_owner_while_new_owner_reconciles():
     assert due.read_due("schedule-manager")["lifecycle_owner"] == "owner-next"
     assert due.read_due("schedule-manager")["generation"] == 3
     assert host.update_calls[-1]["id"] == "automation-portfolio"
+
+
+def test_owner_backed_lifecycle_persists_the_host_readback_join(tmp_path):
+    from herzchen.authoring import register_authoring
+    from herzchen.content import domain_contribution
+    from herzchen.domains.work import register_work
+    from herzchen.kernel import Store
+
+    store = Store.create(tmp_path / "owner.sqlite", authority="lifecycle-owner")
+    register_work(store)
+    store.register_domain_handler((domain_contribution(),))
+    register_authoring(store)
+    owner = PortfolioOwnerBootstrap(store, binding=HerzchenBindingConfig("lifecycle-owner", "credential"), owner_actor="manager")
+    api = OttoPortfolio(owner.consumer_operations())
+    created = api.create_pending(actor="manager", request_id="owner-project", edit={"title": "Owner lifecycle"})
+    applied = owner.sheet.apply(created["project_ref"], {"tasks": [{"id": "required", "title": "Required"}]}, logical_request_key="owner-task", actor=owner.owner_actor)
+    project = owner.graph.get(applied.project.ref)
+    task = owner.graph.get(next(iter(applied.mappings.values())))
+    manager = owner.assignments.assign(task.ref, role="manager", principal="manager", logical_request_key="owner-manager", actor=owner.owner_actor)
+    due = InMemoryDueRecordPort()
+    attention = DurableAttention(RecordingAttentionPort(), due_port=due, host_mode="durable-host", clock=lambda: NOW)
+    assert attention.schedule(_record("schedule-manager", role="manager", target_id="automation-manager", generation=1), request_id="schedule-manager")["outcome"] == "scheduled"
+    assert attention.schedule(_record("schedule-portfolio", role="orchestrator", target_id="automation-portfolio", generation=1), request_id="schedule-portfolio")["outcome"] == "scheduled"
+    host = _Host()
+    integration = PortfolioLifecycleIntegration(
+        attention, manager_schedule_id="schedule-manager", portfolio_schedule_id="schedule-portfolio",
+        lifecycle_owner="owner-root", manager_actor="manager", orchestrator_actor="orchestrator-actor", generation=1,
+        orchestrator_binding={"role": "orchestrator", "native_id": "orch", "root_id": "root", "generation": 1, "status": "active"},
+        projects={"real-project": {"state": "active", "project_ref": project.ref.to_dict(), "task_ref": task.ref.to_dict(), "manager_ref": manager.ref.to_dict(), "lifecycle_owner": "owner-root", "generation": 1}},
+        automation_update=host.update, read_settings=host.read, owner_operations=api,
+    )
+    first = integration.activate("real-project", request_id="owner-activate", actor="manager", generation=1, project_ref=project.ref.to_dict(), task_ref=task.ref.to_dict(), lifecycle_owner="owner-root")
+    assert first["outcome"] == "reconciled"
+    context = first["project_context"]["real-project"]
+    observed = api.read_project_lifecycle(context["project_ref"], context["task_ref"], context["manager_ref"], actor="manager")
+    assert observed["transition"]["intent"] == "active"
+    assert set(observed["transition"]["evidence"]["host_effects"]) == {"manager", "portfolio"}
+    assert all(item["readback_exact"] for item in first["schedules"].values())
+    store.close()
