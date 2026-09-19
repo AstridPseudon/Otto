@@ -136,6 +136,8 @@ class FiniteWorkOperations:
             return self._export_project(payload, request_id=request_id)
         if operation == "work.project.import":
             return self._import_project(payload, request_id=request_id, actor=actor)
+        if operation == "work.task.dependency-refresh":
+            return self._refresh_task_dependency(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.fence":
             return self._fence_assignment(payload, request_id=request_id)
         if operation == "work.responsibility.dispatch":
@@ -201,14 +203,18 @@ class FiniteWorkOperations:
 
     @staticmethod
     def _same_identity(left: Any, right: Any) -> bool:
+        if isinstance(left, Mapping):
+            left = (left.get("authority"), left.get("kind"), left.get("id"))
+        else:
+            left = (getattr(left, "authority", None), getattr(left, "kind", None), getattr(left, "id", None))
+        if isinstance(right, Mapping):
+            right = (right.get("authority"), right.get("kind"), right.get("id"))
+        else:
+            right = (getattr(right, "authority", None), getattr(right, "kind", None), getattr(right, "id", None))
         return (
-            getattr(left, "authority", None),
-            getattr(left, "kind", None),
-            getattr(left, "id", None),
+            left[0], left[1], left[2]
         ) == (
-            getattr(right, "authority", None),
-            getattr(right, "kind", None),
-            getattr(right, "id", None),
+            right[0], right[1], right[2]
         )
 
     def _receipt(self, request_id: str) -> Any:
@@ -224,6 +230,101 @@ class FiniteWorkOperations:
         }
         result.update(values)
         return result
+
+    def _refresh_task_dependency(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """A supported owner operation that acknowledges a current prerequisite.
+
+        ProjectSheet intentionally stores dependency links by identity, so a
+        normal ``link_dependency`` replay cannot remove the historical
+        revision observed by the read-only manager projection.  This command
+        uses the accepted ProjectSheet batch and records the current
+        prerequisite revision in task metadata.  The inbox reader treats that
+        typed marker as an owner acknowledgement only while the observed
+        prerequisite still has the acknowledged revision.
+        """
+
+        if self.sheet_port is None:
+            return self._unsupported(
+                "work.task.dependency-refresh",
+                request_id=request_id,
+                code="canonical_project_sheet_port_unavailable",
+                message="accepted ProjectSheet command port was not injected",
+            )
+        try:
+            from herzchen.contracts import ResourceRef
+
+            task_ref = ResourceRef.from_dict(payload["task_ref"])
+            dependency_ref = ResourceRef.from_dict(payload["dependency_ref"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return {
+                "outcome": "error",
+                "error": {"code": "invalid_dependency_refresh", "message": str(exc), "operation": "work.task.dependency-refresh"},
+                "replayed": False,
+                "event_ids": [],
+            }
+        before = self._receipt(request_id)
+        task = self.reader.get_record(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+        dependency = self.reader.get_record(ResourceRef(dependency_ref.authority, dependency_ref.kind, dependency_ref.id))
+        task_payload = getattr(task, "payload", {}) if task is not None else {}
+        dependency_payload = getattr(dependency, "payload", {}) if dependency is not None else {}
+        if task is None or not isinstance(task_payload, Mapping) or task_payload.get("kind") != "task":
+            return {"outcome": "error", "error": {"code": "task_not_found", "message": "task_ref is not a readable work.task"}, "replayed": False, "event_ids": []}
+        if dependency is None or not isinstance(dependency_payload, Mapping) or dependency_payload.get("kind") != "task":
+            return {"outcome": "error", "error": {"code": "dependency_not_found", "message": "dependency_ref is not a readable work.task"}, "replayed": False, "event_ids": []}
+        project_value = task_payload.get("project_ref")
+        dependency_project_value = dependency_payload.get("project_ref")
+        try:
+            project_ref = ResourceRef.from_dict(project_value) if isinstance(project_value, Mapping) else None
+            dependency_project_ref = ResourceRef.from_dict(dependency_project_value) if isinstance(dependency_project_value, Mapping) else None
+        except (TypeError, ValueError):
+            project_ref = dependency_project_ref = None
+        if project_ref is None or dependency_project_ref is None or not self._same_identity(project_ref, dependency_project_ref):
+            return {"outcome": "error", "error": {"code": "dependency_scope_mismatch", "message": "task and prerequisite must share a project"}, "replayed": False, "event_ids": []}
+        if not any(self._same_identity(ref, dependency.ref) for ref in task_payload.get("dependencies", ())):
+            return {"outcome": "error", "error": {"code": "dependency_not_linked", "message": "task does not currently link dependency_ref"}, "replayed": False, "event_ids": []}
+        project = self.reader.get_record(ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
+        if project is None:
+            return {"outcome": "error", "error": {"code": "project_not_found", "message": "task project is not readable"}, "replayed": False, "event_ids": []}
+        if before is not None:
+            result = self._receipt_result(
+                request_id,
+                outcome="replayed",
+                project_ref=_json_value(getattr(before, "result_ref", None) or project.ref),
+                task_ref=_json_value(getattr(task, "ref", task_ref)),
+                dependency_ref=_json_value(getattr(dependency, "ref", dependency_ref)),
+                acknowledged_revision=_json_value(dependency.ref.revision),
+            )
+            result["replayed"] = True
+            return result
+
+        metadata = dict(task_payload.get("metadata", {})) if isinstance(task_payload.get("metadata", {}), Mapping) else {}
+        marker = metadata.get("otto_dependency_refresh", [])
+        marker = list(marker) if isinstance(marker, (list, tuple)) else []
+        marker = [item for item in marker if isinstance(item, Mapping) and not self._same_identity(item.get("ref"), dependency.ref)]
+        marker.append({"ref": _json_value(dependency.ref), "revision": _json_value(dependency.ref.revision), "source": "otto.owner.dependency-refresh.v1"})
+        metadata["otto_dependency_refresh"] = marker
+        dependencies = [_json_value(ref) for ref in task_payload.get("dependencies", ())]
+        try:
+            batch = self.sheet_port.apply(
+                project.ref,
+                {"tasks": [{"id": task_ref.id, "dependencies": dependencies, "metadata": metadata}]},
+                logical_request_key=request_id,
+                actor=self._actor(actor),
+                base_revision=project.ref.revision,
+            )
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc), "operation": "work.task.dependency-refresh"}, "replayed": False, "event_ids": []}
+        receipt = getattr(batch, "receipt", None)
+        replayed = bool(getattr(receipt, "replayed", False))
+        observed_task = self.reader.get_record(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+        return self._receipt_result(
+            request_id,
+            outcome="replayed" if replayed else "refreshed",
+            project_ref=_json_value(getattr(batch.project, "ref", project.ref)),
+            task_ref=_json_value(getattr(observed_task, "ref", task.ref)),
+            dependency_ref=_json_value(getattr(dependency, "ref", dependency_ref)),
+            acknowledged_revision=_json_value(dependency.ref.revision),
+        )
 
     def _export_project(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
         """Export a typed pending project through the read-only Herzchen reader.

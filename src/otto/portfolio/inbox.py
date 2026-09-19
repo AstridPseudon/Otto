@@ -942,6 +942,25 @@ def derive_manager_inbox(
                     if later:
                         old = next((item for item in later[0].get("before_refs", ()) if _identity(item) == _identity(dep_ref)), None)
                         expected_revision = _ref(old).get("revision") if old is not None else None
+            # ProjectSheet dependency links are intentionally identity-only.
+            # The accepted owner refresh command records the exact observed
+            # prerequisite revision in task metadata so a manager can clear a
+            # stale historical pin through a durable, replay-safe operation.
+            # Do not trust arbitrary metadata: require the typed marker and
+            # keep the marker stale when the prerequisite has advanced again.
+            metadata = authored.get("metadata", {}) if isinstance(authored.get("metadata"), Mapping) else {}
+            refresh_markers = metadata.get("otto_dependency_refresh", ())
+            if isinstance(refresh_markers, Mapping):
+                refresh_markers = (refresh_markers,)
+            if isinstance(refresh_markers, (list, tuple)):
+                for marker in refresh_markers:
+                    if not isinstance(marker, Mapping) or marker.get("source") != "otto.owner.dependency-refresh.v1":
+                        continue
+                    marker_ref = _ref(marker.get("ref"))
+                    marker_revision = marker.get("revision")
+                    if marker_ref is not None and _identity(marker_ref) == _identity(dep_ref) and isinstance(marker_revision, str) and current_ref is not None:
+                        expected_revision = marker_revision
+                        break
             changed = bool(expected_revision and current_ref and expected_revision != current_ref.get("revision"))
             stale = stale or changed
             dependency_states.append({"ref": dep_ref, "expected_revision": expected_revision, "observed_ref": current_ref, "revision_changed": changed, "lifecycle": current.get("lifecycle") if isinstance(current, Mapping) else None})
