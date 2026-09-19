@@ -127,6 +127,17 @@ class DueRecord:
     completed_at: Optional[str] = None
     completion_evidence: Optional[Mapping[str, JSONValue]] = None
     completion_state: str = "none"
+    # SUP-02 owner-bound host configuration.  These fields remain part of the
+    # existing due record so a host can reconcile a trigger without a second
+    # registry or scheduler.  ``target`` is descriptive routing metadata; it
+    # does not imply that Otto can reach the named host itself.
+    target: Optional[Mapping[str, JSONValue]] = None
+    role: Optional[str] = None
+    purpose: Optional[str] = None
+    message: Optional[str] = None
+    lifecycle_owner: Optional[str] = None
+    host_state: str = "unknown"
+    host_evidence: Optional[Mapping[str, JSONValue]] = None
 
     def __post_init__(self) -> None:
         _required_text(self.schedule_id, "schedule_id")
@@ -147,6 +158,21 @@ class DueRecord:
         for field_name, value in (("project_ref", self.project_ref), ("manager_ref", self.manager_ref)):
             if value is not None:
                 _required_text(value, field_name)
+        for field_name, value in (("role", self.role), ("purpose", self.purpose), ("message", self.message), ("lifecycle_owner", self.lifecycle_owner)):
+            if value is not None:
+                _required_text(value, field_name)
+        if self.target is not None:
+            if not isinstance(self.target, Mapping):
+                raise TypeError("target must be a JSON object")
+            target = _json_copy(self.target, "target")
+            if not isinstance(target, Mapping):
+                raise TypeError("target must be a JSON object")
+            if not _required_text(target.get("host") or target.get("host_id"), "target.host"):
+                raise ValueError("target.host must be non-blank text")
+            identity = next((target.get(key) for key in ("native_id", "conversation_id", "agent_id", "thread_id", "id") if target.get(key)), None)
+            if not _required_text(identity, "target.native_id"):
+                raise ValueError("target.native_id must be non-blank text")
+            object.__setattr__(self, "target", target)
         if isinstance(self.generation, bool) or not isinstance(self.generation, int) or self.generation < 1:
             raise ValueError("generation must be a positive integer")
         if any(not isinstance(reason, str) or not reason.strip() for reason in self.due_reasons):
@@ -161,6 +187,8 @@ class DueRecord:
             raise ValueError("unsupported delivery_state")
         if self.completion_state not in {"none", "succeeded", "failed", "unknown"}:
             raise ValueError("unsupported completion_state")
+        if self.host_state not in {"unknown", "pending", "active", "paused", "failed"}:
+            raise ValueError("unsupported host_state")
         object.__setattr__(self, "outstanding_decisions", tuple(_json_copy(item, "outstanding_decisions") for item in self.outstanding_decisions))
         if self.last_result is not None:
             object.__setattr__(self, "last_result", _json_copy(self.last_result, "last_result"))
@@ -168,6 +196,8 @@ class DueRecord:
             object.__setattr__(self, "delivery_evidence", _json_copy(self.delivery_evidence, "delivery_evidence"))
         if self.completion_evidence is not None:
             object.__setattr__(self, "completion_evidence", _json_copy(self.completion_evidence, "completion_evidence"))
+        if self.host_evidence is not None:
+            object.__setattr__(self, "host_evidence", _json_copy(self.host_evidence, "host_evidence"))
 
     @property
     def immutable_input(self) -> dict[str, JSONValue]:
@@ -184,6 +214,11 @@ class DueRecord:
             "project_ref": self.project_ref,
             "manager_ref": self.manager_ref,
             "generation": self.generation,
+            "target": None if self.target is None else dict(self.target),
+            "role": self.role,
+            "purpose": self.purpose,
+            "message": self.message,
+            "lifecycle_owner": self.lifecycle_owner,
         }
 
     def to_dict(self) -> dict[str, JSONValue]:
@@ -205,6 +240,8 @@ class DueRecord:
             "completed_at": self.completed_at,
             "completion_evidence": None if self.completion_evidence is None else dict(self.completion_evidence),
             "completion_state": self.completion_state,
+            "host_state": self.host_state,
+            "host_evidence": None if self.host_evidence is None else dict(self.host_evidence),
         }
 
     @classmethod
@@ -227,6 +264,9 @@ class DueRecord:
             delivered_at=value.get("delivered_at"), delivery_evidence=value.get("delivery_evidence"),
             completed_at=value.get("completed_at"), completion_evidence=value.get("completion_evidence"),
             completion_state=value.get("completion_state", "none"),
+            target=value.get("target"), role=value.get("role"), purpose=value.get("purpose"),
+            message=value.get("message"), lifecycle_owner=value.get("lifecycle_owner"),
+            host_state=value.get("host_state", "unknown"), host_evidence=value.get("host_evidence"),
         )
 
 
@@ -244,6 +284,16 @@ class SharedAttentionPort(Protocol):
     def create_attention(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]: ...
 
     def list_attention(self, recipient: Optional[str] = None) -> Sequence[Mapping[str, JSONValue]]: ...
+
+
+class HostTriggerPort(Protocol):
+    """Finite owner-side trigger seam; implementations remain outside Otto."""
+
+    def ensure_trigger(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]: ...
+
+    def read_trigger(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]: ...
+
+    def pause_trigger(self, schedule_id: str, *, request_id: str) -> Mapping[str, JSONValue]: ...
 
 
 class AmendmentPort(Protocol):
@@ -825,6 +875,83 @@ class RecordingAttentionPort:
         return tuple(item for item in self.requests if recipient is None or item.get("recipient") == recipient)
 
 
+class RecordingHostTriggerPort:
+    """Deterministic fixture for the finite owner-side host seam.
+
+    This fixture records idempotent ensure/pause calls and exposes readback so
+    tests can distinguish desired configuration from observed host state.  It
+    is deliberately not a scheduler and does not launch a native conversation.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, JSONValue]] = []
+        self._records: dict[str, dict[str, JSONValue]] = {}
+        self._replies: dict[str, dict[str, JSONValue]] = {}
+        self.available = True
+
+    def ensure_trigger(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]:
+        value = dict(_json_copy(request, "host trigger request"))
+        schedule_id = _required_text(value.get("schedule_id"), "schedule_id")
+        request_id = _required_text(value.get("request_id"), "request_id")
+        prior = self._replies.get(request_id)
+        if prior is not None:
+            if prior.get("request") != value:
+                raise InputChangedError("host trigger request was reused with changed input")
+            return _json_copy(prior["response"], "host trigger response")
+        if not self.available:
+            raise HostUnavailableError("host trigger port is unavailable")
+        current = self._records.get(schedule_id)
+        same_configuration = current is not None and current.get("configuration") == value.get("configuration")
+        response = {
+            "outcome": "replayed" if same_configuration else "ensured",
+            "schedule_id": schedule_id,
+            "request_id": request_id,
+            "state": "active",
+            "target": value.get("configuration", {}).get("target"),
+            "configuration": value.get("configuration"),
+        }
+        self._records[schedule_id] = {"configuration": value.get("configuration"), "state": "active", "response": response}
+        self._replies[request_id] = {"request": value, "response": response}
+        self.requests.append(value)
+        return _json_copy(response, "host trigger response")
+
+    def read_trigger(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
+        value = self._records.get(schedule_id)
+        return None if value is None else _json_copy(value.get("response"), "host trigger readback")
+
+    def pause_trigger(self, schedule_id: str, *, request_id: str) -> Mapping[str, JSONValue]:
+        request_id = _required_text(request_id, "request_id")
+        if not self.available:
+            raise HostUnavailableError("host trigger port is unavailable")
+        current = self._records.get(schedule_id)
+        if current is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id, "state": "unknown", "request_id": request_id}
+        configuration = _json_copy(current.get("configuration"), "configuration")
+        if isinstance(configuration, Mapping):
+            configuration = dict(configuration)
+            target = configuration.get("target")
+            if isinstance(target, Mapping) and isinstance(target.get("automation"), Mapping):
+                target = dict(target)
+                automation = dict(target["automation"])
+                automation["status"] = "PAUSED"
+                target["automation"] = automation
+                configuration["target"] = target
+            if isinstance(configuration.get("automation"), Mapping):
+                automation = dict(configuration["automation"])
+                automation["status"] = "PAUSED"
+                configuration["automation"] = automation
+        response = {
+            "outcome": "paused", "schedule_id": schedule_id, "state": "paused",
+            "request_id": request_id, "configuration": configuration,
+            "target": configuration.get("target") if isinstance(configuration, Mapping) else None,
+        }
+        current["state"] = "paused"
+        current["configuration"] = configuration
+        current["response"] = response
+        self._replies[request_id] = {"request": {"schedule_id": schedule_id, "request_id": request_id, "action": "pause"}, "response": response}
+        return _json_copy(response, "host trigger response")
+
+
 class ImprovementPropagation:
     """Keep review notification, manager choice, and implementation distinct."""
 
@@ -918,7 +1045,7 @@ def _same_immutable(left: DueRecord, right: DueRecord) -> bool:
 class DurableAttention:
     """One-shot/interval readiness gate with durable-host reconciliation."""
 
-    def __init__(self, attention: SharedAttentionPort, *, due_port: Optional[DueRecordPort] = None, clock: Optional[Callable[[], datetime]] = None, host_mode: str = "awaited", host_available: bool = True) -> None:
+    def __init__(self, attention: SharedAttentionPort, *, due_port: Optional[DueRecordPort] = None, clock: Optional[Callable[[], datetime]] = None, host_mode: str = "awaited", host_available: bool = True, host_port: Optional[HostTriggerPort] = None) -> None:
         if host_mode not in {"awaited", "durable-host"}:
             raise ValueError("host_mode must be awaited or durable-host")
         self.attention = attention
@@ -926,6 +1053,7 @@ class DurableAttention:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.host_mode = host_mode
         self.host_available = host_available
+        self.host_port = host_port
         self._awaited_records: dict[str, DueRecord] = {}
 
     @property
@@ -963,6 +1091,301 @@ class DurableAttention:
         stored = self._write(record, request_id=key, expected_version=0)
         return {"outcome": "scheduled", "record": stored.to_dict(), "replayed": False, "expected_delta": {"record_version": 1}, "mutation": {"before": None, "action": record.to_dict(), "fresh_after": stored.to_dict()}, "automatic_action": False, "capability": self.capability}
 
+    def reconfigure(
+        self,
+        desired: DueRecord,
+        *,
+        request_id: str,
+        expected_version: int,
+        actor: Optional[str] = None,
+    ) -> dict[str, JSONValue]:
+        """CAS-replace immutable host configuration under the current owner.
+
+        A changed target/role/message requires a new invocation identity and a
+        current version.  This keeps same-key replay and generation fencing
+        meaningful while avoiding a second trigger registry.
+        """
+
+        _required_text(request_id, "request_id")
+        current = self._read(desired.schedule_id)
+        if current is None:
+            return {"outcome": "unknown", "schedule_id": desired.schedule_id, "automatic_action": False}
+        if actor is not None and actor != current.lifecycle_owner:
+            return {"outcome": "rejected", "schedule_id": desired.schedule_id, "error": {"code": "foreign_authority", "message": "actor is not the lifecycle owner"}, "automatic_action": False}
+        if expected_version != current.version:
+            return {"outcome": "rejected", "schedule_id": desired.schedule_id, "error": {"code": "stale_version", "message": "configuration CAS is stale"}, "automatic_action": False}
+        if current.in_flight_request is not None:
+            return {"outcome": "held", "schedule_id": desired.schedule_id, "request_id": current.in_flight_request, "error": {"code": "busy", "message": "an invocation is in flight"}, "automatic_action": False}
+        if _same_immutable(current, desired):
+            return {"outcome": "replayed", "schedule_id": desired.schedule_id, "record": current.to_dict(), "replayed": True, "expected_delta": "none", "automatic_action": False}
+        if current.invocation_identity == desired.invocation_identity:
+            return {"outcome": "rejected", "schedule_id": desired.schedule_id, "error": {"code": "configuration_identity_required", "message": "changed configuration requires a new invocation identity"}, "automatic_action": False}
+        next_record = DueRecord.from_dict({
+            **desired.to_dict(),
+            "version": current.version,
+            "last_covered_slot": current.last_covered_slot,
+            "in_flight_request": None,
+            "delivery_state": "none",
+            "last_completed_request": current.last_completed_request,
+            "last_result": current.last_result,
+            "due_reasons": list(current.due_reasons),
+            "delivered_at": None,
+            "delivery_evidence": None,
+            "completed_at": None,
+            "completion_evidence": None,
+            "completion_state": "none",
+            "host_state": "unknown",
+            "host_evidence": None,
+        })
+        try:
+            stored = self._write(next_record, request_id="reconfigure:" + request_id, expected_version=current.version)
+        except StateConflictError:
+            return {"outcome": "rejected", "schedule_id": desired.schedule_id, "error": {"code": "stale_version", "message": "configuration CAS was rejected by the owner"}, "automatic_action": False}
+        return {
+            "outcome": "reconfigured", "schedule_id": desired.schedule_id, "record": stored.to_dict(),
+            "replayed": False, "expected_delta": {"invocation_identity": stored.invocation_identity, "host_state": "unknown"},
+            "mutation": {"before": current.to_dict(), "action": desired.to_dict(), "fresh_after": stored.to_dict()},
+            "automatic_action": False,
+        }
+
+    @staticmethod
+    def _host_configuration(record: DueRecord, desired_state: str = "active") -> dict[str, JSONValue]:
+        configuration = {
+            "target": None if record.target is None else dict(record.target),
+            "role": record.role,
+            "purpose": record.purpose,
+            "message": record.message or record.instruction,
+            "schedule": {"anchor": record.anchor, "interval_seconds": record.interval_seconds, "due_at": record.due_at},
+            "lifecycle_owner": record.lifecycle_owner,
+            "invocation_identity": record.invocation_identity,
+        }
+        if desired_state not in {"active", "paused"}:
+            raise ValueError("desired_state must be active or paused")
+        target = configuration.get("target")
+        if isinstance(target, Mapping) and isinstance(target.get("automation"), Mapping):
+            target = dict(target)
+            automation = dict(target["automation"])
+            automation["status"] = "ACTIVE" if desired_state == "active" else "PAUSED"
+            target["automation"] = automation
+            configuration["target"] = target
+        automation = configuration.get("automation")
+        if isinstance(automation, Mapping):
+            automation = dict(automation)
+            automation["status"] = "ACTIVE" if desired_state == "active" else "PAUSED"
+            configuration["automation"] = automation
+        return configuration
+
+    def prepare_host(
+        self,
+        schedule_id: str,
+        *,
+        request_id: str,
+        expected_version: Optional[int] = None,
+        actor: Optional[str] = None,
+        lifecycle_owner: Optional[str] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+        desired_state: str = "active",
+    ) -> dict[str, JSONValue]:
+        """Validate current ownership and durably prepare one host effect.
+
+        This is the owner half of the bridge.  It performs no host call.  A
+        host caller must use the returned effect and then submit readback to
+        :meth:`acknowledge_host`.
+        """
+
+        from .host_bridge import HostBridgeError, make_host_effect
+
+        _required_text(request_id, "request_id")
+        if desired_state not in {"active", "paused"}:
+            raise ValueError("desired_state must be active or paused")
+        owner = actor if actor is not None else lifecycle_owner
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
+        if owner is None or owner != record.lifecycle_owner:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "foreign_authority", "message": "authenticated actor is not the lifecycle owner"}, "automatic_action": False}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=owner)
+        if scope_error is not None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}
+        if expected_version is not None and expected_version != record.version:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "stale_version", "message": "host preparation version is stale"}, "automatic_action": False}
+        if record.target is None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "missing_target", "message": "host effects require an owner-bound native target"}, "automatic_action": False}
+
+        # Same logical request adopts an already persisted pending effect.  It
+        # never produces a second host registration.
+        prior_evidence = record.host_evidence
+        if isinstance(prior_evidence, Mapping) and prior_evidence.get("effect") is not None:
+            try:
+                prior_effect = make_host_effect(
+                    schedule_id=record.schedule_id, request_id=str(prior_evidence["effect"]["request_id"]),
+                    lifecycle_owner=record.lifecycle_owner or owner, project_ref=record.project_ref,
+                    manager_ref=record.manager_ref, generation=record.generation,
+                    owner_version=int(prior_evidence["effect"]["owner_version"]),
+                    desired_state=str(prior_evidence["effect"]["desired_state"]),
+                    configuration=prior_evidence["effect"]["configuration"],
+                )
+            except (KeyError, TypeError, ValueError, HostBridgeError):
+                prior_effect = None
+            if prior_effect is not None and prior_effect.request_id == request_id:
+                if prior_effect.desired_state != desired_state or prior_effect.configuration != self._host_configuration(record, desired_state):
+                    return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "input_changed", "message": "host request id was reused with changed input"}, "automatic_action": False}
+                return {"outcome": "replayed", "schedule_id": schedule_id, "effect": prior_effect.to_dict(), "record": record.to_dict(), "replayed": True, "automatic_action": False}
+
+        try:
+            effect = make_host_effect(
+                schedule_id=record.schedule_id, request_id=request_id,
+                lifecycle_owner=record.lifecycle_owner or owner, project_ref=record.project_ref,
+                manager_ref=record.manager_ref, generation=record.generation,
+                owner_version=record.version, desired_state=desired_state,
+                configuration=self._host_configuration(record, desired_state),
+            )
+        except HostBridgeError as exc:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "invalid_host_effect", "message": str(exc)}, "automatic_action": False}
+        pending = DueRecord.from_dict({
+            **record.to_dict(), "host_state": "pending",
+            "host_evidence": {"outcome": "pending_host", "effect": effect.to_dict(), "owner_version": record.version},
+        })
+        try:
+            stored = self._write(pending, request_id="host-prepare:" + request_id, expected_version=record.version)
+        except StateConflictError:
+            fresh = self._read(schedule_id)
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "stale_version", "message": "host preparation lost the owner race"}, "record": None if fresh is None else fresh.to_dict(), "automatic_action": False}
+        return {"outcome": "pending_host", "schedule_id": schedule_id, "effect": effect.to_dict(), "record": stored.to_dict(), "replayed": False, "automatic_action": False}
+
+    def acknowledge_host(
+        self,
+        schedule_id: str,
+        *,
+        request_id: str,
+        observed: Optional[Mapping[str, JSONValue]],
+        expected_version: Optional[int] = None,
+        actor: Optional[str] = None,
+        lifecycle_owner: Optional[str] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+    ) -> dict[str, JSONValue]:
+        """Persist exact host readback through the guarded owner path."""
+
+        from .host_bridge import HostEffect, readback_matches
+
+        _required_text(request_id, "request_id")
+        owner = actor if actor is not None else lifecycle_owner
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
+        if owner is None or owner != record.lifecycle_owner:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "foreign_authority", "message": "authenticated actor is not the lifecycle owner"}, "automatic_action": False}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=owner)
+        if scope_error is not None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}
+        if expected_version is not None and expected_version != record.version:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "stale_version", "message": "host acknowledgement version is stale"}, "record": record.to_dict(), "automatic_action": False}
+        evidence = record.host_evidence if isinstance(record.host_evidence, Mapping) else {}
+        effect_value = evidence.get("effect")
+        if not isinstance(effect_value, Mapping):
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "no_pending_host_effect", "message": "no prepared host effect exists"}, "automatic_action": False}
+        try:
+            effect = HostEffect.from_dict(effect_value)
+        except Exception as exc:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "invalid_host_effect", "message": str(exc)}, "automatic_action": False}
+        if effect.request_id != request_id:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "request_mismatch", "message": "acknowledgement is for a different host effect"}, "automatic_action": False}
+        if observed is None:
+            observation = {"schedule_id": schedule_id, "state": "pending", "outcome": "response_lost", "response_lost": True}
+            next_state = "pending"
+            exact = False
+        else:
+            observation = dict(_json_copy(observed, "observed host readback"))
+            exact, comparison = readback_matches(effect, observation)
+            observation["readback_exact"] = exact
+            observation["comparison"] = comparison
+            next_state = effect.desired_state if exact else ("failed" if observation.get("outcome") in {"host_failure", "failed"} else "pending")
+        updated = DueRecord.from_dict({**record.to_dict(), "host_state": next_state, "host_evidence": {"effect": effect.to_dict(), "observation": observation, "readback_exact": exact}})
+        try:
+            # A response-loss retry can settle the same logical effect with a
+            # new observation.  Bind the persistence key to that observation
+            # so the finite port accepts a changed, guarded acknowledgement.
+            stored = self._write(updated, request_id="host-ack:" + request_id + ":" + _digest(observation), expected_version=record.version)
+        except StateConflictError:
+            fresh = self._read(schedule_id)
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "stale_version", "message": "host acknowledgement lost the owner race"}, "record": None if fresh is None else fresh.to_dict(), "automatic_action": False}
+        return {"outcome": "reconciled" if exact else next_state, "schedule_id": schedule_id, "host_state": next_state, "readback_exact": exact, "record": stored.to_dict(), "observation": observation, "automatic_action": False}
+
+    def reconcile_host(
+        self,
+        schedule_id: str,
+        *,
+        request_id: str,
+        desired_state: str = "active",
+        lifecycle_owner: Optional[str] = None,
+        actor: Optional[str] = None,
+        expected_version: Optional[int] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+    ) -> dict[str, JSONValue]:
+        """Project one existing due record to an owner-side host adapter.
+
+        The adapter is optional and finite.  If absent, the result is an
+        explicit unsupported capability rather than a claimed native launch.
+        Any returned host state is persisted beside the due record, separate
+        from delivery and later completion evidence.
+        """
+
+        _required_text(request_id, "request_id")
+        if desired_state not in {"active", "paused"}:
+            raise ValueError("desired_state must be active or paused")
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
+        owner = actor if actor is not None else lifecycle_owner
+        prepared = self.prepare_host(schedule_id, request_id=request_id, expected_version=record.version if expected_version is None else expected_version, actor=owner, project_ref=project_ref, manager_ref=manager_ref, generation=generation, desired_state=desired_state)
+        if prepared.get("outcome") == "rejected":
+            return prepared
+        if prepared.get("outcome") == "replayed" and record.host_state == desired_state:
+            return {"outcome": "reconciled", "schedule_id": schedule_id, "host_state": desired_state, "record": record.to_dict(), "replayed": True, "automatic_action": False}
+        if self.host_port is None:
+            return {"outcome": "unsupported", "schedule_id": schedule_id, "error": {"code": "host_adapter_unavailable", "message": "no owner-side HostTriggerPort was supplied"}, "record": prepared.get("record", record.to_dict()), "automatic_action": False}
+        effect_record = prepared.get("record") or self._read(schedule_id)
+        effect_value = (prepared.get("effect") or (effect_record or {}).get("host_evidence", {}).get("effect"))
+        host_request_id = request_id
+        try:
+            configuration = self._host_configuration(record, desired_state)
+            if desired_state == "active":
+                response = dict(_json_copy(self.host_port.ensure_trigger({
+                    "request_id": request_id,
+                    "schedule_id": record.schedule_id,
+                    "desired_state": desired_state,
+                    "configuration": configuration,
+                }), "host response"))
+            else:
+                response = dict(_json_copy(self.host_port.pause_trigger(record.schedule_id, request_id=request_id), "host response"))
+        except HostUnavailableError as exc:
+            response = {"outcome": "unavailable", "state": "failed", "error": {"code": "host_unavailable", "message": str(exc)}}
+        except Exception as exc:
+            response = {"outcome": "failed", "state": "failed", "error": {"code": "host_adapter_error", "message": str(exc)}}
+        readback = self.host_port.read_trigger(schedule_id)
+        if readback is None:
+            if response.get("outcome") in {"unavailable", "failed"}:
+                readback = {"schedule_id": schedule_id, "state": "failed", "outcome": "host_failure", "response_lost": False, "host_response": response}
+            else:
+                readback = {"schedule_id": schedule_id, "state": "pending", "outcome": "response_lost", "response_lost": True, "host_response": response}
+        else:
+            readback = {**dict(readback), "host_response": response}
+        if isinstance(effect_value, Mapping):
+            ack = self.acknowledge_host(schedule_id, request_id=host_request_id, observed=readback, expected_version=int((effect_record or {}).get("version", record.version + 1)), actor=owner, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+            if ack.get("outcome") in {"reconciled", "active", "paused", "pending", "failed"}:
+                ack["host_response"] = response
+                if response.get("outcome") in {"unavailable", "failed"}:
+                    ack["outcome"] = response.get("outcome")
+                return ack
+        state = readback.get("state")
+        return {"outcome": "pending", "schedule_id": schedule_id, "host_response": response, "host_state": state or "pending", "record": effect_record, "automatic_action": False}
+
     def _slot(self, record: DueRecord, now: datetime) -> Optional[int]:
         current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
         if record.interval_seconds is None:
@@ -977,6 +1400,7 @@ class DurableAttention:
         project_ref: Optional[str],
         manager_ref: Optional[str],
         generation: Optional[int],
+        lifecycle_owner: Optional[str] = None,
     ) -> Optional[dict[str, JSONValue]]:
         if project_ref is not None and project_ref != record.project_ref:
             return {"code": "scope_mismatch", "message": "project scope does not match the due record"}
@@ -987,6 +1411,8 @@ class DurableAttention:
                 return {"code": "stale_generation", "message": "generation must be an integer"}
             if generation != record.generation:
                 return {"code": "stale_generation", "message": "generation is fenced"}
+        if lifecycle_owner is not None and lifecycle_owner != record.lifecycle_owner:
+            return {"code": "foreign_authority", "message": "lifecycle owner does not match the due record"}
         return None
 
     @staticmethod
@@ -1020,11 +1446,12 @@ class DurableAttention:
         project_ref: Optional[str] = None,
         manager_ref: Optional[str] = None,
         generation: Optional[int] = None,
+        lifecycle_owner: Optional[str] = None,
     ) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "automatic_action": False}
-        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
         if scope_error is not None:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "relaunch": False, "automatic_action": False}
         if not self.host_available or (self.host_mode == "durable-host" and self.due_port is None):
@@ -1060,11 +1487,14 @@ class DurableAttention:
         request = {
             "request_id": request_id, "schedule_id": schedule_id, "recipient": stored.recipient,
             "instruction": stored.instruction, "profile": stored.profile, "anchor": stored.anchor,
+            "message": stored.message or stored.instruction,
             "slot": slot, "missed_slots": max(0, slot - record.last_covered_slot - 1),
             "invocation_identity": stored.invocation_identity, "owner": stored.owner,
             "missing_handoff": stored.missing_handoff, "return_condition": stored.return_condition,
             "due_reasons": list(stored.due_reasons), "project_ref": stored.project_ref,
             "manager_ref": stored.manager_ref, "generation": stored.generation,
+            "target": None if stored.target is None else dict(stored.target), "role": stored.role,
+            "purpose": stored.purpose, "lifecycle_owner": stored.lifecycle_owner,
             "readiness": {"status": "attention", "dispatch": False, "executable": False},
         }
         try:
@@ -1089,11 +1519,14 @@ class DurableAttention:
         return {
             "outcome": "attention-ready" if due else state, "schedule_id": record.schedule_id,
             "request_id": request_id or record.in_flight_request, "record": record.to_dict(),
-            "readiness": {"status": "attention" if due else state, "dispatch": False, "executable": False},
+            "readiness": {"status": state if state == "in-flight" else ("attention" if due else state), "dispatch": False, "executable": False},
             "responsible_owner": record.owner or record.recipient, "missing_handoff": record.missing_handoff,
             "return_condition": record.return_condition, "delivery_state": delivery_state or record.delivery_state,
             "due_reasons": list(record.due_reasons), "project_ref": record.project_ref,
             "manager_ref": record.manager_ref, "generation": record.generation,
+            "target": None if record.target is None else dict(record.target), "role": record.role,
+            "purpose": record.purpose, "message": record.message, "lifecycle_owner": record.lifecycle_owner,
+            "host_state": record.host_state, "host_evidence": record.host_evidence,
             "delivered_at": record.delivered_at, "delivery_evidence": record.delivery_evidence,
             "completed_at": record.completed_at, "completion_evidence": record.completion_evidence,
             "completion_state": record.completion_state,
@@ -1112,11 +1545,12 @@ class DurableAttention:
         project_ref: Optional[str] = None,
         manager_ref: Optional[str] = None,
         generation: Optional[int] = None,
+        lifecycle_owner: Optional[str] = None,
     ) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "automatic_action": False}
-        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
         if scope_error is not None:
             return {"outcome": "rejected", "request_id": request_id, "error": scope_error, "relaunch": False, "automatic_action": False}
         if record.last_completed_request == request_id and record.last_result is not None:
@@ -1153,12 +1587,13 @@ class DurableAttention:
         project_ref: Optional[str] = None,
         manager_ref: Optional[str] = None,
         generation: Optional[int] = None,
+        lifecycle_owner: Optional[str] = None,
     ) -> dict[str, JSONValue]:
         """Record one bounded missed period while preserving a future cursor."""
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "automatic_action": False}
-        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation)
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
         if scope_error is not None:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "relaunch": False, "automatic_action": False}
         slot = self._slot(record, now or self.clock())
@@ -1273,7 +1708,7 @@ DurableAttentionService = DurableAttention
 
 __all__ = [
     "AmendmentInterruptedError", "AmendmentPort", "AttentionError", "AttentionScheduler", "CursorContinuity", "CursorContinuityError", "DueRecord", "DueRecordPort",
-    "DurableAttention", "DurableAttentionService", "EventCursorReaderAdapter", "HostUnavailableError", "InMemoryDueRecordPort",
-    "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "SerializedAmendmentPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
+    "DurableAttention", "DurableAttentionService", "EventCursorReaderAdapter", "HostTriggerPort", "HostUnavailableError", "InMemoryDueRecordPort",
+    "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "RecordingHostTriggerPort", "SerializedAmendmentPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
     "StoreDueRecordPort", "due_record_contribution", "issue_store_amendment_port", "issue_store_due_record_port",
 ]
