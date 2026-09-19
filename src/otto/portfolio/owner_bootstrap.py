@@ -316,6 +316,7 @@ class PortfolioOwnerBootstrap:
         "sheet",
         "content",
         "assignments",
+        "lifecycle",
         "authoring",
         "create_and_open_bridge",
     )
@@ -332,6 +333,7 @@ class PortfolioOwnerBootstrap:
         from herzchen.content import ContentCommandHandler
         from herzchen.domains.work import WorkGraph
         from herzchen.domains.work.assignments import ResponsibilityAssignments
+        from herzchen.domains.work.lifecycle import ProjectLifecycle
         from herzchen.domains.work.sheet import ProjectSheet
         from herzchen.kernel.store import Store
 
@@ -350,6 +352,7 @@ class PortfolioOwnerBootstrap:
         self.sheet = ProjectSheet(store, actor=authenticated)
         self.content = ContentCommandHandler(store)
         self.assignments = ResponsibilityAssignments(store, actor=authenticated)
+        self.lifecycle = ProjectLifecycle(store, actor=authenticated)
         self.authoring = AuthoringSessionService(store)
         bridge_type = _create_bridge_type()
         self.create_and_open_bridge = bridge_type(
@@ -373,6 +376,7 @@ class PortfolioOwnerBootstrap:
             sheet_port=self.sheet.command_port,
             content_port=self.content.command_port,
             assignments_port=self.assignments.command_port,
+            lifecycle_port=self.lifecycle.command_port,
             authoring_port=self.authoring.command_port,
             create_open_port=create_open_port,
         )

@@ -14,6 +14,15 @@ import json
 from typing import Any, Mapping, Optional
 
 
+# Keep the consumer facade's public instance shape stable while lifecycle
+# authority remains injected exclusively by the trusted owner bootstrap.
+_LIFECYCLE_PORTS: dict[int, Any] = {}
+
+
+def _lifecycle_for(operations: Any) -> Any:
+    return _LIFECYCLE_PORTS.get(id(operations))
+
+
 @dataclass(frozen=True)
 class HerzchenBindingConfig:
     """Explicit authority and credential used to authenticate an Otto actor."""
@@ -83,6 +92,7 @@ class FiniteWorkOperations:
         sheet_port: Any = None,
         content_port: Any = None,
         assignments_port: Any = None,
+        lifecycle_port: Any = None,
         authoring_port: Any = None,
         create_open_port: Any = None,
     ) -> None:
@@ -94,6 +104,8 @@ class FiniteWorkOperations:
         self.sheet_port = sheet_port
         self.content_port = content_port
         self.assignments_port = assignments_port
+        if lifecycle_port is not None:
+            _LIFECYCLE_PORTS[id(self)] = lifecycle_port
         self.authoring_port = authoring_port
         self.create_open_port = create_open_port
 
@@ -138,6 +150,10 @@ class FiniteWorkOperations:
             return self._import_project(payload, request_id=request_id, actor=actor)
         if operation == "work.task.dependency-refresh":
             return self._refresh_task_dependency(payload, request_id=request_id, actor=actor)
+        if operation == "work.lifecycle.transition":
+            return self._lifecycle_transition(payload, request_id=request_id, actor=actor)
+        if operation == "work.lifecycle.read":
+            return self._lifecycle_read(payload, request_id=request_id)
         if operation == "work.project.lifecycle.transition":
             return self._transition_project_lifecycle(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.fence":
@@ -327,6 +343,77 @@ class FiniteWorkOperations:
             dependency_ref=_json_value(getattr(dependency, "ref", dependency_ref)),
             acknowledged_revision=_json_value(dependency.ref.revision),
         )
+
+    def _lifecycle_transition(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        lifecycle_port = _lifecycle_for(self)
+        if lifecycle_port is None:
+            return self._unsupported("work.lifecycle.transition", request_id=request_id, code="canonical_lifecycle_port_unavailable", message="canonical owner lifecycle port was not injected")
+        try:
+            from herzchen.contracts import ResourceRef
+            project_ref = ResourceRef.from_dict(payload["project_ref"])
+            result = lifecycle_port.transition(
+                project_ref,
+                action=payload["action"],
+                logical_request_key=request_id,
+                expected_project_revision=payload["expected_project_revision"],
+                generation=payload["generation"],
+                manager_assignment=payload.get("manager_assignment"),
+                task=payload.get("task_ref"),
+                orchestrator_assignment=payload.get("orchestrator_assignment"),
+                evidence=payload.get("evidence"),
+                effect_packet=payload.get("effect_packet"),
+                actor=self._actor(actor),
+            )
+            return _json_value(result)
+        except Exception as exc:
+            return {"outcome":"error","error":{"code":type(exc).__name__,"message":str(exc),"operation":"work.lifecycle.transition"},"replayed":False,"event_ids":[]}
+
+    def _lifecycle_read(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
+        lifecycle_port = _lifecycle_for(self)
+        if lifecycle_port is None:
+            return self._unsupported("work.lifecycle.read", request_id=request_id, code="canonical_lifecycle_port_unavailable", message="canonical owner lifecycle port was not injected")
+        try:
+            from herzchen.contracts import ResourceRef
+            project_ref = ResourceRef.from_dict(payload["project_ref"])
+            result = lifecycle_port.read_current(project_ref)
+            return _json_value(result)
+        except Exception as exc:
+            return {"outcome":"error","error":{"code":type(exc).__name__,"message":str(exc),"operation":"work.lifecycle.read"},"replayed":False,"event_ids":[]}
+
+    def _transition_project_lifecycle(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Compatibility adapter for the established portfolio lifecycle call."""
+        intent = payload.get("intent")
+        action = {
+            "active": "activate",
+            "closing": "manager-close-request",
+            "blocked": "manager-close-request",
+            "terminal": "orchestrator-close",
+        }.get(intent)
+        if action is None:
+            return {"outcome": "error", "error": {"code": "unsupported_lifecycle_intent", "message": "unsupported project lifecycle intent", "operation": "work.project.lifecycle.transition"}, "replayed": False, "event_ids": []}
+        obligation = payload.get("obligation") if isinstance(payload.get("obligation"), Mapping) else {}
+        translated = {
+            "project_ref": payload.get("project_ref"),
+            "action": action,
+            "expected_project_revision": payload.get("expected_project_revision"),
+            "generation": payload.get("expected_generation"),
+            "manager_assignment": payload.get("manager_ref") if action != "orchestrator-close" else None,
+            "task_ref": payload.get("task_ref"),
+            "orchestrator_assignment": payload.get("orchestrator_ref", obligation.get("orchestrator_assignment")),
+            "evidence": payload.get("evidence"),
+            "effect_packet": obligation.get("effect_packet"),
+        }
+        result = self._lifecycle_transition(translated, request_id=request_id, actor=actor)
+        if isinstance(result, Mapping) and result.get("outcome") in {"transitioned", "replayed"}:
+            observed = result.get("read") if isinstance(result.get("read"), Mapping) else {}
+            result = dict(result)
+            result.setdefault("state", observed.get("lifecycle"))
+            transition = observed.get("transition")
+            if isinstance(transition, Mapping):
+                transition = dict(transition)
+                transition.setdefault("intent", {"activate": "active", "resume": "active", "manager-close-request": "closing", "orchestrator-close": "terminal"}.get(transition.get("action"), intent))
+                result.setdefault("transition", transition)
+        return result
 
     def _export_project(self, payload: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
         """Export a typed pending project through the read-only Herzchen reader.
@@ -1211,57 +1298,6 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "malformed_completion_result", "message": "owner completion returned a non-object", "operation": "work.task.complete"}, "replayed": False, "event_ids": []}
         return dict(value)
 
-    def _transition_project_lifecycle(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
-        """Forward the finite lifecycle intent to the owner-issued port.
-
-        The port persists the current refs, manager generation, evidence, and
-        obligation on the existing project record.  Otto keeps no lifecycle
-        event store or writer.
-        """
-
-        if self.assignments_port is None:
-            return self._unsupported(
-                "work.project.lifecycle.transition", request_id=request_id,
-                code="canonical_lifecycle_port_unavailable",
-                message="accepted ResponsibilityAssignments lifecycle port was not injected",
-            )
-        required = (
-            "project_ref", "task_ref", "manager_ref", "expected_generation",
-            "expected_project_revision", "expected_task_revision", "intent",
-            "evidence", "obligation",
-        )
-        missing = [field for field in required if field not in payload]
-        if missing:
-            return self._unsupported(
-                "work.project.lifecycle.transition", request_id=request_id,
-                code="lifecycle_prerequisite_missing",
-                message="lifecycle transition requires " + ", ".join(missing),
-            )
-        try:
-            value = self.assignments_port.transition_project(
-                self._record_ref(payload["project_ref"]),
-                task=self._record_ref(payload["task_ref"]),
-                manager_assignment=self._record_ref(payload["manager_ref"]),
-                expected_generation=payload["expected_generation"],
-                expected_project_revision=payload["expected_project_revision"],
-                expected_task_revision=payload["expected_task_revision"],
-                intent=payload["intent"],
-                evidence=payload["evidence"],
-                obligation=payload["obligation"],
-                logical_request_key=request_id,
-                actor=self._actor(actor),
-            )
-        except Exception as exc:
-            name = type(exc).__name__
-            if name in {"ReplayConflictError", "StaleAssignmentError", "WorkNotFoundError", "VersionConflictError"}:
-                code = "replay_conflict" if name == "ReplayConflictError" else "stale_lifecycle" if name in {"StaleAssignmentError", "VersionConflictError"} else "lifecycle_target_not_found"
-                return {"outcome": "error", "error": {"code": code, "message": str(exc), "operation": "work.project.lifecycle.transition"}, "replayed": False, "event_ids": [], "executable": False}
-            if name in {"WorkValidationError", "TypeError", "ValueError"}:
-                return {"outcome": "held", "error": {"code": "lifecycle_not_eligible", "message": str(exc), "operation": "work.project.lifecycle.transition"}, "replayed": False, "event_ids": [], "executable": False}
-            raise
-        value = _json_value(value)
-        return dict(value) if isinstance(value, Mapping) else {"outcome": "error", "error": {"code": "malformed_lifecycle_result", "message": "owner lifecycle returned a non-object", "operation": "work.project.lifecycle.transition"}, "replayed": False, "event_ids": []}
-
     @staticmethod
     def _assignment_dict(assignment: Any) -> dict[str, Any]:
         """Return only the declared assignment value, including durable history."""
@@ -1619,25 +1655,25 @@ class FiniteWorkOperations:
         }
 
     def _read_project_lifecycle(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        if self.assignments_port is None:
-            return self._unsupported(
-                "work.project.lifecycle.read", request_id="read-only",
-                code="canonical_lifecycle_port_unavailable",
-                message="accepted ResponsibilityAssignments lifecycle port was not injected",
-            )
-        required = ("project_ref", "task_ref", "manager_ref")
-        missing = [field for field in required if field not in payload]
-        if missing:
-            return {"outcome": "error", "error": {"code": "lifecycle_read_prerequisite_missing", "message": "lifecycle read requires " + ", ".join(missing)}}
-        try:
-            value = self.assignments_port.read_project_lifecycle(
-                self._record_ref(payload["project_ref"]), task=self._record_ref(payload["task_ref"]),
-                manager_assignment=self._record_ref(payload["manager_ref"]),
-            )
-        except Exception as exc:
-            return {"outcome": "error", "error": {"code": "lifecycle_read_failed", "message": str(exc), "operation": "work.project.lifecycle.read"}}
-        value = _json_value(value)
-        return {"outcome": "read", **dict(value)} if isinstance(value, Mapping) else {"outcome": "error", "error": {"code": "malformed_lifecycle_read", "message": "owner lifecycle read returned a non-object"}}
+        result = self._lifecycle_read({"project_ref": payload.get("project_ref")}, request_id="read-only")
+        if result.get("outcome") != "read":
+            return result
+        manager_ref = payload.get("manager_ref")
+        transition = result.get("transition")
+        if isinstance(transition, Mapping):
+            transition = dict(transition)
+            transition.setdefault("intent", {"activate": "active", "resume": "active", "manager-close-request": "closing", "orchestrator-close": "terminal"}.get(transition.get("action"), result.get("lifecycle")))
+        return {
+            "outcome": "read",
+            "project_ref": result.get("project_ref"),
+            "task_ref": payload.get("task_ref"),
+            "manager_ref": manager_ref,
+            "generation": manager_ref.get("generation", 1) if isinstance(manager_ref, Mapping) else 1,
+            "state": "completed" if result.get("lifecycle") == "completed" else result.get("lifecycle"),
+            "transition": transition,
+            "reconciliation": result.get("reconciliation"),
+            "close_request": result.get("close_request"),
+        }
 
     def manager_inbox(
         self,
