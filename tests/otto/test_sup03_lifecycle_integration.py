@@ -123,6 +123,12 @@ def _evidence(project_id):
         "publication": {"status": "verified", "ref": "publication-proof"},
         "remote": {"status": "verified", "ref": "remote-proof"},
         "runtime": {"status": "qualified", "ref": "runtime-proof"},
+        "task_completion": {
+            "outcome": "completed",
+            "project_ref": f"{project_id}@rev-1",
+            "task_ref": f"task-{project_id}@rev-1",
+            "receipt": {"logical_request_key": f"complete-{project_id}"},
+        },
     }
 
 
@@ -234,6 +240,23 @@ def test_terminal_close_requires_task_acceptance_publication_remote_and_runtime_
     integration.manager_close("project-a", request_id="close-for-evidence", actor="manager-actor", generation=2, **_guard("project-a"))
     with pytest.raises(LifecycleIntegrationError, match="acceptance, publication, remote and runtime"):
         integration.orchestrator_terminal_close("project-a", request_id="missing-evidence", actor="orchestrator-actor", generation=2, project_ref="project-a@rev-1", task_ref="task-project-a@rev-1", lifecycle_owner="owner-root", evidence={"acceptance": {"status": "passed"}})
+    assert integration.orchestrator_verify(actor="orchestrator-actor", generation=2)["projects"]["project-a"] == "closing"
+
+
+def test_terminal_close_rejects_failed_evidence_and_pending_required_task():
+    integration, _attention, _due, _host = _integration({"project-a": "active"})
+    integration.manager_close("project-a", request_id="close-for-outcomes", actor="manager-actor", generation=2, **_guard("project-a"))
+
+    failed = _evidence("project-a")
+    failed["remote"] = {"status": "failed", "ref": "remote-proof"}
+    with pytest.raises(LifecycleIntegrationError, match="remote is not verified"):
+        integration.orchestrator_terminal_close("project-a", request_id="failed-evidence", actor="orchestrator-actor", generation=2, evidence=failed, **_guard("project-a"))
+
+    pending = _evidence("project-a")
+    pending["task_completion"]["outcome"] = "pending"
+    with pytest.raises(LifecycleIntegrationError, match="completed task"):
+        integration.orchestrator_terminal_close("project-a", request_id="pending-task", actor="orchestrator-actor", generation=2, evidence=pending, **_guard("project-a"))
+
     assert integration.orchestrator_verify(actor="orchestrator-actor", generation=2)["projects"]["project-a"] == "closing"
 
 

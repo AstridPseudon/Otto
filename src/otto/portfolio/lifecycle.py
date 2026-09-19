@@ -173,9 +173,32 @@ class PortfolioLifecycleIntegration:
         if not isinstance(evidence, Mapping):
             raise LifecycleIntegrationError("terminal close requires evidence")
         self._project_guard(project_id, project_ref=project_ref, task_ref=task_ref, lifecycle_owner=lifecycle_owner, generation=generation)
-        required = ("acceptance", "publication", "remote", "runtime")
-        if any(not isinstance(evidence.get(key), Mapping) or not evidence[key] for key in required):
-            raise LifecycleIntegrationError("terminal close requires acceptance, publication, remote and runtime evidence")
+        required = {
+            "acceptance": "passed",
+            "publication": "verified",
+            "remote": "verified",
+            "runtime": "qualified",
+        }
+        for key, outcome in required.items():
+            item = evidence.get(key)
+            if not isinstance(item, Mapping):
+                raise LifecycleIntegrationError("terminal close requires acceptance, publication, remote and runtime evidence")
+            try:
+                _text(item.get("ref"), f"terminal evidence.{key}.ref")
+            except LifecycleIntegrationError as exc:
+                raise LifecycleIntegrationError("terminal close requires acceptance, publication, remote and runtime evidence") from exc
+            if item.get("status") != outcome:
+                raise LifecycleIntegrationError(f"terminal evidence {key} is not {outcome}")
+        completion = evidence.get("task_completion")
+        if not isinstance(completion, Mapping):
+            raise LifecycleIntegrationError("terminal close requires completed task evidence")
+        if completion.get("outcome") not in {"completed", "replayed"}:
+            raise LifecycleIntegrationError("terminal close requires a completed task")
+        if completion.get("project_ref") != project_ref or completion.get("task_ref") != task_ref:
+            raise LifecycleIntegrationError("task completion is pinned to a stale project or task revision")
+        receipt = completion.get("receipt")
+        if not isinstance(receipt, Mapping) or not _text(receipt.get("logical_request_key"), "task completion receipt.logical_request_key"):
+            raise LifecycleIntegrationError("terminal close requires a typed task completion receipt")
         if evidence.get("project_ref") != project_ref or evidence.get("task_ref") != task_ref:
             raise LifecycleIntegrationError("terminal evidence is pinned to a stale project or task revision")
         return _copy(dict(evidence), "terminal evidence")
