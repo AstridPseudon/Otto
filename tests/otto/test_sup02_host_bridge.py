@@ -24,7 +24,7 @@ def _record(
     schedule_id="sup02-bridge", *, identity="invocation-1", generation=2,
     target_id="automation-01", role="manager", purpose="hourly-sense-check",
     message="owner context", target_thread_id="thread-manager-01",
-    recipient="project-manager",
+    recipient="project-manager", owner="owner-01",
 ):
     return DueRecord(
         schedule_id=schedule_id, recipient=recipient,
@@ -43,7 +43,7 @@ def _record(
             },
         }, role=role,
         purpose=purpose, message=message,
-        lifecycle_owner="owner-01", owner="owner-01", project_ref="project-01",
+        lifecycle_owner=owner, owner=owner, project_ref="project-01",
         manager_ref="manager-01", generation=generation,
     )
 
@@ -221,6 +221,7 @@ def test_host_failure_and_response_loss_remain_unsettled_and_retryable_by_readba
     lost = executor2.execute(effect2)
     assert lost["outcome"] == "response_lost"
     assert lost["readback"]["response_lost"] is True
+    assert lost["acknowledgement"]["outcome"] == "pending"
     assert due2.read_due(record2.schedule_id)["host_state"] == "pending"
     assert len(updates) == 1
     recovered = executor2.execute(effect2)
@@ -266,6 +267,118 @@ def test_owner_change_during_effect_rejects_stale_ack_without_claiming_active():
     assert stale_ack["outcome"] == "rejected"
     assert stale_ack["error"]["code"] == "stale_version"
     assert due.read_due(record.schedule_id)["host_state"] == "unknown"
+
+
+class _LifecycleTool:
+    """Deterministic app callback fixture keyed by one native automation ID."""
+
+    def __init__(self):
+        self.updates = []
+        self.readbacks = []
+        self.settings = {}
+        self.active_ids = set()
+
+    def update(self, request):
+        self.updates.append(dict(request))
+        automation_id = request["id"]
+        self.settings[automation_id] = dict(request)
+        if request["status"] == "ACTIVE":
+            self.active_ids.add(automation_id)
+        else:
+            self.active_ids.discard(automation_id)
+        return {"accepted": True, "id": automation_id}
+
+    def read(self, effect, response):
+        self.readbacks.append({"effect": effect, "response": response})
+        request = self.settings.get(effect.configuration["target"]["automation_id"])
+        if request is None:
+            return {"schedule_id": effect.schedule_id, "state": "unknown", "response_lost": True}
+        return {
+            "schedule_id": effect.schedule_id,
+            "state": request["status"].lower(),
+            "configuration": dict(effect.configuration),
+        }
+
+
+@pytest.mark.parametrize(
+    ("role", "purpose", "message", "target_id", "target_thread_id", "recipient"),
+    [
+        ("manager", "hourly-sense-check", "manager lifecycle", "automation-shared-manager", "thread-shared-manager", "project-manager"),
+        ("orchestrator", "portfolio-reconcile", "orchestrator lifecycle", "automation-shared-orchestrator", "thread-shared-orchestrator", "portfolio-orchestrator"),
+    ],
+)
+def test_same_id_lifecycle_pauses_to_zero_then_rebinds_one_authorized_owner(
+    role, purpose, message, target_id, target_thread_id, recipient,
+):
+    scheduler, due, record = _scheduler(_record(
+        schedule_id="lifecycle-" + role, role=role, purpose=purpose,
+        message=message, target_id=target_id, target_thread_id=target_thread_id,
+        recipient=recipient,
+    ))
+    tool = _LifecycleTool()
+    ack_calls = []
+
+    def acknowledge(effect, observation):
+        ack_calls.append(observation)
+        current = due.read_due(record.schedule_id)
+        return scheduler.acknowledge_host(
+            record.schedule_id, request_id=effect.request_id, observed=observation,
+            expected_version=current["version"], actor=effect.lifecycle_owner,
+            project_ref=effect.project_ref, manager_ref=effect.manager_ref,
+            generation=effect.generation,
+        )
+
+    executor = DeterministicHostExecutor(tool.update, tool.read, acknowledge)
+    initial = scheduler.prepare_host(record.schedule_id, request_id="lifecycle-active", expected_version=1, actor="owner-01", project_ref="project-01", manager_ref="manager-01", generation=2)
+    active_effect = HostEffect.from_dict(initial["effect"])
+    active = executor.execute(active_effect)
+    assert active["outcome"] == "reconciled"
+    assert tool.active_ids == {target_id}
+    assert len(tool.updates) == len(tool.readbacks) == len(ack_calls) == 1
+
+    current_version = due.read_due(record.schedule_id)["version"]
+    paused = scheduler.prepare_host(record.schedule_id, request_id="lifecycle-paused", expected_version=current_version, actor="owner-01", project_ref="project-01", manager_ref="manager-01", generation=2, desired_state="paused")
+    paused_effect = HostEffect.from_dict(paused["effect"])
+    paused_result = executor.execute(paused_effect)
+    assert paused_result["outcome"] == "reconciled"
+    assert tool.active_ids == set()
+    assert len(tool.updates) == len(tool.readbacks) == len(ack_calls) == 2
+    assert tool.updates[0]["id"] == tool.updates[1]["id"] == target_id
+    assert tool.updates[1]["status"] == "PAUSED"
+
+    rebound = _record(
+        schedule_id=record.schedule_id, identity="invocation-new", generation=3,
+        target_id=target_id, role=role, purpose=purpose, message=message,
+        target_thread_id=target_thread_id, recipient=recipient, owner="owner-02",
+    )
+    current_version = due.read_due(record.schedule_id)["version"]
+    reconfigured = scheduler.reconfigure(rebound, request_id="lifecycle-rebind", expected_version=current_version, actor="owner-01")
+    assert reconfigured["outcome"] == "reconfigured"
+    assert reconfigured["record"]["target"]["automation_id"] == target_id
+    stale_owner = scheduler.prepare_host(record.schedule_id, request_id="stale-owner", expected_version=reconfigured["record"]["version"], actor="owner-01", generation=2)
+    stale_generation = scheduler.prepare_host(record.schedule_id, request_id="stale-generation", expected_version=reconfigured["record"]["version"], actor="owner-02", generation=2)
+    assert stale_owner["error"]["code"] == "foreign_authority"
+    assert stale_generation["error"]["code"] == "stale_generation"
+    assert len(tool.updates) == 2
+
+    current_version = due.read_due(record.schedule_id)["version"]
+    rebound_prepared = scheduler.prepare_host(record.schedule_id, request_id="lifecycle-rebound-active", expected_version=current_version, actor="owner-02", generation=3, project_ref="project-01", manager_ref="manager-01")
+    rebound_effect = HostEffect.from_dict(rebound_prepared["effect"])
+    rebound_result = executor.execute(rebound_effect)
+    assert rebound_result["outcome"] == "reconciled"
+    assert tool.active_ids == {target_id}
+    assert len(tool.updates) == len(tool.readbacks) == len(ack_calls) == 3
+    assert tool.updates[-1]["id"] == target_id
+    assert tool.updates[-1]["status"] == "ACTIVE"
+
+    current_version = due.read_due(record.schedule_id)["version"]
+    replay_prepare = scheduler.prepare_host(record.schedule_id, request_id="lifecycle-rebound-active", expected_version=current_version, actor="owner-02", generation=3, project_ref="project-01", manager_ref="manager-01")
+    replay_effect = HostEffect.from_dict(replay_prepare["effect"])
+    replay_result = executor.execute(replay_effect)
+    assert replay_prepare["outcome"] == "replayed"
+    assert replay_result["replayed"] is True
+    assert len(tool.updates) == len(tool.readbacks) == len(ack_calls) == 3
+    assert due.read_due(record.schedule_id)["version"] == current_version
 
 
 @pytest.mark.parametrize(
