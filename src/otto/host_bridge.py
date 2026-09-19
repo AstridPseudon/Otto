@@ -390,6 +390,22 @@ class DeterministicHostExecutor:
         self._receipts[effect.idempotency_key] = {"effect": effect.to_dict(), "receipt": receipt}
         return receipt
 
+    def recover(self, effect: HostEffect, host_response: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """Settle a persisted effect by readback after an executor restart.
+
+        A durable owner effect may survive a process crash before this
+        executor's in-memory receipt does.  Recovery deliberately performs no
+        host mutation; an exact persisted readback settles it, while a missing
+        or mismatched readback remains pending for a new owner request.
+        """
+
+        if not isinstance(effect, HostEffect):
+            effect = HostEffect.from_dict(effect)
+        response = {} if host_response is None else _copy(host_response, "host response")
+        receipt = self._settle_readback(effect, response, replayed=True)
+        self._receipts[effect.idempotency_key] = {"effect": effect.to_dict(), "receipt": receipt}
+        return receipt
+
 
 class SerializedAutomationUpdateAdapter:
     """Deserialize one owner effect and pass generated fields to the host.

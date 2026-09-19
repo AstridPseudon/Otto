@@ -20,6 +20,7 @@ from .inbox import InboxCursorError, derive_manager_inbox
 from .execution_resume import ExecutionResumeError, execute_selected_packet, packet_digest
 from .sense_check import SenseCheckError, hourly_sense_check
 from .steady_state import SteadyStateError, build_manager_action_packet, fence_replacement
+from .lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
 
 __all__ = [
     "ADMISSION_CHOICES",
@@ -42,4 +43,6 @@ __all__ = [
     "SteadyStateError",
     "build_manager_action_packet",
     "fence_replacement",
+    "LifecycleIntegrationError",
+    "PortfolioLifecycleIntegration",
 ]
