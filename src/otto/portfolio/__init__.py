@@ -21,6 +21,18 @@ from .execution_resume import ExecutionResumeError, execute_selected_packet, pac
 from .sense_check import SenseCheckError, hourly_sense_check
 from .steady_state import SteadyStateError, build_manager_action_packet, fence_replacement
 from .lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
+from .orchestrator_placement import (
+    ExplicitPeerRequired,
+    ForeignAuthorityError,
+    OrchestratorPlacementError,
+    OverlapAcknowledgementRequired,
+    RecursiveOrchestrationError,
+    StalePlacementError,
+    build_orchestrator_view,
+    guard_peer_request,
+    place_new_project,
+    preview_peer_request,
+)
 
 __all__ = [
     "ADMISSION_CHOICES",
@@ -45,4 +57,14 @@ __all__ = [
     "fence_replacement",
     "LifecycleIntegrationError",
     "PortfolioLifecycleIntegration",
+    "ExplicitPeerRequired",
+    "ForeignAuthorityError",
+    "OrchestratorPlacementError",
+    "OverlapAcknowledgementRequired",
+    "RecursiveOrchestrationError",
+    "StalePlacementError",
+    "build_orchestrator_view",
+    "guard_peer_request",
+    "place_new_project",
+    "preview_peer_request",
 ]
