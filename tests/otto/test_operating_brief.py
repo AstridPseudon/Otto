@@ -85,3 +85,48 @@ def test_invalid_role_and_unknown_fields_are_rejected():
     bad["authority"] = "forged"
     with pytest.raises(OperatingBriefError, match="unknown"):
         OperatingBrief.from_mapping(bad)
+
+
+def test_requested_role_cannot_rebind_a_declared_brief():
+    with pytest.raises(OperatingBriefError, match="does not match"):
+        OperatingBrief.from_mapping(BASE, role="orchestrator")
+    with pytest.raises(OperatingBriefError, match="does not match"):
+        render_operating_brief(
+            role="orchestrator",
+            role_instructions="",
+            project_state={},
+            brief=OperatingBrief.from_mapping(BASE),
+            as_of="2026-09-21T18:00:00Z",
+        )
+
+
+def test_snapshot_matches_explicit_refs_by_identity_and_copies_inputs():
+    manager = {"authority": "a", "kind": "wrk.assignment", "id": "assignment-1", "revision": "rev-1"}
+    observed = {**manager, "observed_generation": 3}
+    projects = [{"id": "active", "lifecycle": "pending", "assignment_ref": observed}]
+    refs = [manager]
+    snapshot = compose_owner_snapshot(
+        projects=projects,
+        active_manager_refs=refs,
+        as_of="2026-09-21T18:00:00Z",
+    )
+    assert [item["id"] for item in snapshot["active_projects"]] == ["active"]
+    assert snapshot["active_manager_refs"] == refs
+    observed["revision"] = "mutated"
+    assert snapshot["active_projects"][0]["assignment_ref"]["revision"] == "rev-1"
+
+
+def test_snapshot_rejects_non_object_records_and_invalid_lifecycle():
+    with pytest.raises(OperatingBriefError, match="recent_completions"):
+        compose_owner_snapshot(
+            projects=[],
+            active_manager_refs=[],
+            recent_completions=["not-a-record"],
+            as_of="2026-09-21T18:00:00Z",
+        )
+    with pytest.raises(OperatingBriefError, match="lifecycle"):
+        compose_owner_snapshot(
+            projects=[{"id": "p", "lifecycle": 3, "manager_ref": {"id": "m"}}],
+            active_manager_refs=[{"id": "m"}],
+            as_of="2026-09-21T18:00:00Z",
+        )

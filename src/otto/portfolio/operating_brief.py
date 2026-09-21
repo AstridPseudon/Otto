@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 
 SCHEMA_REVISION = "otto.operating-brief.v1"
@@ -46,6 +46,8 @@ def _digest(value: Any) -> str:
 def _mapping(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise OperatingBriefError(f"{field} must be an object")
+    if any(not isinstance(key, str) for key in value):
+        raise OperatingBriefError(f"{field} keys must be text")
     return _json_copy(dict(value), field)
 
 
@@ -59,6 +61,32 @@ def _mapping_list(value: Any, field: str) -> Tuple[dict[str, Any], ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise OperatingBriefError(f"{field} must be a list of objects")
     return tuple(_mapping(item, f"{field}[{index}]") for index, item in enumerate(value))
+
+
+def _record_list(value: Any, field: str) -> Tuple[dict[str, Any], ...]:
+    """Validate a bounded list of caller-supplied record objects."""
+
+    return _mapping_list(value, field)
+
+
+def _reference_identity(value: Any, field: str) -> tuple[tuple[str, Any], ...]:
+    """Return the supplied canonical identity without trusting extra fields."""
+
+    reference = _mapping(value, field)
+    _text(reference.get("id"), f"{field}.id")
+    return tuple((key, reference[key]) for key in ("authority", "kind", "id", "revision") if key in reference)
+
+
+def _reference_matches(project_ref: Any, active_ref: Any, field: str) -> bool:
+    """Match an observed ref against an explicitly supplied owner ref.
+
+    The active ref is the caller's scope fence. Extra observed metadata is
+    permitted, but every identity field present in that fence must match.
+    """
+
+    observed = dict(_reference_identity(project_ref, field))
+    expected = dict(_reference_identity(active_ref, "active_manager_refs[]"))
+    return all(observed.get(key) == value for key, value in expected.items())
 
 
 def _priority_list(value: Any) -> Tuple[dict[str, Any], ...]:
@@ -95,7 +123,13 @@ class OperatingBrief:
         unknown = set(raw).difference({"schema_revision", "role", "mandate", "user_constraints", "priorities", "operational_constraints", "continuation", "links", "revision"})
         if unknown:
             raise OperatingBriefError("unknown brief fields: " + ", ".join(sorted(unknown)))
-        selected_role = _text(role or raw.get("role"), "role").lower()
+        declared_role = None if raw.get("role") is None else _text(raw.get("role"), "role").lower()
+        requested_role = None if role is None else _text(role, "role").lower()
+        if declared_role is not None and requested_role is not None and declared_role != requested_role:
+            raise OperatingBriefError("brief role does not match the requested role")
+        selected_role = requested_role or declared_role
+        if selected_role is None:
+            raise OperatingBriefError("role must be orchestrator or manager")
         if selected_role not in _ROLES:
             raise OperatingBriefError("role must be orchestrator or manager")
         schema = raw.get("schema_revision", SCHEMA_REVISION)
@@ -176,31 +210,38 @@ def compose_owner_snapshot(
     """
 
     observed_at = _text(as_of, "as_of")
-    if isinstance(projects, (str, bytes)) or not isinstance(projects, Sequence):
-        raise OperatingBriefError("projects must be a list")
-    if isinstance(active_manager_refs, (str, bytes)) or not isinstance(active_manager_refs, Sequence):
-        raise OperatingBriefError("active_manager_refs must be a list")
-    manager_keys = {json.dumps(_mapping(item, "active_manager_refs[]"), sort_keys=True, separators=(",", ":")) for item in active_manager_refs}
+    active_refs = _record_list(active_manager_refs, "active_manager_refs")
+    manager_keys = tuple(active_refs)
+    project_records = _record_list(projects, "projects")
     active, closures = [], []
-    for index, raw in enumerate(projects):
-        project = _mapping(raw, f"projects[{index}]")
-        owner_ref = project.get("manager_ref") or project.get("assignment_ref")
-        if owner_ref is None or json.dumps(_mapping(owner_ref, f"projects[{index}].manager_ref"), sort_keys=True, separators=(",", ":")) not in manager_keys:
+    for index, project in enumerate(project_records):
+        owner_refs = [
+            ("manager_ref", project.get("manager_ref")),
+            ("assignment_ref", project.get("assignment_ref")),
+        ]
+        owner_refs = [(name, value) for name, value in owner_refs if value is not None]
+        if not owner_refs:
             continue
-        lifecycle = str(project.get("lifecycle", "pending")).lower()
+        if not any(_reference_matches(value, active_ref, f"projects[{index}].{name}") for name, value in owner_refs for active_ref in manager_keys):
+            continue
+        lifecycle = _text(project.get("lifecycle", "pending"), f"projects[{index}].lifecycle").lower()
         if lifecycle in {"closed", "completed", "withdrawn"}:
             closures.append(project)
         else:
             active.append(project)
+    completion_records = _record_list(recent_completions, "recent_completions")
+    returned_records = _record_list(returned_results, "returned_results")
+    blocker_records = _record_list(blockers, "blockers")
     body = {
         "schema_revision": SNAPSHOT_SCHEMA_REVISION,
         "as_of": observed_at,
         "coverage_cursor": None if coverage_cursor is None else _text(coverage_cursor, "coverage_cursor"),
         "active_projects": _json_copy(active),
         "closures": _json_copy(closures),
-        "recent_accepted_completions": _json_copy(list(recent_completions)),
-        "returned_unaccepted_results": _json_copy(list(returned_results)),
-        "blockers": _json_copy(list(blockers)),
+        "recent_accepted_completions": _json_copy(list(completion_records)),
+        "returned_unaccepted_results": _json_copy(list(returned_records)),
+        "blockers": _json_copy(list(blocker_records)),
+        "active_manager_refs": _json_copy(list(active_refs)),
         "ownership_source": "explicit canonical manager/assignment refs supplied by caller",
     }
     body["snapshot_sha256"] = _digest(body)
@@ -219,7 +260,15 @@ def render_operating_brief(
 ) -> dict[str, Any]:
     """Render a deterministic inline envelope with honest freshness metadata."""
 
-    selected = OperatingBrief.empty(role) if brief is None else (brief if isinstance(brief, OperatingBrief) else OperatingBrief.from_mapping(brief, role=role))
+    role_value = OperatingBrief.empty(role).role
+    if brief is None:
+        selected = OperatingBrief.empty(role_value)
+    elif isinstance(brief, OperatingBrief):
+        if brief.role != role_value:
+            raise OperatingBriefError("brief role does not match the requested role")
+        selected = brief
+    else:
+        selected = OperatingBrief.from_mapping(brief, role=role_value)
     instructions = _text(role_instructions, "role_instructions", allow_empty=True)
     state = _mapping(project_state, "project_state")
     rendered = {
