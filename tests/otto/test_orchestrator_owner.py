@@ -219,3 +219,24 @@ def test_bound_owner_template_creation_keeps_atomic_supervision_and_typed_batch(
     assert created["task_created"] is True
     assert created["tasks"][0]["local_id"] == "task"
     store.close()
+
+
+def test_old_core_descriptor_reopen_then_owner_bootstrap_registers_orchestration(tmp_path):
+    from herzchen.kernel import Store
+
+    store, path = _registered_store(tmp_path, name="old-core.sqlite")
+    old_domains = store.registered_domains()
+    assert "herzchen.work.orchestration" not in {item.domain_id for item in old_domains}
+    store.close()
+
+    reopened = Store.open(path, authority=AUTHORITY, expected_domains=old_domains)
+    try:
+        created = _api(reopened).create_pending(
+            actor="manager",
+            request_id="old-core-owner-create",
+            edit={"title": "Reopened old core"},
+        )
+        assert created["outcome"] == "created"
+        assert "herzchen.work.orchestration" in {item.domain_id for item in reopened.registered_domains()}
+    finally:
+        reopened.close()

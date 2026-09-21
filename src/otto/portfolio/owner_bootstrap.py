@@ -338,7 +338,7 @@ class PortfolioOwnerBootstrap:
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
-        from herzchen.domains.work import WorkGraph
+        from herzchen.domains.work import WorkGraph, register_orchestration
         from herzchen.domains.work.assignments import ResponsibilityAssignments
         from herzchen.domains.work.lifecycle import ProjectLifecycle
         from herzchen.domains.work.sheet import ProjectSheet
@@ -367,6 +367,7 @@ class PortfolioOwnerBootstrap:
                 raise ValueError("portfolio_ref and main_assignment_ref must be supplied together")
             from herzchen.domains.work.orchestration import Orchestration
 
+            register_orchestration(store)
             orchestration = Orchestration(
                 store,
                 actor=authenticated,
