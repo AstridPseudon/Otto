@@ -210,7 +210,8 @@ class OttoPortfolio:
                 "public_journey_example": "profiles/otto/ott06-public-journey.py contains a complete create/edit/read/replay/task-batch/admit/close-open/reopen sequence with every actor and request_id argument",
             },
             "operations": {
-                "create_pending": "create an inert pending project; optional edit, selected template resource/parameters, and open request",
+                "create_pending": "create a pending project; a qualified owner binding uses atomic default-orchestrator placement",
+                "create_with_default_orchestrator": "explicitly require the owner-backed atomic default-orchestrator placement route",
                 "create_and_open": "create_pending with open requested, using the blank starter by default or a selected template resource",
                 "create_document": "create a typed canonical content document for a pending project",
                 "link_document": "link a typed canonical document association to a project",
@@ -263,6 +264,7 @@ class OttoPortfolio:
         template_parameters: Optional[Mapping[str, Any]] = None,
         open_project: bool = False,
         open: Optional[bool] = None,
+        orchestrated: bool = False,
     ) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         if open is not None:
@@ -271,6 +273,10 @@ class OttoPortfolio:
             open_project = open
         if not isinstance(open_project, bool):
             raise PortfolioError("open_project must be boolean")
+        if not isinstance(orchestrated, bool):
+            raise PortfolioError("orchestrated must be boolean")
+        if orchestrated and open_project:
+            raise PortfolioError("default-orchestrated creation does not support open_project")
         edit_value = _edit(edit)
         template_value = "blank" if template is None else _json_copy(template, field="template")
         if isinstance(template_value, str):
@@ -287,10 +293,35 @@ class OttoPortfolio:
                 dict(template_parameters), field="template_parameters"
             )
         return self._execute(
-            "work.pending.create",
+            "work.orchestrator.project.create" if orchestrated else "work.pending.create",
             payload,
             request_id=request_id,
             actor=actor,
+        )
+
+    def create_with_default_orchestrator(
+        self,
+        *,
+        actor: str,
+        request_id: str,
+        edit: Optional[Mapping[str, Any]] = None,
+        template: Any = None,
+        template_parameters: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Use the owner-backed one-main/default placement route.
+
+        This explicit route is retained as a named compatibility seam; a
+        qualified owner binding also sends ordinary pending creation through
+        the same atomic owner operation.
+        """
+
+        return self.create_pending(
+            actor=actor,
+            request_id=request_id,
+            edit=edit,
+            template=template,
+            template_parameters=template_parameters,
+            orchestrated=True,
         )
 
     def create_and_open(self, **kwargs: Any) -> dict[str, Any]:

@@ -5,9 +5,11 @@ import pytest
 from otto.portfolio.orchestrator_placement import (
     ExplicitPeerRequired,
     ForeignAuthorityError,
+    OrchestratorPlacementError,
     OverlapAcknowledgementRequired,
     RecursiveOrchestrationError,
     StalePlacementError,
+    SupervisorConflictError,
     build_orchestrator_view,
     guard_peer_request,
     place_new_project,
@@ -15,12 +17,15 @@ from otto.portfolio.orchestrator_placement import (
 )
 
 
-def assignment(ref, *, status="active", purpose="Main orchestration", scope="portfolio", authority="owner-a", **extra):
+def assignment(ref, *, status="active", purpose="Main orchestration", scope="portfolio", authority="owner-a", revision="rev-1", generation=1, kind=None, **extra):
+    typed_ref = {"authority": authority, "id": ref, "revision": revision}
+    if kind is not None:
+        typed_ref["kind"] = kind
     return {
-        "ref": {"authority": authority, "id": ref, "revision": "rev-1"},
+        "ref": typed_ref,
         "role": "orchestrator",
         "principal": "task-" + ref,
-        "generation": 1,
+        "generation": generation,
         "status": status,
         "purpose": purpose,
         "intended_scope": scope,
@@ -140,6 +145,65 @@ def test_stale_foreign_retired_and_recursive_inputs_fail_closed():
             assignments=[assignment("main", status="retired")],
             default_assignment_ref="main",
         )
+
+
+def test_resume_preserves_existing_peer_supervisor_after_default_changes():
+    current = build_orchestrator_view(
+        authority="owner-a",
+        revision="rev-5",
+        assignments=[assignment("main"), assignment("peer", purpose="Research", scope="research")],
+        default_assignment_ref="main",
+        supervision=[
+            {
+                "project_ref": {"authority": "owner-a", "id": "project-1", "revision": "rev-7"},
+                "orchestrator_assignment_ref": {"authority": "owner-a", "id": "peer", "revision": "rev-1"},
+            }
+        ],
+    )
+
+    decision = place_new_project(current, "project-1")
+    assert decision.action == "preserve-existing-supervision"
+    assert decision.accountable_orchestrator_assignment_ref == "peer"
+    assert decision.project_revision == "rev-7"
+
+    with pytest.raises(SupervisorConflictError):
+        place_new_project(current, "project-1", requested_assignment_ref="main", explicit_peer=True)
+
+
+def test_stale_assignment_generation_and_reference_revision_are_fenced():
+    current = build_orchestrator_view(
+        authority="owner-a",
+        revision="rev-5",
+        assignments=[assignment("main", revision="rev-2", generation=2)],
+        default_assignment_ref={"authority": "owner-a", "id": "main", "revision": "rev-2", "generation": 2},
+    )
+
+    with pytest.raises(StalePlacementError):
+        guard_peer_request(
+            current,
+            requested_by_assignment_ref={"authority": "owner-a", "id": "main", "revision": "rev-1", "generation": 1},
+            purpose="Research track",
+            intended_scope="research",
+            expected_revision="rev-5",
+        )
+
+    with pytest.raises(StalePlacementError):
+        build_orchestrator_view(
+            authority="owner-a",
+            revision="rev-5",
+            assignments=[assignment("main", revision="rev-2", generation=2)],
+            default_assignment_ref={"authority": "owner-a", "id": "main", "revision": "rev-1"},
+        )
+
+
+def test_malformed_and_wrong_kind_references_fail_closed():
+    current = view()
+    with pytest.raises(OrchestratorPlacementError):
+        place_new_project(current, {})
+    with pytest.raises(OrchestratorPlacementError):
+        place_new_project(current, {"authority": "owner-a", "id": "project-2", "kind": "wrk.assignment"})
+    with pytest.raises(OrchestratorPlacementError):
+        preview_peer_request(current, purpose="Research", intended_scope="research", intended_project_refs=({"id": 42},))
 
     with pytest.raises(RecursiveOrchestrationError):
         build_orchestrator_view(

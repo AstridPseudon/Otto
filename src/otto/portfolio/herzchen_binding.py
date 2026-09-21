@@ -17,10 +17,20 @@ from typing import Any, Mapping, Optional
 # Keep the consumer facade's public instance shape stable while lifecycle
 # authority remains injected exclusively by the trusted owner bootstrap.
 _LIFECYCLE_PORTS: dict[int, Any] = {}
+_ORCHESTRATION_PORTS: dict[int, Any] = {}
+_ORCHESTRATION_PORTFOLIOS: dict[int, Any] = {}
 
 
 def _lifecycle_for(operations: Any) -> Any:
     return _LIFECYCLE_PORTS.get(id(operations))
+
+
+def _orchestration_for(operations: Any) -> Any:
+    return _ORCHESTRATION_PORTS.get(id(operations))
+
+
+def _orchestration_portfolio_for(operations: Any) -> Any:
+    return _ORCHESTRATION_PORTFOLIOS.get(id(operations))
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,8 @@ class FiniteWorkOperations:
         lifecycle_port: Any = None,
         authoring_port: Any = None,
         create_open_port: Any = None,
+        orchestration_port: Any = None,
+        orchestration_portfolio: Any = None,
     ) -> None:
         if port is None or reader is None:
             raise ValueError("port and reader are required for the canonical binding")
@@ -108,6 +120,9 @@ class FiniteWorkOperations:
             _LIFECYCLE_PORTS[id(self)] = lifecycle_port
         self.authoring_port = authoring_port
         self.create_open_port = create_open_port
+        if orchestration_port is not None:
+            _ORCHESTRATION_PORTS[id(self)] = orchestration_port
+            _ORCHESTRATION_PORTFOLIOS[id(self)] = orchestration_portfolio
 
     def _actor(self, actor: str) -> Any:
         return self.binding.authenticated_actor(actor)
@@ -160,8 +175,14 @@ class FiniteWorkOperations:
             return self._fence_assignment(payload, request_id=request_id)
         if operation == "work.responsibility.dispatch":
             return self._dispatch_assignment(payload, request_id=request_id, actor=actor)
+        if operation == "work.orchestrator.project.create":
+            return self._create_orchestrated_project(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and payload.get("open"):
             return self._create_and_open(payload, request_id=request_id, actor=actor)
+        if operation == "work.pending.create" and _orchestration_for(self) is not None:
+            if isinstance(payload.get("template"), Mapping):
+                return self._create_orchestrated_template(payload, request_id=request_id, actor=actor)
+            return self._create_orchestrated_project(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and isinstance(payload.get("template"), Mapping):
             return self._create_from_template(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.open":
@@ -209,6 +230,122 @@ class FiniteWorkOperations:
                 }
             raise
         return self._result(record, request_id=request_id, replayed=before is not None)
+
+    def _create_orchestrated_project(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Use the one owner-local WRK operation for placement and creation."""
+
+        orchestration = _orchestration_for(self)
+        portfolio_ref = _orchestration_portfolio_for(self)
+        if orchestration is None or portfolio_ref is None:
+            return self._unsupported(
+                "work.orchestrator.project.create",
+                request_id=request_id,
+                code="canonical_orchestration_port_unavailable",
+                message="qualified owner orchestration binding was not injected",
+            )
+        edit = payload.get("edit", {})
+        if not isinstance(edit, Mapping):
+            return {"outcome": "error", "error": {"code": "invalid_edit", "message": "edit must be an object", "operation": "work.orchestrator.project.create"}, "replayed": False, "event_ids": []}
+        actor_value = self._actor(actor)
+        before = self._receipt(request_id)
+        try:
+            result = orchestration.create_pending_with_supervisor(
+                actor=actor_value,
+                request_id=request_id,
+                portfolio_ref=portfolio_ref,
+                title=edit.get("title"),
+                outcome=edit.get("outcome", ""),
+                metadata=self._metadata(payload, request_id, payload.get("template", "blank")),
+                expected_project_version=0,
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.orchestrator.project.create"}, "replayed": False, "event_ids": []}
+            raise
+        if not isinstance(result, Mapping):
+            return {"outcome": "error", "error": {"code": "malformed_orchestration_result", "message": "owner orchestration returned a non-object", "operation": "work.orchestrator.project.create"}, "replayed": False, "event_ids": []}
+        project_ref = result.get("project_ref")
+        project_target = None if project_ref is None else self._record_ref(project_ref)
+        observed = None if project_target is None else self.reader.get_record(project_target)
+        supervision = result.get("supervision") if isinstance(result.get("supervision"), Mapping) else {}
+        assignment_ref = result.get("assignment_ref") or supervision.get("assignment_ref")
+        assignment = None
+        if assignment_ref is not None and self.assignments_port is not None:
+            assignment = self.assignments_port.get(self._record_ref(assignment_ref))
+        event_ids = list(result.get("event_ids", ()))
+        for key in (request_id, request_id + ":project"):
+            for event_id in self._events_for(self._receipt(key)):
+                if event_id not in event_ids:
+                    event_ids.append(event_id)
+        return {
+            "outcome": result.get("outcome", "replayed" if before is not None else "created"),
+            "project_ref": _json_value(project_ref),
+            "record": None if observed is None else _record_dict(observed),
+            "receipt": result.get("receipt") or _receipt_dict(self._receipt(request_id)),
+            "project_receipt": result.get("project_receipt") or _receipt_dict(self._receipt(request_id + ":project")),
+            "assignment": None if assignment is None else self._assignment_dict(assignment),
+            "current_assignment": None if assignment is None else self._assignment_dict(assignment),
+            "default_assignment_ref": _json_value(assignment_ref),
+            "default_ref": _json_value(result.get("default_ref") or supervision.get("default_ref")),
+            "supervision": _json_value(result.get("supervision")),
+            "replayed": bool(result.get("replayed", before is not None)),
+            "event_ids": event_ids,
+            "executable": False,
+        }
+
+    def _create_orchestrated_template(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Create atomically, then apply the existing template batch after commit."""
+        if self.sheet_port is None:
+            return self._unsupported("work.pending.create", request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet command port was not injected")
+        try:
+            template = self._typed_template(payload["template"], payload.get("template_parameters"))
+        except Exception as exc:
+            return self._template_error(exc)
+        created = self._create_orchestrated_project(payload, request_id=request_id, actor=actor)
+        if created.get("outcome") == "error":
+            return created
+        project_ref = created.get("project_ref")
+        template_key = request_id + ":template"
+        try:
+            materialized = self.sheet_port.instantiate_new_template(
+                template,
+                payload.get("template_parameters"),
+                project=self._record_ref(project_ref),
+                logical_request_key=template_key,
+                actor=self._actor(actor),
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.create"}, "replayed": False, "event_ids": []}
+            return self._template_error(exc)
+        record = self.reader.get_record(self._record_ref(project_ref))
+        mappings = getattr(materialized, "mappings", {})
+        task_records = []
+        if isinstance(mappings, Mapping):
+            for local_id, task_ref in mappings.items():
+                task_record = self.reader.get_record(task_ref)
+                task_records.append({
+                    "local_id": str(local_id),
+                    "ref": _json_value(task_ref),
+                    "record": None if task_record is None else _record_dict(task_record),
+                })
+        result = dict(created)
+        result.update({
+            "record": None if record is None else _record_dict(record),
+            "template": _json_value(template),
+            "template_receipt": _receipt_dict(self._receipt(template_key)),
+            "template_ref": _json_value(getattr(template, "ref", None)),
+            "template_revision": getattr(template, "revision", None),
+            "tasks": task_records,
+            "task_refs": [_json_value(item["ref"]) for item in task_records],
+            "task_created": bool(task_records),
+        })
+        event_ids = list(result.get("event_ids", ()))
+        for event_id in self._events_for(self._receipt(template_key)):
+            if event_id not in event_ids:
+                event_ids.append(event_id)
+        result["event_ids"] = event_ids
+        return result
 
     @staticmethod
     def _key(request_id: str, suffix: str) -> str:
@@ -900,6 +1037,32 @@ class FiniteWorkOperations:
         return {"outcome": "dispatched", "dispatch": _json_value(dispatch), "receipt": _receipt_dict(receipt), "replayed": False, "event_ids": self._events_for(receipt), "execution": False}
 
     def _create_and_open(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if _orchestration_for(self) is not None:
+            atomic_payload = dict(payload)
+            atomic_payload["open"] = False
+            if isinstance(payload.get("template"), Mapping):
+                created = self._create_orchestrated_template(atomic_payload, request_id=request_id, actor=actor)
+            else:
+                created = self._create_orchestrated_project(atomic_payload, request_id=request_id, actor=actor)
+            if created.get("outcome") == "error":
+                created = dict(created)
+                created["open"] = {"status": "not_requested", "recovery_pending": False, "recovery_status": "not_requested"}
+                return created
+            opened = self._open_existing(
+                {"project_ref": created["project_ref"]},
+                request_id=request_id + ":open",
+                actor=actor,
+            )
+            result = dict(created)
+            result["open"] = opened.get("opened", {"status": opened.get("outcome", "unknown")})
+            result["outcome"] = created.get("outcome", "created")
+            result["replayed"] = bool(created.get("replayed")) and bool(opened.get("replayed"))
+            event_ids = list(created.get("event_ids", ()))
+            for event_id in opened.get("event_ids", ()):
+                if event_id not in event_ids:
+                    event_ids.append(event_id)
+            result["event_ids"] = event_ids
+            return result
         if self.create_open_port is None:
             result = self._unsupported(
                 "work.pending.create",

@@ -319,6 +319,8 @@ class PortfolioOwnerBootstrap:
         "lifecycle",
         "authoring",
         "create_and_open_bridge",
+        "orchestration_port",
+        "orchestration_portfolio",
     )
 
     def __init__(
@@ -328,6 +330,11 @@ class PortfolioOwnerBootstrap:
         binding: HerzchenBindingConfig,
         owner_actor: str,
         materializer: Any = None,
+        portfolio_ref: Any = None,
+        main_assignment_ref: Any = None,
+        allowed_creator_ids: tuple[str, ...] = (),
+        privileged_actor_ids: tuple[str, ...] = (),
+        expected_main_principal: Optional[str] = None,
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
@@ -354,6 +361,24 @@ class PortfolioOwnerBootstrap:
         self.assignments = ResponsibilityAssignments(store, actor=authenticated)
         self.lifecycle = ProjectLifecycle(store, actor=authenticated)
         self.authoring = AuthoringSessionService(store)
+        orchestration_port = None
+        if portfolio_ref is not None or main_assignment_ref is not None:
+            if portfolio_ref is None or main_assignment_ref is None:
+                raise ValueError("portfolio_ref and main_assignment_ref must be supplied together")
+            from herzchen.domains.work.orchestration import Orchestration
+
+            orchestration = Orchestration(
+                store,
+                actor=authenticated,
+                portfolio_ref=portfolio_ref,
+                main_assignment_ref=main_assignment_ref,
+                allowed_creator_ids=allowed_creator_ids,
+                privileged_actor_ids=privileged_actor_ids,
+                expected_main_principal=expected_main_principal,
+            )
+            orchestration_port = orchestration.command_port
+        self.orchestration_port = orchestration_port
+        self.orchestration_portfolio = portfolio_ref
         bridge_type = _create_bridge_type()
         self.create_and_open_bridge = bridge_type(
             store,
@@ -379,6 +404,8 @@ class PortfolioOwnerBootstrap:
             lifecycle_port=self.lifecycle.command_port,
             authoring_port=self.authoring.command_port,
             create_open_port=create_open_port,
+            orchestration_port=self.orchestration_port,
+            orchestration_portfolio=self.orchestration_portfolio,
         )
 
 
