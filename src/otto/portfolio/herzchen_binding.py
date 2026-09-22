@@ -494,11 +494,18 @@ class FiniteWorkOperations:
                 logical_request_key=request_id,
                 expected_project_revision=payload["expected_project_revision"],
                 generation=payload["generation"],
+                expected_project_version=payload.get("expected_project_version"),
                 manager_assignment=payload.get("manager_assignment"),
                 task=payload.get("task_ref"),
                 orchestrator_assignment=payload.get("orchestrator_assignment"),
+                orchestrator_principal=payload.get("orchestrator_principal"),
+                task_refs=payload.get("task_refs", ()),
+                attribution_digest=payload.get("attribution_digest"),
+                owner_attribution=payload.get("owner_attribution"),
                 evidence=payload.get("evidence"),
+                schedule_observation=payload.get("schedule_observation"),
                 effect_packet=payload.get("effect_packet"),
+                settlement=payload.get("settlement"),
                 actor=self._actor(actor),
             )
             return _json_value(result)
