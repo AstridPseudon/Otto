@@ -1,9 +1,9 @@
 """Executable public OTT-06 example.
 
 Run this file with an installed Otto + Herzchen environment.  It deliberately
-uses only the documented owner bootstrap and finite consumer APIs; the owner
-Store is retained by the host and reopened with ``Store.open`` for the final
-read/replay check.
+uses the documented finite consumer APIs plus the host-owned semantic
+check-in boundary; the owner Store and authoring lifecycle remain in host
+custody and are reopened with ``Store.open`` for the final read/replay check.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from herzchen.authoring import register_authoring
+from herzchen.authoring import AuthoringLifecycle, FileWriterLeaseAuthority, register_authoring
 from herzchen.content import domain_contribution as content_contribution
 from herzchen.contracts import ResourceRef
 from herzchen.domains.work import register_work
@@ -117,6 +117,72 @@ def main(argv=None) -> None:
     task_ref = task_batch.project.ref.to_dict()
     task_view = operations.sheet_port.export(ResourceRef.from_dict(task_ref)).to_dict()
     read_after_tasks = portfolio.read_pending(task_ref, actor=actor)
+    # Direct task edits and whole-project check-in use the two supported
+    # owner paths. The finite consumer receives only typed command ports; the
+    # host keeps the authoring service, writer lease and semantic handler.
+    direct_task = operations.port.revise(
+        task_batch.mappings["follow-up"],
+        title="Review the baseline directly edited",
+        logical_request_key="ott06-example-direct-task-1",
+        actor=operations.binding.authenticated_actor(actor),
+    )
+    checkout_root = path.parent / "ott06-project-checkout"
+    checkout_root.mkdir()
+    lifecycle = AuthoringLifecycle(
+        owner.authoring,
+        writer_leases=FileWriterLeaseAuthority(
+            path.parent / "ott06-writer-locks",
+            authority=authority + "-writer",
+            secret=b"ott06-public-writer-authority-key-material",
+            writer_identities=("ott06-editor",),
+        ),
+        writer_identity="ott06-editor",
+    )
+    opened_checkout = lifecycle.open(
+        ResourceRef.from_dict(task_ref),
+        operations.binding.authenticated_actor(actor),
+        request_id="ott06-example-project-open-1",
+        target_kind="project-sheet",
+        base_revision=task_ref["revision"],
+        initial_content=b"{}",
+        pending=True,
+    )
+    (checkout_root / "project.json").write_text(
+        json.dumps(
+            {
+                "title": "OTT-06 public example checked in",
+                "tasks": [
+                    {"id": "foundation", "title": "Capture the baseline", "order": 0},
+                    {
+                        "id": "follow-up",
+                        "title": "Review the baseline checked in",
+                        "order": 1,
+                        "dependencies": ["foundation"],
+                    },
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    checkin = lifecycle.finish(
+        opened_checkout,
+        request_id="ott06-example-project-checkin-1",
+        mode="manual",
+        checkout_root=checkout_root,
+        registered_files=["project.json"],
+        handler=owner.sheet.batches.lifecycle_handler(
+            ResourceRef.from_dict(task_ref),
+            authoring=owner.authoring,
+            handle=opened_checkout.handle,
+            request_id="ott06-example-project-domain-1",
+        ),
+        writer_check=lambda: True,
+    )
+    read_after_checkin = portfolio.read_pending(task_ref, actor=actor)
+    task_ref = read_after_checkin["project_ref"]
     decision_frame = {
         "outcome": "Investigate the dependency before any admission or execution step",
         "recipient": actor,
@@ -159,6 +225,16 @@ def main(argv=None) -> None:
             "mappings": public(task_batch.mappings),
             "receipt": public(task_batch.receipt),
             "view": public(task_view),
+        },
+        "direct_task": public(direct_task.ref),
+        "project_checkout_checkin": {
+            "opened": opened_checkout.opened.status,
+            "status": checkin.status,
+            "validated": checkin.finish.validation.valid if checkin.finish.validation else None,
+            "receipt": public(checkin.receipt),
+            "cleanup": None if checkin.cleanup is None else public(checkin.cleanup),
+            "temporary_file_removed": not (checkout_root / "project.json").exists(),
+            "read_after_checkin": read_after_checkin,
         },
         "read_after_tasks": read_after_tasks,
         "admission": admission,

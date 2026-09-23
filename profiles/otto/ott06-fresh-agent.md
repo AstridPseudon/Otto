@@ -136,14 +136,18 @@ without a durable delta.
 
 The complete call sequence, including every required `actor` and
 `request_id`, is available as the shipped executable example
-`profiles/otto/ott06-public-journey.py`. Run it only with a disposable database
-path; it demonstrates the same finite public calls and the correct
-`Store.open(..., expected_domains=...)` restart composition without exposing
-any private implementation surface. Use `--help` to inspect its usage without
-creating a database, `--db /private/tmp/example.sqlite3` for the disposable
-path, and `--output /private/tmp/example.json` to retain complete JSON without
-terminal truncation. Unknown command-line arguments are rejected before the
-owner Store is created.
+`profiles/otto/ott06-public-journey.py`. It covers a direct task edit, an
+existing-project checkout, ordinary `project.json` editing, owner validation,
+semantic check-in, authenticated cleanup, admission, and a fresh-process-style
+reopen/read replay. The host keeps the `AuthoringLifecycle`, writer-lease
+authority, and `ProjectBatches.lifecycle_handler`; the manager receives only
+the finite serialized command ports and typed reader. A low-level session
+close without the semantic handler is not a successful check-in. Run the
+example only with a disposable database path: `--help` inspects usage without
+creating a database, `--db /private/tmp/example.sqlite3` selects the
+disposable path, and `--output /private/tmp/example.json` retains complete JSON
+without terminal truncation. Unknown command-line arguments are rejected
+before the owner Store is created.
 
 Every result carries typed references and receipts. Readiness, attention,
 import, and handoff do not launch a manager, reserve budget, dispatch work, or

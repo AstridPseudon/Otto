@@ -359,7 +359,7 @@ class PortfolioOwnerBootstrap:
         self.sheet = ProjectSheet(store, actor=authenticated)
         self.content = ContentCommandHandler(store)
         self.assignments = ResponsibilityAssignments(store, actor=authenticated)
-        self.lifecycle = ProjectLifecycle(store, actor=authenticated)
+        self.lifecycle = ProjectLifecycle(store, actor=authenticated, delegation_issuer=authenticated)
         self.authoring = AuthoringSessionService(store)
         orchestration_port = None
         if portfolio_ref is not None or main_assignment_ref is not None:
