@@ -4,6 +4,7 @@ import pytest
 
 from otto.portfolio.operating_brief import (
     OperatingBrief,
+    OperatingBriefAuthoringAdapter,
     OperatingBriefError,
     brief_diff,
     compose_owner_snapshot,
@@ -23,6 +24,24 @@ BASE = {
     "links": [{"label": "run", "href": ".otto/runs/example"}],
     "revision": "brief-1",
 }
+
+
+class _BatchesSpy:
+    def __init__(self):
+        self.calls = []
+
+    def lifecycle_handler(self, project, *, authoring, handle, request_id):
+        self.calls.append((project, authoring, handle, request_id))
+        return {"handler": "owner", "request_id": request_id}
+
+
+class _LifecycleSpy:
+    def __init__(self):
+        self.calls = []
+
+    def finish(self, target, *, request_id, handler, **kwargs):
+        self.calls.append((target, request_id, handler, kwargs))
+        return {"status": "delegated"}
 
 
 def test_schema_round_trip_and_pretty_json_are_deterministic():
@@ -130,3 +149,71 @@ def test_snapshot_rejects_non_object_records_and_invalid_lifecycle():
             active_manager_refs=[{"id": "m"}],
             as_of="2026-09-21T18:00:00Z",
         )
+
+
+def test_agent_adapter_renders_agent_fields_with_empty_protected_sections():
+    adapter = OperatingBriefAuthoringAdapter("manager", _BatchesSpy(), _LifecycleSpy())
+    rendered = adapter.agent_draft(
+        role_instructions="Continue the owned work.",
+        project_state={"id": "project-1"},
+        brief={
+            "role": "manager",
+            "priorities": [{"id": "next", "text": "Review the result", "status": "pending"}],
+            "operational_constraints": ["One writer"],
+        },
+        as_of="2026-09-23T06:30:00Z",
+    )
+    assert rendered["brief"]["mandate"] == ""
+    assert rendered["brief"]["user_constraints"] == []
+    assert rendered["brief"]["priorities"][0]["id"] == "next"
+
+    absent = adapter.agent_draft(
+        role_instructions="Continue the owned work.",
+        project_state={"id": "project-1"},
+        as_of="2026-09-23T06:30:00Z",
+    )
+    assert absent["brief_status"] == "absent_fallback"
+    assert absent["brief"]["mandate"] == ""
+
+
+def test_agent_adapter_rejects_protected_edits_before_owner_delegation():
+    batches = _BatchesSpy()
+    adapter = OperatingBriefAuthoringAdapter("manager", batches, _LifecycleSpy())
+    with pytest.raises(OperatingBriefError, match="protected"):
+        adapter.agent_draft(
+            role_instructions="",
+            project_state={},
+            brief={"role": "manager", "mandate": "Forged authority"},
+            as_of="2026-09-23T06:30:00Z",
+        )
+    assert batches.calls == []
+
+
+def test_agent_adapter_binds_and_finishes_through_the_injected_owner_ports():
+    batches = _BatchesSpy()
+    lifecycle = _LifecycleSpy()
+    adapter = OperatingBriefAuthoringAdapter("manager", batches, lifecycle)
+    result = adapter.finish(
+        "target",
+        project="project",
+        authoring="authoring",
+        handle="handle",
+        request_id="rb02-request-1",
+        mode="manual",
+        checkout_root="/tmp/checkout",
+        registered_files=["document.json"],
+    )
+    assert result == {"status": "delegated"}
+    assert batches.calls == [("project", "authoring", "handle", "rb02-request-1")]
+    assert lifecycle.calls == [
+        (
+            "target",
+            "rb02-request-1",
+            {"handler": "owner", "request_id": "rb02-request-1"},
+            {
+                "mode": "manual",
+                "checkout_root": "/tmp/checkout",
+                "registered_files": ["document.json"],
+            },
+        )
+    ]

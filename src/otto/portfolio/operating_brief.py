@@ -1,8 +1,10 @@
 """Pure operating-brief schema, diff and render helpers.
 
 This module is an additive preparation seam.  It validates and renders caller
-supplied values, but it does not authenticate a user, write a document,
-associate a record, read a live owner graph, or schedule a callback.
+supplied values, but it does not authenticate a user, read a live owner graph,
+or schedule a callback.  ``OperatingBriefAuthoringAdapter`` only composes
+these values with already-injected owner ports; authentication, persistence,
+CAS and retirement remain in those owner ports.
 """
 
 from __future__ import annotations
@@ -298,4 +300,106 @@ def json_envelope(value: Mapping[str, Any]) -> str:
     return json.dumps(_json_copy(dict(value)), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
-__all__ = ["OperatingBrief", "OperatingBriefError", "brief_diff", "compose_owner_snapshot", "json_envelope", "render_operating_brief"]
+@dataclass(frozen=True)
+class OperatingBriefAuthoringAdapter:
+    """Bind an agent-editable brief to the owner's existing semantic handler.
+
+    The adapter deliberately receives the owner ``batches`` and ``lifecycle``
+    ports from the caller.  It neither discovers those ports nor creates a
+    replacement command path.  ``agent_draft`` is pure and rejects protected
+    user fields; ``bind_handler`` and ``finish`` delegate to the supplied
+    owner objects, where actor, scope, checkout, CAS and retirement checks
+    remain enforced.
+    """
+
+    role: str
+    batches: Any
+    lifecycle: Any
+
+    def __post_init__(self) -> None:
+        normalized = OperatingBrief.empty(self.role).role
+        object.__setattr__(self, "role", normalized)
+        if not callable(getattr(self.batches, "lifecycle_handler", None)):
+            raise OperatingBriefError("batches.lifecycle_handler must be callable")
+        if not callable(getattr(self.lifecycle, "finish", None)):
+            raise OperatingBriefError("lifecycle.finish must be callable")
+
+    def agent_draft(
+        self,
+        *,
+        role_instructions: str,
+        project_state: Mapping[str, Any],
+        brief: Optional[OperatingBrief | Mapping[str, Any]] = None,
+        snapshot: Optional[Mapping[str, Any]] = None,
+        edit_recipe: Optional[Mapping[str, Any]] = None,
+        as_of: str,
+    ) -> dict[str, Any]:
+        """Render an agent proposal while keeping protected fields empty.
+
+        A user-provided mandate or constraint must enter through the owner
+        authority path.  Raising here prevents an agent-facing draft from
+        masquerading as an accepted protected-field edit.
+        """
+
+        selected = OperatingBrief.empty(self.role) if brief is None else (
+            brief if isinstance(brief, OperatingBrief) else OperatingBrief.from_mapping(brief, role=self.role)
+        )
+        if selected.role != self.role:
+            raise OperatingBriefError("brief role does not match the adapter role")
+        if selected.mandate or selected.user_constraints:
+            raise OperatingBriefError("agent brief cannot edit protected user fields")
+        return render_operating_brief(
+            role=self.role,
+            role_instructions=role_instructions,
+            project_state=project_state,
+            brief=None if brief is None else selected,
+            snapshot=snapshot,
+            edit_recipe=edit_recipe,
+            as_of=as_of,
+        )
+
+    def bind_handler(self, project: Any, *, authoring: Any, handle: Any, request_id: str) -> Any:
+        """Return the owner's existing project-sheet semantic handler."""
+
+        return self.batches.lifecycle_handler(
+            project,
+            authoring=authoring,
+            handle=handle,
+            request_id=request_id,
+        )
+
+    def finish(
+        self,
+        target: Any,
+        *,
+        project: Any,
+        authoring: Any,
+        handle: Any,
+        request_id: str,
+        **kwargs: Any,
+    ) -> Any:
+        """Delegate one finish through the owner's shared lifecycle boundary."""
+
+        handler = self.bind_handler(
+            project,
+            authoring=authoring,
+            handle=handle,
+            request_id=request_id,
+        )
+        return self.lifecycle.finish(
+            target,
+            request_id=request_id,
+            handler=handler,
+            **kwargs,
+        )
+
+
+__all__ = [
+    "OperatingBrief",
+    "OperatingBriefAuthoringAdapter",
+    "OperatingBriefError",
+    "brief_diff",
+    "compose_owner_snapshot",
+    "json_envelope",
+    "render_operating_brief",
+]
