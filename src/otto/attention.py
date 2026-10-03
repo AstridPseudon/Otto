@@ -961,7 +961,18 @@ class _DueRecordOwnerEngine:
             if record.stop_state != "active" or not record.in_flight_request:
                 raise StateConflictError("an active admitted occurrence is required")
             evidence = dict(record.host_evidence or {})
-            if evidence.get("gateway_attempt") is not None or record.delivered_at or record.delivery_evidence or record.last_result or record.completed_at or record.completion_evidence:
+            attention_receipt = record.delivery_evidence
+            attention_claim_only = (
+                isinstance(attention_receipt, Mapping)
+                and attention_receipt.get("outcome") in {"created", "replayed"}
+                and attention_receipt.get("request_id") == record.in_flight_request
+                and isinstance(attention_receipt.get("receipt"), Mapping)
+                and attention_receipt["receipt"].get("logical_request_key")
+                    == record.in_flight_request
+            )
+            if (evidence.get("gateway_attempt") is not None
+                    or (record.delivery_evidence is not None and not attention_claim_only)
+                    or record.last_result or record.completed_at or record.completion_evidence):
                 raise StateConflictError("attempt or delivery already exists")
             ref = ResourceRef.from_dict(dict(assignment_ref))
             current = self._writer.get_identity(ref)

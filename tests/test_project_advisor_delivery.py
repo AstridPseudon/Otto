@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from herzchen.contracts import AuthenticatedActor, ResourceRef
+from herzchen.kernel.limits import LimitService
 from herzchen.kernel.store import Store
 from herzchen.adapters.host import CodexCliBinding, _select_admitted_turn, _select_invocation_turn
 from otto.attention import (
@@ -764,6 +765,153 @@ class AdvisorDeliveryTests(unittest.TestCase):
 
 
 class OwnerAdmissionTests(unittest.TestCase):
+    def test_adoption_base_claim_reconciles_before_allowance_gateway_and_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store.create(Path(directory) / "owner.sqlite", authority="test-owner")
+            store.register_domain_handler([due_record_contribution()])
+            actor = AuthenticatedActor("test-owner", "owner-principal", "credential")
+            engine = _DueRecordOwnerEngine(
+                store.domain_handler([due_record_contribution()]), actor,
+            )
+            try:
+                project = {**PROJECT, "authority": "test-owner"}
+                manager_ref = {**MANAGER, "authority": "test-owner"}
+                base_ref = {**ADVISOR, "authority": "test-owner", "revision": "rev-6"}
+                current_ref = {**ADVISOR, "authority": "test-owner", "revision": "rev-7"}
+                task = {**ref("work.task", "task-6", "rev-2"), "authority": "test-owner"}
+                mandate = {**ref("dat.content.document", "mandate", "rev-1"),
+                           "authority": "test-owner"}
+                adoption_digest = "a" * 64
+                store.put_identity(
+                    ResourceRef.from_dict(current_ref),
+                    {
+                        "scope": project, "role": "project_advisor",
+                        "principal": "advisor-principal", "generation": 2,
+                        "status": "queued", "manager": "manager-principal",
+                        "resource_adoption_base_ref": base_ref,
+                        "resource_adoptions": [{"name": "advisor-policy"}],
+                        "resource_adoption_digest": adoption_digest,
+                        "resource_adoption_revision": 1,
+                    },
+                    version=1,
+                )
+                current_advisor = assignment(
+                    "project_advisor", current_ref, "advisor-principal", 2,
+                    "manager-principal",
+                )
+                current_advisor.update({
+                    "scope": project,
+                    "payload": {"resource_adoption_base_ref": base_ref},
+                })
+                manager = assignment(
+                    "manager", manager_ref, "manager-principal", 1,
+                    "manager-principal",
+                )
+                manager["scope"] = project
+                assignments = Assignments(manager, current_advisor)
+                pairing = establish_pairing(
+                    project, [manager, current_advisor],
+                    manager_conversation_ref=MANAGER_CONVERSATION,
+                    advisor_conversation_ref=ADVISOR_CONVERSATION,
+                )
+                target = {
+                    **ADVISOR_CONVERSATION, "project_ref": project, "task_ref": task,
+                    "assignment_ref": base_ref, "mandate_ref": mandate,
+                    "role": "project_advisor", "principal": "advisor-principal",
+                }
+                due = DueRecord(
+                    schedule_id="scheduled-adoption-runtime",
+                    recipient="advisor-principal",
+                    instruction="Inspect the delivered effect.", profile="read-only",
+                    anchor=NOW.isoformat(), due_at=NOW.isoformat(),
+                    last_covered_slot=-1,
+                    invocation_identity="scheduled-adoption-runtime-v1",
+                    project_ref=project["id"], manager_ref="owner-principal",
+                    assignment_ref=base_ref, generation=2, target=target,
+                    role="project_advisor", lifecycle_owner="owner-principal",
+                    execution_mode="continue_existing",
+                )
+                attention = DurableAttention(
+                    RecordingAttentionPort(), due_port=engine,
+                    clock=lambda: NOW, host_mode="awaited",
+                )
+                attention.schedule(due, request_id="schedule-adoption-runtime")
+                limits = LimitService(store)
+                pool = limits.create_pool(
+                    ResourceRef("test-owner", "limit", "advisor-pilot"),
+                    capacity_units=1, cumulative_allowance_units=3,
+                    logical_request_key="create-advisor-pilot", actor=actor,
+                )
+                provider_calls = []
+
+                def role_delivery(delivery):
+                    claimed = DueRecord.from_dict(engine.read_due(due.schedule_id))
+                    self.assertEqual(
+                        claimed.delivery_evidence["request_id"], delivery["request_id"]
+                    )
+                    reconciled = engine.reconcile_assignment_resources(
+                        due.schedule_id, assignment_ref=current_ref,
+                        expected_version=claimed.version,
+                        request_id="reconcile:" + delivery["request_id"],
+                    )
+                    self.assertEqual(reconciled["assignment_ref"], current_ref)
+                    reservation = limits.reserve(
+                        pool.ref, "advisor-slot", 1,
+                        logical_request_key="reserve:" + delivery["request_id"],
+                        actor=actor,
+                    )
+                    capture = OwnerDueRecordAttemptCapture(
+                        engine, due.schedule_id, project_ref=project, task_ref=task,
+                        assignment_ref=current_ref, generation=2,
+                        role="project_advisor", principal="advisor-principal",
+                        lifecycle_owner="owner-principal",
+                        expected_target={**target, "assignment_ref": current_ref},
+                    )
+                    fingerprint = "fixture-fingerprint"
+                    gateway_claim = capture.claim(
+                        delivery["request_id"], current_ref, 2, fingerprint,
+                    )
+                    self.assertEqual(gateway_claim["outcome"], "claimed")
+                    provider_calls.append(delivery["request_id"])
+                    capture.record({
+                        "logical_request_key": delivery["request_id"],
+                        "request_fingerprint": fingerprint,
+                        "project_ref": project, "task_ref": task,
+                        "assignment_ref": current_ref, "generation": 2,
+                        "outcome": "succeeded", "delivery_state": "done",
+                    })
+                    settled = limits.settle(
+                        reservation, 1,
+                        logical_request_key="settle:" + delivery["request_id"],
+                        actor=actor,
+                    )
+                    self.assertEqual(settled.actual_units, 1)
+                    return {"outcome": "succeeded", "delivery_state": "done"}
+
+                loop = AdvisorDeliveryLoop(AdvisorDeliveryPorts(
+                    assignments=assignments, attention=attention,
+                    authenticate=lambda value: value,
+                    current_pairing=lambda _project: pairing,
+                    reports_for_project=lambda _project: [],
+                    role_delivery=role_delivery, now=lambda: NOW,
+                ))
+                result = loop.wake_once(
+                    pairing=pairing, schedule_id=due.schedule_id,
+                    advisor_principal="advisor-principal",
+                    lifecycle_owner="owner-principal",
+                    reason="scheduled-effect-followup",
+                )
+                self.assertEqual(result["outcome"], "returned")
+                self.assertEqual(len(provider_calls), 1)
+                final = engine.read_due(due.schedule_id)
+                self.assertEqual(final["assignment_ref"], current_ref)
+                self.assertEqual(
+                    final["host_evidence"]["resource_adoption"]["digest"],
+                    adoption_digest,
+                )
+            finally:
+                store.close()
+
     def test_attention_claim_can_evolve_to_gateway_claim_before_provider_stub(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store.create(Path(directory) / "owner.sqlite", authority="test-owner")
