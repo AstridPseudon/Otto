@@ -572,7 +572,9 @@ class OwnerDueRecordAttemptCapture:
         self._save(record, result, "otto-gateway-result:" + str(value["logical_request_key"]) + ":" + digest)
         return value
 
-    def record_thread_started(self, logical_request_key: str, physical_session_id: str) -> Mapping[str, Any]:
+    def record_thread_started(
+        self, logical_request_key: str, physical_session_id: str, *, process_created: bool = True
+    ) -> Mapping[str, Any]:
         """Bind provider identity to a current claim, without authorizing work."""
         if not _text(logical_request_key) or not _text(physical_session_id):
             raise ValueError("logical request key and physical session identity are required")
@@ -593,7 +595,8 @@ class OwnerDueRecordAttemptCapture:
             return current
         updated = {**current, "physical_session_id": physical_session_id,
                    "native_session_id": physical_session_id,
-                   "launch_state": "identified", "process_created": True}
+                   "launch_state": "identified" if process_created else "identified_existing",
+                   "process_created": process_created}
         saved = self._save(record, updated, "otto-gateway-thread-started:" + logical_request_key + ":" + physical_session_id)
         receipt = saved.get("mutation_receipt") if isinstance(saved, Mapping) else None
         if not isinstance(receipt, Mapping) or receipt.get("status") != "committed":
@@ -827,7 +830,9 @@ class DueRecordAttemptCapture:
         readback = self._attempt(self._record()) or updated
         return {"outcome": "accepted", "accepted": True, "replayed": False, "readback_version": saved.get("version"), "attempt": readback}
 
-    def record_thread_started(self, logical_request_key: str, physical_session_id: str) -> Mapping[str, Any]:
+    def record_thread_started(
+        self, logical_request_key: str, physical_session_id: str, *, process_created: bool = True
+    ) -> Mapping[str, Any]:
         """Persist native identity as soon as the owner adapter observes it."""
 
         if not _text(logical_request_key) or not _text(physical_session_id):
@@ -847,8 +852,8 @@ class DueRecordAttemptCapture:
             **current,
             "physical_session_id": physical_session_id,
             "native_session_id": physical_session_id,
-            "launch_state": "identified",
-            "process_created": True,
+            "launch_state": "identified" if process_created else "identified_existing",
+            "process_created": process_created,
         }
         self._save_attempt(record, updated, request_id=f"gateway-thread-started:{logical_request_key}:{physical_session_id}")
         return updated
@@ -1487,7 +1492,10 @@ class OttoGateway:
             prior_callback = setter(None)
 
             def on_thread_started(physical_session_id: str) -> None:
-                recorder(key, physical_session_id)
+                recorder(
+                    key, physical_session_id,
+                    process_created=responsibility.operation == "invoke",
+                )
                 if callable(prior_callback):
                     prior_callback(physical_session_id)
 
