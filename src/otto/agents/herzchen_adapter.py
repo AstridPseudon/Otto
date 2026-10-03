@@ -771,6 +771,13 @@ class HerzchenCodexAdapter:
                     "physical_session_id": physical, "retry_allowed": False}
             if not isinstance(physical, str) or not physical.strip():
                 raise HerzchenAdapterError("owner-authorized resume requires an existing physical session")
+            if self._thread_started_callback is None:
+                raise HerzchenAdapterError("existing provider identity has no owner occurrence binding")
+            try:
+                self._thread_started_callback(physical)
+            except Exception as exc:
+                return {**base, "outcome": "unknown", "delivery_state": "unknown",
+                        "error": {"code": "owner_identity_capture_failed", "message": str(exc)}}
         else:
             initializer = self._new_host(inert_prompt, {}, model=model, reasoning=reasoning, **inert_options)
             observed_initial = initializer.invoke(typed)
