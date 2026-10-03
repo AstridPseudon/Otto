@@ -12,7 +12,7 @@ SOCKET = Path("/tmp/otto-project-advisor-manager-ops.sock")
 
 def call(payload: dict) -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(30)
+        client.settimeout(1300)
         client.connect(str(SOCKET))
         client.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
         chunks = []
@@ -38,6 +38,11 @@ def main() -> None:
     assign.add_argument("--principal", required=True)
     assign.add_argument("--route", required=True, choices=["normal", "xhard"])
     assign.add_argument("--request-key", required=True)
+    run = commands.add_parser("run-worker", help="assign, launch, and collect one canonical bounded worker")
+    run.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    run.add_argument("--principal", required=True)
+    run.add_argument("--route", required=True, choices=["normal", "xhard"])
+    run.add_argument("--request-key", required=True)
     args = parser.parse_args()
     payload = vars(args)
     response = call(payload)

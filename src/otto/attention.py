@@ -237,8 +237,8 @@ class DueRecord:
         for field_name, value in (("role", self.role), ("purpose", self.purpose), ("message", self.message), ("lifecycle_owner", self.lifecycle_owner)):
             if value is not None:
                 _required_text(value, field_name)
-        if self.execution_mode not in {"continue_existing", "fresh_bounded_worker"}:
-            raise ValueError("execution_mode must be continue_existing or fresh_bounded_worker")
+        if self.execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_manager"}:
+            raise ValueError("execution_mode must be continue_existing, fresh_bounded_worker, or fresh_manager")
         for field_name, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("result_owner", self.result_owner)):
             if value is not None:
                 _required_text(value, field_name)
@@ -283,6 +283,27 @@ class DueRecord:
             for ref in self.context_refs:
                 if not isinstance(ref, Mapping): raise ValueError("fresh context refs must be exact references")
                 for key in ("authority", "kind", "id", "revision"): _required_text(ref.get(key), "context_refs." + key)
+        if self.execution_mode == "fresh_manager":
+            if (self.role != "manager" or not isinstance(self.target, Mapping)
+                    or self.requested_model is None or self.requested_reasoning is None
+                    or self.timeout_seconds is None or self.timeout_seconds > 1920 or not self.context_refs):
+                raise ValueError("fresh_manager requires a bounded configured manager target and context")
+            target = self.target
+            if any(key in target for key in NATIVE_TARGET_KEYS):
+                raise ValueError("fresh_manager must not fabricate a native session alias")
+            principal = target.get("principal")
+            principal_id = principal.get("id") if isinstance(principal, Mapping) else principal
+            if target.get("role") != "manager" or principal_id != self.recipient:
+                raise ValueError("fresh manager principal/role must match logical recipient")
+            for name in ("project_ref", "task_ref", "assignment_ref", "mandate_ref"):
+                ref = target.get(name)
+                if not isinstance(ref, Mapping):
+                    raise ValueError("fresh_manager requires exact target." + name)
+                for field in ("authority", "kind", "id", "revision"):
+                    _required_text(ref.get(field), "target." + name + "." + field)
+            for key, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("requested_profile", self.profile)):
+                if target.get(key) != value:
+                    raise ValueError("fresh manager target configuration conflicts with DueRecord")
         object.__setattr__(self, "context_refs", tuple(_json_copy(item, "context_refs") for item in self.context_refs))
         if self.target is not None:
             if not isinstance(self.target, Mapping):
@@ -292,7 +313,7 @@ class DueRecord:
                 raise TypeError("target must be a JSON object")
             if not _required_text(target.get("host") or target.get("host_id"), "target.host"):
                 raise ValueError("target.host must be non-blank text")
-            if self.execution_mode != "fresh_bounded_worker":
+            if self.execution_mode == "continue_existing":
                 identity = native_target_identity(target)
                 _required_text(identity, "target.native_id")
             object.__setattr__(self, "target", target)

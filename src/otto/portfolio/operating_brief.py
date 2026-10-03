@@ -554,13 +554,13 @@ def prepare_canonical_operating_brief(
 
     explicit = mandate_payload.get("instruction_contract")
     if explicit is not None:
-        if (role_value != "worker" or task_pin is None or mandate_state != "active"
+        if (role_value not in {"worker", "manager"} or task_pin is None or mandate_state != "active"
                 or mandate_payload.get("dispatch_enabled") is not True
                 or mandate_payload.get("task_ref") != task_pin
                 or mandate_payload.get("assignment_ref") != assignment_pin
                 or type(mandate_payload.get("generation")) is not int
                 or mandate_payload.get("generation") != expected_generation):
-            raise OperatingBriefError("execution mandate lacks exact active worker task/assignment/generation/dispatch scope")
+            raise OperatingBriefError("execution mandate lacks exact active role task/assignment/generation/dispatch scope")
         try:
             contract = normalize_instruction_contract(explicit)
         except ResourceSyncError as exc:
@@ -569,6 +569,8 @@ def prepare_canonical_operating_brief(
         if (contract["task_ref"] != task_pin or contract["authority"]["source"] != "canonical_owner"
                 or contract["authority"]["owner_actor"] != principal_id):
             raise OperatingBriefError("execution mandate contract conflicts with current owner/task")
+        if role_value == "manager" and contract["authority"].get("effect_profile") != "workspace-write-manager":
+            raise OperatingBriefError("manager execution mandate lacks exact workspace-write effect profile")
         body["mandate_instruction_contract"] = {
             "source_ref": mandate_pin, "task_ref": task_pin, "assignment_ref": assignment_pin,
             "generation": generation, "dispatch_enabled": True, "instruction_contract": contract,

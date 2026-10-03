@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from typing import Any, Mapping, Sequence
 
 
@@ -107,10 +108,30 @@ def normalize_instruction_contract(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ResourceSyncError("instruction_contract.authority.permitted_effects must be a non-empty list")
     if isinstance(forbidden, (str, bytes)) or not isinstance(forbidden, Sequence):
         raise ResourceSyncError("instruction_contract.authority.forbidden_effects must be a list")
+    permitted_values = [_text(item, "instruction_contract.authority.permitted_effects[]") for item in permitted]
     forbidden_values = {_text(item, "instruction_contract.authority.forbidden_effects[]") for item in forbidden}
-    required_forbidden = {"file_write", "owner_write", "publication", "package_adoption"}
+    effect_profile = authority_value.get("effect_profile")
+    if effect_profile is None:
+        required_forbidden = {"file_write", "owner_write", "publication", "package_adoption"}
+    elif effect_profile in {"workspace-write-manager", "workspace-write-worker"}:
+        roots = authority_value.get("workspace_roots")
+        if (isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence) or not roots
+                or any(not isinstance(item, str) or not os.path.isabs(item) or os.path.realpath(item) != item for item in roots)
+                or len(set(roots)) != len(roots)):
+            raise ResourceSyncError("workspace-write manager authority requires distinct real absolute workspace_roots")
+        required_allowed = {"read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"}
+        required_permitted = {"read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"}
+        if effect_profile == "workspace-write-manager":
+            required_allowed.add("canonical_manager_commands")
+            required_permitted.add("canonical_manager_commands")
+        if set(allowed_values) != required_allowed or set(permitted_values) != required_permitted:
+            raise ResourceSyncError("workspace-write manager operations/effects are not exact")
+        required_forbidden = {"owner_write", "publication", "package_adoption", "remote_push", "release", "deployment"}
+    else:
+        raise ResourceSyncError("unsupported instruction contract effect_profile")
     if not required_forbidden.issubset(forbidden_values):
         raise ResourceSyncError("instruction_contract authority does not fence all forbidden effects")
+    authority_value["permitted_effects"] = permitted_values
     result["task_ref"] = _copy(dict(task_ref), "instruction_contract.task_ref")
     result["objective"] = objective
     result["bounded_operation"] = bounded_operation

@@ -426,14 +426,34 @@ class CodexCliBinding(HostPort):
                 authorization = self._recipient_authorizer(request)
                 principal = authorization.get("principal") if isinstance(authorization, Mapping) else None
                 principal_id = principal if isinstance(principal, str) else principal.get("id") if isinstance(principal, Mapping) else None
+                authority = contract.get("authority", {})
+                read_contract = (
+                    request.requested_profile == "read-only"
+                    and authority.get("effect_profile") is None
+                    and set(contract.get("allowed_operations", ())) == {"read_only_inspection", "return_evidence"}
+                )
+                selected_roots = tuple(dict.fromkeys((os.path.realpath(self.worktree), *self.writable_roots)))
+                write_operations = {"read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"}
+                write_effects = {"read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"}
+                effect_profile = authority.get("effect_profile")
+                if effect_profile == "workspace-write-manager":
+                    write_operations.add("canonical_manager_commands")
+                    write_effects.add("canonical_manager_commands")
+                workspace_contract = (
+                    request.requested_profile == "workspace-write"
+                    and effect_profile in {"workspace-write-manager", "workspace-write-worker"}
+                    and set(contract.get("allowed_operations", ())) == write_operations
+                    and tuple(authority.get("workspace_roots", ())) == selected_roots
+                    and set(authority.get("permitted_effects", ())) == write_effects
+                )
                 if (not isinstance(authorization, Mapping) or authorization.get("status") != "authorized"
                         or authorization.get("physical_session_id") != request.identity.physical_session_id
                         or authorization.get("task_ref") != request.target.to_dict()
                         or authorization.get("brief_sha256") != _digest_json(self.delivered_brief)
                         or principal_id != request.identity.logical_agent_id
-                        or set(contract.get("allowed_operations", ())) != {"read_only_inspection", "return_evidence"}
-                        or contract.get("authority", {}).get("owner_write") is not False
-                        or contract.get("authority", {}).get("dispatch") is not False):
+                        or not (read_contract or workspace_contract)
+                        or authority.get("owner_write") is not False
+                        or authority.get("dispatch") is not False):
                     raise ValueError("trusted recipient authorization is not exact")
                 delivered_authorization = json.loads(json.dumps(authorization))
                 prompt += _owner_delivery_appendix(delivered_authorization, request.requested_profile)
