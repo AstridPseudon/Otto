@@ -354,6 +354,39 @@ class HerzchenCodexAdapter:
         )
 
     @staticmethod
+    def render_verified_invocation(
+        brief: Mapping[str, Any], digest: str, request: Mapping[str, Any],
+        *, model_projection: Any = None,
+    ) -> str:
+        """Render the owner brief plus the exact gateway-claimed turn request."""
+
+        if not isinstance(request, Mapping):
+            raise HerzchenAdapterError("owner invocation request must be an object")
+        rendered = HerzchenCodexAdapter.render_verified_brief(
+            brief, digest, model_projection=model_projection,
+        )
+        # Existing owner operations may intentionally carry only the adopted
+        # brief.  When a turn payload is supplied, however, it must be bound
+        # into the exact rendered input rather than living only in gateway
+        # metadata.
+        if request.get("prompt") is None:
+            return rendered
+        prompt = _text(request.get("prompt"), "request.prompt")
+        logical_key = _text(request.get("logical_request_key"), "request.logical_request_key")
+        value = {
+            "schema": "otto.owner-invocation-request.v1",
+            "logical_request_key": logical_key,
+            "prompt": prompt,
+        }
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        request_digest = _digest(value)
+        return (
+            rendered
+            + f'<otto-invocation-request resource-brief-sha256="{digest}" sha256="{request_digest}">\n'
+            + encoded + "\n</otto-invocation-request>\n"
+        )
+
+    @staticmethod
     def build_cursor_queue(brief: Mapping[str, Any], projection: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Derive D256's pinned sequence from the current full canonical input."""
         digest = _digest(brief)
@@ -664,7 +697,9 @@ class HerzchenCodexAdapter:
                 raise HerzchenAdapterError("bounded source inspection requires owner-authorized direct invoke")
             projection = self._request_projection(brief, digest, request)
             host = self._new_host(
-                self.render_verified_brief(brief, digest, model_projection=projection), brief,
+                self.render_verified_invocation(
+                    brief, digest, request, model_projection=projection,
+                ), brief,
                 model_projection=projection,
                 model=_text(request.get("requested_model", self.requested_model), "requested_model"),
                 reasoning=_text(request.get("requested_reasoning", self.requested_reasoning), "requested_reasoning"),
@@ -891,7 +926,9 @@ class HerzchenCodexAdapter:
         observed_work = None
         try:
             recipient = self._new_host(
-                self.render_verified_brief(brief, digest, model_projection=projection), brief,
+                self.render_verified_invocation(
+                    brief, digest, request, model_projection=projection,
+                ), brief,
                 model=model, reasoning=reasoning, model_projection=projection,
                 recipient_authorizer=admit_recipient, **work_options,
             )

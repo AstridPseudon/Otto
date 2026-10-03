@@ -7,7 +7,7 @@ import unittest
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.kernel.store import Store
-from herzchen.adapters.host import CodexCliBinding, _select_admitted_turn
+from herzchen.adapters.host import CodexCliBinding, _select_admitted_turn, _select_invocation_turn
 from otto.attention import (
     DueRecord,
     DurableAttention,
@@ -18,6 +18,7 @@ from otto.attention import (
     due_record_contribution,
 )
 from otto.agents.gateway import OwnerDueRecordAttemptCapture
+from otto.agents.herzchen_adapter import HerzchenCodexAdapter
 from otto.portfolio import (
     AdvisorDeliveryError,
     AdvisorDeliveryLoop,
@@ -554,6 +555,79 @@ class AdvisorDeliveryTests(unittest.TestCase):
 
 
 class OwnerAdmissionTests(unittest.TestCase):
+    def test_brief_only_invocation_remains_compatible(self):
+        brief = {"schema": "fixture.owner-brief.v1", "mandate": "Current adopted mandate."}
+        digest = "b" * 64
+        self.assertEqual(
+            HerzchenCodexAdapter.render_verified_invocation(brief, digest, {}),
+            HerzchenCodexAdapter.render_verified_brief(brief, digest),
+        )
+
+    def test_gateway_claimed_turn_prompt_is_rendered_and_observed_exactly(self):
+        brief = {"schema": "fixture.owner-brief.v1", "mandate": "Current adopted mandate."}
+        digest = "a" * 64
+        prompt = "Correct the historical claim, then queue the persisted decision."
+        rendered = HerzchenCodexAdapter.render_verified_invocation(
+            brief, digest, {"logical_request_key": "manager-v31", "prompt": prompt},
+        )
+        self.assertIn(prompt, rendered)
+        self.assertIn('schema":"otto.owner-invocation-request.v1"', rendered)
+        lines = [
+            json.dumps({"type": "session_meta", "payload": {"session_id": "manager-session"}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "task_started", "turn_id": "manager-turn-payload",
+                "started_at": int(NOW.timestamp()),
+            }}),
+            json.dumps({"type": "turn_context", "payload": {
+                "turn_id": "manager-turn-payload", "model": "gpt-test",
+                "collaboration_mode": {"settings": {"reasoning_effort": "medium"}},
+                "sandbox_policy": {"type": "workspace-write", "writable_roots": []},
+                "approval_policy": "never",
+            }}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "item_completed", "turn_id": "manager-turn-payload",
+                "thread_id": "manager-session",
+                "item": {"type": "UserMessage", "content": [{"type": "Text", "text": rendered}]},
+            }}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "task_complete", "turn_id": "manager-turn-payload",
+            }}),
+        ]
+        selected = _select_invocation_turn(
+            lines, session_id="manager-session", prompt=rendered,
+            boundary=0, started_at="2026-10-03T14:59:59+00:00",
+        )
+        self.assertEqual(selected[0], "manager-turn-payload")
+
+    def test_manager_due_save_does_not_scan_unrelated_due_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store.create(Path(directory) / "owner.sqlite", authority="test-owner")
+            store.register_domain_handler([due_record_contribution()])
+            engine = _DueRecordOwnerEngine(
+                store.domain_handler([due_record_contribution()]),
+                AuthenticatedActor("test-owner", "owner", "credential"),
+            )
+            try:
+                engine.list_due = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("manager save scanned all Due history")
+                )
+                record = DueRecord(
+                    schedule_id="manager-current", recipient="manager-principal",
+                    instruction="Continue current work.", profile="workspace-write",
+                    anchor=NOW.isoformat(), due_at=NOW.isoformat(), last_covered_slot=0,
+                    invocation_identity="manager-current", delivery_state="none",
+                    project_ref=PROJECT["id"], manager_ref="owner", generation=1,
+                    target={"host": "local", "native_id": "manager-session"},
+                    role="manager", lifecycle_owner="owner",
+                )
+                saved = engine.save_due(
+                    record.schedule_id, record.to_dict(),
+                    request_id="create-manager-current", expected_version=0,
+                )
+                self.assertEqual(saved["version"], 1)
+            finally:
+                store.close()
+
     def test_resume_admission_reads_only_current_occurrence_after_large_history(self):
         prompt = "Receive the persisted advisor decision."
         with tempfile.TemporaryDirectory() as directory:

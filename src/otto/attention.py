@@ -1024,11 +1024,16 @@ class _DueRecordOwnerEngine:
             if observed != expected_version:
                 raise StateConflictError(f"expected durable version {expected_version}, observed {observed}")
             current_value = None if current is None else current.payload
-            conflict = _advisor_claim_conflict(
-                self.list_due(), schedule_id=schedule_id,
-                current=current_value if isinstance(current_value, Mapping) else None,
-                desired=value,
-            )
+            # Only a new project-advisor claim needs the cross-record fence.
+            # Ordinary manager/worker saves are identity-local and must not
+            # materialize every historical Due event before each mutation.
+            conflict = None
+            if value.get("role") == "project_advisor" and value.get("in_flight_request"):
+                conflict = _advisor_claim_conflict(
+                    self.list_due(), schedule_id=schedule_id,
+                    current=current_value if isinstance(current_value, Mapping) else None,
+                    desired=value,
+                )
             if conflict is not None:
                 raise StateConflictError(
                     "project advisor inspection already in flight on "
