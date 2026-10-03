@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import tempfile
 import unittest
 
-from herzchen.contracts import AuthenticatedActor
+from herzchen.contracts import AuthenticatedActor, ResourceRef
 from herzchen.kernel.store import Store
 from herzchen.adapters.host import CodexCliBinding, _select_admitted_turn, _select_invocation_turn
 from otto.attention import (
@@ -232,6 +232,37 @@ class AdvisorDeliveryTests(unittest.TestCase):
             role="project_advisor", lifecycle_owner="owner-principal",
         )
         self.attention.schedule(record, request_id="schedule-adoption-base")
+        resolved = self.attention.resolve_recipient(
+            record.schedule_id, recipient="advisor-principal", role="project_advisor",
+            project_ref=PROJECT["id"], manager_ref="owner-principal", generation=2,
+            lifecycle_owner="owner-principal", assignment_reader=assignments,
+        )
+        self.assertEqual(resolved["outcome"], "resolved")
+        self.assertEqual(
+            resolved["binding"]["canonical_assignment"]["current_assignment_ref"],
+            ADVISOR,
+        )
+
+    def test_recipient_resolution_serializes_resource_ref_from_owner_assignment(self):
+        base = {**ADVISOR, "revision": "rev-6"}
+        current = SimpleNamespace(
+            ref=ResourceRef.from_dict(ADVISOR), scope=PROJECT,
+            role="project_advisor", status="queued", generation=2,
+            principal="advisor-principal",
+            payload={"resource_adoption_base_ref": base},
+        )
+        assignments = SimpleNamespace(get=lambda _ref: current)
+        record = DueRecord(
+            schedule_id="advisor-resource-ref", recipient="advisor-principal",
+            instruction="Inspect current effect.", profile="read-only",
+            anchor=NOW.isoformat(), due_at=NOW.isoformat(), last_covered_slot=-1,
+            invocation_identity="advisor-resource-ref-v1", project_ref=PROJECT["id"],
+            manager_ref="owner-principal", assignment_ref=base, generation=2,
+            target={**ADVISOR_CONVERSATION, "role": "project_advisor",
+                    "principal": "advisor-principal", "assignment_ref": base},
+            role="project_advisor", lifecycle_owner="owner-principal",
+        )
+        self.attention.schedule(record, request_id="schedule-resource-ref")
         resolved = self.attention.resolve_recipient(
             record.schedule_id, recipient="advisor-principal", role="project_advisor",
             project_ref=PROJECT["id"], manager_ref="owner-principal", generation=2,

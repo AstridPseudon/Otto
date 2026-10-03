@@ -1915,9 +1915,10 @@ class DurableAttention:
                     "automatic_action": False,
                 }
             scope_output = assignment_scope.to_dict() if hasattr(assignment_scope, "to_dict") and callable(assignment_scope.to_dict) else assignment_scope
+            current_ref_output = current_ref.to_dict() if hasattr(current_ref, "to_dict") and callable(current_ref.to_dict) else current_ref
             assignment_binding = {
                 "assignment_ref": dict(record.assignment_ref),
-                "current_assignment_ref": _json_copy(current_ref, "assignment.ref"),
+                "current_assignment_ref": _json_copy(current_ref_output, "assignment.ref"),
                 "adoption_base": observed_assignment != expected_assignment,
                 "scope": _json_copy(scope_output, "assignment.scope"),
                 "role": assigned_role,
