@@ -343,6 +343,44 @@ class AdvisorDeliveryTests(unittest.TestCase):
         self.assertTrue(any(item["value"].get("state") == "sent"
                             for item in self.assignments.reports))
 
+        # A corrected redelivery keeps the old false claim in history while
+        # readback and manager-state transitions follow the latest intent.
+        redelivery = Delivery(state="started")
+        loop = AdvisorDeliveryLoop(AdvisorDeliveryPorts(
+            assignments=self.assignments, attention=self.attention,
+            authenticate=lambda actor: actor,
+            current_pairing=lambda project: self.current,
+            reports_for_project=lambda project: list(self.assignments.reports),
+            role_delivery=self._runtime, delivery=redelivery, now=lambda: NOW,
+        ))
+        retried = loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-false", action="Repair the delivery boundary.",
+            rationale="The shim does not transport.", evidence=[{"ref": "shim-source"}],
+            expected_evidence="exact manager turn", request_id="decision-request-corrected",
+        )
+        self.assertEqual(retried["outcome"], "started")
+        self.assertNotEqual(retried["delivery_id"], first["delivery_id"])
+        redelivery.readback = {
+            "state": "sent", "sent_at": NOW.isoformat(), "receipt": {
+                "schema": "otto.exact-session-consumption.v1",
+                "delivery_id": retried["delivery_id"],
+                "physical_session_id": "manager-session",
+                "observed_turn_id": "manager-turn-corrected",
+                "observed_at": NOW.isoformat(),
+                "transport": "owner-host-continuation", "consumed": True,
+            },
+        }
+        recovered = loop.recover_delivery(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-false",
+        )
+        self.assertEqual(recovered["outcome"], "sent")
+        final = loop.read_decision(pairing=self.pairing, decision_id="decision-false")
+        self.assertEqual(final["decision"]["delivery_id"], retried["delivery_id"])
+        self.assertTrue(final["sent"])
+        self.assertTrue(final["delivery_corrected"])
+
     def test_exact_session_adapter_rejects_wrong_session_and_accepts_readback(self):
         calls = []
         readback = {}

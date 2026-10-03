@@ -451,6 +451,13 @@ class AdvisorDeliveryLoop:
                 and str(item["value"].get("schema", "")).startswith("otto.advisor.")]
 
     @staticmethod
+    def _latest_decision(records: Sequence[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
+        """Return the latest append-only delivery intent for one decision."""
+
+        return next((dict(item) for item in reversed(records)
+                     if item.get("schema") == "otto.advisor.decision.v1"), None)
+
+    @staticmethod
     def _delivery_projection(
         records: Sequence[Mapping[str, Any]], *, recipient: Mapping[str, Any], delivery_id: str,
     ) -> dict[str, Any]:
@@ -615,7 +622,7 @@ class AdvisorDeliveryLoop:
         advisor = self._assignment(pairing, "project_advisor", advisor_actor)
         decision_id = _text(decision_id, "decision_id")
         records = self._decision_records(self._reports(pairing), decision_id)
-        decision = next((item for item in records if item.get("schema") == "otto.advisor.decision.v1"), None)
+        decision = self._latest_decision(records)
         if decision is None:
             return {"outcome": "unknown", "error": {"code": "decision_missing"}, "retry": False}
         delivery_id = decision["delivery_id"]
@@ -690,8 +697,7 @@ class AdvisorDeliveryLoop:
         decision_id = _text(decision_id, "decision_id")
         interval_seconds = _seconds(interval_seconds, "interval_seconds")
         records = self._decision_records(self._reports(pairing), decision_id)
-        decision = next((item for item in records
-                         if item.get("schema") == "otto.advisor.decision.v1"), None)
+        decision = self._latest_decision(records)
         if decision is None:
             raise AdvisorDeliveryError("advisor decision does not exist")
         recipient = conversation_for(
@@ -755,8 +761,7 @@ class AdvisorDeliveryLoop:
         if isinstance(evidence, (str, bytes)) or not isinstance(evidence, Sequence) or not evidence:
             raise AdvisorDeliveryError("correction evidence must be a non-empty sequence")
         records = self._decision_records(self._reports(pairing), decision_id)
-        decision = next((item for item in records
-                         if item.get("schema") == "otto.advisor.decision.v1"), None)
+        decision = self._latest_decision(records)
         if decision is None:
             raise AdvisorDeliveryError("advisor decision does not exist")
         recipient = conversation_for(
@@ -902,8 +907,7 @@ class AdvisorDeliveryLoop:
         manager = self._assignment(pairing, "manager", manager_actor)
         decision_id, request_id = _text(decision_id, "decision_id"), _text(request_id, "request_id")
         records = self._decision_records(self._reports(pairing), decision_id)
-        decision = next((item for item in records
-                         if item.get("schema") == "otto.advisor.decision.v1"), None)
+        decision = self._latest_decision(records)
         if decision is None:
             raise AdvisorDeliveryError("advisor decision does not exist")
         recipient = conversation_for(
@@ -944,7 +948,7 @@ class AdvisorDeliveryLoop:
         pairing = self._current(pairing)
         decision_id = _text(decision_id, "decision_id")
         records = self._decision_records(self._reports(pairing), decision_id)
-        decision = next((item for item in records if item.get("schema") == "otto.advisor.decision.v1"), None)
+        decision = self._latest_decision(records)
         if decision is None:
             return {"outcome": "unknown", "decision_id": decision_id}
         manager_states = [item for item in records if item.get("schema") == "otto.advisor.manager-state.v1"]
