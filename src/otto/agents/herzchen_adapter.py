@@ -458,7 +458,8 @@ class HerzchenCodexAdapter:
             raise HerzchenAdapterError("instruction contract task does not match target_ref")
         requested_profile = request.get("requested_profile", "read-only")
         expected_read_targets = contract.get("read_targets")
-        if self.require_host_context and requested_profile == "read-only" and (
+        linked_context_read = contract.get("read_scope") == "linked_context"
+        if self.require_host_context and requested_profile == "read-only" and not linked_context_read and (
             not isinstance(expected_read_targets, list)
             or not expected_read_targets
             or any(not isinstance(item, (str, Mapping)) or (isinstance(item, str) and not item.strip()) for item in expected_read_targets)
@@ -476,6 +477,7 @@ class HerzchenCodexAdapter:
         expected_turn_id: str,
         expected_read_targets: list[Any] | None = None,
         expected_profile: str = "read-only",
+        expected_read_scope: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(value, Mapping):
             raise HerzchenAdapterError("host-owned turn context is not an object")
@@ -512,7 +514,12 @@ class HerzchenCodexAdapter:
             raise HerzchenAdapterError("task-bound evidence session does not match the observed host session")
         if task_evidence.get("turn_id") != expected_turn_id:
             raise HerzchenAdapterError("task-bound evidence turn does not match the observed host turn")
-        if task_evidence.get("provenance") != "host_command_execution/item_completed":
+        expected_provenance = (
+            "host_final_answer/item_completed"
+            if expected_read_scope == "linked_context"
+            else "host_command_execution/item_completed"
+        )
+        if task_evidence.get("provenance") != expected_provenance:
             raise HerzchenAdapterError("task-bound evidence provenance is not exact")
         context_digest = _sha256_text(context_digest, "context_digest")
         if task_evidence.get("context_digest") != context_digest:
@@ -534,7 +541,7 @@ class HerzchenCodexAdapter:
         read_targets = task_evidence.get("read_targets")
         if (
             not isinstance(read_targets, list)
-            or (expected_profile == "read-only" and not read_targets)
+            or (expected_profile == "read-only" and expected_read_scope != "linked_context" and not read_targets)
             or any(not isinstance(item, (str, Mapping)) or (isinstance(item, str) and not item.strip()) for item in read_targets)
         ):
             raise HerzchenAdapterError("task-bound evidence exact read targets are required")
@@ -559,6 +566,18 @@ class HerzchenCodexAdapter:
                 or not _sha256_text(host_event_ref.get("raw_line_sha256"), "host_event_ref.raw_line_sha256")
             ):
                 raise HerzchenAdapterError("host-owned context lacks the exact native item_completed CommandExecution reference")
+        elif expected_read_scope == "linked_context":
+            final = task_evidence.get("host_records", {}).get("final_answer")
+            if (
+                not isinstance(final, Mapping)
+                or final.get("session_id") != expected_session_id
+                or final.get("turn_id") != expected_turn_id
+                or final.get("event_type") != "item_completed"
+                or final.get("item_type") != "AgentMessage"
+                or not isinstance(final.get("item_id"), str)
+                or not _sha256_text(final.get("raw_line_sha256"), "final_answer.raw_line_sha256")
+            ):
+                raise HerzchenAdapterError("host-owned context lacks the exact native final answer reference")
         operation_result = task_evidence.get("operation_result")
         if (
             not isinstance(operation_result, Mapping)
@@ -671,6 +690,11 @@ class HerzchenCodexAdapter:
                 expected_profile=typed.requested_profile,
                 expected_read_targets=(
                     brief.get("instruction_contract", {}).get("read_targets")
+                    if isinstance(brief.get("instruction_contract"), Mapping)
+                    else None
+                ),
+                expected_read_scope=(
+                    brief.get("instruction_contract", {}).get("read_scope")
                     if isinstance(brief.get("instruction_contract"), Mapping)
                     else None
                 ),

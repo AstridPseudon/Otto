@@ -1153,6 +1153,7 @@ class OttoGateway:
             if isinstance(resource_brief, Mapping):
                 contract = resource_brief.get("instruction_contract")
         strict_contract = isinstance(contract, Mapping)
+        linked_context_read = strict_contract and contract.get("read_scope") == "linked_context"
         if not isinstance(task_evidence, Mapping):
             message = "successful host result lacks positive task-bound operation evidence"
             return {
@@ -1178,7 +1179,10 @@ class OttoGateway:
             or observed_session != self._nested_value(result, ("physical_session_id", "native_session_id"))
             or not _text(observed_turn)
             or (strict_contract and returned_turn != observed_turn)
-            or task_evidence.get("provenance") != "host_command_execution/item_completed"
+            or task_evidence.get("provenance") != (
+                "host_final_answer/item_completed" if linked_context_read
+                else "host_command_execution/item_completed"
+            )
             or (strict_contract and not _sha256_hex(observed_context_digest))
             or (strict_contract and returned_context_digest != observed_context_digest)
             or (strict_contract and result.get("context_digest_verified") is not True)
@@ -1304,9 +1308,9 @@ class OttoGateway:
             or not result_ref
             or not _sha256_hex(result_digest)
             or not isinstance(read_targets, list)
-            or not read_targets
-            or (strict_contract and not isinstance(expected_read_targets, list))
-            or (strict_contract and read_targets != _json_value(expected_read_targets))
+            or (not linked_context_read and not read_targets)
+            or (strict_contract and not linked_context_read and not isinstance(expected_read_targets, list))
+            or (strict_contract and not linked_context_read and read_targets != _json_value(expected_read_targets))
             or not isinstance(operation_result, Mapping)
             or operation_result.get("status") != "completed"
             or operation_result.get("result_ref") != result_ref
@@ -1324,6 +1328,25 @@ class OttoGateway:
                 "transport_result": transport_result,
                 "raw_result": transport_result,
             }, message
+        if linked_context_read:
+            final = operation_result.get("output", {}).get("final_answer")
+            final_ref = task_evidence.get("host_records", {}).get("final_answer")
+            if (
+                not isinstance(final, Mapping)
+                or not isinstance(final.get("text"), str)
+                or not final["text"].strip()
+                or final.get("host_record") != final_ref
+                or not isinstance(final_ref, Mapping)
+                or final_ref.get("item_type") != "AgentMessage"
+                or final_ref.get("event_type") != "item_completed"
+            ):
+                message = "linked-context result lacks an exact native final answer"
+                return {
+                    "outcome": "undetermined", "status": "unsupported",
+                    "delivery_state": "unknown", "retry_allowed": False,
+                    "error": {"code": "linked_context_final_required", "message": message},
+                    "transport_result": transport_result, "raw_result": transport_result,
+                }, message
         observed_model = self._nested_value(result, ("observed_model", "model", "model_name"))
         observed_reasoning = self._nested_value(result, ("observed_reasoning", "reasoning_effort", "reasoning"))
         if not _text(observed_model) or not _text(observed_reasoning):

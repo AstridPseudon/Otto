@@ -139,10 +139,14 @@ def _communicate_after_native_start(
     return stdout, stderr, None if timed_out else process.returncode, native_started.is_set()
 
 
-def _owner_delivery_appendix(authorization: Mapping[str, Any], profile: str = "read-only") -> str:
+def _owner_delivery_appendix(authorization: Mapping[str, Any], profile: str = "read-only",
+                             read_scope: str | None = None) -> str:
     permission = (
-        "perform only the brief's exact read-only inspection and return evidence. "
-        "Do not write files or owner state."
+        ("inspect the delivered context and linked sources as needed, then return the requested judgment. "
+         "Do not write files or owner state."
+         if read_scope == "linked_context" else
+         "perform only the brief's exact read-only inspection and return evidence. "
+         "Do not write files or owner state.")
         if profile == "read-only" else
         "work only inside the selected workspace-write root under the brief's mandate. "
         "Do not write owner state except through an explicit supported owner operation."
@@ -152,6 +156,30 @@ def _owner_delivery_appendix(authorization: Mapping[str, Any], profile: str = "r
             "the owner publishes verified output.\n"
             + '<otto-owner-delivery sha256="' + _digest_json(authorization) + '">\n'
             + json.dumps(authorization, sort_keys=True, ensure_ascii=False) + "\n</otto-owner-delivery>\n")
+
+
+def _linked_context_read_contract(contract: Mapping[str, Any], profile: str) -> bool:
+    """Recognize the generic read-only judgment contract at the host boundary."""
+    authority = contract.get("authority", {})
+    allowed = set(contract.get("allowed_operations", ()))
+    permitted = set(authority.get("permitted_effects", ()))
+    return (
+        profile == "read-only"
+        and authority.get("effect_profile") is None
+        and contract.get("read_scope") == "linked_context"
+        and not contract.get("read_targets")
+        and allowed.issubset({
+            "read_project_context", "inspect_recorded_effect", "return_advice", "return_result",
+        })
+        and bool(allowed & {"return_advice", "return_result"})
+        and {"read_delivered_context", "read_linked_sources"}.issubset(permitted)
+        and permitted.issubset({
+            "read_delivered_context", "read_linked_sources", "return_advice", "return_result",
+        })
+        and bool(permitted & {"return_advice", "return_result"})
+        and authority.get("owner_write") is False
+        and authority.get("dispatch") is False
+    )
 
 
 def _verify_model_projection(text: str, brief: Mapping[str, Any], projection: Mapping[str, Any],
@@ -543,6 +571,7 @@ class CodexCliBinding(HostPort):
                     and authority.get("effect_profile") is None
                     and set(contract.get("allowed_operations", ())) == {"read_only_inspection", "return_evidence"}
                 )
+                linked_read_contract = _linked_context_read_contract(contract, request.requested_profile)
                 selected_roots = tuple(dict.fromkeys((os.path.realpath(self.worktree), *self.writable_roots)))
                 write_operations = {"read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"}
                 write_effects = {"read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"}
@@ -562,12 +591,15 @@ class CodexCliBinding(HostPort):
                         or authorization.get("task_ref") != request.target.to_dict()
                         or authorization.get("brief_sha256") != _digest_json(self.delivered_brief)
                         or principal_id != request.identity.logical_agent_id
-                        or not (read_contract or workspace_contract)
+                        or not (read_contract or linked_read_contract or workspace_contract)
                         or authority.get("owner_write") is not False
                         or authority.get("dispatch") is not False):
                     raise ValueError("trusted recipient authorization is not exact")
                 delivered_authorization = json.loads(json.dumps(authorization))
-                prompt += _owner_delivery_appendix(delivered_authorization, request.requested_profile)
+                prompt += _owner_delivery_appendix(
+                    delivered_authorization, request.requested_profile,
+                    read_scope=contract.get("read_scope"),
+                )
             if self.model_projection is not None:
                 _verify_model_projection(prompt, self.delivered_brief, self.model_projection, delivered_authorization)
             if self.cursor_queue is not None:
@@ -1157,10 +1189,12 @@ def _native_host_context(
     contract = delivered_brief.get("instruction_contract", {})
     resolution = delivered_brief.get("resource_resolution", {})
     write_profile = request.requested_profile == "workspace-write"
+    linked_context_read = _linked_context_read_contract(contract, request.requested_profile)
     expected_targets = contract.get("read_targets", [])
     if (contract.get("task_ref") != request.target.to_dict()
             or not isinstance(expected_targets, list)
-            or (not write_profile and not expected_targets)
+            or (not write_profile and not linked_context_read and not expected_targets)
+            or (linked_context_read and expected_targets)
             or any(not isinstance(path, str) or not Path(path).is_absolute() for path in expected_targets)):
         return None
     assignment = resolution.get("responsibility_ref")
@@ -1212,7 +1246,8 @@ def _native_host_context(
             if not users:
                 return None
             messages.append((item, reference(raw, payload, item), position, payload))
-    if sessions != {session_id} or not contexts or len(users) != 1 or not commands:
+    if (sessions != {session_id} or not contexts or len(users) != 1
+            or (not commands and not linked_context_read)):
         return None
     turn, context_ref = contexts[0]
     if any(value != turn for value, _ in contexts):
@@ -1290,6 +1325,33 @@ def _native_host_context(
     for item, event_ref, _position in ([] if bounded else commands):
         status = item.get("status")
         exit_code = item.get("exit_code")
+        if linked_context_read:
+            parsed = item.get("parsed_cmd")
+            cwd = item.get("cwd")
+            if (
+                status not in {"completed", "failed"}
+                or type(exit_code) is not int
+                or not isinstance(item.get("stdout"), str)
+                or not isinstance(item.get("command"), list)
+                or not isinstance(cwd, str)
+                or not isinstance(parsed, list)
+                or not parsed
+            ):
+                return None
+            cwd = unquote(urlparse(cwd).path) if cwd.startswith("file://") else cwd
+            if not Path(cwd).is_absolute():
+                return None
+            for command in parsed:
+                if isinstance(command, Mapping) and command.get("type") == "read" and isinstance(command.get("path"), str) and command["path"]:
+                    path = command["path"]
+                    target = os.path.normpath(path if Path(path).is_absolute() else os.path.join(cwd, path))
+                    if target not in read_targets:
+                        read_targets.append(target)
+            outputs.append({key: item.get(key) for key in (
+                "command", "cwd", "parsed_cmd", "stdout", "stderr", "aggregated_output", "status", "exit_code"
+            )})
+            refs.append(event_ref)
+            continue
         if (status not in ({"completed", "failed"} if write_profile else {"completed"})
                 or type(exit_code) is not int
                 or (not write_profile and exit_code != 0)
@@ -1330,7 +1392,7 @@ def _native_host_context(
                 read_targets.append(target)
         outputs.append({key: item.get(key) for key in ("command", "cwd", "parsed_cmd", "stdout", "stderr", "status", "exit_code")})
         refs.append(event_ref)
-    if not write_profile and read_targets != expected_targets:
+    if not write_profile and not linked_context_read and read_targets != expected_targets:
         return None
     output = {
         "commands": outputs,
@@ -1405,16 +1467,22 @@ def _native_host_context(
             "host_record": event_ref,
         }
         final_text = [text]
+    if linked_context_read and not final_text:
+        return None
     result_digest = _digest_json(output)
     result_ref = {"authority": "codex-host", "kind": "host.command-result", "id": session_id + ":" + turn_id, "revision": result_digest}
+    host_records = {"turn_context": context_ref, "user_message": users[0][1], "commands": refs}
+    if linked_context_read:
+        host_records["final_answer"] = output["final_answer"]["host_record"]
     evidence = {
         "task_ref": request.target.to_dict(), "operation": request.operation.value,
         "session_id": session_id, "turn_id": turn_id,
-        "provenance": "host_command_execution/item_completed",
+        "provenance": ("host_final_answer/item_completed" if linked_context_read
+                       else "host_command_execution/item_completed"),
         "assignment_ref": dict(assignment), "generation": generation,
         "delivered_contract_digest": _digest_json(contract), "delivered_brief_digest": brief_digest, "result_ref": result_ref,
         "result_digest": result_digest, "read_targets": read_targets,
-        "host_records": {"turn_context": context_ref, "user_message": users[0][1], "commands": refs},
+        "host_records": host_records,
         "operation_result": {"status": "completed", "result_ref": result_ref, "result_digest": result_digest, "output": output},
     }
     if len(contexts) > 1:

@@ -112,6 +112,26 @@ def normalize_instruction_contract(value: Mapping[str, Any]) -> dict[str, Any]:
     forbidden_values = {_text(item, "instruction_contract.authority.forbidden_effects[]") for item in forbidden}
     effect_profile = authority_value.get("effect_profile")
     if effect_profile is None:
+        read_scope = result.get("read_scope")
+        if read_scope is not None and read_scope != "linked_context":
+            raise ResourceSyncError("unsupported instruction contract read_scope")
+        if read_scope == "linked_context":
+            if result.get("read_targets") not in (None, []):
+                raise ResourceSyncError("linked-context read contracts cannot declare an exhaustive read target list")
+            permitted_set = set(permitted_values)
+            allowed_set = set(allowed_values)
+            if (
+                not {"read_delivered_context", "read_linked_sources"}.issubset(permitted_set)
+                or not permitted_set.issubset({
+                    "read_delivered_context", "read_linked_sources", "return_advice", "return_result",
+                })
+                or not ({"return_advice", "return_result"} & permitted_set)
+                or not allowed_set.issubset({
+                    "read_project_context", "inspect_recorded_effect", "return_advice", "return_result",
+                })
+                or not ({"return_advice", "return_result"} & allowed_set)
+            ):
+                raise ResourceSyncError("linked-context read operations/effects are not exact")
         required_forbidden = {"file_write", "owner_write", "publication", "package_adoption"}
     elif effect_profile in {"workspace-write-manager", "workspace-write-worker"}:
         roots = authority_value.get("workspace_roots")
