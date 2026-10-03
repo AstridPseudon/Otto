@@ -128,6 +128,13 @@ def main() -> None:
         choices=["acknowledged", "implemented", "effect_observed"],
     )
     manager_state.add_argument("--evidence", action="append", required=True)
+    followup = commands.add_parser(
+        "advisor-followup-schedule",
+        help="schedule the delivered decision's same-advisor effect check from its native delivery time",
+    )
+    followup.add_argument("--request-key", required=True)
+    followup.add_argument("--decision-id", required=True)
+    followup.add_argument("--interval-seconds", required=True, type=int)
     advisor_correct = commands.add_parser(
         "advisor-delivery-correct",
         help="append a correction for a historical false sent claim",
