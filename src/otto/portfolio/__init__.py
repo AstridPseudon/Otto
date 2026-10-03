@@ -48,6 +48,7 @@ from .resource_sync import (
     validate_resource_evidence,
 )
 from .manager_continuity import ManagerContinuity, ManagerContinuityError
+from .execution_operations import OccurrencePreparationError, prepare_current_assignment_occurrence
 from .advisor_pairing import (
     AdvisorPairing,
     AdvisorPairingError,
@@ -122,6 +123,8 @@ __all__ = [
     "ManagerInventoryReader",
     "ManagerContinuity",
     "ManagerContinuityError",
+    "OccurrencePreparationError",
+    "prepare_current_assignment_occurrence",
     "AdvisorPairing",
     "AdvisorPairingError",
     "conversation_for",
