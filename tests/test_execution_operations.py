@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import unittest
 
-from otto.portfolio.execution_operations import OccurrencePreparationError, prepare_current_assignment_occurrence
+from otto.portfolio.execution_operations import (
+    OccurrencePreparationError,
+    build_manager_callback_due,
+    prepare_current_assignment_occurrence,
+)
 
 
 REF = {"authority": "owner", "kind": "wrk.assignment", "id": "a", "revision": "rev-2"}
@@ -78,6 +82,52 @@ class Tests(unittest.TestCase):
                 due=replace(self.due(), execution_mode="fresh_bounded_worker"), assignment_ref=REF,
                 assignment_owner="outsider", operation="resume", lifecycle="resume", request_key="resume-v3",
             )
+
+    def test_settled_manager_builds_same_session_callback(self):
+        prior = type("ManagerDue", (), {
+            "stop_state": "completed", "completion_state": "succeeded",
+            "in_flight_request": None, "delivery_state": "returned",
+            "target": {"native_id": "session", "assignment_ref": BASE},
+            "last_result": {"physical_session_id": "session"},
+        })()
+        # dataclasses.replace is the production mechanism; use a real flexible
+        # dataclass in this focused fixture.
+        @dataclass(frozen=True)
+        class ManagerDue:
+            schedule_id: str = "old"
+            instruction: str = "old"
+            anchor: str = "old"
+            due_at: str = "old"
+            last_covered_slot: int = 1
+            invocation_identity: str = "old"
+            in_flight_request: str | None = None
+            delivery_state: str = "returned"
+            assignment_ref: dict | None = None
+            target: dict | None = None
+            purpose: str = "old"
+            host_state: str = "active"
+            execution_mode: str = "continue_existing"
+            context_refs: tuple = ()
+            timeout_seconds: int = 1
+            stop_state: str = "completed"
+            last_completed_request: str | None = "old"
+            last_result: dict | None = None
+            delivered_at: str | None = "old"
+            delivery_evidence: dict | None = None
+            completed_at: str | None = "old"
+            completion_state: str = "succeeded"
+            completion_evidence: dict | None = None
+            host_evidence: dict | None = None
+        prior = ManagerDue(target={"native_id": "session"}, last_result={"physical_session_id": "session"})
+        result = build_manager_callback_due(
+            prior, schedule_id="next", request_key="callback-v1", assignment_ref=REF,
+            guide_ref={"id": "guide"}, mandate_ref={"id": "mandate"},
+            due_at="2026-10-03T00:00:00Z", timeout_seconds=1200,
+        )
+        self.assertEqual(result.schedule_id, "next")
+        self.assertEqual(result.target["native_id"], "session")
+        self.assertEqual(result.in_flight_request, "callback-v1")
+        self.assertEqual(result.completion_state, "none")
 
 
 if __name__ == "__main__": unittest.main()

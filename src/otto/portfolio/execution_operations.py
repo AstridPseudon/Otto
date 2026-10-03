@@ -23,6 +23,75 @@ _MODES = {
 }
 
 
+def build_manager_callback_due(
+    prior: Any,
+    *,
+    schedule_id: str,
+    request_key: str,
+    assignment_ref: Mapping[str, Any],
+    guide_ref: Mapping[str, Any],
+    mandate_ref: Mapping[str, Any],
+    due_at: str,
+    timeout_seconds: int,
+) -> Any:
+    """Derive the next same-session manager callback from a settled Due.
+
+    The caller still commits and launches through the existing Due/role-runtime
+    ports.  This function only performs the common state transition and keeps
+    run-specific policy outside the execution layer.
+    """
+
+    if not (
+        getattr(prior, "stop_state", None) == "completed"
+        and getattr(prior, "completion_state", None) == "succeeded"
+        and getattr(prior, "in_flight_request", None) is None
+        and getattr(prior, "delivery_state", None) == "returned"
+    ):
+        raise OccurrencePreparationError("prior manager occurrence is not a settled success")
+    target = getattr(prior, "target", None)
+    result = getattr(prior, "last_result", None)
+    session = result.get("physical_session_id") if isinstance(result, Mapping) else None
+    if not isinstance(session, str) or not session.strip():
+        raise OccurrencePreparationError("settled manager occurrence has no native session")
+    if not isinstance(target, Mapping):
+        raise OccurrencePreparationError("prior manager target is unavailable")
+    if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds < 1:
+        raise OccurrencePreparationError("timeout_seconds must be positive")
+    next_target = dict(target)
+    next_target.update({
+        "assignment_ref": dict(assignment_ref),
+        "mandate_ref": dict(mandate_ref),
+        "native_id": session,
+    })
+    return replace(
+        prior,
+        schedule_id=schedule_id,
+        instruction="Resume the same manager from current canonical status and continue ready work.",
+        anchor=due_at,
+        due_at=due_at,
+        last_covered_slot=0,
+        invocation_identity=request_key,
+        in_flight_request=request_key,
+        delivery_state="ready",
+        assignment_ref=dict(assignment_ref),
+        target=next_target,
+        purpose="Canonical manager callback continuation",
+        host_state="active",
+        execution_mode="continue_existing",
+        context_refs=(dict(guide_ref), dict(mandate_ref)),
+        timeout_seconds=timeout_seconds,
+        stop_state="active",
+        last_completed_request=None,
+        last_result=None,
+        delivered_at=None,
+        delivery_evidence=None,
+        completed_at=None,
+        completion_state="none",
+        completion_evidence=None,
+        host_evidence={},
+    )
+
+
 def prepare_current_assignment_occurrence(
     *, due_port: Any, assignments: Any, binding: Any, due: Any,
     assignment_ref: Mapping[str, Any], assignment_owner: str,
@@ -93,4 +162,7 @@ def prepare_current_assignment_occurrence(
     }
 
 
-__all__ = ["OccurrencePreparationError", "prepare_current_assignment_occurrence"]
+__all__ = [
+    "OccurrencePreparationError", "build_manager_callback_due",
+    "prepare_current_assignment_occurrence",
+]
