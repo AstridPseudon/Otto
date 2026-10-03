@@ -176,6 +176,30 @@ class AdvisorDeliveryTests(unittest.TestCase):
         self.assertEqual(len(self.runtime_calls), 1)
         self.assertFalse(replay["runtime_called"])
 
+    def test_preprovider_runtime_error_is_unknown_not_returned(self):
+        self._schedule_wake()
+        loop = AdvisorDeliveryLoop(AdvisorDeliveryPorts(
+            assignments=self.assignments, attention=self.attention,
+            authenticate=lambda actor: actor,
+            current_pairing=lambda project: self.current,
+            reports_for_project=lambda project: list(self.assignments.reports),
+            role_delivery=lambda delivery: {
+                "outcome": "error",
+                "error": {"code": "stale_claim", "message": "claim rejected"},
+            },
+            delivery=self.delivery, now=lambda: NOW,
+        ))
+        result = loop.wake_once(
+            pairing=self.pairing, schedule_id="advisor-wake",
+            advisor_principal="advisor-principal", lifecycle_owner="owner-principal",
+            reason="scheduled",
+        )
+        self.assertEqual(result["outcome"], "unknown")
+        self.assertEqual(result["completion"]["outcome"], "reconcile")
+        stored = DueRecord.from_dict(self.due_port.read_due("advisor-wake"))
+        self.assertEqual(stored.completion_state, "unknown")
+        self.assertIsNotNone(stored.in_flight_request)
+
     def test_stale_pairing_is_rejected_before_runtime(self):
         self._schedule_wake()
         replacement = assignment("project_advisor", ref("wrk.assignment", "advisor-2"),
@@ -192,6 +216,32 @@ class AdvisorDeliveryTests(unittest.TestCase):
                 reason="scheduled",
             )
         self.assertEqual(self.runtime_calls, [])
+
+    def test_recipient_resolution_accepts_current_assignments_adoption_base(self):
+        base = {**ADVISOR, "revision": "rev-6"}
+        current = {**self.advisor, "payload": {"resource_adoption_base_ref": base}}
+        assignments = SimpleNamespace(get=lambda _ref: current)
+        record = DueRecord(
+            schedule_id="advisor-adoption-base", recipient="advisor-principal",
+            instruction="Inspect current effect.", profile="read-only",
+            anchor=NOW.isoformat(), due_at=NOW.isoformat(), last_covered_slot=-1,
+            invocation_identity="advisor-adoption-base-v1", project_ref=PROJECT["id"],
+            manager_ref="owner-principal", assignment_ref=base, generation=2,
+            target={**ADVISOR_CONVERSATION, "role": "project_advisor",
+                    "principal": "advisor-principal", "assignment_ref": base},
+            role="project_advisor", lifecycle_owner="owner-principal",
+        )
+        self.attention.schedule(record, request_id="schedule-adoption-base")
+        resolved = self.attention.resolve_recipient(
+            record.schedule_id, recipient="advisor-principal", role="project_advisor",
+            project_ref=PROJECT["id"], manager_ref="owner-principal", generation=2,
+            lifecycle_owner="owner-principal", assignment_reader=assignments,
+        )
+        self.assertEqual(resolved["outcome"], "resolved")
+        self.assertEqual(
+            resolved["binding"]["canonical_assignment"]["current_assignment_ref"],
+            ADVISOR,
+        )
 
     def test_cross_record_admission_coalesces_reasons_and_owner_cas_fences_race(self):
         self._schedule_wake()
@@ -683,6 +733,95 @@ class AdvisorDeliveryTests(unittest.TestCase):
 
 
 class OwnerAdmissionTests(unittest.TestCase):
+    def test_attention_claim_can_evolve_to_gateway_claim_before_provider_stub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store.create(Path(directory) / "owner.sqlite", authority="test-owner")
+            store.register_domain_handler([due_record_contribution()])
+            engine = _DueRecordOwnerEngine(
+                store.domain_handler([due_record_contribution()]),
+                AuthenticatedActor("test-owner", "owner-principal", "credential"),
+            )
+            try:
+                project = {**PROJECT, "authority": "test-owner"}
+                manager_ref = {**MANAGER, "authority": "test-owner"}
+                advisor_ref = {**ADVISOR, "authority": "test-owner"}
+                attention = DurableAttention(
+                    RecordingAttentionPort(), due_port=engine,
+                    clock=lambda: NOW, host_mode="awaited",
+                )
+                task = {**ref("work.task", "task-6", "rev-2"), "authority": "test-owner"}
+                target = {
+                    **ADVISOR_CONVERSATION, "project_ref": project, "task_ref": task,
+                    "assignment_ref": advisor_ref,
+                    "mandate_ref": {**ref("dat.content.document", "mandate", "rev-1"),
+                                    "authority": "test-owner"},
+                    "role": "project_advisor", "principal": "advisor-principal",
+                }
+                due = DueRecord(
+                    schedule_id="scheduled-owner-runtime", recipient="advisor-principal",
+                    instruction="Inspect the delivered effect.", profile="read-only",
+                    anchor=NOW.isoformat(), due_at=NOW.isoformat(), last_covered_slot=-1,
+                    invocation_identity="scheduled-owner-runtime-v1",
+                    project_ref=project["id"], manager_ref="owner-principal",
+                    assignment_ref=advisor_ref, generation=2, target=target,
+                    role="project_advisor", lifecycle_owner="owner-principal",
+                    execution_mode="continue_existing",
+                )
+                attention.schedule(due, request_id="schedule-owner-runtime")
+                manager = assignment("manager", manager_ref, "manager-principal", 1,
+                                     "manager-principal")
+                advisor = assignment("project_advisor", advisor_ref, "advisor-principal", 2,
+                                     "manager-principal")
+                manager["scope"] = project
+                advisor["scope"] = project
+                pairing = establish_pairing(
+                    project, [manager, advisor],
+                    manager_conversation_ref=MANAGER_CONVERSATION,
+                    advisor_conversation_ref=ADVISOR_CONVERSATION,
+                )
+                assignments = Assignments(manager, advisor)
+                provider_calls = []
+
+                def role_delivery(delivery):
+                    current = DueRecord.from_dict(engine.read_due(due.schedule_id))
+                    capture = OwnerDueRecordAttemptCapture(
+                        engine, due.schedule_id, project_ref=project, task_ref=task,
+                        assignment_ref=advisor_ref, generation=2, role="project_advisor",
+                        principal="advisor-principal", lifecycle_owner="owner-principal",
+                        expected_target=target,
+                    )
+                    fingerprint = "fixture-fingerprint"
+                    claim = capture.claim(
+                        delivery["request_id"], advisor_ref, 2, fingerprint,
+                    )
+                    self.assertEqual(claim["outcome"], "claimed")
+                    provider_calls.append(delivery["request_id"])
+                    capture.record({
+                        "logical_request_key": delivery["request_id"],
+                        "request_fingerprint": fingerprint,
+                        "project_ref": project, "task_ref": task,
+                        "assignment_ref": advisor_ref, "generation": 2,
+                        "outcome": "succeeded", "delivery_state": "done",
+                    })
+                    return {"outcome": "succeeded", "delivery_state": "done"}
+
+                loop = AdvisorDeliveryLoop(AdvisorDeliveryPorts(
+                    assignments=assignments, attention=attention,
+                    authenticate=lambda actor: actor,
+                    current_pairing=lambda project: pairing,
+                    reports_for_project=lambda project: [],
+                    role_delivery=role_delivery, now=lambda: NOW,
+                ))
+                result = loop.wake_once(
+                    pairing=pairing, schedule_id=due.schedule_id,
+                    advisor_principal="advisor-principal", lifecycle_owner="owner-principal",
+                    reason="scheduled-effect-followup",
+                )
+                self.assertEqual(result["outcome"], "returned")
+                self.assertEqual(len(provider_calls), 1)
+            finally:
+                store.close()
+
     def test_brief_only_invocation_remains_compatible(self):
         brief = {"schema": "fixture.owner-brief.v1", "mandate": "Current adopted mandate."}
         digest = "b" * 64

@@ -549,7 +549,11 @@ class OwnerDueRecordAttemptCapture:
             saved = self._save(record, claim, "otto-gateway-claim:" + logical_request_key)
         except Exception as exc:
             if type(exc).__name__ in {"StateConflictError", "VersionConflictError", "InputChangedError", "TargetMismatchError"}:
-                return {"outcome": "stale_claim", "message": "owner CAS rejected the delivery claim"}
+                return {
+                    "outcome": "stale_claim",
+                    "message": "owner CAS rejected the delivery claim",
+                    "diagnostic": {"exception_type": type(exc).__name__, "message": str(exc)},
+                }
             raise
         receipt = saved.get("mutation_receipt") if isinstance(saved, Mapping) else None
         if not isinstance(receipt, Mapping) or receipt.get("status") != "committed" or receipt.get("replayed") is not False:
@@ -1484,7 +1488,10 @@ class OttoGateway:
             if outcome == "foreign_authority":
                 return error("foreign_authority", str(claim.get("message", "owner claim authority does not match")))
             if outcome == "stale_claim":
-                return error("stale_claim", str(claim.get("message", "owner CAS rejected the claim")))
+                return error(
+                    "stale_claim", str(claim.get("message", "owner CAS rejected the claim")),
+                    diagnostic=claim.get("diagnostic"),
+                )
             if outcome == "claimed" and claim.get("claimed") is False:
                 return error("unknown_attempt_requires_reconciliation", "an owner claim is already pending")
             if outcome != "claimed":

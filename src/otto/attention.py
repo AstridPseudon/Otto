@@ -1845,7 +1845,17 @@ class DurableAttention:
                     "error": {"code": "foreign_assignment", "message": "canonical assignment identity is invalid"},
                     "automatic_action": False,
                 }
-            if observed_assignment != expected_assignment:
+            adoption_base = _assignment_value(assignment, "resource_adoption_base_ref")
+            if adoption_base is None:
+                payload = _assignment_value(assignment, "payload")
+                if isinstance(payload, Mapping):
+                    adoption_base = payload.get("resource_adoption_base_ref")
+            try:
+                observed_base = (_reference_identity(adoption_base, "resource_adoption_base_ref")
+                                 if adoption_base is not None else None)
+            except (TypeError, ValueError):
+                observed_base = None
+            if observed_assignment != expected_assignment and observed_base != expected_assignment:
                 return {
                     "outcome": "rejected", "schedule_id": schedule_id,
                     "error": {"code": "foreign_assignment", "message": "canonical assignment identity does not match the trigger pin"},
@@ -1907,6 +1917,8 @@ class DurableAttention:
             scope_output = assignment_scope.to_dict() if hasattr(assignment_scope, "to_dict") and callable(assignment_scope.to_dict) else assignment_scope
             assignment_binding = {
                 "assignment_ref": dict(record.assignment_ref),
+                "current_assignment_ref": _json_copy(current_ref, "assignment.ref"),
+                "adoption_base": observed_assignment != expected_assignment,
                 "scope": _json_copy(scope_output, "assignment.scope"),
                 "role": assigned_role,
                 "principal": principal,

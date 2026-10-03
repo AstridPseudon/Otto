@@ -426,13 +426,13 @@ class AdvisorDeliveryLoop:
             runtime = {"outcome": "unknown", "reason": "runtime result was not an object"}
         runtime = _json(dict(runtime), "runtime result")
         outcome = runtime.get("outcome")
-        if outcome in {"unknown", "crashed"}:
-            completion_outcome = "unknown"
-        elif outcome in {"unsupported", "held", "prepared", "pending"}:
+        if outcome in {"unsupported", "held", "prepared", "pending"}:
             return {"outcome": "held", "wake": ready, "runtime": runtime,
                     "runtime_called": True, "retry": False}
-        else:
+        if outcome in {"succeeded", "returned"}:
             completion_outcome = "returned"
+        else:
+            completion_outcome = "unknown"
         # Another DueRecord may have coalesced a coincident reason onto this
         # durable claim while the advisor was running.  Read the owner record
         # again so completion reports the full covered reason set.
