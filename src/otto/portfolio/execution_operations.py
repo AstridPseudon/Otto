@@ -257,6 +257,8 @@ def compact_project_status(
     for occurrence in occurrences:
         if not isinstance(occurrence, Mapping):
             continue
+        if occurrence.get("role") == "manager":
+            continue
         target = occurrence.get("target")
         task_ref = target.get("task_ref") if isinstance(target, Mapping) else None
         alias = alias_by_id.get(str(task_ref.get("id"))) if isinstance(task_ref, Mapping) else None
