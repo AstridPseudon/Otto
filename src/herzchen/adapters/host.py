@@ -766,15 +766,35 @@ def _select_invocation_turn(lines: list[str], *, session_id: str, prompt: str,
         if any(value != context for _, value in contexts[turn]):
             return None
         user_index, user = users[turn][0]
-        end, _ = ends[turn][0]
+        end, end_payload = ends[turn][0]
         text = "\n".join(part.get("text", "") for part in user.get("content", [])
                          if isinstance(part, Mapping) and part.get("type") in {"text", "Text"})
         if (not (boundary <= start < context_index < user_index < end) or text != prompt
                 or any(not start < index < end for index, _ in contexts[turn])):
             return None
-        if any(v.get("type") == "event_msg" and v.get("payload", {}).get("type") == "item_completed"
-               and v.get("payload", {}).get("turn_id") == turn and not start < i < end
-               for i, v in enumerate(records)):
+        for index, event in enumerate(records):
+            payload = event.get("payload", {})
+            if (event.get("type") != "event_msg" or payload.get("type") != "item_completed"
+                    or payload.get("turn_id") != turn):
+                continue
+            if start < index < end:
+                continue
+            # The provider can serialize a long-running command's completion
+            # record immediately after task_complete.  It still belongs to this
+            # turn when the authenticated command start preceded the task's
+            # completion.  Preserve the failed/cancelled command as execution
+            # history instead of discarding the entire owner join.
+            item = payload.get("item", {})
+            item_started = payload.get("started_at_ms")
+            item_completed = payload.get("completed_at_ms")
+            turn_completed = end_payload.get("completed_at")
+            if (index > end and payload.get("thread_id") == session_id
+                    and isinstance(item, Mapping) and item.get("type") == "CommandExecution"
+                    and type(item_started) is int and type(item_completed) is int
+                    and type(turn_completed) is int
+                    and item_started <= item_completed
+                    and item_started <= turn_completed * 1000):
+                continue
             return None
         # Initial invoke has no prior session to snapshot. Its exact prompt and
         # host-issued session must also start inside this invocation boundary.
@@ -1011,6 +1031,7 @@ def _native_host_context(
     if not isinstance(assignment, Mapping) or not assignment.get("revision") or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
         return None
     sessions, contexts, users, commands = set(), [], [], []
+    command_payloads = {}
     context_positions = []
     messages, completions = [], []
     def reference(raw, payload, item=None):
@@ -1035,7 +1056,7 @@ def _native_host_context(
             contexts.append((payload, reference(raw, {})))
             context_positions.append(position)
         if event.get("type") == "event_msg" and payload.get("type") == "task_complete" and payload.get("turn_id") == turn_id:
-            completions.append(position)
+            completions.append((position, payload))
         if event.get("type") != "event_msg" or payload.get("type") != "item_completed" or payload.get("turn_id") != turn_id:
             continue
         if payload.get("thread_id") != session_id:
@@ -1049,6 +1070,7 @@ def _native_host_context(
             if not users:
                 return None
             commands.append((item, reference(raw, payload, item), position))
+            command_payloads[item["id"]] = payload
         elif item.get("type") == "AgentMessage":
             if not users:
                 return None
@@ -1059,7 +1081,7 @@ def _native_host_context(
     if any(value != turn for value, _ in contexts):
         return None
     if len(contexts) > 1 and (len(completions) != 1
-            or any(position >= completions[0] for position in context_positions)):
+            or any(position >= completions[0][0] for position in context_positions)):
         return None
     model = turn.get("model")
     reasoning = turn.get("collaboration_mode", {}).get("settings", {}).get("reasoning_effort")
@@ -1209,11 +1231,30 @@ def _native_host_context(
                 return None
             ids.append(item["id"])
             if item["phase"] == "final_answer":
-                finals.append((item["content"][0]["text"], event_ref, position))
+                finals.append((item["content"][0]["text"], event_ref, position, payload))
         if len(set(ids)) != len(ids) or len(finals) != 1:
             return None
-        text, event_ref, position = finals[0]
-        if not (max(p for _, _, p in commands) < position < completions[0]) or any(p > position for _, _, p, _ in messages):
+        text, event_ref, position, final_payload = finals[0]
+        completion_position, completion_payload = completions[0]
+        final_started = final_payload.get("started_at_ms")
+        turn_completed = completion_payload.get("completed_at")
+        commands_precede_final = True
+        for item, _, command_position in commands:
+            if command_position < position:
+                continue
+            payload = command_payloads[item["id"]]
+            item_started = payload.get("started_at_ms")
+            item_completed = payload.get("completed_at_ms")
+            if not (command_position > completion_position
+                    and type(item_started) is int and type(item_completed) is int
+                    and type(final_started) is int and type(turn_completed) is int
+                    and item_started <= item_completed
+                    and item_started <= final_started
+                    and item_started <= turn_completed * 1000):
+                commands_precede_final = False
+                break
+        if (not commands_precede_final or not position < completion_position
+                or any(p > position for _, _, p, _ in messages)):
             return None
         try:
             body = text.encode("utf-8")
