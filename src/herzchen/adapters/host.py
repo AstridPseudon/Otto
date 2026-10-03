@@ -1129,7 +1129,13 @@ def _native_host_context(
                    for item, _, _ in commands]
         refs = [event_ref for _, event_ref, _ in commands]
     for item, event_ref, _position in ([] if bounded else commands):
-        if item.get("status") != "completed" or type(item.get("exit_code")) is not int or item.get("exit_code") != 0 or not isinstance(item.get("stdout"), str) or not isinstance(item.get("command"), list):
+        status = item.get("status")
+        exit_code = item.get("exit_code")
+        if (status not in ({"completed", "failed"} if write_profile else {"completed"})
+                or type(exit_code) is not int
+                or (not write_profile and exit_code != 0)
+                or not isinstance(item.get("stdout"), str)
+                or not isinstance(item.get("command"), list)):
             return None
         parsed = item.get("parsed_cmd")
         cwd = item.get("cwd")
@@ -1167,7 +1173,16 @@ def _native_host_context(
         refs.append(event_ref)
     if not write_profile and read_targets != expected_targets:
         return None
-    output = {"commands": outputs}
+    output = {
+        "commands": outputs,
+        "command_execution": {
+            "status": "completed",
+            "command_count": len(outputs),
+            "nonzero_exit_count": sum(
+                1 for item in outputs if item.get("exit_code") != 0
+            ),
+        },
+    }
     if source_verification is not None:
         output["source_verification"] = source_verification
     final_text = []
