@@ -234,7 +234,14 @@ def role_resource_pins(resources: Mapping[str, Any] | None, role: str) -> list[d
     """Return the exact resource refs to pass to the canonical assignment port."""
 
     normalized = normalize_role_attachments(resources)
-    slot = {"orchestrator": "orchestrator", "manager": "manager", "worker": "worker", "parent": None, "executor": "worker"}.get(role)
+    slot = {
+        "orchestrator": "orchestrator",
+        "manager": "manager",
+        "project_advisor": "project_advisor",
+        "worker": "worker",
+        "parent": None,
+        "executor": "worker",
+    }.get(role)
     if slot is None:
         return []
     return [dict(item["resource_ref"]) for item in normalized.get(slot, ())]

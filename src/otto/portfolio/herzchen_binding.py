@@ -1567,6 +1567,8 @@ class FiniteWorkOperations:
         resources = roles.get("resources") or {}
         if resources.get("orchestrator") and not roles.get("orchestrator"):
             return {"outcome": "error", "error": {"code": "orphan_resource_attachment", "message": "orchestrator resources require an explicit orchestrator principal", "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": [], "executable": False}
+        if resources.get("project_advisor") and not roles.get("project_advisor"):
+            return {"outcome": "error", "error": {"code": "orphan_resource_attachment", "message": "project_advisor resources require an explicit project_advisor principal", "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": [], "executable": False}
         for slot, items in resources.items():
             for item in items:
                 if item.get("responsibility_ref") != _json_value(ref):
@@ -1581,6 +1583,8 @@ class FiniteWorkOperations:
         role_inputs = [("parent", [self._record_ref(roles["parent"])])]
         if roles.get("orchestrator") is not None:
             role_inputs.append(("orchestrator", [roles["orchestrator"]]))
+        if roles.get("project_advisor") is not None:
+            role_inputs.append(("project_advisor", [roles["project_advisor"]]))
         role_inputs.extend((("manager", [roles["manager"]]), ("executor", executor_values)))
         event_ids: list[str] = []
         for role, principals in role_inputs:
@@ -1599,7 +1603,12 @@ class FiniteWorkOperations:
                     raise
                 receipt = self._receipt(key)
                 assignment_ref_value = _json_value(getattr(assignment, "ref", None))
-                resource_slot = {"orchestrator": "orchestrator", "manager": "manager", "executor": "worker"}.get(role)
+                resource_slot = {
+                    "orchestrator": "orchestrator",
+                    "manager": "manager",
+                    "project_advisor": "project_advisor",
+                    "executor": "worker",
+                }.get(role)
                 effective_resources = [
                     dict(item, responsibility_ref=assignment_ref_value)
                     for item in role_resources.get(resource_slot, [])

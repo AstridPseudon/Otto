@@ -48,6 +48,14 @@ from .resource_sync import (
     validate_resource_evidence,
 )
 from .manager_continuity import ManagerContinuity, ManagerContinuityError
+from .advisor_pairing import (
+    AdvisorPairing,
+    AdvisorPairingError,
+    conversation_for,
+    establish_pairing,
+    introductions,
+    validate_recipient,
+)
 from .manager_inventory import ManagerInventoryError, ManagerInventoryReader
 from .lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
 from .resource_drift import ResourceDriftError, apply_resource_sync_action, select_resource_sync_action
@@ -114,6 +122,12 @@ __all__ = [
     "ManagerInventoryReader",
     "ManagerContinuity",
     "ManagerContinuityError",
+    "AdvisorPairing",
+    "AdvisorPairingError",
+    "conversation_for",
+    "establish_pairing",
+    "introductions",
+    "validate_recipient",
     "LifecycleIntegrationError",
     "PortfolioLifecycleIntegration",
     "ResourceDriftError",

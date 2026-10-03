@@ -215,7 +215,7 @@ def select_resource_sync_action(
         material = {**material_base, "state": "assignment_not_live", "observed_status": binding.get("status")}
         return _dependency_result("held_assignment_not_live", _key(material), "refresh_current_assignment", material)
     role = binding.get("role")
-    if role not in {"orchestrator", "manager", "executor", "worker"}:
+    if role not in {"orchestrator", "manager", "project_advisor", "executor", "worker"}:
         material = {**material_base, "state": "assignment_role_unknown", "observed_role": role}
         return _dependency_result("held_assignment_role_unknown", _key(material), "refresh_current_assignment", material)
     scope_ref = binding.get("scope_ref")

@@ -1006,6 +1006,8 @@ class OttoPortfolio:
         result = {"parent": parent, "manager": manager, "executor": executor_value}
         if "orchestrator" in roles:
             result["orchestrator"] = _text(roles["orchestrator"], "roles.orchestrator")
+        if "project_advisor" in roles:
+            result["project_advisor"] = _text(roles["project_advisor"], "roles.project_advisor")
         if "resources" in roles:
             raw_resources = roles["resources"]
             if responsibility_ref is not None and isinstance(raw_resources, Mapping):
@@ -1028,6 +1030,8 @@ class OttoPortfolio:
                 raise PortfolioError(str(exc)) from exc
             if result["resources"].get("orchestrator") and not result.get("orchestrator"):
                 raise PortfolioError("orchestrator resources require an explicit orchestrator principal")
+            if result["resources"].get("project_advisor") and not result.get("project_advisor"):
+                raise PortfolioError("project_advisor resources require an explicit project_advisor principal")
         if "profile" in roles:
             result["profile"] = _text(roles["profile"], "roles.profile")
         return result

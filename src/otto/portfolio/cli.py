@@ -457,8 +457,8 @@ def _operating_brief_command(
         raise ValueError("request_json must be an object")
     request = dict(request)
     role = request.get("role")
-    if not isinstance(role, str) or role not in {"orchestrator", "manager", "worker"}:
-        raise ValueError("role must be orchestrator, manager, or worker")
+    if not isinstance(role, str) or role not in {"orchestrator", "manager", "worker", "project_advisor"}:
+        raise ValueError("role must be orchestrator, manager, worker, or project_advisor")
     assignment_pin = _request_ref(request.get("assignment_ref"), "assignment_ref", pinned=True)
     if assignment_pin.get("kind") != "wrk.assignment":
         raise ValueError("assignment_ref must identify a wrk.assignment")

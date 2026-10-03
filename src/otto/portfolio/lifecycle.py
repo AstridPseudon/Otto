@@ -87,10 +87,11 @@ class PortfolioLifecycleIntegration:
         self._generation = _generation(generation)
         self.owner_operations = owner_operations
         if role_runtimes is not None and (not isinstance(role_runtimes, Mapping) or any(
-            role not in {"manager", "orchestrator"} or not callable(getattr(runtime, "hourly_resource_check", None))
+            role not in {"manager", "orchestrator", "project_advisor"}
+            or not callable(getattr(runtime, "hourly_resource_check", None))
             for role, runtime in role_runtimes.items()
         )):
-            raise LifecycleIntegrationError("role_runtimes must map manager/orchestrator to canonical runtimes")
+            raise LifecycleIntegrationError("role_runtimes must map manager/orchestrator/project_advisor to canonical runtimes")
         self.role_runtimes = dict(role_runtimes or {})
         self.orchestrator_binding = self._validate_binding(orchestrator_binding, self._generation)
         if not isinstance(projects, Mapping):
@@ -130,11 +131,13 @@ class PortfolioLifecycleIntegration:
             if not isinstance(self._project_context[key]["role_bindings"], Mapping):
                 raise LifecycleIntegrationError(f"projects[{key}].role_bindings must be an object")
             for bound_role, role_binding in self._project_context[key]["role_bindings"].items():
-                if bound_role not in {"manager", "orchestrator"} or not isinstance(role_binding, Mapping):
+                if bound_role not in {"manager", "orchestrator", "project_advisor"} or not isinstance(role_binding, Mapping):
                     raise LifecycleIntegrationError(f"projects[{key}] has an invalid role binding")
                 for required in ("schedule_id", "assignment_ref", "mandate_ref"):
                     if role_binding.get(required) is None:
                         raise LifecycleIntegrationError(f"projects[{key}].role_bindings.{bound_role}.{required} is required")
+                if bound_role == "project_advisor":
+                    _generation(role_binding.get("generation"), f"projects[{key}].role_bindings.project_advisor.generation")
                 if self.owner_operations is None and any(role_binding.get(name) is None for name in ("project_ref", "task_ref")):
                     raise LifecycleIntegrationError(f"projects[{key}].role_bindings.{bound_role} must include canonical project_ref/task_ref")
             if self.owner_operations is not None and self._project_context[key]["manager_ref"] is None:
@@ -499,7 +502,7 @@ class PortfolioLifecycleIntegration:
         if not isinstance(delivery, Mapping):
             raise LifecycleIntegrationError("role_delivery must be an object")
         role = _text(delivery.get("role"), "role_delivery.role")
-        allowed_actor = self.manager_actor if role == "manager" else self.orchestrator_actor if role == "orchestrator" else None
+        allowed_actor = self.manager_actor if role in {"manager", "project_advisor"} else self.orchestrator_actor if role == "orchestrator" else None
         if allowed_actor is None or actor != allowed_actor:
             raise LifecycleIntegrationError("role delivery requires the matching manager/orchestrator authority")
         runtime = self.role_runtimes.get(role)
@@ -535,7 +538,8 @@ class PortfolioLifecycleIntegration:
             "project_ref": project_ref, "task_ref": task_ref,
             "assignment_ref": binding["assignment_ref"], "mandate_ref": binding["mandate_ref"],
             "schedule_id": _text(binding.get("schedule_id"), "role binding schedule_id"),
-            "logical_request_key": logical_request_key, "expected_generation": self._generation,
+            "logical_request_key": logical_request_key,
+            "expected_generation": _generation(binding.get("generation", self._generation), "role binding generation"),
             "operation": operation, "lifecycle": lifecycle, "packet_digest": packet_digest,
             "request": dict(request), "as_of": as_of,
             "required_resource_names": tuple(required_names),
