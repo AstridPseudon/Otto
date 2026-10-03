@@ -283,11 +283,16 @@ class CodexCliBinding(HostPort):
                  cursor_queue: Optional[list[dict[str, Any]]] = None,
                  trusted_thread_reader: Optional[Callable[[str], Mapping[str, Any]]] = None,
                  recipient_authorizer: Optional[Callable[[HostRequest], Mapping[str, Any]]] = None,
+                 writable_roots: tuple[str, ...] = (),
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
                  source_verifier: Any = None, monotonic_clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__({HostOperation.INVOKE, HostOperation.RESUME})
         self.worktree, self.launcher, self.model, self.reasoning = worktree, launcher, model, reasoning
+        roots = tuple(os.path.realpath(value) for value in writable_roots)
+        if any(not os.path.isabs(value) or not os.path.isdir(value) for value in roots) or len(set(roots)) != len(roots):
+            raise ValueError("writable_roots must be distinct existing absolute directories")
+        self.writable_roots = roots
         self.receipt_path = native_receipt_path or receipt_path
         self.prompt = prompt
         self.evidence_path = evidence_path
@@ -383,6 +388,9 @@ class CodexCliBinding(HostPort):
                    "-c", f"model_reasoning_effort={self.reasoning}",
                    "-s", request.requested_profile, "-c", 'approval_policy="never"',
                    "--ignore-user-config", "--ignore-rules", "--json"]
+        if request.requested_profile == "workspace-write":
+            for root in self.writable_roots:
+                command.extend(["--add-dir", root])
         if request.operation == HostOperation.RESUME:
             command.extend(["resume", request.identity.physical_session_id])
         if self.receipt_path:
@@ -547,8 +555,14 @@ class CodexCliBinding(HostPort):
                 selected_id, turn = selected
                 if observed_turn_id is not None and observed_turn_id != selected_id:
                     raise ValueError("CLI and trace turn identity differ")
-                if turn.get("sandbox_policy", {}).get("type") != request.requested_profile or turn.get("approval_policy") != "never":
+                sandbox = turn.get("sandbox_policy", {})
+                if sandbox.get("type") != request.requested_profile or turn.get("approval_policy") != "never":
                     raise ValueError("native requested/never permission context is unavailable")
+                if request.requested_profile == "workspace-write" and self.writable_roots:
+                    observed_roots = sandbox.get("writable_roots")
+                    if (not isinstance(observed_roots, list)
+                            or not set(self.writable_roots).issubset({os.path.realpath(value) for value in observed_roots if isinstance(value, str)})):
+                        raise ValueError("native workspace-write roots do not include the owner-selected roots")
                 if self.delivered_brief == {} and any(
                     (event := json.loads(line)).get("payload", {}).get("turn_id") == selected_id
                     and event.get("payload", {}).get("item", {}).get("type") == "CommandExecution"

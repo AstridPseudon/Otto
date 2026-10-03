@@ -138,11 +138,13 @@ class HerzchenCodexAdapter:
         owner_authorizer: Optional[Callable[[str, str], Mapping[str, Any]]] = None,
         owner_delivery_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
         source_verifier_factory: Optional[Callable[..., Any]] = None,
+        writable_roots: Sequence[str] = (),
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.owner = _text(owner, "owner")
         self.source = _text(source, "source")
         self.worktree = _text(worktree, "worktree")
+        self.writable_roots = tuple(_text(value, "writable_roots") for value in writable_roots)
         self.launcher = _text(launcher, "launcher")
         self.requested_model = _text(requested_model, "requested_model")
         self.requested_reasoning = _text(requested_reasoning, "requested_reasoning")
@@ -173,6 +175,7 @@ class HerzchenCodexAdapter:
             owner_authorizer=authorizer, owner_delivery_verifier=verifier,
             trusted_thread_reader=self.trusted_thread_reader,
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
+            writable_roots=self.writable_roots,
         )
 
     def set_thread_started_callback(self, callback: Optional[Callable[[str], None]]) -> Optional[Callable[[str], None]]:
@@ -388,6 +391,7 @@ class HerzchenCodexAdapter:
                 native_trace_path=self.native_trace_path,
                 trusted_thread_reader=self.trusted_thread_reader,
                 recipient_authorizer=recipient_authorizer,
+                writable_roots=self.writable_roots,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
         else:
