@@ -750,6 +750,16 @@ class HerzchenCodexAdapter:
             if extended:
                 inert_options["timeout_brief"] = brief
                 work_options["timeout_brief"] = brief
+        else:
+            total = request.get("owner_timeout_seconds")
+            deadline = request.get("owner_occurrence_deadline")
+            if (isinstance(total, bool) or not isinstance(total, (int, float)) or not 60 < total <= 1920
+                    or isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                    or not 0 < deadline - self.monotonic_clock() <= total):
+                raise HerzchenAdapterError("owner occurrence requires a finite supported deadline")
+            inert_seconds = min(120, max(30, total // 10))
+            inert_options = {"timeout_seconds": inert_seconds, "occurrence_deadline": deadline}
+            work_options = {"timeout_seconds": total - inert_seconds, "occurrence_deadline": deadline}
         initializer = self._new_host(inert_prompt, {}, model=model, reasoning=reasoning, **inert_options)
         observed_initial = initializer.invoke(typed)
         if not isinstance(observed_initial, tuple) or len(observed_initial) != 2:
