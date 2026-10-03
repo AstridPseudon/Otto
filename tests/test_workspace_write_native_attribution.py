@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
+import tempfile
 import unittest
 
 from herzchen.adapters.host import (
-    _digest_json, _native_host_context, _owner_delivery_appendix,
+    CodexCliBinding, _digest_json, _native_host_context, _owner_delivery_appendix,
     _select_invocation_turn,
 )
 from herzchen.contracts.model import HostIdentity, HostOperation, HostRequest, ResourceRef
@@ -100,7 +102,8 @@ def _context(profile, *, delayed_command_started_at_ms=None):
         worker_content=[], delivered_brief=brief, delivered_authorization=AUTHORIZATION,
     )
 
-def _linked_context(*, include_read=False, include_failed_read=False, include_search=False):
+def _linked_context(*, include_read=False, include_failed_read=False, include_search=False,
+                    large_history=False):
     contract = {
         "task_ref": TARGET.to_dict(),
         "objective": "Advise the manager from delivered and linked context.",
@@ -175,6 +178,23 @@ def _linked_context(*, include_read=False, include_failed_read=False, include_se
         }),
         _line("event_msg", {"type": "task_complete", "turn_id": TURN, "completed_at": 1}),
     ])
+    if large_history:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            path.write_text(lines[0] + "\n")
+            with path.open("r+b") as stream:
+                stream.seek(33 * 1024 * 1024)
+                stream.write(b"\n")
+            binding = CodexCliBinding.__new__(CodexCliBinding)
+            binding.native_trace_path = str(path)
+            binding.trusted_thread_reader = None
+            binding.occurrence_deadline = None
+            trace_path, boundary, header = binding._resume_trace_boundary(SESSION)
+            with path.open("ab") as stream:
+                stream.write(("\n".join(lines[1:]) + "\n").encode())
+            lines = binding._resume_trace_tail(
+                trace_path, boundary, header,
+            ).decode().splitlines()
     value = _native_host_context(
         lines,
         request=HostRequest(HostOperation.RESUME, HostIdentity("fixture-agent", SESSION), TARGET, "read-only"),
@@ -259,6 +279,13 @@ class WorkspaceWriteAttributionTests(unittest.TestCase):
             "status": "completed", "command_count": 2, "nonzero_exit_count": 1,
         })
         self.assertEqual(value["task_bound_evidence"]["read_targets"], ["/tmp/missing.md"])
+
+    def test_large_resumed_history_keeps_authentic_header_for_native_attribution(self):
+        _contract, _brief, value = _linked_context(
+            include_read=True, include_search=True, large_history=True,
+        )
+        self.assertIsNotNone(value)
+        self.assertEqual(value["session_id"], SESSION)
 
     def test_linked_context_rejects_exhaustive_targets_and_write_effects(self):
         contract, _brief, _value = _linked_context()

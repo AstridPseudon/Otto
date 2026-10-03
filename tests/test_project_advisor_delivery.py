@@ -7,7 +7,7 @@ import unittest
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.kernel.store import Store
-from herzchen.adapters.host import _select_admitted_turn
+from herzchen.adapters.host import CodexCliBinding, _select_admitted_turn
 from otto.attention import (
     DueRecord,
     DurableAttention,
@@ -554,6 +554,48 @@ class AdvisorDeliveryTests(unittest.TestCase):
 
 
 class OwnerAdmissionTests(unittest.TestCase):
+    def test_resume_admission_reads_only_current_occurrence_after_large_history(self):
+        prompt = "Receive the persisted advisor decision."
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "rollout.jsonl"
+            with trace.open("wb") as stream:
+                stream.write((json.dumps({
+                    "type": "session_meta", "payload": {"session_id": "manager-session"},
+                }) + "\n").encode())
+                # A sparse historical body proves the total conversation size
+                # is not treated as the current occurrence's evidence budget.
+                stream.seek(33 * 1024 * 1024)
+                stream.write(b"\n")
+            binding = CodexCliBinding.__new__(CodexCliBinding)
+            binding.native_trace_path = str(trace)
+            binding.trusted_thread_reader = None
+            binding.occurrence_deadline = None
+            path, boundary, header = binding._resume_trace_boundary("manager-session")
+            with trace.open("ab") as stream:
+                for event in (
+                    {"type": "event_msg", "payload": {
+                        "type": "task_started", "turn_id": "manager-turn-admitted",
+                        "started_at": int(NOW.timestamp()),
+                    }},
+                    {"type": "event_msg", "payload": {
+                        "type": "item_completed", "turn_id": "manager-turn-admitted",
+                        "thread_id": "manager-session",
+                        "item": {"type": "UserMessage", "content": [
+                            {"type": "Text", "text": prompt},
+                        ]},
+                    }},
+                ):
+                    stream.write((json.dumps(event) + "\n").encode())
+                stream.write(b'{"type":"partial')
+            tail = binding._resume_trace_tail(path, boundary, header)
+        self.assertLess(len(tail), 2048)
+        self.assertNotIn(b"partial", tail)
+        self.assertEqual(json.loads(tail.splitlines()[0])["payload"]["session_id"], "manager-session")
+        self.assertEqual(_select_admitted_turn(
+            tail.decode().splitlines(), session_id="manager-session", prompt=prompt,
+            boundary=0, started_at="2026-10-03T14:59:59+00:00",
+        ), ("manager-turn-admitted", "2026-10-03T15:00:00+00:00"))
+
     def test_native_message_admission_is_available_before_task_completion(self):
         prompt = "Receive the persisted advisor decision."
         lines = [

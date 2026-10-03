@@ -470,7 +470,7 @@ class CodexCliBinding(HostPort):
         self.model_projection = None if model_projection is None else json.loads(json.dumps(model_projection))
         self.cursor_queue = None if cursor_queue is None else json.loads(json.dumps(cursor_queue))
 
-    def _trace(self, session_id: str, *, deadline: float | None = None) -> tuple[str, bytes]:
+    def _trace_path(self, session_id: str, *, deadline: float | None = None) -> str:
         """Resolve only the exact host-issued session via an injected read port."""
         deadline = self.occurrence_deadline if deadline is None else deadline
         path = self.native_trace_path
@@ -488,6 +488,12 @@ class CodexCliBinding(HostPort):
             path = thread.get("path")
         if not isinstance(path, str) or not Path(path).is_absolute():
             raise ValueError("trusted exact-session trace path is unavailable")
+        return path
+
+    def _trace(self, session_id: str, *, deadline: float | None = None) -> tuple[str, bytes]:
+        """Read a bounded complete trace for a fresh invocation."""
+        deadline = self.occurrence_deadline if deadline is None else deadline
+        path = self._trace_path(session_id, deadline=deadline)
         if deadline is None:
             data = Path(path).read_bytes()
         else:
@@ -503,6 +509,45 @@ class CodexCliBinding(HostPort):
         if sessions != [session_id]:
             raise ValueError("native trace session is missing, ambiguous or different")
         return path, data
+
+    def _resume_trace_boundary(self, session_id: str) -> tuple[str, int, bytes]:
+        """Snapshot an existing conversation without rereading its full history."""
+        path = self._trace_path(session_id)
+        trace = Path(path)
+        size = trace.stat().st_size
+        with trace.open("rb") as stream:
+            first = stream.readline(MAX_SUBMISSION_SIZE + 1)
+            if len(first) > MAX_SUBMISSION_SIZE or not first.endswith(b"\n"):
+                raise ValueError("native trace session header is unavailable")
+            try:
+                event = json.loads(first.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError("native trace session header is malformed") from exc
+            payload = event.get("payload", {}) if isinstance(event, Mapping) else {}
+            observed = payload.get("session_id", payload.get("id")) if isinstance(payload, Mapping) else None
+            if event.get("type") != "session_meta" or observed != session_id:
+                raise ValueError("native trace session is missing or different")
+            if size:
+                stream.seek(size - 1)
+                if stream.read(1) != b"\n":
+                    raise ValueError("native trace boundary is incomplete")
+        return path, size, first
+
+    @staticmethod
+    def _resume_trace_tail(path: str, boundary: int, session_header: bytes) -> bytes:
+        """Read the authentic session header and current occurrence records."""
+        with Path(path).open("rb") as stream:
+            stream.seek(0, 2)
+            current_size = stream.tell()
+            if current_size < boundary:
+                raise ValueError("native trace boundary changed")
+            stream.seek(boundary)
+            data = stream.read(32 * 1024 * 1024 + 1)
+        if len(data) > 32 * 1024 * 1024:
+            raise ValueError("native current-occurrence trace is too large")
+        if data and not data.endswith(b"\n"):
+            data = data.rsplit(b"\n", 1)[0] + b"\n" if b"\n" in data else b""
+        return session_header + data
 
     def preflight(self) -> dict[str, Any]:
         try:
@@ -551,7 +596,8 @@ class CodexCliBinding(HostPort):
             command.extend(["-o", self.receipt_path])
         command.append("-")
         started = _now()
-        baseline = None
+        resume_boundary = None
+        resume_header = None
         trace_path = None
         delivered_authorization = None
         prompt = self.prompt
@@ -639,9 +685,9 @@ class CodexCliBinding(HostPort):
                          "exit_status": None, "stdout": "", "stderr": reason,
                          "delivery_state": "not_started", "reconciliation": reason})
             if request.operation == HostOperation.RESUME and (self.native_trace_path or self.trusted_thread_reader):
-                trace_path, baseline = self._trace(request.identity.physical_session_id)
-                if not baseline.endswith(b"\n"):
-                    raise ValueError("native trace boundary is incomplete")
+                trace_path, resume_boundary, resume_header = self._resume_trace_boundary(
+                    request.identity.physical_session_id
+                )
         except Exception as exc:  # Trusted read/admission ports may fail; never launch.
             return (HostReceipt(request.operation, HostOutcome.UNKNOWN, request.identity,
                                 request.identity.logical_agent_id, request.requested_profile,
@@ -669,7 +715,7 @@ class CodexCliBinding(HostPort):
             def native_start_callback(cli_turn_id: Optional[str], observed_at: str) -> None:
                 turn_id, admitted_at = cli_turn_id, observed_at
                 if turn_id is None:
-                    if trace_path is None or baseline is None:
+                    if trace_path is None or resume_boundary is None:
                         raise ValueError("native trace boundary is unavailable at turn start")
                     deadline = min(
                         self.monotonic_clock() + 5,
@@ -677,15 +723,12 @@ class CodexCliBinding(HostPort):
                     )
                     admitted = None
                     while admitted is None and self.monotonic_clock() < deadline:
-                        with Path(trace_path).open("rb") as stream:
-                            data = stream.read(32 * 1024 * 1024 + 1)
-                        if len(data) > 32 * 1024 * 1024 or not data.startswith(baseline):
-                            raise ValueError("native trace boundary changed at turn start")
+                        data = self._resume_trace_tail(trace_path, resume_boundary, resume_header)
                         admitted = _select_admitted_turn(
                             data.decode("utf-8").splitlines(),
                             session_id=request.identity.physical_session_id,
                             prompt=prompt,
-                            boundary=len(baseline.decode("utf-8").splitlines()),
+                            boundary=0,
                             started_at=started,
                         )
                         if admitted is None:
@@ -766,12 +809,16 @@ class CodexCliBinding(HostPort):
                 # start only.  Terminal metadata readback gets its own short
                 # bounded operation after useful work has finished.
                 trace_deadline = self.monotonic_clock() + 30 if not self.extended_timeout else None
-                current_path, trace = self._trace(observed_session, deadline=trace_deadline)
-                if baseline is not None and (current_path != trace_path or not trace.startswith(baseline)):
-                    raise ValueError("native trace boundary changed")
+                if resume_boundary is not None:
+                    current_path = self._trace_path(observed_session, deadline=trace_deadline)
+                    if current_path != trace_path:
+                        raise ValueError("native trace path changed")
+                    trace = self._resume_trace_tail(current_path, resume_boundary, resume_header)
+                else:
+                    current_path, trace = self._trace(observed_session, deadline=trace_deadline)
                 native_lines = trace.decode("utf-8").splitlines()
                 selected = _select_invocation_turn(native_lines, session_id=observed_session,
-                    prompt=prompt, boundary=0 if baseline is None else len(baseline.decode("utf-8").splitlines()),
+                    prompt=prompt, boundary=0,
                     started_at=started)
                 if selected is None:
                     raise ValueError("native invocation turn is missing, ambiguous or incomplete")
