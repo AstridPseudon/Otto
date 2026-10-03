@@ -873,9 +873,11 @@ class _DueRecordOwnerEngine:
             }
             value = record.to_dict()
             value.update(assignment_ref=dict(assignment_ref), host_evidence=evidence)
-            if record.execution_mode == "fresh_bounded_worker":
-                # The logical target and admitted assignment are one binding.
-                # Advance both only after validating the exact adoption base.
+            if (isinstance(record.target, Mapping)
+                    and record.target.get("assignment_ref") == record.assignment_ref):
+                # The logical target and admitted assignment are one binding
+                # for managers as well as fresh workers. Advance both only
+                # after validating the exact adoption base.
                 value["target"] = {**record.target, "assignment_ref": dict(assignment_ref)}
             return self.save_due(schedule_id, value, request_id=request_id, expected_version=expected_version)
 
