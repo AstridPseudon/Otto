@@ -10,6 +10,7 @@ import time
 import uuid
 
 IPC = Path(__file__).resolve().parent.parent / "controller" / "manager-ipc"
+SERVICE = Path("/tmp/otto-project-advisor-manager-ops.sock")
 
 
 def call(payload: dict) -> dict:
@@ -25,16 +26,21 @@ def call(payload: dict) -> dict:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    deadline = time.monotonic() + 1000
-    while time.monotonic() < deadline:
+    status_deadline = time.monotonic() + 5 if payload.get("command") == "status" else None
+    while status_deadline is None or time.monotonic() < status_deadline:
         try:
             value = json.loads(response.read_text())
         except FileNotFoundError:
+            if status_deadline is None and not SERVICE.exists():
+                raise RuntimeError(
+                    "owner command service ended before a terminal response; "
+                    "inspect the exact canonical request without retry"
+                )
             time.sleep(0.1)
             continue
         response.unlink(missing_ok=True)
         return value
-    raise TimeoutError("owner command response deadline expired; inspect status before retry")
+    raise TimeoutError("read-only status service did not respond within five seconds")
 
 
 def main() -> None:
@@ -48,6 +54,14 @@ def main() -> None:
     report.add_argument("--request-key", required=True)
     report.add_argument("--continue-project", action="store_true",
                         help="request one same-manager callback after this turn settles")
+    task_state = commands.add_parser("task-state", help="update one canonical task lifecycle through the owner work port")
+    task_state.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    task_state.add_argument("--lifecycle", required=True, choices=["pending", "active", "paused", "withdrawn"])
+    task_state.add_argument("--request-key", required=True)
+    commit = commands.add_parser("commit", help="create one owner-authorized local Git checkpoint")
+    commit.add_argument("--message", required=True)
+    commit.add_argument("--path", action="append", dest="paths", required=True,
+                        help="worktree-relative path; repeat for multiple paths")
     assign = commands.add_parser("assign-worker", help="create one canonical worker assignment and adopted task guide")
     assign.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     assign.add_argument("--principal", required=True)
@@ -58,6 +72,7 @@ def main() -> None:
     run.add_argument("--principal", required=True)
     run.add_argument("--route", required=True, choices=["normal", "xhard"])
     run.add_argument("--request-key", required=True)
+    run.add_argument("--focus", help="task-specific outcome or integration constraint to include in the worker brief")
     resume = commands.add_parser("resume-worker", help="resume and collect one inspected interrupted worker")
     resume.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     resume.add_argument("--principal", required=True)

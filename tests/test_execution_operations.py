@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 from otto.portfolio.execution_operations import (
     OccurrencePreparationError,
     build_manager_callback_due,
+    commit_local_checkpoint,
     derive_manager_continuation_request,
     prepare_current_assignment_occurrence,
     read_project_progress_reports,
@@ -101,6 +105,37 @@ class Tests(unittest.TestCase):
                 request_key="resume-invalid-timeout",
             )
         self.assertEqual(port.saved, 0)
+
+    def test_local_checkpoint_commits_only_selected_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "selected.txt").write_text("one\n")
+            (root / "other.txt").write_text("outside\n")
+            result = commit_local_checkpoint(root, ["selected.txt"], message="Selected checkpoint")
+            self.assertEqual(result["outcome"], "committed")
+            self.assertEqual(result["paths"], ["selected.txt"])
+            self.assertEqual(
+                subprocess.run(["git", "-C", str(root), "status", "--short"],
+                               check=True, capture_output=True, text=True).stdout,
+                "?? other.txt\n",
+            )
+            self.assertEqual(
+                commit_local_checkpoint(root, ["selected.txt"], message="Selected checkpoint")["outcome"],
+                "replayed",
+            )
+
+    def test_local_checkpoint_rejects_escape_and_foreign_staging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "selected.txt").write_text("one\n")
+            (root / "foreign.txt").write_text("two\n")
+            subprocess.run(["git", "-C", str(root), "add", "foreign.txt"], check=True)
+            with self.assertRaisesRegex(OccurrencePreparationError, "outside the request"):
+                commit_local_checkpoint(root, ["selected.txt"], message="Selected checkpoint")
+            with self.assertRaisesRegex(OccurrencePreparationError, "escapes"):
+                commit_local_checkpoint(root, ["../outside.txt"], message="Invalid checkpoint")
 
     def test_continuation_is_recovered_from_report_without_projection_file(self):
         due = {

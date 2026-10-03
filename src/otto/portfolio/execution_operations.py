@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+import os
+from pathlib import Path
+import subprocess
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
@@ -24,6 +27,69 @@ _MODES = {
 }
 
 OWNER_TIMEOUT_MAX_SECONDS = 1800
+
+
+def commit_local_checkpoint(
+    worktree: str | Path,
+    paths: list[str] | tuple[str, ...],
+    *,
+    message: str,
+) -> dict[str, Any]:
+    """Create one owner-authorized local checkpoint without publication.
+
+    Paths are explicit worktree-relative source paths.  Existing staged changes
+    outside that set are rejected so an owner service cannot accidentally fold
+    another worker's edits into the checkpoint.
+    """
+
+    root = Path(worktree).resolve()
+    if not (root / ".git").is_dir():
+        raise OccurrencePreparationError("local checkpoint requires a Git worktree")
+    if not isinstance(message, str) or not message.strip() or len(message) > 240:
+        raise OccurrencePreparationError("checkpoint message must be 1-240 characters")
+    if not isinstance(paths, (list, tuple)) or not paths:
+        raise OccurrencePreparationError("checkpoint paths must be a non-empty list")
+    selected: list[str] = []
+    for value in paths:
+        if not isinstance(value, str) or not value.strip() or os.path.isabs(value):
+            raise OccurrencePreparationError("checkpoint paths must be relative text")
+        candidate = (root / value).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise OccurrencePreparationError("checkpoint path escapes the worktree") from exc
+        relative = str(candidate.relative_to(root))
+        if relative == ".git" or relative.startswith(".git/"):
+            raise OccurrencePreparationError("checkpoint path cannot select Git metadata")
+        if relative not in selected:
+            selected.append(relative)
+
+    def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True,
+            check=check, timeout=30,
+        )
+
+    staged = [line for line in git("diff", "--cached", "--name-only").stdout.splitlines() if line]
+    foreign = sorted(set(staged) - set(selected))
+    if foreign:
+        raise OccurrencePreparationError(
+            "checkpoint has staged paths outside the request: " + ", ".join(foreign)
+        )
+    git("add", "--", *selected)
+    staged_selected = [line for line in git("diff", "--cached", "--name-only", "--", *selected).stdout.splitlines() if line]
+    if not staged_selected:
+        return {"outcome": "replayed", "committed": False, "reason": "no selected changes"}
+    committed = git(
+        "-c", "user.name=Otto Owner", "-c", "user.email=otto-owner@localhost",
+        "commit", "-m", message.strip(), "--", *selected,
+    )
+    head = git("rev-parse", "HEAD").stdout.strip()
+    return {
+        "outcome": "committed", "committed": True, "commit": head,
+        "paths": staged_selected, "message": message.strip(),
+        "stdout": committed.stdout.strip(),
+    }
 
 
 def validate_owner_timeout_seconds(requested: int) -> int:
