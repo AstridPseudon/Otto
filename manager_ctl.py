@@ -179,6 +179,7 @@ def main() -> None:
     print(json.dumps(response, indent=2, sort_keys=True))
     if response.get("outcome") not in {
         "ok", "committed", "replayed", "created", "read", "started", "corrected", "recorded",
+        "scheduled",
     }:
         raise SystemExit(1)
 

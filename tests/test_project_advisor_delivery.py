@@ -556,6 +556,41 @@ class AdvisorDeliveryTests(unittest.TestCase):
         stored = DueRecord.from_dict(self.due_port.read_due(followup["schedule_id"]))
         self.assertEqual(stored.anchor, sent["sent_at"])
 
+    def test_followup_can_persist_exact_owner_runtime_binding(self):
+        self.loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-runtime", action="Use the installed correction.",
+            rationale="The native receipt proves delivery.", evidence=[{"ref": "receipt"}],
+            expected_evidence="same advisor inspects the effect",
+            request_id="decision-request-runtime",
+        )
+        task = ref("work.task", "task-6", "rev-2")
+        mandate = ref("portfolio.document", "advisor-mandate", "rev-3")
+        guide = ref("portfolio.document", "advisor-guide", "rev-4")
+        allowance = ref("limit", "advisor-pilot", "rev-1")
+        followup = self.loop.schedule_effect_followup(
+            pairing=self.pairing, decision_id="decision-runtime",
+            advisor_principal="advisor-principal", lifecycle_owner="owner-principal",
+            profile="read-only", request_id="followup-request-runtime",
+            runtime_context={
+                "project_ref": PROJECT, "task_ref": task,
+                "assignment_ref": ADVISOR, "mandate_ref": mandate,
+                "requested_model": "gpt-6-astra", "requested_reasoning": "high",
+                "context_refs": [guide, mandate], "allowance_ref": allowance,
+                "result_owner": "manager-principal", "timeout_seconds": 1200,
+            },
+        )
+        stored = DueRecord.from_dict(self.due_port.read_due(followup["schedule_id"]))
+        self.assertEqual(stored.manager_ref, "owner-principal")
+        self.assertEqual(stored.target["project_ref"], PROJECT)
+        self.assertEqual(stored.target["task_ref"], task)
+        self.assertEqual(stored.target["mandate_ref"], mandate)
+        self.assertEqual(stored.target["physical_session_id"], "advisor-session")
+        self.assertEqual(stored.requested_model, "gpt-6-astra")
+        self.assertEqual(stored.requested_reasoning, "high")
+        self.assertEqual(stored.context_refs, (guide, mandate))
+        self.assertEqual(stored.allowance_ref, allowance)
+
     def test_baseline_cadence_has_one_shots_then_six_hour_interval(self):
         cadence = self.loop.schedule_baseline_cadence(
             pairing=self.pairing, advisor_principal="advisor-principal",

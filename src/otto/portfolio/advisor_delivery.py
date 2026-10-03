@@ -369,9 +369,16 @@ class AdvisorDeliveryLoop:
         advisor_principal = _text(advisor_principal, "advisor_principal")
         lifecycle_owner = _text(lifecycle_owner, "lifecycle_owner")
         reason = _text(reason, "reason")
+        configured = self.ports.attention._read(schedule_id)
+        if configured is None:
+            raise AdvisorDeliveryError("advisor DueRecord does not exist")
+        # A Due scheduled for an owner role runtime is held by the owner actor;
+        # older roster-only schedules used the paired manager assignment id.
+        # Read the authoritative persisted scope so both forms remain usable.
+        manager_scope = configured.manager_ref
         resolved = self.ports.attention.resolve_recipient(
             schedule_id, recipient=advisor_principal, role="project_advisor",
-            project_ref=pairing.project_ref["id"], manager_ref=pairing.manager_ref["id"],
+            project_ref=pairing.project_ref["id"], manager_ref=manager_scope,
             generation=pairing.advisor_generation, lifecycle_owner=lifecycle_owner,
             assignment_reader=self.ports.assignments,
         )
@@ -382,7 +389,7 @@ class AdvisorDeliveryLoop:
             )
         ready = self.ports.attention.check(
             schedule_id, due_reason=reason, project_ref=pairing.project_ref["id"],
-            manager_ref=pairing.manager_ref["id"], generation=pairing.advisor_generation,
+            manager_ref=manager_scope, generation=pairing.advisor_generation,
             lifecycle_owner=lifecycle_owner,
         )
         if ready.get("outcome") != "attention-ready" or ready.get("replayed"):
@@ -410,7 +417,7 @@ class AdvisorDeliveryLoop:
             completion = self.ports.attention.complete(
                 schedule_id, request_id, outcome="unknown",
                 completion_evidence={"kind": "otto.project-advisor-wake.v1", "error": str(exc)},
-                project_ref=pairing.project_ref["id"], manager_ref=pairing.manager_ref["id"],
+                project_ref=pairing.project_ref["id"], manager_ref=manager_scope,
                 generation=pairing.advisor_generation, lifecycle_owner=lifecycle_owner,
             )
             return {"outcome": "unknown", "wake": ready, "completion": completion,
@@ -436,7 +443,7 @@ class AdvisorDeliveryLoop:
             schedule_id, request_id, receipt=runtime, outcome=completion_outcome,
             completion_evidence={"kind": "otto.project-advisor-wake.v1", "runtime": runtime,
                                  "reasons": covered_reasons},
-            project_ref=pairing.project_ref["id"], manager_ref=pairing.manager_ref["id"],
+            project_ref=pairing.project_ref["id"], manager_ref=manager_scope,
             generation=pairing.advisor_generation, lifecycle_owner=lifecycle_owner,
         )
         return {"outcome": "returned" if completion_outcome == "returned" else "unknown",
@@ -685,6 +692,7 @@ class AdvisorDeliveryLoop:
         profile: str,
         request_id: str,
         interval_seconds: int = 3600,
+        runtime_context: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         """Schedule an independent follow-up from the known delivery time.
 
@@ -721,6 +729,52 @@ class AdvisorDeliveryLoop:
         target = dict(pairing.advisor_conversation_ref)
         target.update({"role": "project_advisor", "principal": _text(advisor_principal, "advisor_principal"),
                        "assignment_ref": dict(pairing.advisor_ref)})
+        record_kwargs: dict[str, Any] = {}
+        manager_scope = pairing.manager_ref["id"]
+        if runtime_context is not None:
+            context = _json(dict(runtime_context), "runtime_context")
+            task_ref = _ref(context.get("task_ref"), "runtime_context.task_ref")
+            mandate_ref = _ref(context.get("mandate_ref"), "runtime_context.mandate_ref")
+            project_ref = _ref(context.get("project_ref"), "runtime_context.project_ref")
+            if project_ref != dict(pairing.project_ref):
+                raise AdvisorDeliveryError("runtime context project differs from the pairing")
+            assignment_ref = _ref(
+                context.get("assignment_ref"), "runtime_context.assignment_ref"
+            )
+            if assignment_ref != dict(pairing.advisor_ref):
+                raise AdvisorDeliveryError("runtime context assignment differs from the pairing")
+            requested_model = _text(
+                context.get("requested_model"), "runtime_context.requested_model"
+            )
+            requested_reasoning = _text(
+                context.get("requested_reasoning"), "runtime_context.requested_reasoning"
+            )
+            context_refs = context.get("context_refs")
+            if (isinstance(context_refs, (str, bytes))
+                    or not isinstance(context_refs, Sequence) or not context_refs):
+                raise AdvisorDeliveryError("runtime context requires context_refs")
+            timeout_seconds = context.get("timeout_seconds")
+            if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
+                    or timeout_seconds <= 0):
+                raise AdvisorDeliveryError("runtime context requires a positive timeout_seconds")
+            manager_scope = _text(lifecycle_owner, "lifecycle_owner")
+            target.update({
+                "project_ref": project_ref,
+                "task_ref": task_ref,
+                "assignment_ref": assignment_ref,
+                "mandate_ref": mandate_ref,
+                "requested_model": requested_model,
+                "requested_reasoning": requested_reasoning,
+                "requested_profile": profile,
+            })
+            record_kwargs = {
+                "allowance_ref": context.get("allowance_ref"),
+                "requested_model": requested_model,
+                "requested_reasoning": requested_reasoning,
+                "context_refs": tuple(context_refs),
+                "result_owner": _text(context.get("result_owner"), "runtime_context.result_owner"),
+                "timeout_seconds": timeout_seconds,
+            }
         record = DueRecord(
             schedule_id=schedule_id, recipient=advisor_principal,
             instruction="Inspect implementation evidence for advisor decision " + decision_id + ".",
@@ -729,12 +783,13 @@ class AdvisorDeliveryLoop:
             invocation_identity=_stable(
                 "advisor-followup-occurrence", schedule_id, decision["delivery_id"],
             ),
-            project_ref=pairing.project_ref["id"], manager_ref=pairing.manager_ref["id"],
+            project_ref=pairing.project_ref["id"], manager_ref=manager_scope,
             assignment_ref=dict(pairing.advisor_ref), generation=pairing.advisor_generation,
             target=target, role="project_advisor", purpose="advisor-effect-followup",
             message="Check effect/adoption and suppress an unchanged nudge while useful repair is in progress.",
             lifecycle_owner=_text(lifecycle_owner, "lifecycle_owner"),
             execution_mode="continue_existing",
+            **record_kwargs,
         )
         result = self.ports.attention.schedule(record, request_id=_text(request_id, "request_id"))
         return {"outcome": result.get("outcome"), "decision_id": decision_id,
