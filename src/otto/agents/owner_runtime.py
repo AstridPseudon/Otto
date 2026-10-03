@@ -452,8 +452,8 @@ class CanonicalRoleRuntime:
         withhold the task until provider identity has current owner readback.
         Caller-native receipts alone do not authorize task delivery.
         """
-        if role not in {"orchestrator", "manager", "worker"}:
-            raise OwnerRoleRuntimeError("role must be orchestrator, manager, or worker")
+        if role not in {"orchestrator", "manager", "worker", "project_advisor"}:
+            raise OwnerRoleRuntimeError("role must be orchestrator, manager, worker, or project_advisor")
         if mode not in {"direct", "caller_native"}:
             raise OwnerRoleRuntimeError("mode must be direct or caller_native")
 
@@ -566,8 +566,8 @@ class CanonicalRoleRuntime:
         """
         kwargs["operation"] = "resume"
         kwargs["lifecycle"] = "resume"
-        if role not in {"manager", "orchestrator"}:
-            raise OwnerRoleRuntimeError("callback role must be manager or orchestrator")
+        if role not in {"manager", "orchestrator", "project_advisor"}:
+            raise OwnerRoleRuntimeError("callback role must be manager, orchestrator, or project_advisor")
         result = self._invoke(role=role, **kwargs)
         if isinstance(result, Mapping):
             return {**result, "callback_admission": "current_owner_due_record", "scheduler_origin_attested": False}

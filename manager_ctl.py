@@ -4,24 +4,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
-import socket
+import time
+import uuid
 
-SOCKET = Path("/tmp/otto-project-advisor-manager-ops.sock")
+IPC = Path(__file__).resolve().parent.parent / "controller" / "manager-ipc"
 
 
 def call(payload: dict) -> dict:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(1300)
-        client.connect(str(SOCKET))
-        client.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
-        chunks = []
-        while True:
-            part = client.recv(65536)
-            if not part:
-                break
-            chunks.append(part)
-    return json.loads(b"".join(chunks))
+    token = uuid.uuid4().hex
+    request = IPC / ("request-" + token + ".json")
+    response = IPC / ("response-" + token + ".json")
+    if not IPC.is_dir():
+        raise RuntimeError("owner command channel is unavailable")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(request, flags, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump(payload, stream, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    deadline = time.monotonic() + 1300
+    while time.monotonic() < deadline:
+        try:
+            value = json.loads(response.read_text())
+        except FileNotFoundError:
+            time.sleep(0.1)
+            continue
+        response.unlink(missing_ok=True)
+        return value
+    raise TimeoutError("owner command response deadline expired; inspect status before retry")
 
 
 def main() -> None:

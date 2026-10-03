@@ -21,7 +21,7 @@ class ResourceSyncError(ValueError):
     """A resource descriptor, attachment, or brief is not admissible."""
 
 
-ROLES = frozenset({"orchestrator", "manager", "worker"})
+ROLES = frozenset({"orchestrator", "manager", "worker", "project_advisor"})
 LIFECYCLES = frozenset({"create", "child", "launch", "replace", "resume", "callback"})
 DELIVERY_STATES = frozenset({"prepared", "submitted", "observed_delivered", "running", "completed", "attributed", "accepted"})
 
@@ -186,7 +186,7 @@ def normalize_attachment(value: Mapping[str, Any], *, role: str | None = None) -
         raise ResourceSyncError("resource attachment must be an object")
     selected_role = _text(value.get("role", role), "resource.role").lower()
     if selected_role not in ROLES:
-        raise ResourceSyncError("resource.role must be orchestrator, manager, or worker")
+        raise ResourceSyncError("resource.role must be orchestrator, manager, worker, or project_advisor")
     if role is not None and selected_role != role:
         raise ResourceSyncError("resource role does not match its responsibility slot")
     responsibility = _ref(value.get("responsibility_ref"), "resource.responsibility_ref")
@@ -312,7 +312,7 @@ def resolve_assignment_attachments(assignment: Any, reader: Any, *, role: str | 
     if selected_role == "executor":
         selected_role = "worker"
     if selected_role not in ROLES:
-        raise ResourceSyncError("assignment.role must be orchestrator, manager, or worker")
+        raise ResourceSyncError("assignment.role must be orchestrator, manager, worker, or project_advisor")
     pins = assignment.get("resource_adoptions", ())
     if isinstance(pins, (str, bytes)) or not isinstance(pins, Sequence):
         raise ResourceSyncError("assignment.resource_adoptions must be a list")

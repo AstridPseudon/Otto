@@ -19,7 +19,7 @@ from .resource_sync import ResourceSyncError, resolve_assignment_attachments, no
 
 SCHEMA_REVISION = "otto.operating-brief.v1"
 SNAPSHOT_SCHEMA_REVISION = "otto.operating-snapshot.v1"
-_ROLES = frozenset({"orchestrator", "manager", "worker"})
+_ROLES = frozenset({"orchestrator", "manager", "worker", "project_advisor"})
 _USER_FIELDS = ("mandate", "user_constraints")
 _AGENT_FIELDS = ("priorities", "operational_constraints", "continuation", "links")
 ROLE_OPERATING_CONTRACTS = {
@@ -42,6 +42,11 @@ ROLE_OPERATING_CONTRACTS = {
         "native identity, and unresolved responsibility through the manager's canonical result path. Do not "
         "accept your own work, expand scope or budget, create unassigned work, or message the orchestrator "
         "routinely. Propose necessary changes to the manager and wait when no authorized task action remains."
+    ),
+    "project_advisor": (
+        "Advise one assigned manager on that manager's project using current goals, acceptance criteria, "
+        "messages, files, and prior conversation. Resume the same conversation, choose the shortest "
+        "in-mandate corrective direction, and reject stale pairing state."
     ),
 }
 
@@ -213,9 +218,9 @@ class OperatingBrief:
             raise OperatingBriefError("brief role does not match the requested role")
         selected_role = requested_role or declared_role
         if selected_role is None:
-            raise OperatingBriefError("role must be orchestrator, manager, or worker")
+            raise OperatingBriefError("role must be orchestrator, manager, worker, or project_advisor")
         if selected_role not in _ROLES:
-            raise OperatingBriefError("role must be orchestrator, manager, or worker")
+            raise OperatingBriefError("role must be orchestrator, manager, worker, or project_advisor")
         schema = raw.get("schema_revision", SCHEMA_REVISION)
         if schema != SCHEMA_REVISION:
             raise OperatingBriefError("brief schema_revision is unsupported")
