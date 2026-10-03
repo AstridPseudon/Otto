@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import unittest
 
+from otto.attention import DueRecord
+
 from otto.portfolio.execution_operations import (
     OccurrencePreparationError,
     build_manager_callback_due,
@@ -28,6 +30,7 @@ class Due:
     assignment_ref: dict | None = None
     target: dict | None = None
     execution_mode: str = "continue_existing"
+    role: str = "worker"
     timeout_seconds: int = 1200
     def to_dict(self): return vars(self)
 
@@ -75,6 +78,41 @@ class Tests(unittest.TestCase):
         self.assertEqual(result["assignment_base_ref"], BASE)
         self.assertEqual(result["assignment_current_ref"], REF)
         self.assertEqual(result["due_version"], 2)
+
+    def test_fresh_project_advisor_uses_generic_bounded_role_mode(self):
+        due = replace(
+            self.due(), role="project_advisor", execution_mode="fresh_bounded_role",
+            target={"assignment_ref": BASE},
+        )
+        result = prepare_current_assignment_occurrence(
+            due_port=DuePort(), assignments=Assignments(), binding=Binding(), due=due,
+            assignment_ref=REF, assignment_owner="manager", operation="invoke", lifecycle="launch",
+            request_key="advisor-start-v1",
+        )
+        self.assertEqual(result["outcome"], "committed")
+        self.assertEqual(result["execution_mode"], "fresh_bounded_role")
+
+    def test_fresh_project_advisor_due_requires_exact_readonly_owner_pins(self):
+        project = {"authority": "owner", "kind": "work.project", "id": "p", "revision": "rev-1"}
+        task = {"authority": "owner", "kind": "work.task", "id": "t", "revision": "rev-1"}
+        mandate = {"authority": "owner", "kind": "cnt.document", "id": "m", "revision": "rev-1"}
+        guide = {"authority": "owner", "kind": "cnt.document", "id": "g", "revision": "rev-1"}
+        due = DueRecord(
+            schedule_id="advisor-start", recipient="advisor", instruction="Answer once.",
+            profile="read-only", anchor="2026-10-03T00:00:00Z", due_at="2026-10-03T00:00:00Z",
+            last_covered_slot=0, invocation_identity="advisor-start-v1", project_ref="p", manager_ref="owner",
+            assignment_ref=REF, generation=1, role="project_advisor", lifecycle_owner="owner",
+            target={"host": "local", "project_ref": project, "task_ref": task,
+                    "assignment_ref": REF, "mandate_ref": mandate, "role": "project_advisor",
+                    "principal": "advisor", "requested_model": "gpt-6-astra",
+                    "requested_reasoning": "high", "requested_profile": "read-only"},
+            execution_mode="fresh_bounded_role", requested_model="gpt-6-astra",
+            requested_reasoning="high", context_refs=(guide, mandate), timeout_seconds=1200,
+        )
+        self.assertEqual(due.role, "project_advisor")
+        self.assertEqual(due.execution_mode, "fresh_bounded_role")
+        with self.assertRaisesRegex(ValueError, "must not fabricate"):
+            replace(due, target={**due.target, "native_id": "made-up"})
 
     def test_partial_success_names_committed_due(self):
         result = prepare_current_assignment_occurrence(

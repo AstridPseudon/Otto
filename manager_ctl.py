@@ -88,6 +88,35 @@ def main() -> None:
                       help="omit for a read-only current-pair lookup")
     pair.add_argument("--pin", action="append", dest="pins", default=[],
                       help="exact owner resource-ref JSON; repeat for adopted inputs")
+    advisor_start = commands.add_parser(
+        "advisor-start", help="launch the current paired project advisor and ask one concrete question",
+    )
+    advisor_start.add_argument("--request-key", required=True)
+    advisor_start.add_argument("--question", required=True)
+    advisor_wake = commands.add_parser(
+        "advisor-wake", help="resume the exact paired advisor session to inspect manager effect",
+    )
+    advisor_wake.add_argument("--request-key", required=True)
+    advisor_wake.add_argument("--focus", required=True)
+    advisor_deliver = commands.add_parser(
+        "advisor-deliver", help="persist and receive one decision from the paired advisor",
+    )
+    advisor_deliver.add_argument("--request-key", required=True)
+    advisor_deliver.add_argument("--decision-id", required=True)
+    advisor_deliver.add_argument("--action", required=True)
+    advisor_deliver.add_argument("--rationale", required=True)
+    advisor_deliver.add_argument("--evidence", action="append", required=True)
+    advisor_deliver.add_argument("--expected-evidence", required=True)
+    complete = commands.add_parser(
+        "complete-task", help="request guarded canonical task completion with exact evidence refs",
+    )
+    complete.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    complete.add_argument("--request-key", required=True)
+    complete.add_argument("--disposition", required=True)
+    complete.add_argument("--evidence-ref", action="append", dest="evidence_refs", required=True,
+                          help="exact resource-ref JSON; repeat for all evidence")
+    complete.add_argument("--evidence-hash", action="append", dest="evidence_hashes", required=True,
+                          help="label=sha256; repeat for all evidence")
     commit = commands.add_parser("commit", help="create one owner-authorized local Git checkpoint")
     commit.add_argument("--message", required=True)
     commit.add_argument("--path", action="append", dest="paths", required=True,
@@ -112,7 +141,7 @@ def main() -> None:
     payload = vars(args)
     response = call(payload)
     print(json.dumps(response, indent=2, sort_keys=True))
-    if response.get("outcome") not in {"ok", "committed", "replayed"}:
+    if response.get("outcome") not in {"ok", "committed", "replayed", "created", "read"}:
         raise SystemExit(1)
 
 

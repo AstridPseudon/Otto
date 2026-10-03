@@ -271,8 +271,8 @@ class DueRecord:
         for field_name, value in (("role", self.role), ("purpose", self.purpose), ("message", self.message), ("lifecycle_owner", self.lifecycle_owner)):
             if value is not None:
                 _required_text(value, field_name)
-        if self.execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_manager"}:
-            raise ValueError("execution_mode must be continue_existing, fresh_bounded_worker, or fresh_manager")
+        if self.execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_bounded_role", "fresh_manager"}:
+            raise ValueError("execution_mode must be continue_existing, fresh_bounded_worker, fresh_bounded_role, or fresh_manager")
         for field_name, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("result_owner", self.result_owner)):
             if value is not None:
                 _required_text(value, field_name)
@@ -317,6 +317,29 @@ class DueRecord:
             for ref in self.context_refs:
                 if not isinstance(ref, Mapping): raise ValueError("fresh context refs must be exact references")
                 for key in ("authority", "kind", "id", "revision"): _required_text(ref.get(key), "context_refs." + key)
+        if self.execution_mode == "fresh_bounded_role":
+            if self.role not in {"orchestrator", "project_advisor"} or not isinstance(self.target, Mapping):
+                raise ValueError("fresh_bounded_role requires an orchestrator or project_advisor target")
+            if self.requested_model is None or self.requested_reasoning is None or not self.context_refs:
+                raise ValueError("fresh_bounded_role requires requested model, reasoning, and context")
+            if self.timeout_seconds is None or self.timeout_seconds > 1920:
+                raise ValueError("fresh_bounded_role requires a finite supported timeout")
+            target = self.target
+            if any(key in target for key in NATIVE_TARGET_KEYS):
+                raise ValueError("fresh_bounded_role must not fabricate a native session alias")
+            principal = target.get("principal")
+            principal_id = principal.get("id") if isinstance(principal, Mapping) else principal
+            if target.get("role") != self.role or principal_id != self.recipient:
+                raise ValueError("fresh bounded role principal/role must match logical recipient")
+            for name in ("project_ref", "task_ref", "assignment_ref", "mandate_ref"):
+                ref = target.get(name)
+                if not isinstance(ref, Mapping):
+                    raise ValueError("fresh_bounded_role requires exact target." + name)
+                for field in ("authority", "kind", "id", "revision"):
+                    _required_text(ref.get(field), "target." + name + "." + field)
+            for key, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("requested_profile", self.profile)):
+                if target.get(key) != value:
+                    raise ValueError("fresh bounded role target configuration conflicts with DueRecord")
         if self.execution_mode == "fresh_manager":
             if (self.role != "manager" or not isinstance(self.target, Mapping)
                     or self.requested_model is None or self.requested_reasoning is None

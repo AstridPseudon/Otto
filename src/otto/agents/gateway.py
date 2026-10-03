@@ -922,9 +922,9 @@ class OttoGateway:
             return {"code": "missing_packet_digest", "message": "input packet digest is required"}
         if responsibility.operation in {"resume", "send", "cancel"} and not responsibility.physical_session_id:
             return {"code": "missing_physical_session", "message": "existing physical session identity is required"}
-        if responsibility.execution_mode is not None and responsibility.execution_mode not in {"continue_existing", "fresh_bounded_worker"}:
+        if responsibility.execution_mode is not None and responsibility.execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_bounded_role"}:
             return {"code": "unsupported_execution_mode", "message": "execution mode is not supported"}
-        if responsibility.require_host_attestation and responsibility.execution_mode not in {"continue_existing", "fresh_bounded_worker"}:
+        if responsibility.require_host_attestation and responsibility.execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_bounded_role"}:
             return {"code": "attestation_mode_mismatch", "message": "host attestation requires an explicit execution mode"}
         if responsibility.resource_evidence is not None and responsibility.assignment_ref is None:
             return {"code": "invalid_resource_evidence", "message": "resource evidence requires an assignment reference"}
@@ -1681,7 +1681,7 @@ def run_due_occurrence(
 
     invoked = gateway.invoke(responsibility, request)
     result = dict(_json_value(invoked)) if isinstance(invoked, Mapping) else {"outcome": "unknown", "result": _json_value(invoked)}
-    if result.get("outcome") == "succeeded" and responsibility.execution_mode in {"continue_existing", "fresh_bounded_worker"} and responsibility.require_host_attestation:
+    if result.get("outcome") == "succeeded" and responsibility.execution_mode in {"continue_existing", "fresh_bounded_worker", "fresh_bounded_role"} and responsibility.require_host_attestation:
         manager_acceptance = capture.accept_result(responsibility.logical_request_key or "", manager_actor=responsibility.owner)
     else:
         manager_acceptance = {
@@ -1887,7 +1887,7 @@ def run_scheduled_callback(
     if callback.get("enabled") is not True:
         return _occurrence_rejection("callback", "callback_disabled", "callback is disabled")
     execution_mode = callback.get("execution_mode")
-    if execution_mode not in {"continue_existing", "fresh_bounded_worker"}:
+    if execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_bounded_role"}:
         return _occurrence_rejection("callback", "execution_mode_required", "callback.execution_mode must be explicit")
     required_text_fields = (
         "callback_id", "schedule_id", "owner_actor", "correlation_id", "logical_request_key",
@@ -1961,7 +1961,7 @@ def run_scheduled_callback(
     physical_session_id = callback.get("physical_session_id")
     if execution_mode == "continue_existing" and not _text(physical_session_id):
         return _occurrence_rejection("callback", "physical_session_required", "continue-existing callback requires an explicit physical_session_id")
-    if execution_mode == "fresh_bounded_worker" and physical_session_id is not None:
+    if execution_mode in {"fresh_bounded_worker", "fresh_bounded_role"} and physical_session_id is not None:
         return _occurrence_rejection("callback", "fresh_physical_session_forbidden", "fresh callback cannot supply a physical session")
     operation = "resume" if execution_mode == "continue_existing" else "invoke"
     if execution_mode == "continue_existing":

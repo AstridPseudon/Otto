@@ -423,6 +423,10 @@ def prepare_current_assignment_occurrence(
     if not isinstance(request_key, str) or not request_key.strip():
         raise OccurrencePreparationError("request_key is required")
     expected_mode = _MODES.get((operation, lifecycle))
+    if (operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) in {
+        "orchestrator", "project_advisor"
+    }:
+        expected_mode = "fresh_bounded_role"
     if expected_mode is None:
         raise OccurrencePreparationError("unsupported operation/lifecycle pair")
     if getattr(due, "execution_mode", None) != expected_mode:

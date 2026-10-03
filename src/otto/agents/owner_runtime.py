@@ -481,8 +481,11 @@ class CanonicalRoleRuntime:
         logical_agent_id = principal if isinstance(principal, str) else principal["id"]
         due = self.due_port.read_due(schedule_id) or {}
         fresh_worker = due.get("execution_mode") == "fresh_bounded_worker"
+        fresh_role = due.get("execution_mode") == "fresh_bounded_role"
         if fresh_worker and (role != "worker" or operation != "invoke" or physical_session_id is not None or not authorized_direct):
             raise OwnerRoleRuntimeError("fresh logical worker requires owner-authorized invoke without a native session")
+        if fresh_role and (role not in {"orchestrator", "project_advisor"} or operation != "invoke" or physical_session_id is not None or not authorized_direct):
+            raise OwnerRoleRuntimeError("fresh bounded role requires owner-authorized invoke without a native session")
         requested_model = target.get("requested_model", due.get("requested_model") or "gpt-5.6-luna")
         requested_reasoning = target.get("requested_reasoning", due.get("requested_reasoning") or "high")
         requested_profile = target.get("requested_profile", due.get("profile", "default"))
@@ -518,14 +521,14 @@ class CanonicalRoleRuntime:
                     required_resource_names=required_resource_names,
                     task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
                 )
-                if fresh_worker and not prepared["canonical_evidence"].get("mandate_instruction_contract"):
-                    raise OwnerRoleRuntimeError("fresh worker requires an exact owner execution mandate contract")
+                if (fresh_worker or fresh_role) and not prepared["canonical_evidence"].get("mandate_instruction_contract"):
+                    raise OwnerRoleRuntimeError("fresh bounded role requires an exact owner execution mandate contract")
                 return _canonical_operation_evidence(
                     prepared, owner=logical_agent_id, task_ref=task_ref,
                 )["brief_sha256"]
 
             capture.current_brief_reader = current_brief_digest
-            if fresh_worker:
+            if fresh_worker or fresh_role:
                 current_brief_digest()  # Reject missing/setup/conflicting contracts before any provider claim/delivery.
             adapter = self.adapter.bind_owner_authorization(
                 lambda session_id, brief_sha256: capture.authorize_delivery(
