@@ -712,15 +712,19 @@ class HerzchenCodexAdapter:
             return self._invoke_owner_authorized(request)
         return self._execute("invoke", request)
 
-    def _invoke_owner_authorized(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Initialize inertly, bind owner identity, then deliver by exact resume."""
+    def _invoke_owner_authorized(
+        self, request: Mapping[str, Any], *, existing_session: bool = False
+    ) -> Mapping[str, Any]:
+        """Bind owner identity, then deliver to an exact fresh or existing session."""
         from herzchen.contracts import HostIdentity, HostOperation, HostRequest
 
         if not self.require_host_context or not (callable(self.turn_context_reader) or self.host_context_path):
             raise HerzchenAdapterError("owner-authorized delivery requires host-owned task evidence")
         if not callable(self._owner_delivery_verifier):
             raise HerzchenAdapterError("trusted current owner delivery verifier is required")
-        typed, digest, brief = self._typed_request("invoke", request)
+        typed, digest, brief = self._typed_request(
+            "resume" if existing_session else "invoke", request
+        )
         model = _text(request.get("requested_model", self.requested_model), "requested_model")
         reasoning = _text(request.get("requested_reasoning", self.requested_reasoning), "requested_reasoning")
         projection = self._request_projection(brief, digest, request)
@@ -759,32 +763,40 @@ class HerzchenCodexAdapter:
                 raise HerzchenAdapterError("owner occurrence requires a finite supported deadline")
             inert_seconds = min(120, max(30, total // 10))
             inert_options = {"timeout_seconds": inert_seconds, "occurrence_deadline": deadline}
-            work_options = {"timeout_seconds": total - inert_seconds, "occurrence_deadline": deadline}
-        initializer = self._new_host(inert_prompt, {}, model=model, reasoning=reasoning, **inert_options)
-        observed_initial = initializer.invoke(typed)
-        if not isinstance(observed_initial, tuple) or len(observed_initial) != 2:
-            raise HerzchenAdapterError("inert host initialization returned no receipt")
-        initial_receipt, initial_envelope = observed_initial
-        initial_identity = getattr(initial_receipt, "identity", None)
-        physical = getattr(initial_identity, "physical_session_id", None)
-        initial_outcome = getattr(getattr(initial_receipt, "outcome", None), "value", getattr(initial_receipt, "outcome", "unknown"))
-        base = {"initialization_receipt": _json(initial_receipt),
-                "initialization_envelope": _json(initial_envelope),
-                "physical_session_id": physical, "retry_allowed": False}
-        if isinstance(physical, str) and physical.strip() and self._thread_started_callback is not None:
-            try:
-                self._thread_started_callback(physical)
-            except Exception as exc:
+            work_options = {"timeout_seconds": total if existing_session else total - inert_seconds,
+                            "occurrence_deadline": deadline}
+        if existing_session:
+            physical = typed.identity.physical_session_id
+            base = {"initialization_receipt": None, "initialization_envelope": None,
+                    "physical_session_id": physical, "retry_allowed": False}
+            if not isinstance(physical, str) or not physical.strip():
+                raise HerzchenAdapterError("owner-authorized resume requires an existing physical session")
+        else:
+            initializer = self._new_host(inert_prompt, {}, model=model, reasoning=reasoning, **inert_options)
+            observed_initial = initializer.invoke(typed)
+            if not isinstance(observed_initial, tuple) or len(observed_initial) != 2:
+                raise HerzchenAdapterError("inert host initialization returned no receipt")
+            initial_receipt, initial_envelope = observed_initial
+            initial_identity = getattr(initial_receipt, "identity", None)
+            physical = getattr(initial_identity, "physical_session_id", None)
+            initial_outcome = getattr(getattr(initial_receipt, "outcome", None), "value", getattr(initial_receipt, "outcome", "unknown"))
+            base = {"initialization_receipt": _json(initial_receipt),
+                    "initialization_envelope": _json(initial_envelope),
+                    "physical_session_id": physical, "retry_allowed": False}
+            if isinstance(physical, str) and physical.strip() and self._thread_started_callback is not None:
+                try:
+                    self._thread_started_callback(physical)
+                except Exception as exc:
+                    return {**base, "outcome": "unknown", "delivery_state": "unknown",
+                            "error": {"code": "owner_identity_capture_failed", "message": str(exc)}}
+            initial_host = _json(initial_envelope).get("host_evidence", {})
+            if (initial_outcome != "succeeded" or not isinstance(physical, str) or not physical.strip()
+                    or initial_host.get("invocation_turn_verified") is not True):
                 return {**base, "outcome": "unknown", "delivery_state": "unknown",
-                        "error": {"code": "owner_identity_capture_failed", "message": str(exc)}}
-        initial_host = _json(initial_envelope).get("host_evidence", {})
-        if (initial_outcome != "succeeded" or not isinstance(physical, str) or not physical.strip()
-                or initial_host.get("invocation_turn_verified") is not True):
-            return {**base, "outcome": "unknown", "delivery_state": "unknown",
-                    "error": {"code": "inert_start_unresolved", "message": "initialization did not prove a completed host session"}}
-        if self._thread_started_callback is None:
-            return {**base, "outcome": "unknown", "delivery_state": "unknown",
-                    "error": {"code": "owner_identity_capture_missing", "message": "provider identity was not bound to the owner"}}
+                        "error": {"code": "inert_start_unresolved", "message": "initialization did not prove a completed host session"}}
+            if self._thread_started_callback is None:
+                return {**base, "outcome": "unknown", "delivery_state": "unknown",
+                        "error": {"code": "owner_identity_capture_missing", "message": "provider identity was not bound to the owner"}}
         try:
             authorization = self._owner_authorizer(physical, digest)
         except Exception as exc:
@@ -930,6 +942,8 @@ class HerzchenCodexAdapter:
         return self._source_verifier.recheck(proof)
 
     def resume(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self._owner_authorizer is not None:
+            return self._invoke_owner_authorized(request, existing_session=True)
         return self._execute("resume", request)
 
     def send(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
