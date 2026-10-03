@@ -9,6 +9,7 @@ import unittest
 from otto.portfolio.execution_operations import (
     OccurrencePreparationError,
     build_manager_callback_due,
+    compact_project_status,
     commit_local_checkpoint,
     derive_manager_continuation_request,
     prepare_current_assignment_occurrence,
@@ -136,6 +137,39 @@ class Tests(unittest.TestCase):
                 commit_local_checkpoint(root, ["selected.txt"], message="Selected checkpoint")
             with self.assertRaisesRegex(OccurrencePreparationError, "escapes"):
                 commit_local_checkpoint(root, ["../outside.txt"], message="Invalid checkpoint")
+
+    def test_compact_status_joins_task_report_and_native_handle(self):
+        task_ref = {"authority": "owner", "kind": "work.task", "id": "task-1", "revision": "rev-2"}
+        view = {
+            "project": {"ref": {"id": "project-1"}, "observed": {
+                "lifecycle": "active", "readiness": {"status": "ready"},
+            }},
+            "tasks": [{
+                "ref": task_ref,
+                "authored": {"title": "One", "lifecycle": "pending"},
+                "observed": {
+                    "lifecycle": "active", "readiness": {"status": "ready"},
+                    "assignments": [{"ref": {"id": "assignment-1"}, "payload": {
+                        "principal": "worker-1", "generation": 2, "status": "queued",
+                    }}],
+                },
+            }],
+        }
+        report = {"ref": {"id": "report-1"}, "value": {
+            "task_alias": "PA01", "recorded_at": "2026-10-03T12:00:00Z",
+            "summary": "implemented", "next_action": "review",
+        }}
+        occurrence = {
+            "schedule_id": "worker-1", "version": 4, "target": {"task_ref": task_ref},
+            "delivery_state": "ready", "host_state": "active", "completion_state": "none",
+            "host_evidence": {"gateway_attempt": {"physical_session_id": "session-1"}},
+        }
+        value = compact_project_status(
+            view, task_refs={"PA01": task_ref}, reports=[report], occurrences=[occurrence],
+        )
+        self.assertEqual(value["tasks"]["PA01"]["lifecycle"], "active")
+        self.assertEqual(value["tasks"]["PA01"]["latest_report"]["ref"], {"id": "report-1"})
+        self.assertEqual(value["tasks"]["PA01"]["occurrence"]["physical_session_id"], "session-1")
 
     def test_continuation_is_recovered_from_report_without_projection_file(self):
         due = {

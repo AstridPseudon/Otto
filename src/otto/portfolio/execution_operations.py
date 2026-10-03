@@ -217,6 +217,128 @@ def read_project_progress_reports(reader: Any, project_ref: Mapping[str, Any]) -
     return reports
 
 
+def compact_project_status(
+    project_view: Mapping[str, Any],
+    *,
+    task_refs: Mapping[str, Mapping[str, Any]],
+    reports: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
+    occurrences: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
+) -> dict[str, Any]:
+    """Project a useful read-only status without embedding raw receipts.
+
+    The project sheet and Due records remain authoritative.  This projection
+    keeps their current refs, lifecycle, latest manager report, and active or
+    terminal native handle while leaving full receipts available by ref.
+    """
+
+    if not isinstance(project_view, Mapping):
+        raise OccurrencePreparationError("project view is unavailable")
+    tasks = project_view.get("tasks")
+    if not isinstance(tasks, list):
+        raise OccurrencePreparationError("project view has no task list")
+
+    alias_by_id = {
+        str(ref.get("id")): alias
+        for alias, ref in task_refs.items()
+        if isinstance(alias, str) and isinstance(ref, Mapping) and ref.get("id")
+    }
+    report_by_alias: dict[str, Mapping[str, Any]] = {}
+    for report in reports:
+        value = report.get("value") if isinstance(report, Mapping) else None
+        alias = value.get("task_alias") if isinstance(value, Mapping) else None
+        if alias not in task_refs:
+            continue
+        current = report_by_alias.get(alias)
+        current_value = current.get("value") if isinstance(current, Mapping) else {}
+        if str(value.get("recorded_at", "")) >= str(current_value.get("recorded_at", "")):
+            report_by_alias[alias] = report
+
+    occurrence_by_alias: dict[str, Mapping[str, Any]] = {}
+    for occurrence in occurrences:
+        if not isinstance(occurrence, Mapping):
+            continue
+        target = occurrence.get("target")
+        task_ref = target.get("task_ref") if isinstance(target, Mapping) else None
+        alias = alias_by_id.get(str(task_ref.get("id"))) if isinstance(task_ref, Mapping) else None
+        if alias is None:
+            continue
+        current = occurrence_by_alias.get(alias)
+        occurrence_order = (
+            str(occurrence.get("completed_at") or occurrence.get("delivered_at")
+                or occurrence.get("due_at") or occurrence.get("anchor") or ""),
+            str(occurrence.get("schedule_id") or ""),
+            int(occurrence.get("version", 0)),
+        )
+        current_order = (
+            str((current or {}).get("completed_at") or (current or {}).get("delivered_at")
+                or (current or {}).get("due_at") or (current or {}).get("anchor") or ""),
+            str((current or {}).get("schedule_id") or ""),
+            int((current or {}).get("version", 0)),
+        )
+        if current is None or occurrence_order >= current_order:
+            occurrence_by_alias[alias] = occurrence
+
+    projected: dict[str, Any] = {}
+    for item in tasks:
+        if not isinstance(item, Mapping):
+            continue
+        ref = item.get("ref")
+        alias = alias_by_id.get(str(ref.get("id"))) if isinstance(ref, Mapping) else None
+        if alias is None:
+            continue
+        authored = item.get("authored") if isinstance(item.get("authored"), Mapping) else {}
+        observed = item.get("observed") if isinstance(item.get("observed"), Mapping) else {}
+        assignments = observed.get("assignments") if isinstance(observed.get("assignments"), list) else []
+        assignment = assignments[-1] if assignments else None
+        report = report_by_alias.get(alias)
+        report_value = report.get("value") if isinstance(report, Mapping) else None
+        occurrence = occurrence_by_alias.get(alias)
+        last_result = occurrence.get("last_result") if isinstance(occurrence, Mapping) else None
+        host_attempt = (((occurrence or {}).get("host_evidence") or {}).get("gateway_attempt") or {})
+        attempt_result = host_attempt.get("result") if isinstance(host_attempt, Mapping) else None
+        projected[alias] = {
+            "ref": dict(ref),
+            "title": authored.get("title") or authored.get("name"),
+            "lifecycle": observed.get("lifecycle") or authored.get("lifecycle"),
+            "readiness": observed.get("readiness"),
+            "assignment": None if not isinstance(assignment, Mapping) else {
+                "ref": assignment.get("ref"),
+                "principal": (assignment.get("payload") or {}).get("principal"),
+                "generation": (assignment.get("payload") or {}).get("generation"),
+                "status": (assignment.get("payload") or {}).get("status"),
+            },
+            "latest_report": None if not isinstance(report, Mapping) else {
+                "ref": report.get("ref"),
+                "recorded_at": report_value.get("recorded_at"),
+                "summary": report_value.get("summary"),
+                "next_action": report_value.get("next_action"),
+            },
+            "occurrence": None if not isinstance(occurrence, Mapping) else {
+                "schedule_id": occurrence.get("schedule_id"),
+                "version": occurrence.get("version"),
+                "delivery_state": occurrence.get("delivery_state"),
+                "host_state": occurrence.get("host_state"),
+                "completion_state": occurrence.get("completion_state"),
+                "physical_session_id": (
+                    (last_result or {}).get("physical_session_id")
+                    or (attempt_result or {}).get("physical_session_id")
+                    or host_attempt.get("physical_session_id")
+                ),
+                "turn_id": (last_result or {}).get("observed_turn_id") or (attempt_result or {}).get("observed_turn_id"),
+                "result": last_result,
+            },
+        }
+    project = project_view.get("project")
+    observed_project = project.get("observed") if isinstance(project, Mapping) else None
+    return {
+        "schema": "otto.project-status.v1",
+        "project_ref": (project or {}).get("ref") if isinstance(project, Mapping) else None,
+        "lifecycle": (observed_project or {}).get("lifecycle") if isinstance(observed_project, Mapping) else None,
+        "readiness": (observed_project or {}).get("readiness") if isinstance(observed_project, Mapping) else None,
+        "tasks": projected,
+    }
+
+
 def build_manager_callback_due(
     prior: Any,
     *,
@@ -359,7 +481,7 @@ def prepare_current_assignment_occurrence(
 
 __all__ = [
     "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
-    "derive_manager_continuation_request",
+    "compact_project_status", "derive_manager_continuation_request",
     "prepare_current_assignment_occurrence", "read_project_progress_reports",
     "validate_owner_timeout_seconds",
 ]

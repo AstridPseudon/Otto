@@ -6,14 +6,25 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 import uuid
 
 IPC = Path(__file__).resolve().parent.parent / "controller" / "manager-ipc"
 SERVICE = Path("/tmp/otto-project-advisor-manager-ops.sock")
+OFFLINE_READER = Path(__file__).resolve().parent.parent / "controller" / "read_manager_status.py"
+OWNER_PYTHON = Path("/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python")
 
 
 def call(payload: dict) -> dict:
+    if payload.get("command") == "status" and not SERVICE.exists():
+        completed = subprocess.run(
+            [str(OWNER_PYTHON), str(OFFLINE_READER)],
+            text=True, capture_output=True, timeout=10,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("offline owner status failed: " + completed.stderr.strip())
+        return json.loads(completed.stdout)
     token = uuid.uuid4().hex
     request = IPC / ("request-" + token + ".json")
     response = IPC / ("response-" + token + ".json")
