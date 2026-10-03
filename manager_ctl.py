@@ -25,7 +25,7 @@ def call(payload: dict) -> dict:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    deadline = time.monotonic() + 1300
+    deadline = time.monotonic() + 1000
     while time.monotonic() < deadline:
         try:
             value = json.loads(response.read_text())
@@ -56,6 +56,11 @@ def main() -> None:
     run.add_argument("--principal", required=True)
     run.add_argument("--route", required=True, choices=["normal", "xhard"])
     run.add_argument("--request-key", required=True)
+    resume = commands.add_parser("resume-worker", help="resume and collect one inspected interrupted worker")
+    resume.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    resume.add_argument("--principal", required=True)
+    resume.add_argument("--route", required=True, choices=["normal", "xhard"])
+    resume.add_argument("--request-key", required=True)
     args = parser.parse_args()
     payload = vars(args)
     response = call(payload)
