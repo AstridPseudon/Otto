@@ -79,6 +79,133 @@ def _principal(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+_SESSION_KEYS = (
+    "native_id", "physical_session_id", "conversation_id", "thread_id", "session_id", "id",
+)
+
+
+def _session_identity(value: Any, field: str) -> str:
+    """Return one unambiguous native-session identity from a conversation."""
+
+    if not isinstance(value, Mapping):
+        raise AdvisorDeliveryError(f"{field} must be a conversation reference")
+    identities = {
+        item.strip() for key in _SESSION_KEYS
+        if isinstance((item := value.get(key)), str) and item.strip()
+    }
+    if len(identities) != 1:
+        raise AdvisorDeliveryError(f"{field} must identify one exact native session")
+    return next(iter(identities))
+
+
+def _exact_consumption_receipt(
+    value: Any, *, recipient: Mapping[str, Any], delivery_id: str,
+) -> Optional[dict[str, Any]]:
+    """Accept only a receipt proving consumption by the pinned native session."""
+
+    if not isinstance(value, Mapping) or value.get("state") != "sent":
+        return None
+    receipt = value.get("receipt")
+    if not isinstance(receipt, Mapping):
+        return None
+    try:
+        expected_session = _session_identity(recipient, "recipient")
+    except AdvisorDeliveryError:
+        return None
+    if (
+        receipt.get("schema") != "otto.exact-session-consumption.v1"
+        or receipt.get("delivery_id") != delivery_id
+        or receipt.get("physical_session_id") != expected_session
+        or receipt.get("transport") != "owner-host-continuation"
+        or receipt.get("consumed") is not True
+        or not isinstance(receipt.get("observed_turn_id"), str)
+        or not receipt["observed_turn_id"].strip()
+    ):
+        return None
+    return _json(dict(receipt), "receipt")
+
+
+@dataclass(frozen=True)
+class ExactSessionDelivery:
+    """Adapt existing host continuation/readback operations to delivery.
+
+    The continuation operation remains responsible for authorization, native
+    execution, and its durable occurrence.  This adapter creates no ledger: it
+    merely requires a successful result from the exact requested session and a
+    native turn identity before reporting consumption.
+    """
+
+    continue_session: Callable[[Mapping[str, Any]], Mapping[str, Any]]
+    read_session_delivery: Callable[[str], Mapping[str, Any]]
+
+    def __post_init__(self) -> None:
+        if not callable(self.continue_session) or not callable(self.read_session_delivery):
+            raise TypeError("exact-session delivery requires continuation and readback operations")
+
+    @staticmethod
+    def _result(value: Any, *, delivery_id: str, session_id: str) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {"state": "unknown", "retry": False}
+        if isinstance(value.get("result"), Mapping):
+            result = value["result"]
+        elif isinstance(value.get("last_result"), Mapping):
+            result = value["last_result"]
+        else:
+            result = value
+        outcome = result.get("outcome", value.get("outcome"))
+        if (outcome is None and value.get("completion_state") == "succeeded"
+                and value.get("delivery_state") == "returned"):
+            outcome = "succeeded"
+        observed_session = result.get("physical_session_id") or result.get("native_session_id")
+        turn_id = result.get("observed_turn_id") or result.get("turn_id")
+        if outcome in {"succeeded", "returned"} and observed_session == session_id \
+                and isinstance(turn_id, str) and turn_id.strip():
+            return {
+                "state": "sent",
+                "receipt": {
+                    "schema": "otto.exact-session-consumption.v1",
+                    "delivery_id": delivery_id,
+                    "physical_session_id": session_id,
+                    "observed_turn_id": turn_id.strip(),
+                    "consumed": True,
+                    "transport": "owner-host-continuation",
+                },
+                "retry": False,
+            }
+        if outcome in {"started", "active", "pending"}:
+            return {"state": "started", "retry": False}
+        return {"state": "unknown", "retry": False}
+
+    def send(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        delivery_id = _text(value.get("delivery_id"), "delivery_id")
+        recipient = value.get("recipient") or value.get("target")
+        session_id = _session_identity(recipient, "recipient")
+        request = {
+            "schema": "otto.exact-session-delivery.v1",
+            "delivery_id": delivery_id,
+            "logical_request_key": "otto-advisor-delivery:" + delivery_id,
+            "operation": "resume",
+            "physical_session_id": session_id,
+            "recipient": dict(recipient),
+            "message": _json(value.get("message"), "message"),
+        }
+        return self._result(
+            self.continue_session(request), delivery_id=delivery_id, session_id=session_id,
+        )
+
+    def read_delivery(self, delivery_id: str) -> dict[str, Any]:
+        delivery_id = _text(delivery_id, "delivery_id")
+        value = self.read_session_delivery(delivery_id)
+        if not isinstance(value, Mapping):
+            return {"state": "unknown", "retry": False}
+        recipient = value.get("recipient") or value.get("target")
+        try:
+            session_id = _session_identity(recipient, "readback.recipient")
+        except AdvisorDeliveryError:
+            return {"state": "unknown", "retry": False}
+        return self._result(value, delivery_id=delivery_id, session_id=session_id)
+
+
 @dataclass(frozen=True)
 class AdvisorDeliveryPorts:
     """Finite owner/host capabilities used by :class:`AdvisorDeliveryLoop`."""
@@ -270,6 +397,40 @@ class AdvisorDeliveryLoop:
                 and item["value"].get("decision_id") == decision_id
                 and str(item["value"].get("schema", "")).startswith("otto.advisor.")]
 
+    @staticmethod
+    def _delivery_projection(
+        records: Sequence[Mapping[str, Any]], *, recipient: Mapping[str, Any], delivery_id: str,
+    ) -> dict[str, Any]:
+        """Project append-only delivery history, including later corrections."""
+
+        projected: dict[str, Any] = {"state": "persisted", "receipt": None}
+        invalid_sent_claims = 0
+        for item in records:
+            if item.get("delivery_id") != delivery_id:
+                continue
+            if item.get("schema") == "otto.advisor.delivery-correction.v1":
+                projected = {"state": "unknown", "receipt": None, "correction": dict(item)}
+                continue
+            if item.get("schema") != "otto.advisor.delivery.v1":
+                continue
+            state = item.get("state")
+            if state == "sent":
+                receipt = _exact_consumption_receipt(
+                    {"state": state, "receipt": item.get("receipt")},
+                    recipient=recipient, delivery_id=delivery_id,
+                )
+                if receipt is None:
+                    invalid_sent_claims += 1
+                    projected = {"state": "unknown", "receipt": None,
+                                 "invalid_sent_claim": dict(item)}
+                else:
+                    projected = {"state": "sent", "receipt": receipt,
+                                 "sent_at": item.get("sent_at")}
+            elif state in {"started", "unknown"}:
+                projected = {"state": state, "receipt": None}
+        projected["invalid_sent_claims"] = invalid_sent_claims
+        return projected
+
     def deliver_decision(
         self,
         *,
@@ -313,19 +474,28 @@ class AdvisorDeliveryLoop:
             expected = dict(body)
             if any(prior_intent.get(key) != value for key, value in expected.items()):
                 raise AdvisorDeliveryError("request_id was reused with changed decision input")
-            terminal = next((item for item in reversed(records)
-                             if item.get("delivery_id") == delivery_id
-                             and item.get("schema") == "otto.advisor.delivery.v1"
-                             and item.get("state") in {"sent", "unknown"}), None)
-            if terminal is None:
-                return {"outcome": "unknown", "decision_id": decision_id,
-                        "delivery_id": delivery_id, "retry": False,
-                        "reason": "persisted intent has no terminal delivery record"}
-            return {"outcome": terminal["state"], "decision_id": decision_id,
-                    "delivery_id": delivery_id, "receipt": terminal.get("receipt"),
-                    "retry": False, "replayed": True}
-        report = self._append(advisor, body, actor=advisor_actor,
-                              generation=pairing.advisor_generation, request_key=request_id)
+            delivery_state = self._delivery_projection(
+                records, recipient=recipient, delivery_id=delivery_id,
+            )
+            if delivery_state["state"] == "sent":
+                return {"outcome": "sent", "decision_id": decision_id,
+                        "delivery_id": delivery_id, "receipt": delivery_state.get("receipt"),
+                        "sent_at": delivery_state.get("sent_at"), "retry": False,
+                        "replayed": True}
+            if delivery_state["state"] in {"started", "unknown"}:
+                recovered = self.recover_delivery(
+                    pairing=pairing, advisor_actor=advisor_actor, decision_id=decision_id,
+                )
+                return {**recovered, "replayed": True}
+            report = next((item for item in self._reports(pairing)
+                           if isinstance(item.get("value"), Mapping)
+                           and item["value"].get("schema") == body["schema"]
+                           and item["value"].get("request_id") == request_id), None)
+            if report is None or not isinstance(report.get("ref"), Mapping):
+                raise AdvisorDeliveryError("persisted decision report is unavailable")
+        else:
+            report = self._append(advisor, body, actor=advisor_actor,
+                                  generation=pairing.advisor_generation, request_key=request_id)
         message = {"type": "project_advisor_decision", "decision_id": decision_id,
                    "report_ref": report["ref"], "action": action,
                    "expected_evidence": expected_evidence, "recipient": recipient}
@@ -333,6 +503,17 @@ class AdvisorDeliveryLoop:
             return {"outcome": "prepared", "decision_id": decision_id,
                     "delivery_id": delivery_id, "report_ref": report["ref"],
                     "recipient": recipient, "message": message, "retry": False}
+        started_body = {
+            "schema": "otto.advisor.delivery.v1", "decision_id": decision_id,
+            "project_ref": dict(pairing.project_ref), "delivery_id": delivery_id,
+            "recipient_assignment_ref": dict(pairing.manager_ref), "recipient": recipient,
+            "state": "started", "receipt": None, "sent_at": None,
+            "started_at": _stamp(self.ports.now()),
+        }
+        self._append(
+            advisor, started_body, actor=advisor_actor, generation=pairing.advisor_generation,
+            request_key="otto-advisor-delivery-started:" + delivery_id,
+        )
         try:
             sent = self.ports.delivery.send({
                 "schema": "otto.advisor.delivery.v1", "delivery_id": delivery_id,
@@ -343,15 +524,15 @@ class AdvisorDeliveryLoop:
             sent = {"state": "unknown", "error": str(exc)}
         if not isinstance(sent, Mapping):
             sent = {"state": "unknown"}
-        state = sent.get("state")
-        receipt = sent.get("receipt")
-        if state != "sent" or not isinstance(receipt, Mapping):
-            state, receipt = "unknown", None
+        receipt = _exact_consumption_receipt(
+            sent, recipient=recipient, delivery_id=delivery_id,
+        )
+        state = "sent" if receipt is not None else "unknown"
         result_body = {
             "schema": "otto.advisor.delivery.v1", "decision_id": decision_id,
             "project_ref": dict(pairing.project_ref), "delivery_id": delivery_id,
             "recipient_assignment_ref": dict(pairing.manager_ref), "recipient": recipient,
-            "state": state, "receipt": _json(receipt, "receipt") if receipt is not None else None,
+            "state": state, "receipt": receipt,
             "sent_at": _stamp(self.ports.now()) if state == "sent" else None,
         }
         result_report = self._append(
@@ -375,12 +556,17 @@ class AdvisorDeliveryLoop:
         if decision is None:
             return {"outcome": "unknown", "error": {"code": "decision_missing"}, "retry": False}
         delivery_id = decision["delivery_id"]
-        sent = next((item for item in reversed(records)
-                     if item.get("schema") == "otto.advisor.delivery.v1"
-                     and item.get("delivery_id") == delivery_id and item.get("state") == "sent"), None)
-        if sent is not None:
+        recipient = conversation_for(
+            pairing, role="manager", assignment_ref=pairing.manager_ref,
+            generation=pairing.manager_generation,
+        )
+        projection = self._delivery_projection(
+            records, recipient=recipient, delivery_id=delivery_id,
+        )
+        if projection["state"] == "sent":
             return {"outcome": "sent", "delivery_id": delivery_id,
-                    "receipt": sent.get("receipt"), "sent_at": sent.get("sent_at"), "retry": False}
+                    "receipt": projection.get("receipt"), "sent_at": projection.get("sent_at"),
+                    "retry": False}
         read = getattr(self.ports.delivery, "read_delivery", None) if self.ports.delivery is not None else None
         if not callable(read):
             return {"outcome": "unknown", "delivery_id": delivery_id,
@@ -390,8 +576,10 @@ class AdvisorDeliveryLoop:
         except Exception as exc:
             return {"outcome": "unknown", "delivery_id": delivery_id,
                     "error": str(exc), "retry": False}
-        if not isinstance(value, Mapping) or value.get("state", value.get("outcome")) != "sent" \
-                or not isinstance(value.get("receipt"), Mapping):
+        receipt = _exact_consumption_receipt(
+            value, recipient=recipient, delivery_id=delivery_id,
+        )
+        if receipt is None:
             return {"outcome": "unknown", "delivery_id": delivery_id,
                     "readback": _json(value, "readback") if isinstance(value, Mapping) else None,
                     "retry": False}
@@ -400,8 +588,8 @@ class AdvisorDeliveryLoop:
             "schema": "otto.advisor.delivery.v1", "decision_id": decision_id,
             "project_ref": dict(pairing.project_ref), "delivery_id": delivery_id,
             "recipient_assignment_ref": dict(pairing.manager_ref),
-            "recipient": dict(pairing.manager_conversation_ref), "state": "sent",
-            "receipt": _json(value["receipt"], "receipt"), "sent_at": _text(sent_at, "sent_at"),
+            "recipient": recipient, "state": "sent",
+            "receipt": receipt, "sent_at": _text(sent_at, "sent_at"),
             "reconciled": True,
         }
         report = self._append(
@@ -434,10 +622,18 @@ class AdvisorDeliveryLoop:
         decision_id = _text(decision_id, "decision_id")
         interval_seconds = _seconds(interval_seconds, "interval_seconds")
         records = self._decision_records(self._reports(pairing), decision_id)
-        sent = next((item for item in reversed(records)
-                     if item.get("schema") == "otto.advisor.delivery.v1"
-                     and item.get("state") == "sent" and isinstance(item.get("sent_at"), str)), None)
-        if sent is None:
+        decision = next((item for item in records
+                         if item.get("schema") == "otto.advisor.decision.v1"), None)
+        if decision is None:
+            raise AdvisorDeliveryError("advisor decision does not exist")
+        recipient = conversation_for(
+            pairing, role="manager", assignment_ref=pairing.manager_ref,
+            generation=pairing.manager_generation,
+        )
+        sent = self._delivery_projection(
+            records, recipient=recipient, delivery_id=decision["delivery_id"],
+        )
+        if sent["state"] != "sent" or not isinstance(sent.get("sent_at"), str):
             raise AdvisorDeliveryError("effect follow-up requires known instruction delivery")
         try:
             delivered_at = datetime.fromisoformat(sent["sent_at"].replace("Z", "+00:00"))
@@ -456,7 +652,9 @@ class AdvisorDeliveryLoop:
             instruction="Inspect implementation evidence for advisor decision " + decision_id + ".",
             profile=_text(profile, "profile"), anchor=_stamp(delivered_at),
             due_at=_stamp(due_at), last_covered_slot=-1,
-            invocation_identity=_stable("advisor-followup-occurrence", schedule_id, sent["delivery_id"]),
+            invocation_identity=_stable(
+                "advisor-followup-occurrence", schedule_id, decision["delivery_id"],
+            ),
             project_ref=pairing.project_ref["id"], manager_ref=pairing.manager_ref["id"],
             assignment_ref=dict(pairing.advisor_ref), generation=pairing.advisor_generation,
             target=target, role="project_advisor", purpose="advisor-effect-followup",
@@ -466,8 +664,66 @@ class AdvisorDeliveryLoop:
         )
         result = self.ports.attention.schedule(record, request_id=_text(request_id, "request_id"))
         return {"outcome": result.get("outcome"), "decision_id": decision_id,
-                "delivery_id": sent["delivery_id"], "due_at": record.due_at,
+                "delivery_id": decision["delivery_id"], "due_at": record.due_at,
                 "schedule_id": schedule_id, "attention": result}
+
+    def record_delivery_correction(
+        self,
+        *,
+        pairing: AdvisorPairing,
+        advisor_actor: str,
+        decision_id: str,
+        reason: str,
+        evidence: Sequence[Any],
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Append a correction without rewriting a historical false sent claim."""
+
+        pairing = self._current(pairing)
+        advisor = self._assignment(pairing, "project_advisor", advisor_actor)
+        decision_id = _text(decision_id, "decision_id")
+        request_id = _text(request_id, "request_id")
+        reason = _text(reason, "reason")
+        if isinstance(evidence, (str, bytes)) or not isinstance(evidence, Sequence) or not evidence:
+            raise AdvisorDeliveryError("correction evidence must be a non-empty sequence")
+        records = self._decision_records(self._reports(pairing), decision_id)
+        decision = next((item for item in records
+                         if item.get("schema") == "otto.advisor.decision.v1"), None)
+        if decision is None:
+            raise AdvisorDeliveryError("advisor decision does not exist")
+        recipient = conversation_for(
+            pairing, role="manager", assignment_ref=pairing.manager_ref,
+            generation=pairing.manager_generation,
+        )
+        false_claim = next((item for item in reversed(records)
+                            if item.get("schema") == "otto.advisor.delivery.v1"
+                            and item.get("delivery_id") == decision["delivery_id"]
+                            and item.get("state") == "sent"
+                            and _exact_consumption_receipt(
+                                {"state": "sent", "receipt": item.get("receipt")},
+                                recipient=recipient, delivery_id=decision["delivery_id"],
+                            ) is None), None)
+        if false_claim is None:
+            raise AdvisorDeliveryError("delivery correction requires a historical sent claim")
+        body = {
+            "schema": "otto.advisor.delivery-correction.v1",
+            "decision_id": decision_id,
+            "project_ref": dict(pairing.project_ref),
+            "delivery_id": decision["delivery_id"],
+            "prior_state": "sent",
+            "corrected_state": "unknown",
+            "reason": reason,
+            "evidence": _json(list(evidence), "evidence"),
+            "observed_at": _stamp(self.ports.now()),
+            "request_id": request_id,
+        }
+        report = self._append(
+            advisor, body, actor=advisor_actor, generation=pairing.advisor_generation,
+            request_key=request_id,
+        )
+        return {"outcome": "corrected", "decision_id": decision_id,
+                "delivery_id": decision["delivery_id"], "report_ref": report["ref"],
+                "retry": False}
 
     def schedule_baseline_cadence(
         self,
@@ -578,10 +834,17 @@ class AdvisorDeliveryLoop:
         manager = self._assignment(pairing, "manager", manager_actor)
         decision_id, request_id = _text(decision_id, "decision_id"), _text(request_id, "request_id")
         records = self._decision_records(self._reports(pairing), decision_id)
-        if not any(item.get("schema") == "otto.advisor.decision.v1" for item in records):
+        decision = next((item for item in records
+                         if item.get("schema") == "otto.advisor.decision.v1"), None)
+        if decision is None:
             raise AdvisorDeliveryError("advisor decision does not exist")
-        sent = any(item.get("schema") == "otto.advisor.delivery.v1"
-                   and item.get("state") == "sent" for item in records)
+        recipient = conversation_for(
+            pairing, role="manager", assignment_ref=pairing.manager_ref,
+            generation=pairing.manager_generation,
+        )
+        sent = self._delivery_projection(
+            records, recipient=recipient, delivery_id=decision["delivery_id"],
+        )["state"] == "sent"
         observed_states = {item.get("state") for item in records
                            if item.get("schema") == "otto.advisor.manager-state.v1"}
         if not sent:
@@ -616,14 +879,26 @@ class AdvisorDeliveryLoop:
         decision = next((item for item in records if item.get("schema") == "otto.advisor.decision.v1"), None)
         if decision is None:
             return {"outcome": "unknown", "decision_id": decision_id}
-        deliveries = [item for item in records if item.get("schema") == "otto.advisor.delivery.v1"]
         manager_states = [item for item in records if item.get("schema") == "otto.advisor.manager-state.v1"]
         observed = {item.get("state") for item in manager_states}
+        recipient = conversation_for(
+            pairing, role="manager", assignment_ref=pairing.manager_ref,
+            generation=pairing.manager_generation,
+        )
+        delivery = self._delivery_projection(
+            records, recipient=recipient, delivery_id=decision["delivery_id"],
+        )
         return {
             "outcome": "read", "decision_id": decision_id, "decision": decision,
             "persisted": True,
-            "sent": any(item.get("state") == "sent" for item in deliveries),
-            "delivery_unknown": any(item.get("state") == "unknown" for item in deliveries),
+            "delivery_state": delivery["state"],
+            "sent": delivery["state"] == "sent",
+            "delivery_unknown": delivery["state"] == "unknown",
+            "invalid_sent_claims": delivery["invalid_sent_claims"],
+            "delivery_corrected": any(
+                item.get("schema") == "otto.advisor.delivery-correction.v1"
+                for item in records
+            ),
             "acknowledged": "acknowledged" in observed,
             "implemented": "implemented" in observed,
             "effect_observed": "effect_observed" in observed,
@@ -631,4 +906,6 @@ class AdvisorDeliveryLoop:
         }
 
 
-__all__ = ["AdvisorDeliveryError", "AdvisorDeliveryLoop", "AdvisorDeliveryPorts"]
+__all__ = [
+    "AdvisorDeliveryError", "AdvisorDeliveryLoop", "AdvisorDeliveryPorts", "ExactSessionDelivery",
+]

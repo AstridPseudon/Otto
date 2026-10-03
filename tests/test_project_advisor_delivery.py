@@ -19,6 +19,7 @@ from otto.portfolio import (
     AdvisorDeliveryError,
     AdvisorDeliveryLoop,
     AdvisorDeliveryPorts,
+    ExactSessionDelivery,
     establish_pairing,
 )
 
@@ -79,7 +80,14 @@ class Delivery:
         if self.state == "raise":
             raise RuntimeError("response lost")
         if self.state == "sent":
-            return {"state": "sent", "receipt": {"native_message_id": "message-1"}}
+            return {"state": "sent", "receipt": {
+                "schema": "otto.exact-session-consumption.v1",
+                "delivery_id": value["delivery_id"],
+                "physical_session_id": "manager-session",
+                "observed_turn_id": "manager-turn-1",
+                "transport": "owner-host-continuation",
+                "consumed": True,
+            }}
         return {"state": self.state}
 
     def read_delivery(self, delivery_id):
@@ -231,21 +239,132 @@ class AdvisorDeliveryTests(unittest.TestCase):
         self.assertEqual(replay["outcome"], "unknown")
         self.assertEqual(len(self.delivery.calls), 1)
         self.delivery.readback = {
-            "state": "sent", "receipt": {"native_message_id": "message-1"},
+            "state": "sent", "receipt": {
+                "schema": "otto.exact-session-consumption.v1",
+                "delivery_id": first["delivery_id"],
+                "physical_session_id": "manager-session",
+                "observed_turn_id": "manager-turn-recovered",
+                "transport": "owner-host-continuation",
+                "consumed": True,
+            },
             "sent_at": NOW.isoformat(),
         }
-        recovered = self.loop.recover_delivery(
-            pairing=self.pairing, advisor_actor="advisor-principal", decision_id="decision-1",
+        recovered = self.loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-1", action="Remove the invented freshness gate.",
+            rationale="Narrative status did not change semantic authority.",
+            evidence=[{"ref": "report-1"}], expected_evidence="focused test passes",
+            request_id="decision-request-1",
         )
-        self.assertEqual((recovered["outcome"], recovered["reconciled"]), ("sent", True))
+        self.assertEqual(
+            (recovered["outcome"], recovered["reconciled"], recovered["replayed"]),
+            ("sent", True, True),
+        )
         self.assertEqual(len(self.delivery.calls), 1)
+
+    def test_intent_and_started_are_persisted_before_transport(self):
+        observed = []
+
+        class InspectingDelivery(Delivery):
+            def send(inner, value):
+                observed.extend(item["value"]["state"] for item in self.assignments.reports
+                                if item["value"].get("decision_id") == "decision-order")
+                return super().send(value)
+
+        self.delivery = InspectingDelivery()
+        self.loop = AdvisorDeliveryLoop(AdvisorDeliveryPorts(
+            assignments=self.assignments, attention=self.attention,
+            authenticate=lambda actor: actor,
+            current_pairing=lambda project: self.current,
+            reports_for_project=lambda project: list(self.assignments.reports),
+            role_delivery=self._runtime, delivery=self.delivery, now=lambda: NOW,
+        ))
+        result = self.loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-order", action="Use exact-session delivery.",
+            rationale="It preserves the native boundary.", evidence=[{"ref": "diff-order"}],
+            expected_evidence="manager turn", request_id="decision-request-order",
+        )
+        self.assertEqual(result["outcome"], "sent")
+        self.assertEqual(observed, ["persisted", "started"])
+
+    def test_false_sent_claim_is_not_delivery_and_append_only_correction_is_visible(self):
+        self.delivery.state = "false-shim"
+
+        def false_send(value):
+            self.delivery.calls.append(value)
+            return {"state": "sent", "receipt": {
+                "transport": "active-manager-command-response",
+                "manager_session_id": "manager-session",
+                "delivery_id": value["delivery_id"],
+            }}
+
+        self.delivery.send = false_send
+        first = self.loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-false", action="Repair the delivery boundary.",
+            rationale="The shim does not transport.", evidence=[{"ref": "shim-source"}],
+            expected_evidence="exact manager turn", request_id="decision-request-false",
+        )
+        self.assertEqual(first["outcome"], "unknown")
+
+        # Preserve the historical false record exactly as observed, then add a
+        # canonical correction rather than rewriting it.
+        false_record = next(item["value"] for item in self.assignments.reports
+                            if item["value"].get("schema") == "otto.advisor.delivery.v1"
+                            and item["value"].get("state") == "unknown")
+        false_record["state"] = "sent"
+        false_record["receipt"] = {
+            "transport": "active-manager-command-response",
+            "manager_session_id": "manager-session",
+            "delivery_id": first["delivery_id"],
+        }
+        corrected = self.loop.record_delivery_correction(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-false", reason="The historical shim performed no transport.",
+            evidence=[{"ref": "controller-source"}], request_id="correct-false-delivery",
+        )
+        self.assertEqual(corrected["outcome"], "corrected")
+        projected = self.loop.read_decision(
+            pairing=self.pairing, decision_id="decision-false",
+        )
+        self.assertFalse(projected["sent"])
+        self.assertTrue(projected["delivery_corrected"])
+        self.assertEqual(projected["invalid_sent_claims"], 1)
+        self.assertTrue(any(item["value"].get("state") == "sent"
+                            for item in self.assignments.reports))
+
+    def test_exact_session_adapter_rejects_wrong_session_and_accepts_readback(self):
+        calls = []
+        readback = {}
+        adapter = ExactSessionDelivery(
+            continue_session=lambda request: calls.append(request) or {
+                "outcome": "succeeded", "physical_session_id": "wrong-session",
+                "observed_turn_id": "turn-wrong",
+            },
+            read_session_delivery=lambda delivery_id: readback,
+        )
+        intent = {"delivery_id": "delivery-1", "recipient": MANAGER_CONVERSATION,
+                  "message": {"text": "apply repair"}}
+        self.assertEqual(adapter.send(intent)["state"], "unknown")
+        self.assertEqual(calls[0]["physical_session_id"], "manager-session")
+        readback.update({
+            "completion_state": "succeeded", "delivery_state": "returned",
+            "last_result": {"physical_session_id": "manager-session",
+                            "observed_turn_id": "turn-recovered"},
+            "target": MANAGER_CONVERSATION,
+        })
+        recovered = adapter.read_delivery("delivery-1")
+        self.assertEqual(recovered["state"], "sent")
+        self.assertTrue(recovered["receipt"]["consumed"])
 
     def test_crash_after_send_before_result_report_is_unknown_without_resend(self):
         original_append = self.assignments.append_report
         crashed = {"value": False}
 
         def append_with_crash(assignment_ref, value, **kwargs):
-            if value.get("schema") == "otto.advisor.delivery.v1" and not crashed["value"]:
+            if (value.get("schema") == "otto.advisor.delivery.v1"
+                    and value.get("state") in {"sent", "unknown"} and not crashed["value"]):
                 crashed["value"] = True
                 raise RuntimeError("crash after transport returned")
             return original_append(assignment_ref, value, **kwargs)
