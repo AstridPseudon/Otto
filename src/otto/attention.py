@@ -139,6 +139,40 @@ def _assignment_value(assignment: Any, field_name: str) -> Any:
     return getattr(assignment, field_name, None)
 
 
+def _same_advisor_inspection_scope(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Identify records that must not launch overlapping advisor inspections."""
+
+    if left.get("role") != "project_advisor" or right.get("role") != "project_advisor":
+        return False
+    left_assignment = left.get("assignment_ref")
+    right_assignment = right.get("assignment_ref")
+    return all(left.get(key) == right.get(key) for key in (
+        "project_ref", "recipient", "generation", "lifecycle_owner",
+    )) and left_assignment == right_assignment
+
+
+def _advisor_claim_conflict(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    schedule_id: str,
+    current: Optional[Mapping[str, Any]],
+    desired: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    """Return an existing cross-record claim for one new advisor claim."""
+
+    if desired.get("role") != "project_advisor" or not desired.get("in_flight_request"):
+        return None
+    if isinstance(current, Mapping) and current.get("in_flight_request"):
+        return None
+    for candidate in records:
+        if (candidate.get("schedule_id") != schedule_id
+                and candidate.get("stop_state") == "active"
+                and candidate.get("in_flight_request")
+                and _same_advisor_inspection_scope(candidate, desired)):
+            return candidate
+    return None
+
+
 @dataclass(frozen=True)
 class DueRecord:
     """The small durable record needed to resume one responsibility.
@@ -726,6 +760,14 @@ class InMemoryDueRecordPort:
         current_version = 0 if current is None else int(current.get("version", 0))
         if current_version != expected_version:
             raise StateConflictError(f"expected durable version {expected_version}, observed {current_version}")
+        conflict = _advisor_claim_conflict(
+            self._records.values(), schedule_id=schedule_id, current=current, desired=value,
+        )
+        if conflict is not None:
+            raise StateConflictError(
+                "project advisor inspection already in flight on "
+                + str(conflict.get("schedule_id"))
+            )
         value["version"] = current_version + 1
         self._records[schedule_id] = value
         self._requests[request_id] = (schedule_id, dict(value))
@@ -958,6 +1000,17 @@ class _DueRecordOwnerEngine:
             observed = 0 if current is None else int(current.version)
             if observed != expected_version:
                 raise StateConflictError(f"expected durable version {expected_version}, observed {observed}")
+            current_value = None if current is None else current.payload
+            conflict = _advisor_claim_conflict(
+                self.list_due(), schedule_id=schedule_id,
+                current=current_value if isinstance(current_value, Mapping) else None,
+                desired=value,
+            )
+            if conflict is not None:
+                raise StateConflictError(
+                    "project advisor inspection already in flight on "
+                    + str(conflict.get("schedule_id"))
+                )
         if prior is not None:
             # Store replay identity includes the original unpinned target and
             # request payload.  Reconstruct those exact values before asking
@@ -2214,6 +2267,167 @@ class DurableAttention:
             raise ValueError("due reasons must contain non-blank text")
         return tuple(dict.fromkeys(values))
 
+    def _advisor_inflight_peer(self, record: DueRecord) -> Optional[DueRecord]:
+        if self.due_port is None or record.role != "project_advisor":
+            return None
+        values = self.due_port.list_due({
+            "project_ref": record.project_ref,
+            "role": "project_advisor",
+            "recipient": record.recipient,
+            "lifecycle_owner": record.lifecycle_owner,
+            "stop_state": "active",
+        })
+        peers = []
+        for value in values:
+            candidate = DueRecord.from_dict(value)
+            if (candidate.schedule_id != record.schedule_id
+                    and candidate.in_flight_request is not None
+                    and candidate.generation == record.generation
+                    and candidate.assignment_ref == record.assignment_ref):
+                peers.append(candidate)
+        return min(peers, key=lambda item: item.schedule_id) if peers else None
+
+    def _coalesce_advisor_inspection(
+        self,
+        record: DueRecord,
+        peer: DueRecord,
+        *,
+        slot: int,
+        reasons: tuple[str, ...],
+        observed_now: datetime,
+    ) -> dict[str, JSONValue]:
+        """Cover one occurrence through an existing advisor inspection claim.
+
+        The peer receives every reason before the source occurrence is marked
+        covered.  A crash between those writes leaves the source due and is
+        safely replayable; after both writes, the source cannot launch a
+        duplicate.  Unknown coverage deliberately requires readback instead
+        of treating the peer's eventual effect as already observed.
+        """
+
+        stored_peer = None
+        for _attempt in range(3):
+            merged = tuple(dict.fromkeys((*peer.due_reasons, *reasons)))
+            if merged == peer.due_reasons:
+                stored_peer = peer
+                break
+            try:
+                stored_peer = self._write(
+                    DueRecord.from_dict({**peer.to_dict(), "due_reasons": list(merged)}),
+                    request_id=("coalesce-advisor:" + str(peer.in_flight_request) + ":"
+                                + record.schedule_id + ":" + str(slot)),
+                    expected_version=peer.version,
+                )
+                break
+            except StateConflictError:
+                latest = self._advisor_inflight_peer(record)
+                if latest is None:
+                    break
+                peer = latest
+        if stored_peer is None:
+            return {"outcome": "reconcile", "schedule_id": record.schedule_id,
+                    "relaunch": False, "automatic_action": False}
+        peer = stored_peer
+        evidence = {
+            "kind": "otto.project-advisor.coalesced-inspection.v1",
+            "claim_schedule_id": peer.schedule_id,
+            "claim_request_id": peer.in_flight_request,
+            "covered_schedule_id": record.schedule_id,
+            "covered_slot": slot,
+            "reasons": list(reasons),
+        }
+        covered = DueRecord.from_dict({
+            **record.to_dict(), "last_covered_slot": slot,
+            "stop_state": "completed" if record.interval_seconds is None else record.stop_state,
+            "delivery_state": "unknown", "due_reasons": list(reasons),
+            "completed_at": _iso(observed_now), "completion_state": "unknown",
+            "completion_evidence": evidence,
+        })
+        try:
+            stored = self._write(
+                covered,
+                request_id=("cover-advisor:" + str(peer.in_flight_request) + ":"
+                            + record.schedule_id + ":" + str(slot)),
+                expected_version=record.version,
+            )
+        except StateConflictError:
+            current = self._read(record.schedule_id)
+            if current is None or current.last_covered_slot < slot:
+                return {"outcome": "reconcile", "schedule_id": record.schedule_id,
+                        "claim_schedule_id": peer.schedule_id,
+                        "claim_request_id": peer.in_flight_request,
+                        "relaunch": False, "automatic_action": False}
+            stored = current
+        result = self._readiness(stored, "coalesced", due=False, delivery_state="unknown")
+        result.update({
+            "outcome": "coalesced", "claim_schedule_id": peer.schedule_id,
+            "claim_request_id": peer.in_flight_request,
+            "covered_reasons": list(reasons), "relaunch": False,
+            "mutation": {"before": record.to_dict(), "action": evidence,
+                         "fresh_after": stored.to_dict()},
+        })
+        return result
+
+    def _settle_advisor_coverage(
+        self,
+        claim: DueRecord,
+        *,
+        request_id: str,
+        completed_at: str,
+        completion_evidence: Optional[Mapping[str, JSONValue]],
+    ) -> list[dict[str, JSONValue]]:
+        """Project a successful shared inspection onto its covered records."""
+
+        if self.due_port is None or claim.role != "project_advisor":
+            return []
+        values = self.due_port.list_due({
+            "project_ref": claim.project_ref,
+            "role": "project_advisor",
+            "recipient": claim.recipient,
+            "lifecycle_owner": claim.lifecycle_owner,
+        })
+        settled = []
+        for value in values:
+            record = DueRecord.from_dict(value)
+            evidence = record.completion_evidence
+            if (record.schedule_id == claim.schedule_id or not isinstance(evidence, Mapping)
+                    or evidence.get("kind") != "otto.project-advisor.coalesced-inspection.v1"
+                    or evidence.get("claim_schedule_id") != claim.schedule_id
+                    or evidence.get("claim_request_id") != request_id
+                    or record.completion_state == "succeeded"):
+                continue
+            result = {
+                "outcome": "coalesced-returned", "request_id": request_id,
+                "claim_schedule_id": claim.schedule_id,
+                "covered_schedule_id": record.schedule_id,
+                "relaunch": False, "automatic_action": False,
+            }
+            next_evidence = {
+                **dict(evidence), "claim_completion_state": "succeeded",
+                "claim_completion_evidence": (None if completion_evidence is None
+                                               else dict(completion_evidence)),
+            }
+            try:
+                stored = self._write(
+                    DueRecord.from_dict({
+                        **record.to_dict(), "delivery_state": "returned",
+                        "last_completed_request": request_id, "last_result": result,
+                        "completed_at": completed_at, "completion_state": "succeeded",
+                        "completion_evidence": next_evidence,
+                    }),
+                    request_id="settle-advisor-coverage:" + request_id + ":" + record.schedule_id,
+                    expected_version=record.version,
+                )
+            except StateConflictError:
+                current = self._read(record.schedule_id)
+                if current is None or current.completion_state != "succeeded":
+                    continue
+                stored = current
+            settled.append({"schedule_id": stored.schedule_id,
+                            "reasons": list((stored.completion_evidence or {}).get("reasons", ())),
+                            "completion_state": stored.completion_state})
+        return settled
+
     def check(
         self,
         schedule_id: str,
@@ -2253,6 +2467,11 @@ class DurableAttention:
         slot = self._slot(record, observed_now)
         if slot is None or slot <= record.last_covered_slot:
             return self._readiness(record, "waiting", due=False)
+        peer = self._advisor_inflight_peer(record)
+        if peer is not None:
+            return self._coalesce_advisor_inspection(
+                record, peer, slot=slot, reasons=requested_reasons, observed_now=observed_now,
+            )
         request_id = hashlib.sha256(f"{record.schedule_id}:{record.invocation_identity}:{slot}".encode("utf-8")).hexdigest()
         next_record = DueRecord.from_dict({**record.to_dict(), "last_covered_slot": slot, "in_flight_request": request_id, "delivery_state": "ready", "due_reasons": list(requested_reasons), "delivered_at": None, "delivery_evidence": None, "completed_at": None, "completion_evidence": None, "completion_state": "none"})
         try:
@@ -2261,6 +2480,12 @@ class DurableAttention:
             current = self._read(schedule_id)
             if current is not None and current.in_flight_request is not None:
                 return self._readiness(current, "in-flight", due=True, request_id=current.in_flight_request, delivery_state=current.delivery_state, replayed=True)
+            peer = self._advisor_inflight_peer(record)
+            if peer is not None:
+                return self._coalesce_advisor_inspection(
+                    current or record, peer, slot=slot,
+                    reasons=requested_reasons, observed_now=observed_now,
+                )
             raise
         request = {
             "request_id": request_id, "schedule_id": schedule_id, "recipient": stored.recipient,
@@ -2332,7 +2557,13 @@ class DurableAttention:
         if scope_error is not None:
             return {"outcome": "rejected", "request_id": request_id, "error": scope_error, "relaunch": False, "automatic_action": False}
         if record.last_completed_request == request_id and record.last_result is not None:
-            return {**dict(record.last_result), "outcome": "replayed", "replayed": True, "expected_delta": "none", "automatic_action": False}
+            covered = self._settle_advisor_coverage(
+                record, request_id=request_id, completed_at=record.completed_at or _iso(self.clock()),
+                completion_evidence=record.completion_evidence,
+            ) if record.completion_state == "succeeded" else []
+            return {**dict(record.last_result), "outcome": "replayed", "replayed": True,
+                    "expected_delta": "none", "covered_records": covered,
+                    "automatic_action": False}
         if record.in_flight_request != request_id:
             return {"outcome": "reconcile", "error": {"code": "request_not_in_flight", "message": "only the recorded invocation may complete"}, "relaunch": False, "automatic_action": False}
         completion_time = _iso(completed_at or self.clock())
@@ -2352,6 +2583,10 @@ class DurableAttention:
         state = DueRecord.from_dict({**record.to_dict(), "in_flight_request": None, "delivery_state": "returned", "last_completed_request": request_id, "last_result": result, "completed_at": completion_time, "completion_evidence": evidence, "completion_state": "succeeded", "stop_state": "completed" if record.interval_seconds is None else "active"})
         stored = self._write(state, request_id=f"complete:{request_id}", expected_version=record.version)
         result["record"] = stored.to_dict()
+        result["covered_records"] = self._settle_advisor_coverage(
+            stored, request_id=request_id, completed_at=completion_time,
+            completion_evidence=evidence,
+        )
         result["expected_delta"] = {"in_flight_request": None, "last_completed_request": request_id}
         result["mutation"] = {"before": record.to_dict(), "action": {"request_id": request_id, "receipt": result["receipt"], "outcome": outcome}, "fresh_after": stored.to_dict()}
         return result

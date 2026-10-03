@@ -62,6 +62,7 @@ from .advisor_pairing import (
     validate_recipient,
 )
 from .advisor_context import AdvisorContextError, build_advisor_context, choose_advisor_direction
+from .advisor_delivery import AdvisorDeliveryError, AdvisorDeliveryLoop, AdvisorDeliveryPorts
 from .manager_inventory import ManagerInventoryError, ManagerInventoryReader
 from .lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
 from .resource_drift import ResourceDriftError, apply_resource_sync_action, select_resource_sync_action
@@ -140,6 +141,9 @@ __all__ = [
     "AdvisorContextError",
     "build_advisor_context",
     "choose_advisor_direction",
+    "AdvisorDeliveryError",
+    "AdvisorDeliveryLoop",
+    "AdvisorDeliveryPorts",
     "LifecycleIntegrationError",
     "PortfolioLifecycleIntegration",
     "ResourceDriftError",
