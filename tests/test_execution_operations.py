@@ -6,7 +6,10 @@ import unittest
 from otto.portfolio.execution_operations import (
     OccurrencePreparationError,
     build_manager_callback_due,
+    derive_manager_continuation_request,
     prepare_current_assignment_occurrence,
+    read_project_progress_reports,
+    validate_owner_timeout_seconds,
 )
 
 
@@ -20,6 +23,7 @@ class Due:
     assignment_ref: dict | None = None
     target: dict | None = None
     execution_mode: str = "continue_existing"
+    timeout_seconds: int = 1200
     def to_dict(self): return vars(self)
 
 
@@ -44,8 +48,10 @@ class Binding:
 
 
 class DuePort:
-    def __init__(self, fail=False): self.fail = fail
-    def save_due(self, schedule, value, **kwargs): return {"version": 1}
+    def __init__(self, fail=False): self.fail, self.saved = fail, 0
+    def save_due(self, schedule, value, **kwargs):
+        self.saved += 1
+        return {"version": 1}
     def reconcile_assignment_resources(self, schedule, **kwargs):
         if self.fail: raise RuntimeError("stale current assignment")
         return {"version": 2}
@@ -82,6 +88,80 @@ class Tests(unittest.TestCase):
                 due=replace(self.due(), execution_mode="fresh_bounded_worker"), assignment_ref=REF,
                 assignment_owner="outsider", operation="resume", lifecycle="resume", request_key="resume-v3",
             )
+
+    def test_timeout_policy_is_derived_and_rejected_before_write(self):
+        self.assertEqual(validate_owner_timeout_seconds(1200), 1200)
+        self.assertEqual(validate_owner_timeout_seconds(1800), 1800)
+        port = DuePort()
+        with self.assertRaisesRegex(OccurrencePreparationError, "between 61 and 1800"):
+            prepare_current_assignment_occurrence(
+                due_port=port, assignments=Assignments(), binding=Binding(),
+                due=replace(self.due(), timeout_seconds=2700), assignment_ref=REF,
+                assignment_owner="manager", operation="resume", lifecycle="resume",
+                request_key="resume-invalid-timeout",
+            )
+        self.assertEqual(port.saved, 0)
+
+    def test_continuation_is_recovered_from_report_without_projection_file(self):
+        due = {
+            "schedule_id": "manager-v2", "stop_state": "completed",
+            "completion_state": "succeeded", "in_flight_request": None,
+            "delivery_state": "returned", "anchor": "2026-10-03T10:00:00Z",
+            "completed_at": "2026-10-03T10:05:00Z", "assignment_ref": REF,
+            "last_result": {"physical_session_id": "session", "observed_turn_id": "turn"},
+        }
+        reports = ({
+            "kind": "report", "assignment": REF, "ref": {"id": "report-1"},
+            "value": {
+                "schema": "otto.manager-progress.v1", "task_alias": "PA03",
+                "next_action": "begin PA05", "continue_requested": True,
+                "logical_request_key": "pa03-accepted", "recorded_at": "2026-10-03T10:04:00Z",
+            },
+        },)
+        result = derive_manager_continuation_request(due, reports)
+        self.assertEqual(result["next_action"], "begin PA05")
+        self.assertEqual(result["settled_schedule_id"], "manager-v2")
+        self.assertEqual(result["physical_session_id"], "session")
+
+    def test_continuation_ignores_prior_turn_and_nonrequest_reports(self):
+        due = {
+            "schedule_id": "manager-v2", "stop_state": "completed",
+            "completion_state": "succeeded", "in_flight_request": None,
+            "delivery_state": "returned", "anchor": "2026-10-03T10:00:00Z",
+            "completed_at": "2026-10-03T10:05:00Z", "assignment_ref": REF,
+            "last_result": {"physical_session_id": "session", "observed_turn_id": "turn"},
+        }
+        reports = (
+            {"kind": "report", "assignment": REF, "ref": {"id": "old"}, "value": {
+                "schema": "otto.manager-progress.v1", "continue_requested": True,
+                "recorded_at": "2026-10-03T09:59:00Z"}},
+            {"kind": "report", "assignment": REF, "ref": {"id": "current"}, "value": {
+                "schema": "otto.manager-progress.v1", "continue_requested": False,
+                "recorded_at": "2026-10-03T10:04:00Z"}},
+        )
+        self.assertIsNone(derive_manager_continuation_request(due, reports))
+
+    def test_progress_reports_use_public_event_reader(self):
+        class Subject:
+            kind, id = "wrk.report", "report-1"
+        class Event:
+            subject = Subject()
+        class RecordRef:
+            def to_dict(self): return {"authority": "owner", "kind": "wrk.report", "id": "report-1", "revision": "rev-1"}
+        class Record:
+            ref = RecordRef()
+            payload = {
+                "observation_kind": "report", "assignment": REF,
+                "value": {"project_ref": {"authority": "owner", "kind": "work.project", "id": "p"}},
+            }
+        class Reader:
+            def list_events(self): return (Event(), Event())
+            def get_record(self, subject): return Record()
+        result = read_project_progress_reports(
+            Reader(), {"authority": "owner", "kind": "work.project", "id": "p"}
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["ref"]["id"], "report-1")
 
     def test_settled_manager_builds_same_session_callback(self):
         prior = type("ManagerDue", (), {

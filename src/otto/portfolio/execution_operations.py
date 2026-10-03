@@ -7,6 +7,7 @@ does not own a scheduler, Store, provider, or second execution ledger.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
@@ -21,6 +22,133 @@ _MODES = {
     ("resume", "resume"): "continue_existing",
     ("resume", "callback"): "continue_existing",
 }
+
+OWNER_TIMEOUT_MAX_SECONDS = 1800
+
+
+def validate_owner_timeout_seconds(requested: int) -> int:
+    """Validate one ordinary host timeout before an occurrence is saved.
+
+    The ordinary owner route has no extended-timeout exception.  Keeping this
+    check at the preparation boundary prevents a Due from being committed only
+    to fail later in the adapter or host constructor.
+    """
+
+    if (
+        isinstance(requested, bool)
+        or not isinstance(requested, int)
+        or not 60 < requested <= OWNER_TIMEOUT_MAX_SECONDS
+    ):
+        raise OccurrencePreparationError(
+            f"timeout_seconds must be between 61 and {OWNER_TIMEOUT_MAX_SECONDS}"
+        )
+    return requested
+
+
+def _value(source: Any, name: str) -> Any:
+    return source.get(name) if isinstance(source, Mapping) else getattr(source, name, None)
+
+
+def _instant(value: Any) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise OccurrencePreparationError("continuation record has no finite timestamp")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise OccurrencePreparationError("continuation timestamp is invalid") from exc
+
+
+def _same_ref(left: Any, right: Any) -> bool:
+    return (
+        isinstance(left, Mapping)
+        and isinstance(right, Mapping)
+        and all(left.get(key) == right.get(key) for key in ("authority", "kind", "id"))
+    )
+
+
+def derive_manager_continuation_request(
+    settled_due: Any, reports: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...]
+) -> dict[str, Any] | None:
+    """Recover a manager's explicit next action from canonical reports.
+
+    Navigation JSON may be absent after a crash.  A continuation exists only
+    when a report from this exact settled manager occurrence requested it.
+    """
+
+    if not (
+        _value(settled_due, "stop_state") == "completed"
+        and _value(settled_due, "completion_state") == "succeeded"
+        and _value(settled_due, "in_flight_request") is None
+        and _value(settled_due, "delivery_state") == "returned"
+    ):
+        raise OccurrencePreparationError("manager occurrence is not a settled success")
+    started = _instant(_value(settled_due, "anchor"))
+    completed = _instant(_value(settled_due, "completed_at"))
+    assignment_ref = _value(settled_due, "assignment_ref")
+    candidates: list[tuple[datetime, str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for report in reports:
+        value = report.get("value")
+        ref = report.get("ref")
+        if (
+            report.get("kind") != "report"
+            or not _same_ref(report.get("assignment"), assignment_ref)
+            or not isinstance(value, Mapping)
+            or value.get("schema") != "otto.manager-progress.v1"
+            or value.get("continue_requested") is not True
+            or not isinstance(ref, Mapping)
+        ):
+            continue
+        recorded = _instant(value.get("recorded_at"))
+        if started <= recorded <= completed:
+            candidates.append((recorded, str(ref.get("id", "")), report, value))
+    if not candidates:
+        return None
+    _, _, report, value = max(candidates, key=lambda item: (item[0], item[1]))
+    result = _value(settled_due, "last_result")
+    result = result if isinstance(result, Mapping) else {}
+    return {
+        "schema": "otto.manager-continuation-request.v1",
+        "task_alias": value.get("task_alias"),
+        "next_action": value.get("next_action"),
+        "report_ref": dict(report["ref"]),
+        "logical_request_key": value.get("logical_request_key") or "continue:" + str(report["ref"].get("id")),
+        "requested_at": value.get("recorded_at"),
+        "settled_schedule_id": _value(settled_due, "schedule_id"),
+        "settled_turn_id": result.get("observed_turn_id"),
+        "physical_session_id": result.get("physical_session_id"),
+        "state": "ready",
+    }
+
+
+def read_project_progress_reports(reader: Any, project_ref: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read immutable manager progress through the owner's public event reader."""
+
+    if not all(callable(getattr(reader, name, None)) for name in ("list_events", "get_record")):
+        raise OccurrencePreparationError("owner event reader is unavailable")
+    reports: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in reader.list_events():
+        subject = getattr(event, "subject", None)
+        if getattr(subject, "kind", None) != "wrk.report" or subject.id in seen:
+            continue
+        seen.add(subject.id)
+        record = reader.get_record(subject)
+        payload = getattr(record, "payload", None)
+        if not isinstance(payload, Mapping):
+            continue
+        value = payload.get("value")
+        linked = value.get("project_ref") if isinstance(value, Mapping) else None
+        if not _same_ref(linked, project_ref):
+            continue
+        ref = getattr(record, "ref", None)
+        assignment = payload.get("assignment")
+        if not isinstance(assignment, Mapping) or not hasattr(ref, "to_dict"):
+            continue
+        reports.append({
+            "ref": ref.to_dict(), "assignment": dict(assignment),
+            "kind": payload.get("observation_kind"), "value": dict(value),
+        })
+    return reports
 
 
 def build_manager_callback_due(
@@ -55,8 +183,7 @@ def build_manager_callback_due(
         raise OccurrencePreparationError("settled manager occurrence has no native session")
     if not isinstance(target, Mapping):
         raise OccurrencePreparationError("prior manager target is unavailable")
-    if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds < 1:
-        raise OccurrencePreparationError("timeout_seconds must be positive")
+    timeout_seconds = validate_owner_timeout_seconds(timeout_seconds)
     next_target = dict(target)
     next_target.update({
         "assignment_ref": dict(assignment_ref),
@@ -120,6 +247,7 @@ def prepare_current_assignment_occurrence(
         raise OccurrencePreparationError("continue_existing requires target.native_id")
     if expected_mode != "continue_existing" and native_id is not None:
         raise OccurrencePreparationError("fresh occurrence cannot claim an existing native session")
+    timeout_seconds = validate_owner_timeout_seconds(getattr(due, "timeout_seconds", None))
 
     try:
         current = assignments.get(ResourceRef.from_dict(assignment_ref))
@@ -144,6 +272,7 @@ def prepare_current_assignment_occurrence(
         "assignment_base_ref": base_ref.to_dict(), "assignment_current_ref": current.ref.to_dict(),
         "due_version": created["version"], "replay_key": request_key,
         "execution_mode": expected_mode, "actor": actor.actor,
+        "timeout_seconds": timeout_seconds,
     }
     try:
         reconciled = due_port.reconcile_assignment_resources(
@@ -163,6 +292,8 @@ def prepare_current_assignment_occurrence(
 
 
 __all__ = [
-    "OccurrencePreparationError", "build_manager_callback_due",
-    "prepare_current_assignment_occurrence",
+    "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
+    "derive_manager_continuation_request",
+    "prepare_current_assignment_occurrence", "read_project_progress_reports",
+    "validate_owner_timeout_seconds",
 ]
