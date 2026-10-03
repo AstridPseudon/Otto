@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import socket
 
-SOCKET = Path(__file__).resolve().parents[1] / "controller" / "manager-ops.sock"
+SOCKET = Path("/tmp/otto-project-advisor-manager-ops.sock")
 
 
 def call(payload: dict) -> dict:
