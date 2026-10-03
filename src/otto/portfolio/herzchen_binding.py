@@ -371,6 +371,8 @@ class FiniteWorkOperations:
             return self._admit(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.assign":
             return self._assign_roles(payload, request_id=request_id, actor=actor)
+        if operation == "work.project-advisor.pair":
+            return self._project_advisor_pair(payload, request_id=request_id, actor=actor)
         if operation in {"work.task.complete", "work.project-sheet.complete"}:
             return self._complete_task(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.handoff":
@@ -1622,6 +1624,154 @@ class FiniteWorkOperations:
             None,
         )
         return {"outcome": "assigned", "project_ref": _json_value(ref), "roles": assignments, "manager_assignment_ref": manager_assignment_ref, "parent_receipt": _receipt_dict(parent_receipt), "event_ids": event_ids, "replayed": all(item["replayed"] for item in assignments.values()) if assignments else False, "executable": False}
+
+    @staticmethod
+    def _active_assignment(assignment: Any) -> bool:
+        status = getattr(assignment, "status", None)
+        status = getattr(status, "value", status)
+        return str(status).lower() in {
+            "active", "assigned", "queued", "running", "in-flight", "reassigned",
+        }
+
+    @staticmethod
+    def _same_ref_identity(left: Any, right: Any) -> bool:
+        left, right = _json_value(left), _json_value(right)
+        return (
+            isinstance(left, Mapping)
+            and isinstance(right, Mapping)
+            and all(left.get(key) == right.get(key) for key in ("authority", "kind", "id"))
+        )
+
+    def _project_assignment_values(self, project_ref: Any) -> tuple[Any, list[Any]]:
+        """Read current project assignments through the public Sheet projection."""
+
+        view = self.sheet_port.export(project_ref)
+        value = _json_value(view.to_dict() if hasattr(view, "to_dict") else view)
+        project = value.get("project") if isinstance(value, Mapping) else None
+        current_ref = project.get("ref") if isinstance(project, Mapping) else None
+        if not isinstance(current_ref, Mapping):
+            raise ValueError("project Sheet projection has no current project ref")
+        observed = project.get("observed") if isinstance(project, Mapping) else None
+        rows = observed.get("assignments") if isinstance(observed, Mapping) else None
+        if not isinstance(rows, list):
+            raise ValueError("project Sheet projection has no assignment list")
+        result = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            ref = row.get("ref") if isinstance(row, Mapping) else None
+            if not isinstance(ref, Mapping):
+                continue
+            identity = tuple(str(ref.get(key, "")) for key in ("authority", "kind", "id"))
+            if not all(identity) or identity in seen:
+                continue
+            seen.add(identity)
+            assignment = self.assignments_port.get(self._record_ref(ref))
+            if self._same_ref_identity(getattr(assignment, "scope", None), project_ref):
+                result.append(assignment)
+        return self._record_ref(current_ref), result
+
+    def _project_advisor_pair(
+        self, payload: Mapping[str, Any], *, request_id: str, actor: str,
+    ) -> Mapping[str, Any]:
+        """Read or create the one advisor assignment for a current manager.
+
+        The Project Sheet remains the roster read and ResponsibilityAssignments
+        remains the sole writer.  This operation creates no conversation,
+        schedule, allowance, delivery, or pilot-specific state.
+        """
+
+        operation = "work.project-advisor.pair"
+        if self.sheet_port is None or self.assignments_port is None:
+            return self._unsupported(
+                operation, request_id=request_id,
+                code="canonical_project_advisor_ports_unavailable",
+                message="accepted ProjectSheet and ResponsibilityAssignments ports are required",
+            )
+        try:
+            project_ref = self._record_ref(payload["project_ref"])
+            manager_ref = self._record_ref(payload["manager_assignment_ref"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"outcome": "error", "error": {"code": "invalid_pairing_ref", "message": str(exc), "operation": operation}, "event_ids": []}
+        expected_generation = payload.get("manager_generation")
+        if (isinstance(expected_generation, bool) or not isinstance(expected_generation, int)
+                or expected_generation < 1):
+            return {"outcome": "error", "error": {"code": "invalid_manager_generation", "message": "manager_generation must be a positive integer", "operation": operation}, "event_ids": []}
+        principal = payload.get("advisor_principal")
+        if principal is not None and (not isinstance(principal, str) or not principal.strip()):
+            return {"outcome": "error", "error": {"code": "invalid_advisor_principal", "message": "advisor_principal must be non-blank text", "operation": operation}, "event_ids": []}
+        pins = payload.get("pins", ())
+        if not isinstance(pins, (list, tuple)):
+            return {"outcome": "error", "error": {"code": "invalid_advisor_pins", "message": "pins must be an array", "operation": operation}, "event_ids": []}
+        if pins and principal is None:
+            return {"outcome": "error", "error": {"code": "invalid_advisor_pins", "message": "pins require advisor_principal", "operation": operation}, "event_ids": []}
+        try:
+            pin_refs = tuple(self._record_ref(value) for value in pins)
+            current_project_ref, assignments = self._project_assignment_values(project_ref)
+            if _json_value(current_project_ref) != _json_value(project_ref):
+                raise ValueError("project reference is stale")
+            active = [value for value in assignments if self._active_assignment(value)]
+            managers = [value for value in active if getattr(value, "role", None) == "manager"]
+            advisors = [value for value in active if getattr(value, "role", None) == "project_advisor"]
+            if len(managers) != 1:
+                raise ValueError("project must have exactly one active manager assignment")
+            manager = managers[0]
+            if (_json_value(getattr(manager, "ref", None)) != _json_value(manager_ref)
+                    or getattr(manager, "generation", None) != expected_generation):
+                raise ValueError("manager assignment or generation is stale")
+            manager_principal = getattr(manager, "principal", None)
+            pair_key = (
+                "otto-project-advisor-pair:" + current_project_ref.id + ":"
+                + manager.ref.id + ":g" + str(expected_generation)
+            )
+            prior_receipt = self._receipt(pair_key)
+            created = False
+            if len(advisors) > 1:
+                raise ValueError("project has more than one active project advisor assignment")
+            if not advisors:
+                if principal is None:
+                    return {
+                        "outcome": "missing", "schema": "otto.project-advisor-owner-pair.v1",
+                        "project_ref": _json_value(project_ref),
+                        "manager": self._assignment_dict(manager), "advisor": None,
+                        "read_only": True, "dispatch": False, "execution": False,
+                        "event_ids": [], "replayed": False,
+                    }
+                advisor = self.assignments_port.assign(
+                    current_project_ref, role="project_advisor", principal=principal.strip(),
+                    manager=manager_principal, pins=pin_refs,
+                    logical_request_key=pair_key,
+                    actor=self._actor(actor),
+                )
+                created = prior_receipt is None
+            else:
+                advisor = advisors[0]
+                if principal is not None and getattr(advisor, "principal", None) != principal.strip():
+                    raise ValueError("current project advisor principal differs from the request")
+                if principal is not None and tuple(getattr(advisor, "pins", ())) != pin_refs:
+                    raise ValueError("current project advisor pins differ from the request")
+            advisor_payload = _json_value(getattr(advisor, "payload", {}))
+            linked_manager = advisor_payload.get("manager") if isinstance(advisor_payload, Mapping) else None
+            if isinstance(linked_manager, Mapping):
+                linked_manager = linked_manager.get("id") or linked_manager.get("principal")
+            else:
+                linked_manager = getattr(linked_manager, "id", linked_manager)
+            if linked_manager not in {manager_principal, getattr(manager_ref, "id", None)}:
+                raise ValueError("project advisor is not linked to the current manager")
+            receipt = self._receipt(pair_key)
+            replayed = prior_receipt is not None or (receipt is not None and not created)
+            return {
+                "outcome": "created" if created else "read",
+                "schema": "otto.project-advisor-owner-pair.v1",
+                "project_ref": _json_value(current_project_ref),
+                "manager": self._assignment_dict(manager),
+                "advisor": self._assignment_dict(advisor),
+                "pairing_request_key": pair_key,
+                "receipt": _receipt_dict(receipt),
+                "event_ids": self._events_for(receipt),
+                "replayed": replayed, "dispatch": False, "execution": False,
+            }
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": "project_advisor_pairing_rejected", "message": str(exc), "operation": operation}, "event_ids": []}
 
     def _complete_task(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Forward direct and sheet completion through one owner guard."""

@@ -166,6 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
     complete.add_argument("--input-json", required=True, help="full OttoPortfolio.complete_task request, including actor, request id and current owner pins")
     _add_format(complete)
 
+    advisor = sub.add_parser(
+        "project-advisor-pair",
+        help="read or create the one advisor assignment for an exact current manager",
+    )
+    advisor.add_argument("--actor", required=True)
+    advisor.add_argument("--request-id", required=True)
+    advisor.add_argument("--project-ref", required=True, help="exact current work.project ResourceRef JSON")
+    advisor.add_argument("--manager-assignment-ref", required=True, help="exact current manager wrk.assignment ResourceRef JSON")
+    advisor.add_argument("--manager-generation", required=True, type=int)
+    advisor.add_argument("--advisor-principal", help="omit for a read-only current-pair lookup")
+    advisor.add_argument("--pin", action="append", default=[], help="exact owner resource ref JSON; repeat to pin advisor inputs")
+    _add_format(advisor)
+
     brief = sub.add_parser("operating-brief", help="prepare the current manager brief from exact owner reads and adopted resources")
     brief.add_argument("--request-json", required=True, help="role, pinned project/task/assignment/mandate refs, generation and as-of time")
     _add_format(brief)
@@ -828,15 +841,17 @@ def main(
                     "assessment_coverage": "OttoAssessment.coverage",
                     "completion_gate": "ResponsibilityAssignments.completion_blockers",
                     "task_completion": "OttoPortfolio.complete_task -> existing work owner completion guard",
+                    "project_advisor_pair": "OttoPortfolio.pair_project_advisor -> existing ProjectSheet and ResponsibilityAssignments ports",
                     "operating_brief": "resolve_assignment_attachments -> prepare_canonical_operating_brief",
                 },
                 "integration_state": {
                     "assessment_coverage": "available only when the accepted OttoAssessment facade is injected",
                     "completion_gate": "available only when the existing owner read port is injected; returned blockers are the owner predicate",
                     "task_completion": "available only through an explicitly injected owner-bound OttoPortfolio and full current request pins",
+                    "project_advisor_pair": "available only through an explicitly injected owner-bound OttoPortfolio and exact current manager pins",
                     "operating_brief": "available only through injected canonical owner readers; local staged bundles are never treated as adopted resources",
                 },
-                "cli_scope": "owner-backed reads and one explicit owner-guarded task completion action; legacy pending-project commands remain; no dispatch, launch, or scheduler command",
+                "cli_scope": "owner-backed reads, guarded task completion, and current manager/advisor assignment pairing; legacy pending-project commands remain; no dispatch, launch, or scheduler command",
                 "document_injection": "Supply the accepted ProjectDocumentOperations instance through cli.main(argv, document_operations=...).",
                 "assessment_injection": "Supply the accepted OttoAssessment facade through cli.main(argv, assessment=...).",
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
@@ -887,6 +902,16 @@ def main(
         elif args.command == "complete-task":
             result = _complete_task_command(
                 args, portfolio, portfolio_injected=portfolio_injected, bound_actor=bound_actor,
+            )
+        elif args.command == "project-advisor-pair":
+            result = portfolio.pair_project_advisor(
+                _parse_ref(args.project_ref, "project_ref"),
+                _parse_ref(args.manager_assignment_ref, "manager_assignment_ref"),
+                actor=args.actor,
+                request_id=args.request_id,
+                manager_generation=args.manager_generation,
+                advisor_principal=args.advisor_principal,
+                pins=tuple(_parse_ref(value, "pin") for value in args.pin),
             )
         elif args.command == "operating-brief":
             result = _operating_brief_command(

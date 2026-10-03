@@ -13,11 +13,21 @@ import uuid
 IPC = Path(__file__).resolve().parent.parent / "controller" / "manager-ipc"
 SERVICE = Path("/tmp/otto-project-advisor-manager-ops.sock")
 OFFLINE_READER = Path(__file__).resolve().parent.parent / "controller" / "read_manager_status.py"
+STATUS_OWNER = Path(__file__).resolve().parent.parent / "controller" / "manager-status-owner.json"
 OWNER_PYTHON = Path("/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python")
 
 
 def call(payload: dict) -> dict:
+    retained_status = False
     if payload.get("command") == "status" and not SERVICE.exists():
+        try:
+            owner_pid = json.loads(STATUS_OWNER.read_text())["pid"]
+            os.kill(int(owner_pid), 0)
+            retained_status = True
+        except (FileNotFoundError, KeyError, ValueError, ProcessLookupError, PermissionError,
+                json.JSONDecodeError):
+            retained_status = False
+    if payload.get("command") == "status" and not SERVICE.exists() and not retained_status:
         completed = subprocess.run(
             [str(OWNER_PYTHON), str(OFFLINE_READER)],
             text=True, capture_output=True, timeout=10,
@@ -69,6 +79,15 @@ def main() -> None:
     task_state.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     task_state.add_argument("--lifecycle", required=True, choices=["pending", "active", "paused", "withdrawn"])
     task_state.add_argument("--request-key", required=True)
+    pair = commands.add_parser(
+        "project-advisor-pair",
+        help="read or create the one advisor assignment for the current manager",
+    )
+    pair.add_argument("--request-key", required=True)
+    pair.add_argument("--advisor-principal",
+                      help="omit for a read-only current-pair lookup")
+    pair.add_argument("--pin", action="append", dest="pins", default=[],
+                      help="exact owner resource-ref JSON; repeat for adopted inputs")
     commit = commands.add_parser("commit", help="create one owner-authorized local Git checkpoint")
     commit.add_argument("--message", required=True)
     commit.add_argument("--path", action="append", dest="paths", required=True,

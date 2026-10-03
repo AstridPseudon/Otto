@@ -1,11 +1,12 @@
 import unittest
 from types import SimpleNamespace
 
+from herzchen.contracts import ResourceRef
 from otto.portfolio import (
     AdvisorPairing, AdvisorPairingError, OperatingBrief,
     conversation_for, establish_pairing, introductions,
 )
-from otto.portfolio.herzchen_binding import FiniteWorkOperations
+from otto.portfolio.herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig
 from otto.portfolio.intake import OttoPortfolio, PortfolioError
 from otto.portfolio.lifecycle import PortfolioLifecycleIntegration
 from otto.portfolio.resource_sync import role_resource_pins
@@ -165,6 +166,110 @@ class IntegrationTests(unittest.TestCase):
         })
         self.assertEqual(result["expected_generation"], 2)
         self.assertEqual(result["assignment_ref"], ADVISOR)
+
+
+class _PairReceipt:
+    replayed = False
+
+    def to_dict(self):
+        return {"status": "committed", "event_ids": ["advisor-created"]}
+
+
+class _PairReader:
+    def __init__(self):
+        self.receipts = {}
+
+    def get_receipt(self, key):
+        return self.receipts.get(key)
+
+    def list_events(self):
+        return (SimpleNamespace(event_id="advisor-created"),)
+
+
+class _PairAssignments:
+    def __init__(self, reader):
+        self.reader = reader
+        manager_ref = ResourceRef.from_dict(MANAGER)
+        self.values = {
+            MANAGER["id"]: SimpleNamespace(
+                ref=manager_ref, assignment_ref=manager_ref,
+                scope=ResourceRef.from_dict(PROJECT), role="manager",
+                principal="manager-principal", generation=1, status="queued",
+                pins=(), history=(), payload={"manager": "manager-principal"},
+            ),
+        }
+        self.assign_calls = []
+
+    def get(self, value):
+        return self.values[value.id]
+
+    def assign(self, scope, **kwargs):
+        self.assign_calls.append((scope, kwargs))
+        advisor_ref = ResourceRef("owner", "wrk.assignment", "advisor-created", "rev-1")
+        advisor = SimpleNamespace(
+            ref=advisor_ref, assignment_ref=advisor_ref, scope=scope,
+            role="project_advisor", principal=kwargs["principal"], generation=1,
+            status="queued", pins=tuple(kwargs.get("pins", ())), history=(),
+            payload={"manager": kwargs["manager"]},
+        )
+        self.values[advisor_ref.id] = advisor
+        self.reader.receipts[kwargs["logical_request_key"]] = _PairReceipt()
+        return advisor
+
+
+class _PairSheet:
+    def __init__(self, assignments):
+        self.assignments = assignments
+
+    def export(self, _project):
+        return {"project": {"ref": PROJECT, "observed": {"assignments": [
+            {"ref": value.ref.to_dict()} for value in self.assignments.values.values()
+        ]}}}
+
+
+class OwnerPairFixtureTests(unittest.TestCase):
+    """Reusable owner seam fixture; this is not native PA06 pilot evidence."""
+
+    def setUp(self):
+        reader = _PairReader()
+        assignments = _PairAssignments(reader)
+        operations = FiniteWorkOperations(
+            port=SimpleNamespace(), reader=reader,
+            binding=HerzchenBindingConfig("owner", "credential"),
+            sheet_port=_PairSheet(assignments), assignments_port=assignments,
+        )
+        self.assignments = assignments
+        self.portfolio = OttoPortfolio(operations)
+
+    def call(self, *, principal=None, generation=1, request_id="pair-v1"):
+        return self.portfolio.pair_project_advisor(
+            PROJECT, MANAGER, actor="manager-principal", request_id=request_id,
+            manager_generation=generation, advisor_principal=principal,
+        )
+
+    def test_read_create_and_replay_use_one_generic_assignment(self):
+        missing = self.call(request_id="pair-read")
+        self.assertEqual((missing["outcome"], missing["advisor"]), ("missing", None))
+        self.assertEqual(self.assignments.assign_calls, [])
+
+        created = self.call(principal="advisor-principal")
+        self.assertEqual(created["outcome"], "created")
+        self.assertEqual(created["advisor"]["role"], "project_advisor")
+        self.assertEqual(created["advisor"]["stored_manager"], "manager-principal")
+        self.assertFalse(created["dispatch"])
+        self.assertFalse(created["execution"])
+        self.assertEqual(len(self.assignments.assign_calls), 1)
+
+        replay = self.call(principal="advisor-principal", request_id="pair-v2")
+        self.assertEqual((replay["outcome"], replay["replayed"]), ("read", True))
+        self.assertEqual(created["pairing_request_key"], replay["pairing_request_key"])
+        self.assertEqual(len(self.assignments.assign_calls), 1)
+
+    def test_stale_manager_generation_is_rejected_before_creation(self):
+        result = self.call(principal="advisor-principal", generation=2)
+        self.assertEqual(result["error"]["code"], "project_advisor_pairing_rejected")
+        self.assertIn("stale", result["error"]["message"])
+        self.assertEqual(self.assignments.assign_calls, [])
 
 
 if __name__ == "__main__":

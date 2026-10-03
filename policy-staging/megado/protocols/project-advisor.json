@@ -19,7 +19,7 @@
     "role_turns": "bind_at_adoption",
     "live_check_occurrences": "bind_at_adoption",
     "timeout_seconds": "bind_at_adoption",
-    "campaign_ceiling": 3,
+    "campaign_ceiling": "bind_at_adoption",
     "unknown_effects": "hold_until_reconciled",
     "installation_grants": false,
     "retry_resets_allowance": false

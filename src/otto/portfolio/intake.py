@@ -310,6 +310,7 @@ class OttoPortfolio:
                 "satisfied_prerequisite": "record attention/readiness only for a dependency change",
                 "admit": "manager decision: admit, investigate, merge, park, or drop",
                 "assign_roles": "bind one parent, optional orchestrator, one accountable manager, and bounded executor(s); role-keyed adopted resources are pinned through the canonical assignment port",
+                "pair_project_advisor": "read or create the one project-scoped advisor assignment for an exact current manager; no host session, schedule, allowance, or delivery is created",
                 "handoff": "fence a returned manager assignment reference and preserve identity, evidence, consumption, and parent obligation",
                 "complete_task": "manager-only guarded task close; verifies current project/task/assignment pins, disposition, evidence hashes and gates before one owner transaction",
                 "manager_inbox": "read one derived project/subproject scope with tasks, assignments, attempts, reports, decisions, attention and repeat-safe event cursor; read-only",
@@ -1068,6 +1069,43 @@ class OttoPortfolio:
             {"project_ref": _ref(project_ref), "roles": self._roles(roles, responsibility_ref=_ref(project_ref))},
             request_id=request_id,
             actor=actor,
+        )
+
+    def pair_project_advisor(
+        self,
+        project_ref: Any,
+        manager_assignment_ref: Any,
+        *,
+        actor: str,
+        request_id: str,
+        manager_generation: int,
+        advisor_principal: Optional[str] = None,
+        pins: Sequence[Any] = (),
+    ) -> dict[str, Any]:
+        """Read the current pair, creating only a missing advisor assignment.
+
+        Omitting ``advisor_principal`` makes this a read-only lookup.  Host
+        conversation binding and all later effects use their ordinary ports.
+        """
+
+        request_id, actor = self._request(request_id, actor)
+        if (isinstance(manager_generation, bool) or not isinstance(manager_generation, int)
+                or manager_generation < 1):
+            raise PortfolioError("manager_generation must be a positive integer")
+        if advisor_principal is not None:
+            advisor_principal = _text(advisor_principal, "advisor_principal")
+        if isinstance(pins, (str, bytes)) or not isinstance(pins, Sequence):
+            raise PortfolioError("pins must be an array")
+        payload: dict[str, Any] = {
+            "project_ref": _ref(project_ref),
+            "manager_assignment_ref": _ref(manager_assignment_ref, "manager_assignment_ref"),
+            "manager_generation": manager_generation,
+            "pins": [_ref(value, "pins") for value in pins],
+        }
+        if advisor_principal is not None:
+            payload["advisor_principal"] = advisor_principal
+        return self._execute(
+            "work.project-advisor.pair", payload, request_id=request_id, actor=actor,
         )
 
     def complete_task(
