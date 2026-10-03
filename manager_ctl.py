@@ -117,6 +117,17 @@ def main() -> None:
         help="read persisted, sent, acknowledged, implemented, and effect-observed state",
     )
     advisor_state.add_argument("--decision-id", required=True)
+    manager_state = commands.add_parser(
+        "advisor-manager-state",
+        help="record manager acknowledgement, implementation, or observed effect for a delivered decision",
+    )
+    manager_state.add_argument("--request-key", required=True)
+    manager_state.add_argument("--decision-id", required=True)
+    manager_state.add_argument(
+        "--state", required=True,
+        choices=["acknowledged", "implemented", "effect_observed"],
+    )
+    manager_state.add_argument("--evidence", action="append", required=True)
     advisor_correct = commands.add_parser(
         "advisor-delivery-correct",
         help="append a correction for a historical false sent claim",
@@ -160,7 +171,7 @@ def main() -> None:
     response = call(payload)
     print(json.dumps(response, indent=2, sort_keys=True))
     if response.get("outcome") not in {
-        "ok", "committed", "replayed", "created", "read", "started", "corrected",
+        "ok", "committed", "replayed", "created", "read", "started", "corrected", "recorded",
     }:
         raise SystemExit(1)
 
