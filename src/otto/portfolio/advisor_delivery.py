@@ -57,6 +57,12 @@ def _stamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _seconds(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise AdvisorDeliveryError(f"{field} must be a positive integer")
+    return value
+
+
 def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         if name in value:
@@ -415,11 +421,18 @@ class AdvisorDeliveryLoop:
         lifecycle_owner: str,
         profile: str,
         request_id: str,
+        interval_seconds: int = 3600,
     ) -> dict[str, Any]:
-        """Schedule one advisor follow-up exactly one hour after known delivery."""
+        """Schedule an independent follow-up from the known delivery time.
+
+        ``interval_seconds`` is supplied by the adopted policy.  The default
+        preserves Megado's current one-hour policy, while deterministic proof
+        can use an accelerated interval without changing the delivery anchor.
+        """
 
         pairing = self._current(pairing)
         decision_id = _text(decision_id, "decision_id")
+        interval_seconds = _seconds(interval_seconds, "interval_seconds")
         records = self._decision_records(self._reports(pairing), decision_id)
         sent = next((item for item in reversed(records)
                      if item.get("schema") == "otto.advisor.delivery.v1"
@@ -432,7 +445,8 @@ class AdvisorDeliveryLoop:
             raise AdvisorDeliveryError("delivery time is invalid") from exc
         if delivered_at.tzinfo is None:
             raise AdvisorDeliveryError("delivery time must be timezone-aware")
-        due_at = delivered_at.astimezone(timezone.utc) + timedelta(hours=1)
+        delivered_at = delivered_at.astimezone(timezone.utc)
+        due_at = delivered_at + timedelta(seconds=interval_seconds)
         schedule_id = _stable("advisor-followup", pairing.project_ref["id"], decision_id)
         target = dict(pairing.advisor_conversation_ref)
         target.update({"role": "project_advisor", "principal": _text(advisor_principal, "advisor_principal"),
@@ -454,6 +468,97 @@ class AdvisorDeliveryLoop:
         return {"outcome": result.get("outcome"), "decision_id": decision_id,
                 "delivery_id": sent["delivery_id"], "due_at": record.due_at,
                 "schedule_id": schedule_id, "attention": result}
+
+    def schedule_baseline_cadence(
+        self,
+        *,
+        pairing: AdvisorPairing,
+        advisor_principal: str,
+        lifecycle_owner: str,
+        profile: str,
+        request_id: str,
+        anchor: Optional[datetime] = None,
+        initial_offsets_seconds: Sequence[int],
+        first_regular_offset_seconds: int,
+        repeat_interval_seconds: int,
+    ) -> dict[str, Any]:
+        """Admit baseline checks as one-shots plus one anchored interval.
+
+        The policy owns the offsets and interval.  This method only composes
+        them into existing ``DueRecord`` instances, so missed slots, overlap,
+        recovery and lifecycle stop behavior remain owned by ``DurableAttention``.
+        """
+
+        pairing = self._current(pairing)
+        advisor_principal = _text(advisor_principal, "advisor_principal")
+        lifecycle_owner = _text(lifecycle_owner, "lifecycle_owner")
+        profile = _text(profile, "profile")
+        request_id = _text(request_id, "request_id")
+        if isinstance(initial_offsets_seconds, (str, bytes)) or not isinstance(initial_offsets_seconds, Sequence):
+            raise AdvisorDeliveryError("initial_offsets_seconds must be a sequence")
+        offsets = tuple(_seconds(value, "initial_offsets_seconds") for value in initial_offsets_seconds)
+        if not offsets or tuple(sorted(set(offsets))) != offsets:
+            raise AdvisorDeliveryError("initial_offsets_seconds must be strictly increasing")
+        first_regular_offset_seconds = _seconds(first_regular_offset_seconds, "first_regular_offset_seconds")
+        repeat_interval_seconds = _seconds(repeat_interval_seconds, "repeat_interval_seconds")
+        if first_regular_offset_seconds <= offsets[-1]:
+            raise AdvisorDeliveryError("first_regular_offset_seconds must follow initial offsets")
+        baseline = anchor or self.ports.now()
+        anchor_value = _stamp(baseline)
+        target = dict(pairing.advisor_conversation_ref)
+        target.update({"role": "project_advisor", "principal": advisor_principal,
+                       "assignment_ref": dict(pairing.advisor_ref)})
+
+        def record(
+            schedule_id: str,
+            *,
+            record_anchor: str,
+            due_at: Optional[str],
+            interval: Optional[int],
+            last_covered_slot: int,
+            identity: str,
+        ) -> DueRecord:
+            return DueRecord(
+                schedule_id=schedule_id, recipient=advisor_principal,
+                instruction="Inspect current project work and evidence.", profile=profile,
+                anchor=record_anchor, due_at=due_at, interval_seconds=interval,
+                last_covered_slot=last_covered_slot, invocation_identity=identity,
+                project_ref=pairing.project_ref["id"], manager_ref=pairing.manager_ref["id"],
+                assignment_ref=dict(pairing.advisor_ref), generation=pairing.advisor_generation,
+                target=target, role="project_advisor", purpose="advisor-baseline",
+                message="Inspect current work and combine coincident baseline reasons.",
+                lifecycle_owner=lifecycle_owner, execution_mode="continue_existing",
+            )
+
+        records = []
+        for offset in offsets:
+            schedule_id = _stable("advisor-baseline", pairing.project_ref["id"], "initial", offset)
+            records.append(record(
+                schedule_id,
+                record_anchor=anchor_value,
+                due_at=_stamp(baseline + timedelta(seconds=offset)), interval=None,
+                last_covered_slot=-1,
+                identity=_stable("advisor-baseline-occurrence", schedule_id),
+            ))
+        # The policy's recurring anchor is the second initial check.  Mark
+        # that initial slot covered by the one-shot above so the interval's
+        # first due slot is the policy's first regular offset (+9h in Megado).
+        repeat_anchor = baseline + timedelta(seconds=offsets[-1])
+        regular_slots = (first_regular_offset_seconds - offsets[-1]) // repeat_interval_seconds
+        if offsets[-1] + regular_slots * repeat_interval_seconds != first_regular_offset_seconds:
+            raise AdvisorDeliveryError("first_regular_offset_seconds must align with repeat_interval_seconds")
+        schedule_id = _stable("advisor-baseline", pairing.project_ref["id"], "regular", first_regular_offset_seconds)
+        records.append(record(
+            schedule_id, record_anchor=_stamp(repeat_anchor), due_at=None,
+            interval=repeat_interval_seconds, last_covered_slot=0,
+            identity=_stable("advisor-baseline-occurrence", schedule_id),
+        ))
+        results = [self.ports.attention.schedule(
+            item, request_id=f"{request_id}:{item.schedule_id}"
+        ) for item in records]
+        return {"outcome": "scheduled", "anchor": anchor_value,
+                "schedule_ids": [item.schedule_id for item in records],
+                "schedules": results}
 
     def record_manager_state(
         self,

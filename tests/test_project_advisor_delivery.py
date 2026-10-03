@@ -319,6 +319,58 @@ class AdvisorDeliveryTests(unittest.TestCase):
         self.assertTrue(final["implemented"])
         self.assertTrue(final["effect_observed"])
 
+    def test_followup_uses_policy_interval_from_delivery_anchor(self):
+        sent = self.loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-accelerated", action="Use the focused repair.",
+            rationale="The evidence supports the existing path.", evidence=[{"ref": "diff-accelerated"}],
+            expected_evidence="focused result", request_id="decision-request-accelerated",
+        )
+        followup = self.loop.schedule_effect_followup(
+            pairing=self.pairing, decision_id="decision-accelerated",
+            advisor_principal="advisor-principal", lifecycle_owner="owner-principal",
+            profile="advisor", request_id="followup-request-accelerated",
+            interval_seconds=15 * 60,
+        )
+        self.assertEqual(followup["due_at"], "2026-10-03T15:15:00+00:00")
+        stored = DueRecord.from_dict(self.due_port.read_due(followup["schedule_id"]))
+        self.assertEqual(stored.anchor, sent["sent_at"])
+
+    def test_baseline_cadence_has_one_shots_then_six_hour_interval(self):
+        cadence = self.loop.schedule_baseline_cadence(
+            pairing=self.pairing, advisor_principal="advisor-principal",
+            lifecycle_owner="owner-principal", profile="advisor",
+            request_id="baseline-request", anchor=NOW,
+            initial_offsets_seconds=(3600, 3 * 3600),
+            first_regular_offset_seconds=9 * 3600,
+            repeat_interval_seconds=6 * 3600,
+        )
+        initial, second, regular = cadence["schedule_ids"]
+        self.assertEqual(
+            [DueRecord.from_dict(self.due_port.read_due(item)).due_at for item in (initial, second)],
+            ["2026-10-03T16:00:00+00:00", "2026-10-03T18:00:00+00:00"],
+        )
+        recurring = DueRecord.from_dict(self.due_port.read_due(regular))
+        self.assertEqual(recurring.anchor, "2026-10-03T18:00:00+00:00")
+        self.assertEqual(recurring.interval_seconds, 6 * 3600)
+
+        for schedule_id, when in ((initial, NOW.replace(hour=16)), (second, NOW.replace(hour=18))):
+            ready = self.attention.check(schedule_id, now=when)
+            self.assertEqual(ready["outcome"], "attention-ready")
+            self.attention.complete(schedule_id, ready["request_id"], completed_at=when)
+
+        first_regular_at = NOW.replace(day=4, hour=0)
+        first_regular = self.attention.check(regular, now=first_regular_at)
+        self.assertEqual(first_regular["outcome"], "attention-ready")
+        self.attention.complete(regular, first_regular["request_id"], completed_at=first_regular_at)
+        missed_regular = self.attention.check(regular, now=NOW.replace(day=4, hour=12))
+        self.assertEqual(missed_regular["outcome"], "attention-ready")
+        self.assertEqual(missed_regular["missed_slots"], 1)
+
+        stopped = self.attention.stop(regular, request_id="withdraw-baseline")
+        self.assertEqual(stopped["outcome"], "stopped")
+        self.assertEqual(self.attention.check(regular, now=NOW.replace(day=4, hour=12))["outcome"], "stopped")
+
 
 class OwnerAdmissionTests(unittest.TestCase):
     def test_store_owner_transaction_fences_cross_record_advisor_claim(self):
