@@ -46,6 +46,8 @@ def main() -> None:
     report.add_argument("--summary", required=True)
     report.add_argument("--next-action", required=True)
     report.add_argument("--request-key", required=True)
+    report.add_argument("--continue-project", action="store_true",
+                        help="request one same-manager callback after this turn settles")
     assign = commands.add_parser("assign-worker", help="create one canonical worker assignment and adopted task guide")
     assign.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     assign.add_argument("--principal", required=True)

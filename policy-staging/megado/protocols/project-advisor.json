@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "id": "megado.project_advisor",
+  "version": "1.0.0",
+  "interpretation": "adopted_role_policy_not_workflow_code",
+  "role": "project_advisor",
+  "oracle_binding": "oracle",
+  "cardinality": "one_active_advisor_per_manager",
+  "scope": "single_manager_project",
+  "model": {
+    "advisor": {
+      "model": "gpt-6-astra",
+      "reasoning": "high"
+    },
+    "oracle_binding": "oracle"
+  },
+  "allowance": {
+    "source": "explicit_instance_adoption",
+    "role_turns": "bind_at_adoption",
+    "live_check_occurrences": "bind_at_adoption",
+    "timeout_seconds": "bind_at_adoption",
+    "campaign_ceiling": 3,
+    "unknown_effects": "hold_until_reconciled",
+    "installation_grants": false,
+    "retry_resets_allowance": false
+  },
+  "cadence": {
+    "initial_offsets_seconds": [3600, 10800],
+    "repeat_interval_seconds": 21600,
+    "repeat_anchor": "second_initial_due",
+    "first_regular_offset_seconds": 32400,
+    "intervention_followup_seconds": 3600,
+    "followup_anchor": "observed_instruction_delivery",
+    "followup_resets_baseline": false,
+    "one_time_supported": true,
+    "hourly_default": false
+  },
+  "context_template": {
+    "required": [
+      "project_ref",
+      "manager_ref",
+      "advisor_ref",
+      "goal",
+      "acceptance_criteria",
+      "mandate",
+      "document_refs",
+      "manager_conversation_ref",
+      "last_inspected",
+      "open_decisions",
+      "wake_reason"
+    ],
+    "inspection": [
+      "read_actual_messages",
+      "read_relevant_files",
+      "read_owner_state",
+      "bounded_direct_read_when_delta_is_missing"
+    ]
+  },
+  "judgment_questions": [
+    "What changed in delivered behavior or evidence since the last check?",
+    "What are the manager and workers actually doing, and why?",
+    "Does the next action advance the original outcome?",
+    "Is the blocker an owner requirement, a real defect, or an agent-added restriction?",
+    "Are repeated checks, fragmented handoffs, or unnecessary escalation delaying progress?",
+    "Was the previous correction implemented, useful, and supported by effect evidence?"
+  ],
+  "dispositions": ["continue", "watch", "correct", "escalate"],
+  "behavior": {
+    "healthy_or_unchanged": "quiet",
+    "correction": "choose_one_in_mandate_direction_with_owner_and_expected_evidence",
+    "followup": "inspect_adoption_and_effect_not_obedience_or_deadline",
+    "unchanged_reminder": "suppress",
+    "missed_intervals": "collapse_to_one_current_inspection",
+    "overlap": "serialize_same_advisor_and_combine_reasons",
+    "uncertain_delivery": "reconcile_before_resend",
+    "narrative_status": "not_executable_input",
+    "historical_backlink": "not_an_acceptance_gate"
+  },
+  "escalation": {
+    "only": ["owner_only", "cross_project", "authority_gap", "uncertain_effect"],
+    "ordinary_project_questions": "resolve_within_delegated_mandate"
+  },
+  "adoption": {
+    "explicit": true,
+    "installation_grants_authority": false,
+    "activates_supervision": false,
+    "owner_and_host_execute": true,
+    "independent_review": "separate"
+  },
+  "no_automatic_dispatch": true,
+  "no_budget_reset": true,
+  "no_new_workflow_engine": true,
+  "no_new_issue_ledger": true
+}
