@@ -135,6 +135,15 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         attempt = None if record is None else self._attempt(record)
         prior = attempt.get("result") if isinstance(attempt, Mapping) else None
         value = deepcopy(dict(replacement)) if isinstance(replacement, Mapping) else None
+        if (record is not None and attempt is not None and attempt.get("state") == "result"
+                and attempt.get("logical_request_key") == logical_request_key
+                and isinstance(prior, Mapping) and isinstance(value, Mapping)
+                and prior == value and prior.get("outcome") == "succeeded"
+                and isinstance(attempt.get("reconciliation"), Mapping)
+                and attempt["reconciliation"].get("effect") == "retained_evidence_reparsed_no_provider_replay"):
+            return {"outcome": "reconciled", "replayed": True,
+                    "readback_version": record.version,
+                    "reconciliation": attempt["reconciliation"], "attempt": attempt}
         if (record is None or attempt is None or attempt.get("state") != "result"
                 or attempt.get("logical_request_key") != logical_request_key
                 or not isinstance(prior, Mapping) or not isinstance(value, Mapping)
@@ -197,6 +206,43 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             raise OwnerRoleRuntimeError("reconciled owner result readback differs")
         return {"outcome": "reconciled", "readback_version": saved.get("version"),
                 "reconciliation": reconciliation, "attempt": readback}
+
+    def accept_result(self, logical_request_key: str, *, manager_actor: str) -> Mapping[str, Any]:
+        """Accept one exact successful owner-authorized result through Due CAS."""
+        record = self._record()
+        if record is None:
+            return {"outcome": "unknown", "status": "undetermined", "message": "due record is missing"}
+        if manager_actor != self.lifecycle_owner:
+            return {"outcome": "rejected", "status": "unsupported",
+                    "error": {"code": "foreign_authority", "message": "only the lifecycle owner may accept the result"}}
+        attempt = self._attempt(record)
+        if attempt is None or attempt.get("logical_request_key") != logical_request_key:
+            return {"outcome": "unknown", "status": "undetermined", "message": "attempt is not present"}
+        result = attempt.get("result") if isinstance(attempt.get("result"), Mapping) else {}
+        if attempt.get("state") != "result" or result.get("outcome") != "succeeded":
+            return {"outcome": "not_accepted", "status": "undetermined",
+                    "retry_allowed": False, "attempt": attempt}
+        if (result.get("observed_model") != record.requested_model
+                or result.get("observed_reasoning") != record.requested_reasoning):
+            return {"outcome": "not_accepted", "status": "unsupported", "retry_allowed": False,
+                    "error": {"code": "observed_host_attestation_required",
+                              "message": "owner acceptance requires matching observed model/reasoning"},
+                    "attempt": attempt}
+        prior = attempt.get("manager_acceptance")
+        if isinstance(prior, Mapping) and prior.get("owner") == manager_actor and prior.get("accepted") is True:
+            return {"outcome": "accepted", "accepted": True, "replayed": True,
+                    "readback_version": record.version, "attempt": attempt}
+        digest = hashlib.sha256(json.dumps(
+            _json(result), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+        acceptance = {"accepted": True, "owner": manager_actor, "owner_version": record.version,
+                      "logical_request_key": logical_request_key, "result_digest": digest}
+        updated = {**attempt, "manager_acceptance": acceptance}
+        saved = self._save(record, updated,
+                           "otto-gateway-accept:" + logical_request_key + ":" + str(record.version))
+        readback = self._attempt(self._record()) or updated
+        return {"outcome": "accepted", "accepted": True, "replayed": False,
+                "readback_version": saved.get("version"), "attempt": readback}
 
     def publish_analytical_result(self, envelope: Mapping[str, Any], result_owner: HerzchenAttemptCapture) -> Mapping[str, Any]:
         """Append an already CAS-recorded success; never replace an unknown.

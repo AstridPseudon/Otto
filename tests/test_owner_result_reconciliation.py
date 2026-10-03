@@ -78,6 +78,13 @@ class OwnerResultReconciliationTests(unittest.TestCase):
             capture.attempt["reconciliation"]["effect"],
             "retained_evidence_reparsed_no_provider_replay",
         )
+        accepted = capture.accept_result("request-1", manager_actor="owner-principal")
+        self.assertTrue(accepted["accepted"])
+        replayed = capture.reconcile_unknown_result(
+            "request-1", capture.result("succeeded"), resolver="owner-principal",
+            trace_sha256="b" * 64, parser_revision="host-parser-test-v1",
+        )
+        self.assertTrue(replayed["replayed"])
 
     def test_changed_retained_stdout_is_rejected(self):
         capture = FixtureCapture()
