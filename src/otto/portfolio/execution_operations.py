@@ -450,7 +450,14 @@ def prepare_current_assignment_occurrence(
         raise OccurrencePreparationError("current assignment or owner actor is unavailable") from exc
     if actor.actor != assignment_owner:
         raise OccurrencePreparationError("authenticated actor differs from assignment owner")
-    if assignment_owner not in {getattr(current, "manager", None), getattr(current, "principal", None)}:
+    current_payload = getattr(current, "payload", {})
+    current_manager = getattr(current, "manager", None)
+    if current_manager is None and isinstance(current_payload, Mapping):
+        current_manager = current_payload.get("manager")
+    current_principal = getattr(current, "principal", None)
+    if current_principal is None and isinstance(current_payload, Mapping):
+        current_principal = current_payload.get("principal")
+    if assignment_owner not in {current_manager, current_principal}:
         raise OccurrencePreparationError("resource adoption actor is not assignment owner")
 
     base_value = getattr(current, "payload", {}).get("resource_adoption_base_ref")

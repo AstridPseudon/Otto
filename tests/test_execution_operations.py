@@ -47,6 +47,17 @@ class Assignment:
     principal = "worker"
 
 
+class PayloadOwnedAssignment:
+    ref = Ref(REF)
+    payload = {"resource_adoption_base_ref": BASE, "manager": "manager", "principal": "advisor"}
+    manager = None
+    principal = "advisor"
+
+
+class PayloadOwnedAssignments:
+    def get(self, ref): return PayloadOwnedAssignment()
+
+
 class Assignments:
     def get(self, ref): return Assignment()
 
@@ -91,6 +102,16 @@ class Tests(unittest.TestCase):
         )
         self.assertEqual(result["outcome"], "committed")
         self.assertEqual(result["execution_mode"], "fresh_bounded_role")
+
+    def test_assignment_payload_manager_can_prepare_role_occurrence(self):
+        due = replace(self.due(), role="project_advisor", execution_mode="fresh_bounded_role",
+                      target={"assignment_ref": BASE})
+        result = prepare_current_assignment_occurrence(
+            due_port=DuePort(), assignments=PayloadOwnedAssignments(), binding=Binding(), due=due,
+            assignment_ref=REF, assignment_owner="manager", operation="invoke", lifecycle="launch",
+            request_key="advisor-payload-owner-v1",
+        )
+        self.assertEqual(result["outcome"], "committed")
 
     def test_fresh_project_advisor_due_requires_exact_readonly_owner_pins(self):
         project = {"authority": "owner", "kind": "work.project", "id": "p", "revision": "rev-1"}
