@@ -6,6 +6,7 @@ does not create a queue, persist a session ledger, or settle Runtime work.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, replace
+from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any, Mapping, Optional, Protocol
@@ -607,6 +608,60 @@ class OwnerDueRecordAttemptCapture:
                 or captured is None or captured.get("physical_session_id") != physical_session_id
                 or captured.get("logical_request_key") != logical_request_key):
             raise ValueError("thread identity owner readback failed")
+        return captured
+
+    def record_delivery_admission(
+        self, logical_request_key: str, physical_session_id: str,
+        observed_turn_id: str, observed_at: str,
+    ) -> Mapping[str, Any]:
+        """Persist exact native turn admission while useful work may continue."""
+
+        if not all(_text(item) for item in (
+            logical_request_key, physical_session_id, observed_turn_id, observed_at,
+        )):
+            raise ValueError("delivery admission identity and timestamp are required")
+        try:
+            stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("delivery admission timestamp is invalid") from exc
+        if stamp.tzinfo is None:
+            raise ValueError("delivery admission timestamp must be timezone-aware")
+        observed_at = stamp.astimezone(timezone.utc).isoformat()
+        if self.scope_validator is not None:
+            failure = self.scope_validator()
+            if failure:
+                raise ValueError(str(failure))
+        record = self._record()
+        if record is None or self._scope_error(
+            record, self.assignment_ref, self.generation, logical_request_key,
+        ):
+            raise ValueError("delivery admission no longer has current owner custody")
+        current = self._attempt(record)
+        if (current is None or current.get("state") != "claimed"
+                or current.get("logical_request_key") != logical_request_key
+                or current.get("physical_session_id") != physical_session_id):
+            raise ValueError("delivery admission has no exact owner-bound session claim")
+        admission = {
+            "schema": "otto.owner-host-delivery-admission.v1",
+            "state": "turn_started", "native_turn_started": True,
+            "physical_session_id": physical_session_id,
+            "observed_turn_id": observed_turn_id, "observed_at": observed_at,
+            "transport": "owner-host-continuation",
+        }
+        prior = current.get("delivery_admission")
+        if prior is not None:
+            if prior != admission:
+                raise ValueError("native delivery admission changed after owner capture")
+            return current
+        updated = {**current, "delivery_admission": admission}
+        self._save(
+            record, updated,
+            "otto-gateway-turn-started:" + logical_request_key + ":" + observed_turn_id,
+        )
+        readback = self._record()
+        captured = None if readback is None else self._attempt(readback)
+        if captured is None or captured.get("delivery_admission") != admission:
+            raise ValueError("delivery admission owner readback failed")
         return captured
 
 
@@ -1508,7 +1563,9 @@ class OttoGateway:
                 })
             return result
         restore_thread_callback = None
+        restore_turn_callback = None
         callback_installed = False
+        turn_callback_installed = False
         setter = getattr(self.adapter, "set_thread_started_callback", None)
         recorder = getattr(self.attempt_capture, "record_thread_started", None) if self.attempt_capture is not None else None
         if owner_bound and responsibility.operation != "inspect" and key and callable(setter) and callable(recorder):
@@ -1525,6 +1582,27 @@ class OttoGateway:
             setter(on_thread_started)
             restore_thread_callback = prior_callback
             callback_installed = True
+        turn_setter = getattr(self.adapter, "set_turn_started_callback", None)
+        admission_recorder = (
+            getattr(self.attempt_capture, "record_delivery_admission", None)
+            if self.attempt_capture is not None else None
+        )
+        if (owner_bound and responsibility.operation in {"resume", "send"} and key
+                and callable(turn_setter) and callable(admission_recorder)
+                and responsibility.physical_session_id):
+            prior_turn_callback = turn_setter(None)
+
+            def on_turn_started(observed_turn_id: str, observed_at: str) -> None:
+                admission_recorder(
+                    key, responsibility.physical_session_id,
+                    observed_turn_id, observed_at,
+                )
+                if callable(prior_turn_callback):
+                    prior_turn_callback(observed_turn_id, observed_at)
+
+            turn_setter(on_turn_started)
+            restore_turn_callback = prior_turn_callback
+            turn_callback_installed = True
         try:
             result = method(request)
             result, attestation_error = self._enforce_host_attestation(responsibility, result, request)
@@ -1537,6 +1615,8 @@ class OttoGateway:
         finally:
             if callback_installed and callable(setter):
                 setter(restore_thread_callback)
+            if turn_callback_installed and callable(turn_setter):
+                turn_setter(restore_turn_callback)
         return self._attach_attempt(
             responsibility, request, result, error_message=attestation_error
         ) if owner_bound and responsibility.operation != "inspect" else result

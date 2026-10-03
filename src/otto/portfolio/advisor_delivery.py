@@ -57,6 +57,19 @@ def _stamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _observed_stamp(value: Any, field: str) -> str:
+    """Return one native observation timestamp in normalized UTC form."""
+
+    value = _text(value, field)
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AdvisorDeliveryError(f"{field} must be an ISO-8601 timestamp") from exc
+    if observed.tzinfo is None:
+        raise AdvisorDeliveryError(f"{field} must be timezone-aware")
+    return _stamp(observed)
+
+
 def _seconds(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise AdvisorDeliveryError(f"{field} must be a positive integer")
@@ -122,7 +135,14 @@ def _exact_consumption_receipt(
         or not receipt["observed_turn_id"].strip()
     ):
         return None
-    return _json(dict(receipt), "receipt")
+    result = _json(dict(receipt), "receipt")
+    observed_at = result.get("observed_at")
+    if observed_at is not None:
+        try:
+            result["observed_at"] = _observed_stamp(observed_at, "receipt.observed_at")
+        except AdvisorDeliveryError:
+            return None
+    return result
 
 
 @dataclass(frozen=True)
@@ -131,8 +151,9 @@ class ExactSessionDelivery:
 
     The continuation operation remains responsible for authorization, native
     execution, and its durable occurrence.  This adapter creates no ledger: it
-    merely requires a successful result from the exact requested session and a
-    native turn identity before reporting consumption.
+    requires either a native message/turn admission or a successful result from
+    the exact requested session, with the native turn identity and observation
+    timestamp, before reporting consumption.
     """
 
     continue_session: Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -156,10 +177,40 @@ class ExactSessionDelivery:
         if (outcome is None and value.get("completion_state") == "succeeded"
                 and value.get("delivery_state") == "returned"):
             outcome = "succeeded"
-        observed_session = result.get("physical_session_id") or result.get("native_session_id")
-        turn_id = result.get("observed_turn_id") or result.get("turn_id")
-        if outcome in {"succeeded", "returned"} and observed_session == session_id \
-                and isinstance(turn_id, str) and turn_id.strip():
+        admission = result.get("delivery_admission")
+        if not isinstance(admission, Mapping):
+            admission = value.get("delivery_admission")
+        if not isinstance(admission, Mapping):
+            admission = {}
+        observed_session = (
+            admission.get("physical_session_id") or admission.get("native_session_id")
+            or result.get("physical_session_id") or result.get("native_session_id")
+        )
+        turn_id = (
+            admission.get("observed_turn_id") or admission.get("turn_id")
+            or result.get("observed_turn_id") or result.get("turn_id")
+        )
+        observed_at = next((item for item in (
+            admission.get("observed_at"), admission.get("message_admitted_at"),
+            admission.get("turn_started_at"), result.get("message_admitted_at"),
+            result.get("turn_started_at"), result.get("observed_turn_started_at"),
+            value.get("message_admitted_at"), value.get("turn_started_at"),
+            value.get("observed_turn_started_at"),
+        ) if isinstance(item, str) and item.strip()), None)
+        admitted = (
+            outcome in {"succeeded", "returned"}
+            or admission.get("message_admitted") is True
+            or admission.get("native_turn_started") is True
+            or admission.get("state") in {"message_admitted", "turn_started"}
+            or result.get("message_admitted") is True
+            or result.get("native_turn_started") is True
+        )
+        try:
+            observed_at = _observed_stamp(observed_at, "delivery_admission.observed_at")
+        except AdvisorDeliveryError:
+            observed_at = None
+        if admitted and observed_session == session_id \
+                and isinstance(turn_id, str) and turn_id.strip() and observed_at is not None:
             return {
                 "state": "sent",
                 "receipt": {
@@ -167,9 +218,11 @@ class ExactSessionDelivery:
                     "delivery_id": delivery_id,
                     "physical_session_id": session_id,
                     "observed_turn_id": turn_id.strip(),
+                    "observed_at": observed_at,
                     "consumed": True,
                     "transport": "owner-host-continuation",
                 },
+                "sent_at": observed_at,
                 "retry": False,
             }
         if outcome in {"started", "active", "pending"}:
@@ -498,6 +551,7 @@ class AdvisorDeliveryLoop:
                                   generation=pairing.advisor_generation, request_key=request_id)
         message = {"type": "project_advisor_decision", "decision_id": decision_id,
                    "report_ref": report["ref"], "action": action,
+                   "rationale": rationale, "evidence": evidence_value,
                    "expected_evidence": expected_evidence, "recipient": recipient}
         if self.ports.delivery is None:
             return {"outcome": "prepared", "decision_id": decision_id,
@@ -527,13 +581,22 @@ class AdvisorDeliveryLoop:
         receipt = _exact_consumption_receipt(
             sent, recipient=recipient, delivery_id=delivery_id,
         )
-        state = "sent" if receipt is not None else "unknown"
+        state = "sent" if receipt is not None else (
+            "started" if sent.get("state") == "started" else "unknown"
+        )
+        sent_at = None
+        if receipt is not None:
+            candidate = sent.get("sent_at") or receipt.get("observed_at")
+            try:
+                sent_at = _observed_stamp(candidate, "sent_at")
+            except AdvisorDeliveryError:
+                state, receipt = "unknown", None
         result_body = {
             "schema": "otto.advisor.delivery.v1", "decision_id": decision_id,
             "project_ref": dict(pairing.project_ref), "delivery_id": delivery_id,
             "recipient_assignment_ref": dict(pairing.manager_ref), "recipient": recipient,
             "state": state, "receipt": receipt,
-            "sent_at": _stamp(self.ports.now()) if state == "sent" else None,
+            "sent_at": sent_at,
         }
         result_report = self._append(
             advisor, result_body, actor=advisor_actor, generation=pairing.advisor_generation,
@@ -583,7 +646,12 @@ class AdvisorDeliveryLoop:
             return {"outcome": "unknown", "delivery_id": delivery_id,
                     "readback": _json(value, "readback") if isinstance(value, Mapping) else None,
                     "retry": False}
-        sent_at = value.get("sent_at") or _stamp(self.ports.now())
+        sent_at = value.get("sent_at") or receipt.get("observed_at")
+        try:
+            sent_at = _observed_stamp(sent_at, "sent_at")
+        except AdvisorDeliveryError:
+            return {"outcome": "unknown", "delivery_id": delivery_id,
+                    "readback": _json(value, "readback"), "retry": False}
         body = {
             "schema": "otto.advisor.delivery.v1", "decision_id": decision_id,
             "project_ref": dict(pairing.project_ref), "delivery_id": delivery_id,

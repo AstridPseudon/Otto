@@ -49,6 +49,7 @@ def _communicate_after_native_start(
     expected_session_id: str,
     start_timeout_seconds: float,
     monotonic_clock: Callable[[], float] = time.monotonic,
+    native_start_callback: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> tuple[str, str, int | None, bool]:
     """Bound transport/start, then retain an identified native turn to terminal.
 
@@ -64,6 +65,7 @@ def _communicate_after_native_start(
     native_started = threading.Event()
     thread_matched = threading.Event()
     writer_error: list[BaseException] = []
+    start_callback_error: list[BaseException] = []
 
     def read_stdout() -> None:
         stream = process.stdout
@@ -80,6 +82,15 @@ def _communicate_after_native_start(
                 if event.get("thread_id") == expected_session_id:
                     thread_matched.set()
             elif isinstance(event, Mapping) and event.get("type") == "turn.started" and thread_matched.is_set():
+                turn_id = event.get("turn_id")
+                if not native_started.is_set() and native_start_callback is not None:
+                    try:
+                        native_start_callback(
+                            turn_id.strip() if isinstance(turn_id, str) and turn_id.strip() else None,
+                            _now(),
+                        )
+                    except BaseException as exc:
+                        start_callback_error.append(exc)
                 native_started.set()
         stream.close()
 
@@ -136,6 +147,8 @@ def _communicate_after_native_start(
         stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
     if writer_error and not timed_out and process.returncode == 0:
         raise OSError("Codex CLI prompt transport failed") from writer_error[0]
+    if start_callback_error:
+        raise OSError("native turn-start capture failed") from start_callback_error[0]
     return stdout, stderr, None if timed_out else process.returncode, native_started.is_set()
 
 
@@ -421,6 +434,7 @@ class CodexCliBinding(HostPort):
                  cursor_queue: Optional[list[dict[str, Any]]] = None,
                  trusted_thread_reader: Optional[Callable[[str], Mapping[str, Any]]] = None,
                  recipient_authorizer: Optional[Callable[[HostRequest], Mapping[str, Any]]] = None,
+                 native_start_callback: Optional[Callable[[str, str], None]] = None,
                  writable_roots: tuple[str, ...] = (),
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
@@ -437,6 +451,7 @@ class CodexCliBinding(HostPort):
         self.native_trace_path = native_trace_path
         self.trusted_thread_reader = trusted_thread_reader
         self._recipient_authorizer = recipient_authorizer
+        self._native_start_callback = native_start_callback
         self._delivery_consumed = False
         self.timeout_brief = None if timeout_brief is None else json.loads(json.dumps(timeout_brief))
         self.extended_timeout = _extended_timeout_brief(self.timeout_brief, model, reasoning)
@@ -649,6 +664,36 @@ class CodexCliBinding(HostPort):
                                 request.identity.logical_agent_id, request.requested_profile,
                                 observed_runner=RUNNER_ID, unsupported_reason="occurrence_deadline_exhausted"),
                     {"delivery_state": "not_started", "reconciliation": "finite deadline exhausted"})
+        native_start_callback = None
+        if request.operation == HostOperation.RESUME and self._native_start_callback is not None:
+            def native_start_callback(cli_turn_id: Optional[str], observed_at: str) -> None:
+                turn_id, admitted_at = cli_turn_id, observed_at
+                if turn_id is None:
+                    if trace_path is None or baseline is None:
+                        raise ValueError("native trace boundary is unavailable at turn start")
+                    deadline = min(
+                        self.monotonic_clock() + 5,
+                        self.occurrence_deadline or self.monotonic_clock() + 5,
+                    )
+                    admitted = None
+                    while admitted is None and self.monotonic_clock() < deadline:
+                        with Path(trace_path).open("rb") as stream:
+                            data = stream.read(32 * 1024 * 1024 + 1)
+                        if len(data) > 32 * 1024 * 1024 or not data.startswith(baseline):
+                            raise ValueError("native trace boundary changed at turn start")
+                        admitted = _select_admitted_turn(
+                            data.decode("utf-8").splitlines(),
+                            session_id=request.identity.physical_session_id,
+                            prompt=prompt,
+                            boundary=len(baseline.decode("utf-8").splitlines()),
+                            started_at=started,
+                        )
+                        if admitted is None:
+                            time.sleep(0.01)
+                    if admitted is None:
+                        raise ValueError("exact native message admission is unavailable")
+                    turn_id, admitted_at = admitted
+                self._native_start_callback(turn_id, admitted_at)
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, cwd=self.worktree,
@@ -659,6 +704,7 @@ class CodexCliBinding(HostPort):
                     expected_session_id=request.identity.physical_session_id,
                     start_timeout_seconds=effective_timeout,
                     monotonic_clock=self.monotonic_clock,
+                    native_start_callback=native_start_callback,
                 )
             else:
                 # Fresh initialization and the explicitly adopted bounded
@@ -894,6 +940,54 @@ def capture_native_cli_candidate(text: str, *, expected_session_id: str | None) 
             'missing_joins':['turn_id','delivered_brief','permission_context','owner_source_verification'],
             'native_records':records,'commands':commands,'final_candidate':{**final,
                 'text_sha256':hashlib.sha256(body).hexdigest(),'utf8_bytes':len(body),'phase_observed':False}}
+
+
+def _select_admitted_turn(lines: list[str], *, session_id: str, prompt: str,
+                          boundary: int, started_at: str) -> tuple[str, str] | None:
+    """Correlate an exact admitted user message before its turn is terminal."""
+
+    try:
+        starts, users = {}, {}
+        for index, raw in enumerate(lines):
+            event = json.loads(raw)
+            if not isinstance(event, Mapping):
+                return None
+            payload = event.get("payload", {})
+            if not isinstance(payload, Mapping):
+                continue
+            turn = payload.get("turn_id")
+            if not isinstance(turn, str) or not turn:
+                continue
+            if event.get("type") == "event_msg" and payload.get("type") == "task_started" and index >= boundary:
+                starts.setdefault(turn, []).append((index, payload))
+            if (event.get("type") == "event_msg" and payload.get("type") == "item_completed"
+                    and payload.get("item", {}).get("type") == "UserMessage"):
+                if payload.get("thread_id") != session_id:
+                    return None
+                users.setdefault(turn, []).append((index, payload["item"]))
+        candidates = []
+        invocation_epoch = int(datetime.fromisoformat(started_at).timestamp())
+        for turn, beginnings in starts.items():
+            messages = users.get(turn, [])
+            if len(beginnings) != 1 or len(messages) != 1:
+                continue
+            start_index, start_payload = beginnings[0]
+            user_index, user = messages[0]
+            text = "\n".join(
+                part.get("text", "") for part in user.get("content", [])
+                if isinstance(part, Mapping) and part.get("type") in {"text", "Text"}
+            )
+            native_started = start_payload.get("started_at")
+            if (not boundary <= start_index < user_index or text != prompt
+                    or not isinstance(native_started, int) or isinstance(native_started, bool)
+                    or native_started < invocation_epoch):
+                continue
+            candidates.append((turn, datetime.fromtimestamp(
+                native_started, tz=timezone.utc,
+            ).isoformat()))
+        return candidates[0] if len(candidates) == 1 else None
+    except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+        return None
 
 
 def _select_invocation_turn(lines: list[str], *, session_id: str, prompt: str,

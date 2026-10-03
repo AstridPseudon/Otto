@@ -160,13 +160,14 @@ class HerzchenCodexAdapter:
         self.source_verifier_factory, self.monotonic_clock = source_verifier_factory, monotonic_clock
         self._source_verifier = None
         self._thread_started_callback: Optional[Callable[[str], None]] = None
+        self._turn_started_callback: Optional[Callable[[str, str], None]] = None
 
     def bind_owner_authorization(self, authorizer: Callable[[str, str], Mapping[str, Any]],
                                  *, verifier: Optional[Callable[..., Mapping[str, Any]]] = None) -> "HerzchenCodexAdapter":
         """Return a fresh adapter for one owner-admitted two-turn delivery."""
         if not callable(authorizer):
             raise HerzchenAdapterError("trusted owner authorizer is required")
-        return type(self)(
+        bound = type(self)(
             owner=self.owner, source=self.source, worktree=self.worktree, launcher=self.launcher,
             requested_model=self.requested_model, requested_reasoning=self.requested_reasoning,
             binding_factory=self.binding_factory, host_adapter_factory=self.host_adapter_factory,
@@ -177,12 +178,25 @@ class HerzchenCodexAdapter:
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
             writable_roots=self.writable_roots,
         )
+        bound._turn_started_callback = self._turn_started_callback
+        return bound
 
     def set_thread_started_callback(self, callback: Optional[Callable[[str], None]]) -> Optional[Callable[[str], None]]:
         prior = self._thread_started_callback
         if callback is not None and not callable(callback):
             raise HerzchenAdapterError("thread-started callback must be callable")
         self._thread_started_callback = callback
+        return prior
+
+    def set_turn_started_callback(
+        self, callback: Optional[Callable[[str, str], None]],
+    ) -> Optional[Callable[[str, str], None]]:
+        """Install the owner capture for an exact native turn admission."""
+
+        prior = self._turn_started_callback
+        if callback is not None and not callable(callback):
+            raise HerzchenAdapterError("turn-started callback must be callable")
+        self._turn_started_callback = callback
         return prior
 
     @staticmethod
@@ -391,6 +405,7 @@ class HerzchenCodexAdapter:
                 native_trace_path=self.native_trace_path,
                 trusted_thread_reader=self.trusted_thread_reader,
                 recipient_authorizer=recipient_authorizer,
+                native_start_callback=self._turn_started_callback,
                 writable_roots=self.writable_roots,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
@@ -403,7 +418,10 @@ class HerzchenCodexAdapter:
                 worktree=self.worktree, launcher=self.launcher, model=model, reasoning=reasoning,
                 prompt=prompt, host_context_path=self.host_context_path,
                 **({"model_projection": model_projection} if model_projection is not None else {}),
-                **({"cursor_queue": cursor_queue} if cursor_queue is not None else {}), **receiving, **bounded,
+                **({"cursor_queue": cursor_queue} if cursor_queue is not None else {}),
+                **({"native_start_callback": self._turn_started_callback}
+                   if self._turn_started_callback is not None else {}),
+                **receiving, **bounded,
             )
         if self.host_adapter_factory is None:
             try:

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -6,6 +7,7 @@ import unittest
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.kernel.store import Store
+from herzchen.adapters.host import _select_admitted_turn
 from otto.attention import (
     DueRecord,
     DurableAttention,
@@ -15,6 +17,7 @@ from otto.attention import (
     _DueRecordOwnerEngine,
     due_record_contribution,
 )
+from otto.agents.gateway import OwnerDueRecordAttemptCapture
 from otto.portfolio import (
     AdvisorDeliveryError,
     AdvisorDeliveryLoop,
@@ -85,6 +88,7 @@ class Delivery:
                 "delivery_id": value["delivery_id"],
                 "physical_session_id": "manager-session",
                 "observed_turn_id": "manager-turn-1",
+                "observed_at": NOW.isoformat(),
                 "transport": "owner-host-continuation",
                 "consumed": True,
             }}
@@ -244,6 +248,7 @@ class AdvisorDeliveryTests(unittest.TestCase):
                 "delivery_id": first["delivery_id"],
                 "physical_session_id": "manager-session",
                 "observed_turn_id": "manager-turn-recovered",
+                "observed_at": NOW.isoformat(),
                 "transport": "owner-host-continuation",
                 "consumed": True,
             },
@@ -287,6 +292,9 @@ class AdvisorDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(result["outcome"], "sent")
         self.assertEqual(observed, ["persisted", "started"])
+        self.assertEqual(self.delivery.calls[0]["message"]["rationale"],
+                         "It preserves the native boundary.")
+        self.assertEqual(self.delivery.calls[0]["message"]["evidence"], [{"ref": "diff-order"}])
 
     def test_false_sent_claim_is_not_delivery_and_append_only_correction_is_visible(self):
         self.delivery.state = "false-shim"
@@ -340,7 +348,7 @@ class AdvisorDeliveryTests(unittest.TestCase):
         adapter = ExactSessionDelivery(
             continue_session=lambda request: calls.append(request) or {
                 "outcome": "succeeded", "physical_session_id": "wrong-session",
-                "observed_turn_id": "turn-wrong",
+                "observed_turn_id": "turn-wrong", "observed_turn_started_at": NOW.isoformat(),
             },
             read_session_delivery=lambda delivery_id: readback,
         )
@@ -351,12 +359,66 @@ class AdvisorDeliveryTests(unittest.TestCase):
         readback.update({
             "completion_state": "succeeded", "delivery_state": "returned",
             "last_result": {"physical_session_id": "manager-session",
-                            "observed_turn_id": "turn-recovered"},
+                            "observed_turn_id": "turn-recovered",
+                            "observed_turn_started_at": NOW.isoformat()},
             "target": MANAGER_CONVERSATION,
         })
         recovered = adapter.read_delivery("delivery-1")
         self.assertEqual(recovered["state"], "sent")
         self.assertTrue(recovered["receipt"]["consumed"])
+
+    def test_exact_session_adapter_accepts_native_admission_before_completion(self):
+        admitted_at = "2026-10-03T14:59:58Z"
+        adapter = ExactSessionDelivery(
+            continue_session=lambda request: {
+                "outcome": "active",
+                "delivery_admission": {
+                    "state": "turn_started", "native_turn_started": True,
+                    "physical_session_id": "manager-session",
+                    "observed_turn_id": "turn-admitted", "observed_at": admitted_at,
+                },
+            },
+            read_session_delivery=lambda delivery_id: {},
+        )
+        result = adapter.send({
+            "delivery_id": "delivery-admitted", "recipient": MANAGER_CONVERSATION,
+            "message": {"text": "apply repair"},
+        })
+        self.assertEqual(result["state"], "sent")
+        self.assertEqual(result["sent_at"], "2026-10-03T14:59:58+00:00")
+        self.assertEqual(result["receipt"]["observed_at"], result["sent_at"])
+
+    def test_delivery_uses_native_admission_time_instead_of_loop_clock(self):
+        admitted_at = "2026-10-03T14:58:00Z"
+
+        class AdmittedDelivery(Delivery):
+            def send(inner, value):
+                inner.calls.append(value)
+                return {"state": "sent", "sent_at": admitted_at, "receipt": {
+                    "schema": "otto.exact-session-consumption.v1",
+                    "delivery_id": value["delivery_id"],
+                    "physical_session_id": "manager-session",
+                    "observed_turn_id": "manager-turn-admitted",
+                    "observed_at": admitted_at,
+                    "transport": "owner-host-continuation", "consumed": True,
+                }}
+
+        delivery = AdmittedDelivery()
+        loop = AdvisorDeliveryLoop(AdvisorDeliveryPorts(
+            assignments=self.assignments, attention=self.attention,
+            authenticate=lambda actor: actor,
+            current_pairing=lambda project: self.current,
+            reports_for_project=lambda project: list(self.assignments.reports),
+            role_delivery=self._runtime, delivery=delivery, now=lambda: NOW,
+        ))
+        result = loop.deliver_decision(
+            pairing=self.pairing, advisor_actor="advisor-principal",
+            decision_id="decision-native-time", action="Use the admitted turn.",
+            rationale="The native receipt owns the cadence anchor.",
+            evidence=[{"ref": "native-admission"}], expected_evidence="focused result",
+            request_id="decision-request-native-time",
+        )
+        self.assertEqual(result["sent_at"], "2026-10-03T14:58:00+00:00")
 
     def test_crash_after_send_before_result_report_is_unknown_without_resend(self):
         original_append = self.assignments.append_report
@@ -492,6 +554,77 @@ class AdvisorDeliveryTests(unittest.TestCase):
 
 
 class OwnerAdmissionTests(unittest.TestCase):
+    def test_native_message_admission_is_available_before_task_completion(self):
+        prompt = "Receive the persisted advisor decision."
+        lines = [
+            json.dumps({"type": "session_meta", "payload": {"session_id": "manager-session"}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "task_started", "turn_id": "manager-turn-admitted",
+                "started_at": int(NOW.timestamp()),
+            }}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "item_completed", "turn_id": "manager-turn-admitted",
+                "thread_id": "manager-session",
+                "item": {"type": "UserMessage", "content": [{"type": "Text", "text": prompt}]},
+            }}),
+        ]
+        result = _select_admitted_turn(
+            lines, session_id="manager-session", prompt=prompt, boundary=1,
+            started_at="2026-10-03T14:59:59+00:00",
+        )
+        self.assertEqual(result, (
+            "manager-turn-admitted", "2026-10-03T15:00:00+00:00",
+        ))
+
+    def test_owner_capture_persists_exact_turn_admission_before_result(self):
+        class OwnerPort(InMemoryDueRecordPort):
+            def save_due(inner, *args, **kwargs):
+                saved = super().save_due(*args, **kwargs)
+                return {**saved, "mutation_receipt": {
+                    "status": "committed", "replayed": False,
+                }}
+
+        due_port = OwnerPort()
+        task = ref("work.task", "task-1")
+        target = {
+            "host": "codex", "native_id": "manager-session",
+            "project_ref": PROJECT, "task_ref": task, "assignment_ref": MANAGER,
+            "role": "manager", "principal": "manager-principal",
+        }
+        record = DueRecord(
+            schedule_id="manager-delivery", recipient="manager-principal",
+            instruction="Receive advisor decision.", profile="workspace-write",
+            anchor=NOW.isoformat(), due_at=NOW.isoformat(), last_covered_slot=0,
+            invocation_identity="delivery-key", in_flight_request="delivery-key",
+            delivery_state="ready", project_ref=PROJECT["id"], manager_ref="owner-principal",
+            assignment_ref=MANAGER, generation=1, target=target, role="manager",
+            lifecycle_owner="owner-principal", execution_mode="continue_existing",
+        )
+        due_port.save_due(
+            record.schedule_id, record.to_dict(), request_id="create-delivery", expected_version=0,
+        )
+        capture = OwnerDueRecordAttemptCapture(
+            due_port, record.schedule_id, project_ref=PROJECT, task_ref=task,
+            assignment_ref=MANAGER, generation=1, role="manager",
+            principal="manager-principal", lifecycle_owner="owner-principal",
+            expected_target=target,
+        )
+        self.assertEqual(
+            capture.claim("delivery-key", MANAGER, 1, "fingerprint")["outcome"],
+            "claimed",
+        )
+        capture.record_thread_started("delivery-key", "manager-session", process_created=False)
+        captured = capture.record_delivery_admission(
+            "delivery-key", "manager-session", "manager-turn-admitted",
+            "2026-10-03T15:00:00Z",
+        )
+        self.assertEqual(captured["state"], "claimed")
+        self.assertEqual(
+            captured["delivery_admission"]["observed_at"],
+            "2026-10-03T15:00:00+00:00",
+        )
+        self.assertNotIn("result", captured)
+
     def test_store_owner_transaction_fences_cross_record_advisor_claim(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store.create(Path(directory) / "owner.sqlite", authority="test-owner")

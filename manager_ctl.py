@@ -107,6 +107,24 @@ def main() -> None:
     advisor_deliver.add_argument("--rationale", required=True)
     advisor_deliver.add_argument("--evidence", action="append", required=True)
     advisor_deliver.add_argument("--expected-evidence", required=True)
+    advisor_recover = commands.add_parser(
+        "advisor-delivery-recover",
+        help="reconcile one started/unknown advisor delivery by owner readback without resend",
+    )
+    advisor_recover.add_argument("--decision-id", required=True)
+    advisor_state = commands.add_parser(
+        "advisor-decision-state",
+        help="read persisted, sent, acknowledged, implemented, and effect-observed state",
+    )
+    advisor_state.add_argument("--decision-id", required=True)
+    advisor_correct = commands.add_parser(
+        "advisor-delivery-correct",
+        help="append a correction for a historical false sent claim",
+    )
+    advisor_correct.add_argument("--request-key", required=True)
+    advisor_correct.add_argument("--decision-id", required=True)
+    advisor_correct.add_argument("--reason", required=True)
+    advisor_correct.add_argument("--evidence", action="append", required=True)
     complete = commands.add_parser(
         "complete-task", help="request guarded canonical task completion with exact evidence refs",
     )
@@ -141,7 +159,9 @@ def main() -> None:
     payload = vars(args)
     response = call(payload)
     print(json.dumps(response, indent=2, sort_keys=True))
-    if response.get("outcome") not in {"ok", "committed", "replayed", "created", "read"}:
+    if response.get("outcome") not in {
+        "ok", "committed", "replayed", "created", "read", "started", "corrected",
+    }:
         raise SystemExit(1)
 
 
