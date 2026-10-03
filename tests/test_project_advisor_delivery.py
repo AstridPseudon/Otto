@@ -224,6 +224,61 @@ class AdvisorDeliveryTests(unittest.TestCase):
         self.assertEqual((covered.delivery_state, covered.completion_state),
                          ("returned", "succeeded"))
 
+    def test_terminal_gateway_attempt_is_not_an_inflight_advisor_peer(self):
+        self._schedule_wake()
+        first = self.attention.check("advisor-wake", due_reason="initial")
+        claimed = DueRecord.from_dict(self.due_port.read_due("advisor-wake"))
+        self.due_port.save_due(
+            "advisor-wake",
+            {**claimed.to_dict(), "host_evidence": {"gateway_attempt": {
+                "state": "result", "result": {
+                    "outcome": "succeeded", "delivery_state": "done",
+                    "logical_request_key": first["request_id"],
+                },
+            }}},
+            request_id="record-terminal-gateway-attempt", expected_version=claimed.version,
+        )
+        self._schedule_second_wake()
+        second = self.attention.check("advisor-followup", due_reason="effect-followup")
+        self.assertEqual(first["outcome"], "attention-ready")
+        self.assertEqual(second["outcome"], "attention-ready")
+        self.assertNotIn("claim_schedule_id", second)
+
+    def test_unknown_gateway_attempt_still_fences_an_advisor_peer(self):
+        self._schedule_wake()
+        self.attention.check("advisor-wake", due_reason="initial")
+        claimed = DueRecord.from_dict(self.due_port.read_due("advisor-wake"))
+        self.due_port.save_due(
+            "advisor-wake",
+            {**claimed.to_dict(), "host_evidence": {"gateway_attempt": {
+                "state": "result", "result": {
+                    "outcome": "unknown", "delivery_state": "unknown",
+                    "logical_request_key": claimed.in_flight_request,
+                },
+            }}},
+            request_id="record-unknown-gateway-attempt", expected_version=claimed.version,
+        )
+        self._schedule_second_wake()
+        second = self.attention.check("advisor-followup", due_reason="effect-followup")
+        self.assertEqual(second["outcome"], "coalesced")
+        self.assertEqual(second["claim_schedule_id"], "advisor-wake")
+
+    def test_recurring_prior_completion_does_not_hide_current_claim(self):
+        self._schedule_wake()
+        first = self.attention.check("advisor-wake", due_reason="current-slot")
+        claimed = DueRecord.from_dict(self.due_port.read_due("advisor-wake"))
+        self.due_port.save_due(
+            "advisor-wake",
+            {**claimed.to_dict(), "last_completed_request": "prior-slot-request",
+             "completion_state": "succeeded"},
+            request_id="record-prior-slot-completion", expected_version=claimed.version,
+        )
+        self._schedule_second_wake()
+        second = self.attention.check("advisor-followup", due_reason="effect-followup")
+        self.assertEqual(first["outcome"], "attention-ready")
+        self.assertEqual(second["outcome"], "coalesced")
+        self.assertEqual(second["claim_request_id"], first["request_id"])
+
     def test_unknown_delivery_is_not_resent_and_readback_can_reconcile(self):
         self.delivery.state = "raise"
         first = self.loop.deliver_decision(

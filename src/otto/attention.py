@@ -168,9 +168,30 @@ def _advisor_claim_conflict(
         if (candidate.get("schedule_id") != schedule_id
                 and candidate.get("stop_state") == "active"
                 and candidate.get("in_flight_request")
+                and not _advisor_gateway_terminal(candidate)
                 and _same_advisor_inspection_scope(candidate, desired)):
             return candidate
     return None
+
+
+def _advisor_gateway_terminal(record: Mapping[str, Any]) -> bool:
+    """True only for an authoritative non-unknown owner gateway result."""
+
+    host_evidence = record.get("host_evidence")
+    gateway_attempt = (host_evidence.get("gateway_attempt")
+                       if isinstance(host_evidence, Mapping) else None)
+    gateway_result = (gateway_attempt.get("result")
+                      if isinstance(gateway_attempt, Mapping) else None)
+    current_request = record.get("in_flight_request")
+    return bool(
+        isinstance(current_request, str) and bool(current_request)
+        and isinstance(gateway_attempt, Mapping)
+        and gateway_attempt.get("state") == "result"
+        and isinstance(gateway_result, Mapping)
+        and gateway_result.get("logical_request_key") == current_request
+        and gateway_result.get("outcome") == "succeeded"
+        and gateway_result.get("delivery_state") in {"done", "completed"}
+    )
 
 
 @dataclass(frozen=True)
@@ -2310,6 +2331,8 @@ class DurableAttention:
             candidate = DueRecord.from_dict(value)
             if (candidate.schedule_id != record.schedule_id
                     and candidate.in_flight_request is not None
+                    and candidate.stop_state == "active"
+                    and not _advisor_gateway_terminal(candidate.to_dict())
                     and candidate.generation == record.generation
                     and candidate.assignment_ref == record.assignment_ref):
                 peers.append(candidate)
