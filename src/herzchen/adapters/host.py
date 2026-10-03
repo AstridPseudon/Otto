@@ -18,6 +18,7 @@ import math
 import shlex
 import zlib
 import signal
+import threading
 import time
 from urllib.parse import unquote, urlparse
 from pathlib import Path
@@ -27,6 +28,115 @@ from .receipt import AdapterReceiptEnvelope
 
 RUNNER_ID = "codex-cli"
 MAX_SUBMISSION_SIZE = 1_000_000
+
+
+def _terminate_owned_process(process: Any) -> None:
+    """Cancel one launched CLI occurrence without claiming provider release."""
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, AttributeError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _communicate_after_native_start(
+    process: Any,
+    prompt: str,
+    *,
+    expected_session_id: str,
+    start_timeout_seconds: float,
+    monotonic_clock: Callable[[], float] = time.monotonic,
+) -> tuple[str, str, int | None, bool]:
+    """Bound transport/start, then retain an identified native turn to terminal.
+
+    Ordinary owner work is not a wall-clock timer.  The finite phase ends only
+    after the launched CLI reports both the exact expected thread and a native
+    turn start.  From there the owning caller waits for the useful turn to
+    finish, or explicitly cancels it by unwinding this call.
+    """
+
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    stream_lock = threading.Lock()
+    native_started = threading.Event()
+    thread_matched = threading.Event()
+    writer_error: list[BaseException] = []
+
+    def read_stdout() -> None:
+        stream = process.stdout
+        if stream is None:
+            return
+        for line in iter(stream.readline, ""):
+            with stream_lock:
+                stdout_parts.append(line)
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(event, Mapping) and event.get("type") == "thread.started":
+                if event.get("thread_id") == expected_session_id:
+                    thread_matched.set()
+            elif isinstance(event, Mapping) and event.get("type") == "turn.started" and thread_matched.is_set():
+                native_started.set()
+        stream.close()
+
+    def read_stderr() -> None:
+        stream = process.stderr
+        if stream is None:
+            return
+        for value in iter(stream.readline, ""):
+            with stream_lock:
+                stderr_parts.append(value)
+        stream.close()
+
+    def write_prompt() -> None:
+        try:
+            if process.stdin is None:
+                raise BrokenPipeError("Codex CLI stdin is unavailable")
+            process.stdin.write(prompt)
+            process.stdin.close()
+        except BaseException as exc:  # Transport failure is reconciled below.
+            writer_error.append(exc)
+
+    readers = (
+        threading.Thread(target=read_stdout, name="codex-cli-stdout", daemon=True),
+        threading.Thread(target=read_stderr, name="codex-cli-stderr", daemon=True),
+    )
+    writer = threading.Thread(target=write_prompt, name="codex-cli-stdin", daemon=True)
+    for thread in (*readers, writer):
+        thread.start()
+    deadline = monotonic_clock() + start_timeout_seconds
+    timed_out = False
+    try:
+        while process.poll() is None and not native_started.is_set():
+            remaining = deadline - monotonic_clock()
+            if remaining <= 0:
+                timed_out = True
+                _terminate_owned_process(process)
+                process.wait()
+                break
+            native_started.wait(min(0.05, remaining))
+        if not timed_out:
+            # There is deliberately no ordinary work-duration deadline here.
+            # The owner keeps custody until the identified turn is terminal.
+            process.wait()
+    except BaseException:
+        _terminate_owned_process(process)
+        try:
+            process.wait()
+        finally:
+            raise
+    finally:
+        for thread in (*readers, writer):
+            thread.join(timeout=2)
+    with stream_lock:
+        stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
+    if writer_error and not timed_out and process.returncode == 0:
+        raise OSError("Codex CLI prompt transport failed") from writer_error[0]
+    return stdout, stderr, None if timed_out else process.returncode, native_started.is_set()
 
 
 def _owner_delivery_appendix(authorization: Mapping[str, Any], profile: str = "read-only") -> str:
@@ -317,15 +427,16 @@ class CodexCliBinding(HostPort):
         self.model_projection = None if model_projection is None else json.loads(json.dumps(model_projection))
         self.cursor_queue = None if cursor_queue is None else json.loads(json.dumps(cursor_queue))
 
-    def _trace(self, session_id: str) -> tuple[str, bytes]:
+    def _trace(self, session_id: str, *, deadline: float | None = None) -> tuple[str, bytes]:
         """Resolve only the exact host-issued session via an injected read port."""
+        deadline = self.occurrence_deadline if deadline is None else deadline
         path = self.native_trace_path
         if self.trusted_thread_reader is not None:
-            if self.occurrence_deadline is not None:
+            if deadline is not None:
                 read = getattr(self.trusted_thread_reader, "read_with_deadline", None)
                 if not callable(read):
                     raise ValueError("trusted metadata reader has no finite deadline seam")
-                response = read(session_id, self.occurrence_deadline)
+                response = read(session_id, deadline)
             else:
                 response = self.trusted_thread_reader(session_id)
             thread = response.get("thread") if isinstance(response, Mapping) else None
@@ -334,14 +445,14 @@ class CodexCliBinding(HostPort):
             path = thread.get("path")
         if not isinstance(path, str) or not Path(path).is_absolute():
             raise ValueError("trusted exact-session trace path is unavailable")
-        if self.occurrence_deadline is None:
+        if deadline is None:
             data = Path(path).read_bytes()
         else:
-            if self.monotonic_clock() >= self.occurrence_deadline:
+            if self.monotonic_clock() >= deadline:
                 raise ValueError("trace deadline exhausted")
             with Path(path).open("rb") as stream:
                 data = stream.read(32 * 1024 * 1024 + 1)
-            if len(data) > 32 * 1024 * 1024 or self.monotonic_clock() >= self.occurrence_deadline:
+            if len(data) > 32 * 1024 * 1024 or self.monotonic_clock() >= deadline:
                 raise ValueError("trace size or deadline exceeded")
         records = [json.loads(line) for line in data.decode("utf-8").splitlines()]
         sessions = [v["payload"].get("session_id", v["payload"].get("id")) for v in records
@@ -509,17 +620,21 @@ class CodexCliBinding(HostPort):
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, cwd=self.worktree,
-                                       env=os.environ.copy(), **({"start_new_session": True} if self.extended_timeout else {}))
-            stdout, stderr = process.communicate(prompt, timeout=effective_timeout)
-            exit_status = process.returncode
+                                       env=os.environ.copy(), start_new_session=True)
+            if request.operation == HostOperation.RESUME and not self.extended_timeout:
+                stdout, stderr, exit_status, _ = _communicate_after_native_start(
+                    process, prompt,
+                    expected_session_id=request.identity.physical_session_id,
+                    start_timeout_seconds=effective_timeout,
+                    monotonic_clock=self.monotonic_clock,
+                )
+            else:
+                # Fresh initialization and the explicitly adopted bounded
+                # inspection route retain their finite wall-clock contract.
+                stdout, stderr = process.communicate(prompt, timeout=effective_timeout)
+                exit_status = process.returncode
         except subprocess.TimeoutExpired:
-            try:
-                if self.extended_timeout:
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
-            except OSError:
-                pass  # Kill delivery is not proof of physical provider release.
+            _terminate_owned_process(process)
             if self.occurrence_deadline is None:
                 stdout, stderr = process.communicate()
             else:
@@ -542,6 +657,7 @@ class CodexCliBinding(HostPort):
                      "delivery_state": "unknown"})
         observed_session = None
         observed_turn_id = None
+        native_turn_started = False
         observed_model = None
         observed_reasoning = None
         observed_profile = None
@@ -555,15 +671,24 @@ class CodexCliBinding(HostPort):
                 continue
             if isinstance(event, Mapping) and event.get("type") == "thread.started":
                 observed_session = event.get("thread_id")
+            if isinstance(event, Mapping) and event.get("type") == "turn.started":
+                native_turn_started = True
             if isinstance(event, Mapping) and event.get("type") == "turn.completed":
                 observed_turn_id = event.get("turn_id")
         invocation_turn_verified = False
         trace_error = None
+        if (request.operation == HostOperation.RESUME and observed_session is not None
+                and observed_session != request.identity.physical_session_id):
+            trace_error = "resumed session differs"
         if exit_status is not None and observed_session and (self.native_trace_path or self.trusted_thread_reader):
             try:
                 if request.operation == HostOperation.RESUME and observed_session != request.identity.physical_session_id:
                     raise ValueError("resumed session differs")
-                current_path, trace = self._trace(observed_session)
+                # The launch deadline bounds admission and authentic native
+                # start only.  Terminal metadata readback gets its own short
+                # bounded operation after useful work has finished.
+                trace_deadline = self.monotonic_clock() + 30 if not self.extended_timeout else None
+                current_path, trace = self._trace(observed_session, deadline=trace_deadline)
                 if baseline is not None and (current_path != trace_path or not trace.startswith(baseline)):
                     raise ValueError("native trace boundary changed")
                 native_lines = trace.decode("utf-8").splitlines()
@@ -598,7 +723,9 @@ class CodexCliBinding(HostPort):
                 trace_error = str(exc)
                 native_lines = []
         physical_session = observed_session
-        if request.operation == HostOperation.RESUME and not physical_session:
+        if request.operation == HostOperation.RESUME and (
+            not physical_session or physical_session != request.identity.physical_session_id
+        ):
             physical_session = request.identity.physical_session_id
         identity = type(request.identity)(request.identity.logical_agent_id, physical_session)
         if trace_error is not None:
@@ -640,7 +767,17 @@ class CodexCliBinding(HostPort):
         return receipt, {"command": command, "stdout": stdout, "stderr": stderr,
                          "exit_status": exit_status, "observed_model": observed_model,
                          "observed_reasoning": observed_reasoning, "observed_profile": observed_profile,
-                         "host_evidence": {"session_id": physical_session, "turn_id": observed_turn_id, "provenance": "host_native_jsonl", "invocation_turn_verified": invocation_turn_verified, "otto_host_turn_context": native_context, "native_candidate": native_candidate, "verification_failures":verification_failures},
+                         "host_evidence": {
+                             "session_id": physical_session, "turn_id": observed_turn_id,
+                             "provenance": "host_native_jsonl",
+                             "process_started": True,
+                             "session_created": request.operation == HostOperation.INVOKE,
+                             "native_turn_started": native_turn_started,
+                             "invocation_turn_verified": invocation_turn_verified,
+                             "otto_host_turn_context": native_context,
+                             "native_candidate": native_candidate,
+                             "verification_failures": verification_failures,
+                         },
                          "stdout_ref": self.evidence_path,
                          "native_receipt_ref": self.receipt_path,
                          "native_candidate": native_candidate, "verification_failures": verification_failures,

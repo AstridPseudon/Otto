@@ -761,10 +761,12 @@ class HerzchenCodexAdapter:
                     or isinstance(deadline, bool) or not isinstance(deadline, (int, float))
                     or not 0 < deadline - self.monotonic_clock() <= total):
                 raise HerzchenAdapterError("owner occurrence requires a finite supported deadline")
-            inert_seconds = min(120, max(30, total // 10))
-            inert_options = {"timeout_seconds": inert_seconds, "occurrence_deadline": deadline}
-            work_options = {"timeout_seconds": total if existing_session else total - inert_seconds,
-                            "occurrence_deadline": deadline}
+            launch_seconds = 120
+            inert_options = {"timeout_seconds": launch_seconds, "occurrence_deadline": deadline}
+            # Ordinary role work is retained by the owner to terminal once the
+            # exact native session and turn start are observed.  This finite
+            # value bounds only launch/prompt transport, not useful execution.
+            work_options = {"timeout_seconds": launch_seconds, "occurrence_deadline": deadline}
         if existing_session:
             physical = typed.identity.physical_session_id
             base = {"initialization_receipt": None, "initialization_envelope": None,
