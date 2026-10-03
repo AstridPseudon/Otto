@@ -114,6 +114,90 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             raise OwnerRoleRuntimeError("current owner delivery authorization does not match recipient")
         return deepcopy(dict(authorization))
 
+    def reconcile_unknown_result(
+        self, logical_request_key: str, replacement: Mapping[str, Any], *,
+        resolver: str, trace_sha256: str, parser_revision: str,
+    ) -> Mapping[str, Any]:
+        """Replace one exact unknown capture after retained evidence is reparsed.
+
+        This is an owner reconciliation operation, never a provider retry.  It
+        preserves the original result digest and accepts only a successful
+        replacement with the same immutable request, assignment, native
+        session, authorization, and retained transport bytes.
+        """
+        if resolver != self.lifecycle_owner:
+            raise OwnerRoleRuntimeError("only the lifecycle owner may reconcile an unknown result")
+        if (not isinstance(trace_sha256, str) or len(trace_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in trace_sha256)
+                or not isinstance(parser_revision, str) or not parser_revision.strip()):
+            raise OwnerRoleRuntimeError("reconciliation requires an exact trace digest and parser revision")
+        record = self._record()
+        attempt = None if record is None else self._attempt(record)
+        prior = attempt.get("result") if isinstance(attempt, Mapping) else None
+        value = deepcopy(dict(replacement)) if isinstance(replacement, Mapping) else None
+        if (record is None or attempt is None or attempt.get("state") != "result"
+                or attempt.get("logical_request_key") != logical_request_key
+                or not isinstance(prior, Mapping) or not isinstance(value, Mapping)
+                or prior.get("outcome") != "unknown" or prior.get("delivery_state") != "unknown"):
+            raise OwnerRoleRuntimeError("reconciliation requires the exact current unknown owner result")
+        immutable = (
+            "logical_request_key", "owner", "project_ref", "task_ref", "assignment_ref",
+            "generation", "operation", "requested_profile", "requested_model",
+            "requested_reasoning", "logical_agent_id", "physical_session_id",
+            "native_session_id", "request_fingerprint",
+        )
+        if any(value.get(field) != prior.get(field) for field in immutable):
+            raise OwnerRoleRuntimeError("reconciled result changed immutable owner custody")
+        evidence = value.get("task_bound_evidence")
+        authorization = attempt.get("delivery_authorization")
+        if (value.get("outcome") != "succeeded" or value.get("delivery_state") not in {"done", "completed"}
+                or value.get("context_digest_verified") is not True
+                or value.get("observed_model") != record.requested_model
+                or value.get("observed_reasoning") != record.requested_reasoning
+                or not isinstance(evidence, Mapping)
+                or evidence.get("assignment_ref") != self.assignment_ref
+                or evidence.get("generation") != self.generation
+                or evidence.get("session_id") != value.get("physical_session_id")
+                or evidence.get("owner_delivery_authorization") != authorization):
+            raise OwnerRoleRuntimeError("reconciled result lacks the exact successful owner/native join")
+        prior_raw = prior.get("raw_result")
+        next_raw = value.get("raw_result")
+        if not isinstance(prior_raw, Mapping) or not isinstance(next_raw, Mapping):
+            raise OwnerRoleRuntimeError("reconciled result lacks retained transport evidence")
+        for field in ("initialization_receipt", "initialization_envelope", "owner_delivery_authorization"):
+            if next_raw.get(field) != prior_raw.get(field):
+                raise OwnerRoleRuntimeError("reconciled result changed retained initialization evidence")
+        prior_work = prior_raw.get("work_envelope")
+        next_work = next_raw.get("work_envelope")
+        if not isinstance(prior_work, Mapping) or not isinstance(next_work, Mapping):
+            raise OwnerRoleRuntimeError("reconciled result lacks retained work envelope")
+        for field in ("command", "stdout", "stderr", "exit_status", "started_at", "ended_at",
+                      "physical_session_id", "process_id", "input_packet_digest"):
+            if next_work.get(field) != prior_work.get(field):
+                raise OwnerRoleRuntimeError("reconciled result changed retained work transport bytes")
+        digest = lambda body: hashlib.sha256(json.dumps(
+            _json(body), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+        prior_digest = digest(prior)
+        reconciliation = {
+            "schema": "otto.owner-result-reconciliation.v1",
+            "resolver": resolver,
+            "source_unknown_sha256": prior_digest,
+            "trace_sha256": trace_sha256,
+            "parser_revision": parser_revision,
+            "effect": "retained_evidence_reparsed_no_provider_replay",
+        }
+        updated = {**attempt, "result": value, "reconciliation": reconciliation}
+        saved = self._save(
+            record, updated,
+            "otto-gateway-reconcile:" + logical_request_key + ":" + prior_digest + ":" + trace_sha256,
+        )
+        readback = self._attempt(self._record())
+        if readback != updated:
+            raise OwnerRoleRuntimeError("reconciled owner result readback differs")
+        return {"outcome": "reconciled", "readback_version": saved.get("version"),
+                "reconciliation": reconciliation, "attempt": readback}
+
     def publish_analytical_result(self, envelope: Mapping[str, Any], result_owner: HerzchenAttemptCapture) -> Mapping[str, Any]:
         """Append an already CAS-recorded success; never replace an unknown.
 
@@ -440,6 +524,66 @@ class CanonicalRoleRuntime:
     def invoke_manager(self, **kwargs: Any) -> Any:
         """Legacy owner route; not the post-bind authorization contract."""
         return self._invoke(role="manager", **kwargs)
+
+    def reconcile_worker_result(
+        self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+        assignment_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],
+        schedule_id: str, logical_request_key: str, expected_generation: int,
+        lifecycle: str, as_of: str, replacement: Mapping[str, Any],
+        trace_sha256: str, parser_revision: str,
+        required_resource_names: Sequence[str] = (),
+    ) -> Mapping[str, Any]:
+        """Reconcile retained worker evidence without invoking the provider."""
+        if self.result_capture_factory is None:
+            raise OwnerRoleRuntimeError("worker reconciliation requires an owner-issued result capability")
+        _assignment, _target, capture = self._binding(
+            role="worker", project_ref=project_ref, task_ref=task_ref,
+            assignment_ref=assignment_ref, mandate_ref=mandate_ref,
+            schedule_id=schedule_id, logical_request_key=logical_request_key,
+            expected_generation=expected_generation,
+        )
+        from .orchestrator_route import (
+            _canonical_operation_evidence, prepare_canonical_assignment_role_brief,
+        )
+
+        def current_brief_digest() -> str:
+            prepared = prepare_canonical_assignment_role_brief(
+                role="worker", project_ref=project_ref, assignment_ref=assignment_ref,
+                mandate_ref=mandate_ref, expected_generation=expected_generation,
+                project_reader=self._project_reader(project_ref),
+                assignment_reader=self._assignment_reader(assignment_ref),
+                mandate_reader=self._mandate_reader(project_ref, mandate_ref),
+                resource_reader=self.operations.content_port,
+                lifecycle=lifecycle, as_of=as_of,
+                required_resource_names=required_resource_names,
+                task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
+            )
+            return _canonical_operation_evidence(
+                prepared, owner=replacement.get("logical_agent_id"), task_ref=task_ref,
+            )["brief_sha256"]
+
+        capture.current_brief_reader = current_brief_digest
+        resource = replacement.get("resource_evidence")
+        if (not isinstance(resource, Mapping)
+                or resource.get("brief_sha256") != current_brief_digest()):
+            raise OwnerRoleRuntimeError("reconciled result does not use the current adopted owner brief")
+        reconciled = capture.reconcile_unknown_result(
+            logical_request_key, replacement, resolver=self.actor,
+            trace_sha256=trace_sha256, parser_revision=parser_revision,
+        )
+        result_owner = self.result_capture_factory(
+            project_ref=project_ref, task_ref=task_ref,
+            assignment_ref=assignment_ref, generation=expected_generation,
+            logical_request_key=logical_request_key,
+        )
+        if not isinstance(result_owner, HerzchenAttemptCapture):
+            raise OwnerRoleRuntimeError("owner result capability is unavailable")
+        published = capture.publish_analytical_result(replacement, result_owner)
+        accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
+        if accepted.get("accepted") is not True:
+            raise OwnerRoleRuntimeError("reconciled result was not accepted by the owner occurrence")
+        return {"outcome": "reconciled", "attempt": reconciled,
+                "published_analytical_result": published, "manager_acceptance": accepted}
 
     def invoke_orchestrator(self, **kwargs: Any) -> Any:
         """Legacy owner route; not the post-bind authorization contract."""
