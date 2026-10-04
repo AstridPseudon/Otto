@@ -68,10 +68,31 @@ or actual host pause/resume/stop/completion. Query the current composition with:
 ```
 
 This reads the existing owner Due, pairing, persisted PAUSED settings and 3/3
-pool before any effect, claim or reservation. `unsupported` with
-`host_adapter_unavailable` means no owner-side HostTriggerPort was supplied.
-An adapter object alone would not prove a callback; the returned evidence
-status stays `required_evidence_gap` until separate actual host receipts exist.
-The current supported app tool exposes view/update of automations, not a
-provider-free native scheduler callback. Do not activate the exhausted advisor
-or count the paused acknowledgement replay or these fixture tests as closure.
+pool before any effect, claim or reservation. Its `read` result reports three
+independent facts: the direct owner `HostTriggerPort` is absent; the supported
+external host-effect bridge is implemented; actual scheduled firing is unproven.
+The bridge is `prepare_host` -> `DeterministicHostExecutor.execute/recover` ->
+`automation_update` -> exact persisted settings readback -> `acknowledge_host`.
+A root/tool caller supplies the update and read callbacks; the current worker
+process need not own a direct port or an executor. Readback proves configuration,
+not a scheduled callback. `required_evidence_gap` remains until actual supported
+host firing and its owner admission are observed.
+
+`ExecutionHost.reconcile_trigger` is the existing bridge-aware caller. Ordinary
+pause and resume reconcile the retained schedule. Optional `owner_transition`
+`stop` or `complete` performs a version- and scope-guarded owner transition, then
+pauses the same external automation only after terminal success. Recurring
+successful completion keeps its cadence. Unknown/failed completion permits no
+external lifecycle success or automatic launch. Replays recover the retained
+effect without another update; exact readback and owner acknowledgement are both
+required. The portfolio lifecycle caller now routes through this same method.
+Low-level `DurableAttention.stop/complete` change owner state only and never
+implicitly suspend an external automation.
+
+The worker's prior `automation_update(view)` approval-policy error is local to
+that execution profile. The root reports that its authorized view succeeds.
+Neither this error nor the absent direct port establishes global tool absence.
+Keep the product automation PAUSED, pool 3/3, historical unknowns unchanged and
+old manager stopped. Actual firing needs a separately authorized root-host
+controller callback and a correlated owner receipt; no new scheduler, advisor
+turn, task or occurrence is authorized by these inspection results.

@@ -2635,6 +2635,7 @@ class DurableAttention:
         manager_ref: Optional[str] = None,
         generation: Optional[int] = None,
         lifecycle_owner: Optional[str] = None,
+        expected_version: Optional[int] = None,
     ) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
@@ -2642,6 +2643,8 @@ class DurableAttention:
         scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
         if scope_error is not None:
             return {"outcome": "rejected", "request_id": request_id, "error": scope_error, "relaunch": False, "automatic_action": False}
+        if expected_version is not None and expected_version != record.version:
+            return {"outcome": "rejected", "error": {"code": "stale_version"}, "automatic_action": False}
         if record.last_completed_request == request_id and record.last_result is not None:
             covered = self._settle_advisor_coverage(
                 record, request_id=request_id, completed_at=record.completed_at or _iso(self.clock()),
@@ -2725,10 +2728,18 @@ class DurableAttention:
             return {"outcome": "waiting", "record": record.to_dict(), "relaunch": False, "automatic_action": False}
         return {"outcome": "resume-same-request", "request_id": record.in_flight_request, "record": record.to_dict(), "relaunch": False, "responsible_owner": record.owner or record.recipient, "return_condition": record.return_condition, "automatic_action": False}
 
-    def stop(self, schedule_id: str, *, request_id: str) -> dict[str, JSONValue]:
+    def stop(self, schedule_id: str, *, request_id: str, expected_version: Optional[int] = None,
+             project_ref: Optional[str] = None, manager_ref: Optional[str] = None,
+             generation: Optional[int] = None, lifecycle_owner: Optional[str] = None) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref,
+                                        generation=generation, lifecycle_owner=lifecycle_owner)
+        if scope_error is not None:
+            return {"outcome": "rejected", "error": scope_error, "automatic_action": False}
+        if expected_version is not None and expected_version != record.version:
+            return {"outcome": "rejected", "error": {"code": "stale_version"}, "automatic_action": False}
         if record.stop_state == "stopped":
             return {"outcome": "replayed", "record": record.to_dict(), "automatic_action": False}
         stored = self._write(DueRecord.from_dict({**record.to_dict(), "stop_state": "stopped"}), request_id=f"stop:{request_id}", expected_version=record.version)

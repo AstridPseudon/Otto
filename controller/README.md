@@ -80,3 +80,13 @@ one current-task request into the existing manager's callback; dispatch is
 held while the current manager effect is unknown. The lifecycle command reads
 the adopted PAUSED automation and exercises existing production rejection
 guards with explicitly inert Due/resource projections and the existing 3/3 pool.
+
+Host capability inspection separates the optional direct owner HostTriggerPort,
+the supported external prepare/execute-or-recover/readback/ack bridge, and actual
+scheduled firing. Missing direct port does not disable the external bridge.
+`ExecutionHost.reconcile_trigger` is the existing bridge-aware lifecycle caller;
+its scoped stop/terminal-completion transitions reconcile external PAUSED state.
+Low-level Due stop/complete remain owner state only. Exact readback and owner ack
+prove reconciliation, not firing. A worker-local tool approval error does not
+apply to a root context whose authorized automation view succeeds. See
+`final-review-closures-README.md` for the retained PAUSED evidence gap.

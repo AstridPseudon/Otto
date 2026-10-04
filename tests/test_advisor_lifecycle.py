@@ -83,8 +83,11 @@ class AdvisorLifecycleTests(unittest.TestCase):
                 patch.object(self.fixture.attention, "check") as claim, \
                 patch.object(type(self.limits), "reserve", create=True) as reserve:
             result = self.call("host-capability")
-        self.assertEqual(result["outcome"], "unsupported")
-        self.assertEqual(result["error"]["code"], "host_adapter_unavailable")
+        self.assertEqual(result["outcome"], "read")
+        self.assertIsNone(result["error"])
+        self.assertFalse(result["host_connection"]["direct_owner_port"]["supplied"])
+        self.assertTrue(result["host_connection"]["external_effect_bridge"]["implementation_available"])
+        self.assertFalse(result["host_connection"]["external_effect_bridge"]["executor_in_this_process"])
         self.assertFalse(result["host_connection"]["actual_host_callback_observed"])
         self.assertEqual(result["host_connection"]["evidence_status"], "required_evidence_gap")
         prepare.assert_not_called()

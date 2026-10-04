@@ -219,7 +219,11 @@ class ExecutionHost:
 
     @staticmethod
     def reconcile_trigger(*, attention: Any, executor: Any, schedule_id: str,
-                          request_id: str, actor: str, desired_state: str = "active") -> dict[str, Any]:
+                          request_id: str, actor: str, desired_state: str = "active",
+                          expected_version: int | None = None, project_ref: str | None = None,
+                          manager_ref: str | None = None, generation: int | None = None,
+                          owner_transition: str | None = None,
+                          completion: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Use the existing owner host-effect and automation executor seam.
 
         An effect already persisted under this request is reconciled by host
@@ -229,10 +233,52 @@ class ExecutionHost:
         with unattended execution.
         """
         from otto.host_bridge import HostEffect
+        if owner_transition not in {None, "stop", "complete"}:
+            raise ValueError("owner_transition must be stop or complete")
+        if expected_version is not None and (isinstance(expected_version, bool)
+                or not isinstance(expected_version, int) or expected_version < 1):
+            raise ValueError("expected_version must be a positive integer")
+        if generation is not None and (isinstance(generation, bool)
+                or not isinstance(generation, int) or generation < 1):
+            raise ValueError("generation must be a positive integer")
+        record = attention._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "error": {"code": "unknown_schedule"}, "automatic_action": False}
+        scope = {"project_ref": project_ref if project_ref is not None else record.project_ref,
+                 "manager_ref": manager_ref if manager_ref is not None else record.manager_ref,
+                 "generation": generation if generation is not None else record.generation,
+                 "lifecycle_owner": actor}
+        owner_result = None
+        expected = record.version if expected_version is None else expected_version
+        if owner_transition == "stop":
+            owner_result = attention.stop(schedule_id, request_id=request_id,
+                expected_version=expected, **scope)
+        elif owner_transition == "complete":
+            values = dict(completion or {})
+            if set(values) - {"receipt", "outcome", "completion_evidence", "completed_at"}:
+                raise ValueError("completion must contain only receipt/outcome/evidence/time")
+            owner_result = attention.complete(schedule_id, request_id, expected_version=expected,
+                                               **scope, **values)
+        if owner_result is not None:
+            fresh = attention._read(schedule_id)
+            # Unknown/failed completion never becomes an external lifecycle
+            # success. Recurring successful completion keeps its cadence.
+            if (owner_result.get("outcome") not in {"stopped", "returned", "replayed"}
+                    or fresh.stop_state not in {"stopped", "completed"}):
+                return {**owner_result, "external_host_suspended": False,
+                        "host_operation_called": False, "owner_transition": owner_result}
+            record = fresh
+            request_id = "host-" + owner_transition + ":" + request_id
+            desired_state = "paused"
+            expected = record.version
+        if desired_state == "active" and record.stop_state != "active":
+            return {"outcome": "rejected", "error": {"code": "schedule_stopped" if record.stop_state == "stopped" else "schedule_terminal"},
+                    "external_host_suspended": False, "automatic_action": False}
         prepared = attention.prepare_host(schedule_id, request_id=request_id,
-                                          desired_state=desired_state, actor=actor)
+            expected_version=expected, desired_state=desired_state, actor=actor,
+            project_ref=scope["project_ref"], manager_ref=scope["manager_ref"], generation=scope["generation"])
         if prepared.get("effect") is None:
-            return prepared
+            return {**prepared, "owner_transition": owner_result, "external_host_suspended": False}
         effect = HostEffect.from_dict(prepared["effect"])
         result = executor.recover(effect) if prepared.get("replayed") else executor.execute(effect)
         acknowledgement = result.get("acknowledgement") or {}
@@ -240,4 +286,7 @@ class ExecutionHost:
         if outcome == "reconciled" and acknowledgement.get("outcome") != "reconciled":
             outcome = "pending_owner"
         return {"schedule_id": schedule_id, "prepared": prepared, "host": result,
-                "outcome": outcome, "automatic_action": outcome == "reconciled"}
+                "owner_transition": owner_result, "outcome": outcome,
+                "external_host_suspended": (desired_state == "paused" and outcome == "reconciled"
+                    and acknowledgement.get("readback_exact") is True),
+                "observed_scheduled_callback": False, "automatic_action": outcome == "reconciled"}

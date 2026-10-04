@@ -334,29 +334,19 @@ class PortfolioLifecycleIntegration:
         record = self._record(schedule_id)
         if record is None:
             return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
-        prepared = self.attention.prepare_host(
-            schedule_id,
-            request_id=request_id,
-            expected_version=record.version,
-            actor=self._lifecycle_owner,
-            project_ref=record.project_ref,
-            manager_ref=record.manager_ref,
-            generation=self._generation,
-            desired_state=desired_state,
-        )
-        if prepared.get("outcome") in {"unknown", "rejected"}:
-            return {"schedule_id": schedule_id, "prepared": prepared, "outcome": prepared["outcome"]}
-        effect = HostEffect.from_dict(prepared["effect"])
-        receipt = self._executor.recover(effect) if prepared.get("outcome") == "replayed" else self._executor.execute(effect)
-        return {
-            "schedule_id": schedule_id,
-            "desired_state": desired_state,
-            "prepared": prepared,
-            "receipt": receipt,
-            "outcome": receipt.get("outcome"),
-            "readback_exact": bool(receipt.get("readback", {}).get("readback_exact")),
-            "acknowledgement": receipt.get("acknowledgement"),
-        }
+        from .execution_host import ExecutionHost
+        result = ExecutionHost.reconcile_trigger(
+            attention=self.attention, executor=self._executor, schedule_id=schedule_id,
+            request_id=request_id, desired_state=desired_state, actor=self._lifecycle_owner,
+            expected_version=record.version, project_ref=record.project_ref,
+            manager_ref=record.manager_ref, generation=self._generation)
+        receipt = result.get("host") or {}
+        return {"schedule_id": schedule_id, "desired_state": desired_state,
+                "prepared": result.get("prepared"), "receipt": receipt,
+                "outcome": result["outcome"],
+                "readback_exact": bool(receipt.get("readback", {}).get("readback_exact")),
+                "acknowledgement": receipt.get("acknowledgement"),
+                "observed_scheduled_callback": False}
 
     def _desired_states(self) -> dict[str, str]:
         active = any(state == "active" for state in self._projects.values())

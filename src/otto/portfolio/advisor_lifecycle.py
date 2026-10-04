@@ -10,6 +10,7 @@ from otto.attention import DueRecord, DurableAttention, InMemoryDueRecordPort, R
 from .advisor_delivery import AdvisorDeliveryLoop, effect_followup_schedule_id
 from .advisor_execution import AdvisorExecution
 from .advisor_followup_command import advisor_followup_from_command
+from otto.host_bridge import host_trigger_capabilities
 
 
 def exercise_advisor_lifecycle(
@@ -48,25 +49,16 @@ def exercise_advisor_lifecycle(
                 "limit": value.cumulative_allowance_units, "used": value.cumulative_used_units,
                 "held": value.held_units, "version": value.version}
     before_pool = pool_snapshot(pool)
-    host_port = loop.ports.attention.host_port
-    host_connection = {
-        "host_mode": loop.ports.attention.host_mode,
-        "host_port_configured": host_port is not None,
-        "ensure_read_pause_available": host_port is not None and all(
-            callable(getattr(host_port, method, None)) for method in
-            ("ensure_trigger", "read_trigger", "pause_trigger")),
-        "actual_host_callback_observed": False,
-        "pause_resume_stop_completion_proven_by_host": False,
-        "evidence_status": "required_evidence_gap",
-    }
+    host_connection = host_trigger_capabilities(attention=loop.ports.attention,
+        record=original, persisted_readback_available=True)
+    host_connection["evidence_status"] = "required_evidence_gap"
+    host_connection["actual_host_callback_observed"] = False
     if operation == "host-capability":
         # Inspection must precede prepare_host/check: those operations can
-        # persist an effect or claim. No adapter means no host callback route.
+        # persist an effect or claim. A missing direct port does not disable the external effect bridge.
         return {"schema": "otto.advisor-host-capability.v1", "operation": operation,
-                "outcome": "unsupported" if host_port is None else "read",
-                "error": ({"code": "host_adapter_unavailable",
-                           "message": "no owner-side HostTriggerPort was supplied"}
-                          if host_port is None else None),
+                "outcome": "read",
+                "error": None,
                 "schedule_id": schedule, "decision_id": decision, "automation_id": identity,
                 "persisted_settings": settings, "due_version": original.version,
                 "stop_state": original.stop_state, "host_state": original.host_state,
