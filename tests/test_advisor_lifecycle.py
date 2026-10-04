@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from herzchen.contracts import AuthenticatedActor, ResourceRef
 from herzchen.kernel.limits import LimitService
@@ -41,10 +41,10 @@ class AdvisorLifecycleTests(unittest.TestCase):
         self.fixture.due_port.save_due(self.schedule, value, request_id="fixture-existing", expected_version=0)
         self.dispatch = Mock(side_effect=AssertionError("live dispatch must remain suppressed"))
 
-    def call(self):
+    def call(self, operation="guard-exercise"):
         return exercise_advisor_lifecycle(
             request={"schedule_id": self.schedule, "decision_id": "existing-decision",
-                     "automation_id": self.settings["id"]},
+                     "automation_id": self.settings["id"], "operation": operation},
             pairing=self.fixture.pairing, advisor_principal="advisor-principal", actor="owner-principal",
             loop=self.fixture.loop, allowance=self.limits, authenticate=lambda _actor: self.actor,
             read_settings=lambda _id: self.settings, live_dispatch=self.dispatch)
@@ -65,6 +65,8 @@ class AdvisorLifecycleTests(unittest.TestCase):
         self.assertEqual(self.fixture.due_port.read_due(self.schedule), before)
         self.assertFalse(result["provider_called"])
         self.assertFalse(result["automation_activated"])
+        self.assertFalse(result["host_connection"]["actual_host_callback_observed"])
+        self.assertEqual(result["host_connection"]["evidence_status"], "required_evidence_gap")
 
     def test_pause_stop_and_completion_use_existing_guards_on_repeat(self):
         result = self.call()
@@ -74,6 +76,23 @@ class AdvisorLifecycleTests(unittest.TestCase):
             self.assertEqual(row["restart_callback"]["outcome"], expected)
             self.assertFalse(row["first_callback"].get("dispatch", {}).get("runtime_called", False))
         self.dispatch.assert_not_called()
+
+    def test_missing_host_capability_is_read_before_any_effect_claim_or_reservation(self):
+        before = self.fixture.due_port.read_due(self.schedule)
+        with patch.object(self.fixture.attention, "prepare_host") as prepare, \
+                patch.object(self.fixture.attention, "check") as claim, \
+                patch.object(type(self.limits), "reserve", create=True) as reserve:
+            result = self.call("host-capability")
+        self.assertEqual(result["outcome"], "unsupported")
+        self.assertEqual(result["error"]["code"], "host_adapter_unavailable")
+        self.assertFalse(result["host_connection"]["actual_host_callback_observed"])
+        self.assertEqual(result["host_connection"]["evidence_status"], "required_evidence_gap")
+        prepare.assert_not_called()
+        claim.assert_not_called()
+        reserve.assert_not_called()
+        self.dispatch.assert_not_called()
+        self.assertEqual(self.fixture.due_port.read_due(self.schedule), before)
+        self.assertEqual(result["allowance"]["used"], 3)
 
     def test_persisted_settings_mismatch_rejects_before_callback(self):
         self.settings = {**self.settings, "targetThreadId": "foreign"}

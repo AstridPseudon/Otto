@@ -151,10 +151,11 @@ def main() -> None:
     followup_tick.add_argument("--decision-id", required=True)
     followup_tick.add_argument("--operation", choices=["status", "dispatch"], default="status",
                                help="status is read-only; dispatch may claim the existing occurrence")
-    lifecycle = commands.add_parser("advisor-followup-lifecycle", help="provider-free live admission and inert lifecycle scenarios")
+    lifecycle = commands.add_parser("advisor-followup-lifecycle", help="supplemental guard checks or read-only host capability; proves no host lifecycle")
     lifecycle.add_argument("--schedule-id", required=True)
     lifecycle.add_argument("--decision-id", required=True)
     lifecycle.add_argument("--automation-id", required=True)
+    lifecycle.add_argument("--operation", choices=["guard-exercise", "host-capability"], default="guard-exercise")
     paused_host = commands.add_parser(
         "advisor-followup-bind-paused", help="bind and acknowledge one existing paused owner automation",
     )

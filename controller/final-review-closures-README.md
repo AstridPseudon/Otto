@@ -1,4 +1,4 @@
-# Explicit continuation and provider-free lifecycle closure
+# Explicit continuation and supplemental lifecycle guard evidence
 
 The ordinary `serve_manager_owner.py` remains the single Store writer. It
 launches no role automatically. `report --continue-project` persists an
@@ -56,3 +56,22 @@ The exercise does not activate an automation or create/reset allowance, and
 these fixtures do not establish that an active app heartbeat fired. No separate
 preview rule set participates in dispatch. Apply the continuation controller
 patch first, then `advisor-lifecycle-service.patch` while the service is stopped.
+
+
+Final review retains `required_evidence_gap` for actual supported host trigger
+lifecycle. The command above manually enters the owner dispatch guard and its
+other lifecycle rows are inert fixtures; they do not prove an app-host callback
+or actual host pause/resume/stop/completion. Query the current composition with:
+
+```sh
+<owner-python> manager_ctl.py advisor-followup-lifecycle --schedule-id advisor-followup-27a599f6cadb57bb25884b7d9627 --decision-id decision-pa06-delivery-boundary-v1 --automation-id paused-project-advisor-effect-follow-up --operation host-capability
+```
+
+This reads the existing owner Due, pairing, persisted PAUSED settings and 3/3
+pool before any effect, claim or reservation. `unsupported` with
+`host_adapter_unavailable` means no owner-side HostTriggerPort was supplied.
+An adapter object alone would not prove a callback; the returned evidence
+status stays `required_evidence_gap` until separate actual host receipts exist.
+The current supported app tool exposes view/update of automations, not a
+provider-free native scheduler callback. Do not activate the exhausted advisor
+or count the paused acknowledgement replay or these fixture tests as closure.

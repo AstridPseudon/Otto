@@ -24,6 +24,9 @@ def exercise_advisor_lifecycle(
     existing exhausted pool. Only fixture Due/resource joins are inert. A
     provider start capability is never supplied. No activation or pool reset.
     """
+    operation = request.get("operation", "guard-exercise")
+    if operation not in {"guard-exercise", "host-capability"}:
+        raise ValueError("operation must be guard-exercise or host-capability")
     schedule, decision, identity = request.get("schedule_id"), request.get("decision_id"), request.get("automation_id")
     if schedule != effect_followup_schedule_id(pairing.project_ref, decision):
         raise ValueError("exercise requires the existing project's decision schedule")
@@ -45,6 +48,32 @@ def exercise_advisor_lifecycle(
                 "limit": value.cumulative_allowance_units, "used": value.cumulative_used_units,
                 "held": value.held_units, "version": value.version}
     before_pool = pool_snapshot(pool)
+    host_port = loop.ports.attention.host_port
+    host_connection = {
+        "host_mode": loop.ports.attention.host_mode,
+        "host_port_configured": host_port is not None,
+        "ensure_read_pause_available": host_port is not None and all(
+            callable(getattr(host_port, method, None)) for method in
+            ("ensure_trigger", "read_trigger", "pause_trigger")),
+        "actual_host_callback_observed": False,
+        "pause_resume_stop_completion_proven_by_host": False,
+        "evidence_status": "required_evidence_gap",
+    }
+    if operation == "host-capability":
+        # Inspection must precede prepare_host/check: those operations can
+        # persist an effect or claim. No adapter means no host callback route.
+        return {"schema": "otto.advisor-host-capability.v1", "operation": operation,
+                "outcome": "unsupported" if host_port is None else "read",
+                "error": ({"code": "host_adapter_unavailable",
+                           "message": "no owner-side HostTriggerPort was supplied"}
+                          if host_port is None else None),
+                "schedule_id": schedule, "decision_id": decision, "automation_id": identity,
+                "persisted_settings": settings, "due_version": original.version,
+                "stop_state": original.stop_state, "host_state": original.host_state,
+                "host_connection": host_connection, "allowance": before_pool,
+                "host_operation_called": False, "provider_called": False,
+                "automation_activated": False, "allowance_changed": False,
+                "read_only_live_owner": True, "retry": False}
     entered = []
     def compact_callback(value):
         # Readiness embeds the full retained Due history. Keep the admission
@@ -117,6 +146,8 @@ def exercise_advisor_lifecycle(
             "schedule_id": schedule, "decision_id": decision, "automation_id": identity,
             "persisted_settings": settings, "original_due_version": original.version,
             "live_callback": live, "inert_callback_scenarios": rows,
+            "host_connection": host_connection,
+            "evidence_scope": "operator-dispatch guard and inert Due/resource scenarios; not host-trigger lifecycle",
             "production_entries": entered, "allowance_before": before_pool, "allowance_after": after_pool,
             "provider_boundary": "no provider capability; active Due/resource joins are labelled inert",
             "automation_activated": False, "allowance_changed": False, "provider_called": False,
