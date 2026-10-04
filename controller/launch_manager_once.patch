@@ -1,0 +1,32 @@
+--- a/controller/launch_manager_once.py
++++ b/controller/launch_manager_once.py
+@@ -958,23 +958,15 @@
+                 reason=request.get("reason"), evidence=evidence,
+             )
+         if command == "complete-task":
++            from otto.portfolio.execution_operations import complete_task_from_command
+             task = request.get("task")
+             if task not in self.state["task_refs"]:
+                 raise ValueError("unknown task alias")
+-            try:
+-                evidence_refs = [json.loads(value) for value in request.get("evidence_refs", [])]
+-                evidence_hashes = dict(value.split("=", 1) for value in request.get("evidence_hashes", []))
+-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+-                raise ValueError("evidence refs and label=sha256 hashes are required") from exc
+-            task_ref = self.state["task_refs"][task]
+-            return self.portfolio.complete_task(
+-                self.state["project_ref"], task_ref, self.state["assignment_ref"],
+-                actor=self.state["manager"], request_id=request.get("request_key"),
+-                expected_generation=self.state["manager_generation"],
+-                expected_project_revision=self.state["project_ref"]["revision"],
+-                expected_task_revision=task_ref["revision"],
+-                disposition=request.get("disposition"), evidence_refs=evidence_refs,
+-                evidence_hashes=evidence_hashes,
++            return complete_task_from_command(
++                self.portfolio, request=request,
++                project_ref=self.state["project_ref"], task_ref=self.state["task_refs"][task],
++                manager_assignment_ref=self.state["assignment_ref"],
++                manager_actor=self.state["manager"], manager_generation=self.state["manager_generation"],
+             )
+         if command == "commit":
+             from otto.portfolio.execution_operations import commit_local_checkpoint

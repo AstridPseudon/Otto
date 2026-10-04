@@ -159,6 +159,13 @@ def main() -> None:
                           help="exact resource-ref JSON; repeat for all evidence")
     complete.add_argument("--evidence-hash", action="append", dest="evidence_hashes", required=True,
                           help="label=sha256; repeat for all evidence")
+    complete.add_argument("--gate-ref", action="append", dest="gate_refs", required=True,
+                          help="exact accepted assessment gate-ref JSON; repeat for all gates")
+    for name in ("candidate", "result", "attempt"):
+        complete.add_argument("--" + name + "-ref", dest=name + "_ref",
+                              help="exact owner resource-ref JSON for " + name)
+    complete.add_argument("--source-set-digest",
+                          help="digest of the reviewed source set, when required by the gate")
     commit = commands.add_parser("commit", help="create one owner-authorized local Git checkpoint")
     commit.add_argument("--message", required=True)
     commit.add_argument("--path", action="append", dest="paths", required=True,
@@ -185,7 +192,7 @@ def main() -> None:
     print(json.dumps(response, indent=2, sort_keys=True))
     if response.get("outcome") not in {
         "ok", "committed", "replayed", "created", "read", "started", "corrected", "recorded",
-        "scheduled",
+        "scheduled", "completed",
     }:
         raise SystemExit(1)
 

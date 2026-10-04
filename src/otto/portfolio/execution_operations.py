@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -27,6 +28,51 @@ _MODES = {
 }
 
 OWNER_TIMEOUT_MAX_SECONDS = 1800
+
+
+def complete_task_from_command(
+    portfolio: Any, *, request: Mapping[str, Any], project_ref: Mapping[str, Any],
+    task_ref: Mapping[str, Any], manager_assignment_ref: Mapping[str, Any],
+    manager_actor: str, manager_generation: int,
+) -> Mapping[str, Any]:
+    """Forward completion evidence to the existing guarded portfolio operation.
+
+    The owner supplies current scope and manager pins. Command input supplies
+    evidence only; this adapter neither accepts a worker result nor bypasses
+    the public assessment/completion guards.
+    """
+    for field in ("evidence_refs", "gate_refs", "evidence_hashes"):
+        if not isinstance(request.get(field), list) or not request[field]:
+            raise ValueError(field + " must be a non-empty list")
+
+    def completion_ref(value: Any) -> dict[str, Any]:
+        return ResourceRef.from_dict(json.loads(value)).to_dict()
+
+    try:
+        evidence_refs = [completion_ref(value) for value in request["evidence_refs"]]
+        gate_refs = [completion_ref(value) for value in request["gate_refs"]]
+        evidence_hashes = dict(value.split("=", 1) for value in request["evidence_hashes"])
+        optional = {
+            name: completion_ref(request[name])
+            for name in ("candidate_ref", "result_ref", "attempt_ref")
+            if request.get(name) is not None
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("valid owner resource-ref JSON and label=sha256 hashes are required") from exc
+    source_set_digest = request.get("source_set_digest")
+    if source_set_digest is not None:
+        if not isinstance(source_set_digest, str) or not source_set_digest.strip():
+            raise ValueError("source_set_digest must be non-blank text")
+        optional["source_set_digest"] = source_set_digest
+    return portfolio.complete_task(
+        project_ref, task_ref, manager_assignment_ref,
+        actor=manager_actor, request_id=request.get("request_key"),
+        expected_generation=manager_generation,
+        expected_project_revision=project_ref["revision"],
+        expected_task_revision=task_ref["revision"],
+        disposition=request.get("disposition"), evidence_refs=evidence_refs,
+        evidence_hashes=evidence_hashes, gate_refs=gate_refs, **optional,
+    )
 
 
 def commit_local_checkpoint(
@@ -495,6 +541,7 @@ def prepare_current_assignment_occurrence(
 __all__ = [
     "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
     "compact_project_status", "derive_manager_continuation_request",
+    "complete_task_from_command",
     "prepare_current_assignment_occurrence", "read_project_progress_reports",
     "validate_owner_timeout_seconds",
 ]
