@@ -168,7 +168,9 @@ def _record_no_overlap(request, execution, scope, reports):
     pins = _disposition_pins(scope)
     for field, value in pins.items():
         if type(request.get(field)) is not type(value) or request.get(field) != value:
-            return {"outcome": "rejected", "error": {"code": "stale_or_foreign_disposition", "field": field}}
+            return {"outcome": "rejected", "error": {"code": "stale_or_foreign_disposition", "field": field,
+                    "requested": request.get(field), "requested_type": type(request.get(field)).__name__,
+                    "actual": value, "actual_type": type(value).__name__}}
     key = request.get("request_key")
     if not isinstance(key, str) or not key.strip() or key != key.strip():
         raise ValueError("request_key must be exact non-blank text")

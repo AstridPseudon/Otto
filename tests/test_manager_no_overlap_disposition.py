@@ -60,6 +60,17 @@ class ManagerNoOverlapDispositionTests(unittest.TestCase):
         self.assertEqual(f.port.read_due(self.current), self.old)
         self.assertEqual(len(f.provider.calls), self.provider_calls)
 
+    def test_rejection_identifies_exact_requested_and_actual_pin_without_mutation(self):
+        before = self.reports()
+        wrong = self.callback + "9"
+        result = self.dispose(expected_continuation_schedule_id=wrong)
+        self.assertEqual(result["error"], {"code": "stale_or_foreign_disposition",
+            "field": "expected_continuation_schedule_id", "requested": wrong,
+            "requested_type": "str", "actual": self.callback, "actual_type": "str"})
+        self.assertEqual(self.reports(), before)
+        self.assertEqual(self.fixture.port.read_due(self.current), self.old)
+        self.assertEqual(self.fixture.port.read_due(self.callback), self.new)
+
     def test_status_exposes_exact_read_only_owner_pins_before_disposition(self):
         before = self.reports()
         result = self.call("status", current=self.current)
