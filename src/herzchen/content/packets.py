@@ -602,6 +602,33 @@ class _ContextPacketServiceEngine:
     notify_document_amendment = notify_amendment
     amend_notification = notify_amendment
 
+    def create_attention(self, request: Mapping[str, Any], context: TransactionContext) -> Mapping[str, Any]:
+        """Persist one finite notification through the existing attention port.
+
+        A notification is neither provider admission nor task execution. The
+        caller's owner capability validates schedule/recipient scope before
+        calling this generic content operation.
+        """
+        writer = self._require_writer()
+        if not isinstance(request, Mapping) or request.get("request_id") != context.logical_request_key:
+            raise PacketError("attention request must match its authenticated logical key")
+        recipient = _tuple_text((request.get("recipient"),), "recipient")[0]
+        body = {"record_type": ATTENTION_KIND, "recipient": recipient,
+                "cause": request.get("due_reason", "scheduled-attention"),
+                "subject": request.get("target"), "state": "open", "request": dict(request)}
+        identifier = "attention-" + sha256(canonical_json(
+            [writer.authority, context.logical_request_key]).encode()).hexdigest()[:24]
+        target = ResourceRef(writer.authority, ATTENTION_KIND, identifier)
+        envelope = CommandEnvelope("dat.context.attention.create", PACKET_SCHEMA_REVISION,
+                                   target, context, body)
+        with writer.transaction() as transaction:
+            receipt = writer.mutate(envelope, event_type="dat.context.attention.created",
+                result_ref=ResourceRef(writer.authority, ATTENTION_KIND, identifier, "attention-1"),
+                effects=body, transaction=transaction)
+        return {"outcome": "replayed" if receipt.replayed else "created", "request_id": context.logical_request_key,
+                "attention_ref": receipt.result_ref.to_dict(), "event_ids": list(receipt.event_ids),
+                "receipt": receipt.to_dict()}
+
     def list_attention(self, recipient: Optional[str] = None) -> Tuple[Mapping[str, Any], ...]:
         latest: dict[str, Mapping[str, Any]] = {}
         for event in self._require_writer().list_events():

@@ -315,7 +315,8 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         if isinstance(receipt, Mapping) and receipt.get("observed_profile") is not None:
             context["effective_profile"] = receipt["observed_profile"]
         HerzchenCodexAdapter._observed_context(context, expected_session_id=value["physical_session_id"],
-            expected_turn_id=evidence["turn_id"], expected_read_targets=contract.get("read_targets"))
+            expected_turn_id=evidence["turn_id"], expected_profile=value.get("requested_profile"),
+            expected_read_targets=contract.get("read_targets"), expected_read_scope=contract.get("read_scope"))
         if contract.get("source_inspection") is not None:
             if not callable(self.source_result_validator):
                 raise OwnerRoleRuntimeError("source verifier missing before assignment publication")
@@ -573,6 +574,61 @@ class CanonicalRoleRuntime:
     def invoke_manager(self, **kwargs: Any) -> Any:
         """Legacy owner route; not the post-bind authorization contract."""
         return self._invoke(role="manager", **kwargs)
+
+    def accept_role_result(
+        self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+        assignment_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],
+        schedule_id: str, logical_request_key: str, expected_generation: int,
+        lifecycle: str, as_of: str, required_resource_names: Sequence[str] = (),
+    ) -> Mapping[str, Any]:
+        """Publish/accept a retained verified result without invoking a provider.
+
+        This is execution acceptance; substantive task completion still belongs
+        to the assessment/completion operations. A publication crash is safely
+        retried through the original assignment receipt.
+        """
+        _assignment, _target, capture = self._binding(
+            role=role, project_ref=project_ref, task_ref=task_ref,
+            assignment_ref=assignment_ref, mandate_ref=mandate_ref,
+            schedule_id=schedule_id, logical_request_key=logical_request_key,
+            expected_generation=expected_generation,
+        )
+        from .orchestrator_route import _canonical_operation_evidence, prepare_canonical_assignment_role_brief
+
+        def current_brief_digest() -> str:
+            prepared = prepare_canonical_assignment_role_brief(
+                role=role, project_ref=project_ref, assignment_ref=assignment_ref,
+                mandate_ref=mandate_ref, expected_generation=expected_generation,
+                project_reader=self._project_reader(project_ref),
+                assignment_reader=self._assignment_reader(assignment_ref),
+                mandate_reader=self._mandate_reader(project_ref, mandate_ref),
+                resource_reader=self.operations.content_port, lifecycle=lifecycle,
+                as_of=as_of, required_resource_names=required_resource_names,
+                task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
+            )
+            return _canonical_operation_evidence(
+                prepared, owner=_assignment["principal"], task_ref=task_ref,
+            )["brief_sha256"]
+
+        capture.current_brief_reader = current_brief_digest
+        due = self.due_port.read_due(schedule_id) or {}
+        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+        result = attempt.get("result")
+        resource = result.get("resource_evidence") if isinstance(result, Mapping) else None
+        if (not isinstance(resource, Mapping)
+                or resource.get("brief_sha256") != current_brief_digest()):
+            raise OwnerRoleRuntimeError("retained result does not use the current adopted owner brief")
+        published = None
+        if role == "worker":
+            if self.result_capture_factory is None:
+                raise OwnerRoleRuntimeError("worker result publication requires an owner-issued capability")
+            result_owner = self.result_capture_factory(
+                project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
+                generation=expected_generation, logical_request_key=logical_request_key,
+            )
+            published = capture.publish_analytical_result(result, result_owner)
+        accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
+        return {**accepted, "published_analytical_result": published}
 
     def reconcile_worker_result(
         self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],

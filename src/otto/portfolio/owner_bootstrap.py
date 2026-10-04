@@ -567,6 +567,42 @@ class PortfolioOwnerBootstrap:
 
         return ManagerApplication.from_owner(self)
 
+    def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
+                              manager_actor: str | None = None) -> Any:
+        """Issue maintained execution commands over the existing finite ports."""
+        from .execution import ExecutionApplication
+        runtime = self.role_runtime(due_port=due_port, adapter=adapter)
+        kwargs = {} if clock is None else {"clock": clock}
+        return ExecutionApplication(portfolio=runtime.portfolio,
+            assignments=self.assignments.command_port, due_port=due_port,
+            binding=self.binding, actor=self.owner_actor.actor, runtime=runtime,
+            manager_actor=manager_actor, **kwargs)
+
+    def shared_attention_port(self, *, due_port: Any) -> Any:
+        """Issue durable scheduled notifications through the existing DAT owner."""
+        from herzchen.content.packets import ContextPacketService
+        from herzchen.contracts import ResourceRef, TransactionContext
+        from otto.attention import SerializedAttentionPort
+        import hashlib
+        import json
+        packets = ContextPacketService(self.store).command_port
+        actor, grant = self.owner_actor, self.project_read_grant
+
+        def create(request: Mapping[str, Any]) -> Mapping[str, Any]:
+            due = due_port.read_due(request.get("schedule_id"))
+            project = ResourceRef(actor.authority, "work.project", request.get("project_ref"))
+            if (grant is None or not grant.allows(project) or not isinstance(due, Mapping)
+                    or due.get("lifecycle_owner") != actor.actor
+                    or due.get("in_flight_request") != request.get("request_id")
+                    or any(due.get(field) != request.get(field) for field in
+                           ("recipient", "generation", "project_ref", "manager_ref", "target", "role"))):
+                raise PermissionError("attention request does not match the current granted owner occurrence")
+            digest = hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False,
+                                               separators=(",", ":")).encode()).hexdigest()
+            return packets.create_attention(request, TransactionContext(actor, request["request_id"], digest))
+        from .owner_readers import json_value
+        return SerializedAttentionPort(create, lambda recipient: json_value(packets.list_attention(recipient)))
+
     def role_runtime(self, *, due_port: Any, adapter: Any, runtime_probe: Any = None,
                      issue_delivery: Any = None) -> Any:
         """Compose a role runtime from finite clients without exposing Store.

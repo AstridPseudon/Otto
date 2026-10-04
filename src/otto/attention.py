@@ -2096,6 +2096,10 @@ class DurableAttention:
             return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
         if owner is None or owner != record.lifecycle_owner:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "foreign_authority", "message": "authenticated actor is not the lifecycle owner"}, "automatic_action": False}
+        if record.stop_state == "stopped" and desired_state == "active":
+            return {"outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "schedule_stopped", "message": "a stopped occurrence cannot activate its host trigger"},
+                    "automatic_action": False}
         scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=owner)
         if scope_error is not None:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}

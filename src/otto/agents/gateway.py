@@ -1164,7 +1164,9 @@ class OttoGateway:
         envelope = self._attempt_from_result(responsibility, request, result, error_message=error_message)
         envelope_value = envelope.to_dict()
         if isinstance(result, Mapping):
-            for field_name in ("task_bound_evidence", "transport_result", "raw_result"):
+            for field_name in ("task_bound_evidence", "transport_result", "raw_result",
+                               "observed_turn_id", "observed_context_digest", "context_digest_verified",
+                               "observed_profile", "worker_content"):
                 if field_name in result:
                     envelope_value[field_name] = _json_value(result[field_name])
         if self.attempt_capture is not None:
