@@ -46,6 +46,21 @@ def exercise_advisor_lifecycle(
                 "held": value.held_units, "version": value.version}
     before_pool = pool_snapshot(pool)
     entered = []
+    def compact_callback(value):
+        # Readiness embeds the full retained Due history. Keep the admission
+        # evidence and exact occurrence IDs without copying native transcripts.
+        result = {key: value[key] for key in ("outcome", "schedule_id", "decision_id", "operation",
+                  "dispatch_called", "provider_called", "reason", "retry", "error") if key in value}
+        dispatch = value.get("dispatch")
+        if isinstance(dispatch, Mapping):
+            wake = dispatch.get("wake") or {}
+            completion = dispatch.get("completion") or {}
+            result["dispatch"] = {"outcome": dispatch.get("outcome"),
+                "runtime_called": dispatch.get("runtime_called", False), "retry": dispatch.get("retry", False),
+                "wake": {key: wake.get(key) for key in ("outcome", "request_id", "replayed", "readiness")},
+                "completion": {"outcome": completion.get("outcome"),
+                    "evidence": (completion.get("record") or {}).get("completion_evidence")}}
+        return result
     def provider_start(**_kwargs):
         raise AssertionError("provider boundary: lifecycle exercise cannot start a provider")
     def command(read, dispatch):
@@ -61,7 +76,8 @@ def exercise_advisor_lifecycle(
                              ("stopped", "stopped", "active"), ("completed", "completed", "active")):
         value = original.to_dict()
         value.update(stop_state=stop, host_state=host, completion_state="none", in_flight_request=None,
-                     last_covered_slot=-1, invocation_identity=original.invocation_identity + ":lifecycle-fixture-" + name, target={**value["target"], "automation": {
+                     last_covered_slot=-1, host_evidence=None, last_result=None,
+                     completion_evidence=None, delivery_evidence=None, invocation_identity=original.invocation_identity + ":lifecycle-fixture-" + name, target={**value["target"], "automation": {
                          **configuration, "status": "PAUSED" if host == "paused" else "ACTIVE"}})
         memory = InMemoryDueRecordPort()
         memory.save_due(schedule, value, request_id="inert-lifecycle-" + name, expected_version=0)
@@ -86,8 +102,11 @@ def exercise_advisor_lifecycle(
                                      allowance_ref=pool_ref.to_dict())
         recovered = command(memory.read_due, dispatch)
         rows[name] = {"fixture_scope": "inert Due/resource join; current owner pairing and real exhausted allowance",
-                      "first_callback": first, "restart_callback": recovered,
-                      "record": memory.read_due(schedule)}
+                      "first_callback": compact_callback(first), "restart_callback": compact_callback(recovered),
+                      "record": {key: memory.read_due(schedule).get(key) for key in
+                          ("schedule_id", "version", "stop_state", "host_state", "completion_state",
+                           "in_flight_request", "last_completed_request")},
+                      "native_session": original.target.get("native_id") or original.target.get("physical_session_id")}
     after_pool = pool_snapshot(allowance.get_pool(pool_ref))
     if after_pool != before_pool or loop.ports.attention._read(schedule).to_dict() != original.to_dict():
         raise AssertionError("lifecycle exercise changed live owner custody")
