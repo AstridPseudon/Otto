@@ -104,7 +104,7 @@ def _no_overlap_scope(execution, anchor, current, selected, native_session_id, t
     attempt = (current.host_evidence or {}).get("gateway_attempt") or {}
     prior_result = current.last_result or {}
     observed = attempt.get("result") or {}
-    if (assignment.role != "manager" or assignment.principal != execution.actor
+    if (assignment.role != "manager" or assignment.principal != execution.manager_actor
             or assignment.generation != current.generation
             or assignment.scope.id != current.project_ref
             or current.target.get("native_id") != native_session_id
@@ -148,6 +148,7 @@ def _no_overlap_scope(execution, anchor, current, selected, native_session_id, t
             "continuation_schedule_id": callback_id, "continuation_version": callback.version,
             "manager_assignment_ref": assignment.ref.to_dict(), "manager_principal": assignment.principal,
             "generation": assignment.generation, "native_session_id": native_session_id,
+            "owner_actor": execution.actor,
             "process_created": False, "native_session_created": False, "in_flight_request": None}
 
 

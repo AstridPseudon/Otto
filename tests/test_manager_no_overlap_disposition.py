@@ -42,6 +42,24 @@ class ManagerNoOverlapDispositionTests(unittest.TestCase):
             anchor_schedule_id=self.anchor, current_schedule_id=self.current,
             task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session", read_reports=self.reports)
 
+    def test_separate_controller_owner_and_manager_principal_are_exactly_scoped(self):
+        f = self.fixture
+        for sid in (self.anchor, self.current, self.callback):
+            value = f.port.read_due(sid)
+            value.update(lifecycle_owner="controller-owner", manager_ref="controller-owner")
+            f.port.save_due(sid, value, request_id="controller-owner:" + sid, expected_version=value["version"])
+        self.old, self.new = f.port.read_due(self.current), f.port.read_due(self.callback)
+        with patch.object(f.app, "actor", "controller-owner"):
+            result = self.dispose()
+            self.assertEqual(result["outcome"], "committed", result)
+            self.assertEqual(result["scope"]["owner_actor"], "controller-owner")
+            self.assertEqual(result["scope"]["manager_principal"], "manager")
+            self.assertFalse(self.call("status", current=self.current)["dispatch_held_by_current_unknown"])
+            with patch.object(f.app, "manager_actor", "foreign"):
+                self.assertEqual(self.dispose()["outcome"], "rejected")
+        self.assertEqual(f.port.read_due(self.current), self.old)
+        self.assertEqual(len(f.provider.calls), self.provider_calls)
+
     def test_status_exposes_exact_read_only_owner_pins_before_disposition(self):
         before = self.reports()
         result = self.call("status", current=self.current)
