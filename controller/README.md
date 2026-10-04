@@ -42,6 +42,27 @@ running. The paused product automation proposal and its exact readback/
 acknowledgement sequence are recorded in the successor run's `work/` receipts;
 creating that paused app automation is a separate root-host lifecycle operation.
 
+The maintained owner-admission tick for an existing advisor effect follow-up is
+also available through `manager_ctl.py advisor-followup`. It defaults to a
+read-only status read:
+
+```sh
+/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python \
+  ../manager-worktree/manager_ctl.py advisor-followup \
+  --schedule-id advisor-followup-27a599f6cadb57bb25884b7d9627 \
+  --decision-id decision-pa06-delivery-boundary-v1 \
+  --operation status
+```
+
+An explicitly authorized active tick may use `--operation dispatch`; it passes
+only those existing IDs into Otto's pairing, Due, allowance, and provider
+admission path. It does not wake the advisor thread directly, create a new
+occurrence, or reset the exhausted PA06 allowance. A paused, pending, or failed
+canonical trigger is held, and an ambiguous dispatch remains unknown with no
+retry. The native advisor thread is a valid identity for the paused binding,
+but an active automation must notify the owner/controller path first so Otto
+admission runs before any native advisor turn.
+
 For a cold operator, read the successor run's `status.md`, `tasklist.md`, and
 `execution-observations.md`, then use the exact source head and runtime manifest
 readback before any mutation. The current canonical commit is obtained with
