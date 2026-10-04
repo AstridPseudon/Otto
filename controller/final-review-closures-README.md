@@ -40,3 +40,19 @@ Focused tests are `tests.test_manager_service_continuation.ManagerServiceContinu
 the existing canonical-report continuation test in `tests.test_execution_application`,
 and `tests.test_execution_operations`. They use a fake provider in temporary
 owner state. Live demonstration uses prepare/status only, with no provider call.
+
+
+The provider-free `advisor-followup-lifecycle` command requires the already
+adopted PAUSED automation and exhausted existing pool. It reads persisted app
+settings and calls the existing production `advisor-followup` dispatch adapter:
+the live canonical paused guard suppresses dispatch. It then labels four inert
+Due/resource projections. Active goes through `AdvisorExecution.wake_once` and
+real `LimitService.reserve` on the unchanged exhausted pool, failing before a
+provider capability; repeated unknown returns reconciliation. Pause is held by
+the existing callback guard; stop and completion are suppressed by production
+`DurableAttention.check`. Fixture restart rebuilds the delivery composition.
+Actual service restart and paused-effect reconciliation have separate receipts.
+The exercise does not activate an automation or create/reset allowance, and
+these fixtures do not establish that an active app heartbeat fired. No separate
+preview rule set participates in dispatch. Apply the continuation controller
+patch first, then `advisor-lifecycle-service.patch` while the service is stopped.
