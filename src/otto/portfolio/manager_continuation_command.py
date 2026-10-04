@@ -19,7 +19,7 @@ def manager_continuation_from_command(
     """
     operation = request.get("operation", "prepare")
     key = request.get("report_key")
-    if operation not in {"status", "prepare", "dispatch", "dispose-no-overlap"}:
+    if operation not in {"status", "prepare", "dispatch", "dispose-no-overlap", "mandate-status"}:
         raise ValueError("operation must be status, prepare, dispatch or dispose-no-overlap")
     if not isinstance(key, str) or not key.strip() or key != key.strip():
         raise ValueError("report_key must identify one exact durable manager report")
@@ -53,6 +53,10 @@ def manager_continuation_from_command(
                   if value["ref"] == selected["report_ref"])
     if report.get("task_ref") != task:
         return {**base, "outcome": "held", "provider_called": False, "reason": "report task revision is stale"}
+    if operation == "mandate-status":
+        from .execution_operations import manager_continuation_schedule_id
+        return {**base, **execution.inspect_mandate(schedule_id=manager_continuation_schedule_id(
+            anchor.assignment_ref, selected["logical_request_key"]))}
     unknown = current.completion_state == "unknown" or (
         isinstance(current.host_evidence, Mapping)
         and ((current.host_evidence.get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown")

@@ -76,7 +76,7 @@ def main() -> None:
     commands.add_parser("status", help="read current canonical project/task/assignment state")
     continuation = commands.add_parser("manager-continue", help="consume an explicit durable same-manager report")
     continuation.add_argument("--report-key", required=True)
-    continuation.add_argument("--operation", choices=["status", "prepare", "dispatch", "dispose-no-overlap"], default="prepare")
+    continuation.add_argument("--operation", choices=["status", "prepare", "dispatch", "dispose-no-overlap", "mandate-status"], default="prepare")
     continuation.add_argument("--request-key")
     for name in ("current-schedule-id", "continuation-schedule-id", "project-id", "manager",
                  "native-session-id", "latest-turn-id"):

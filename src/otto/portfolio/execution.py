@@ -395,6 +395,34 @@ class ExecutionApplication:
             lifecycle="resume" if resume else "launch", packet_digest=_digest(prompt),
             request={"prompt": prompt}, as_of=due.anchor, required_resource_names=names)
 
+    def inspect_mandate(self, *, schedule_id: str) -> dict[str, Any]:
+        """Read the prepared occurrence's exact mandate scope without effects."""
+        from .owner_readers import mandate_reader
+        due = self._read(schedule_id)
+        target = due.target
+        assignment = self.assignments.get(ResourceRef.from_dict(due.assignment_ref))
+        read = mandate_reader(self.portfolio.operations, target["project_ref"], target["mandate_ref"])
+        mandate = read(_identity(target["mandate_ref"]))
+        content = mandate["payload"]
+        expected = {"role": due.role, "status": "active", "dispatch_enabled": True,
+                    "task_ref": target["task_ref"], "assignment_ref": assignment.ref.to_dict(),
+                    "generation": due.generation}
+        mismatches = {key: {"actual": content.get(key), "expected": value}
+                      for key, value in expected.items()
+                      if type(content.get(key)) is not type(value) or content.get(key) != value}
+        contract = content.get("instruction_contract") or {}
+        authority = contract.get("authority") or {}
+        return {"outcome": "read", "read_only": True, "provider_called": False,
+                "schedule_id": schedule_id, "due_version": due.version,
+                "mandate_ref": target["mandate_ref"], "current_assignment_ref": assignment.ref.to_dict(),
+                "mandate_scope": {key: content.get(key) for key in expected},
+                "expected_scope": expected, "scope_mismatches": mismatches,
+                "instruction_contract_scope": {"task_ref": contract.get("task_ref"),
+                    "source": authority.get("source"), "owner_actor": authority.get("owner_actor"),
+                    "effect_profile": authority.get("effect_profile")},
+                "mandate_content_sha256": _digest(content),
+                "attempt_present": (due.host_evidence or {}).get("gateway_attempt") is not None}
+
     def prepare_instruction(self, *, schedule_id: str, request_key: str, instruction: str) -> dict[str, Any]:
         """Persist host policy on an existing unattempted occurrence.
 
