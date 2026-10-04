@@ -1,0 +1,19 @@
+--- a/controller/launch_manager_once.py
++++ b/controller/launch_manager_once.py
+@@ -957,6 +957,16 @@
+                 key=request.get("request_key"), decision_id=request.get("decision_id"),
+                 reason=request.get("reason"), evidence=evidence,
+             )
++        if command == "completion-gate":
++            from otto.portfolio.completion_gate import completion_gate_from_command
++            task = request.get("task")
++            if task not in self.state["task_refs"]:
++                raise ValueError("unknown task alias")
++            return completion_gate_from_command(
++                self.owner.assignments.command_port, request=request,
++                task_ref=self.state["task_refs"][task],
++                actor=self.binding.authenticated_actor(self.state["manager"]),
++            )
+         if command == "complete-task":
+             from otto.portfolio.execution_operations import complete_task_from_command
+             task = request.get("task")

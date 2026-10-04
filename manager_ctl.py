@@ -149,6 +149,15 @@ def main() -> None:
     advisor_correct.add_argument("--decision-id", required=True)
     advisor_correct.add_argument("--reason", required=True)
     advisor_correct.add_argument("--evidence", action="append", required=True)
+    gate = commands.add_parser("completion-gate", help="read provisional owner completion blockers; records no acceptance")
+    gate.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    gate.add_argument("--candidate-ref", help="exact current candidate resource-ref JSON")
+    gate.add_argument("--gate-ref", action="append", dest="gate_refs", default=[],
+                      help="exact accepted assessment decision-ref JSON; repeat")
+    gate.add_argument("--evidence-ref", action="append", dest="evidence_refs", default=[],
+                      help="exact retained evidence resource-ref JSON; repeat")
+    gate.add_argument("--evidence-hash", action="append", dest="evidence_hashes", default=[],
+                      help="SHA256 digest aligned with each evidence-ref; repeat in the same order")
     complete = commands.add_parser(
         "complete-task", help="request guarded canonical task completion with exact evidence refs",
     )
