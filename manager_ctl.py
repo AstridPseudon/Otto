@@ -148,6 +148,14 @@ def main() -> None:
     followup_tick.add_argument("--decision-id", required=True)
     followup_tick.add_argument("--operation", choices=["status", "dispatch"], default="status",
                                help="status is read-only; dispatch may claim the existing occurrence")
+    paused_host = commands.add_parser(
+        "advisor-followup-bind-paused", help="bind and acknowledge one existing paused owner automation",
+    )
+    paused_host.add_argument("--schedule-id", required=True)
+    paused_host.add_argument("--decision-id", required=True)
+    paused_host.add_argument("--automation-id", required=True)
+    paused_host.add_argument("--expected-version", required=True, type=int)
+    paused_host.add_argument("--request-key", required=True)
     advisor_correct = commands.add_parser(
         "advisor-delivery-correct",
         help="append a correction for a historical false sent claim",
@@ -206,6 +214,8 @@ def main() -> None:
     payload = vars(args)
     response = call(payload)
     print(json.dumps(response, indent=2, sort_keys=True))
+    if args.command == "advisor-followup-bind-paused" and response.get("outcome") == "reconciled":
+        return
     if response.get("outcome") not in {
         "ok", "committed", "replayed", "created", "read", "started", "corrected", "recorded",
         "scheduled", "completed", "returned",

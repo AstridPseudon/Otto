@@ -1,0 +1,27 @@
+--- a/controller/launch_manager_once.py
++++ b/controller/launch_manager_once.py
+@@ -949,6 +949,24 @@
+                 key=request.get("request_key"), decision_id=request.get("decision_id"),
+                 interval_seconds=request.get("interval_seconds"),
+             )
++        if command == "advisor-followup-bind-paused":
++            from otto.portfolio.advisor_host_command import (
++                bind_paused_advisor_automation, read_persisted_automation_settings,
++            )
++            try:
++                import tomllib
++            except ImportError:
++                # This run's existing Python 3.9 owner environment supplies
++                # pip's vendored Tomli; no dependency install or host mutation.
++                from pip._vendor import tomli as tomllib
++            _advisor, pairing, loop = self._advisor_delivery_loop()
++            automation_directory = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "automations"
++            return bind_paused_advisor_automation(
++                request=request, pairing=pairing, actor=self.state["owner"],
++                attention=loop.ports.attention,
++                read_settings=lambda identity: read_persisted_automation_settings(
++                    automation_directory, identity, parse_toml=tomllib.loads),
++            )
+         if command == "advisor-followup":
+             from otto.portfolio.advisor_followup_command import advisor_followup_from_command
+             return advisor_followup_from_command(
