@@ -326,16 +326,18 @@ class SerializedReaderClient:
 
 
 class _OwnerService:
-    def __init__(self, facade: Any, transport: SerializedFacadeTransport) -> None:
+    def __init__(self, facade: Any, transport: SerializedFacadeTransport, *, socket_enabled: bool = True) -> None:
         self.facade, self.transport, self.closed, self.audit = facade, transport, threading.Event(), []
         self.owner_endpoints = tuple(getattr(facade, "endpoints", transport.endpoints))
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.bind(transport.socket_path); os.chmod(transport.socket_path, 0o600); self.socket.listen(16)
-        self.socket.settimeout(0.2)
+        self.socket = None
+        if socket_enabled:
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.socket.bind(transport.socket_path); os.chmod(transport.socket_path, 0o600); self.socket.listen(16)
+            self.socket.settimeout(0.2)
         self.thread: Optional[threading.Thread] = None
 
     def activate(self) -> None:
-        if self.thread is None:
+        if self.socket is not None and self.thread is None:
             self.thread = threading.Thread(target=self._serve, name="herzchen-owner-" + self.transport.session_id, daemon=True)
             self.thread.start()
 
@@ -392,10 +394,13 @@ class _OwnerService:
             return response
 
     def close(self) -> None:
-        self.closed.set(); self.socket.close()
+        self.closed.set()
+        if self.socket is not None:
+            self.socket.close()
         if self.thread is not None and self.thread is not threading.current_thread(): self.thread.join(timeout=1.0)
-        try: os.unlink(self.transport.socket_path); os.rmdir(os.path.dirname(self.transport.socket_path))
-        except OSError: pass
+        if self.socket is not None:
+            try: os.unlink(self.transport.socket_path); os.rmdir(os.path.dirname(self.transport.socket_path))
+            except OSError: pass
 
 
 _OWNER_SERVICES: Dict[str, _OwnerService] = {}
@@ -410,7 +415,12 @@ def _start_service(value: Any, domain_id: str, facade_name: str, endpoints: Sequ
     session_id = secrets.token_hex(12)
     transport = SerializedFacadeTransport(os.path.join(directory, "owner.sock"), secrets.token_urlsafe(32),
         domain_id, facade_name, consumer_endpoints, schema_revision, os.getpid(), session_id)
-    _OWNER_SERVICES[session_id] = _OwnerService(value, transport)
+    # Some managed hosts deny AF_UNIX bind even for a process-local owner.  An
+    # explicit opt-in keeps the normal cross-process socket boundary unchanged,
+    # while allowing same-process owner calls to use the exact same finite
+    # facade and authority checks through SerializedCommandClient.call().
+    socket_enabled = os.environ.get("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK") != "1"
+    _OWNER_SERVICES[session_id] = _OwnerService(value, transport, socket_enabled=socket_enabled)
     return transport
 
 

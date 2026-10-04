@@ -24,7 +24,13 @@ def call(payload: dict) -> dict:
             owner_pid = json.loads(STATUS_OWNER.read_text())["pid"]
             os.kill(int(owner_pid), 0)
             retained_status = True
-        except (FileNotFoundError, KeyError, ValueError, ProcessLookupError, PermissionError,
+        except PermissionError:
+            # Managed sandboxes may deny cross-process liveness probes even
+            # when the owner file is readable and the file-IPC service is live.
+            # Keep the bounded IPC status path; it will still fail closed if
+            # no response arrives.
+            retained_status = True
+        except (FileNotFoundError, KeyError, ValueError, ProcessLookupError,
                 json.JSONDecodeError):
             retained_status = False
     if payload.get("command") == "status" and not SERVICE.exists() and not retained_status:
@@ -52,7 +58,7 @@ def call(payload: dict) -> dict:
         try:
             value = json.loads(response.read_text())
         except FileNotFoundError:
-            if status_deadline is None and not SERVICE.exists():
+            if status_deadline is None and not SERVICE.exists() and not STATUS_OWNER.exists():
                 raise RuntimeError(
                     "owner command service ended before a terminal response; "
                     "inspect the exact canonical request without retry"
