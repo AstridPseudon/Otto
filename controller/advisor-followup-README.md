@@ -98,7 +98,7 @@ existing Python 3.9 environment supplies pip's vendored Tomli for persisted
 TOML reads; Python 3.11+ uses standard `tomllib`. The generic module takes an
 injected parser and installs no dependency.
 
-With the current record still at version 23, the owner service command is:
+The bind was issued against the pre-bind record at version 23. It reconciled successfully, advanced the owner record to version 26, and left the persisted automation PAUSED; the durable readback is `work/paused-advisor-host-binding-readback-20261004.json`. The historical owner service command was:
 
 ```sh
 /Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python \
