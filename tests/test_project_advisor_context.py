@@ -2,6 +2,7 @@ import unittest
 
 from otto.portfolio import (
     AdvisorContextError,
+    ROLE_OPERATING_CONTRACTS,
     build_advisor_context,
     choose_advisor_direction,
     establish_pairing,
@@ -58,6 +59,16 @@ class AdvisorContextTests(unittest.TestCase):
         self.assertEqual(self.context["last_inspected"]["message_id"], "m-4")
         self.assertTrue(self.context["inspection"]["read_actual_messages"])
         self.assertEqual(self.context["inspection"]["missing_delta_fallback"], "bounded_direct_read")
+
+    def test_operating_contract_preserves_low_noise_supervision_boundary(self):
+        contract = ROLE_OPERATING_CONTRACTS["project_advisor"]
+        for requirement in (
+            "stay quiet when progress is healthy or unchanged",
+            "evidence-backed",
+            "requirement provenance",
+            "Escalate only owner-only, cross-project, authority-gap, or uncertain effects",
+        ):
+            self.assertIn(requirement, contract)
 
     def test_healthy_check_is_quiet(self):
         result = choose_advisor_direction(

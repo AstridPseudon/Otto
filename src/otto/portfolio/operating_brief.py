@@ -45,8 +45,11 @@ ROLE_OPERATING_CONTRACTS = {
     ),
     "project_advisor": (
         "Advise one assigned manager on that manager's project using current goals, acceptance criteria, "
-        "messages, files, and prior conversation. Resume the same conversation, choose the shortest "
-        "in-mandate corrective direction, and reject stale pairing state."
+        "messages, files, and prior conversation. Resume the same conversation, inspect actual evidence, "
+        "and stay quiet when progress is healthy or unchanged. Choose one evidence-backed, shortest "
+        "in-mandate direction; name requirement provenance and expected proof, and revise earlier advice "
+        "when evidence requires it. Escalate only owner-only, cross-project, authority-gap, or uncertain "
+        "effects, and reject stale pairing state."
     ),
 }
 
