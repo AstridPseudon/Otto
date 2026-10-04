@@ -79,6 +79,7 @@ The ordinary diagnostic path is deliberately split by authority:
 python -m otto.portfolio.cli --help
 python -m otto.portfolio.cli help --format text
 python manager_ctl.py --help
+python controller/serve_manager_owner.py
 python controller/inspect_project.py
 python controller/read_manager_status.py
 ```
@@ -86,7 +87,10 @@ python controller/read_manager_status.py
 The first two commands describe and exercise scoped owner-backed reads, briefs,
 pairing, acceptance, and the maintained execution composition. `manager_ctl.py`
 is the thin owner command client for an already running command service; it does
-not start a legacy manager. `inspect_project.py` and `read_manager_status.py`
+not start a legacy manager. `serve_manager_owner.py` keeps the existing
+`ManagerCommandServer`/`ExecutionHost` custody and file-IPC surface alive until
+its explicit stop file; it launches no manager, worker or advisor. The live
+service must own the Store exclusively. `inspect_project.py` and `read_manager_status.py`
 are current-state evidence readers. Status reads the exact persisted schedule
 with `read_due(schedule_id)`; it must not enumerate the entire historical Due
 stream merely to render current state.
