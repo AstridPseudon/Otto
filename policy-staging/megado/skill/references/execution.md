@@ -63,3 +63,38 @@ Map every promised outcome to observed evidence; distinguish complete, blocked, 
 Verify final allowed targets and tree/dependency equivalence (including squash/rebase effects), run the small supported-entrypoint smoke and return a source manifest. A source merge is not package publication, production deployment or old-data migration. Hand off the actual remaining limits, pending work, recovery route and canonical state location.
 
 Discovery-index scripts may be used in the file-based environment if present and verified; failure of a convenience index is not an acceptance gate. Native Otto/Herzchen uses its actual project discovery API. Never depend on an unavailable helper to create fictional execution evidence.
+
+## Maintained Otto operator surface
+
+The maintained execution composition is owner-bound: construct it through
+`PortfolioOwnerBootstrap.execution_application(...)` and use its
+`ExecutionApplication` methods for manager preparation, start, continuation,
+recovery, and public acceptance. Scheduled advisor work uses
+`AdvisorExecution` and `ExecutionHost` through the same bootstrap; it does not
+create a second Store, scheduler, or workflow engine.
+
+The ordinary diagnostic path is deliberately split by authority:
+
+```sh
+python -m otto.portfolio.cli --help
+python -m otto.portfolio.cli help --format text
+python manager_ctl.py --help
+python controller/inspect_project.py
+python controller/read_manager_status.py
+```
+
+The first two commands describe and exercise scoped owner-backed reads, briefs,
+pairing, acceptance, and the maintained execution composition. `manager_ctl.py`
+is the thin owner command client for an already running command service; it does
+not start a legacy manager. `inspect_project.py` and `read_manager_status.py`
+are current-state evidence readers. Status reads the exact persisted schedule
+with `read_due(schedule_id)`; it must not enumerate the entire historical Due
+stream merely to render current state.
+
+For an existing advisor occurrence, reconcile first and preserve its exact
+schedule, assignment, generation, native binding, decision state, allowance,
+and gateway/provider evidence. Only then may the owner-admitted controller
+prepare or wake the authorized occurrence. A delivered decision is never
+resent because a follow-up read is pending. Awaited dispatch and fixture
+callbacks are evidence of those mechanisms only; unattended timer behavior
+requires an actual configured host automation and its persisted readback.

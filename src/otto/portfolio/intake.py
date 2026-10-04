@@ -282,6 +282,8 @@ class OttoPortfolio:
     @staticmethod
     def help() -> dict[str, Any]:
         return {
+            "outcome": "available",
+            "schema": "otto.portfolio-help.v1",
             "surface": "otto.portfolio",
             "purpose": "capture and explicitly admit pending projects through canonical work operations",
             "bootstrap": {
@@ -316,6 +318,25 @@ class OttoPortfolio:
                 "manager_inbox": "read one derived project/subproject scope with tasks, assignments, attempts, reports, decisions, attention and repeat-safe event cursor; read-only",
                 "submit_checkin": "append one current-manager report for a matching DueRecord occurrence, then recoverably acknowledge that occurrence",
                 "submit_issue/respond_to_issue/record_issue_outcome": "append typed issue history over assignment reports; resolution requires application evidence",
+            },
+            "execution": {
+                "composition": "PortfolioOwnerBootstrap.execution_application(...) -> ExecutionApplication",
+                "manager": {
+                    "prepare": "assign/adopt the current owner-pinned manager occurrence before any provider effect",
+                    "start": "start one admitted occurrence and publish the durable result or unknown effect",
+                    "continue": "continue_manager reuses the settled native session and canonical progress report",
+                    "recover": "recover reconciles the exact occurrence before any retry; unknown effects remain fenced",
+                },
+                "advisor": {
+                    "schedule": "AdvisorExecution.prepare_scheduled prepares the existing owner-bound Due",
+                    "wake": "wake_once admits one current advisor occurrence after assignment/generation reconciliation",
+                    "allowance": "reconcile_allowance settles the neutral owner allowance without replaying uncertain effects",
+                },
+                "host": {
+                    "custody": "ExecutionHost retains admitted command/service custody across parent completion",
+                    "lifecycle": "ExecutionHost reconciles the persisted trigger before pause, stop, or restart",
+                },
+                "operator_boundary": "This CLI does not construct an owner, Store, provider, scheduler, or native session; use the owner-bound controller/command surface for execution and this CLI for scoped reads, briefs, pairing, acceptance, and help.",
             },
             "resource_attachments": "assign_roles accepts role-keyed adopted resource descriptors; exact resource_ref revisions are persisted as canonical assignment pins and later brief evidence carries bundle/export/brief digests",
             "invariants": [

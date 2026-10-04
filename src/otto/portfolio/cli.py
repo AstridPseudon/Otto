@@ -832,6 +832,7 @@ def main(
                     "native_closure": "unsupported unless the host returns exact closure evidence",
                 },
                 "canonical_public_paths": {
+                    "execution_application": "PortfolioOwnerBootstrap.execution_application -> ExecutionApplication",
                     "manager_current_work": "OttoPortfolio.read_work",
                     "project_inventory": "OttoPortfolio.list_projects",
                     "task_filters": "OttoPortfolio.list_work",
@@ -851,7 +852,7 @@ def main(
                     "project_advisor_pair": "available only through an explicitly injected owner-bound OttoPortfolio and exact current manager pins",
                     "operating_brief": "available only through injected canonical owner readers; local staged bundles are never treated as adopted resources",
                 },
-                "cli_scope": "owner-backed reads, guarded task completion, and current manager/advisor assignment pairing; legacy pending-project commands remain; no dispatch, launch, or scheduler command",
+                "cli_scope": "owner-backed reads, guarded task completion, current manager/advisor assignment pairing, and execution help; legacy pending-project commands remain; no dispatch, launch, or scheduler command",
                 "document_injection": "Supply the accepted ProjectDocumentOperations instance through cli.main(argv, document_operations=...).",
                 "assessment_injection": "Supply the accepted OttoAssessment facade through cli.main(argv, assessment=...).",
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
