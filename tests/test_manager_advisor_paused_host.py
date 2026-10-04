@@ -76,6 +76,40 @@ class PausedAdvisorHostTests(unittest.TestCase):
         self.assertEqual(second["prepared"]["effect"], first["prepared"]["effect"])
         self.assertEqual(self.attention._read(self.schedule).version, fresh.version)
 
+    def test_store_backed_acknowledgement_replay_after_actual_owner_reopen_is_read_only(self):
+        from herzchen.contracts import AuthenticatedActor
+        from herzchen.kernel.store import Store
+        from otto.attention import DurableAttention, RecordingAttentionPort, due_record_contribution, issue_store_due_record_port
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "owner.sqlite"
+            actor = AuthenticatedActor("owner-principal", "owner", "fixture")
+            store = Store.create(path, authority="owner")
+            store.register_domain_handler((due_record_contribution(),))
+            try:
+                port = issue_store_due_record_port(store.domain_handler((due_record_contribution(),)), actor)
+                attention = DurableAttention(RecordingAttentionPort(), due_port=port, host_mode="awaited")
+                attention.schedule(self.initial, request_id="existing-owner-schedule")
+                first = bind_paused_advisor_automation(request=self.request, pairing=self.fixture.pairing,
+                    actor="owner-principal", attention=attention, read_settings=self.reader)
+                self.assertEqual(first["outcome"], "reconciled")
+                before = attention._read(self.schedule).to_dict()
+            finally:
+                store.close()
+            store = Store.open(path, authority="owner", expected_domains=(due_record_contribution(),))
+            try:
+                port = issue_store_due_record_port(store.domain_handler((due_record_contribution(),)), actor)
+                attention = DurableAttention(RecordingAttentionPort(), due_port=port, host_mode="awaited")
+                result = bind_paused_advisor_automation(
+                    request={**self.request, "expected_version": before["version"]},
+                    pairing=self.fixture.pairing, actor="owner-principal", attention=attention,
+                    read_settings=self.reader)
+                self.assertEqual(result["outcome"], "reconciled")
+                self.assertTrue(result["prepared"]["replayed"])
+                self.assertTrue(result["acknowledgement"]["replayed"])
+                self.assertEqual(attention._read(self.schedule).to_dict(), before)
+            finally:
+                store.close()
+
     def test_stale_foreign_or_wrong_schedule_rejects_before_host_read_and_writes(self):
         with patch.object(self.attention, "reconfigure") as write:
             self.assertEqual(self.call(actor="foreign")["outcome"], "rejected")

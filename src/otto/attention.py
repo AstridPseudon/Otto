@@ -2213,6 +2213,13 @@ class DurableAttention:
                 "effect": effect.to_dict(), "observation": observation, "readback_exact": exact,
             },
         })
+        if updated.to_dict() == record.to_dict():
+            # The same effect and readback are already durably acknowledged.
+            # Store replay binds the original CAS precondition; a fresh owner
+            # version must not be persisted under that old acknowledgement key.
+            return {"outcome": "reconciled" if exact else next_state, "schedule_id": schedule_id,
+                    "host_state": next_state, "readback_exact": exact, "record": record.to_dict(),
+                    "observation": observation, "replayed": True, "automatic_action": False}
         try:
             # A response-loss retry can settle the same logical effect with a
             # new observation.  Bind the persistence key to that observation
