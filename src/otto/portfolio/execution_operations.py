@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -176,6 +177,13 @@ def _same_ref(left: Any, right: Any) -> bool:
         and isinstance(right, Mapping)
         and all(left.get(key) == right.get(key) for key in ("authority", "kind", "id"))
     )
+
+
+def manager_continuation_schedule_id(assignment_ref: Mapping[str, Any], report_key: str) -> str:
+    """Canonical callback identity shared by preparation and owner disposition."""
+    value = json.dumps([dict(assignment_ref), report_key], sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=False).encode()
+    return "manager-callback-" + hashlib.sha256(value).hexdigest()[:28]
 
 
 def derive_manager_continuation_request(
@@ -547,7 +555,7 @@ def prepare_current_assignment_occurrence(
 
 __all__ = [
     "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
-    "compact_project_status", "derive_manager_continuation_request",
+    "compact_project_status", "derive_manager_continuation_request", "manager_continuation_schedule_id",
     "complete_task_from_command",
     "prepare_current_assignment_occurrence", "read_project_progress_reports",
     "validate_owner_timeout_seconds",

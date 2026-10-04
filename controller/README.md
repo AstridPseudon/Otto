@@ -90,3 +90,16 @@ Low-level Due stop/complete remain owner state only. Exact readback and owner ac
 prove reconciliation, not firing. A worker-local tool approval error does not
 apply to a root context whose authorized automation view succeeds. See
 `final-review-closures-README.md` for the retained PAUSED evidence gap.
+
+`manager-continue --operation dispose-no-overlap` appends one owner report scoped
+to an already-prepared explicit report-key continuation. It validates the expected
+current and continuation Due versions/IDs, project, manager principal, generation,
+native session and last completed anchor turn. The old record must remain terminal
+unknown with no in-flight request, explicit false process/session creation evidence,
+no observed new turn and a retained `preprovider_unknown` result. False creation
+flags alone never authorize an uncertain existing-session effect. The disposition
+neither rewrites that unknown nor launches a provider. Repeated identical requests
+replay the same owner report. `manager-continue --operation dispatch` revalidates
+the entire scope and old Due fingerprint before admitting that same report key;
+changed Due versions, another report key or a new callback attempt keep dispatch
+held. The global unknown guard remains in place for all other intents.

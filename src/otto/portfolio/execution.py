@@ -17,7 +17,7 @@ from herzchen.content.instructions import validate_instruction_content
 from otto.attention import DueRecord
 from .execution_operations import (
     OccurrencePreparationError, build_manager_callback_due,
-    derive_manager_continuation_request, prepare_current_assignment_occurrence,
+    derive_manager_continuation_request, manager_continuation_schedule_id, prepare_current_assignment_occurrence,
     validate_owner_timeout_seconds,
 )
 from .owner_readers import json_value, owner_ref, task_reader
@@ -507,7 +507,7 @@ class ExecutionApplication:
         if request is None:
             return {"outcome": "idle", "schedule_id": schedule_id, "reason": "no canonical continuation request"}
         key = request["logical_request_key"]
-        schedule = "manager-callback-" + _digest([prior.assignment_ref, key])[:28]
+        schedule = manager_continuation_schedule_id(prior.assignment_ref, key)
         if self.due_port.read_due(schedule) is not None:
             return self.recover(schedule_id=schedule, execute=execute)
         instruction = _text(request.get("next_action"), "continuation next_action")
