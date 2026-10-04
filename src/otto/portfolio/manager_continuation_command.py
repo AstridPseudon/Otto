@@ -19,8 +19,8 @@ def manager_continuation_from_command(
     """
     operation = request.get("operation", "prepare")
     key = request.get("report_key")
-    if operation not in {"status", "prepare", "dispatch", "dispose-no-overlap", "mandate-status"}:
-        raise ValueError("operation must be status, prepare, dispatch or dispose-no-overlap")
+    if operation not in {"status", "prepare", "dispatch", "dispose-no-overlap", "mandate-status", "reconcile-manager-task"}:
+        raise ValueError("unsupported manager continuation operation")
     if not isinstance(key, str) or not key.strip() or key != key.strip():
         raise ValueError("report_key must identify one exact durable manager report")
     try:
@@ -71,15 +71,19 @@ def manager_continuation_from_command(
         return {**base, "outcome": "read", "request": selected,
                 "current_unknown_effect": unknown, "provider_called": False,
                 "expected_disposition_pins": None if scope is None else _disposition_pins(scope),
+                "expected_task_reconciliation_pins": None if scope is None else {
+                    **_disposition_pins(scope), "expected_report_task_ref": task,
+                    "expected_execution_task_ref": anchor.target["task_ref"],
+                    "expected_mandate_ref": anchor.target["mandate_ref"]},
                 "no_overlap_disposition_ref": None if retained is None else retained["ref"],
                 "no_overlap_evidence_error": error,
                 "dispatch_held_by_current_unknown": unknown and retained is None}
     disposition = None
-    if operation == "dispose-no-overlap" or (operation == "dispatch" and unknown):
+    if operation in {"dispose-no-overlap", "reconcile-manager-task"} or (operation == "dispatch" and unknown):
         try:
             scope = _no_overlap_scope(execution, anchor, current, selected, native_session_id, task)
         except ValueError as exc:
-            return {**base, "outcome": "rejected" if operation == "dispose-no-overlap" else "held",
+            return {**base, "outcome": "rejected" if operation in {"dispose-no-overlap", "reconcile-manager-task"} else "held",
                     "provider_called": False, "reason": str(exc),
                     "current_unknown_effect": unknown}
         if operation == "dispose-no-overlap":
@@ -87,6 +91,29 @@ def manager_continuation_from_command(
             return {**base, **recorded, "provider_called": False, "current_unknown_effect": unknown,
                     "historical_unknown_preserved": True}
         disposition = _retained_no_overlap(scope, reports)
+        if operation == "reconcile-manager-task":
+            pins = {**_disposition_pins(scope), "expected_report_task_ref": task,
+                    "expected_execution_task_ref": anchor.target["task_ref"],
+                    "expected_mandate_ref": anchor.target["mandate_ref"]}
+            for field, value in pins.items():
+                if type(request.get(field)) is not type(value) or request.get(field) != value:
+                    return {**base, "outcome": "rejected", "provider_called": False,
+                            "error": {"code": "stale_or_foreign_reconciliation", "field": field,
+                                      "requested": request.get(field), "actual": value}}
+            if unknown and disposition is None:
+                return {**base, "outcome": "held", "provider_called": False,
+                        "reason": "current manager unknown effect requires owner disposition"}
+            try:
+                result = execution.reconcile_manager_task(
+                    schedule_id=scope["continuation_schedule_id"], anchor_schedule_id=anchor_schedule_id,
+                    expected_version=scope["continuation_version"], report_task_ref=task,
+                    execution_task_ref=anchor.target["task_ref"], mandate_ref=anchor.target["mandate_ref"],
+                    scope=scope, disposition_ref=None if disposition is None else disposition["ref"],
+                    request_key=request.get("request_key"))
+            except ValueError as exc:
+                return {**base, "outcome": "rejected", "provider_called": False, "reason": str(exc)}
+            return {**base, **result, "historical_unknown_preserved": True,
+                    "no_overlap_disposition_ref": None if disposition is None else disposition["ref"]}
         if disposition is None:
             return {**base, "outcome": "held", "request": selected,
                     "provider_called": False, "reason": "current manager unknown effect requires owner disposition"}
@@ -135,25 +162,37 @@ def _no_overlap_scope(execution, anchor, current, selected, native_session_id, t
     if value is None:
         raise ValueError("same report-key continuation must already be prepared")
     callback = DueRecord.from_dict(value)
+    reconciliation = execution.manager_task_reconciliation(callback)
+    scoped_callback = callback if reconciliation is None else DueRecord.from_dict(reconciliation["before"])
+    if reconciliation is not None and (
+            reconciliation.get("anchor_schedule_id") != anchor.schedule_id
+            or reconciliation.get("execution_task_ref") != anchor.target.get("task_ref")
+            or callback.target.get("mandate_ref") != anchor.target.get("mandate_ref")):
+        raise ValueError("manager task reconciliation belongs to another anchor")
     if (callback.role != "manager" or callback.generation != current.generation
             or callback.assignment_ref["id"] != current.assignment_ref["id"]
             or callback.target.get("native_id") != native_session_id
-            or callback.target.get("task_ref") != task
+            or scoped_callback.target.get("task_ref") != task
             or callback.project_ref != current.project_ref
             or callback.in_flight_request != selected["logical_request_key"]
             or callback.stop_state != "active" or callback.completion_state != "none"
             or (callback.host_evidence or {}).get("gateway_attempt") is not None):
         raise ValueError("new continuation is no longer the exact unexecuted owner intent")
-    return {"project_ref": dict(anchor.target["project_ref"]), "task_ref": dict(task),
+    # task_ref is the durable report metadata; actual execution remains the
+    # anchor manager task after the narrowly verified prospective repair.
+    scope = {"project_ref": dict(anchor.target["project_ref"]), "task_ref": dict(task),
             "report_key": selected["logical_request_key"], "report_ref": selected["report_ref"],
             "anchor_schedule_id": anchor.schedule_id, "latest_completed_turn_id": turn,
             "current_schedule_id": current.schedule_id, "current_version": current.version,
             "current_due_sha256": _digest(current.to_dict()),
-            "continuation_schedule_id": callback_id, "continuation_version": callback.version,
+            "continuation_schedule_id": callback_id, "continuation_version": scoped_callback.version,
             "manager_assignment_ref": assignment.ref.to_dict(), "manager_principal": assignment.principal,
             "generation": assignment.generation, "native_session_id": native_session_id,
             "owner_actor": execution.actor,
             "process_created": False, "native_session_created": False, "in_flight_request": None}
+    if reconciliation is not None and reconciliation.get("scope") != scope:
+        raise ValueError("manager task reconciliation disposition scope changed")
+    return scope
 
 
 def _disposition_pins(scope):

@@ -423,6 +423,86 @@ class ExecutionApplication:
                 "mandate_content_sha256": _digest(content),
                 "attempt_present": (due.host_evidence or {}).get("gateway_attempt") is not None}
 
+    def manager_task_reconciliation(self, due: DueRecord) -> Mapping[str, Any] | None:
+        """Validate the exact one-version derivative of an unattempted callback."""
+        evidence = due.host_evidence or {}
+        receipt = evidence.get("manager_task_reconciliation")
+        if receipt is None:
+            return None
+        if not isinstance(receipt, Mapping):
+            raise OccurrencePreparationError("manager task reconciliation receipt is invalid")
+        before = receipt.get("before")
+        if (not isinstance(before, Mapping) or type(before.get("version")) is not int
+                or not isinstance(before.get("target"), Mapping)
+                or not isinstance(receipt.get("execution_task_ref"), Mapping)
+                or receipt.get("schema") != "otto.manager-task-reconciliation.v1"):
+            raise OccurrencePreparationError("manager task reconciliation receipt is invalid")
+        expected = {**before, "version": before["version"] + 1,
+                    "target": {**before["target"], "task_ref": receipt["execution_task_ref"]},
+                    "host_evidence": {**(before.get("host_evidence") or {}),
+                                      "manager_task_reconciliation": receipt}}
+        if due.to_dict() != expected or _digest(before) != receipt.get("before_sha256"):
+            raise OccurrencePreparationError("manager callback changed after task reconciliation")
+        return receipt
+
+    def reconcile_manager_task(self, *, schedule_id: str, anchor_schedule_id: str,
+                               expected_version: int, report_task_ref: Mapping[str, Any],
+                               execution_task_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],
+                               scope: Mapping[str, Any], disposition_ref: Mapping[str, Any] | None,
+                               request_key: str) -> dict[str, Any]:
+        """CAS only a legacy report-task pin to the settled manager's mandate task.
+
+        Report intent stays in the instruction. Neither the mandate nor the old
+        unknown occurrence is rewritten; retained disposition scope is durable.
+        """
+        _text(request_key, "request_key")
+        due, anchor = self._read(schedule_id), self._read(anchor_schedule_id)
+        receipt = self.manager_task_reconciliation(due)
+        original = due if receipt is None else DueRecord.from_dict(receipt["before"])
+        if (type(expected_version) is not int or original.version != expected_version
+                or original.target.get("task_ref") != dict(report_task_ref)
+                or anchor.target.get("task_ref") != dict(execution_task_ref)
+                or original.target.get("mandate_ref") != dict(mandate_ref)
+                or anchor.target.get("mandate_ref") != dict(mandate_ref)
+                or due.role != "manager" or anchor.role != "manager"
+                or anchor.completion_state != "succeeded"
+                or due.assignment_ref["id"] != anchor.assignment_ref["id"]
+                or due.generation != anchor.generation
+                or due.target.get("native_id") != anchor.target.get("native_id")
+                or due.stop_state != "active" or due.completion_state != "none"
+                or due.in_flight_request != scope["report_key"]
+                or (due.host_evidence or {}).get("gateway_attempt") is not None):
+            raise OccurrencePreparationError("manager task reconciliation pins are stale or foreign")
+        assignment = self._current(due.assignment_ref, due.generation)
+        self._verify_native_binding(assignment, due.target["native_id"], anchor_schedule_id)
+        if _digest(self._read(scope["current_schedule_id"]).to_dict()) != scope["current_due_sha256"]:
+            raise OccurrencePreparationError("current manager evidence changed before reconciliation")
+        inspected = self.inspect_mandate(schedule_id=schedule_id)
+        mandate_scope = inspected["mandate_scope"]
+        wanted = {**inspected["expected_scope"], "task_ref": dict(execution_task_ref)}
+        contract = inspected["instruction_contract_scope"]
+        if (mandate_scope != wanted or contract != {"task_ref": dict(execution_task_ref),
+                "source": "canonical_owner", "owner_actor": assignment.principal,
+                "effect_profile": "workspace-write-manager"}):
+            raise OccurrencePreparationError("anchor manager mandate does not authorize exact reconciliation scope")
+        binding = {"schema": "otto.manager-task-reconciliation.v1", "request_key": request_key,
+                   "anchor_schedule_id": anchor_schedule_id, "scope": dict(scope),
+                   "disposition_ref": disposition_ref, "execution_task_ref": dict(execution_task_ref),
+                   "before": original.to_dict(), "before_sha256": _digest(original.to_dict())}
+        if receipt is not None:
+            if receipt != binding:
+                raise OccurrencePreparationError("manager task reconciliation input changed")
+            return {"outcome": "replayed", "schedule_id": schedule_id,
+                    "due_version": due.version, "provider_called": False}
+        if report_task_ref == execution_task_ref:
+            raise OccurrencePreparationError("manager task reconciliation requires a task mismatch")
+        saved = self.due_port.save_due(schedule_id, replace(due,
+            target={**due.target, "task_ref": dict(execution_task_ref)},
+            host_evidence={**(due.host_evidence or {}), "manager_task_reconciliation": binding}).to_dict(),
+            request_id="execution-manager-task:" + request_key, expected_version=expected_version)
+        return {"outcome": "committed", "schedule_id": schedule_id,
+                "due_version": saved["version"], "provider_called": False}
+
     def prepare_instruction(self, *, schedule_id: str, request_key: str, instruction: str) -> dict[str, Any]:
         """Persist host policy on an existing unattempted occurrence.
 
