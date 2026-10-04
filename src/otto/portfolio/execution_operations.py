@@ -179,7 +179,8 @@ def _same_ref(left: Any, right: Any) -> bool:
 
 
 def derive_manager_continuation_request(
-    settled_due: Any, reports: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...]
+    settled_due: Any, reports: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *, report_key: str | None = None,
 ) -> dict[str, Any] | None:
     """Recover a manager's explicit next action from canonical reports.
 
@@ -194,6 +195,9 @@ def derive_manager_continuation_request(
         and _value(settled_due, "delivery_state") == "returned"
     ):
         raise OccurrencePreparationError("manager occurrence is not a settled success")
+    if report_key is not None:
+        if not isinstance(report_key, str) or not report_key.strip():
+            raise OccurrencePreparationError("report_key must be non-blank text")
     started = _instant(_value(settled_due, "anchor"))
     completed = _instant(_value(settled_due, "completed_at"))
     assignment_ref = _value(settled_due, "assignment_ref")
@@ -211,7 +215,9 @@ def derive_manager_continuation_request(
         ):
             continue
         recorded = _instant(value.get("recorded_at"))
-        if started <= recorded <= completed:
+        explicit = (report_key is not None and value.get("logical_request_key") == report_key
+                    and _same_ref(value.get("project_ref"), (_value(settled_due, "target") or {}).get("project_ref")))
+        if (report_key is None and started <= recorded <= completed) or (explicit and recorded >= started):
             candidates.append((recorded, str(ref.get("id", "")), report, value))
     if not candidates:
         return None
@@ -229,6 +235,7 @@ def derive_manager_continuation_request(
         "settled_turn_id": result.get("observed_turn_id"),
         "physical_session_id": result.get("physical_session_id"),
         "state": "ready",
+        "explicit_service_request": report_key is not None,
     }
 
 

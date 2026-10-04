@@ -494,14 +494,16 @@ class ExecutionApplication:
         return {**handle, "due_version": saved["version"], "outcome": "succeeded", "result": dict(result),
                 "next_action": "inspect result and accept or correct the task"}
 
-    def continue_manager(self, *, schedule_id: str, execute: bool = True) -> dict[str, Any]:
+    def continue_manager(self, *, schedule_id: str, execute: bool = True,
+                         report_key: str | None = None, task_ref: Mapping[str, Any] | None = None,
+                         reports: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
         """Prepare a durable callback from the last explicit canonical report."""
         prior = self._read(schedule_id)
-        reports = [dict(ref=json_value(report.ref), assignment=json_value(report.assignment),
+        reports = reports if reports is not None else [dict(ref=json_value(report.ref), assignment=json_value(report.assignment),
                         kind=report.kind, value=json_value(report.value))
                    for report in self.assignments.list_observations(
                        ResourceRef.from_dict(prior.assignment_ref), kind="report")]
-        request = derive_manager_continuation_request(prior, reports)
+        request = derive_manager_continuation_request(prior, reports, report_key=report_key)
         if request is None:
             return {"outcome": "idle", "schedule_id": schedule_id, "reason": "no canonical continuation request"}
         key = request["logical_request_key"]
@@ -514,8 +516,10 @@ class ExecutionApplication:
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
             due_at=self._now(), timeout_seconds=prior.timeout_seconds)
-        self._verify_native_binding(current, due.target["native_id"], schedule_id)
+        self._verify_native_binding(current, due.target["native_id"], prior.schedule_id)
         due = replace(due, instruction=instruction)
+        if task_ref is not None:
+            due = replace(due, target={**due.target, "task_ref": dict(task_ref)})
         prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
             assignments=self.assignments, binding=self.binding, due=due,
             assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,

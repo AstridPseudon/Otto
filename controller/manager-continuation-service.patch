@@ -1,0 +1,52 @@
+--- a/controller/launch_manager_once.py
++++ b/controller/launch_manager_once.py
+@@ -847,6 +847,27 @@
+                 )}}},
+                 "raw_readback": str(EVIDENCE / "manager-continuation-due-readback-final.json"),
+             }
++        if command == "manager-continue":
++            from otto.portfolio.manager_continuation_command import manager_continuation_from_command
++            from otto.portfolio.execution_operations import read_project_progress_reports
++            meta = self.state.get("manager_continuation") or {}
++            current_id = meta.get("schedule_id") or self.state["schedule_id"]
++            current = self.due_port.read_due(current_id) or {}
++            anchor_id = current_id
++            if current.get("completion_state") != "succeeded":
++                anchor_id = (meta.get("requested_continuation") or {}).get("settled_schedule_id")
++            if not isinstance(anchor_id, str):
++                return {"outcome": "held", "provider_called": False, "retry": False,
++                        "reason": "no retained successful same-manager anchor"}
++            app = self._execution(principal=self.state["manager"],
++                model=self.state["requested_model"], reasoning=self.state["requested_reasoning"],
++                evidence_id="manager-explicit-continuation")
++            return manager_continuation_from_command(
++                request=request, execution=app, anchor_schedule_id=anchor_id,
++                current_schedule_id=current_id, task_refs=self.state["task_refs"],
++                native_session_id=meta.get("native_session_id"),
++                read_reports=lambda: read_project_progress_reports(self.store.consumer(), self.state["project_ref"]),
++            )
+         if command == "report":
+             task = request.get("task")
+             if task not in self.state["task_refs"]:
+@@ -864,16 +885,12 @@
+                 expected_generation=self.state["manager_generation"],
+                 logical_request_key=request.get("request_key"), actor=actor,
+             )
+-            if continue_project:
+-                self.continuation_request = {
+-                    "schema": "otto.manager-continuation-request.v1",
+-                    "task_alias": task, "next_action": request.get("next_action"),
+-                    "report_ref": j(getattr(report, "ref", None)),
+-                    "logical_request_key": request.get("request_key"),
+-                    "requested_at": now(),
+-                }
+             return {"outcome": "committed", "report": j(report),
+-                    "continuation_requested": continue_project}
++                    "continuation_requested": continue_project,
++                    "continuation_durable": continue_project,
++                    "continuation_next_command": (
++                        "manager-continue --report-key " + request.get("request_key") + " --operation prepare"
++                        if continue_project else None)}
+         if command == "task-state":
+             from herzchen.domains.work.model import Lifecycle
+             task = request.get("task")
