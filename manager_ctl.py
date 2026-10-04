@@ -141,6 +141,13 @@ def main() -> None:
     followup.add_argument("--request-key", required=True)
     followup.add_argument("--decision-id", required=True)
     followup.add_argument("--interval-seconds", required=True, type=int)
+    followup_tick = commands.add_parser(
+        "advisor-followup", help="read an existing follow-up; explicit dispatch uses owner admission",
+    )
+    followup_tick.add_argument("--schedule-id", required=True)
+    followup_tick.add_argument("--decision-id", required=True)
+    followup_tick.add_argument("--operation", choices=["status", "dispatch"], default="status",
+                               help="status is read-only; dispatch may claim the existing occurrence")
     advisor_correct = commands.add_parser(
         "advisor-delivery-correct",
         help="append a correction for a historical false sent claim",
@@ -201,7 +208,7 @@ def main() -> None:
     print(json.dumps(response, indent=2, sort_keys=True))
     if response.get("outcome") not in {
         "ok", "committed", "replayed", "created", "read", "started", "corrected", "recorded",
-        "scheduled", "completed",
+        "scheduled", "completed", "returned",
     }:
         raise SystemExit(1)
 

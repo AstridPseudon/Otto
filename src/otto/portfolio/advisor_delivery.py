@@ -51,6 +51,12 @@ def _stable(prefix: str, *parts: Any) -> str:
     return prefix + "-" + sha256(wire.encode("utf-8")).hexdigest()[:28]
 
 
+def effect_followup_schedule_id(project_ref: Mapping[str, Any], decision_id: str) -> str:
+    """Identify the existing per-decision schedule without creating an occurrence."""
+    project = _ref(project_ref, "project_ref")
+    return _stable("advisor-followup", project["id"], _text(decision_id, "decision_id"))
+
+
 def _stamp(value: datetime) -> str:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise AdvisorDeliveryError("clock must return a timezone-aware datetime")
@@ -725,7 +731,7 @@ class AdvisorDeliveryLoop:
             raise AdvisorDeliveryError("delivery time must be timezone-aware")
         delivered_at = delivered_at.astimezone(timezone.utc)
         due_at = delivered_at + timedelta(seconds=interval_seconds)
-        schedule_id = _stable("advisor-followup", pairing.project_ref["id"], decision_id)
+        schedule_id = effect_followup_schedule_id(pairing.project_ref, decision_id)
         target = dict(pairing.advisor_conversation_ref)
         target.update({"role": "project_advisor", "principal": _text(advisor_principal, "advisor_principal"),
                        "assignment_ref": dict(pairing.advisor_ref)})
