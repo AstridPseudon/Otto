@@ -63,6 +63,23 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertEqual(len(f.provider.calls), self.provider_calls)
         self.assertEqual(self.call("status")["request"]["logical_request_key"], self.key)
 
+    def test_explicit_command_consumes_retained_action_in_same_session_with_fake_provider(self):
+        f = self.fixture
+        result = self.call("dispatch")
+        self.assertEqual(result["outcome"], "succeeded", result)
+        identity = result["continuation"]["schedule_id"]
+        due = f.port.read_due(identity)
+        self.assertEqual(due["last_result"]["physical_session_id"], "manager-session")
+        self.assertEqual(due["target"]["task_ref"], f.task.ref.to_dict())
+        self.assertEqual(due["assignment_ref"]["id"], f.app._read(self.anchor).assignment_ref["id"])
+        self.assertIn("Inspect retained PA02 source", f.provider.calls[-1])
+        self.assertEqual(len(f.provider.calls), self.provider_calls + 1)
+        f.compose()
+        repeated = self.call("dispatch")
+        self.assertEqual(repeated["outcome"], "replayed")
+        self.assertEqual(repeated["continuation"]["schedule_id"], identity)
+        self.assertEqual(len(f.provider.calls), self.provider_calls + 1)
+
     def test_existing_unknown_is_not_replayed_and_blocks_dispatch(self):
         f = self.fixture
         prior = f.app._read(self.anchor)

@@ -83,7 +83,7 @@ def main() -> None:
     report.add_argument("--next-action", required=True)
     report.add_argument("--request-key", required=True)
     report.add_argument("--continue-project", action="store_true",
-                        help="request one same-manager callback after this turn settles")
+                        help="persist a same-manager request; consume with manager-continue --report-key")
     task_state = commands.add_parser("task-state", help="update one canonical task lifecycle through the owner work port")
     task_state.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     task_state.add_argument("--lifecycle", required=True, choices=["pending", "active", "paused", "withdrawn"])

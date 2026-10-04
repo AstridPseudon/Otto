@@ -68,3 +68,15 @@ For a cold operator, read the successor run's `status.md`, `tasklist.md`, and
 readback before any mutation. The current canonical commit is obtained with
 `git -C ../manager-worktree rev-parse HEAD`; do not infer it from a narrative
 note or from a stale historical controller patch.
+
+
+`report --continue-project` returns the explicit handoff command
+`manager-continue --report-key <original-key> --operation prepare`. The ordinary
+service consumes the durable owner report through that command, including
+reports submitted after a manager turn. See
+[final-review-closures-README.md](final-review-closures-README.md) for identity,
+unknown-result, restart and provider-free lifecycle details. Prepare consumes
+one current-task request into the existing manager's callback; dispatch is
+held while the current manager effect is unknown. The lifecycle command reads
+the adopted PAUSED automation and exercises existing production rejection
+guards with explicitly inert Due/resource projections and the existing 3/3 pool.

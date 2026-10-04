@@ -82,7 +82,10 @@ def exercise_advisor_lifecycle(
         memory = InMemoryDueRecordPort()
         memory.save_due(schedule, value, request_id="inert-lifecycle-" + name, expected_version=0)
         attention = DurableAttention(RecordingAttentionPort(), due_port=memory, host_mode="awaited")
-        ports = replace(loop.ports, attention=attention)
+        # Pairing was read by the live controller at callback entry. Fixture
+        # restarts retain that same immutable identity snapshot; they do not
+        # repeatedly scan native-history projections for fixture rows.
+        ports = replace(loop.ports, attention=attention, current_pairing=lambda _project: pairing)
         # Explicit inert resource join. Production allowance reserve is still
         # reached with the real exhausted owner pool and authentic owner actor.
         app = SimpleNamespace(actor=actor, binding=SimpleNamespace(authenticated_actor=authenticate),

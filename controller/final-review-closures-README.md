@@ -39,7 +39,7 @@ and restart the same entrypoint in its supported managed-host profile:
 Focused tests are `tests.test_manager_service_continuation.ManagerServiceContinuationTests`,
 the existing canonical-report continuation test in `tests.test_execution_application`,
 and `tests.test_execution_operations`. They use a fake provider in temporary
-owner state. Live demonstration uses prepare/status only, with no provider call.
+owner state. Live demonstration prepares and recovers the explicit request, and verifies held dispatch under the current unknown; no provider is called. A temporary-owner fake-provider test consumes the retained PA02 inspection action in the same session once and suppresses duplicate dispatch after restart.
 
 
 The provider-free `advisor-followup-lifecycle` command requires the already
