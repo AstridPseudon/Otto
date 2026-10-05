@@ -19,7 +19,7 @@ def manager_continuation_from_command(
     """
     operation = request.get("operation", "prepare")
     key = request.get("report_key")
-    if operation not in {"status", "prepare", "dispatch", "dispose-no-overlap", "mandate-status", "reconcile-manager-task"}:
+    if operation not in {"status", "prepare", "dispatch", "dispose-no-overlap", "mandate-status", "reconcile-manager-task", "preprovider-status", "dispose-preprovider"}:
         raise ValueError("unsupported manager continuation operation")
     if not isinstance(key, str) or not key.strip() or key != key.strip():
         raise ValueError("report_key must identify one exact durable manager report")
@@ -53,6 +53,10 @@ def manager_continuation_from_command(
                   if value["ref"] == selected["report_ref"])
     if report.get("task_ref") != task:
         return {**base, "outcome": "held", "provider_called": False, "reason": "report task revision is stale"}
+    if operation in {"preprovider-status", "dispose-preprovider"}:
+        from .manager_preprovider_disposition import preprovider_disposition
+        return {**base, **preprovider_disposition(request, execution, anchor, current,
+                                                   selected, native_session_id, reports)}
     if operation == "mandate-status":
         from .execution_operations import manager_continuation_schedule_id
         return {**base, **execution.inspect_mandate(schedule_id=manager_continuation_schedule_id(
