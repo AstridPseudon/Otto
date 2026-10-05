@@ -276,6 +276,18 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.assertEqual(path.read_bytes(), raw)
         self.assertTrue(status["terminal"])
         self.assertFalse(status["retry"])
+        canonical_ref = {"authority": "owner", "kind": "work.task", "id": "actual-task", "revision": "rev-2"}
+        value = {"outcome": "ok", "project_ref": {**canonical_ref, "kind": "work.project"},
+                 "task_refs": {"J04": canonical_ref}, "workers": {"J04": {"principal": "cold-operator",
+                    "schedule_id": "exact-prepared", "generation": 2, "assignment_ref": canonical_ref,
+                    "submission": {"focus": "nested prose" * 100000}}},
+                 "manager_assignment": {"reports": ["native prose" * 100000]}}
+        path.write_text(json.dumps(value))
+        summary = read_command_response(self.directory, "abcdef")["summary"]
+        self.assertEqual(summary["task_refs"]["J04"], canonical_ref)
+        self.assertEqual(summary["workers"]["J04"]["schedule_id"], "exact-prepared")
+        self.assertNotIn("reports", summary["manager_assignment"])
+        self.assertLess(len(json.dumps(summary)), 4096)
 
     def test_context_manager_closes_idle_host_on_bootstrap_exception(self):
         directory = self.directory.parent / "bootstrap-ipc"

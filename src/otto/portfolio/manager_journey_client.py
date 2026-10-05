@@ -62,7 +62,9 @@ def command_result_summary(value: Any) -> Any:
     fields = ("outcome", "stage", "schedule_id", "principal", "generation",
               "provider_called", "retry_provider", "retry", "unknown_reason",
               "observed_model", "observed_reasoning", "observed_turn_id",
-              "physical_session_id", "context_digest_verified", "request_key")
+              "physical_session_id", "context_digest_verified", "request_key", "delivery_state",
+              "model", "reasoning", "native_session_id", "retained_handle", "response_path",
+              "version", "in_flight_request", "stop_state", "completion_state", "role", "status", "manager")
     summary = {key: item for key in fields if key in value
                and isinstance((item := value[key]), (str, bool, int, type(None)))
                and (not isinstance(item, str) or len(item) <= 512)}
@@ -79,6 +81,37 @@ def command_result_summary(value: Any) -> Any:
                     and isinstance((item := child["result"][field]), (str, bool, int, type(None)))
                     and (not isinstance(item, str) or len(item) <= 512)}
             summary[key] = nested
+    def ref(item):
+        keys = ("authority", "kind", "id", "revision")
+        if not isinstance(item, dict) or any(not isinstance(item.get(key), str)
+                or len(item[key]) > 256 for key in keys[:3]):
+            return None
+        return {key: item[key] for key in keys if isinstance(item.get(key), str) and len(item[key]) <= 256}
+    if ref(value.get("project_ref")):
+        summary["project_ref"] = ref(value["project_ref"])
+    for key in ("task_refs", "criteria"):
+        items = value.get(key)
+        if isinstance(items, dict):
+            summary[key] = {name: ref(item) for name, item in list(items.items())[:64]
+                            if isinstance(name, str) and len(name) <= 64 and ref(item)}
+    for key in ("native_manager", "manager_assignment", "occurrence"):
+        item = value.get(key)
+        if isinstance(item, dict):
+            summary[key] = {field: data for field in fields if field in item
+                and isinstance((data := item[field]), (str, bool, int, type(None)))
+                and (not isinstance(data, str) or len(data) <= 512)}
+            for field in ("ref", "scope", "assignment_ref"):
+                if ref(item.get(field)): summary[key][field] = ref(item[field])
+    workers = value.get("workers")
+    if isinstance(workers, dict):
+        summary["workers"] = {}
+        for name, worker in list(workers.items())[:64]:
+            if not isinstance(name, str) or len(name) > 64 or not isinstance(worker, dict): continue
+            summary["workers"][name] = {field: data for field in fields if field in worker
+                and isinstance((data := worker[field]), (str, bool, int, type(None)))
+                and (not isinstance(data, str) or len(data) <= 512)}
+            for field in ("assignment_ref", "guide_ref", "mandate_ref"):
+                if ref(worker.get(field)): summary["workers"][name][field] = ref(worker[field])
     return summary
 
 
