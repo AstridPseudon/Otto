@@ -43,7 +43,8 @@ while not Path(sys.argv[6]).exists() and time.monotonic()<deadline:time.sleep(.0
 if not Path(sys.argv[6]).exists():raise RuntimeError("child command admission expired")
 results=[]
 for request in ({"command":"task-state","task":"PA06","lifecycle":"active","request_key":"native-pa06-active"},
-                {"command":"report","task":"PA06","summary":"Assessment evidence retained", "next_action":"Review owner acceptance","request_key":"native-assessment-report"}):
+                {"command":"report","task":"PA06","summary":"Assessment evidence retained", "next_action":"Review owner acceptance","request_key":"native-assessment-report"},
+                {"command":"project-lifecycle-read","task":"PA06"}):
     results.append(client.call(request))
 Path(sys.argv[3]).write_text(json.dumps(results))
 deadline=time.monotonic()+10
@@ -105,6 +106,9 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
                  "recorded_at": service.NOW.isoformat()}, expected_generation=1,
                 logical_request_key=request["request_key"], actor=f.actor)
             return {"outcome": "committed", "ref": report.ref.to_dict()}
+        if command == "project-lifecycle-read":
+            return {"outcome": "read", "lifecycle": "active", "read_only": True,
+                    "writes": 0, "dispatch": False, "launch": False}
         return service.manager_continuation_from_command(request=request, execution=f.app,
             anchor_schedule_id=self.anchor, current_schedule_id=self.anchor, task_refs=self.tasks,
             native_session_id="manager-session", read_reports=self.reports)
@@ -125,7 +129,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         f = self.fixture
         response = self.dispatch()
         child = self.wait_file(self.child_receipt)
-        self.assertEqual([r["outcome"] for r in child], ["committed", "committed"])
+        self.assertEqual([r["outcome"] for r in child], ["committed", "committed", "read"])
         self.assertEqual(child[0]["lifecycle"], "active")
         self.assertFalse(response.exists())
         self.assertTrue(self.host.owner_path.exists())
@@ -161,7 +165,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
                 self.host.retain(name="new-child-during-drain", operation=lambda: None)
             self.allow_commands.touch()
             child = self.wait_file(self.child_receipt)
-            self.assertEqual([r["outcome"] for r in child], ["committed", "committed"])
+            self.assertEqual([r["outcome"] for r in child], ["committed", "committed", "read"])
             self.assertFalse(response.exists())
             status = self.send("777777", {"command": "status"})
             self.assertEqual(self.wait_file(status)["outcome"], "read")

@@ -338,6 +338,27 @@ class OttoPortfolio:
                 },
                 "operator_boundary": "This CLI does not construct an owner, Store, provider, scheduler, or native session; use the owner-bound controller/command surface for execution and this CLI for scoped reads, briefs, pairing, acceptance, and help.",
             },
+            "operator_contract": {
+                "working_entrypoint": "python -m otto.portfolio.cli help --format text",
+                "owner_status_entrypoint": "manager_ctl.py status (through the already running owner command service)",
+                "current_run_configuration": ".otto/runs/<run-id>/run.yaml, or its adopted native configuration record; this is the sole model/stage/budget authority",
+                "complete_criterion_source": ".otto/runs/<run-id>/tasklist.md; read the exact criterion rows before interpreting status",
+                "accessible_megado_skill": "policy-staging/megado/skill/SKILL.md and its linked execution/run-config/native-work references",
+                "status_semantics": {
+                    "execution": "show committed dispatch/occurrence/result observations; absence is unknown, not failure",
+                    "review_acceptance": "show review decisions and acceptance_exists separately from writes_performed",
+                    "lifecycle": "show owner-read project/task lifecycle and current owner bindings",
+                    "uncertainty": "retain historical uncertain effects and distinguish verifier limits, evidence mismatch, and unresolved live effects",
+                    "suggestions": "reports and next_action values are timestamped observations/advice, not scheduler commands or acceptance",
+                },
+                "supported_read_operations": [
+                    "python -m otto.portfolio.cli projects --actor ACTOR",
+                    "python -m otto.portfolio.cli overview --actor ACTOR --project-ref REF_JSON",
+                    "python -m otto.portfolio.cli task --actor ACTOR --project-ref PROJECT_REF_JSON --task-ref TASK_REF_JSON",
+                    "python -m otto.portfolio.cli assessment-coverage --parent-ref TASK_REF_JSON",
+                    "python -m otto.portfolio.cli completion-gate --task-ref TASK_REF_JSON",
+                ],
+            },
             "resource_attachments": "assign_roles accepts role-keyed adopted resource descriptors; exact resource_ref revisions are persisted as canonical assignment pins and later brief evidence carries bundle/export/brief digests",
             "invariants": [
                 "pending creation does not create a manager, tasklist, allowance, session, or accepted result",

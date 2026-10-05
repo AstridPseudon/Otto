@@ -197,6 +197,27 @@ class Tests(unittest.TestCase):
             with self.assertRaisesRegex(OccurrencePreparationError, "escapes"):
                 commit_local_checkpoint(root, ["../outside.txt"], message="Invalid checkpoint")
 
+    def test_local_checkpoint_accepts_a_linked_git_worktree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            repository = parent / "repository"
+            linked = parent / "linked"
+            subprocess.run(["git", "init", "-q", str(repository)], check=True)
+            (repository / "baseline.txt").write_text("baseline\n")
+            subprocess.run(["git", "-C", str(repository), "add", "baseline.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(repository), "-c", "user.name=Test", "-c",
+                "user.email=test@example.invalid", "commit", "-q", "-m", "baseline",
+            ], check=True)
+            subprocess.run(["git", "-C", str(repository), "worktree", "add", "-q", str(linked)], check=True)
+            self.assertTrue((linked / ".git").is_file())
+            (linked / "selected.txt").write_text("linked checkpoint\n")
+
+            result = commit_local_checkpoint(linked, ["selected.txt"], message="Linked checkpoint")
+
+            self.assertEqual(result["outcome"], "committed")
+            self.assertEqual(result["paths"], ["selected.txt"])
+
     def test_compact_status_joins_task_report_and_native_handle(self):
         task_ref = {"authority": "owner", "kind": "work.task", "id": "task-1", "revision": "rev-2"}
         view = {
@@ -229,6 +250,42 @@ class Tests(unittest.TestCase):
         self.assertEqual(value["tasks"]["PA01"]["lifecycle"], "active")
         self.assertEqual(value["tasks"]["PA01"]["latest_report"]["ref"], {"id": "report-1"})
         self.assertEqual(value["tasks"]["PA01"]["occurrence"]["physical_session_id"], "session-1")
+        self.assertEqual(value["tasks"]["PA01"]["execution"]["result_refs"], [])
+        self.assertEqual(value["tasks"]["PA01"]["review"]["acceptance_exists"]["state"], "unknown")
+        self.assertIsNone(value["tasks"]["PA01"]["review"]["acceptance_exists"]["value"])
+        self.assertEqual(value["writes_performed"], 0)
+        self.assertIsNone(value["acceptance_exists"])
+
+    def test_compact_status_keeps_acceptance_distinct_from_uncertain_history(self):
+        task_ref = {"authority": "owner", "kind": "work.task", "id": "task-1", "revision": "rev-2"}
+        view = {
+            "project": {"ref": {"id": "project-1"}, "observed": {"lifecycle": "active"}},
+            "tasks": [{
+                "ref": task_ref,
+                "authored": {"title": "One", "lifecycle": "active"},
+                "observed": {
+                    "lifecycle": "active", "decisions": [{
+                        "ref": {"id": "decision-1"}, "accepted": True,
+                    }],
+                    "results": [{"ref": {"id": "result-1"}}],
+                },
+            }],
+        }
+        occurrences = [
+            {"schedule_id": "old", "version": 1, "anchor": "2026-10-01T10:00:00Z",
+             "delivery_state": "unknown", "completion_state": "unknown", "target": {"task_ref": task_ref}},
+            {"schedule_id": "new", "version": 2, "anchor": "2026-10-02T10:00:00Z",
+             "delivery_state": "returned", "completion_state": "succeeded",
+             "last_result": {"outcome": "returned"}, "target": {"task_ref": task_ref}},
+        ]
+        value = compact_project_status(project_view=view, task_refs={"PA01": task_ref}, occurrences=occurrences)
+        task = value["tasks"]["PA01"]
+        self.assertEqual(task["execution"]["result_refs"], [{"id": "result-1"}])
+        self.assertTrue(task["review"]["acceptance_exists"]["value"])
+        self.assertEqual(len(task["historical_occurrences"]), 2)
+        self.assertEqual(len(value["historical_uncertain_effects"]), 1)
+        self.assertTrue(value["acceptance_exists"])
+        self.assertEqual(value["writes_performed"], 0)
 
     def test_continuation_is_recovered_from_report_without_projection_file(self):
         due = {

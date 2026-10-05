@@ -90,7 +90,13 @@ def commit_local_checkpoint(
     """
 
     root = Path(worktree).resolve()
-    if not (root / ".git").is_dir():
+    git_metadata = root / ".git"
+    # Linked worktrees intentionally expose .git as a file pointing at the
+    # owning repository's worktree metadata.  Validate the actual Git
+    # identity through Git rather than requiring an in-place .git directory;
+    # the owner route must work for the maintained linked checkout as well as
+    # for an ordinary repository.
+    if git_metadata.is_symlink() or not (git_metadata.is_dir() or git_metadata.is_file()):
         raise OccurrencePreparationError("local checkpoint requires a Git worktree")
     if not isinstance(message, str) or not message.strip() or len(message) > 240:
         raise OccurrencePreparationError("checkpoint message must be 1-240 characters")
@@ -116,6 +122,10 @@ def commit_local_checkpoint(
             ["git", "-C", str(root), *args], capture_output=True, text=True,
             check=check, timeout=30,
         )
+
+    identity = git("rev-parse", "--is-inside-work-tree")
+    if identity.stdout.strip() != "true":
+        raise OccurrencePreparationError("local checkpoint requires a Git worktree")
 
     staged = [line for line in git("diff", "--cached", "--name-only").stdout.splitlines() if line]
     foreign = sorted(set(staged) - set(selected))
@@ -319,8 +329,11 @@ def compact_project_status(
     """Project a useful read-only status without embedding raw receipts.
 
     The project sheet and Due records remain authoritative.  This projection
-    keeps their current refs, lifecycle, latest manager report, and active or
-    terminal native handle while leaving full receipts available by ref.
+    keeps their current refs, lifecycle, latest manager report, review and
+    acceptance observations, scoped blockers, and active or terminal native
+    handles while leaving full receipts available by ref.  Historical
+    occurrences are retained as compact observations so an uncertain effect
+    cannot hide an unrelated accepted result.
     """
 
     if not isinstance(project_view, Mapping):
@@ -345,7 +358,7 @@ def compact_project_status(
         if str(value.get("recorded_at", "")) >= str(current_value.get("recorded_at", "")):
             report_by_alias[alias] = report
 
-    occurrence_by_alias: dict[str, Mapping[str, Any]] = {}
+    occurrences_by_alias: dict[str, list[Mapping[str, Any]]] = {}
     for occurrence in occurrences:
         if not isinstance(occurrence, Mapping):
             continue
@@ -356,21 +369,94 @@ def compact_project_status(
         alias = alias_by_id.get(str(task_ref.get("id"))) if isinstance(task_ref, Mapping) else None
         if alias is None:
             continue
-        current = occurrence_by_alias.get(alias)
-        occurrence_order = (
-            str(occurrence.get("completed_at") or occurrence.get("delivered_at")
-                or occurrence.get("due_at") or occurrence.get("anchor") or ""),
-            str(occurrence.get("schedule_id") or ""),
-            int(occurrence.get("version", 0)),
+        occurrences_by_alias.setdefault(alias, []).append(occurrence)
+
+    def occurrence_order(value: Mapping[str, Any]) -> tuple[str, str, int]:
+        try:
+            version = int(value.get("version", 0))
+        except (TypeError, ValueError):
+            version = 0
+        return (
+            str(value.get("completed_at") or value.get("delivered_at")
+                or value.get("due_at") or value.get("anchor") or ""),
+            str(value.get("schedule_id") or ""),
+            version,
         )
-        current_order = (
-            str((current or {}).get("completed_at") or (current or {}).get("delivered_at")
-                or (current or {}).get("due_at") or (current or {}).get("anchor") or ""),
-            str((current or {}).get("schedule_id") or ""),
-            int((current or {}).get("version", 0)),
-        )
-        if current is None or occurrence_order >= current_order:
-            occurrence_by_alias[alias] = occurrence
+
+    def compact_occurrence(value: Mapping[str, Any]) -> dict[str, Any]:
+        last_result = value.get("last_result")
+        last_result = last_result if isinstance(last_result, Mapping) else {}
+        host_evidence = value.get("host_evidence")
+        host_evidence = host_evidence if isinstance(host_evidence, Mapping) else {}
+        host_attempt = host_evidence.get("gateway_attempt")
+        host_attempt = host_attempt if isinstance(host_attempt, Mapping) else {}
+        attempt_result = host_attempt.get("result")
+        attempt_result = attempt_result if isinstance(attempt_result, Mapping) else {}
+        return {
+            "schedule_id": value.get("schedule_id"),
+            "version": value.get("version"),
+            "delivery_state": value.get("delivery_state"),
+            "host_state": value.get("host_state"),
+            "completion_state": value.get("completion_state"),
+            "physical_session_id": (
+                last_result.get("physical_session_id")
+                or attempt_result.get("physical_session_id")
+                or host_attempt.get("physical_session_id")
+            ),
+            "turn_id": last_result.get("observed_turn_id") or attempt_result.get("observed_turn_id"),
+            "result": last_result or None,
+            "uncertain_live_effect": (
+                value.get("uncertain_live_effect") is True
+                or value.get("delivery_state") in {"unknown", "uncertain"}
+                or value.get("completion_state") in {"unknown", "uncertain"}
+                or last_result.get("outcome") in {"unknown", "uncertain", "response_lost"}
+            ),
+        }
+
+    def projection_value(value: Any, *, source_refs: list[Any], reason: str) -> dict[str, Any]:
+        if value is None:
+            return {"state": "unknown", "value": None, "source_refs": source_refs, "reason": reason}
+        return {"state": "known", "value": value, "source_refs": source_refs, "reason": None}
+
+    def accepted_decisions(decisions: Any) -> dict[str, Any]:
+        if not isinstance(decisions, list):
+            return projection_value(None, source_refs=[], reason="owner review decisions are not exposed")
+        accepted = []
+        refs = []
+        for decision in decisions:
+            if not isinstance(decision, Mapping):
+                continue
+            disposition = str(decision.get("disposition", decision.get("status", ""))).lower()
+            if decision.get("accepted") is True or disposition in {"accept", "accepted", "accepted-for-task", "accepted-for-project"}:
+                accepted.append(decision)
+                if isinstance(decision.get("ref"), Mapping):
+                    refs.append(dict(decision["ref"]))
+        return projection_value(bool(accepted), source_refs=refs, reason="acceptance is an observed decision, not a write")
+
+    def verification_state(task_occurrences: list[Mapping[str, Any]]) -> dict[str, Any]:
+        flags = {"verifier_limit": None, "evidence_mismatch": None, "uncertain_live_effect": None}
+        refs: list[dict[str, Any]] = []
+        for occurrence in task_occurrences:
+            compact = compact_occurrence(occurrence)
+            result = compact.get("result") if isinstance(compact.get("result"), Mapping) else {}
+            for source in (occurrence, result):
+                if not isinstance(source, Mapping):
+                    continue
+                if source.get("verifier_limit") is True or source.get("evidence_verification") in {"unavailable", "unverified", "provisional"}:
+                    flags["verifier_limit"] = True
+                if source.get("evidence_mismatch") is True or source.get("evidence_verification") in {"mismatch", "mismatched"}:
+                    flags["evidence_mismatch"] = True
+                if source.get("uncertain_live_effect") is True:
+                    flags["uncertain_live_effect"] = True
+            if compact["uncertain_live_effect"]:
+                flags["uncertain_live_effect"] = True
+            if isinstance(occurrence.get("schedule_id"), str):
+                refs.append({"schedule_id": occurrence["schedule_id"], "version": occurrence.get("version")})
+        return {
+            key: projection_value(value, source_refs=refs if value is not None else [],
+                                  reason=("no explicit verifier observation" if value is None else None))
+            for key, value in flags.items()
+        }
 
     projected: dict[str, Any] = {}
     for item in tasks:
@@ -386,49 +472,118 @@ def compact_project_status(
         assignment = assignments[-1] if assignments else None
         report = report_by_alias.get(alias)
         report_value = report.get("value") if isinstance(report, Mapping) else None
-        occurrence = occurrence_by_alias.get(alias)
-        last_result = occurrence.get("last_result") if isinstance(occurrence, Mapping) else None
-        host_attempt = (((occurrence or {}).get("host_evidence") or {}).get("gateway_attempt") or {})
-        attempt_result = host_attempt.get("result") if isinstance(host_attempt, Mapping) else None
+        task_occurrences = sorted(occurrences_by_alias.get(alias, []), key=occurrence_order)
+        occurrence = task_occurrences[-1] if task_occurrences else None
+        occurrence_view = None if occurrence is None else compact_occurrence(occurrence)
+        decisions = observed.get("decisions")
+        if not isinstance(decisions, list):
+            decisions = None
+        assignment_view = None if not isinstance(assignment, Mapping) else {
+            "ref": assignment.get("ref"),
+            "principal": (assignment.get("payload") or {}).get("principal"),
+            "generation": (assignment.get("payload") or {}).get("generation"),
+            "status": (assignment.get("payload") or {}).get("status"),
+        }
+        readiness = observed.get("readiness")
+        readiness = readiness if isinstance(readiness, Mapping) else None
+        blockers = [] if readiness is None else [
+            {"source": "readiness", "code": key, "value": readiness.get(key)}
+            for key in ("blockers", "blocked_by", "blocking_reasons")
+            if readiness.get(key)
+        ]
+        dependencies = observed.get("dependencies", item.get("dependencies"))
+        dependency_blockers = [
+            dependency for dependency in (dependencies if isinstance(dependencies, list) else [])
+            if isinstance(dependency, Mapping)
+            and (dependency.get("blocked") is True
+                 or dependency.get("severity") == "blocking"
+                 or str(dependency.get("state", "")).lower() in {"blocked", "failed"})
+        ]
+        if dependency_blockers:
+            blockers.append({"source": "dependencies", "value": dependency_blockers})
+        task_lifecycle = observed.get("lifecycle", authored.get("lifecycle"))
+        result_rows = observed.get("results") if isinstance(observed.get("results"), list) else None
+        result_refs = [] if result_rows is None else [dict(row["ref"]) for row in result_rows if isinstance(row, Mapping) and isinstance(row.get("ref"), Mapping)]
         projected[alias] = {
             "ref": dict(ref),
             "title": authored.get("title") or authored.get("name"),
-            "lifecycle": observed.get("lifecycle") or authored.get("lifecycle"),
-            "readiness": observed.get("readiness"),
-            "assignment": None if not isinstance(assignment, Mapping) else {
-                "ref": assignment.get("ref"),
-                "principal": (assignment.get("payload") or {}).get("principal"),
-                "generation": (assignment.get("payload") or {}).get("generation"),
-                "status": (assignment.get("payload") or {}).get("status"),
-            },
+            "lifecycle": task_lifecycle,
+            "readiness": readiness,
+            "assignment": assignment_view,
+            "owner": assignment_view,
+            "blockers": blockers,
+            "blockers_state": projection_value(
+                blockers if readiness is not None or dependency_blockers else None, source_refs=[],
+                reason=("owner readiness did not expose scoped blockers"
+                        if readiness is None and not dependency_blockers else None),
+            ),
             "latest_report": None if not isinstance(report, Mapping) else {
                 "ref": report.get("ref"),
                 "recorded_at": report_value.get("recorded_at"),
                 "summary": report_value.get("summary"),
                 "next_action": report_value.get("next_action"),
             },
-            "occurrence": None if not isinstance(occurrence, Mapping) else {
-                "schedule_id": occurrence.get("schedule_id"),
-                "version": occurrence.get("version"),
-                "delivery_state": occurrence.get("delivery_state"),
-                "host_state": occurrence.get("host_state"),
-                "completion_state": occurrence.get("completion_state"),
-                "physical_session_id": (
-                    (last_result or {}).get("physical_session_id")
-                    or (attempt_result or {}).get("physical_session_id")
-                    or host_attempt.get("physical_session_id")
+            "occurrence": occurrence_view,
+            "execution": {
+                "occurrence": occurrence_view,
+                "result_refs": result_refs,
+                "result_state": projection_value(
+                    result_refs, source_refs=result_refs,
+                    reason="owner execution results are not exposed" if result_rows is None else None,
                 ),
-                "turn_id": (last_result or {}).get("observed_turn_id") or (attempt_result or {}).get("observed_turn_id"),
-                "result": last_result,
             },
+            "review": {
+                "decisions": [] if decisions is None else decisions,
+                "acceptance_exists": accepted_decisions(decisions),
+            },
+            "verification": verification_state(task_occurrences),
+            "historical_occurrences": [compact_occurrence(row) for row in task_occurrences],
         }
     project = project_view.get("project")
     observed_project = project.get("observed") if isinstance(project, Mapping) else None
+    observed_project = observed_project if isinstance(observed_project, Mapping) else {}
+    project_assignments = observed_project.get("assignments")
+    project_assignments = project_assignments if isinstance(project_assignments, list) else []
+    project_owners = [
+        {
+            "ref": row.get("ref"),
+            "principal": (row.get("payload") or {}).get("principal"),
+            "role": (row.get("payload") or {}).get("role"),
+            "generation": (row.get("payload") or {}).get("generation"),
+            "status": (row.get("payload") or {}).get("status"),
+        }
+        for row in project_assignments if isinstance(row, Mapping)
+    ]
+    uncertain = [
+        {"task_alias": alias, "occurrence": occurrence}
+        for alias, row in projected.items()
+        for occurrence in row.get("historical_occurrences", ())
+        if occurrence.get("uncertain_live_effect") is True
+    ]
     return {
         "schema": "otto.project-status.v1",
         "project_ref": (project or {}).get("ref") if isinstance(project, Mapping) else None,
-        "lifecycle": (observed_project or {}).get("lifecycle") if isinstance(observed_project, Mapping) else None,
-        "readiness": (observed_project or {}).get("readiness") if isinstance(observed_project, Mapping) else None,
+        "lifecycle": observed_project.get("lifecycle"),
+        "readiness": observed_project.get("readiness"),
+        "owners": project_owners,
+        "tasks_lifecycle": {alias: row.get("lifecycle") for alias, row in projected.items()},
+        "historical_uncertain_effects": uncertain,
+        "acceptance_exists": (
+            True if any(row.get("review", {}).get("acceptance_exists", {}).get("value") is True for row in projected.values())
+            else False if any(row.get("review", {}).get("acceptance_exists", {}).get("state") == "known" for row in projected.values())
+            else None
+        ),
+        "writes_performed": 0,
+        "read_only": True,
+        "dispatch": False,
+        "launch": False,
+        "supported_operations": {
+            "status": "read current owner-backed project/task/execution/review state",
+            "assessment_coverage": "read scoped assessment results and accepted decisions when the assessment owner is injected",
+            "completion_gate": "read provisional completion blockers; records no acceptance",
+            "complete_task": "request guarded owner task completion with exact current refs and evidence",
+            "project_lifecycle": "read or request a guarded lifecycle transition through the existing owner operation",
+        },
         "tasks": projected,
     }
 
