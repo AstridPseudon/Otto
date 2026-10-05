@@ -621,18 +621,34 @@ class PortfolioOwnerBootstrap:
                                        manager_actor: str, manager_generation: int,
                                        logical_request_key: str, assessment_policy: Any) -> Mapping[str, Any]:
         """Create only the pool authorized by trusted local controller policy."""
-        from herzchen.kernel import LimitService
+        from herzchen.kernel import LimitService, VersionConflictError
         if not isinstance(logical_request_key, str) or not logical_request_key.strip():
             raise ValueError("logical request key is required")
         self.manager_assessment(project_ref=project_ref, task_ref=task_ref,
             manager_assignment_ref=manager_assignment_ref, manager_actor=manager_actor,
             manager_generation=manager_generation, assessment_policy=assessment_policy)
         actor = self.binding.authenticated_actor(manager_actor)
-        pool = LimitService(self.store).create_pool(
-            assessment_policy.pool_ref, capacity_units=assessment_policy.capacity_units,
-            cumulative_allowance_units=assessment_policy.cumulative_allowance_units,
-            logical_request_key=logical_request_key, actor=actor)
-        return {"outcome": "replayed" if pool.receipt is not None and pool.receipt.replayed else "committed",
+        limits = LimitService(self.store)
+        try:
+            pool = limits.create_pool(
+                assessment_policy.pool_ref, capacity_units=assessment_policy.capacity_units,
+                cumulative_allowance_units=assessment_policy.cumulative_allowance_units,
+                logical_request_key=logical_request_key, actor=actor)
+            replayed = pool.receipt is not None and pool.receipt.replayed
+        except VersionConflictError:
+            # A controller-created pool can have a different setup key. Only
+            # recover the specific version-conflict shape by reading the exact
+            # policy-bound identity; all other failures remain unchanged.
+            pool = limits.get_pool(assessment_policy.pool_ref)
+            if pool is None:
+                raise
+            if (pool.capacity_units != assessment_policy.capacity_units
+                    or pool.cumulative_allowance_units != assessment_policy.cumulative_allowance_units):
+                raise PermissionError("local assessment pool exists but differs from the bound policy")
+            # The current identity is the exact trusted pool, so reuse is safe
+            # even though the setup logical key differs from this operation.
+            replayed = True
+        return {"outcome": "replayed" if replayed else "committed",
                 "schema": "otto.manager-assessment-pool.v1", "pool": pool.ref.to_dict(),
                 "capacity_units": pool.capacity_units, "cumulative_allowance_units": pool.cumulative_allowance_units,
                 "held_units": pool.held_units, "cumulative_used_units": pool.cumulative_used_units,

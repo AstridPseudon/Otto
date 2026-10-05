@@ -50,6 +50,30 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.commands.review_task({**request, "inspection": {"different": True}})
 
+    def test_review_reuses_precreated_bound_pool_from_a_different_setup_key(self):
+        policy = self.fixture.state["assessment_policy"]
+        LimitService(self.application.store).create_pool(
+            ResourceRef(self.application.actor.authority, "limit", "local-inspection"),
+            capacity_units=policy["capacity_units"],
+            cumulative_allowance_units=policy["cumulative_allowance_units"],
+            logical_request_key="controller-local-pool-setup", actor=self.application.actor)
+        result = self.commands.review_task(self.request(key="precreated-pool-review"))
+        self.assertEqual(result["outcome"], "accepted", result)
+        self.assertEqual(result["completion"]["outcome"], "completed", result)
+        pool = LimitService(self.application.store).get_pool(
+            ResourceRef(self.application.actor.authority, "limit", "local-inspection"))
+        self.assertEqual(pool.cumulative_used_units, 1)
+
+    def test_existing_bound_pool_with_different_limits_is_rejected(self):
+        policy = self.fixture.state["assessment_policy"]
+        LimitService(self.application.store).create_pool(
+            ResourceRef(self.application.actor.authority, "limit", "local-inspection"),
+            capacity_units=policy["capacity_units"],
+            cumulative_allowance_units=policy["cumulative_allowance_units"] + 1,
+            logical_request_key="controller-wrong-pool-setup", actor=self.application.actor)
+        with self.assertRaises(PermissionError):
+            self.commands.review_task(self.request(key="wrong-pool-review"))
+
     def test_rework_never_accepts_and_repaired_evidence_uses_same_required_scope(self):
         request = self.request(verdict="REWORK")
         rejected = self.commands.review_task(request)
