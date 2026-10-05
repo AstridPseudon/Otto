@@ -783,6 +783,9 @@ class ExecutionApplication:
         context = request.get("report_context")
         if preserve_execution_binding:
             context = {**(context or {}), "execution_task_ref": prior.target["task_ref"],
+                "current_continuation": {"schedule_id": schedule, "consumed_report_key": key,
+                    "report_consumed_by_this_invocation": True,
+                    "operator_direction": "This invocation already consumes the referenced report. Carry out its substantive next action; do not redispatch that report or wait for your own turn to settle. The owner finalizes settlement after this native turn returns."},
                 "reported_task_ref": None if task_ref is None else dict(task_ref),
                 "current_intent": {"source": "explicit_manager_report", "report_ref": request["report_ref"],
                                    "recorded_at": request["requested_at"], "next_action": instruction},

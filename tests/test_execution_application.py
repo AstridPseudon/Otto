@@ -388,6 +388,40 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertEqual(replay["schedule_id"], continued["schedule_id"])
         self.assertEqual(len(self.provider.calls), 2)
 
+    def test_retained_manager_settlement_uses_the_same_normalized_contract_as_admission(self):
+        original = self.app.portfolio.create_document
+        def authored_whitespace(*args, **kwargs):
+            content = kwargs.get("content")
+            if isinstance(content, dict) and content.get("role") == "manager":
+                kwargs = {**kwargs, "content": {**content, "instruction_contract": {
+                    **content["instruction_contract"],
+                    "bounded_operation": content["instruction_contract"]["bounded_operation"] + "\n"}}}
+            return original(*args, **kwargs)
+        self.app.portfolio.create_document = authored_whitespace
+        assignment, guide, mandate = self.role_handles("manager", "manager", "manager-session")
+        prepared = self.app.prepare_role(role="manager", project_ref=self.project.ref.to_dict(),
+            task_ref=self.task.ref.to_dict(), assignment_ref=assignment.ref.to_dict(), generation=1,
+            mandate_ref=mandate, context_refs=(guide, mandate), request_key="raw-manager-contract",
+            instruction="Record useful progress and return", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="manager-session")
+        result = self.app.start(schedule_id=prepared["schedule_id"], settle=False)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        before = self.port.read_due(prepared["schedule_id"])
+        retained = before["host_evidence"]["gateway_attempt"]["result"]
+        self.assertEqual(before["completion_state"], "none")
+        self.assertTrue(self.owner.content.read(ResourceRef.from_dict(mandate))["content"]
+            ["instruction_contract"]["bounded_operation"].endswith("\n"))
+        self.assertFalse(retained["resource_evidence"]["brief"]["instruction_contract"]
+            ["bounded_operation"].endswith("\n"))
+        self.compose()
+        settled = self.app.recover(schedule_id=prepared["schedule_id"], execute=False)
+        self.assertEqual(settled["outcome"], "succeeded", settled)
+        after = self.port.read_due(prepared["schedule_id"])
+        self.assertEqual(after["host_evidence"]["gateway_attempt"]["result"], retained)
+        self.assertEqual(after["stop_state"], "completed")
+        self.assertEqual(self.app.recover(schedule_id=prepared["schedule_id"], execute=False)["outcome"], "replayed")
+        self.assertEqual(len(self.provider.calls), 1)
+
     def advisor_fixture(self):
         manager, _guide, _mandate = self.role_handles("manager", "manager", "manager-session")
         advisor, guide, mandate = self.role_handles("project_advisor", "advisor", "advisor-session")

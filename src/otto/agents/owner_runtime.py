@@ -23,6 +23,7 @@ from otto.portfolio.owner_readers import (
     project_reader,
     task_reader,
 )
+from otto.portfolio.resource_sync import normalize_instruction_contract
 from otto.portfolio.resource_drift import apply_resource_sync_action, select_resource_sync_action
 
 
@@ -537,7 +538,7 @@ class CanonicalRoleRuntime:
                     return "completed manager owner scope is unavailable"
                 return None
             capture.completed_scope_validator = completed_scope
-            capture.manager_command_contract = deepcopy(contract)
+            capture.manager_command_contract = normalize_instruction_contract(contract)
         return assignment, dict(target), capture
 
     def _invoke(self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],

@@ -188,6 +188,8 @@ class ManagerServiceContinuationTests(unittest.TestCase):
             read_reports=self.reports, preserve_execution_binding=True)
         due = f.port.read_due(prepared["continuation"]["schedule_id"])
         self.assertEqual(due["target"]["project_ref"], project.ref.to_dict())
+        self.assertIn('"report_consumed_by_this_invocation":true', due["message"])
+        self.assertIn("do not redispatch that report", due["message"])
         self.assertEqual(due["target"]["task_ref"], f.app._read(self.anchor).target["task_ref"])
         self.assertIsNone((due.get("host_evidence") or {}).get("gateway_attempt"))
         self.assertEqual(len(f.provider.calls), self.provider_calls)

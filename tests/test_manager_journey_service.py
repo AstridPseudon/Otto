@@ -193,6 +193,38 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         self.assertEqual(len(application.provider.calls), 3)
         self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-6.1-sol")
 
+    def test_current_manager_lifecycle_read_uses_the_finite_owner_grant(self):
+        f = self.fixture
+        f.compose(owner_actor="service-owner", manager_actor="manager")
+        self.server.owner, self.server.portfolio = f.owner, f.app.portfolio
+        self.server.state["owner"] = "service-owner"
+        legacy = self.server.handle({"command": "project-lifecycle-read", "task": "J01"})
+        self.assertEqual(legacy["error"]["code"], "project_scope_denied")
+        self.install_candidate()
+        request = {"command": "project-lifecycle-read", "task": "J01"}
+        current = self.host.handler(request)
+        self.assertEqual(current["outcome"], "read", current)
+        self.assertEqual(current["project_ref"], self.server.state["project_ref"])
+        with self.assertRaisesRegex(ValueError, "bound project/task/manager"):
+            self.host.handler({**request, "project_ref": {**self.server.state["project_ref"], "id": "foreign"}})
+        with self.assertRaisesRegex(ValueError, "current task alias"):
+            self.host.handler({**request, "task": "foreign"})
+        self.assertEqual(len(f.provider.calls), 1)
+
+    def test_unsettled_self_continuation_names_the_return_then_owner_settlement_action(self):
+        self.install_candidate()
+        before = self.fixture.port.read_due(self.anchor)
+        pending = {**before, "completion_state": "none", "stop_state": "active"}
+        original = self.server.due_port.read_due
+        with patch.object(type(self.server.due_port), "read_due",
+                side_effect=lambda schedule: pending if schedule == self.anchor else original(schedule)):
+            held = self.host.handler({"command": "manager-continue", "report_key": self.key})
+        self.assertEqual(held["outcome"], "held", held)
+        self.assertIn("return from the current native turn", held["next_action"])
+        self.assertEqual(held["current_schedule_id"], self.anchor)
+        self.assertEqual(self.fixture.port.read_due(self.anchor), before)
+        self.assertEqual(len(self.fixture.provider.calls), 1)
+
     def test_worker_roots_follow_actual_adapter_and_owner_configured_cold_operation(self):
         self.install_candidate()
         config = json.loads((self.service.RUN / "run.yaml").read_text())

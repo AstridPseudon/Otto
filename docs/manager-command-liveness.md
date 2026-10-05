@@ -123,3 +123,25 @@ The installed-service regression now traverses retained native worker result,
 substantive review and real completion, a new same-session manager continuation,
 repeat dispatch and ordinary terminal project close. This is fixture coverage;
 authentic cold journey evidence still requires the actual installed operator.
+
+Retained manager settlement compares the instruction contract in the admitted
+brief with the canonical mandate using the same maintained normalization used
+at admission. An authored trailing newline does not imply changed authority.
+The full admitted brief digest, unchanged mandate/assignment, native admission,
+contract evidence and parsed result fences still apply. A successful native
+result may remain `partial` at owner settlement; inspect and recover that exact
+occurrence with execute=False instead of replaying its provider work.
+
+Ordinary manager lifecycle reads first authorize the exact current manager
+assignment and constrain project/task/manager refs to the service binding. The
+service then uses its finite owner's project read grant. This supports an owner
+issuer distinct from the native manager without giving the manager a raw reader
+or allowing caller-selected project scope.
+
+A manager cannot await its own current turn's settlement. Record a continuation
+report and return; the owner finalizes the turn and consumes the report. An
+unsettled self-continuation returns that explicit next action. A delivered
+continuation identifies the report already consumed by this invocation and asks
+the manager to carry out its substantive next action, avoiding redispatch of the
+same report. A native-success inner result is not proof of owner settlement and
+must not trigger automatic continuation while the occurrence is still active.

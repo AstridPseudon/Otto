@@ -85,6 +85,20 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "project-lifecycle-read":
+            # The operator is authorized by its exact manager assignment. The
+            # finite owner read grant remains bound to the service issuer.
+            self.commands._authorize()
+            state = self.server.state
+            alias = request.get("task", next(iter(state["task_refs"])))
+            if alias not in state["task_refs"]:
+                raise ValueError("lifecycle read requires a current task alias")
+            pins = {"project_ref": state["project_ref"], "task_ref": state["task_refs"][alias],
+                    "manager_ref": state["assignment_ref"]}
+            if set(request) - {"command", "task", *pins} or any(
+                    field in request and request[field] != pin for field, pin in pins.items()):
+                raise ValueError("lifecycle read cannot change the bound project/task/manager")
+            return self.server.portfolio.read_project_lifecycle(**pins, actor=state["owner"])
         if command == "manager-continue":
             from .manager_continuation_command import manager_continuation_from_command
             from .execution_operations import read_project_progress_reports
@@ -97,7 +111,9 @@ class ManagerJourneyService:
                       (metadata.get("requested_continuation") or {}).get("settled_schedule_id"))
             if not isinstance(anchor, str):
                 return {"outcome": "held", "provider_called": False, "retry": False,
-                        "reason": "no retained successful same-manager anchor"}
+                        "reason": "no retained successful same-manager anchor",
+                        "current_schedule_id": current_id,
+                        "next_action": "record the requested continuation report and return from the current native turn; the owner can consume it after settlement"}
             app = self.server._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="manager-explicit-continuation")
             result = manager_continuation_from_command(request=request, execution=app,
