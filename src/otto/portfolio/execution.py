@@ -413,7 +413,7 @@ class ExecutionApplication:
                 request_id=due.invocation_identity + ":resources")
             due = DueRecord.from_dict(value)
         current = self._current(due.assignment_ref, due.generation)
-        return self._manager_project_reference(due, current)
+        return self._manager_task_reference(self._manager_project_reference(due, current), current)
 
     def _manager_project_reference(self, due: DueRecord, assignment: Any) -> DueRecord:
         """Refresh only the project snapshot of an unattempted bound callback.
@@ -448,6 +448,69 @@ class ExecutionApplication:
             host_evidence={**(due.host_evidence or {}), "manager_project_reconciliation": receipt}).to_dict(),
             request_id=due.invocation_identity + ":project:" + fresh["revision"],
             expected_version=due.version)
+        return DueRecord.from_dict(saved)
+
+    def _manager_task_reference(self, due: DueRecord, assignment: Any) -> DueRecord:
+        """Derive the next manager mandate after its same task actually completes.
+
+        Only a prospective callback can refresh its snapshot. The historical
+        occurrence and mandate remain intact; no permission or task identity is
+        inferred from the task mentioned in a progress report.
+        """
+        target = due.target
+        if (due.role != "manager" or due.execution_mode != "continue_existing"
+                or not isinstance(target, Mapping) or "reported_task_ref" not in target
+                or due.stop_state != "active"
+                or (due.host_evidence or {}).get("gateway_attempt") is not None):
+            return due
+        pinned = owner_ref(target["task_ref"], "callback task_ref")
+        if assignment.role != "manager" or _identity(assignment.scope.to_dict()) != _identity(target["project_ref"]):
+            raise OccurrencePreparationError("callback task differs from its current manager scope")
+        observed = task_reader(self.portfolio.operations, target["project_ref"], pinned)(_identity(pinned))
+        fresh = owner_ref(observed["ref"], "current callback task_ref")
+        if _identity(fresh) != _identity(pinned):
+            raise OccurrencePreparationError("current callback task identity changed")
+        if fresh == pinned:
+            return due
+        if observed["lifecycle"] != "completed" or not isinstance(observed["payload"].get("completion"), Mapping):
+            raise OccurrencePreparationError("changed manager task requires committed completion before continuation refresh")
+        from .owner_readers import mandate_reader
+        before_ref = target["mandate_ref"]
+        before = mandate_reader(self.portfolio.operations, target["project_ref"], before_ref)(_identity(before_ref))["payload"]
+        expected = {"role": "manager", "status": "active", "dispatch_enabled": True,
+                    "task_ref": pinned, "assignment_ref": due.assignment_ref, "generation": due.generation}
+        if any(type(before.get(k)) is not type(v) or before.get(k) != v for k, v in expected.items()):
+            raise OccurrencePreparationError("completed manager task mandate differs from its retained binding")
+        contract = normalize_instruction_contract(before.get("instruction_contract"))
+        authority = contract.get("authority", {})
+        if (contract.get("task_ref") != pinned or authority.get("source") != "canonical_owner"
+                or authority.get("owner_actor") != assignment.principal
+                or authority.get("effect_profile") != "workspace-write-manager"
+                or "canonical_manager_commands" not in contract.get("allowed_operations", ())):
+            raise OccurrencePreparationError("task refresh requires the retained canonical manager contract")
+        if any(item.get("resource_ref") == before_ref for item in assignment.payload.get("resource_adoptions", ())):
+            raise OccurrencePreparationError("adopted mandate task refresh requires explicit resource adoption")
+        # Copy all original content, changing only the two task revision pins.
+        # A distinct immutable document keeps every old authorization readable.
+        content = {**before, "task_ref": fresh,
+                   "instruction_contract": {**before["instruction_contract"], "task_ref": fresh}}
+        key = due.invocation_identity + ":completed-task:" + fresh["revision"]
+        created = self.portfolio.create_document(target["project_ref"], actor=self.actor,
+            request_id=key, document_id="manager-continuation-mandate-" + _digest(key)[:24],
+            role="mandate", content=content)
+        mandate = self._document_revision(created, "continued manager mandate")
+        receipt = {"schema": "otto.manager-completed-task-refresh.v1",
+                   "before_task_ref": pinned, "current_task_ref": fresh,
+                   "before_mandate_ref": before_ref, "current_mandate_ref": mandate,
+                   "before_mandate_sha256": _digest(before), "current_mandate_sha256": _digest(content),
+                   "assignment_ref": due.assignment_ref, "generation": due.generation,
+                   "native_id": target["native_id"], "before_due_version": due.version,
+                   "reported_task_ref": target["reported_task_ref"], "provider_called": False}
+        saved = self.due_port.save_due(due.schedule_id, replace(due,
+            target={**target, "task_ref": fresh, "mandate_ref": mandate},
+            context_refs=tuple(mandate if ref == before_ref else ref for ref in due.context_refs),
+            host_evidence={**(due.host_evidence or {}), "manager_completed_task_refresh": receipt}).to_dict(),
+            request_id=key + ":due", expected_version=due.version)
         return DueRecord.from_dict(saved)
 
     def _kwargs(self, due: DueRecord) -> dict[str, Any]:
@@ -673,6 +736,19 @@ class ExecutionApplication:
         return {**handle, "due_version": saved["version"], "outcome": "succeeded", "result": dict(result),
                 "next_action": "inspect result and accept or correct the task"}
 
+    def _retained_completed_task_refresh(self, value: Mapping[str, Any], anchor: DueRecord) -> bool:
+        receipt = (value.get("host_evidence") or {}).get("manager_completed_task_refresh")
+        return (isinstance(receipt, Mapping)
+                and receipt.get("schema") == "otto.manager-completed-task-refresh.v1"
+                and receipt.get("before_task_ref") == anchor.target["task_ref"]
+                and receipt.get("before_mandate_ref") == anchor.target["mandate_ref"]
+                and receipt.get("current_task_ref") == value["target"].get("task_ref")
+                and receipt.get("current_mandate_ref") == value["target"].get("mandate_ref")
+                and receipt.get("assignment_ref") == value["assignment_ref"]
+                and receipt.get("generation") == value["generation"]
+                and receipt.get("native_id") == value["target"].get("native_id")
+                and receipt.get("reported_task_ref") == value["target"].get("reported_task_ref"))
+
     def continue_manager(self, *, schedule_id: str, execute: bool = True,
                          report_key: str | None = None, task_ref: Mapping[str, Any] | None = None,
                          reports: list[Mapping[str, Any]] | None = None,
@@ -691,7 +767,8 @@ class ExecutionApplication:
         existing = self.due_port.read_due(schedule)
         if existing is not None:
             if preserve_execution_binding and (
-                    existing["target"].get("task_ref") != prior.target["task_ref"]
+                    (existing["target"].get("task_ref") != prior.target["task_ref"]
+                     and not self._retained_completed_task_refresh(existing, prior))
                     or existing["target"].get("reported_task_ref") != task_ref):
                 return {"outcome": "held", "schedule_id": schedule, "provider_called": False,
                         "reason": "retained legacy continuation requires explicit task-binding reconciliation"}

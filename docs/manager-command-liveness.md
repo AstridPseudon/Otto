@@ -96,3 +96,30 @@ After a READY-only contract failure, preserve that occurrence, append an owner
 disposition, reassign the same observed idle session through public assignment
 operations, adopt the corrected guide/mandate and prepare a distinct first-work
 RESUME. A new key alone does not authorize replay of UNKNOWN work.
+
+
+A project manager remains accountable after completing the task that anchors its
+execution. The next ordinary report-key continuation refreshes that same task's
+revision only when canonical completion evidence exists. It creates a distinct
+mandate document by copying the retained content and changing only the mandate
+and instruction-contract task revision pins. The old occurrence and mandate
+remain readable. Permissions, manager assignment/generation, native session,
+report intent and task identity do not change. The prospective Due CAS records
+both task/mandate refs and content digests; duplicate dispatch consumes the same
+receipt and never calls the provider again. An attempted occurrence is immutable.
+
+Canonical briefing accepts a completed execution task only for a project-scoped
+active manager with an exact current manager mandate and canonical manager
+command authority. Workers/advisors still require active task state. A changed
+uncompleted task, changed contract, adopted-mandate resource, stale assignment,
+foreign scope or unknown effect requires the corresponding explicit owner
+operation; no report text grants those changes.
+
+Previously the final task completion made the preserved task/mandate revisions
+stale, then the generic active-task rule also rejected the legitimate remaining
+manager/project-close turn. Verification stopped at task completion and invoked
+project close from an external test caller without traversing that continuation.
+The installed-service regression now traverses retained native worker result,
+substantive review and real completion, a new same-session manager continuation,
+repeat dispatch and ordinary terminal project close. This is fixture coverage;
+authentic cold journey evidence still requires the actual installed operator.

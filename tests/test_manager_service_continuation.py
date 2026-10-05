@@ -192,6 +192,42 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertIsNone((due.get("host_evidence") or {}).get("gateway_attempt"))
         self.assertEqual(len(f.provider.calls), self.provider_calls)
 
+    def test_completed_task_refresh_never_changes_attempted_callbacks_or_nonmanager_roles(self):
+        f = self.fixture
+        prepared = manager_continuation_from_command(
+            request={"report_key": self.key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=self.reports, preserve_execution_binding=True)
+        due = f.app._read(prepared["continuation"]["schedule_id"])
+        assignment = f.app._current(due.assignment_ref, due.generation)
+        for retained in (replace(due, role="worker"), replace(due, role="project_advisor"),
+                         replace(due, host_evidence={**(due.host_evidence or {}),
+                                 "gateway_attempt": {"state": "attempt", "process_created": False}})):
+            with patch("otto.portfolio.execution.task_reader") as reader:
+                self.assertEqual(f.app._manager_task_reference(retained, assignment), retained)
+                reader.assert_not_called()
+        self.assertEqual(f.app._read(due.schedule_id), due)
+
+    def test_changed_uncompleted_task_requires_owner_action_without_new_mandate_or_provider(self):
+        f = self.fixture
+        prepared = manager_continuation_from_command(
+            request={"report_key": self.key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=self.reports, preserve_execution_binding=True)
+        schedule = prepared["continuation"]["schedule_id"]
+        before = f.port.read_due(schedule)
+        f.owner.graph.set_lifecycle(f.task.ref, Lifecycle.ACTIVE,
+            logical_request_key="changed-uncompleted-task", actor=f.actor)
+        with patch.object(f.app.portfolio, "create_document", wraps=f.app.portfolio.create_document) as create:
+            held = f.app.start(schedule_id=schedule)
+        self.assertEqual(held["outcome"], "partial", held)
+        self.assertIn("committed completion", held["error"]["message"])
+        create.assert_not_called()
+        self.assertEqual(f.port.read_due(schedule), before)
+        self.assertEqual(len(f.provider.calls), self.provider_calls)
+
 
 if __name__ == "__main__":
     unittest.main()

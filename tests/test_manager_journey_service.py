@@ -160,12 +160,37 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             "judgments": {"C01": {"verdict": "PASS", "rationale": "Retained native evidence proves the bounded correction",
                                     "evidence_refs": [candidate]}}}))
         self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
+        # The supported installed service continues the same manager after its
+        # execution task has completed, then performs normal terminal close.
+        anchor_before = application.port.read_due(self.anchor)
+        current_task = self.server.state["task_refs"]["J01"]
+        report = self.wait_response(self.send("a001", {
+            "command": "report", "task": "J01", "summary": "Current artifact accepted and completed",
+            "next_action": "Inspect current terminal tasks and close this project through normal finish-project",
+            "request_key": "post-completion-close", "continue_project": True}))
+        self.assertEqual(report["outcome"], "committed", report)
+        continued = self.wait_response(self.send("a002", {
+            "command": "manager-continue", "report_key": "post-completion-close", "operation": "dispatch"}))
+        self.assertEqual(continued["outcome"], "succeeded", continued)
+        callback = application.port.read_due(continued["continuation"]["schedule_id"])
+        self.assertEqual(callback["target"]["task_ref"], current_task)
+        self.assertEqual(callback["target"]["native_id"], "manager-session")
+        self.assertNotEqual(callback["target"]["mandate_ref"], anchor_before["target"]["mandate_ref"])
+        before_content = application.owner.content.read(ResourceRef.from_dict(anchor_before["target"]["mandate_ref"]))["content"]
+        after_content = application.owner.content.read(ResourceRef.from_dict(callback["target"]["mandate_ref"]))["content"]
+        self.assertEqual(after_content, {**before_content, "task_ref": current_task,
+            "instruction_contract": {**before_content["instruction_contract"], "task_ref": current_task}})
+        self.assertEqual(application.port.read_due(self.anchor), anchor_before)
+        duplicate = self.wait_response(self.send("a003", {
+            "command": "manager-continue", "report_key": "post-completion-close", "operation": "dispatch"}))
+        self.assertEqual(duplicate["outcome"], "replayed", duplicate)
+        self.assertEqual(application.port.read_due(callback["schedule_id"]), callback)
         closed = self.wait_response(self.send("8888", {"command": "finish-project", "request_key": "terminal-project",
             "dispositions": {name: {"status": "qualified", "rationale": "Isolated fixture with no publication, remote or scheduled runtime obligation"}
                              for name in ("acceptance", "publication", "remote", "runtime")}}))
         self.assertEqual(closed["outcome"], "completed", closed)
         self.assertEqual(closed["readback"]["lifecycle"], "completed")
-        self.assertEqual(len(application.provider.calls), 2)
+        self.assertEqual(len(application.provider.calls), 3)
         self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-6.1-sol")
 
     def test_worker_roots_follow_actual_adapter_and_owner_configured_cold_operation(self):

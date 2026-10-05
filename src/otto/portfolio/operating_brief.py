@@ -521,7 +521,14 @@ def prepare_canonical_operating_brief(
     task_context = None
     if task is not None and task_pin is not None:
         task_payload = _owner_payload(task, "task")
-        task_state = _state(task, "task")
+        # A project manager remains accountable after completing its execution
+        # task. Its exact active manager mandate must still authorize ordinary
+        # management; workers and advisors cannot resume completed task work.
+        completed_manager_task = (role_value == "manager" and scope_matches_project
+            and task.get("lifecycle", task_payload.get("lifecycle")) == "completed"
+            and isinstance(task_payload.get("completion"), Mapping)
+            and isinstance(mandate_payload.get("instruction_contract"), Mapping))
+        task_state = "completed" if completed_manager_task else _state(task, "task")
         task_project_ref = task.get("project_ref", task_payload.get("project_ref"))
         if not _same_identity(task_project_ref, project_pin, "task.project_ref"):
             raise OperatingBriefError("task is not a child of the requested project")
@@ -579,6 +586,8 @@ def prepare_canonical_operating_brief(
             raise OperatingBriefError("execution mandate contract conflicts with current owner/task")
         if role_value == "manager" and contract["authority"].get("effect_profile") != "workspace-write-manager":
             raise OperatingBriefError("manager execution mandate lacks exact workspace-write effect profile")
+        if task_state == "completed" and "canonical_manager_commands" not in contract["allowed_operations"]:
+            raise OperatingBriefError("completed task requires ordinary project manager command authority")
         if role_value == "project_advisor" and contract["authority"].get("effect_profile") is not None:
             raise OperatingBriefError("project advisor mandate cannot grant a workspace-write effect profile")
         body["mandate_instruction_contract"] = {
