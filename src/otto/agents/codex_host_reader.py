@@ -17,7 +17,13 @@ import subprocess
 import time
 from typing import Any
 
-SUPPORTED_CLI_SHA256 = "788a818fbb9596869c7a487554507cb8bdca17584b8671112b23f9e225ba35c8"
+# Independently qualified initialize/thread-read stdio implementations. A new
+# version/path alone does not admit a binary; its exact digest must be qualified.
+SUPPORTED_CLI_SHA256 = frozenset({
+    "788a818fbb9596869c7a487554507cb8bdca17584b8671112b23f9e225ba35c8",  # 0.158.0
+    "50ac633af64851511f9bbc71032cdae7f1ba20b3234c189687d61ba846c354c5",  # desktop 0.159.2
+    "16593cc2f422d5f398a8e40f550ebbaf1245392528957be342c295920a300704",  # pinned daemon 0.159.2
+})
 MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_MESSAGES = 64
 
@@ -144,7 +150,7 @@ class _StdioRPC:
 class CodexAppServerThreadReader:
     """Trusted composition callback. The sole call input is the issued session ID.
 
-    The selected CLI digest binds the previously observed 0.158.0 protocol;
+    The selected CLI digest binds a separately qualified stdio protocol;
     another binary requires a separately qualified adapter update. Root/cwd are
     trusted composition settings, never parameters from a task request.
     """
@@ -184,7 +190,7 @@ class CodexAppServerThreadReader:
                     digest.update(chunk)
                 else:
                     _fail("launcher_size_limit")
-            if digest.hexdigest() != SUPPORTED_CLI_SHA256:
+            if digest.hexdigest() not in SUPPORTED_CLI_SHA256:
                 _fail("unsupported_cli_identity")
             process = subprocess.Popen([self.launcher, "app-server", "--listen", "stdio://"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
