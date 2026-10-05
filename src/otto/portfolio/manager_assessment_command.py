@@ -10,12 +10,19 @@ from .owner_readers import json_value
 OPERATIONS = ("declare-scope", "freeze-input", "select-candidate", "assess", "accept", "coverage")
 
 
+def _bound_policy(policy: Any, state: Mapping[str, Any]) -> Any:
+    from .local_assessment_policy import LocalAssessmentPolicy
+    value = state["assessment_policy"] if policy is None else policy
+    return LocalAssessmentPolicy.from_run_config(value, state=state) if isinstance(value, Mapping) else value
+
+
 def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
-                                    state: Mapping[str, Any], policy: Any) -> Mapping[str, Any]:
+                                    state: Mapping[str, Any], policy: Any = None) -> Mapping[str, Any]:
     """The service supplies current state; the CLI supplies no actor capability."""
     alias = request.get("task")
     if alias not in state["task_refs"]:
         raise ValueError("unknown task alias")
+    policy = _bound_policy(policy, state)
     return owner.manager_assessment(
         project_ref=state["project_ref"], task_ref=state["task_refs"][alias],
         manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
@@ -24,7 +31,7 @@ def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
 
 
 def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, Any],
-                                         state: Mapping[str, Any], policy: Any) -> Mapping[str, Any]:
+                                         state: Mapping[str, Any], policy: Any = None) -> Mapping[str, Any]:
     """Create/read the finite local assessment pool through the owner.
 
     The controller supplies the bound run policy; callers supply only current
@@ -36,6 +43,7 @@ def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, An
     alias = request.get("task")
     if alias not in state["task_refs"]:
         raise ValueError("unknown task alias")
+    policy = _bound_policy(policy, state)
     expected_task = request.get("expected_task_ref")
     expected_assignment = request.get("expected_assignment_ref")
     if expected_task != state["task_refs"][alias] or expected_assignment != state["assignment_ref"]:

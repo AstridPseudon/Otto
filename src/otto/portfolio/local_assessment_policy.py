@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Any, Mapping
 from herzchen.contracts import ResourceRef
 
@@ -42,23 +44,11 @@ class LocalAssessmentPolicy:
     @classmethod
     def from_run_config(cls, configured: Mapping[str, Any], *, state: Mapping[str, Any]) -> "LocalAssessmentPolicy":
         """Normalize declarative run aliases using trusted owning-controller state."""
-        if not isinstance(configured, Mapping) or configured.get("kind") != "owner_local_bookkeeping":
-            raise ValueError("assessment_accounting must declare owner local bookkeeping")
-        pool_id, rows = configured.get("pool_id"), configured.get("task_criterion_pairs")
-        if not isinstance(pool_id, str) or not pool_id.strip() or not isinstance(rows, list):
-            raise ValueError("assessment_accounting requires a pool identity and pair aliases")
-        pairs = []
-        for row in rows:
-            if not isinstance(row, str) or row.count("/") != 1:
-                raise ValueError("assessment_accounting pairs must be task/criterion aliases")
-            task, criterion = row.split("/")
-            pairs.append({"task": task, "criterion": criterion})
-        return cls.from_config({"purpose": configured.get("purpose"), "local_only": configured.get("local_only"),
-            "pool_ref": ResourceRef(state["authority"], "limit", pool_id).to_dict(),
-            "capacity_units": configured.get("capacity_units"),
-            "cumulative_allowance_units": configured.get("cumulative_allowance_units"),
-            "scope_project_ref": state["project_ref"], "task_criterion_pairs": pairs},
-            task_refs=state["task_refs"], criterion_refs=state["criterion_refs"])
+        project = ResourceRef.from_dict(state["project_ref"])
+        if state["authority"] != project.authority:
+            raise ValueError("trusted controller project and authority differ")
+        return cls.from_config(configured, project_ref=state["project_ref"],
+                               task_refs=state["task_refs"], criterion_refs=state["criterion_refs"])
 
     @classmethod
     def from_config(cls, configured: Mapping[str, Any], *, task_refs: Mapping[str, Any],
@@ -88,6 +78,8 @@ class LocalAssessmentPolicy:
             if not isinstance(pool_id, str) or not pool_id.strip():
                 raise ValueError("assessment_accounting requires a pool_id or pool_ref")
             pool_value = {"authority": project.authority, "kind": "limit", "id": pool_id}
+        elif configured.get("pool_id") is not None and configured["pool_id"] != pool_value.get("id"):
+            raise ValueError("assessment_accounting pool_id and pool_ref disagree")
         pairs_value = configured["task_criterion_pairs"]
         rows = []
         if not isinstance(pairs_value, list):
@@ -124,3 +116,15 @@ class LocalAssessmentPolicy:
     def require_pair(self, task: ResourceRef, criterion: ResourceRef) -> None:
         if (task, criterion) not in self.task_criterion_pairs:
             raise PermissionError("criterion is outside the configured local assessment task/criterion pairs")
+
+
+def compose_manager_assessment_state(state: Mapping[str, Any], *, config_path: Any) -> dict[str, Any]:
+    """Load the owning controller's trusted run policy without storing live objects.
+
+    Both service entrypoints can call this before issuing commands. Keep only
+    JSON policy in state, since the operational controller persists that state;
+    resolve current task/criterion pins again for each finite command.
+    """
+    configured = json.loads(Path(config_path).read_text())["assessment_accounting"]
+    LocalAssessmentPolicy.from_run_config(configured, state=state)
+    return {**state, "assessment_policy": configured}
