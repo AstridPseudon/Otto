@@ -10,6 +10,7 @@ def manager_continuation_from_command(
     *, request: Mapping[str, Any], execution: Any, anchor_schedule_id: str,
     current_schedule_id: str, task_refs: Mapping[str, Any], native_session_id: str,
     read_reports: Callable[[], list[Mapping[str, Any]]],
+    preserve_execution_binding: bool = False,
 ) -> dict[str, Any]:
     """Prepare by default. Unknown current effects require a scoped owner disposition before dispatch.
 
@@ -122,7 +123,8 @@ def manager_continuation_from_command(
             return {**base, "outcome": "held", "request": selected,
                     "provider_called": False, "reason": "current manager unknown effect requires owner disposition"}
     result = execution.continue_manager(schedule_id=anchor_schedule_id, report_key=key,
-        task_ref=task, execute=operation == "dispatch", reports=reports)
+        task_ref=task, execute=operation == "dispatch", reports=reports,
+        **({"preserve_execution_binding": True} if preserve_execution_binding else {}))
     return {**base, "outcome": result.get("outcome"), "continuation": result,
             "request": selected, "current_unknown_effect": unknown,
             "no_overlap_disposition_ref": None if disposition is None else disposition["ref"],
@@ -176,7 +178,9 @@ def _no_overlap_scope(execution, anchor, current, selected, native_session_id, t
     if (callback.role != "manager" or callback.generation != current.generation
             or callback.assignment_ref["id"] != current.assignment_ref["id"]
             or callback.target.get("native_id") != native_session_id
-            or scoped_callback.target.get("task_ref") != task
+            or (scoped_callback.target.get("task_ref") != task
+                and not (scoped_callback.target.get("task_ref") == anchor.target.get("task_ref")
+                         and scoped_callback.target.get("reported_task_ref") == task))
             or callback.project_ref != current.project_ref
             or callback.in_flight_request != selected["logical_request_key"]
             or callback.stop_state != "active" or callback.completion_state != "none"

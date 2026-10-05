@@ -303,7 +303,12 @@ class _ProjectLifecycleEngine:
         payload = identity.payload
         if payload.get("role") != role:
             raise ProjectLifecycleError("assignment role does not authorize this PM action")
-        if int(payload.get("generation", 0)) != generation:
+        expected_generation = generation
+        if role == "orchestrator":
+            control = self._current_unpinned(project).payload.get("lifecycle_control", {})
+            attribution = control.get("owner_attribution") or {}
+            expected_generation = (attribution.get("orchestrator") or {}).get("generation")
+        if int(payload.get("generation", 0)) != expected_generation:
             raise ProjectLifecycleError("assignment generation is stale")
         scope = self._pm_ref(payload.get("scope"), "assignment.scope")
         if (scope.authority, scope.kind, scope.id) != (project.authority, project.kind, project.id):
@@ -343,7 +348,7 @@ class _ProjectLifecycleEngine:
                 "orchestrator": {
                     "assignment_ref": orchestrator.ref.to_dict(),
                     "principal": principal,
-                    "generation": generation,
+                    "generation": int(orchestrator.payload.get("generation", 0)),
                 },
                 "allowed_actions": sorted(_PM_ACTIONS),
                 "issued_request_key": key,
@@ -377,7 +382,7 @@ class _ProjectLifecycleEngine:
         if manager_value.get("principal") != manager.payload.get("principal"):
             raise ProjectLifecycleError("owner attribution manager principal does not match")
         orchestrator_value = value.get("orchestrator")
-        if orchestrator is not None and (not isinstance(orchestrator_value, Mapping) or orchestrator_value.get("assignment_ref") != orchestrator.ref.to_dict() or int(orchestrator_value.get("generation", 0)) != generation):
+        if orchestrator is not None and (not isinstance(orchestrator_value, Mapping) or orchestrator_value.get("assignment_ref") != orchestrator.ref.to_dict() or int(orchestrator_value.get("generation", 0)) != int(orchestrator.payload.get("generation", 0))):
             raise ProjectLifecycleError("owner attribution orchestrator fence does not match")
         if orchestrator is not None and orchestrator_value.get("principal") != orchestrator.payload.get("principal"):
             raise ProjectLifecycleError("owner attribution orchestrator principal does not match")

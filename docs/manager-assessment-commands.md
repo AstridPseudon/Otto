@@ -16,14 +16,14 @@ pairs. The CLI supplies none of those policy values, so it cannot create an
 arbitrary budget or consume a provider allowance. It is ordinary LIMIT
 accounting for owner assessment records and has no provider capability.
 
-Every call requires `--task PA01..PA06`, `--expected-task-ref '<exact ref JSON>'`,
-`--expected-assignment-ref '<exact manager assignment ref JSON>'`,
-`--expected-generation N`, `--request-key KEY`, `--operation OP`, and
-`--arguments '<JSON object>'`. The service supplies the actor and project from
-its maintained current state. It rechecks the project/task revisions, manager
-assignment revision, generation, principal, role and owner grant on every call.
-An existing scope must bind the exact current task. A project-level scope is not
-silently converted into a task acceptance gate.
+Every maintained-client call requires `--task J01..J04`, `--operation OP`,
+`--request-key KEY`, and `--arguments '<JSON object>'`. The client derives the
+expected current task ref, manager assignment ref, and generation from the
+canonical run state; the service supplies the actor and project from its
+maintained current state. It rechecks project/task revisions, manager assignment
+revision, generation, principal, role, and owner grant on every call. An existing
+scope must bind the exact current task. A project-level scope is not silently
+converted into a task acceptance gate.
 
 | Operation | Arguments |
 | --- | --- |
@@ -55,11 +55,10 @@ before retry.
 Example acceptance of a previously inspected, current PASS result:
 
 ```sh
-python manager_ctl.py manager-assessment --task PA06 --operation accept \
-  --request-key manager-pa06-C09-accept-v1 \
-  --expected-task-ref "$current_task_ref" \
-  --expected-assignment-ref "$current_manager_assignment_ref" \
-  --expected-generation 1 \
+PYTHON=/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python
+CLIENT=/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-manager-journey-20261005/controller/manager_ctl.py
+"$PYTHON" "$CLIENT" manager-assessment --task J04 --operation accept \
+  --request-key manager-j04-C08-accept-v1 \
   --arguments "$acceptance_arguments"
 ```
 
@@ -76,3 +75,13 @@ The service's nested IPC allowlist includes `manager-assessment` and the finite
 read-only `advisor-decision-state`. Both run on the existing serialized owner
 thread during an authorized manager native wait. Provider-bearing commands
 remain deferred; owner custody and UNKNOWN/no-overlap fences are unchanged.
+
+For focused local verification, use the pinned interpreter and the candidate
+checkout's unittest suite; pytest is not required:
+
+```sh
+PYTHONPATH=src "$PYTHON" -m unittest \
+  tests.test_manager_bootstrap_recovery \
+  tests.test_manager_service_continuation \
+  tests.test_workspace_write_native_attribution -q
+```

@@ -8,6 +8,7 @@ admitted children while their command/status surface remains available.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import queue
 from pathlib import Path
@@ -36,6 +37,8 @@ def _atomic_json(path: Path, value: Any) -> None:
 _DISPATCH_CONTEXT = threading.local()
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
                                  "manager-assessment", "manager-assessment-pool",
+                                 "run-worker", "worker-status", "start-retained-worker",
+                                 "review-task", "finish-task", "finish-project",
                                  "project-lifecycle-read",
                                  "advisor-decision-state"})
 
@@ -62,7 +65,7 @@ class ExecutionHost:
         self._lock = threading.RLock()
         self._command_lock = threading.RLock()
         self._owner_calls = queue.Queue()
-        self._external_waiting = False
+        self._external_waiting = 0
         self._active_files: set[str] = set()
         self._closing = False
         self._owns_owner_file = False
@@ -126,7 +129,8 @@ class ExecutionHost:
                     return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
                 previous = getattr(_DISPATCH_CONTEXT, "value", None)
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
-                    request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
+                    (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
+                    or request.get("command") == "start-retained-worker")
                 try:
                     return self.handler(request)
                 finally:
@@ -269,9 +273,7 @@ class ExecutionHost:
                 completed.set()
 
         with host._lock:
-            if host._external_waiting:
-                raise RuntimeError("nested native transport wait is not admitted")
-            host._external_waiting = True
+            host._external_waiting += 1
         transport = threading.Thread(target=run, name="otto-manager-transport", daemon=False)
         try:
             transport.start()
@@ -282,8 +284,8 @@ class ExecutionHost:
             host._pump_owner_calls()
         finally:
             with host._lock:
-                host._external_waiting = False
-                while True:
+                host._external_waiting -= 1
+                while not host._external_waiting:
                     try:
                         _, waiting, value = host._owner_calls.get_nowait()
                     except queue.Empty:
@@ -295,6 +297,35 @@ class ExecutionHost:
         if "error" in result:
             raise result["error"]
         return result["value"]
+
+    def submit(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Retain a prepared worker request on the existing durable owner lane.
+
+        Execution and canonical settlement stay on the command custodian, not
+        an arbitrary child thread. Restart consumes the same prepared occurrence
+        through its canonical attempt fence rather than resending its provider.
+        """
+        context = getattr(_DISPATCH_CONTEXT, "value", None)
+        if context is None or context[0] is not self or context[1] != threading.get_ident():
+            raise RuntimeError("worker submission requires its serialized command owner")
+        if self._closing:
+            raise RuntimeError("execution host is draining; no new worker may be admitted")
+        if request.get("command") != "start-retained-worker":
+            raise ValueError("only a prepared worker occurrence may be retained")
+        encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
+        token = hashlib.sha256(encoded.encode()).hexdigest()
+        path = self.directory / ("request-" + token + ".json")
+        response = self.directory / ("response-" + token + ".json")
+        if not response.exists():
+            if path.exists():
+                if json.loads(path.read_text()) != dict(request):
+                    raise ValueError("retained worker input changed")
+            else:
+                _atomic_json(path, dict(request))
+        return {"outcome": "admitted", "schedule_id": request["schedule_id"],
+                "retained_handle": token, "response_path": str(response),
+                "provider_called": False, "retry_provider": False,
+                "next_command": "worker-status"}
 
     def retain(self, *, name: str, operation: Callable[[], Any]) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""

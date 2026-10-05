@@ -600,7 +600,7 @@ class PortfolioOwnerBootstrap:
                     or current.role != "manager" or current.principal != actor.actor
                     or (current.scope.authority, current.scope.kind, current.scope.id)
                     != (project.authority, project.kind, project.id)
-                    or current.status.value in {"cancelled", "reassigned"}):
+                    or current.status.value == "cancelled"):
                 raise PermissionError("manager assessment assignment is stale or out of scope")
 
         def pool_guard() -> None:

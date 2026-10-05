@@ -604,7 +604,8 @@ class ExecutionApplication:
 
     def continue_manager(self, *, schedule_id: str, execute: bool = True,
                          report_key: str | None = None, task_ref: Mapping[str, Any] | None = None,
-                         reports: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                         reports: list[Mapping[str, Any]] | None = None,
+                         preserve_execution_binding: bool = False) -> dict[str, Any]:
         """Prepare a durable callback from the last explicit canonical report."""
         prior = self._read(schedule_id)
         reports = reports if reports is not None else [dict(ref=json_value(report.ref), assignment=json_value(report.assignment),
@@ -616,7 +617,13 @@ class ExecutionApplication:
             return {"outcome": "idle", "schedule_id": schedule_id, "reason": "no canonical continuation request"}
         key = request["logical_request_key"]
         schedule = manager_continuation_schedule_id(prior.assignment_ref, key)
-        if self.due_port.read_due(schedule) is not None:
+        existing = self.due_port.read_due(schedule)
+        if existing is not None:
+            if preserve_execution_binding and (
+                    existing["target"].get("task_ref") != prior.target["task_ref"]
+                    or existing["target"].get("reported_task_ref") != task_ref):
+                return {"outcome": "held", "schedule_id": schedule, "provider_called": False,
+                        "reason": "retained legacy continuation requires explicit task-binding reconciliation"}
             return self.recover(schedule_id=schedule, execute=execute)
         instruction = _text(request.get("next_action"), "continuation next_action")
         current = self._current(prior.assignment_ref, prior.generation)
@@ -626,11 +633,24 @@ class ExecutionApplication:
             due_at=self._now(), timeout_seconds=prior.timeout_seconds)
         self._verify_native_binding(current, due.target["native_id"], prior.schedule_id)
         context = request.get("report_context")
+        if preserve_execution_binding:
+            context = {**(context or {}), "execution_task_ref": prior.target["task_ref"],
+                "reported_task_ref": None if task_ref is None else dict(task_ref),
+                "current_intent": {"source": "explicit_manager_report", "report_ref": request["report_ref"],
+                                   "recorded_at": request["requested_at"], "next_action": instruction},
+                "requirement_provenance": {
+                    "owner_constraints": "adopted mandate and executable permission contract remain binding",
+                    "observed_facts": "canonical report and retained owner/native readbacks",
+                    "agent_suggestions": "historical priorities and next-step prose are advice, not owner prohibitions",
+                    "uncertain_effects": "unknown-send fences remain binding; current intent does not authorize replay"}}
+            if len(json.dumps(context, ensure_ascii=False).encode()) > 16384:
+                raise OccurrencePreparationError("manager continuation evidence exceeds its bounded context size")
         due = replace(due, instruction=instruction,
             message=due.message if context is None else "Current canonical manager report context:\n" +
                 json.dumps(context, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         if task_ref is not None:
-            due = replace(due, target={**due.target, "task_ref": dict(task_ref)})
+            due = replace(due, target={**due.target,
+                "reported_task_ref" if preserve_execution_binding else "task_ref": dict(task_ref)})
         prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
             assignments=self.assignments, binding=self.binding, due=due,
             assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,
