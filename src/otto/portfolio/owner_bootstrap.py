@@ -567,6 +567,43 @@ class PortfolioOwnerBootstrap:
 
         return ManagerApplication.from_owner(self)
 
+    def manager_assessment(self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+                           manager_assignment_ref: Mapping[str, Any], manager_actor: str,
+                           manager_generation: int) -> Any:
+        """Issue finite assessment commands for the current assigned manager/task."""
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.assessment import AssessmentModule
+        from .assessment import OttoAssessment
+        from .manager_assessment_command import ManagerAssessmentCommands
+        project, task, assignment = (ResourceRef.from_dict(value) for value in
+                                    (project_ref, task_ref, manager_assignment_ref))
+        actor = self.binding.authenticated_actor(manager_actor)
+        if (project.kind != "work.project" or task.kind != "work.task"
+                or assignment.kind != "wrk.assignment"
+                or any(ref.authority != self.owner_actor.authority or not ref.revision
+                       for ref in (project, task, assignment))
+                or type(manager_generation) is not int or manager_generation < 1):
+            raise ValueError("manager assessment requires exact owner scope and generation")
+
+        def authorize() -> None:
+            grant = self.project_read_grant
+            if grant is None or grant.principal != self.owner_actor or not grant.allows(project):
+                raise PermissionError("manager assessment project is outside the owner grant")
+            _read_current_result_task(self.graph.reader, project.to_dict(), task.to_dict())
+            current = self.assignments.command_port.get(assignment)
+            if (current.ref != assignment or current.generation != manager_generation
+                    or current.role != "manager" or current.principal != actor.actor
+                    or (current.scope.authority, current.scope.kind, current.scope.id)
+                    != (project.authority, project.kind, project.id)
+                    or current.status.value in {"cancelled", "reassigned"}):
+                raise PermissionError("manager assessment assignment is stale or out of scope")
+
+        authorize()
+        return ManagerAssessmentCommands(
+            assessment=OttoAssessment(AssessmentModule(self.store, actor=actor), actor),
+            reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
+            generation=manager_generation, authorize=authorize)
+
     def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
                               manager_actor: str | None = None) -> Any:
         """Issue maintained execution commands over the existing finite ports."""

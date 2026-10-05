@@ -755,13 +755,19 @@ class AdvisorDeliveryTests(unittest.TestCase):
         first_regular = self.attention.check(regular, now=first_regular_at)
         self.assertEqual(first_regular["outcome"], "attention-ready")
         self.attention.complete(regular, first_regular["request_id"], completed_at=first_regular_at)
-        missed_regular = self.attention.check(regular, now=NOW.replace(day=4, hour=12))
+        second_regular_at = NOW.replace(day=4, hour=6)  # +15h, not a skipped slot
+        second_regular = self.attention.check(regular, now=second_regular_at)
+        self.assertEqual(second_regular["outcome"], "attention-ready")
+        self.assertEqual(second_regular["missed_slots"], 0)
+        self.assertNotEqual(first_regular["request_id"], second_regular["request_id"])
+        self.attention.complete(regular, second_regular["request_id"], completed_at=second_regular_at)
+        missed_regular = self.attention.check(regular, now=NOW.replace(day=4, hour=18))
         self.assertEqual(missed_regular["outcome"], "attention-ready")
         self.assertEqual(missed_regular["missed_slots"], 1)
 
         stopped = self.attention.stop(regular, request_id="withdraw-baseline")
         self.assertEqual(stopped["outcome"], "stopped")
-        self.assertEqual(self.attention.check(regular, now=NOW.replace(day=4, hour=12))["outcome"], "stopped")
+        self.assertEqual(self.attention.check(regular, now=NOW.replace(day=4, hour=18))["outcome"], "stopped")
 
 
 class OwnerAdmissionTests(unittest.TestCase):

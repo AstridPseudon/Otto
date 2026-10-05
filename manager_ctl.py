@@ -184,6 +184,16 @@ def main() -> None:
     advisor_correct.add_argument("--decision-id", required=True)
     advisor_correct.add_argument("--reason", required=True)
     advisor_correct.add_argument("--evidence", action="append", required=True)
+    assessment = commands.add_parser("manager-assessment", help="record inspected assessment/acceptance through the current manager owner")
+    assessment.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    assessment.add_argument("--operation", required=True,
+                            choices=["declare-scope", "freeze-input", "select-candidate", "assess", "accept", "coverage"])
+    assessment.add_argument("--arguments", required=True, type=json.loads,
+                            help="operation-specific JSON object; exact owner refs, no actor overrides")
+    assessment.add_argument("--request-key", required=True)
+    assessment.add_argument("--expected-task-ref", required=True, type=json.loads)
+    assessment.add_argument("--expected-assignment-ref", required=True, type=json.loads)
+    assessment.add_argument("--expected-generation", required=True, type=int)
     gate = commands.add_parser("completion-gate", help="read provisional owner completion blockers; records no acceptance")
     gate.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     gate.add_argument("--candidate-ref", help="exact current candidate resource-ref JSON")
