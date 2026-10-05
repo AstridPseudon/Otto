@@ -20,7 +20,7 @@ from .execution_operations import (
     derive_manager_continuation_request, manager_continuation_schedule_id, prepare_current_assignment_occurrence,
     validate_owner_timeout_seconds,
 )
-from .owner_readers import json_value, owner_ref, task_reader
+from .owner_readers import json_value, owner_ref, project_reader, task_reader
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
 
@@ -376,8 +376,43 @@ class ExecutionApplication:
                 assignment_ref=current.ref.to_dict(), expected_version=due.version,
                 request_id=due.invocation_identity + ":resources")
             due = DueRecord.from_dict(value)
-        self._current(due.assignment_ref, due.generation)
-        return due
+        current = self._current(due.assignment_ref, due.generation)
+        return self._manager_project_reference(due, current)
+
+    def _manager_project_reference(self, due: DueRecord, assignment: Any) -> DueRecord:
+        """Refresh only the project snapshot of an unattempted bound callback.
+
+        Project edits do not rebind the manager's execution task or mandate.
+        Once gateway custody exists, every invocation pin remains immutable.
+        """
+        target = due.target
+        if (due.role != "manager" or due.execution_mode != "continue_existing"
+                or not isinstance(target, Mapping) or "reported_task_ref" not in target):
+            return due
+        if due.stop_state != "active" or (due.host_evidence or {}).get("gateway_attempt") is not None:
+            return due
+        pinned = owner_ref(target["project_ref"], "callback project_ref")
+        if (pinned["kind"] != "work.project" or due.project_ref != pinned["id"]
+                or _identity(assignment.scope.to_dict()) != _identity(pinned)
+                or assignment.role != "manager"):
+            raise OccurrencePreparationError("callback project differs from its current manager scope")
+        observed = project_reader(self.portfolio.operations, pinned)(_identity(pinned))
+        fresh = owner_ref(observed["ref"], "current callback project_ref")
+        if _identity(fresh) != _identity(pinned):
+            raise OccurrencePreparationError("current callback project identity changed")
+        if fresh == pinned:
+            return due
+        receipt = {"schema": "otto.manager-project-reconciliation.v1",
+                   "before_project_ref": pinned, "current_project_ref": fresh,
+                   "before_due_version": due.version, "assignment_ref": due.assignment_ref,
+                   "generation": due.generation, "execution_task_ref": target["task_ref"],
+                   "reported_task_ref": target["reported_task_ref"], "provider_called": False}
+        saved = self.due_port.save_due(due.schedule_id, replace(due,
+            target={**target, "project_ref": fresh},
+            host_evidence={**(due.host_evidence or {}), "manager_project_reconciliation": receipt}).to_dict(),
+            request_id=due.invocation_identity + ":project:" + fresh["revision"],
+            expected_version=due.version)
+        return DueRecord.from_dict(saved)
 
     def _kwargs(self, due: DueRecord) -> dict[str, Any]:
         target = due.target
@@ -655,4 +690,7 @@ class ExecutionApplication:
             assignments=self.assignments, binding=self.binding, due=due,
             assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,
             operation="resume", lifecycle="callback", request_key=key)
+        if prepared["outcome"] == "committed" and preserve_execution_binding:
+            reconciled = self._resources(self._read(schedule))
+            prepared = {**prepared, "due_version": reconciled.version}
         return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared

@@ -45,3 +45,20 @@ PYTHONPATH=src "$PYTHON" -m unittest tests.test_manager_reentrant_ipc tests.test
 
 These fixtures support J05/C09 judgment. They do not mark that task accepted or
 prove the installed cold journey; retain native and installed receipts separately.
+
+Adding an owner-authorized task can advance the current project revision while a
+successful manager anchor retains its older project snapshot. A bound manager
+callback refreshes that same project's reference through an identity-fenced
+canonical read and public Due CAS before the gateway claim. Its receipt preserves
+the before/current project references and original Due version. The execution
+task, reported task, mandate, native session, assignment, generation and invocation
+identity remain unchanged. Foreign project scope is rejected. Attempted callbacks
+keep their original pins and are reconciled through retained evidence.
+
+If dispatch returned `partial` before the gateway, inspect the exact callback's
+gateway evidence. After the correction is installed and no gateway attempt is
+confirmed, use the same report key and occurrence for public continuation
+dispatch. Do not invent a new report, callback or model invocation to bypass the
+failure. The regression reproduces the stale-project error and then resumes that
+same occurrence through real canonical briefing, gateway and fake provider
+settlement; provider replay remains fenced.

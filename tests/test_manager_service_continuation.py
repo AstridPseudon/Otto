@@ -3,6 +3,7 @@ from datetime import timedelta
 from dataclasses import replace
 import unittest
 from unittest.mock import Mock, patch
+from herzchen.domains.work import Lifecycle
 
 from otto.portfolio.manager_continuation_command import manager_continuation_from_command
 from otto.portfolio.execution_operations import derive_manager_continuation_request, read_project_progress_reports
@@ -115,6 +116,81 @@ class ManagerServiceContinuationTests(unittest.TestCase):
             result = self.call()
         self.assertEqual(result["outcome"], "committed")
         self.assertEqual(verify.call_args.args[2], self.anchor)
+
+    def test_same_prepared_callback_refreshes_project_revision_without_rebinding_task(self):
+        f = self.fixture
+        prepared = manager_continuation_from_command(
+            request={"report_key": self.key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=self.reports, preserve_execution_binding=True)
+        schedule = prepared["continuation"]["schedule_id"]
+        before = f.port.read_due(schedule)
+        self.assertIsNone((before.get("host_evidence") or {}).get("gateway_attempt"))
+        project = f.owner.graph.set_lifecycle(f.project.ref, Lifecycle.ACTIVE,
+            logical_request_key="owner-project-advanced", actor=f.actor)
+        self.assertNotEqual(project.ref.to_dict(), before["target"]["project_ref"])
+        with patch.object(f.app, "_manager_project_reference", side_effect=lambda due, assignment: due):
+            failed = f.app.start(schedule_id=schedule)
+        self.assertEqual(failed["outcome"], "partial", failed)
+        self.assertEqual(failed["error"]["message"], "project does not match the pinned canonical reference")
+        self.assertEqual(f.port.read_due(schedule), before)
+        self.assertEqual(len(f.provider.calls), self.provider_calls)
+        # This public same-occurrence recovery is the real retry of the previous
+        # pre-runtime failure, through canonical briefing and gateway/provider.
+        result = f.app.recover(schedule_id=schedule, execute=True)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        after = f.port.read_due(schedule)
+        self.assertEqual(after["target"]["project_ref"], project.ref.to_dict())
+        for field in ("task_ref", "reported_task_ref", "mandate_ref", "native_id"):
+            self.assertEqual(after["target"][field], before["target"][field])
+        self.assertEqual(after["assignment_ref"], before["assignment_ref"])
+        self.assertEqual(after["generation"], before["generation"])
+        self.assertEqual(after["invocation_identity"], before["invocation_identity"])
+        reconciliation = after["host_evidence"]["manager_project_reconciliation"]
+        self.assertEqual(reconciliation["before_project_ref"], before["target"]["project_ref"])
+        self.assertEqual(reconciliation["current_project_ref"], project.ref.to_dict())
+        self.assertEqual(len(f.provider.calls), self.provider_calls + 1)
+        original = after
+        self.assertEqual(f.app.recover(schedule_id=schedule, execute=True)["outcome"], "replayed")
+        self.assertEqual(f.port.read_due(schedule), original)
+        self.assertEqual(len(f.provider.calls), self.provider_calls + 1)
+
+    def test_project_reconciliation_rejects_foreign_scope_and_never_edits_attempted_due(self):
+        f = self.fixture
+        prepared = manager_continuation_from_command(
+            request={"report_key": self.key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=self.reports, preserve_execution_binding=True)
+        schedule = prepared["continuation"]["schedule_id"]
+        due = f.app._read(schedule)
+        assignment = f.app._current(due.assignment_ref, due.generation)
+        foreign = replace(due, target={**due.target, "project_ref": {**due.target["project_ref"], "id": "foreign-project"}})
+        with self.assertRaisesRegex(ValueError, "current manager scope"):
+            f.app._manager_project_reference(foreign, assignment)
+        attempted = replace(due, host_evidence={**(due.host_evidence or {}),
+            "gateway_attempt": {"state": "attempt", "process_created": False}})
+        with patch("otto.portfolio.execution.project_reader") as read:
+            self.assertEqual(f.app._manager_project_reference(attempted, assignment), attempted)
+            read.assert_not_called()
+        self.assertEqual(f.app._read(schedule), due)
+        self.assertEqual(len(f.provider.calls), self.provider_calls)
+
+    def test_new_bound_callback_is_prepared_with_current_project_revision_without_provider(self):
+        f = self.fixture
+        project = f.owner.graph.set_lifecycle(f.project.ref, Lifecycle.ACTIVE,
+            logical_request_key="project-before-callback", actor=f.actor)
+        prepared = manager_continuation_from_command(
+            request={"report_key": self.key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=self.reports, preserve_execution_binding=True)
+        due = f.port.read_due(prepared["continuation"]["schedule_id"])
+        self.assertEqual(due["target"]["project_ref"], project.ref.to_dict())
+        self.assertEqual(due["target"]["task_ref"], f.app._read(self.anchor).target["task_ref"])
+        self.assertIsNone((due.get("host_evidence") or {}).get("gateway_attempt"))
+        self.assertEqual(len(f.provider.calls), self.provider_calls)
 
 
 if __name__ == "__main__":
