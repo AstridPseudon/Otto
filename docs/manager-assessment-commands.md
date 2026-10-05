@@ -8,6 +8,14 @@ not a native model invocation. Source and evidence must already have admitted
 owner refs; importing files and proving their provenance remain existing owner
 operations.
 
+Before assessment, the owner may admit the bounded local bookkeeping allocation
+through `manager_ctl.py manager-assessment-pool`. This creates or replays the
+fixed pool `project-advisor-closeout-assessment-v1` with capacity 1 and cumulative
+allowance 11, matching the current 11 task/criterion pairs (including shared C07).
+It is ordinary LIMIT accounting for owner assessment records and has no provider
+capability. The installed advisor model pool `pa06-project-advisor-pilot-v1` is
+never valid for this command; its 3/3 allowance remains unchanged.
+
 Every call requires `--task PA01..PA06`, `--expected-task-ref '<exact ref JSON>'`,
 `--expected-assignment-ref '<exact manager assignment ref JSON>'`,
 `--expected-generation N`, `--request-key KEY`, `--operation OP`, and
@@ -37,11 +45,12 @@ task completion gates. Coverage distinguishes assessed results from actual
 accepted decision refs.
 
 `assess` uses the existing limit owner, reserving and settling one unit per
-assessment. Supply an already authorized assessment pool with capacity and
-remaining allowance. The command does not create/reset a pool, override units,
-or grant capacity to an exhausted advisor allowance. Logical-key replay does
-not consume another unit. Use a distinct key for each criterion and operation;
-after an uncertain response, inspect retained exact request state before retry.
+assessment. Supply the already-authorized local closeout pool with capacity and
+remaining allowance. The command rejects the exhausted advisor model pool,
+does not override units or grant a fourth advisor turn, and does not accept an
+arbitrary pool. Logical-key replay does not consume another unit. Use a distinct
+key for each criterion and operation; after an uncertain response, inspect
+retained exact request state before retry.
 
 Example acceptance of a previously inspected, current PASS result:
 

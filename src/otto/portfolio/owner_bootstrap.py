@@ -604,6 +604,69 @@ class PortfolioOwnerBootstrap:
             reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
             generation=manager_generation, authorize=authorize)
 
+    def create_manager_assessment_pool(self, *, project_ref: Mapping[str, Any],
+                                       task_ref: Mapping[str, Any],
+                                       manager_assignment_ref: Mapping[str, Any],
+                                       manager_actor: str, manager_generation: int,
+                                       logical_request_key: str) -> Mapping[str, Any]:
+        """Admit the bounded local bookkeeping pool for this manager mandate.
+
+        Assessment records consume this neutral owner allocation only; the
+        project-advisor model allowance remains a separate exhausted pool.
+        Pool identity and quantity are fixed by the maintained command surface
+        so a caller cannot silently grant a fourth advisor turn or arbitrary
+        assessment budget.
+        """
+        from herzchen.contracts import ResourceRef
+        from herzchen.kernel import LimitService
+        from .manager_assessment_command import (
+            ADVISOR_MODEL_POOL_ID, LOCAL_ASSESSMENT_POOL_ALLOWANCE,
+            LOCAL_ASSESSMENT_POOL_CAPACITY, LOCAL_ASSESSMENT_POOL_ID,
+        )
+
+        project, task, assignment = (ResourceRef.from_dict(value) for value in
+                                     (project_ref, task_ref, manager_assignment_ref))
+        actor = self.binding.authenticated_actor(manager_actor)
+        if (project.kind != "work.project" or task.kind != "work.task"
+                or assignment.kind != "wrk.assignment"
+                or any(ref.authority != self.owner_actor.authority or not ref.revision
+                       for ref in (project, task, assignment))
+                or not isinstance(logical_request_key, str) or not logical_request_key.strip()
+                or type(manager_generation) is not int or manager_generation < 1):
+            raise ValueError("manager assessment pool requires exact owner scope and generation")
+        if LOCAL_ASSESSMENT_POOL_ID == ADVISOR_MODEL_POOL_ID:
+            raise RuntimeError("local assessment pool must remain distinct from advisor model allowance")
+        grant = self.project_read_grant
+        if grant is None or grant.principal != self.owner_actor or not grant.allows(project):
+            raise PermissionError("assessment pool project is outside the owner grant")
+        _read_current_result_task(self.graph.reader, project.to_dict(), task.to_dict())
+        current = self.assignments.command_port.get(assignment)
+        if (current.ref != assignment or current.generation != manager_generation
+                or current.role != "manager" or current.principal != actor.actor
+                or (current.scope.authority, current.scope.kind, current.scope.id)
+                != (project.authority, project.kind, project.id)
+                or current.status.value in {"cancelled", "reassigned"}):
+            raise PermissionError("assessment pool manager assignment is stale or out of scope")
+        pool_ref = ResourceRef(self.owner_actor.authority, "limit", LOCAL_ASSESSMENT_POOL_ID)
+        pool = LimitService(self.store).create_pool(
+            pool_ref, capacity_units=LOCAL_ASSESSMENT_POOL_CAPACITY,
+            cumulative_allowance_units=LOCAL_ASSESSMENT_POOL_ALLOWANCE,
+            logical_request_key=logical_request_key, actor=actor,
+        )
+        return {
+            "outcome": "replayed" if pool.receipt is not None and pool.receipt.replayed else "committed",
+            "schema": "otto.manager-assessment-pool.v1",
+            "pool": pool_ref.to_dict(),
+            "capacity_units": pool.capacity_units,
+            "cumulative_allowance_units": pool.cumulative_allowance_units,
+            "held_units": pool.held_units,
+            "cumulative_used_units": pool.cumulative_used_units,
+            "remaining_allowance_units": pool.remaining_allowance_units,
+            "purpose": "local assessment accounting for the 11 current task/criterion pairs; no provider execution",
+            "advisor_model_pool_unchanged": True,
+            "provider_called": False,
+        }
+
     def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
                               manager_actor: str | None = None) -> Any:
         """Issue maintained execution commands over the existing finite ports."""

@@ -194,6 +194,15 @@ def main() -> None:
     assessment.add_argument("--expected-task-ref", required=True, type=json.loads)
     assessment.add_argument("--expected-assignment-ref", required=True, type=json.loads)
     assessment.add_argument("--expected-generation", required=True, type=int)
+    assessment_pool = commands.add_parser(
+        "manager-assessment-pool",
+        help="admit the bounded local assessment-accounting pool (never the advisor model pool)",
+    )
+    assessment_pool.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    assessment_pool.add_argument("--request-key", required=True)
+    assessment_pool.add_argument("--expected-task-ref", required=True, type=json.loads)
+    assessment_pool.add_argument("--expected-assignment-ref", required=True, type=json.loads)
+    assessment_pool.add_argument("--expected-generation", required=True, type=int)
     gate = commands.add_parser("completion-gate", help="read provisional owner completion blockers; records no acceptance")
     gate.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     gate.add_argument("--candidate-ref", help="exact current candidate resource-ref JSON")

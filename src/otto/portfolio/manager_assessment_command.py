@@ -9,6 +9,14 @@ from .owner_readers import json_value
 
 OPERATIONS = ("declare-scope", "freeze-input", "select-candidate", "assess", "accept", "coverage")
 
+# Local bookkeeping has its own bounded owner allocation.  It is deliberately
+# separate from the installed advisor's model-call allowance: assessment
+# invocations record owner decisions and do not start a provider.
+LOCAL_ASSESSMENT_POOL_ID = "project-advisor-closeout-assessment-v1"
+LOCAL_ASSESSMENT_POOL_CAPACITY = 1
+LOCAL_ASSESSMENT_POOL_ALLOWANCE = 11  # 2+2+2+2+1+2 task/criterion pairs, incl. shared C07
+ADVISOR_MODEL_POOL_ID = "pa06-project-advisor-pilot-v1"
+
 
 def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
                                     state: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -21,6 +29,34 @@ def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
         manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
         manager_generation=state["manager_generation"],
     ).execute(request)
+
+
+def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, Any],
+                                         state: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Create/read the finite local assessment pool through the owner.
+
+    The pool identity and bounded size are code-level policy, so a caller
+    cannot accidentally point assessment bookkeeping at the advisor model
+    allowance or create an arbitrary extra budget.
+    """
+    alias = request.get("task")
+    if alias not in state["task_refs"]:
+        raise ValueError("unknown task alias")
+    expected_task = request.get("expected_task_ref")
+    expected_assignment = request.get("expected_assignment_ref")
+    if expected_task != state["task_refs"][alias] or expected_assignment != state["assignment_ref"]:
+        raise PermissionError("assessment pool task/manager assignment pins changed")
+    if (type(request.get("expected_generation")) is not int
+            or request["expected_generation"] != state["manager_generation"]):
+        raise PermissionError("assessment pool manager generation changed")
+    key = request.get("request_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("logical request key is required")
+    return owner.create_manager_assessment_pool(
+        project_ref=state["project_ref"], task_ref=state["task_refs"][alias],
+        manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
+        manager_generation=state["manager_generation"], logical_request_key=key,
+    )
 
 
 class ManagerAssessmentCommands:
@@ -127,6 +163,15 @@ class ManagerAssessmentCommands:
                     packet_ref = ref("input_ref", "assessment.input")
                     self._input(packet_ref, scope, candidate, criterion)
                     pool = self._ref(args.get("limit_pool_ref"), "limit_pool_ref", kind="limit", stable=True)
+                    if pool.id == ADVISOR_MODEL_POOL_ID:
+                        raise PermissionError(
+                            "assessment bookkeeping cannot consume the exhausted advisor model allowance; "
+                            "use the bounded local assessment pool"
+                        )
+                    if pool.id != LOCAL_ASSESSMENT_POOL_ID:
+                        raise PermissionError(
+                            "assessment requires the owner-authorized project-advisor closeout pool"
+                        )
                     protocol_result = args.get("protocol_result")
                     if not isinstance(protocol_result, Mapping) or not protocol_result:
                         raise ValueError("protocol_result must record the manager's actual inspection")

@@ -11,7 +11,10 @@ from herzchen.domains.work import WorkGraph
 from herzchen.kernel.limits import LimitService
 from otto.portfolio.completion_gate import completion_gate_from_command
 from otto.portfolio.execution_operations import complete_task_from_command
-from otto.portfolio.manager_assessment_command import manager_assessment_from_command
+from otto.portfolio.manager_assessment_command import (
+    LOCAL_ASSESSMENT_POOL_ID,
+    manager_assessment_from_command,
+)
 from tests import test_manager_reentrant_ipc as reentrant
 
 
@@ -34,8 +37,12 @@ class ManagerAssessmentIPCTests(unittest.TestCase):
             protocol="original-criteria", criteria=[{"id": "original-C09", "definition": "observable correction"}],
             logical_request_key="original-criteria")
         self.criterion = criteria.criterion_refs[0]
-        self.pool = LimitService(f.store).create_pool(ResourceRef(f.actor.authority, "limit", "manager-inspection"),
-            capacity_units=1, cumulative_allowance_units=4, logical_request_key="manager-inspection-budget", actor=f.actor)
+        pool_record = f.owner.create_manager_assessment_pool(
+            project_ref=f.project.ref.to_dict(), task_ref=f.task.ref.to_dict(),
+            manager_assignment_ref=self.assignment.to_dict(), manager_actor="manager",
+            manager_generation=1, logical_request_key="local-assessment-pool-v1",
+        )
+        self.pool = LimitService(f.store).get_pool(ResourceRef.from_dict(pool_record["pool"]))
         self.plan = self.directory.parent / "assessment-plan.json"
         self.native_child.write_text('''import importlib.util,json,sys,time
 from pathlib import Path
@@ -168,6 +175,20 @@ if not Path(paths[4]).exists():raise RuntimeError("manager release expired")
         self.assertEqual(completed["outcome"], "completed", completed)
         self.assertEqual(completed["completion"]["assessment_gate_check"]["blockers"], [])
         self.assertEqual(LimitService(self.fixture.store).get_pool(self.pool.ref).cumulative_used_units, 1)
+
+    def test_local_pool_owner_setup_is_bounded_and_replay_safe(self):
+        f = self.fixture
+        created = f.owner.create_manager_assessment_pool(
+            project_ref=f.project.ref.to_dict(), task_ref=f.task.ref.to_dict(),
+            manager_assignment_ref=self.assignment.to_dict(), manager_actor="manager",
+            manager_generation=1, logical_request_key="local-assessment-pool-v1",
+        )
+        self.assertEqual(created["pool"]["id"], LOCAL_ASSESSMENT_POOL_ID)
+        self.assertEqual(created["outcome"], "committed")
+        self.assertEqual(created["capacity_units"], 1)
+        self.assertEqual(created["cumulative_allowance_units"], 11)
+        self.assertTrue(created["advisor_model_pool_unchanged"])
+        self.assertEqual(created["remaining_allowance_units"], 11)
 
     def test_read_only_advisor_decision_state_responds_during_native_wait(self):
         f = self.fixture

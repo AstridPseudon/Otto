@@ -35,7 +35,8 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 _DISPATCH_CONTEXT = threading.local()
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
-                                 "manager-assessment", "advisor-decision-state"})
+                                 "manager-assessment", "manager-assessment-pool",
+                                 "advisor-decision-state"})
 
 
 class ExecutionHost:
