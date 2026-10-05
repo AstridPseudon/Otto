@@ -62,3 +62,37 @@ dispatch. Do not invent a new report, callback or model invocation to bypass the
 failure. The regression reproduces the stale-project error and then resumes that
 same occurrence through real canonical briefing, gateway and fake provider
 settlement; provider replay remains fenced.
+
+Terminal `command-status` now returns a bounded typed summary plus the exact
+response path, SHA256 and byte count. Full transport bytes stay in the artifact;
+large responses must never be embedded recursively in another native command
+output. Installed clients use `read_command_response` for terminal reads and
+`read_command_status(..., pending_only=True)` while waiting. A response that
+arrives between those reads is consumed by the next terminal read, preserving a
+worker's retained handle rather than confusing it with the outer submission.
+The IPC pump skips its own active token before classifying a second provider
+request as pending. Observe the original handle; pending receipts belong only
+to distinct queued requests.
+
+A manager explicitly authorized for canonical manager commands may advance its
+project and task revisions during work. Admission still checks the full owner
+snapshot. Terminal verification checks the same native admission and claim,
+unchanged assignment and mandate, current identity and membership, and the exact
+admitted brief/contract/context evidence. Task acceptance remains a separate
+substantive operation. Ordinary workers retain the full post-work scope fence.
+The old failure discarded the explicit post-work authorization error and selected
+an unrelated oversized CLI-candidate diagnostic recursively. New records preserve
+the adapter error; historical UNKNOWNs require public retained-evidence
+reconciliation, never provider replay or altered transport bytes.
+
+Owner run policy may declare `worker_operation_profiles` with task aliases mapped
+to `implementation` (default) or `cold_manager_operation`. Caller focus cannot
+grant this capability. Cold operation instructions authorize the assigned
+installed journey through canonical manager commands and require actual receipts;
+they do not ask for source implementation. The parent manager judges the cold
+operator task. Contract roots come from the actual selected adapter's worktree and
+writable roots, and invalid task profiles fail before assignment or initialization.
+After a READY-only contract failure, preserve that occurrence, append an owner
+disposition, reassign the same observed idle session through public assignment
+operations, adopt the corrected guide/mandate and prepare a distinct first-work
+RESUME. A new key alone does not authorize replay of UNKNOWN work.

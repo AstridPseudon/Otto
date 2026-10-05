@@ -168,6 +168,45 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         self.assertEqual(len(application.provider.calls), 2)
         self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-6.1-sol")
 
+    def test_worker_roots_follow_actual_adapter_and_owner_configured_cold_operation(self):
+        self.install_candidate()
+        config = json.loads((self.service.RUN / "run.yaml").read_text())
+        config["worker_operation_profiles"] = {"J01": "cold_manager_operation"}
+        self.fixture.app.runtime.adapter.writable_roots = (str(self.root / "controller"),)
+        real_read = Path.read_text
+        def read(path, *args, **kwargs):
+            return json.dumps(config) if path == self.service.RUN / "run.yaml" else real_read(path, *args, **kwargs)
+        with patch.object(Path, "read_text", read):
+            admitted = self.wait_response(self.send("cccc", self.worker_request()))
+        self.assertEqual(admitted["outcome"], "admitted", admitted)
+        self.assertTrue(self.fixture.provider.work_started.wait(10))
+        due = self.fixture.app._read(admitted["schedule_id"])
+        from otto.agents.orchestrator_route import prepare_canonical_assignment_role_brief
+        # The provider receives the actual canonical brief, not a fabricated
+        # contract built only in the assertion.
+        prompt = self.fixture.provider.calls[-1]
+        self.assertIn("cold manager operation", prompt)
+        self.assertNotIn("Implement only J01", prompt)
+        self.assertIn("canonical_manager_commands", prompt)
+        self.assertIn(str(self.root / "controller"), prompt)
+        self.fixture.provider.work_release.set()
+        self.assertEqual(self.wait_response(Path(admitted["response_path"]))["outcome"], "succeeded")
+
+    def test_unknown_operation_profile_is_rejected_before_any_provider_or_assignment(self):
+        self.install_candidate()
+        config = json.loads((self.service.RUN / "run.yaml").read_text())
+        config["worker_operation_profiles"] = {"J01": "invented_authority"}
+        real_read = Path.read_text
+        def read(path, *args, **kwargs):
+            return json.dumps(config) if path == self.service.RUN / "run.yaml" else real_read(path, *args, **kwargs)
+        calls = len(self.fixture.provider.calls)
+        with patch.object(Path, "read_text", read):
+            result = self.wait_response(self.send("dddd", self.worker_request()))
+        self.assertEqual(result["outcome"], "error")
+        self.assertIn("owner must correct run policy", result["message"])
+        self.assertEqual(len(self.fixture.provider.calls), calls)
+        self.assertNotIn("J01", self.server.state.get("workers", {}))
+
     def test_unknown_send_keeps_handle_and_restart_cannot_repeat_provider(self):
         self.install_candidate()
         application = self.fixture
@@ -210,7 +249,10 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         release = self.root / "release-parent"
         receipt = self.root / "native-commands.json"
         script = self.root / "native-manager.py"
-        client = Path(__file__).resolve().parents[3] / "controller" / "manager_ctl.py"
+        installed_client = Path(__file__).resolve().parents[3] / "controller" / "manager_ctl.py"
+        client = self.root / "manager_ctl.py"
+        client.write_text(installed_client.read_text().replace("read_command_status(IPC, token)",
+                                                             "read_command_status(IPC, token, pending_only=True)"))
         script.write_text('''import importlib.util,json,sys,time
 from pathlib import Path
 spec=importlib.util.spec_from_file_location("journey_client",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)

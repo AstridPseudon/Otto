@@ -86,6 +86,25 @@ class OwnerResultReconciliationTests(unittest.TestCase):
         )
         self.assertTrue(replayed["replayed"])
 
+    def test_completed_manager_scope_keeps_assignment_and_admission_fences(self):
+        capture = FixtureCapture()
+        capture.completed_scope_validator = lambda: "canonical assignment changed after instruction preparation"
+        with self.assertRaisesRegex(OwnerRoleRuntimeError, "canonical assignment changed"):
+            capture.verify_completed_delivery("request-1", "session-1", "a" * 64, AUTHORIZATION)
+        capture.completed_scope_validator = lambda: None
+        capture._scope_error = lambda *args: None
+        capture.attempt["physical_session_id"] = "session-1"
+        capture.attempt["delivery_authorization"] = {**AUTHORIZATION, "brief_sha256": "a" * 64}
+        capture.attempt["delivery_admission"] = {"native_turn_started": True, "physical_session_id": "different-session"}
+        with self.assertRaisesRegex(OwnerRoleRuntimeError, "exact admitted native claim"):
+            capture.verify_completed_delivery("request-1", "session-1", "a" * 64, capture.attempt["delivery_authorization"])
+        capture.attempt["delivery_admission"]["physical_session_id"] = "session-1"
+        self.assertEqual(capture.verify_completed_delivery("request-1", "session-1", "a" * 64,
+            capture.attempt["delivery_authorization"]), capture.attempt["delivery_authorization"])
+        capture.attempt["delivery_authorization"] = {**capture.attempt["delivery_authorization"], "brief_sha256": "b" * 64}
+        with self.assertRaisesRegex(OwnerRoleRuntimeError, "exact admitted native claim"):
+            capture.verify_completed_delivery("request-1", "session-1", "a" * 64, capture.attempt["delivery_authorization"])
+
     def test_changed_retained_stdout_is_rejected(self):
         capture = FixtureCapture()
         replacement = capture.result("succeeded")

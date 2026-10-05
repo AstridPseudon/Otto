@@ -9,6 +9,61 @@ from typing import Any, Mapping
 from .manager_journey_command import ManagerJourneyCommands
 
 
+def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: Mapping[str, Any],
+                             principal: str, model: str, reasoning: str, focus: str,
+                             workspace: Path, run_path: Path, adapter: Any) -> tuple[str, dict, dict]:
+    """Owner policy selects capability; caller focus cannot grant authority."""
+    operation = config.get("worker_operation_profiles", {}).get(task, "implementation")
+    if operation not in {"implementation", "cold_manager_operation"}:
+        raise ValueError("worker task operation profile is unsupported; owner must correct run policy before submission")
+    if Path(adapter.worktree).resolve() != workspace:
+        raise ValueError("worker adapter worktree differs from the delegated workspace")
+    roots = list(dict.fromkeys([str(workspace),
+        *(str(Path(root).resolve()) for root in adapter.writable_roots)]))
+    instruction = (f"Implement only {task} in {workspace / 'src'}. "
+        f"Use the current canonical task, linked run contract and {model} {reasoning}. "
+        "Run focused verification and return exact changed paths, results and unresolved responsibilities. "
+        "Do not accept your work, alter controller state, push, release, deploy or retry an unknown effect.\n\n"
+        "Current manager invocation intent:\n" + focus.strip())
+    contract = {"task_ref": task_ref, "objective": f"Implement the delegated {task} outcome",
+        "bounded_operation": instruction,
+        "allowed_operations": ["read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"],
+        "acceptance_criteria": ["Complete the bounded source change and focused verification",
+                                "Return changed paths, evidence and unresolved responsibility"],
+        "authority": {"source": "canonical_owner", "owner_actor": principal,
+            "gateway_claim_required": True, "owner_write": False, "dispatch": False,
+            "effect_profile": "workspace-write-worker", "workspace_roots": roots,
+            "permitted_effects": ["read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"],
+            "forbidden_effects": ["owner_write", "publication", "package_adoption", "remote_push", "release", "deployment"]}}
+    brief = {"role": "worker", "mandate": "Implement this bounded outcome directly; return evidence to the manager; do not delegate.",
+        "user_constraints": ["Do not modify canonical state, controller runtime or historical effects"],
+        "operational_constraints": ["Unknown-send fences remain binding; reconcile before any replay"],
+        "priorities": [{"id": task.lower(), "text": focus.strip(), "status": "pending"}],
+        "continuation": {"next_action": focus.strip()},
+        "links": [{"label": name, "path": str(run_path / name)}
+                  for name in ("agent_goal.md", "tasklist.md", "run.yaml", "owner-setup-guidance-20261005.md")]
+                 + [{"label": "Megado skill", "path": str(workspace / "policy-staging/megado/skill/SKILL.md")}],
+        "revision": "ordinary-worker-v1"}
+    if operation == "cold_manager_operation":
+        instruction = (f"Execute the authorized cold manager operation for {task} using the delivered run instructions and maintained installed client. "
+            "Exercise the assigned journey directly, including substantive review and guarded acceptance of its delegated artifacts. "
+            "Return actual installed receipts, native identities, unresolved responsibilities and blockers. "
+            "Do not implement source repairs, change controller runtime, expand budgets, or retry unknown effects. "
+            "Your parent manager judges this operator task; review/acceptance commands apply to the journey artifacts under the assigned scope.\n\n"
+            "Current manager invocation intent:\n" + focus.strip())
+        contract.update(objective=f"Execute the delegated {task} cold manager operation", bounded_operation=instruction,
+            acceptance_criteria=["Exercise the assigned installed journey through maintained commands",
+                                 "Return actual receipts and unresolved responsibility without source implementation"])
+        contract["allowed_operations"].append("canonical_manager_commands")
+        contract["authority"]["effect_profile"] = "workspace-write-manager"
+        contract["authority"]["permitted_effects"].append("canonical_manager_commands")
+        brief.update(mandate="Execute the prescribed cold manager operation directly through maintained commands; return installed evidence to the parent manager.",
+                     revision="ordinary-cold-manager-operation-v1")
+    from .resource_sync import normalize_instruction_contract
+    normalize_instruction_contract(contract)  # Reject invalid composition before assignment/initialization.
+    return instruction, contract, brief
+
+
 class ManagerJourneyService:
     """Wrap the maintained outer handler; the host still owns one Store lane."""
 
@@ -134,32 +189,11 @@ class ManagerJourneyService:
                             "retry_provider": False,
                             "reason": "existing task worker is unstarted, active or uncertain; reconcile that occurrence before a new send"}
         task_ref = state["task_refs"][task]
-        instruction = (f"Implement only {task} in {self.workspace / 'src'}. "
-            f"Use the current canonical task, linked run contract and {model} {reasoning}. "
-            "Run focused verification and return exact changed paths, results and unresolved responsibilities. "
-            "Do not accept your work, alter controller state, push, release, deploy or retry an unknown effect.\n\n"
-            "Current manager invocation intent:\n" + focus.strip())
-        contract = {"task_ref": task_ref, "objective": f"Implement the delegated {task} outcome",
-            "bounded_operation": instruction,
-            "allowed_operations": ["read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"],
-            "acceptance_criteria": ["Complete the bounded source change and focused verification",
-                                    "Return changed paths, evidence and unresolved responsibility"],
-            "authority": {"source": "canonical_owner", "owner_actor": principal,
-                "gateway_claim_required": True, "owner_write": False, "dispatch": False,
-                "effect_profile": "workspace-write-worker", "workspace_roots": [str(self.workspace)],
-                "permitted_effects": ["read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"],
-                "forbidden_effects": ["owner_write", "publication", "package_adoption", "remote_push", "release", "deployment"]}}
-        brief = {"role": "worker", "mandate": "Implement this bounded outcome directly; return evidence to the manager; do not delegate.",
-            "user_constraints": ["Do not modify canonical state, controller runtime or historical effects"],
-            "operational_constraints": ["Unknown-send fences remain binding; reconcile before any replay"],
-            "priorities": [{"id": task.lower(), "text": focus.strip(), "status": "pending"}],
-            "continuation": {"next_action": focus.strip()},
-            "links": [{"label": name, "path": str(self.run_path / name)}
-                      for name in ("agent_goal.md", "tasklist.md", "run.yaml", "owner-setup-guidance-20261005.md")]
-                     + [{"label": "Megado skill", "path": str(self.workspace / "policy-staging/megado/skill/SKILL.md")}],
-            "revision": "ordinary-worker-v1"}
         app = self.server._execution(principal=principal, model=model, reasoning=reasoning,
             evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20])
+        instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
+            principal=principal, model=model, reasoning=reasoning, focus=focus,
+            workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter)
         prepared = app.assign_worker(project_ref=state["project_ref"], task_ref=task_ref,
             principal=principal, request_key=key, instructions=instruction, instruction_contract=contract,
             brief=brief, model=model, reasoning=reasoning, timeout_seconds=1200)

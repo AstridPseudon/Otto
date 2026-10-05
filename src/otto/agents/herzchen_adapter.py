@@ -137,6 +137,7 @@ class HerzchenCodexAdapter:
         require_host_context: bool = False,
         owner_authorizer: Optional[Callable[[str, str], Mapping[str, Any]]] = None,
         owner_delivery_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
+        owner_completed_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
         source_verifier_factory: Optional[Callable[..., Any]] = None,
         writable_roots: Sequence[str] = (),
         monotonic_clock: Callable[[], float] = time.monotonic,
@@ -155,6 +156,7 @@ class HerzchenCodexAdapter:
         self.native_trace_path = native_trace_path
         self.trusted_thread_reader = trusted_thread_reader
         self.require_host_context = bool(require_host_context)
+        self._owner_completed_verifier = owner_completed_verifier
         self._owner_authorizer = owner_authorizer
         self._owner_delivery_verifier = owner_delivery_verifier
         self.source_verifier_factory, self.monotonic_clock = source_verifier_factory, monotonic_clock
@@ -163,7 +165,8 @@ class HerzchenCodexAdapter:
         self._turn_started_callback: Optional[Callable[[str, str], None]] = None
 
     def bind_owner_authorization(self, authorizer: Callable[[str, str], Mapping[str, Any]],
-                                 *, verifier: Optional[Callable[..., Mapping[str, Any]]] = None) -> "HerzchenCodexAdapter":
+                                 *, verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
+                                 completed_verifier: Optional[Callable[..., Mapping[str, Any]]] = None) -> "HerzchenCodexAdapter":
         """Return a fresh adapter for one owner-admitted two-turn delivery."""
         if not callable(authorizer):
             raise HerzchenAdapterError("trusted owner authorizer is required")
@@ -174,6 +177,7 @@ class HerzchenCodexAdapter:
             turn_context_reader=self.turn_context_reader, host_context_path=self.host_context_path,
             native_trace_path=self.native_trace_path, require_host_context=self.require_host_context,
             owner_authorizer=authorizer, owner_delivery_verifier=verifier,
+            owner_completed_verifier=completed_verifier,
             trusted_thread_reader=self.trusted_thread_reader,
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
             writable_roots=self.writable_roots,
@@ -966,11 +970,15 @@ class HerzchenCodexAdapter:
                             + " without a verified resumed turn; task delivery remains unverified"),
             }
         owner_still_current = False
+        post_work_authorization_error = None
         if result.get("outcome") == "succeeded":
             try:
-                owner_still_current = self._owner_delivery_verifier(physical, digest, dict(authorization)) == authorization
-            except Exception:
-                owner_still_current = False
+                verifier = self._owner_completed_verifier or self._owner_delivery_verifier
+                owner_still_current = verifier(physical, digest, dict(authorization)) == authorization
+                if not owner_still_current:
+                    post_work_authorization_error = "owner delivery authorization changed after work"
+            except Exception as exc:
+                post_work_authorization_error = str(exc)
         result.update({"initialization_receipt": base["initialization_receipt"],
                        "initialization_envelope": base["initialization_envelope"],
                        "owner_delivery_authorization": _json(authorization),
@@ -1004,7 +1012,8 @@ class HerzchenCodexAdapter:
                 or not isinstance(contract, Mapping)
                 or evidence.get("delivered_contract_digest") != _digest(dict(contract))):
             result.update({"outcome": "unknown", "delivery_state": "unknown"})
-            result.setdefault("error", {"code":"authorized_result_unverified", "message":"exact resumed session and task evidence were not proved"})
+            result.setdefault("error", {"code":"authorized_result_unverified",
+                "message": post_work_authorization_error or "exact resumed session and task evidence were not proved"})
         if limits is not None and result.get("outcome") == "succeeded":
             try:
                 self.verify_source_result(result.get("task_bound_evidence"), brief)

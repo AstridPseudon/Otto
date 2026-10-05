@@ -33,6 +33,8 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         super().__init__(*args, **kwargs)
         self.current_brief_reader: Optional[Callable[[], str]] = None
         self.source_result_validator = None
+        self.completed_scope_validator = None
+        self.manager_command_contract = None
 
     def record(self, envelope: Mapping[str, Any]) -> Mapping[str, Any]:
         brief = envelope.get("resource_evidence", {}).get("brief", {})
@@ -113,6 +115,69 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
                 or any(authorization.get(key) != value for key, value in expected.items())):
             raise OwnerRoleRuntimeError("current owner delivery authorization does not match recipient")
         return deepcopy(dict(authorization))
+
+    def verify_completed_delivery(self, logical_request_key: str, physical_session_id: str,
+                                  brief_sha256: str, authorization: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Verify an admitted manager result after its authorized state effects.
+
+        Admission still uses verify_delivery's full snapshot fence. A manager
+        explicitly permitted to issue canonical commands may advance project/
+        task revisions. Its assignment, mandate and exact native admission must
+        remain unchanged; this settles transport, never accepts task judgment.
+        """
+        if not callable(self.completed_scope_validator):
+            return self.verify_delivery(logical_request_key, physical_session_id, brief_sha256, authorization)
+        failure = self.completed_scope_validator()
+        if failure:
+            raise OwnerRoleRuntimeError(str(failure))
+        record = self._record()
+        attempt = None if record is None else self._attempt(record)
+        admission = (attempt or {}).get("delivery_admission") or {}
+        if (record is None or self._scope_error(record, self.assignment_ref, self.generation, logical_request_key)
+                or attempt is None or attempt.get("state") not in {"claimed", "result"}
+                or attempt.get("logical_request_key") != logical_request_key
+                or attempt.get("physical_session_id") != physical_session_id
+                or attempt.get("delivery_authorization") != authorization
+                or authorization.get("brief_sha256") != brief_sha256
+                or authorization.get("physical_session_id") != physical_session_id
+                or admission.get("native_turn_started") is not True
+                or admission.get("physical_session_id") != physical_session_id):
+            raise OwnerRoleRuntimeError("completed manager result differs from the exact admitted native claim")
+        return deepcopy(dict(authorization))
+
+    def validate_completed_manager_result(self, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Reparse admitted evidence against unchanged manager capability."""
+        from .herzchen_adapter import HerzchenCodexAdapter
+        if not callable(self.completed_scope_validator) or not isinstance(self.manager_command_contract, Mapping):
+            raise OwnerRoleRuntimeError("completed result has no explicit canonical-manager capability")
+        resource = value.get("resource_evidence") or {}
+        brief = resource.get("brief") or {}
+        contract = brief.get("instruction_contract")
+        authorization = ((self._attempt(self._record()) or {}).get("delivery_authorization") or {})
+        digest = lambda body: hashlib.sha256(json.dumps(_json(body), ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if (contract != self.manager_command_contract or digest(brief) != resource.get("brief_sha256")
+                or resource.get("brief_sha256") != authorization.get("brief_sha256")):
+            raise OwnerRoleRuntimeError("completed manager result changed the admitted brief or current mandate contract")
+        self.verify_completed_delivery(value.get("logical_request_key"), value.get("physical_session_id"),
+                                       resource["brief_sha256"], authorization)
+        raw = value.get("raw_result") or {}
+        context = (raw.get("work_envelope") or {}).get("host_evidence", {}).get("otto_host_turn_context")
+        parsed = HerzchenCodexAdapter._observed_context(context,
+            expected_session_id=value.get("physical_session_id"), expected_turn_id=value.get("observed_turn_id"),
+            expected_profile=value.get("requested_profile"), expected_read_targets=contract.get("read_targets"),
+            expected_read_scope=contract.get("read_scope"))
+        evidence = parsed["task_bound_evidence"]
+        admission = (self._attempt(self._record()) or {}).get("delivery_admission") or {}
+        if (evidence != value.get("task_bound_evidence") or evidence.get("owner_delivery_authorization") != authorization
+                or evidence.get("delivered_brief_digest") != digest(brief)
+                or evidence.get("delivered_contract_digest") != digest(contract)
+                or evidence.get("task_ref") != self.task_ref or evidence.get("assignment_ref") != self.assignment_ref
+                or evidence.get("generation") != self.generation
+                or parsed["model"] != value.get("requested_model") or parsed["reasoning"] != value.get("requested_reasoning")
+                or parsed["turn_id"] != admission.get("observed_turn_id")):
+            raise OwnerRoleRuntimeError("completed manager result differs from admitted native evidence")
+        return parsed
 
     def reconcile_unknown_result(
         self, logical_request_key: str, replacement: Mapping[str, Any], *,
@@ -452,6 +517,27 @@ class CanonicalRoleRuntime:
             expected_target=target,
             scope_validator=validate_current_owner_scope,
         )
+        content = snapshots["mandate"].get("payload", {})
+        contract = content.get("instruction_contract", {}) if isinstance(content, Mapping) else {}
+        if (role == "manager" and contract.get("authority", {}).get("effect_profile") == "workspace-write-manager"
+                and "canonical_manager_commands" in contract.get("allowed_operations", ())):
+            def completed_scope():
+                try:
+                    current_due = self.due_port.read_due(schedule_id)
+                    if current_due is None or current_due.get("timeout_seconds") != due.timeout_seconds:
+                        return "canonical owner occurrence timeout changed"
+                    for name in ("assignment", "mandate"):
+                        if _json(readers[name](identities[name])) != snapshots[name]:
+                            return f"canonical {name} changed after instruction preparation"
+                    # The same identity-fenced readers still prove project/task
+                    # membership; mutable revisions are effects of this role.
+                    for name in ("project", "task"):
+                        readers[name](identities[name])
+                except Exception:
+                    return "completed manager owner scope is unavailable"
+                return None
+            capture.completed_scope_validator = completed_scope
+            capture.manager_command_contract = deepcopy(contract)
         return assignment, dict(target), capture
 
     def _invoke(self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
@@ -538,6 +624,9 @@ class CanonicalRoleRuntime:
                 verifier=lambda session_id, brief_sha256, authorization: capture.verify_delivery(
                     logical_request_key, session_id, brief_sha256, authorization,
                 ),
+                completed_verifier=lambda session_id, brief_sha256, authorization: capture.verify_completed_delivery(
+                    logical_request_key, session_id, brief_sha256, authorization,
+                ),
             )
             capture.source_result_validator = getattr(adapter, "verify_source_result", None)
             owner_timeout = due.get("timeout_seconds")
@@ -615,7 +704,9 @@ class CanonicalRoleRuntime:
         attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
         result = attempt.get("result")
         resource = result.get("resource_evidence") if isinstance(result, Mapping) else None
-        if (not isinstance(resource, Mapping)
+        if role == "manager" and callable(capture.completed_scope_validator):
+            capture.validate_completed_manager_result(result)
+        elif (not isinstance(resource, Mapping)
                 or resource.get("brief_sha256") != current_brief_digest()):
             raise OwnerRoleRuntimeError("retained result does not use the current adopted owner brief")
         published = None

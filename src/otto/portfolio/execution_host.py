@@ -183,6 +183,11 @@ class ExecutionHost:
                 command = request.get("command")
                 if (command == "status") != status:
                     continue
+                # The pump also sees its own outer request. It already owns
+                # that token; never describe it as a queued second dispatch.
+                with self._lock:
+                    if token in self._active_files:
+                        continue
                 capability = _nested_capability(request) if allowed is not None else "admitted"
                 if capability == "retained":
                     pending = self.directory / ("pending-" + token + ".json")

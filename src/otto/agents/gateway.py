@@ -1090,7 +1090,10 @@ class OttoGateway:
         observed_model = get(("observed_model", "model", "model_name"))
         observed_reasoning = get(("observed_reasoning", "reasoning_effort", "reasoning"))
         delivery_state = get(("delivery_state",), "done" if outcome == "succeeded" else "unknown")
-        unknown_reason = error_message or get(("reconciliation", "unsupported_error", "unsupported_reason"))
+        adapter_error = result.get("error") if isinstance(result, Mapping) else None
+        unknown_reason = (error_message or
+            (adapter_error.get("message") if isinstance(adapter_error, Mapping) else None) or
+            get(("reconciliation", "unsupported_error", "unsupported_reason")))
         timeout = get(("timeout",), None)
         if timeout is None and isinstance(unknown_reason, str):
             timeout = "timeout" in unknown_reason.lower()
@@ -1166,7 +1169,7 @@ class OttoGateway:
         if isinstance(result, Mapping):
             for field_name in ("task_bound_evidence", "transport_result", "raw_result",
                                "observed_turn_id", "observed_context_digest", "context_digest_verified",
-                               "observed_profile", "worker_content"):
+                               "observed_profile", "worker_content", "error"):
                 if field_name in result:
                     envelope_value[field_name] = _json_value(result[field_name])
         if self.attempt_capture is not None:

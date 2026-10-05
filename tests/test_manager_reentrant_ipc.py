@@ -138,6 +138,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.assertEqual([r["outcome"] for r in child], ["committed", "committed", "read"])
         self.assertEqual(child[0]["lifecycle"], "active")
         self.assertFalse(response.exists())
+        self.assertFalse((self.directory / "pending-abc123.json").exists())
         self.assertTrue(self.host.owner_path.exists())
         self.assertEqual(len(set(self.handler_threads + self.mutation_threads)), 1)
         self.assertNotEqual(self.transport_threads[0], self.handler_threads[0])
@@ -200,7 +201,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.assertEqual(replay["outcome"], "replayed", replay)
         self.assertEqual(len(f.provider.calls), calls)
         self.assertFalse((self.directory / "pending-ffffff.json").exists())
-        self.assertEqual(read_command_status(self.directory, "ffffff"), replay)
+        self.assertEqual(read_command_status(self.directory, "ffffff")["summary"]["outcome"], replay["outcome"])
 
     def test_native_manager_commit_and_unsupported_command_respond_before_child_exit(self):
         root = self.directory.parent
@@ -235,6 +236,46 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.release.touch()
         self.assertEqual(self.wait_file(response)["outcome"], "succeeded")
         self.assertEqual(len(self.fixture.provider.calls), calls)
+
+    def test_explicit_manager_commands_may_advance_bound_task_after_exact_admission(self):
+        requests = json.loads(self.requests_file.read_text())
+        requests.append({"command": "task-state", "task": "PA02", "lifecycle": "active",
+                         "request_key": "bound-task-change"})
+        self.requests_file.write_text(json.dumps(requests))
+        response = self.dispatch()
+        self.wait_file(self.child_receipt)
+        self.release.touch()
+        result = self.wait_file(response)
+        self.assertEqual(result["outcome"], "succeeded", str({k: result.get("continuation",{}).get(k) for k in ("outcome","stage","error")}))
+        attempt = self.fixture.port.read_due(result["continuation"]["schedule_id"])["host_evidence"]["gateway_attempt"]
+        self.assertEqual(attempt["result"]["outcome"], "succeeded")
+        self.assertTrue(attempt["delivery_admission"]["native_turn_started"])
+        self.assertTrue(attempt["result"]["context_digest_verified"])
+        before = len(self.fixture.provider.calls)
+        self.assertEqual(self.fixture.app.recover(schedule_id=result["continuation"]["schedule_id"], execute=False)["outcome"], "replayed")
+        self.assertEqual(len(self.fixture.provider.calls), before)
+
+    def test_terminal_status_is_bounded_and_preserves_full_response(self):
+        from otto.portfolio.manager_journey_client import read_command_status, read_command_response
+        path = self.directory / "response-abcdef.json"
+        value = {"outcome": "unknown", "continuation": {"schedule_id": "same-occurrence",
+            "result": {"outcome": "unknown", "unknown_reason": "real-fence", "raw_result": {
+                "stdout": "nested evidence" * 100000}}}}
+        path.write_text(json.dumps(value))
+        raw = path.read_bytes()
+        self.assertIsNone(read_command_status(self.directory, "abcdef", pending_only=True))
+        status = read_command_status(self.directory, "abcdef")
+        self.assertLess(len(json.dumps(status).encode()), 4096)
+        self.assertEqual(status["summary"]["continuation"]["result"]["unknown_reason"], "real-fence")
+        self.assertEqual(status["response_utf8_bytes"], len(raw))
+        self.assertEqual(status["response_sha256"], __import__("hashlib").sha256(raw).hexdigest())
+        self.assertEqual(read_command_response(self.directory, "abcdef"), status)
+        small = self.directory / "response-123abc.json"
+        small.write_text(json.dumps({"outcome": "admitted", "response_path": "worker-exact-path", "retained_handle": "worker-handle"}))
+        self.assertEqual(read_command_response(self.directory, "123abc")["response_path"], "worker-exact-path")
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertTrue(status["terminal"])
+        self.assertFalse(status["retry"])
 
     def test_context_manager_closes_idle_host_on_bootstrap_exception(self):
         directory = self.directory.parent / "bootstrap-ipc"
