@@ -188,6 +188,8 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         self.assertIn("cold manager operation", prompt)
         self.assertNotIn("Implement only J01", prompt)
         self.assertIn("canonical_manager_commands", prompt)
+        self.assertIn("Use the prescribed maintained canonical manager commands", prompt)
+        self.assertNotIn("Do not modify canonical state", prompt)
         self.assertIn(str(self.root / "controller"), prompt)
         self.fixture.provider.work_release.set()
         self.assertEqual(self.wait_response(Path(admitted["response_path"]))["outcome"], "succeeded")

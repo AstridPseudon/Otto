@@ -58,6 +58,7 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
         contract["authority"]["effect_profile"] = "workspace-write-manager"
         contract["authority"]["permitted_effects"].append("canonical_manager_commands")
         brief.update(mandate="Execute the prescribed cold manager operation directly through maintained commands; return installed evidence to the parent manager.",
+                     user_constraints=["Use the prescribed maintained canonical manager commands; do not directly edit canonical owner records, controller runtime or historical effects"],
                      revision="ordinary-cold-manager-operation-v1")
     from .resource_sync import normalize_instruction_contract
     normalize_instruction_contract(contract)  # Reject invalid composition before assignment/initialization.
