@@ -7,7 +7,7 @@ from herzchen.contracts import ResourceRef
 from .owner_readers import json_value
 
 
-OPERATIONS = ("declare-scope", "freeze-input", "select-candidate", "assess", "accept", "coverage")
+OPERATIONS = ("declare-scope", "freeze-input", "select-candidate", "assess", "accept", "close-finding", "coverage")
 
 
 def _bound_policy(policy: Any, state: Mapping[str, Any]) -> Any:
@@ -76,8 +76,9 @@ class ManagerAssessmentCommands:
         if not isinstance(value, Mapping):
             raise ValueError(field + " must be resource-ref JSON")
         ref = ResourceRef.from_dict(value)
+        unpinned_finding = kind == "assessment.finding" and ref.revision is None and not stable
         if (ref.authority != self._task.authority or (kind and ref.kind != kind)
-                or (ref.revision is not None if stable else not ref.revision)):
+                or (ref.revision is not None if stable else (not ref.revision and not unpinned_finding))):
             raise ValueError(field + (" must be an unpinned owner target" if stable else " must pin an owner revision"))
         if not stable:
             self._current(ref, field)
@@ -109,6 +110,7 @@ class ManagerAssessmentCommands:
             "select-candidate": {"scope_ref", "candidate_ref", "criterion_ref", "rationale"},
             "assess": {"scope_ref", "candidate_ref", "criterion_ref", "input_ref", "verdict", "limit_pool_ref", "protocol_result", "findings"},
             "accept": {"result_ref", "candidate_ref", "criterion_ref", "evidence_refs", "rationale"},
+            "close-finding": {"finding_ref", "evidence_refs", "test_only", "rationale"},
             "coverage": set(),
         }[op]
         if set(args) - fields:
@@ -127,6 +129,18 @@ class ManagerAssessmentCommands:
                 protocol=args.get("protocol"), designated_approver=self._actor.actor,
                 authority=self._actor.authority, review_required=True, allow_no_review=False,
                 policy={"required_for_completion": True}, **common)
+        elif op == "close-finding":
+            finding = self._assessment.get_finding(ref("finding_ref", "assessment.finding"))
+            result = self._assessment.get_result(finding.result_ref)
+            scope = self._scope(result.scope_ref)
+            candidate, criterion = result.candidate_ref, result.criterion_ref
+            self._policy.require_pair(self._task, criterion)
+            self._input(result.input_packet_ref, scope, candidate, criterion)
+            evidence = self._refs(args.get("evidence_refs"), "evidence_refs")
+            closed = self._assessment.close_finding(
+                finding.ref, evidence_refs=evidence, test_only=bool(args.get("test_only", False)),
+                rationale=args.get("rationale"), **common)
+            record = closed
         elif op == "accept":
             result = self._assessment.get_result(ref("result_ref", "assessment.result"))
             scope = self._scope(result.scope_ref)

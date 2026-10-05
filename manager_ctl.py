@@ -187,7 +187,7 @@ def main() -> None:
     assessment = commands.add_parser("manager-assessment", help="record inspected assessment/acceptance through the current manager owner")
     assessment.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
     assessment.add_argument("--operation", required=True,
-                            choices=["declare-scope", "freeze-input", "select-candidate", "assess", "accept", "coverage"])
+                            choices=["declare-scope", "freeze-input", "select-candidate", "assess", "accept", "close-finding", "coverage"])
     assessment.add_argument("--arguments", required=True, type=json.loads,
                             help="operation-specific JSON object; exact owner refs, no actor overrides")
     assessment.add_argument("--request-key", required=True)

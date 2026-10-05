@@ -202,6 +202,49 @@ if not Path(paths[4]).exists():raise RuntimeError("manager release expired")
         self.assertTrue(created["local_only"])
         self.assertEqual(created["remaining_allowance_units"], 1)
 
+    def test_close_finding_is_owner_guarded_before_acceptance(self):
+        f = self.fixture
+        scope = {"authority": f.actor.authority, "kind": "assessment.scope", "id": "task-close-finding"}
+        candidate, criterion = self.candidate.ref.to_dict(), self.criterion.to_dict()
+        finding_ref = {"authority": f.actor.authority, "kind": "assessment.finding",
+                       "id": "assess-close-finding-finding-0", "revision": None}
+        commands = [
+            self.request("declare-scope", {"scope_ref": scope, "criterion_refs": [criterion],
+                "protocol": "manager-close-finding"}, key="declare-close-finding"),
+            self.request("freeze-input", {"scope_ref": {"authority": f.actor.authority,
+                "kind": "assessment.scope", "id": "task-close-finding", "revision": "rev-1"},
+                "candidate_ref": candidate, "criterion_refs": [criterion],
+                "source_refs": [self.source.ref.to_dict()], "evidence_refs": [candidate],
+                "packet": {"inspection": "retained result with one explicitly closed finding"}},
+                key="freeze-close-finding"),
+            self.request("select-candidate", {"scope_ref": {"authority": f.actor.authority,
+                "kind": "assessment.scope", "id": "task-close-finding", "revision": "rev-1"},
+                "candidate_ref": candidate, "criterion_ref": criterion,
+                "rationale": "select-close-finding"}, key="select-close-finding"),
+            self.request("assess", {"scope_ref": {"authority": f.actor.authority,
+                "kind": "assessment.scope", "id": "task-close-finding", "revision": "rev-1"},
+                "candidate_ref": candidate, "criterion_ref": criterion,
+                "input_ref": {"authority": f.actor.authority, "kind": "assessment.input",
+                               "id": "freeze-close-finding", "revision": "rev-1"},
+                "verdict": "PASS", "limit_pool_ref": self.pool.ref.to_dict(),
+                "protocol_result": {"inspected": True},
+                "findings": [{"summary": "bounded finding requiring explicit owner closure"}]},
+                key="assess-close-finding"),
+            self.request("close-finding", {"finding_ref": finding_ref,
+                "evidence_refs": [candidate], "test_only": False,
+                "rationale": "closed-by-retained-owner-evidence"}, key="close-finding"),
+            self.request("accept", {"result_ref": {"authority": f.actor.authority,
+                "kind": "assessment.result", "id": "assess-close-finding", "revision": "rev-1"},
+                "candidate_ref": candidate, "criterion_ref": criterion,
+                "evidence_refs": [candidate], "rationale": "accept-after-finding-close"},
+                key="accept-close-finding"),
+        ]
+        response, child = self.run_commands(commands)
+        self.assertEqual([r["outcome"] for r in child["results"]], ["committed"] * len(commands))
+        self.assertEqual(child["results"][4]["operation"], "close-finding")
+        self.assertEqual(child["results"][5]["operation"], "accept")
+        self.finish(response)
+
     def test_read_only_advisor_decision_state_responds_during_native_wait(self):
         f = self.fixture
         from types import SimpleNamespace
