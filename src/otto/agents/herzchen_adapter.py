@@ -411,6 +411,9 @@ class HerzchenCodexAdapter:
                   recipient_authorizer: Optional[Callable[..., Mapping[str, Any]]] = None,
                   timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                   source_verifier: Any = None, timeout_brief: Any = None) -> Any:
+        from otto.portfolio.execution_host import ExecutionHost
+        recipient_authorizer = ExecutionHost.owner_callback(recipient_authorizer)
+        native_start_callback = ExecutionHost.owner_callback(self._turn_started_callback)
         cursor_queue = None
         if model_projection is not None and brief["context"]["canonical_snapshot"]["generation"] >= 11:
             recipient = model_projection["owner_context"].get("recipient_permission_contract", {})
@@ -438,7 +441,7 @@ class HerzchenCodexAdapter:
                 native_trace_path=self.native_trace_path,
                 trusted_thread_reader=self.trusted_thread_reader,
                 recipient_authorizer=recipient_authorizer,
-                native_start_callback=self._turn_started_callback,
+                native_start_callback=native_start_callback,
                 writable_roots=self.writable_roots,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
@@ -452,7 +455,7 @@ class HerzchenCodexAdapter:
                 prompt=prompt, host_context_path=self.host_context_path,
                 **({"model_projection": model_projection} if model_projection is not None else {}),
                 **({"cursor_queue": cursor_queue} if cursor_queue is not None else {}),
-                **({"native_start_callback": self._turn_started_callback}
+                **({"native_start_callback": native_start_callback}
                    if self._turn_started_callback is not None else {}),
                 **receiving, **bounded,
             )
@@ -932,7 +935,8 @@ class HerzchenCodexAdapter:
                 model=model, reasoning=reasoning, model_projection=projection,
                 recipient_authorizer=admit_recipient, **work_options,
             )
-            observed_work = recipient.resume(resumed)
+            from otto.portfolio.execution_host import ExecutionHost
+            observed_work = ExecutionHost.external_call(lambda: recipient.resume(resumed))
             result = dict(self._execute(
                 "resume", {**request, "physical_session_id": physical},
                 observed_override=observed_work,

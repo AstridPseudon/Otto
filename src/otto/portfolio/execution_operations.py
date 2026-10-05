@@ -186,6 +186,36 @@ def manager_continuation_schedule_id(assignment_ref: Mapping[str, Any], report_k
     return "manager-callback-" + hashlib.sha256(value).hexdigest()[:28]
 
 
+def _manager_report_context(report: Mapping[str, Any], value: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Carry bounded evidence from the exact durable report, without granting acceptance.
+
+    Existing report callers can put reviewed source/result refs in summary.
+    Owner API callers may also supply structured review/lifecycle refs. These
+    stay attributed to this report; task completion still needs owner gates.
+    """
+    summary = value.get("summary")
+    evidence = value.get("continuation_evidence")
+    if summary is None and evidence is None:
+        return None
+    if summary is not None and (not isinstance(summary, str) or not summary.strip()):
+        raise OccurrencePreparationError("manager report context summary must be non-blank text")
+    if evidence is not None:
+        if not isinstance(evidence, Mapping) or set(evidence) - {"accepted_review_refs", "lifecycle_evidence_refs"}:
+            raise OccurrencePreparationError("manager continuation evidence fields are unsupported")
+        for refs in evidence.values():
+            if not isinstance(refs, list) or len(refs) > 16 or any(not isinstance(ref, (str, Mapping)) for ref in refs):
+                raise OccurrencePreparationError("manager continuation evidence must contain bounded reference lists")
+    context = {"schema": "otto.manager-continuation-report-context.v1", "report_ref": dict(report["ref"]),
+               "logical_request_key": value.get("logical_request_key") or "continue:" + str(report["ref"].get("id")),
+               "recorded_at": value.get("recorded_at"),
+               "summary": summary, "continuation_evidence": evidence,
+               "acceptance_authority": "ordinary owner task and assessment gates remain required"}
+    encoded = json.dumps(context, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode("utf-8")) > 16384:
+        raise OccurrencePreparationError("manager continuation evidence exceeds its bounded context size")
+    return json.loads(encoded)
+
+
 def derive_manager_continuation_request(
     settled_due: Any, reports: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     *, report_key: str | None = None,
@@ -244,6 +274,7 @@ def derive_manager_continuation_request(
         "physical_session_id": result.get("physical_session_id"),
         "state": "ready",
         "explicit_service_request": report_key is not None,
+        "report_context": _manager_report_context(report, value),
     }
 
 

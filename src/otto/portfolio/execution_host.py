@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 from pathlib import Path
 import socket
 import threading
@@ -32,6 +33,10 @@ def _atomic_json(path: Path, value: Any) -> None:
         temporary.unlink(missing_ok=True)
 
 
+_DISPATCH_CONTEXT = threading.local()
+_REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task"})
+
+
 class ExecutionHost:
     """One owner-process command service, retained to admitted work completion.
 
@@ -52,7 +57,10 @@ class ExecutionHost:
         self._commands_stop = threading.Event()
         self._children: set[threading.Thread] = set()
         self._lock = threading.RLock()
-        self._command_lock = threading.Lock()
+        self._command_lock = threading.RLock()
+        self._owner_calls = queue.Queue()
+        self._external_waiting = False
+        self._active_files: set[str] = set()
         self._closing = False
         self._owns_owner_file = False
         self._threads: list[threading.Thread] = []
@@ -111,7 +119,15 @@ class ExecutionHost:
             if request.get("command") == "status":
                 return self.handler(request)
             with self._command_lock:
-                return self.handler(request)
+                if self._closing and request.get("command") not in _REENTRANT_COMMANDS:
+                    return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
+                previous = getattr(_DISPATCH_CONTEXT, "value", None)
+                _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
+                    request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
+                try:
+                    return self.handler(request)
+                finally:
+                    _DISPATCH_CONTEXT.value = previous
         except Exception as exc:
             return {"outcome": "error", "error": type(exc).__name__, "message": str(exc),
                     "next_action": "inspect the exact canonical request before retry"}
@@ -138,27 +154,144 @@ class ExecutionHost:
                 except (OSError, ValueError) as exc:
                     self.failures["socket"] = {"code": type(exc).__name__, "message": str(exc)}
 
+    def _serve_files(self, status: bool, *, allowed: frozenset[str] | None = None) -> None:
+        for path in sorted(self.directory.glob("request-*.json")):
+            token = path.name[len("request-"):-len(".json")]
+            if not token or any(char not in "0123456789abcdef" for char in token):
+                continue
+            response = self.directory / ("response-" + token + ".json")
+            acquired = False
+            claimed = False
+            try:
+                request = json.loads(path.read_text())
+                command = request.get("command")
+                if (command == "status") != status or (allowed is not None and command not in allowed):
+                    continue
+                if not status:
+                    # A compatible socket dispatch may own a native wait. Do
+                    # not claim/block its child's file before its pump sees it.
+                    acquired = self._command_lock.acquire(blocking=False)
+                    if not acquired:
+                        continue
+                    if self._closing and command not in _REENTRANT_COMMANDS:
+                        continue
+                with self._lock:
+                    if token in self._active_files:
+                        continue
+                    self._active_files.add(token)
+                    claimed = True
+                if not response.exists():
+                    result = self._dispatch(request)
+                    _atomic_json(response, result)
+                path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
+            finally:
+                if claimed:
+                    with self._lock:
+                        self._active_files.discard(token)
+                if acquired:
+                    self._command_lock.release()
+
     def _serve(self, status: bool) -> None:
         stop = self._stop if status else self._commands_stop
         while not stop.is_set():
-            for path in sorted(self.directory.glob("request-*.json")):
-                token = path.name[len("request-"):-len(".json")]
-                if not token or any(char not in "0123456789abcdef" for char in token):
-                    continue
-                response = self.directory / ("response-" + token + ".json")
-                try:
-                    request = json.loads(path.read_text())
-                    if (request.get("command") == "status") != status:
-                        continue
-                    if not response.exists():
-                        result = self._dispatch(request)
-                        _atomic_json(response, result)
-                    path.unlink(missing_ok=True)
-                except FileNotFoundError:
-                    continue
-                except Exception as exc:
-                    self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
+            self._serve_files(status)
             stop.wait(0.05)
+        if not status:
+            # One bounded final snapshot drains queued finite owner commands.
+            # Provider-bearing requests remain durable for owner review/restart.
+            self._serve_files(False, allowed=_REENTRANT_COMMANDS)
+
+    @staticmethod
+    def owner_callback(callback: Callable[..., Any] | None) -> Callable[..., Any] | None:
+        """Marshal an admitted transport callback to its serialized owner."""
+        context = getattr(_DISPATCH_CONTEXT, "value", None)
+        if callback is None or context is None or not context[2]:
+            return callback
+        host, owner_thread, _ = context
+
+        def owned(*args: Any, **kwargs: Any) -> Any:
+            if threading.get_ident() == owner_thread:
+                return callback(*args, **kwargs)
+            completed, result = threading.Event(), {}
+            with host._lock:
+                if not host._external_waiting:
+                    raise RuntimeError("owner callback arrived outside its admitted transport wait")
+                host._owner_calls.put((lambda: callback(*args, **kwargs), completed, result))
+            completed.wait()
+            if "error" in result:
+                raise result["error"]
+            return result["value"]
+        return owned
+
+    def _pump_owner_calls(self) -> None:
+        while True:
+            try:
+                operation, completed, result = self._owner_calls.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                result["value"] = operation()
+            except BaseException as exc:
+                result["error"] = exc
+            finally:
+                completed.set()
+
+    @staticmethod
+    def external_call(operation: Callable[[], Any]) -> Any:
+        """Yield only an admitted manager's transport wait, never owner custody.
+
+        The owner thread retains its command lock and executes finite nested
+        commands and native admission callbacks itself. The transport thread
+        cannot read/mutate the owner through an unwrapped callback. Other long
+        dispatches remain queued; result capture/settlement resumes on owner.
+        """
+        context = getattr(_DISPATCH_CONTEXT, "value", None)
+        if context is None or not context[2]:
+            return operation()
+        host, owner_thread, _ = context
+        if threading.get_ident() != owner_thread:
+            raise RuntimeError("transport wait must be entered by its command owner")
+        completed, result = threading.Event(), {}
+
+        def run() -> None:
+            try:
+                result["value"] = operation()
+            except BaseException as exc:
+                result["error"] = exc
+            finally:
+                completed.set()
+
+        with host._lock:
+            if host._external_waiting:
+                raise RuntimeError("nested native transport wait is not admitted")
+            host._external_waiting = True
+        transport = threading.Thread(target=run, name="otto-manager-transport", daemon=False)
+        try:
+            transport.start()
+            while not completed.is_set():
+                host._pump_owner_calls()
+                host._serve_files(False, allowed=_REENTRANT_COMMANDS)
+                completed.wait(0.01)
+            host._pump_owner_calls()
+        finally:
+            with host._lock:
+                host._external_waiting = False
+                while True:
+                    try:
+                        _, waiting, value = host._owner_calls.get_nowait()
+                    except queue.Empty:
+                        break
+                    value["error"] = RuntimeError("transport completed before owner callback admission")
+                    waiting.set()
+            if transport.ident is not None:
+                transport.join()
+        if "error" in result:
+            raise result["error"]
+        return result["value"]
 
     def retain(self, *, name: str, operation: Callable[[], Any]) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""

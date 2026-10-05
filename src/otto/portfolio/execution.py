@@ -625,7 +625,10 @@ class ExecutionApplication:
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
             due_at=self._now(), timeout_seconds=prior.timeout_seconds)
         self._verify_native_binding(current, due.target["native_id"], prior.schedule_id)
-        due = replace(due, instruction=instruction)
+        context = request.get("report_context")
+        due = replace(due, instruction=instruction,
+            message=due.message if context is None else "Current canonical manager report context:\n" +
+                json.dumps(context, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         if task_ref is not None:
             due = replace(due, target={**due.target, "task_ref": dict(task_ref)})
         prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
