@@ -33,6 +33,11 @@ class ManagerReentrantIPCTests(unittest.TestCase):
         self.transport_threads, self.mutation_threads, self.handler_threads = [], [], []
         self.client = Path(__file__).resolve().parents[1] / "manager_ctl.py"
         self.native_child = self.directory.parent / "native-child.py"
+        self.requests_file = self.directory.parent / "child-requests.json"
+        self.requests_file.write_text(json.dumps([
+            {"command": "task-state", "task": "PA06", "lifecycle": "active", "request_key": "native-pa06-active"},
+            {"command": "report", "task": "PA06", "summary": "Assessment evidence retained", "next_action": "Review owner acceptance", "request_key": "native-assessment-report"},
+            {"command": "project-lifecycle-read", "task": "PA06"}]))
         self.native_child.write_text('''import importlib.util,json,sys,time
 from pathlib import Path
 spec=importlib.util.spec_from_file_location("owner_manager_ctl",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
@@ -42,9 +47,7 @@ deadline=time.monotonic()+10
 while not Path(sys.argv[6]).exists() and time.monotonic()<deadline:time.sleep(.01)
 if not Path(sys.argv[6]).exists():raise RuntimeError("child command admission expired")
 results=[]
-for request in ({"command":"task-state","task":"PA06","lifecycle":"active","request_key":"native-pa06-active"},
-                {"command":"report","task":"PA06","summary":"Assessment evidence retained", "next_action":"Review owner acceptance","request_key":"native-assessment-report"},
-                {"command":"project-lifecycle-read","task":"PA06"}):
+for request in json.loads(Path(sys.argv[7]).read_text()):
     results.append(client.call(request))
 Path(sys.argv[3]).write_text(json.dumps(results))
 deadline=time.monotonic()+10
@@ -59,7 +62,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
                 # this fixture supplies transcript data instead of a model call.
                 observed = super().execute(request)
                 result = subprocess.run([sys.executable, str(outer.native_child), str(outer.client),
-                    str(outer.directory), str(outer.child_receipt), str(outer.release), str(outer.child_ready), str(outer.allow_commands)],
+                    str(outer.directory), str(outer.child_receipt), str(outer.release), str(outer.child_ready), str(outer.allow_commands), str(outer.requests_file)],
                     capture_output=True, text=True, timeout=12)
                 if result.returncode:
                     raise RuntimeError(result.stderr)
@@ -92,6 +95,9 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         if command == "status":
             return {"outcome": "read", "owner_available": True}
         self.handler_threads.append(threading.get_ident())
+        if command == "commit":
+            from otto.portfolio.execution_operations import commit_local_checkpoint
+            return commit_local_checkpoint(self.directory.parent, request["paths"], message=request["message"])
         if command == "task-state":
             task = f.owner.graph.set_lifecycle(ResourceRef.from_dict(self.tasks[request["task"]]),
                 Lifecycle(request["lifecycle"]), logical_request_key=request["request_key"], actor=f.actor)
@@ -170,6 +176,13 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
             status = self.send("777777", {"command": "status"})
             self.assertEqual(self.wait_file(status)["outcome"], "read")
             self.assertFalse(queued.exists())
+            pending = self.wait_file(self.directory / "pending-ffffff.json")
+            self.assertTrue(pending["request_retained"])
+            self.assertFalse(pending["effects_started"])
+            self.assertFalse(pending["retry"])
+            from otto.portfolio.manager_journey_client import read_command_status
+            self.assertEqual(read_command_status(self.directory, "ffffff"), pending)
+            self.assertTrue((self.directory / "request-ffffff.json").exists())
             self.release.touch()
             self.wait_file(response)
         finally:
@@ -186,6 +199,51 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         replay = self.wait_file(queued)
         self.assertEqual(replay["outcome"], "replayed", replay)
         self.assertEqual(len(f.provider.calls), calls)
+        self.assertFalse((self.directory / "pending-ffffff.json").exists())
+        self.assertEqual(read_command_status(self.directory, "ffffff"), replay)
+
+    def test_native_manager_commit_and_unsupported_command_respond_before_child_exit(self):
+        root = self.directory.parent
+        def git(*args):
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout.strip()
+        git("init", "-q")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        (root / "checkpoint.txt").write_text("before")
+        git("add", "checkpoint.txt")
+        git("commit", "-qm", "Fixture baseline")
+        initial = git("rev-parse", "HEAD")
+        (root / "checkpoint.txt").write_text("tested source")
+        requests = json.loads(self.requests_file.read_text())
+        requests.extend([
+            {"command": "commit", "paths": ["checkpoint.txt"], "message": "Owner nested checkpoint"},
+            {"command": "unsupported-owner-operation", "request_key": "no-effects"}])
+        self.requests_file.write_text(json.dumps(requests))
+        response = self.dispatch()
+        child = self.wait_file(self.child_receipt)
+        self.assertFalse(response.exists())
+        self.assertEqual(child[-2]["outcome"], "committed")
+        self.assertNotEqual(child[-2]["commit"], initial)
+        self.assertEqual(child[-2]["commit"], git("rev-parse", "HEAD"))
+        self.assertEqual(git("status", "--porcelain", "--", "checkpoint.txt"), "")
+        self.assertEqual(child[-1]["outcome"], "held")
+        self.assertFalse(child[-1]["effects_started"])
+        self.assertFalse(child[-1]["retry"])
+        self.assertIn("Do not resend", child[-1]["next_action"])
+        self.assertEqual(len(set(self.handler_threads + self.mutation_threads)), 1)
+        calls = len(self.fixture.provider.calls)
+        self.release.touch()
+        self.assertEqual(self.wait_file(response)["outcome"], "succeeded")
+        self.assertEqual(len(self.fixture.provider.calls), calls)
+
+    def test_context_manager_closes_idle_host_on_bootstrap_exception(self):
+        directory = self.directory.parent / "bootstrap-ipc"
+        guarded = ExecutionHost(directory=directory, handler=lambda request: {})
+        with self.assertRaisesRegex(RuntimeError, "bootstrap output failed"):
+            with guarded:
+                raise RuntimeError("bootstrap output failed")
+        self.assertFalse(guarded.owner_path.exists())
+        self.assertTrue(all(not thread.is_alive() for thread in guarded._threads))
 
     def test_current_review_and_lifecycle_context_survives_preparation_and_delivery(self):
         f = self.fixture

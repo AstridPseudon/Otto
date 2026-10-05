@@ -39,8 +39,17 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
                                  "manager-assessment", "manager-assessment-pool",
                                  "run-worker", "worker-status", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
-                                 "project-lifecycle-read",
+                                 "project-lifecycle-read", "commit",
                                  "advisor-decision-state"})
+
+
+def _nested_capability(request: Mapping[str, Any]) -> str:
+    """Classify nested file operations without releasing owner custody."""
+    if request.get("command") in _REENTRANT_COMMANDS:
+        return "admitted"
+    if request.get("command") == "manager-continue" and request.get("operation") == "dispatch":
+        return "retained"  # Another native manager turn cannot overlap this one.
+    return "held"
 
 
 class ExecutionHost:
@@ -172,7 +181,17 @@ class ExecutionHost:
             try:
                 request = json.loads(path.read_text())
                 command = request.get("command")
-                if (command == "status") != status or (allowed is not None and command not in allowed):
+                if (command == "status") != status:
+                    continue
+                capability = _nested_capability(request) if allowed is not None else "admitted"
+                if capability == "retained":
+                    pending = self.directory / ("pending-" + token + ".json")
+                    if not pending.exists():
+                        _atomic_json(pending, {"outcome": "pending", "request_id": token,
+                            "request_retained": True, "provider_called": False, "effects_started": False,
+                            "retry": False, "response_path": str(response),
+                            "reason": "another native manager turn owns the command lane",
+                            "next_action": "Observe this exact response path after the current turn settles; do not resend the request or rerun tests while waiting."})
                     continue
                 if not status:
                     # A compatible socket dispatch may own a native wait. Do
@@ -180,7 +199,7 @@ class ExecutionHost:
                     acquired = self._command_lock.acquire(blocking=False)
                     if not acquired:
                         continue
-                    if self._closing and command not in _REENTRANT_COMMANDS:
+                    if self._closing and _nested_capability(request) == "retained":
                         continue
                 with self._lock:
                     if token in self._active_files:
@@ -188,8 +207,15 @@ class ExecutionHost:
                     self._active_files.add(token)
                     claimed = True
                 if not response.exists():
-                    result = self._dispatch(request)
+                    if capability == "held":
+                        result = {"outcome": "held", "reason": "operation is not admitted during the current native transport wait",
+                                  "command": command, "provider_called": False, "effects_started": False,
+                                  "retry": False, "request_retained": False,
+                                  "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
+                    else:
+                        result = self._dispatch(request)
                     _atomic_json(response, result)
+                (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
                 path.unlink(missing_ok=True)
             except FileNotFoundError:
                 continue
