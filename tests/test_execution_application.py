@@ -179,6 +179,21 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertEqual(duplicate["outcome"], "replayed")
         self.assertEqual(len(self.provider.calls), 1)
 
+    def test_worker_preparation_reads_document_revision_when_response_omits_record(self):
+        original = self.app.portfolio.create_document
+
+        def without_record(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result.pop("record", None)
+            return result
+
+        self.app.portfolio.create_document = without_record
+        prepared = self.app.assign_worker(**self.request())
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        self.assertEqual(prepared["guide_ref"]["revision"], "rev-1")
+        self.assertEqual(prepared["mandate_ref"]["revision"], "rev-1")
+        self.assertEqual(self.provider.calls, [])
+
     def test_inspected_worker_result_closes_task_through_public_manager_acceptance(self):
         result = self.app.assign_and_start(**self.request())
         self.assertEqual(result["outcome"], "succeeded", result.get("error"))

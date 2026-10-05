@@ -68,6 +68,42 @@ class ExecutionApplication:
             raise OccurrencePreparationError("execution actor does not own the assignment")
         return current
 
+    def _document_revision(self, result: Mapping[str, Any], field: str) -> Mapping[str, Any]:
+        """Resolve a document revision from either response envelope or owner readback."""
+        record = result.get("record")
+        payload = record.get("payload") if isinstance(record, Mapping) else None
+        revision = payload.get("current_revision") if isinstance(payload, Mapping) else None
+        if isinstance(revision, Mapping) and revision.get("revision"):
+            return dict(revision)
+        document_ref = result.get("document_ref")
+        if isinstance(document_ref, Mapping):
+            stable = ResourceRef.from_dict(document_ref)
+            current = self.portfolio.operations.reader.get_record(stable)
+            current_payload = (current.get("payload") if isinstance(current, Mapping)
+                               else getattr(current, "payload", None))
+            revision = (current_payload.get("current_revision")
+                        if isinstance(current_payload, Mapping) else None)
+            if isinstance(revision, ResourceRef):
+                return json_value(revision)
+            if isinstance(revision, Mapping) and revision.get("revision"):
+                return dict(revision)
+            content_port = getattr(self.portfolio.operations, "content_port", None)
+            if content_port is not None:
+                observed = content_port.read(stable)
+                observed_payload = (observed.get("payload") if isinstance(observed, Mapping)
+                                    else None)
+                revision = (observed.get("current_revision")
+                            if isinstance(observed, Mapping) else None)
+                if revision is None and isinstance(observed_payload, Mapping):
+                    revision = observed_payload.get("current_revision")
+                if isinstance(revision, ResourceRef):
+                    return json_value(revision)
+                if isinstance(revision, Mapping) and revision.get("revision"):
+                    return dict(revision)
+            if stable.revision:
+                return stable.to_dict()
+        raise OccurrencePreparationError(field + " create response has no current document revision")
+
     def assign_worker(self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
                       principal: str, request_key: str, instructions: str,
                       instruction_contract: Mapping[str, Any], brief: Mapping[str, Any],
@@ -109,7 +145,7 @@ class ExecutionApplication:
                        "supporting_refs": [], "instructions": instructions}
             guide = self.portfolio.create_document(project, actor=self.actor,
                 request_id=request_key + ":guide", document_id=name, content=content)
-            guide_ref = guide["record"]["payload"]["current_revision"]
+            guide_ref = self._document_revision(guide, "worker guide")
             handles["guide_ref"] = guide_ref
             stage = "assignment"
             actor = self.binding.authenticated_actor(self.manager_actor)
@@ -139,7 +175,7 @@ class ExecutionApplication:
                          "dispatch_enabled": True, "task_ref": task,
                          "assignment_ref": assignment.ref.to_dict(), "generation": assignment.generation,
                          "brief": dict(brief), "instruction_contract": dict(instruction_contract)})
-            mandate_ref = mandate["record"]["payload"]["current_revision"]
+            mandate_ref = self._document_revision(mandate, "worker mandate")
             handles["mandate_ref"] = mandate_ref
             stage = "due"
             at = self._now()
