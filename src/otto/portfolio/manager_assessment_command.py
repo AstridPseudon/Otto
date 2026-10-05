@@ -9,17 +9,9 @@ from .owner_readers import json_value
 
 OPERATIONS = ("declare-scope", "freeze-input", "select-candidate", "assess", "accept", "coverage")
 
-# Local bookkeeping has its own bounded owner allocation.  It is deliberately
-# separate from the installed advisor's model-call allowance: assessment
-# invocations record owner decisions and do not start a provider.
-LOCAL_ASSESSMENT_POOL_ID = "project-advisor-closeout-assessment-v1"
-LOCAL_ASSESSMENT_POOL_CAPACITY = 1
-LOCAL_ASSESSMENT_POOL_ALLOWANCE = 11  # 2+2+2+2+1+2 task/criterion pairs, incl. shared C07
-ADVISOR_MODEL_POOL_ID = "pa06-project-advisor-pilot-v1"
-
 
 def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
-                                    state: Mapping[str, Any]) -> Mapping[str, Any]:
+                                    state: Mapping[str, Any], policy: Any) -> Mapping[str, Any]:
     """The service supplies current state; the CLI supplies no actor capability."""
     alias = request.get("task")
     if alias not in state["task_refs"]:
@@ -27,18 +19,20 @@ def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
     return owner.manager_assessment(
         project_ref=state["project_ref"], task_ref=state["task_refs"][alias],
         manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
-        manager_generation=state["manager_generation"],
+        manager_generation=state["manager_generation"], assessment_policy=policy,
     ).execute(request)
 
 
 def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, Any],
-                                         state: Mapping[str, Any]) -> Mapping[str, Any]:
+                                         state: Mapping[str, Any], policy: Any) -> Mapping[str, Any]:
     """Create/read the finite local assessment pool through the owner.
 
-    The pool identity and bounded size are code-level policy, so a caller
-    cannot accidentally point assessment bookkeeping at the advisor model
-    allowance or create an arbitrary extra budget.
+    The controller supplies the bound run policy; callers supply only current
+    manager/task pins and a replay key, never pool identities or quantities.
     """
+    fields = {"command", "task", "expected_task_ref", "expected_assignment_ref", "expected_generation", "request_key"}
+    if set(request) - fields:
+        raise ValueError("assessment pool request cannot supply policy or budget fields")
     alias = request.get("task")
     if alias not in state["task_refs"]:
         raise ValueError("unknown task alias")
@@ -55,7 +49,7 @@ def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, An
     return owner.create_manager_assessment_pool(
         project_ref=state["project_ref"], task_ref=state["task_refs"][alias],
         manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
-        manager_generation=state["manager_generation"], logical_request_key=key,
+        manager_generation=state["manager_generation"], assessment_policy=policy, logical_request_key=key,
     )
 
 
@@ -63,10 +57,11 @@ class ManagerAssessmentCommands:
     """Owner-issued, exact task/assignment capability, revalidated on every call."""
 
     def __init__(self, *, assessment: Any, reader: Any, actor: Any, task: ResourceRef,
-                 assignment: ResourceRef, generation: int, authorize: Any) -> None:
+                 assignment: ResourceRef, generation: int, authorize: Any, policy: Any, pool_guard: Any) -> None:
         self._assessment, self._reader, self._actor = assessment, reader, actor
         self._task, self._assignment, self._generation = task, assignment, generation
         self._authorize = authorize
+        self._policy, self._pool_guard = policy, pool_guard
 
     def _ref(self, value: Any, field: str, *, kind: str | None = None,
              stable: bool = False) -> ResourceRef:
@@ -120,7 +115,7 @@ class ManagerAssessmentCommands:
         if op == "declare-scope":
             record = self._assessment.declare_scope(
                 self._ref(args.get("scope_ref"), "scope_ref", kind="assessment.scope", stable=True),
-                parent_obligation=self._task, criteria=self._refs(args.get("criterion_refs"), "criterion_refs", kind="assessment.criterion"),
+                parent_obligation=self._task, criteria=self._criteria(args.get("criterion_refs")),
                 protocol=args.get("protocol"), designated_approver=self._actor.actor,
                 authority=self._actor.authority, review_required=True, allow_no_review=False,
                 policy={"required_for_completion": True}, **common)
@@ -128,6 +123,7 @@ class ManagerAssessmentCommands:
             result = self._assessment.get_result(ref("result_ref", "assessment.result"))
             scope = self._scope(result.scope_ref)
             candidate, criterion = ref("candidate_ref"), ref("criterion_ref", "assessment.criterion")
+            self._policy.require_pair(self._task, criterion)
             self._input(result.input_packet_ref, scope, candidate, criterion)
             evidence = self._refs(args.get("evidence_refs"), "evidence_refs")
             packet = self._assessment.get_input(result.input_packet_ref)
@@ -139,7 +135,7 @@ class ManagerAssessmentCommands:
             scope = self._scope(ref("scope_ref", "assessment.scope"))
             candidate = ref("candidate_ref")
             if op == "freeze-input":
-                criteria = self._refs(args.get("criterion_refs"), "criterion_refs", kind="assessment.criterion")
+                criteria = self._criteria(args.get("criterion_refs"))
                 if not set(criteria).issubset(set(scope.criterion_refs)):
                     raise ValueError("input criteria are outside the scope")
                 sources = self._refs(args.get("source_refs"), "source_refs")
@@ -156,6 +152,7 @@ class ManagerAssessmentCommands:
                     consumed_refs=consumed, **common)
             else:
                 criterion = ref("criterion_ref", "assessment.criterion")
+                self._policy.require_pair(self._task, criterion)
                 if op == "select-candidate":
                     record = self._assessment.select_candidate(scope.ref, candidate=candidate,
                         criterion=criterion, rationale=args.get("rationale"), **common)
@@ -163,15 +160,9 @@ class ManagerAssessmentCommands:
                     packet_ref = ref("input_ref", "assessment.input")
                     self._input(packet_ref, scope, candidate, criterion)
                     pool = self._ref(args.get("limit_pool_ref"), "limit_pool_ref", kind="limit", stable=True)
-                    if pool.id == ADVISOR_MODEL_POOL_ID:
-                        raise PermissionError(
-                            "assessment bookkeeping cannot consume the exhausted advisor model allowance; "
-                            "use the bounded local assessment pool"
-                        )
-                    if pool.id != LOCAL_ASSESSMENT_POOL_ID:
-                        raise PermissionError(
-                            "assessment requires the owner-authorized project-advisor closeout pool"
-                        )
+                    if pool != self._policy.pool_ref:
+                        raise PermissionError("assessment requires the exact controller-authorized local pool")
+                    self._pool_guard()
                     protocol_result = args.get("protocol_result")
                     if not isinstance(protocol_result, Mapping) or not protocol_result:
                         raise ValueError("protocol_result must record the manager's actual inspection")
@@ -182,8 +173,16 @@ class ManagerAssessmentCommands:
                 "operation": op, "ref": record.ref.to_dict(), "record": json_value(record.payload),
                 "provider_called": False, "task_completion_recorded": False}
 
+    def _criteria(self, values: Any) -> tuple[ResourceRef, ...]:
+        criteria = self._refs(values, "criterion_refs", kind="assessment.criterion")
+        for criterion in criteria:
+            self._policy.require_pair(self._task, criterion)
+        return criteria
+
     def _scope(self, ref: ResourceRef) -> Any:
         scope = self._assessment.get_scope(ref)
+        for criterion in scope.criterion_refs:
+            self._policy.require_pair(self._task, criterion)
         if scope.parent_obligation_ref != self._task:
             raise PermissionError("assessment scope is not bound to the exact current task")
         return scope

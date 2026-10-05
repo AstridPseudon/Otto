@@ -12,9 +12,9 @@ from herzchen.kernel.limits import LimitService
 from otto.portfolio.completion_gate import completion_gate_from_command
 from otto.portfolio.execution_operations import complete_task_from_command
 from otto.portfolio.manager_assessment_command import (
-    LOCAL_ASSESSMENT_POOL_ID,
-    manager_assessment_from_command,
+    manager_assessment_from_command, manager_assessment_pool_from_command,
 )
+from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
 from tests import test_manager_reentrant_ipc as reentrant
 
 
@@ -37,10 +37,17 @@ class ManagerAssessmentIPCTests(unittest.TestCase):
             protocol="original-criteria", criteria=[{"id": "original-C09", "definition": "observable correction"}],
             logical_request_key="original-criteria")
         self.criterion = criteria.criterion_refs[0]
+        self.config = {"kind": "owner_local_bookkeeping", "purpose": "local test inspection", "local_only": True,
+            "pool_ref": ResourceRef(f.actor.authority, "limit", "configured-local-inspection").to_dict(),
+            "capacity_units": 1, "cumulative_allowance_units": 1,
+            "scope_project_ref": f.project.ref.to_dict(),
+            "task_criterion_pairs": [{"task": "PA02", "criterion": "quality"}]}
+        self.policy = LocalAssessmentPolicy.from_config(self.config,
+            task_refs=self.tasks, criterion_refs={"quality": self.criterion.to_dict()})
         pool_record = f.owner.create_manager_assessment_pool(
             project_ref=f.project.ref.to_dict(), task_ref=f.task.ref.to_dict(),
             manager_assignment_ref=self.assignment.to_dict(), manager_actor="manager",
-            manager_generation=1, logical_request_key="local-assessment-pool-v1",
+            manager_generation=1, logical_request_key="local-assessment-pool-v1", assessment_policy=self.policy,
         )
         self.pool = LimitService(f.store).get_pool(ResourceRef.from_dict(pool_record["pool"]))
         self.plan = self.directory.parent / "assessment-plan.json"
@@ -108,7 +115,12 @@ if not Path(paths[4]).exists():raise RuntimeError("manager release expired")
         f = self.fixture
         if request["command"] == "manager-assessment":
             self.handler_threads.append(threading.get_ident())
-            return manager_assessment_from_command(f.owner, request=request,
+            return manager_assessment_from_command(f.owner, request=request, policy=self.policy,
+                state={"project_ref": f.project.ref.to_dict(), "task_refs": self.tasks,
+                       "assignment_ref": self.assignment.to_dict(), "manager": "manager", "manager_generation": 1})
+        if request["command"] == "manager-assessment-pool":
+            self.handler_threads.append(threading.get_ident())
+            return manager_assessment_pool_from_command(f.owner, request=request, policy=self.policy,
                 state={"project_ref": f.project.ref.to_dict(), "task_refs": self.tasks,
                        "assignment_ref": self.assignment.to_dict(), "manager": "manager", "manager_generation": 1})
         if request["command"] == "completion-gate":
@@ -181,14 +193,14 @@ if not Path(paths[4]).exists():raise RuntimeError("manager release expired")
         created = f.owner.create_manager_assessment_pool(
             project_ref=f.project.ref.to_dict(), task_ref=f.task.ref.to_dict(),
             manager_assignment_ref=self.assignment.to_dict(), manager_actor="manager",
-            manager_generation=1, logical_request_key="local-assessment-pool-v1",
+            manager_generation=1, logical_request_key="local-assessment-pool-v1", assessment_policy=self.policy,
         )
-        self.assertEqual(created["pool"]["id"], LOCAL_ASSESSMENT_POOL_ID)
+        self.assertEqual(created["pool"], self.policy.pool_ref.to_dict())
         self.assertEqual(created["outcome"], "committed")
         self.assertEqual(created["capacity_units"], 1)
-        self.assertEqual(created["cumulative_allowance_units"], 11)
-        self.assertTrue(created["advisor_model_pool_unchanged"])
-        self.assertEqual(created["remaining_allowance_units"], 11)
+        self.assertEqual(created["cumulative_allowance_units"], 1)
+        self.assertTrue(created["local_only"])
+        self.assertEqual(created["remaining_allowance_units"], 1)
 
     def test_read_only_advisor_decision_state_responds_during_native_wait(self):
         f = self.fixture
