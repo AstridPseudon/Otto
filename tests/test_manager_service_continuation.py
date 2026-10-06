@@ -1,6 +1,7 @@
 """Explicit continuation checks use the maintained owner and a fake provider."""
 from datetime import timedelta
 from dataclasses import replace
+import json
 import unittest
 from unittest.mock import Mock, patch
 from herzchen.domains.work import Lifecycle
@@ -193,6 +194,47 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertEqual(due["target"]["task_ref"], f.app._read(self.anchor).target["task_ref"])
         self.assertIsNone((due.get("host_evidence") or {}).get("gateway_attempt"))
         self.assertEqual(len(f.provider.calls), self.provider_calls)
+
+    def test_consumed_transport_prose_is_advice_not_the_delivered_work_instruction(self):
+        f = self.fixture
+        anchor_before = f.port.read_due(self.anchor)
+        assignment = f.app.assignments.get(f.app._read(self.anchor).assignment_ref)
+        key = "transport-and-artifact-action"
+        reported = "Use this report through manager-continue with operation dispatch; then deliver the artifact."
+        f.app.assignments.append_report(assignment.ref,
+            {"schema": "otto.manager-progress.v1", "project_ref": f.project.ref.to_dict(),
+             "task_alias": "PA02", "task_ref": f.task.ref.to_dict(), "continue_requested": True,
+             "next_action": reported, "logical_request_key": key,
+             "recorded_at": (NOW + timedelta(minutes=1)).isoformat()},
+            expected_generation=1, logical_request_key=key, actor=f.actor)
+        reports = self.reports()
+        prepared = manager_continuation_from_command(
+            request={"report_key": key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=lambda: reports, preserve_execution_binding=True)
+        schedule = prepared["continuation"]["schedule_id"]
+        due = f.port.read_due(schedule)
+        self.assertNotIn(reported, due["instruction"])
+        self.assertIn("Advance the adopted manager objective", due["instruction"])
+        context = json.loads(due["message"].split("\n", 1)[1])
+        self.assertEqual(context["current_intent"]["source"], "adopted_manager_contract")
+        self.assertEqual(context["current_intent"]["reported_next_action"], reported)
+        self.assertEqual(context["current_intent"]["next_action"], due["instruction"])
+        self.assertTrue(context["current_continuation"]["report_consumed_by_this_invocation"])
+        self.assertEqual(f.app.start(schedule_id=schedule)["outcome"], "succeeded")
+        self.assertIn(due["instruction"], f.provider.calls[-1])
+        invocation = json.loads(f.provider.calls[-1].split("<otto-invocation-request", 1)[1]
+                                .split("\n", 1)[1].split("\n</otto-invocation-request>", 1)[0])
+        delivered_instruction, delivered_context = invocation["prompt"].split(
+            "\nCurrent canonical manager report context:\n", 1)
+        self.assertEqual(delivered_instruction, due["instruction"])
+        self.assertEqual(json.loads(delivered_context), context)
+        f.compose()
+        self.assertEqual(f.app.start(schedule_id=schedule)["outcome"], "replayed")
+        self.assertEqual(len(f.provider.calls), self.provider_calls + 1)
+        self.assertEqual(f.port.read_due(self.anchor), anchor_before)
+        self.assertEqual(self.reports(), reports)
 
     def test_completed_task_refresh_never_changes_attempted_callbacks_or_nonmanager_roles(self):
         f = self.fixture

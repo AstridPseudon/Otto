@@ -145,3 +145,13 @@ continuation identifies the report already consumed by this invocation and asks
 the manager to carry out its substantive next action, avoiding redispatch of the
 same report. A native-success inner result is not proof of owner settlement and
 must not trigger automatic continuation while the occurrence is still active.
+
+The primary instruction of a bound manager continuation advances the adopted
+contract objective. The triggering report's next action remains attributed
+planning advice in `current_intent.reported_next_action`; it is not copied into
+the primary work instruction. Otherwise a report saying "dispatch this report,
+then deliver" can turn a delivered work invocation into another dispatch-only
+turn. Do not put temporary startup-only work into the enduring mandate's
+continuation direction. A phase change uses public document/adoption and role
+preparation with a corrected brief, the same native manager and a distinct
+intent; attempted occurrences and their reports remain immutable.

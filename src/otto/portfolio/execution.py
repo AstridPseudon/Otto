@@ -782,13 +782,28 @@ class ExecutionApplication:
         self._verify_native_binding(current, due.target["native_id"], prior.schedule_id)
         context = request.get("report_context")
         if preserve_execution_binding:
+            # A report can describe the transport operation that brought us
+            # here. Keep that prose attributed rather than promoting it into
+            # another execution instruction after the report is consumed.
+            reported_next_action = instruction
+            from .owner_readers import mandate_reader
+            mandate = mandate_reader(self.portfolio.operations, prior.target["project_ref"],
+                prior.target["mandate_ref"])(_identity(prior.target["mandate_ref"]))
+            contract = normalize_instruction_contract(mandate["payload"]["instruction_contract"])
+            instruction = ("Advance the adopted manager objective: " + contract["objective"] + ". "
+                "Perform the remaining substantive project work within the adopted contract. "
+                "The triggering report has already been consumed to deliver this work invocation. "
+                "Use the attributed reported next action as planning advice within that objective; "
+                "a request to dispatch this same report describes this invocation's transport, not new work.")
             context = {**(context or {}), "execution_task_ref": prior.target["task_ref"],
                 "current_continuation": {"schedule_id": schedule, "consumed_report_key": key,
                     "report_consumed_by_this_invocation": True,
                     "operator_direction": "This invocation already consumes the referenced report. Carry out its substantive next action; do not redispatch that report or wait for your own turn to settle. The owner finalizes settlement after this native turn returns."},
                 "reported_task_ref": None if task_ref is None else dict(task_ref),
-                "current_intent": {"source": "explicit_manager_report", "report_ref": request["report_ref"],
-                                   "recorded_at": request["requested_at"], "next_action": instruction},
+                "current_intent": {"source": "adopted_manager_contract", "report_ref": request["report_ref"],
+                                   "recorded_at": request["requested_at"], "next_action": instruction,
+                                   "suggestion_source": "explicit_manager_report",
+                                   "reported_next_action": reported_next_action},
                 "requirement_provenance": {
                     "owner_constraints": "adopted mandate and executable permission contract remain binding",
                     "observed_facts": "canonical report and retained owner/native readbacks",
