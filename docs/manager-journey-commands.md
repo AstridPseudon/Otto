@@ -6,60 +6,44 @@ this document is a concise entrypoint, not a second state store.
 
 ## Read the current contract
 
-Before acting, read these exact run artifacts:
+Read the actual owner goal, criteria, active configuration, current manager guide
+and accessible skill links in your delivered context. Their paths and task/model
+routes belong to this pinned project; examples from another project do not grant
+authority or budget. `status` supplies the current aliases, refs and handles.
 
-- `agent_goal.md` — objective, authority, and non-goals
-- `tasklist.md` — C01–C08 and the evidence required for each criterion
-- `run.yaml` — active model routes, local assessment allowance, and review limits
-- `plan.md` — integration order and cold-journey validation
-- `manager-guide.md` — current manager instructions
-- `work/integration-owner/policy-staging/megado/skill/SKILL.md` — accessible Megado protocol
-
-The working checkout is:
-
-`/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-manager-journey-20261005/work/integration-owner`
-
-The maintained client is:
-
-`/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-manager-journey-20261005/controller/manager_ctl.py`
-
-Use it with the run's pinned interpreter:
+Use the installed `ottoctl` beside the current controller's operator guide. It
+pins its stdlib client interpreter separately from the owner service. Use its
+absolute path from your delivered context, or from the controller directory:
 
 ```sh
-PYTHON=/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python
-CLIENT=/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-manager-journey-20261005/controller/manager_ctl.py
-"$PYTHON" "$CLIENT" --help
-"$PYTHON" "$CLIENT" status
+CLIENT="$PWD/ottoctl"
+"$CLIENT" --help
+"$CLIENT" status
 ```
 
 Do not open `owner.sqlite`, edit `canonical-state.json`, or hot-edit the pinned
-controller. The supported owner route for a local checkpoint is `commit`:
+controller. The maintained route for a scoped local checkpoint is:
 
 ```sh
-"$PYTHON" "$CLIENT" commit --path docs/manager-journey-commands.md \
+"$CLIENT" commit --path docs/manager-journey-commands.md \
   --message "Document the maintained manager-journey command path"
 ```
 
+Use only paths actually owned by your implementation role. The manager generally
+delegates implementation and owns substantive judgment and bookkeeping.
+
 ## Ordinary progress and continuation
 
-Record evidence and the next bounded action with `report`. When a report requests
-continuation, consume the returned exact command with `manager-continue --operation
-prepare`; preparation is not provider replay. Dispatch is separate, and an
-unknown current manager effect remains held until its owner disposition is
-recorded. Never retry a new request key merely because a prior provider result is
-unknown.
+`report` records observed evidence and the next bounded action. A report that
+requests continuation yields an exact report-key command; preparation and
+dispatch are separate. Once that report-key continuation is delivered, perform
+its substantive objective rather than redispatching its consumed trigger. Never
+replace an unknown effect with a fresh key to guess at delivery.
 
-Delegate through the current task route:
-
-```sh
-"$PYTHON" "$CLIENT" run-worker --task J01 --route xhard \
-  --principal journey-integration-1 --request-key journey-j01-worker-v1 \
-  --focus "bounded connected J01/J02 implementation and evidence"
-```
-
-The J01/J02 integration owner is the single Sol route. J03 and the cold operator
-use the normal route. A worker result is evidence for manager judgment, not an
-automatic acceptance or task completion.
+Delegate with `run-worker --help`, the current task alias, configured route,
+principal, exact logical request key and bounded focus. Use `worker-status` and
+`command-status` for the returned retained handles. A worker result is evidence
+for manager judgment, not automatic acceptance or task completion.
 
 The owner service retains settled worker-result delivery to the same manager.
 After the last accepted finish intent actually commits and that manager turn
@@ -74,7 +58,7 @@ handle rather than redispatching it, polling indefinitely, or repeating tests.
 Discover the canonical result of an existing worker before choosing review refs:
 
 ```sh
-"$PYTHON" "$CLIENT" review-input --task J01
+"$CLIENT" review-input --task J01
 ```
 
 This read returns the exact `wrk.result` candidate, source/evidence references,
@@ -120,18 +104,31 @@ exact current candidate, accepted gate refs, and evidence refs when those exist;
 operations for substantive PASS/REWORK/UNKNOWN judgment and local bookkeeping,
 then use `complete-task` only with the returned current refs and accepted gates.
 
-The project close is a separate maintained operation. First read the current
-lifecycle and revisions:
+Project close is a separate guarded operation after actual task completion. Use
+`finish-project --help` for the complete JSON shape and response semantics. A
+local delivery example is:
 
 ```sh
-"$PYTHON" "$CLIENT" project-lifecycle-read --task J01
+"$CLIENT" finish-project --request-key local-project-close-v1 --dispositions '{"acceptance":{"status":"passed","rationale":"All actual tasks retain accepted candidates and committed completion"},"publication":{"status":"qualified","rationale":"Local artifact delivery; publication is not required"},"remote":{"status":"qualified","rationale":"Local delivery; remote push is not required"},"runtime":{"status":"qualified","rationale":"Owner retains bounded callbacks and reconciles project-owned schedules"}}'
 ```
 
-Perform a lifecycle transition only with the exact expected generation, project
-revision, task revision, evidence, and obligation returned by the owner read.
-After task completion, read the project lifecycle again and retain the terminal
-readback. Completed commands, six finished steps, or a pending metadata record do
-not prove project close.
+Choose each disposition from actual facts. Allowed statuses are `passed`,
+`verified` and `qualified`; each needs a substantive rationale. This example
+does not waive gates or establish acceptance, publication, remote delivery or
+runtime settlement. The owner service binds the orchestrator and schedule
+observer and supplies current lifecycle pins; operators need not assemble
+low-level transitions or inspect controller source.
+
+A `pending` reply retains its exact transport handle. Use `command-status
+--request-id HANDLE` to recover that reply; keep the logical request key and do
+not create another finish effect. If a finish waits on your own manager turn,
+return so owner settlement can proceed. A terminal transport response can still
+be held or unknown. Actual project completion requires the retained response's
+`project_completion_recorded=true`, `settlement_pending=false`, and completed
+`readback` with `reconciliation.status=reconciled`.
+
+`project-lifecycle-read` reads current canonical state without mutation.
+Completed command output or pending metadata alone does not prove project close.
 
 For a cold journey, a fresh operator must use these same documents and commands to
 submit work, receive a retained handle, issue nested status/report/assessment or
@@ -139,24 +136,9 @@ finish commands, reconcile any interruption without duplicate effects, complete 
 task, advance, and verify the project terminal state. Supervisor-written per-step
 instructions are not journey evidence.
 
-## Observed host boundary
+## Historical host repairs
 
-The fresh J04 run reproduced a real command-lane dependency cycle. The outer
-`run-worker --task J04 --request-key journey-j04-cold-v1` was admitted as
-`worker-765555adea732a77f135cbe17e01` and reached physical session
-`01a10c5b-2f05-7612-bee5-5e76e2a695db`. Its retained host receipt contains the
-initial READY turn. The worker then submitted the nested
-`project-lifecycle-read --task J04` request, which remains queued behind the
-outer request; the manager's same-lane progress report is queued as well. This
-is terminal evidence of the synchronous command dependency, not evidence of a
-completed journey.
-
-The host-only adoption request is bounded to the pinned controller's
-`manager_server_baseline.py:779`: schedule `app.start(...)` through the already
-available `ExecutionHost.retain` (or an equivalent owner-approved retained
-operation), return the durable handle to the caller, and keep the existing
-occurrence/reconciliation semantics. Add a host-level regression proving that
-an admitted worker can issue a nested `status`/lifecycle read while the worker
-operation is active, then retry the same J04 request only after the host
-reports the prior occurrence reconciled. The worker must not edit or restart
-the controller.
+Earlier controller adoption and retry proposals are historical bootstrap evidence
+in the run's execution observations. They are not operator instructions. Use the
+current installed client and retained handles; never edit, adopt or restart a
+live controller, reconstruct old requests, or replay an uncertain provider effect.

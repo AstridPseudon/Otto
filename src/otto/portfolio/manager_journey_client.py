@@ -7,6 +7,31 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+FINISH_PROJECT_EXAMPLE = (
+    "ottoctl finish-project --request-key local-project-close-v1 --dispositions '"
+    '{"acceptance":{"status":"passed","rationale":"All actual tasks retain accepted candidates and committed completion"},'
+    '"publication":{"status":"qualified","rationale":"Local artifact delivery; publication is not required"},'
+    '"remote":{"status":"qualified","rationale":"Local delivery; remote push is not required"},'
+    '"runtime":{"status":"qualified","rationale":"Owner retains bounded callbacks and reconciles project-owned schedules"}}'
+    "'"
+)
+
+FINISH_PROJECT_HELP = """Use this guarded operation after all actual tasks have committed completion.
+Choose dispositions that match observed facts; the example is not acceptance.
+
+Example (copy as one shell command):
+""" + FINISH_PROJECT_EXAMPLE + """
+
+A pending reply retains the request handle. Use command-status --request-id HANDLE
+to recover that exact reply; do not repeat the finish effect with another key.
+If finish waits on your own manager turn, return so the owner can settle it.
+Terminal transport alone is not project completion: inspect the retained response
+for project_completion_recorded=true, settlement_pending=false, and a completed
+readback with reconciliation.status=reconciled. A held/unknown result is not PASS.
+project-lifecycle-read exposes the current canonical lifecycle without mutation.
+No low-level lifecycle pins or controller-source inspection are needed.
+"""
+
 
 def read_command_status(directory: str | Path, request_id: str, *, pending_only: bool = False) -> Any:
     """Read the exact retained transport handle without sending another command."""
@@ -156,7 +181,8 @@ def add_manager_journey_parsers(commands: Any) -> None:
     finish.add_argument("--task", required=True)
     finish.add_argument("--request-key", required=True)
     finish.add_argument("--review-key", required=True)
-    project = commands.add_parser("finish-project", help="close completed project tasks and read actual terminal settlement")
+    project = commands.add_parser("finish-project", help="close completed project tasks and read actual terminal settlement",
+                                  description=FINISH_PROJECT_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     project.add_argument("--request-key", required=True)
     project.add_argument("--dispositions", required=True, type=json.loads,
                          help="acceptance/publication/remote/runtime: qualified status and rationale")
