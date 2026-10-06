@@ -85,6 +85,29 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "manager-task-settlement":
+            self.commands._authorize()
+            state = self.server.state
+            if (set(request) != {"command", "principal", "schedule_id"}
+                    or request["principal"] != state["manager"]
+                    or request["schedule_id"] != (state.get("manager_continuation") or {}).get("schedule_id")):
+                raise PermissionError("task-settlement continuation handle is stale or foreign")
+            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                reasoning=state["requested_reasoning"], evidence_id=request["schedule_id"])
+            due = app._read(request["schedule_id"])
+            if not (due.host_evidence or {}).get("task_settlement_continuation"):
+                raise PermissionError("task-settlement command requires its retained completion observation")
+            result = app.recover(schedule_id=due.schedule_id, execute=True)
+            if result.get("outcome") in {"succeeded", "replayed"}:
+                state["manager_continuation"].update(outcome=result["outcome"],
+                    requested_continuation={"settled_schedule_id": due.schedule_id})
+                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
+                self._refresh_refs()
+            return result
+        if command == "review-input":
+            if set(request) != {"command", "task"}:
+                raise ValueError("review-input requires only the current task alias")
+            return self.commands.review_input(request["task"])
         if command == "manager-worker-result":
             self.commands._authorize()
             state = self.server.state
@@ -104,6 +127,7 @@ class ManagerJourneyService:
                     "outcome": result["outcome"], "requested_continuation": {"settled_schedule_id": result["schedule_id"]}}
                 result = {**result, "completion_intents": self.commands.settle_completion_intents()}
                 self._refresh_refs()
+                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
             return result
         if command == "project-lifecycle-read":
             # The operator is authorized by its exact manager assignment. The
@@ -144,6 +168,7 @@ class ManagerJourneyService:
             if result.get("outcome") in {"succeeded", "replayed"}:
                 result = {**result, "completion_intents": self.commands.settle_completion_intents()}
                 self._refresh_refs()
+                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
             return result
         if command in {"review-task", "finish-task", "finish-project"}:
             operation = getattr(self.commands, command.replace("-", "_"))
@@ -151,6 +176,12 @@ class ManagerJourneyService:
                                 observe_schedules=self.observe_schedules)
                       if command == "finish-project" else operation(request))
             self._refresh_refs()
+            if command != "finish-project" and (result.get("outcome") in {"completed", "replayed"}
+                    or (result.get("completion") or {}).get("outcome") in {"completed", "replayed"}):
+                state = self.server.state
+                app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                    reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
+                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
             return result
         if command == "run-worker":
             return self._submit_worker(request)
@@ -167,6 +198,12 @@ class ManagerJourneyService:
             if result.get("outcome") in {"succeeded", "replayed"}:
                 result = {**result, "completion_intents": self.commands.settle_completion_intents()}
                 self._refresh_refs()
+                result = {**result, "review_input": self.commands.review_input(request["task"])}
+                if result["completion_intents"]:
+                    state = self.server.state
+                    manager_app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                        reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
+                    result = {**result, "task_settlement_notification": self._retain_task_settlement(manager_app)}
                 if command == "start-retained-worker":
                     if self.host._closing:
                         retained = {"outcome": "held", "provider_called": False,
@@ -177,6 +214,24 @@ class ManagerJourneyService:
                     result = {**result, "manager_result_notification": retained}
             return result
         return self.server.handle(request)
+
+    def _retain_task_settlement(self, app: Any) -> Mapping[str, Any]:
+        if self.host._closing:
+            return {"outcome": "held", "provider_called": False,
+                    "reason": "owner is draining; preserve completion intents for same-manager closeout after restart"}
+        state = self.server.state
+        anchor = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+        prepared = app.continue_manager_after_tasks(manager_schedule_id=anchor, execute=False)
+        if prepared.get("outcome") not in {"committed", "prepared"}:
+            return prepared
+        due = app._read(prepared["schedule_id"])
+        state.update(schedule_id=due.schedule_id, logical_request_key=due.in_flight_request,
+            manager_start_instruction=due.instruction,
+            manager_continuation={"schedule_id": due.schedule_id, "native_session_id": due.target["native_id"],
+                "outcome": "prepared", "requested_continuation": {"settled_schedule_id": anchor}})
+        self.server._save_state()
+        return self.host.submit({"command": "manager-task-settlement", "principal": state["manager"],
+                                 "schedule_id": due.schedule_id})
 
     def _refresh_refs(self) -> None:
         from herzchen.contracts import ResourceRef

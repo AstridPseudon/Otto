@@ -61,7 +61,43 @@ The J01/J02 integration owner is the single Sol route. J03 and the cold operator
 use the normal route. A worker result is evidence for manager judgment, not an
 automatic acceptance or task completion.
 
+The owner service retains settled worker-result delivery to the same manager.
+After the last accepted finish intent actually commits and that manager turn
+settles, it also retains one same-manager closeout inspection. Neither delivery
+creates a progress report or accepts the project. A repeated observation resolves
+the same occurrence; an unknown manager effect blocks another dispatch. Return
+from a turn whose finish is pending on its own settlement. Inspect its retained
+handle rather than redispatching it, polling indefinitely, or repeating tests.
+
 ## Judgment, completion, and project close
+
+Discover the canonical result of an existing worker before choosing review refs:
+
+```sh
+"$PYTHON" "$CLIENT" review-input --task J01
+```
+
+This read returns the exact `wrk.result` candidate, source/evidence references,
+worker result digest and native identity. `worker-status` also returns this view
+after success. Read the actual artifact, task outcome and criterion before
+`review-task`; transport success is unjudged evidence. Verify promised paths as
+well as contents. A useful alternate filename does not fulfill a task that
+explicitly promises another path.
+
+Use each resource-ref JSON object as returned: `--candidate-ref OBJECT` and one
+`--source-ref OBJECT` flag per source. Do not pass an array to a single source
+flag. Supply a judgment for every configured criterion with `verdict`,
+`rationale` and `evidence_refs`, and include the actual candidate in those
+evidence refs. The assessment owner's rationale field is an identifier and
+does not admit slash, backslash or NUL; put paths and substantive observations
+in `--inspection`. Instruction GUIDE/MANDATE documents describe requirements
+and authority; they cannot substitute for delivered artifact candidates.
+
+An older schema-valid acceptance can still have wrong candidate provenance.
+The service preserves such decisions, completions and consumed allowance, but
+holds project acceptance with the affected task refs. Inspect the retained
+records and obtain an authorized correction; do not relabel the candidate,
+reset the pool, or blindly submit another review.
 
 `completion-gate` is a read-only provisional predicate. It must be supplied the
 exact current candidate, accepted gate refs, and evidence refs when those exist;

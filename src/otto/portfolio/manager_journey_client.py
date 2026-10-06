@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -112,20 +113,42 @@ def command_result_summary(value: Any) -> Any:
                 and (not isinstance(data, str) or len(data) <= 512)}
             for field in ("assignment_ref", "guide_ref", "mandate_ref"):
                 if ref(worker.get(field)): summary["workers"][name][field] = ref(worker[field])
+    review = value.get("review_input")
+    if isinstance(review, dict):
+        summary["review_input"] = {key: review[key] for key in ("outcome", "schedule_id", "worker_result_sha256", "observed_turn_id", "physical_session_id")
+                                   if isinstance(review.get(key), str) and len(review[key]) <= 512}
+        for key in ("candidate_ref", "task_ref"):
+            if ref(review.get(key)): summary["review_input"][key] = ref(review[key])
+        for key in ("source_refs", "evidence_refs"):
+            if isinstance(review.get(key), list): summary["review_input"][key] = [ref(item) for item in review[key][:64] if ref(item)]
     return summary
+
+
+def _review_ref(value: str) -> Any:
+    try:
+        result = json.loads(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("supply one resource-ref JSON object") from exc
+    if not isinstance(result, dict) or not all(isinstance(result.get(key), str) and result[key]
+            for key in ("authority", "kind", "id", "revision")):
+        raise argparse.ArgumentTypeError("supply one pinned resource-ref JSON object; repeat --source-ref for each source, not a JSON array")
+    return result
 
 
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
     status = commands.add_parser("command-status", help="read one retained transport handle without another send")
     status.add_argument("--request-id", required=True)
+    inputs = commands.add_parser("review-input", help="read exact retained worker candidate/evidence refs without judging or sending work")
+    inputs.add_argument("--task", required=True)
     review = commands.add_parser("review-task", help="record explicit criterion judgment and guarded task finish")
     review.add_argument("--task", required=True)
     review.add_argument("--request-key", required=True)
-    review.add_argument("--candidate-ref", required=True, type=json.loads)
-    review.add_argument("--source-ref", action="append", dest="source_refs", required=True, type=json.loads)
+    review.add_argument("--candidate-ref", required=True, type=_review_ref, help="one pinned resource-ref object from review-input or admitted artifact content")
+    review.add_argument("--source-ref", action="append", dest="source_refs", required=True, type=_review_ref,
+                        help="one pinned object per flag; repeat this flag for additional sources")
     review.add_argument("--judgments", required=True, type=json.loads,
-                        help="criterion alias -> verdict, rationale, evidence_refs; every configured task criterion")
+                        help="criterion alias -> verdict, rationale, evidence_refs; rationale is nonblank text without slash/backslash; put paths in inspection; include actual candidate in evidence_refs")
     review.add_argument("--inspection", required=True, type=json.loads, help="substantive observations, not an automatic verdict")
     review.add_argument("--review-only", action="store_false", dest="finish",
                         help="retain judgment without requesting task completion")

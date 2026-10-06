@@ -65,6 +65,53 @@ class ManagerJourneyCommands:
             raise ValueError("request_key must be 1..160 exact characters")
         return key
 
+    def review_input(self, alias: str) -> Mapping[str, Any]:
+        """Expose the exact retained worker observation, never an automatic PASS."""
+        self._authorize()
+        worker = (self.state.get("workers") or {}).get(alias)
+        if alias not in self.state["task_refs"] or not isinstance(worker, Mapping) or self.due_port is None:
+            return {"outcome": "held", "provider_called": False,
+                    "reason": "no retained worker handle for this task; admit actual candidate content through the owner"}
+        due = self.due_port.read_due(worker["schedule_id"]) or {}
+        result = ((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("result") or {}
+        assignment = self.owner.assignments.command_port.get(ResourceRef.from_dict(worker["assignment_ref"]))
+        task_ref = self.state["task_refs"][alias]
+        same_identity = lambda a, b: isinstance(a, Mapping) and isinstance(b, Mapping) and all(
+            a.get(key) == b.get(key) for key in ("authority", "kind", "id"))
+        if (assignment.ref.to_dict() != worker["assignment_ref"]
+                or assignment.principal != worker["principal"] or assignment.payload.get("manager") != self.state["manager"]
+                or assignment.generation != worker["generation"] or due.get("assignment_ref") != worker["assignment_ref"]
+                or due.get("generation") != worker["generation"]
+                or not same_identity(result.get("task_ref"), task_ref)
+                or not same_identity(result.get("project_ref"), self.state["project_ref"])):
+            raise PermissionError("review input worker/task/project assignment binding differs")
+        if (due.get("stop_state") != "completed" or due.get("completion_state") != "succeeded"
+                or due.get("in_flight_request") is not None or result.get("outcome") != "succeeded"
+                or result.get("context_digest_verified") is not True):
+            return {"outcome": "pending", "schedule_id": worker["schedule_id"], "provider_called": False,
+                    "retry_provider": False, "reason": "inspect or settle this exact worker occurrence before judging it"}
+        observations = [item for item in self.owner.assignments.command_port.list_observations(assignment.ref, kind="result")
+                        if json_value(item.value) == result]
+        if len(observations) != 1:
+            raise ValueError("retained worker result does not identify one exact canonical observation")
+        ref = observations[0].ref.to_dict()
+        task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
+        return {"outcome": "read", "task_ref": task_ref, "task_outcome": task.payload.get("outcome"),
+                "schedule_id": worker["schedule_id"], "candidate_ref": ref, "source_refs": [ref], "evidence_refs": [ref],
+                "worker_result_sha256": _digest(result), "observed_turn_id": result.get("observed_turn_id"),
+                "physical_session_id": result.get("physical_session_id"), "provider_called": False,
+                "acceptance": "unjudged retained worker result; inspect actual artifact paths/content and criterion before review-task",
+                "next_action": "Use these exact refs for review-task after substantive inspection. Instruction GUIDE/MANDATE refs are context, not delivered artifact candidates. Preserve completed tasks, decisions and budget use; this read does not authorize another review or worker replay."}
+
+    def _instruction_document(self, ref: ResourceRef) -> bool:
+        if ref.kind != "dat.content.document":
+            return False
+        value = self.owner.content.read(ref)
+        content = value.get("content") or (value.get("revision") or {}).get("content") or {}
+        document = value.get("document") or {}
+        return (document.get("role") == "mandate" or isinstance(content, Mapping) and
+                (content.get("schema") == "herzchen.instructions.v1" or "instruction_contract" in content))
+
     def review_task(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._authorize()
         key = self._key(request)
@@ -114,6 +161,14 @@ class ManagerJourneyCommands:
                     raise ValueError("each criterion requires verdict, rationale and genuine evidence_refs")
                 evidence.extend(commands._refs(judgment["evidence_refs"], "evidence_refs"))
             evidence = list(dict.fromkeys(evidence))
+            if self._instruction_document(candidate) or candidate not in evidence:
+                raise ValueError("ordinary review requires the actual artifact/result candidate in evidence_refs; "
+                    "GUIDE/MANDATE instruction documents cannot substitute for delivered work. "
+                    "Use review-input --task to discover retained worker refs, then inspect the artifact and exact task outcome.")
+            for judgment in judgments.values():
+                if any(char in judgment["rationale"] for char in ("/", "\\", "\x00")):
+                    raise ValueError("rationale is an assessment identifier: use nonblank text without slash, backslash or NUL; "
+                                     "put paths and substantive inspection prose in inspection")
             hashes = {}
             for ref in evidence:
                 payload = commands._reader.get_identity(ref).payload
@@ -296,6 +351,18 @@ class ManagerJourneyCommands:
             return {"outcome": "held", "project_completion_recorded": False,
                     "reason": "all actual project tasks require committed completion evidence",
                     "provider_called": False}
+        invalid = []
+        for task in tasks:
+            completion = task.payload["completion"]
+            candidate = ResourceRef.from_dict(completion["candidate_ref"]) if completion.get("candidate_ref") else None
+            if (candidate is None or self._instruction_document(candidate)
+                    or candidate.to_dict() not in json_value(completion.get("evidence_refs", []))):
+                invalid.append(task.ref.to_dict())
+        if invalid:
+            return {"outcome": "held", "project_completion_recorded": False, "provider_called": False,
+                    "reason": "recorded task completion does not retain genuine artifact/result candidate evidence",
+                    "task_refs": invalid,
+                    "next_action": "Inspect review-input and the retained judgments/completion evidence. Preserve historical decisions and budget use; resolve the provenance/outcome discrepancy through an authorized owner correction before project acceptance. Do not blindly re-review or replay workers."}
         dispositions = request.get("dispositions")
         if not isinstance(dispositions, Mapping) or set(dispositions) != {"acceptance", "publication", "remote", "runtime"}:
             raise ValueError("supply acceptance/publication/remote/runtime dispositions")

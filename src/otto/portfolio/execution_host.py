@@ -39,6 +39,7 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
                                  "manager-assessment", "manager-assessment-pool",
                                  "run-worker", "worker-status", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
+                                 "review-input",
                                  "project-lifecycle-read", "commit",
                                  "advisor-decision-state"})
 
@@ -48,7 +49,7 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
     if request.get("command") in _REENTRANT_COMMANDS:
         return "admitted"
     if (request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
-            or request.get("command") == "manager-worker-result"):
+            or request.get("command") in {"manager-worker-result", "manager-task-settlement"}):
         return "retained"  # Another native manager turn cannot overlap this one.
     return "held"
 
@@ -140,7 +141,7 @@ class ExecutionHost:
                 previous = getattr(_DISPATCH_CONTEXT, "value", None)
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
                     (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
-                    or request.get("command") in {"start-retained-worker", "manager-worker-result"})
+                    or request.get("command") in {"start-retained-worker", "manager-worker-result", "manager-task-settlement"})
                 try:
                     return self.handler(request)
                 finally:
@@ -350,8 +351,8 @@ class ExecutionHost:
             raise RuntimeError("worker submission requires its serialized command owner")
         if self._closing:
             raise RuntimeError("execution host is draining; no new worker may be admitted")
-        if request.get("command") not in {"start-retained-worker", "manager-worker-result"}:
-            raise ValueError("only a prepared worker or observed worker-result continuation may be retained")
+        if request.get("command") not in {"start-retained-worker", "manager-worker-result", "manager-task-settlement"}:
+            raise ValueError("only prepared work or an observed result/completion continuation may be retained")
         encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
         token = hashlib.sha256(encoded.encode()).hexdigest()
         path = self.directory / ("request-" + token + ".json")

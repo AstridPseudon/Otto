@@ -191,6 +191,7 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             self.assertEqual(resumed["outcome"], "succeeded", resumed)
             self.assertEqual(len(set(self.owner_threads)), 1)
         candidate = application.app.assignments.list_observations(ResourceRef.from_dict(admitted["assignment_ref"]), kind="result")[0].ref.to_dict()
+        reports_before_finish = self.reports()
         reviewed = self.wait_response(self.send("7777", {"command": "review-task", "task": "J01",
             "request_key": "native-review", "candidate_ref": candidate, "source_refs": [candidate],
             "inspection": {"checks": "Failed check followed by repair and successful focused check; native custody inspected"},
@@ -201,15 +202,12 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         # execution task has completed, then performs normal terminal close.
         anchor_before = application.port.read_due(self.anchor)
         current_task = self.server.state["task_refs"]["J01"]
-        report = self.wait_response(self.send("a001", {
-            "command": "report", "task": "J01", "summary": "Current artifact accepted and completed",
-            "next_action": "Inspect current terminal tasks and close this project through normal finish-project",
-            "request_key": "post-completion-close", "continue_project": True}))
-        self.assertEqual(report["outcome"], "committed", report)
-        continued = self.wait_response(self.send("a002", {
-            "command": "manager-continue", "report_key": "post-completion-close", "operation": "dispatch"}))
+        notification = reviewed["task_settlement_notification"]
+        self.assertEqual(notification["outcome"], "admitted", reviewed)
+        continued = self.wait_response(Path(notification["response_path"]))
         self.assertEqual(continued["outcome"], "succeeded", continued)
-        callback = application.port.read_due(continued["continuation"]["schedule_id"])
+        callback = application.port.read_due(continued["schedule_id"])
+        self.assertIn("task_settlement_continuation", callback["host_evidence"])
         self.assertEqual(callback["target"]["task_ref"], current_task)
         self.assertEqual(callback["target"]["native_id"], "manager-session")
         self.assertNotEqual(callback["target"]["mandate_ref"], anchor_before["target"]["mandate_ref"])
@@ -219,7 +217,7 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             "instruction_contract": {**before_content["instruction_contract"], "task_ref": current_task}})
         self.assertEqual(application.port.read_due(self.anchor), anchor_before)
         duplicate = self.wait_response(self.send("a003", {
-            "command": "manager-continue", "report_key": "post-completion-close", "operation": "dispatch"}))
+            "command": "manager-task-settlement", "principal": "manager", "schedule_id": callback["schedule_id"]}))
         self.assertEqual(duplicate["outcome"], "replayed", duplicate)
         self.assertEqual(application.port.read_due(callback["schedule_id"]), callback)
         closed = self.wait_response(self.send("8888", {"command": "finish-project", "request_key": "terminal-project",
@@ -228,7 +226,145 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         self.assertEqual(closed["outcome"], "completed", closed)
         self.assertEqual(closed["readback"]["lifecycle"], "completed")
         self.assertEqual(len(application.provider.calls), 4, "anchor, worker, result inspection and terminal continuation")
+        progress = lambda rows: [row for row in rows if row["value"].get("schema") == "otto.manager-progress.v1"]
+        self.assertEqual(progress(self.reports()), progress(reports_before_finish), "finish wake must not invent a progress report")
         self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-6.1-sol")
+
+    def test_native_review_pending_own_settlement_automatically_continues_to_close(self):
+        self.install_candidate()
+        f = self.fixture
+        client = Path(__file__).resolve().parents[3] / "controller" / "manager_ctl.py"
+        script = self.root / "ordinary-manager.py"
+        script.write_text('''import importlib.util,json,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location("client",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
+client.IPC=Path(sys.argv[2]);client.HERE=client.IPC;client.SERVICE=client.IPC/"unused.sock"
+if sys.argv[3]=="review":
+    inputs=client.call({"command":"review-input","task":"J01"})
+    result=client.call({"command":"review-task","task":"J01","request_key":"native-retained-review",
+        "candidate_ref":inputs["candidate_ref"],"source_refs":inputs["source_refs"],
+        "inspection":{"observed":"actual retained failed check, repair and passed check inspected"},
+        "judgments":{"C01":{"verdict":"PASS","rationale":"retained_native_inspection_pass","evidence_refs":inputs["evidence_refs"]}}})
+else:
+    result=client.call({"command":"finish-project","request_key":"native-terminal-close",
+        "dispositions":{name:{"status":"qualified","rationale":"isolated fixture has no publication remote or owned schedule"}
+                        for name in ("acceptance","publication","remote","runtime")}})
+Path(sys.argv[4]).write_text(json.dumps(result))
+''')
+        outer = self
+
+        class OrdinaryManager(ProviderBinding):
+            def execute(self, request):
+                result = super().execute(request)
+                if request.identity.logical_agent_id == "manager" and self.options.get("delivered_brief"):
+                    phase = "close" if "Observed owner task-settlement context:" in self.options["prompt"] else "review"
+                    child = subprocess.run([sys.executable, str(script), str(client), str(outer.directory), phase,
+                                            str(outer.root / (phase + ".json"))], capture_output=True, text=True, timeout=20)
+                    if child.returncode:
+                        raise RuntimeError(child.stderr)
+                return result
+
+        f.app.runtime.adapter.binding_factory = lambda **options: OrdinaryManager(f.provider, options)
+        reports_before = self.reports()
+        f.provider.work_release.set()
+        worker = self.wait_response(self.send("1111", self.worker_request()))
+        result = self.wait_response(Path(worker["response_path"]))
+        reviewed = self.wait_response(Path(result["manager_result_notification"]["response_path"]))
+        self.assertEqual(reviewed["outcome"], "succeeded", reviewed)
+        self.assertEqual(json.loads((self.root / "review.json").read_text())["completion"]["outcome"], "pending")
+        self.assertEqual(reviewed["completion_intents"][0]["result"]["outcome"], "completed")
+        final = self.wait_response(Path(reviewed["task_settlement_notification"]["response_path"]))
+        self.assertEqual(final["outcome"], "succeeded", final)
+        closed = json.loads((self.root / "close.json").read_text())
+        self.assertEqual(closed["outcome"], "completed", closed)
+        self.assertEqual(f.owner.graph.get(f.project.ref).lifecycle.value, "completed")
+        progress = lambda rows: [row for row in rows if row["value"].get("schema") == "otto.manager-progress.v1"]
+        self.assertEqual(progress(self.reports()), progress(reports_before))
+        self.assertEqual(len(f.provider.calls), 4)
+        duplicate = f.app.continue_manager_after_tasks(manager_schedule_id=final["schedule_id"], execute=True)
+        self.assertEqual(duplicate["outcome"], "idle", duplicate)
+        self.assertEqual(len(f.provider.calls), 4)
+
+    def test_instruction_candidate_rejection_is_before_any_review_or_budget_effect(self):
+        self.install_candidate()
+        f = self.fixture
+        due = f.app._read(self.anchor)
+        candidate = due.target["mandate_ref"]
+        review = {"command": "review-task", "task": "J01", "request_key": "instruction-substitution",
+            "candidate_ref": candidate, "source_refs": [candidate], "inspection": {"observed": "artifact prose only"},
+            "judgments": {"C01": {"verdict": "PASS", "rationale": "inspected", "evidence_refs": [candidate]}}}
+        with patch.object(self.host.handler.commands, "_journal", wraps=self.host.handler.commands._journal) as journal:
+            response = self.wait_response(self.send("abcd", review))
+        self.assertEqual(response["outcome"], "error", response)
+        self.assertIn("GUIDE/MANDATE", response["message"])
+        self.assertFalse(any(len(call.args) > 2 for call in journal.call_args_list), "no ordinary journal mutation")
+        self.assertEqual(f.owner.graph.get(f.task.ref).lifecycle.value, "pending")
+        self.assertEqual(len(f.provider.calls), 1)
+
+    def test_review_input_exact_result_and_stale_worker_fence_and_cli_shape(self):
+        self.install_candidate()
+        f = self.fixture
+        f.provider.work_release.set()
+        admitted = self.wait_response(self.send("1111", self.worker_request()))
+        settled = self.wait_response(Path(admitted["response_path"]))
+        self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
+        inputs = self.wait_response(self.send("abcd", {"command": "review-input", "task": "J01"}))
+        self.assertEqual(inputs["outcome"], "read", inputs)
+        self.assertEqual(inputs["candidate_ref"]["kind"], "wrk.result")
+        self.assertEqual(inputs["candidate_ref"], inputs["evidence_refs"][0])
+        retained = f.owner.graph.reader.get_identity(ResourceRef.from_dict(inputs["candidate_ref"]))
+        self.assertEqual(retained.payload["value"], f.port.read_due(admitted["schedule_id"])["host_evidence"]["gateway_attempt"]["result"])
+        self.server.state["workers"]["J01"]["generation"] += 1
+        with self.assertRaisesRegex(PermissionError, "binding differs"):
+            self.host.handler.commands.review_input("J01")
+        import argparse
+        from otto.portfolio.manager_journey_client import _review_ref, command_result_summary
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "repeat --source-ref"):
+            _review_ref(json.dumps(inputs["source_refs"]))
+        self.assertEqual(_review_ref(json.dumps(inputs["candidate_ref"])), inputs["candidate_ref"])
+        summary = command_result_summary({"outcome": "succeeded", "review_input": inputs})
+        self.assertEqual(summary["review_input"]["candidate_ref"], inputs["candidate_ref"])
+
+    def test_historical_instruction_acceptance_stays_recorded_but_cannot_close_project(self):
+        self.install_candidate()
+        f = self.fixture
+        candidate = f.app._read(self.anchor).target["mandate_ref"]
+        request = {"command": "review-task", "task": "J01", "request_key": "historical-bad-candidate",
+            "candidate_ref": candidate, "source_refs": [candidate], "inspection": {"observed": "artifact described but not bound"},
+            "judgments": {"C01": {"verdict": "PASS", "rationale": "historical_pass", "evidence_refs": [candidate]}}}
+        # Establish the authentic shape of an older accepted instruction-only
+        # completion. The repair must expose it without rewriting the history.
+        with patch.object(self.host.handler.commands, "_instruction_document", return_value=False), \
+                patch.object(self.host.handler, "_retain_task_settlement", return_value={"outcome": "held"}):
+            accepted = self.wait_response(self.send("abcd", request))
+        self.assertEqual(accepted["completion"]["outcome"], "completed", accepted)
+        before = f.owner.graph.get(f.task.ref).payload
+        from herzchen.kernel.limits import LimitService
+        pool = ResourceRef(f.actor.authority, "limit", "journey-local")
+        usage = LimitService(f.store).get_pool(pool).cumulative_used_units
+        closed = self.wait_response(self.send("bbbb", {"command": "finish-project", "request_key": "blocked-close",
+            "dispositions": {name: {"status": "qualified", "rationale": "historical completion alone"}
+                             for name in ("acceptance", "publication", "remote", "runtime")}}))
+        self.assertEqual(closed["outcome"], "held", closed)
+        self.assertIn("genuine artifact", closed["reason"])
+        self.assertEqual(f.owner.graph.get(f.task.ref).payload, before)
+        self.assertEqual(LimitService(f.store).get_pool(pool).cumulative_used_units, usage)
+        self.assertEqual(usage, 1)
+        self.assertEqual(f.owner.graph.get(f.project.ref).lifecycle.value, "pending")
+        before_due = f.port.read_due(self.anchor)
+        prepared = f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=False)
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        next_due = f.port.read_due(prepared["schedule_id"])
+        self.assertIsNone((next_due.get("host_evidence") or {}).get("gateway_attempt"))
+        self.assertEqual(f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=False)["schedule_id"], prepared["schedule_id"])
+        self.assertEqual(f.port.read_due(self.anchor), before_due)
+        current = f.app._read(self.anchor)
+        f.port.save_due(self.anchor, replace(current, completion_state="unknown").to_dict(),
+                       request_id="fixture-unknown-closeout-anchor", expected_version=current.version)
+        held = f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=True)
+        self.assertEqual(held["outcome"], "held", held)
+        self.assertEqual(f.port.read_due(prepared["schedule_id"]), next_due)
+        self.assertEqual(len(f.provider.calls), 1)
 
     def test_current_manager_lifecycle_read_uses_the_finite_owner_grant(self):
         f = self.fixture
