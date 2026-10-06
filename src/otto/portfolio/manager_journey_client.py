@@ -90,7 +90,8 @@ def command_result_summary(value: Any) -> Any:
               "observed_model", "observed_reasoning", "observed_turn_id",
               "physical_session_id", "context_digest_verified", "request_key", "delivery_state",
               "model", "reasoning", "native_session_id", "retained_handle", "response_path",
-              "version", "in_flight_request", "stop_state", "completion_state", "role", "status", "manager")
+              "version", "in_flight_request", "stop_state", "completion_state", "role", "status", "manager",
+              "project_completion_recorded", "settlement_pending", "canonical_lifecycle", "blocked_operation")
     summary = {key: item for key in fields if key in value
                and isinstance((item := value[key]), (str, bool, int, type(None)))
                and (not isinstance(item, str) or len(item) <= 512)}
@@ -146,6 +147,32 @@ def command_result_summary(value: Any) -> Any:
             if ref(review.get(key)): summary["review_input"][key] = ref(review[key])
         for key in ("source_refs", "evidence_refs"):
             if isinstance(review.get(key), list): summary["review_input"][key] = [ref(item) for item in review[key][:64] if ref(item)]
+    status = value.get("status")
+    if not isinstance(status, dict):
+        status = value.get("operation_status")
+    if isinstance(status, dict):
+        status_fields = ("schema", "project_completion_recorded", "settlement_pending", "canonical_lifecycle",
+                         "blocked_operation", "read_only", "dispatch", "launch", "agent_suggestion")
+        summary["status"] = {key: status[key] for key in status_fields if key in status
+                              and isinstance(status[key], (str, bool, int, type(None)))}
+        for layer in ("transport_completion", "accepted_review", "task_settlement",
+                      "canonical_project_completion", "current_required_scope", "pending_help",
+                      "instruction_provenance", "supported_next_remedy"):
+            item = status.get(layer)
+            if not isinstance(item, dict):
+                continue
+            if layer in {"current_required_scope", "instruction_provenance"}:
+                summary["status"][layer] = {"state": item.get("state"), "value": item.get("value"),
+                                             "reason": item.get("reason")}
+            elif layer == "pending_help":
+                summary["status"][layer] = {key: item.get(key) for key in
+                    ("state", "status", "issue_id", "purpose", "destination", "delivery_id", "resolution")
+                    if key in item}
+            else:
+                summary["status"][layer] = {key: item[key] for key in
+                    ("state", "completed", "settled", "schedule_id", "request_id", "project_completion_recorded",
+                     "lifecycle", "reconciliation", "accepted", "supported", "operation", "command", "reason")
+                    if key in item and isinstance(item[key], (str, bool, int, type(None), dict, list))}
     return summary
 
 

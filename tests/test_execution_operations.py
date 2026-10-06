@@ -11,6 +11,7 @@ from otto.attention import DueRecord
 from otto.portfolio.execution_operations import (
     OccurrencePreparationError,
     build_manager_callback_due,
+    compact_operation_status,
     compact_project_status,
     commit_local_checkpoint,
     derive_manager_continuation_request,
@@ -286,6 +287,55 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(value["historical_uncertain_effects"]), 1)
         self.assertTrue(value["acceptance_exists"])
         self.assertEqual(value["writes_performed"], 0)
+
+    def test_operation_status_keeps_transport_review_settlement_and_project_close_distinct(self):
+        value = compact_operation_status(
+            {"schedule_id": "op-1", "delivery_state": "returned", "completion_state": "none",
+             "stop_state": "active", "role": "manager"},
+            accepted_review={"state": "known", "value": True, "source_refs": [{"id": "gate-1"}]},
+            canonical_project={"lifecycle": "active", "project_completion_recorded": False,
+                               "reconciliation": {"status": "pending"}},
+            required_scope={"task_aliases": ["PA01"]},
+            blockers=[],
+            pending_help={"state": "known", "status": "pending", "destination": {"id": "orch"}},
+            instruction_provenance={"mandate_ref": {"id": "mandate-1"}},
+        )
+        self.assertEqual(value["transport_completion"]["state"], "completed")
+        self.assertTrue(value["transport_completion"]["completed"])
+        self.assertTrue(value["accepted_review"]["value"])
+        self.assertEqual(value["task_settlement"]["state"], "pending")
+        self.assertFalse(value["canonical_project_completion"]["project_completion_recorded"])
+        self.assertEqual(value["pending_help"]["status"], "pending")
+        self.assertEqual(value["instruction_provenance"]["value"]["mandate_ref"]["id"], "mandate-1")
+        self.assertEqual(value["supported_next_remedy"]["command"], "read-help")
+        unknown = compact_operation_status()
+        self.assertIsNone(unknown["canonical_project_completion"]["project_completion_recorded"])
+
+    def test_project_status_exposes_current_layers_without_globalizing_old_unknown(self):
+        task_ref = {"authority": "owner", "kind": "work.task", "id": "task-1", "revision": "rev-2"}
+        view = {"project": {"ref": {"id": "project-1"}, "observed": {
+            "lifecycle": "active", "readiness": {"blockers": []},
+        }}, "tasks": [{"ref": task_ref, "authored": {"title": "One", "lifecycle": "active"},
+            "observed": {"lifecycle": "active", "decisions": [{"ref": {"id": "gate-1"}, "accepted": True}]}}]}
+        value = compact_project_status(
+            view, task_refs={"PA01": task_ref},
+            occurrences=[{"schedule_id": "old", "anchor": "2026-10-01T10:00:00Z",
+                          "delivery_state": "unknown", "completion_state": "unknown",
+                          "target": {"task_ref": task_ref}},
+                         {"schedule_id": "new", "anchor": "2026-10-02T10:00:00Z",
+                          "delivery_state": "returned", "completion_state": "none",
+                          "stop_state": "active", "target": {"task_ref": task_ref}}],
+            help_issues=[{"issue_id": "help-1", "state": "open", "purpose": "operational_help",
+                          "current_owner_ref": {"id": "orch"},
+                          "deliveries": [{"delivery_id": "delivery-1", "state": "pending"}]}],
+            instruction_provenance={"mandate_ref": {"id": "mandate-1"}},
+        )
+        self.assertEqual(value["transport_completion"]["state"], "completed")
+        self.assertEqual(value["task_settlement"]["state"], "pending")
+        self.assertTrue(value["accepted_review"]["value"])
+        self.assertEqual(value["pending_help"]["destination"]["id"], "orch")
+        self.assertEqual(len(value["historical_uncertain_effects"]), 1)
+        self.assertFalse(value["blocked_operation"])
 
     def test_continuation_is_recovered_from_report_without_projection_file(self):
         due = {

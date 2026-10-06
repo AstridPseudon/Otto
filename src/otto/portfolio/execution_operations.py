@@ -319,12 +319,193 @@ def read_project_progress_reports(reader: Any, project_ref: Mapping[str, Any]) -
     return reports
 
 
+def _status_projection(value: Any, *, reason: str) -> dict[str, Any]:
+    """Represent one status layer without treating absence as failure."""
+
+    if value is None:
+        return {"state": "unknown", "value": None, "reason": reason}
+    return {"state": "known", "value": value, "reason": None}
+
+
+def _transport_state(operation: Mapping[str, Any]) -> tuple[str, bool | None]:
+    raw = operation.get("transport_completion")
+    if isinstance(raw, Mapping):
+        state = raw.get("state") or raw.get("status")
+        completed = raw.get("completed")
+        if isinstance(state, str):
+            state = state.strip().lower()
+            if state in {"completed", "complete", "returned", "sent", "succeeded"}:
+                return "completed", True
+            if state in {"pending", "prepared", "active", "in_flight"}:
+                return "pending", False
+            if state in {"unknown", "uncertain", "lost"}:
+                return "unknown", None
+        if type(completed) is bool:
+            return ("completed" if completed else "pending"), completed
+    state = operation.get("delivery_state")
+    if state in {"returned", "sent", "succeeded", "completed"}:
+        return "completed", True
+    if state in {"ready", "pending", "prepared", "active", "in_flight"}:
+        return "pending", False
+    if state in {"unknown", "uncertain"} or operation.get("uncertain_live_effect") is True:
+        return "unknown", None
+    return "not_started", False
+
+
+def _settlement_state(operation: Mapping[str, Any]) -> tuple[str, bool | None]:
+    explicit = operation.get("task_settlement")
+    if isinstance(explicit, Mapping):
+        state = explicit.get("state") or explicit.get("status")
+        settled = explicit.get("settled")
+        if state in {"settled", "completed", "succeeded"} or settled is True:
+            return "settled", True
+        if state in {"pending", "active", "in_flight"} or settled is False:
+            return "pending", False
+        if state in {"unknown", "uncertain"}:
+            return "unknown", None
+    completion = operation.get("completion_state")
+    if completion == "succeeded" and operation.get("stop_state", "completed") == "completed":
+        return "settled", True
+    if completion in {"none", "pending", "active"} or operation.get("stop_state") == "active":
+        return "pending", False
+    if completion in {"unknown", "uncertain"}:
+        return "unknown", None
+    return "not_started", False
+
+
+def _canonical_completion(canonical_project: Mapping[str, Any] | None) -> dict[str, Any]:
+    value = canonical_project if isinstance(canonical_project, Mapping) else {}
+    lifecycle = value.get("lifecycle", value.get("state"))
+    recorded = value.get("project_completion_recorded")
+    if type(recorded) is not bool:
+        recorded = None if lifecycle is None else lifecycle == "completed"
+    reconciliation = value.get("reconciliation")
+    reconciliation = dict(reconciliation) if isinstance(reconciliation, Mapping) else None
+    if lifecycle == "completed":
+        state = "completed" if recorded is True else "unknown" if recorded is None else "pending"
+    elif lifecycle is None:
+        state = "unknown"
+    else:
+        state = "in_progress"
+    return {
+        "state": state,
+        "project_completion_recorded": recorded,
+        "lifecycle": lifecycle,
+        "project_close_ready": value.get("project_close_ready") is True,
+        "reconciliation": reconciliation,
+        "source_refs": list(value.get("source_refs", ())) if isinstance(value.get("source_refs"), list) else [],
+    }
+
+
+def _next_supported_remedy(
+    operation: Mapping[str, Any], *,
+    canonical_project: Mapping[str, Any],
+    pending_help: Mapping[str, Any],
+    blockers: list[Any],
+) -> dict[str, Any]:
+    """Return one executable command-shaped remedy, never a prose prohibition."""
+
+    explicit = operation.get("supported_next_remedy") or operation.get("next_remedy")
+    if isinstance(explicit, Mapping):
+        return {**dict(explicit), "supported": explicit.get("supported", True)}
+    if pending_help.get("status") in {"pending", "unknown", "unresolved"}:
+        delivery_id = pending_help.get("delivery_id")
+        if isinstance(delivery_id, str) and delivery_id:
+            return {"supported": True, "operation": "read-help", "command": "read-help --delivery-id " + delivery_id,
+                    "reason": "reconcile the retained help delivery before any retry"}
+        return {"supported": True, "operation": "read-help", "command": "read-help",
+                "reason": "read the current help destination and delivery state"}
+    transport, _ = _transport_state(operation)
+    if transport == "unknown":
+        return {"supported": True, "operation": "status", "command": "status",
+                "reason": "reconcile the exact retained operation before retrying"}
+    settlement, _ = _settlement_state(operation)
+    if settlement in {"pending", "unknown"}:
+        schedule = operation.get("schedule_id")
+        if isinstance(schedule, str) and schedule:
+            role = operation.get("role")
+            if role == "worker" and isinstance(operation.get("task"), str) and isinstance(operation.get("principal"), str):
+                command = "worker-status --task {0} --principal {1} --schedule-id {2}".format(
+                    operation["task"], operation["principal"], schedule)
+            else:
+                command = "command-status --request-id " + schedule
+            return {"supported": True, "operation": "reconcile-settlement", "command": command,
+                    "reason": "settle the retained operation without a provider retry"}
+    if blockers:
+        return {"supported": False, "operation": "owner-blocked", "command": None,
+                "reason": "current scoped blockers must be resolved by their owning operation"}
+    if (canonical_project.get("project_completion_recorded") is not True
+            and canonical_project.get("project_close_ready") is True):
+        return {"supported": True, "operation": "finish-project", "command": "finish-project",
+                "reason": "request guarded project close with current task evidence and dispositions"}
+    return {"supported": True, "operation": "status", "command": "status",
+            "reason": "read current canonical state"}
+
+
+def compact_operation_status(
+    operation: Mapping[str, Any] | None = None, *,
+    accepted_review: Mapping[str, Any] | None = None,
+    canonical_project: Mapping[str, Any] | None = None,
+    required_scope: Any = None,
+    blockers: list[Any] | tuple[Any, ...] = (),
+    pending_help: Mapping[str, Any] | None = None,
+    instruction_provenance: Mapping[str, Any] | None = None,
+    supported_next_remedy: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project one operation into independently truthful status layers.
+
+    Transport return, review acceptance, native task settlement, and canonical
+    project completion are deliberately separate.  This is a read-only
+    projection; it does not infer acceptance from transport or turn a
+    recommendation into an owner restriction.
+    """
+
+    current = dict(operation) if isinstance(operation, Mapping) else {}
+    transport_state, transport_completed = _transport_state(current)
+    settlement_state, settled = _settlement_state(current)
+    review = dict(accepted_review) if isinstance(accepted_review, Mapping) else {
+        "state": "unknown", "accepted": None, "reason": "no accepted review readback was supplied"
+    }
+    project = _canonical_completion(canonical_project)
+    scope = _status_projection(required_scope, reason="current required scope is not exposed")
+    scoped_blockers = list(blockers) if isinstance(blockers, (list, tuple)) else []
+    help_value = dict(pending_help) if isinstance(pending_help, Mapping) else {
+        "state": "known", "status": "none", "destination": None
+    }
+    provenance = _status_projection(instruction_provenance, reason="instruction provenance is not exposed")
+    remedy = dict(supported_next_remedy) if isinstance(supported_next_remedy, Mapping) else _next_supported_remedy(
+        current, canonical_project=project, pending_help=help_value, blockers=scoped_blockers)
+    return {
+        "schema": "otto.operation-status.v1",
+        "transport_completion": {"state": transport_state, "completed": transport_completed,
+                                  "schedule_id": current.get("schedule_id"), "request_id": current.get("request_id")},
+        "accepted_review": review,
+        "task_settlement": {"state": settlement_state, "settled": settled,
+                             "schedule_id": current.get("schedule_id")},
+        "canonical_project_completion": project,
+        "current_required_scope": scope,
+        "blockers": scoped_blockers,
+        "blocked_operation": bool(scoped_blockers),
+        "pending_help": help_value,
+        "instruction_provenance": provenance,
+        "supported_next_remedy": remedy,
+        "agent_suggestion": current.get("agent_suggestion"),
+        "read_only": True,
+        "dispatch": False,
+        "launch": False,
+    }
+
+
 def compact_project_status(
     project_view: Mapping[str, Any],
     *,
     task_refs: Mapping[str, Mapping[str, Any]],
     reports: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
     occurrences: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
+    help_issues: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
+    required_scope: Any = None,
+    instruction_provenance: Mapping[str, Any] | None = None,
+    operation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project a useful read-only status without embedding raw receipts.
 
@@ -535,7 +716,9 @@ def compact_project_status(
             "review": {
                 "decisions": [] if decisions is None else decisions,
                 "acceptance_exists": accepted_decisions(decisions),
+                "accepted_review": accepted_decisions(decisions),
             },
+            "agent_suggestion": None if not isinstance(report_value, Mapping) else report_value.get("next_action"),
             "verification": verification_state(task_occurrences),
             "historical_occurrences": [compact_occurrence(row) for row in task_occurrences],
         }
@@ -560,6 +743,81 @@ def compact_project_status(
         for occurrence in row.get("historical_occurrences", ())
         if occurrence.get("uncertain_live_effect") is True
     ]
+    current_occurrences = [row for rows in occurrences_by_alias.values() for row in rows]
+    current_occurrence = max(current_occurrences, key=occurrence_order) if current_occurrences else None
+    current_alias = None
+    if isinstance(operation, Mapping):
+        target = operation.get("target")
+        target_task = target.get("task_ref") if isinstance(target, Mapping) else operation.get("task_ref")
+        if isinstance(target_task, Mapping):
+            current_alias = alias_by_id.get(str(target_task.get("id")))
+    if current_alias is None and current_occurrence is not None:
+        target = current_occurrence.get("target")
+        target_task = target.get("task_ref") if isinstance(target, Mapping) else None
+        current_alias = alias_by_id.get(str(target_task.get("id"))) if isinstance(target_task, Mapping) else None
+    current_row = projected.get(current_alias) if current_alias is not None else None
+    if not isinstance(operation, Mapping):
+        operation = current_occurrence
+    operation = dict(operation) if isinstance(operation, Mapping) else {}
+    if current_row is not None and not isinstance(operation.get("accepted_review"), Mapping):
+        operation["accepted_review"] = current_row["review"]["accepted_review"]
+
+    project_control = observed_project.get("lifecycle_control")
+    project_control = project_control if isinstance(project_control, Mapping) else {}
+    canonical_project = {
+        "lifecycle": observed_project.get("lifecycle"),
+        "project_completion_recorded": observed_project.get("project_completion_recorded"),
+        "reconciliation": observed_project.get("reconciliation", project_control.get("reconciliation")),
+        "source_refs": [project.get("ref")] if isinstance(project, Mapping) and isinstance(project.get("ref"), Mapping) else [],
+    }
+    if (not isinstance(canonical_project["project_completion_recorded"], bool)
+            and canonical_project["lifecycle"] is not None):
+        canonical_project["project_completion_recorded"] = canonical_project["lifecycle"] == "completed"
+    if required_scope is None:
+        required_scope = project_view.get("required_scope") or observed_project.get("required_scope")
+    if required_scope is None:
+        required_scope = {
+            "task_aliases": list(task_refs),
+            "task_refs": [dict(ref) for ref in task_refs.values() if isinstance(ref, Mapping)],
+        }
+    current_blockers: list[Any] = []
+    project_readiness = observed_project.get("readiness")
+    if isinstance(project_readiness, Mapping):
+        for key in ("blockers", "blocked_by", "blocking_reasons"):
+            if project_readiness.get(key):
+                current_blockers.append({"source": "project.readiness", "code": key, "value": project_readiness[key]})
+    if current_row is not None:
+        current_blockers.extend(current_row.get("blockers", ()))
+    if isinstance(operation.get("blockers"), list):
+        current_blockers.extend(operation["blockers"])
+
+    pending_help: dict[str, Any] = {"state": "known", "status": "none", "destination": None}
+    open_help = [item for item in help_issues if isinstance(item, Mapping) and item.get("state") == "open"]
+    if open_help:
+        issue = open_help[-1]
+        deliveries = issue.get("deliveries") if isinstance(issue.get("deliveries"), list) else []
+        delivery = deliveries[-1] if deliveries and isinstance(deliveries[-1], Mapping) else {}
+        pending_help = {
+            "state": "known", "status": delivery.get("state") or issue.get("routing_state") or "pending",
+            "issue_id": issue.get("issue_id"), "purpose": issue.get("purpose"),
+            "destination": issue.get("current_owner_ref"), "delivery_id": delivery.get("delivery_id"),
+            "resolution": issue.get("state"),
+        }
+    provenance = instruction_provenance
+    if provenance is None:
+        provenance = operation.get("instruction_provenance")
+    if provenance is None:
+        target = operation.get("target")
+        if isinstance(target, Mapping):
+            provenance = {key: target[key] for key in ("project_ref", "task_ref", "assignment_ref", "mandate_ref", "generation", "context_refs") if key in target}
+    review = current_row["review"]["accepted_review"] if current_row is not None else _status_projection(None, reason="no current task review readback")
+    operation_status = compact_operation_status(operation, accepted_review=review,
+        canonical_project=canonical_project, required_scope=required_scope,
+        blockers=current_blockers, pending_help=pending_help,
+        instruction_provenance=provenance)
+    reconciliation = canonical_project.get("reconciliation")
+    settlement_pending = (None if not isinstance(reconciliation, Mapping)
+                          else reconciliation.get("status") != "reconciled")
     return {
         "schema": "otto.project-status.v1",
         "project_ref": (project or {}).get("ref") if isinstance(project, Mapping) else None,
@@ -568,6 +826,22 @@ def compact_project_status(
         "owners": project_owners,
         "tasks_lifecycle": {alias: row.get("lifecycle") for alias, row in projected.items()},
         "historical_uncertain_effects": uncertain,
+        "operation_status": operation_status,
+        "transport_completion": operation_status["transport_completion"],
+        "accepted_review": operation_status["accepted_review"],
+        "task_settlement": operation_status["task_settlement"],
+        "canonical_project_completion": operation_status["canonical_project_completion"],
+        "current_required_scope": operation_status["current_required_scope"],
+        "blockers": current_blockers,
+        "blocked_operation": bool(current_blockers),
+        "pending_help": pending_help,
+        "instruction_provenance": operation_status["instruction_provenance"],
+        "agent_suggestion": None if current_row is None else current_row.get("agent_suggestion"),
+        "project_completion_recorded": canonical_project["project_completion_recorded"],
+        "settlement_pending": settlement_pending,
+        "canonical_lifecycle": canonical_project.get("lifecycle"),
+        "reconciliation": reconciliation,
+        "supported_next_remedy": operation_status["supported_next_remedy"],
         "acceptance_exists": (
             True if any(row.get("review", {}).get("acceptance_exists", {}).get("value") is True for row in projected.values())
             else False if any(row.get("review", {}).get("acceptance_exists", {}).get("state") == "known" for row in projected.values())
@@ -741,7 +1015,7 @@ def prepare_current_assignment_occurrence(
 
 __all__ = [
     "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
-    "compact_project_status", "derive_manager_continuation_request", "manager_continuation_schedule_id",
+    "compact_operation_status", "compact_project_status", "derive_manager_continuation_request", "manager_continuation_schedule_id",
     "complete_task_from_command",
     "prepare_current_assignment_occurrence", "read_project_progress_reports",
     "validate_owner_timeout_seconds",

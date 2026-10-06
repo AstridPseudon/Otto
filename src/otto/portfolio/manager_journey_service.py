@@ -6,7 +6,10 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from herzchen.contracts import ResourceRef
+
 from .manager_journey_command import ManagerJourneyCommands
+from .execution_operations import compact_project_status, read_project_progress_reports
 from .owner_readers import json_value
 
 
@@ -86,8 +89,51 @@ class ManagerJourneyService:
             reasoning=due["requested_reasoning"], evidence_id=due["schedule_id"])
         return app.recover(schedule_id=due["schedule_id"], execute=False)
 
+    def _status(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Read one bounded current projection; status never dispatches or mutates."""
+
+        self.commands._authorize()
+        state = self.server.state
+        project_ref = state["project_ref"]
+        operations = self.server.portfolio.operations
+        sheet = getattr(operations, "sheet_port", None)
+        if not callable(getattr(sheet, "export", None)):
+            # Preserve the host's existing finite read when the older owner
+            # adapter has not installed the ProjectSheet read port yet.
+            return self.server.handle(request)
+        view = json_value(sheet.export(ResourceRef.from_dict(project_ref)))
+        if not isinstance(view, Mapping):
+            raise ValueError("current project status readback is not an object")
+        reports = read_project_progress_reports(self.server.store.consumer(), project_ref)
+        loop = self.server.portfolio._issue_loop()
+        help_read = loop.read_issues(project_ref=project_ref) if loop is not None else {"issues": []}
+        issues = help_read.get("issues", []) if isinstance(help_read, Mapping) else []
+        occurrences = self.server.due_port.list_due()
+        current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state.get("schedule_id")
+        operation = self.server.due_port.read_due(current_id) if current_id else None
+        operation = dict(operation) if isinstance(operation, Mapping) else {}
+        operation.setdefault("request_id", operation.get("in_flight_request") or operation.get("last_completed_request"))
+        target = operation.get("target")
+        if isinstance(target, Mapping):
+            operation.setdefault("instruction_provenance", {
+                key: target[key] for key in ("project_ref", "task_ref", "assignment_ref", "mandate_ref", "generation", "context_refs")
+                if key in target
+            })
+        status = compact_project_status(
+            view, task_refs=state["task_refs"], reports=reports, occurrences=occurrences,
+            help_issues=issues, required_scope=state.get("required_scope"), operation=operation,
+        )
+        return {
+            "outcome": "ok", "project_ref": project_ref,
+            "task_refs": state["task_refs"], "workers": state.get("workers", {}),
+            "manager": state.get("manager"), "manager_assignment_ref": state.get("assignment_ref"),
+            "status": status, **status,
+        }
+
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "status":
+            return self._status(request)
         if command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
             return self._help(request)
         if command == "start-retained-help":
