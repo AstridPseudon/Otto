@@ -48,6 +48,12 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
 
 def _nested_capability(request: Mapping[str, Any]) -> str:
     """Classify nested file operations without releasing owner custody."""
+    # Setup inspection is finite and inert; prepare/activate stay held during
+    # the admitted native wait and cannot acquire another execution effect.
+    if (request.get("command") == "operating-setup"
+            and request.get("operation", "read") == "read"
+            and not set(request) - {"command", "operation"}):
+        return "admitted"
     if request.get("command") in _REENTRANT_COMMANDS:
         return "admitted"
     if (request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
