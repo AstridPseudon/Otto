@@ -344,6 +344,10 @@ class ExecutionApplication:
                   "execution_selection": selection}
         if native_session_id is not None:
             target["native_id"] = native_session_id
+            if binding_schedule_id is not None:
+                proof = self.due_port.read_due(binding_schedule_id)
+                target["native_binding"] = {"schedule_id": binding_schedule_id,
+                                            "due_sha256": _digest(proof)}
         due = DueRecord(schedule_id=schedule, recipient=assignment.principal, instruction=instruction,
             profile=profile, anchor=at, due_at=at, last_covered_slot=0,
             invocation_identity=request_key + ":" + semantic, in_flight_request=request_key,

@@ -4,6 +4,7 @@ Run: PYTHONPATH=src:. python3 -m unittest discover -s src/otto/portfolio/tests
 Provider substitutions exercise admission; the installed live journey is S06.
 """
 from dataclasses import replace
+import hashlib
 import json
 from types import SimpleNamespace
 import unittest
@@ -40,6 +41,79 @@ class OperatingSetupTests(unittest.TestCase):
         _manager, schedule = self.role("manager")
         return {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": schedule},
                 "advisor_policy": {"mode": "disabled", "reason": "Owner supervises this bounded run"}, "acceptance_tasks": []}
+
+    def test_adopted_resource_continuation_retains_actual_native_binding_for_setup_and_admission(self):
+        from otto.attention import DueRecord
+        from otto.portfolio.execution import _digest
+        from otto.portfolio.execution_operations import prepare_current_assignment_occurrence
+        from herzchen.content.instructions import validate_instruction_content
+        f = self.f
+        manager, guide, mandate = f.role_handles("manager", "manager", None)
+        at = f.app.clock().isoformat()
+        target = {"host": "local", "native_id": "actual-manager-session", "role": "manager", "principal": "manager",
+            "project_ref": f.project.ref.to_dict(), "task_ref": f.task.ref.to_dict(),
+            "assignment_ref": manager.ref.to_dict(), "mandate_ref": mandate,
+            "requested_model": "gpt-test", "requested_reasoning": "high", "requested_profile": "workspace-write"}
+        # The owner bootstrap issues the initial exact native occurrence. Its
+        # proof below comes from an actual authorized provider fixture turn.
+        initial = DueRecord(schedule_id="owner-bootstrap-native", recipient="manager", instruction="Inspect project",
+            profile="workspace-write", anchor=at, due_at=at, last_covered_slot=0, invocation_identity="bootstrap-native",
+            in_flight_request="bootstrap-native", delivery_state="ready", owner="manager", project_ref=f.project.id,
+            manager_ref="manager", assignment_ref=manager.ref.to_dict(), generation=manager.generation,
+            target=target, role="manager", lifecycle_owner="manager", execution_mode="continue_existing",
+            requested_model="gpt-test", requested_reasoning="high", context_refs=(guide, mandate), result_owner="manager", timeout_seconds=1200)
+        prepare_current_assignment_occurrence(due_port=f.port, assignments=f.app.assignments,
+            binding=f.binding, due=initial, assignment_ref=manager.ref.to_dict(), assignment_owner="manager",
+            operation="resume", lifecycle="resume", request_key="owner-bootstrap-native")
+        started = f.app.start(schedule_id=initial.schedule_id)
+        self.assertEqual(started["outcome"], "succeeded", started)
+        anchor = f.port.read_due(initial.schedule_id)
+        self.assertIsNone(manager.session)
+        old = f.owner.content.read(ResourceRef.from_dict(guide))["content"]
+        instructions = old["instructions"] + "\nRead the updated selected host command."
+        updated = {**old, "name": "updated-selected-manager", "instructions": instructions,
+            "bundle_digest": hashlib.sha256(instructions.encode()).hexdigest()}
+        made = f.app.portfolio.create_document(f.project.ref.to_dict(), actor="manager", request_id="updated-native-guide",
+            document_id="updated-native-guide", content=updated)
+        new_guide = made["record"]["payload"]["current_revision"]
+        adopted = f.app.assignments.adopt_resources(manager.ref, resources=[{"resource_ref": new_guide,
+            "resource_name": updated["name"], "content_digest": validate_instruction_content(updated), "required": True}],
+            expected_revision=manager.revision, expected_generation=manager.generation,
+            logical_request_key="adopt-native-guide", actor=f.actor)
+        before = f.owner.content.read(ResourceRef.from_dict(mandate))["content"]
+        made = f.app.portfolio.create_document(f.project.ref.to_dict(), actor="manager", request_id="updated-native-mandate",
+            document_id="updated-native-mandate", role="mandate", content={**before, "assignment_ref": adopted.ref.to_dict()})
+        new_mandate = made["record"]["payload"]["current_revision"]
+        prepared = f.app.prepare_role(role="manager", project_ref=f.project.ref.to_dict(), task_ref=f.task.ref.to_dict(),
+            assignment_ref=adopted.ref.to_dict(), generation=adopted.generation, mandate_ref=new_mandate,
+            request_key="adopted-native-context", instruction="Read updated role context", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="actual-manager-session", binding_schedule_id=initial.schedule_id)
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        raw = f.port.read_due(prepared["schedule_id"])
+        self.assertEqual(raw["target"]["native_binding"], {"schedule_id": initial.schedule_id, "due_sha256": _digest(anchor)})
+        setup = {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": prepared["schedule_id"]},
+            "advisor_policy": {"mode": "disabled", "reason": "No advisor selected"}, "acceptance_tasks": []}
+        self.assertTrue(evaluate_setup(f.app.runtime, f.project.ref.to_dict(), setup)["ready"])
+        self.assertEqual(f.app.prepare_operating_setup(project_ref=f.project.ref.to_dict(), setup=setup, request_key="adopted-context-setup")["outcome"], "prepared")
+        self.assertTrue(f.app.read_operating_setup(project_ref=f.project.ref.to_dict())["ready"])
+        # Valid-looking pins to foreign sessions, generations and roles do not
+        # establish continuity, even when their declared content hash matches.
+        for field, value in (("generation", 2), ("role", "worker"), ("recipient", "foreign"), ("native_id", "foreign")):
+            fake = {**anchor, "schedule_id": "foreign-" + field}
+            if field == "native_id": fake["target"] = {**anchor["target"], field: value}
+            else: fake[field] = value
+            bad = replace(f.app._read(prepared["schedule_id"]), target={**raw["target"], "native_binding": {
+                "schedule_id": fake["schedule_id"], "due_sha256": _digest(fake)}})
+            original_port = f.app.runtime.due_port
+            f.app.runtime.due_port = SimpleNamespace(read_due=lambda schedule: fake if schedule == fake["schedule_id"] else original_port.read_due(schedule))
+            try:
+                decision = evaluate_setup(f.app.runtime, f.project.ref.to_dict(), setup, current_due=bad)
+                self.assertFalse(decision["ready"], field)
+            finally:
+                f.app.runtime.due_port = original_port
+        self.assertEqual(f.app.start(schedule_id=prepared["schedule_id"])["outcome"], "succeeded")
+        self.assertEqual(len(f.provider.calls), 2)
+        self.assertEqual(f.port.read_due(initial.schedule_id), anchor)
 
     def test_draft_read_and_activation_are_inert(self):
         f = self.f

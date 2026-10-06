@@ -148,19 +148,47 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             # A newly prepared continuation has not acquired admission evidence
             # yet. Its current resources/model are checked above; the adopted
             # occurrence retains proof of this same generation's conversation.
-            attempt = (binding_due.host_evidence or {}).get("gateway_attempt") or {}
+            conversation_due = binding_due
+            proof_pin = due.target.get("native_binding")
+            if bound is None and proof_pin is not None:
+                import hashlib
+                import json
+                if not isinstance(proof_pin, Mapping) or set(proof_pin) != {"schedule_id", "due_sha256"}:
+                    raise OperatingSetupError("native binding requires one exact owner occurrence pin")
+                proof = runtime.due_port.read_due(proof_pin["schedule_id"])
+                proof_digest = hashlib.sha256(json.dumps(proof, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False).encode()).hexdigest()
+                if not isinstance(proof, Mapping) or proof_digest != proof_pin["due_sha256"]:
+                    raise OperatingSetupError("retained native binding occurrence changed")
+                conversation_due = DueRecord.from_dict(proof)
+                prior_ref = conversation_due.assignment_ref
+                current_ref = due.assignment_ref
+                if (any(prior_ref.get(k) != current_ref.get(k) for k in ("authority", "kind", "id"))
+                        or (prior_ref != current_ref and assignment.get("payload", {}).get("resource_adoption_base_ref") != prior_ref)
+                        or conversation_due.generation != due.generation or conversation_due.recipient != due.recipient
+                        or conversation_due.role != role or conversation_due.lifecycle_owner != runtime.actor
+                        or conversation_due.manager_ref != runtime.actor
+                        or native_target_identity(conversation_due.target) != native
+                        or any(conversation_due.target["project_ref"].get(k) != project_ref.get(k)
+                               for k in ("authority", "kind", "id"))):
+                    raise OperatingSetupError("retained native binding is outside the current adoption/generation")
+                proof_attempt = (conversation_due.host_evidence or {}).get("gateway_attempt") or {}
+                if ((proof_attempt.get("delivery_admission") or {}).get("native_turn_started") is not True
+                        or (proof_attempt.get("delivery_authorization") or {}).get("status") != "authorized"):
+                    raise OperatingSetupError("retained native binding lacks actual authenticated admission")
+            attempt = (conversation_due.host_evidence or {}).get("gateway_attempt") or {}
             admission = attempt.get("delivery_admission") or {}
             authorization = attempt.get("delivery_authorization") or {}
             if bound is not None and bound != native:
                 raise OperatingSetupError("role conversation differs from current assignment binding")
-            if bound is None and (binding_due.recipient != principal_id
-                    or binding_due.target.get("principal") != principal
+            if bound is None and (conversation_due.recipient != principal_id
+                    or conversation_due.target.get("principal") != principal
                     or admission.get("physical_session_id") != native
                     or authorization.get("physical_session_id") != native
-                    or authorization.get("assignment_ref") != binding_due.assignment_ref
-                    or authorization.get("generation") != binding_due.generation
-                    or authorization.get("project_ref") != binding_due.target["project_ref"]
-                    or authorization.get("task_ref") != binding_due.target["task_ref"]
+                    or authorization.get("assignment_ref") != conversation_due.assignment_ref
+                    or authorization.get("generation") != conversation_due.generation
+                    or authorization.get("project_ref") != conversation_due.target["project_ref"]
+                    or authorization.get("task_ref") != conversation_due.target["task_ref"]
                     or authorization.get("role") != role or authorization.get("principal") != principal):
                 raise OperatingSetupError("role conversation is not backed by assignment or admitted delivery")
             canonical = prepared["canonical_evidence"]
@@ -169,6 +197,8 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
                            "assignment_ref": due.assignment_ref, "generation": due.generation,
                            "conversation_id": native,
                            "conversation_ref": {"host": due.target["host"], "native_id": native},
+                           "conversation_binding_source": proof_pin if bound is None and proof_pin is not None else
+                               {"source": "assignment" if bound is not None else "admitted_role", "schedule_id": conversation_due.schedule_id},
                            "base_resource": canonical["base_resource"]["ref"],
                            "mandate_ref": canonical["source_refs"]["mandate"],
                            "task_ref": canonical["source_refs"]["task"],
