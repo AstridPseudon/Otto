@@ -52,7 +52,8 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
     # the admitted native wait and cannot acquire another execution effect.
     if (request.get("command") == "operating-setup"
             and request.get("operation", "read") == "read"
-            and not set(request) - {"command", "operation"}):
+            and not set(request) - {"command", "operation", "setup", "request_key"}
+            and request.get("setup") is None and request.get("request_key") is None):
         return "admitted"
     if request.get("command") in _REENTRANT_COMMANDS:
         return "admitted"
