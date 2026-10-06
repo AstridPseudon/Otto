@@ -77,6 +77,7 @@ class ManagerJourneyService:
                  orchestrator_principal: str | None = None, observe_schedules: Any = None,
                  help_reply_authorizer: Any = None) -> None:
         self.server, self.host = server, host
+        self._host_execution = server._execution
         self.run_path, self.workspace = Path(run_path).resolve(), Path(workspace).resolve()
         self.commands = ManagerJourneyCommands(owner=server.owner, portfolio=server.portfolio,
             state=server.state, policy=policy, due_port=server.due_port,
@@ -84,8 +85,25 @@ class ManagerJourneyService:
         self.orchestrator_principal, self.observe_schedules = orchestrator_principal, observe_schedules
         self.help_reply_authorizer = help_reply_authorizer
 
+    def _execution(self, **options: Any) -> Any:
+        """Bind every execution path to the installed owner's assessment policy.
+
+        Setup reads and provider admission must use the same authority. The
+        host supplies adapters; neither transport nor setup JSON can choose
+        assessment criteria or allowance.
+        """
+        from .local_assessment_policy import LocalAssessmentPolicy
+        app = self._host_execution(**options)
+        policy = self.commands.policy or self.server.state.get("assessment_policy")
+        if isinstance(policy, Mapping):
+            policy = LocalAssessmentPolicy.from_run_config(policy, state=self.server.state)
+        trusted = self.server.owner.role_runtime(due_port=self.server.due_port,
+            adapter=app.runtime.adapter, assessment_policy=policy)
+        app.runtime.acceptance_readiness = trusted.acceptance_readiness
+        return app
+
     def _settle_execution(self, due: Mapping[str, Any]) -> Mapping[str, Any]:
-        app = self.server._execution(principal=due["recipient"], model=due["requested_model"],
+        app = self._execution(principal=due["recipient"], model=due["requested_model"],
             reasoning=due["requested_reasoning"], evidence_id=due["schedule_id"])
         return app.recover(schedule_id=due["schedule_id"], execute=False)
 
@@ -158,7 +176,7 @@ class ManagerJourneyService:
                     or raw["generation"] != receipt["generation"] or raw["target"].get("native_id") != receipt["conversation_id"]
                     or assignment.role not in {"orchestrator", "project_advisor"}):
                 raise PermissionError("retained help recipient is stale")
-            app = self.server._execution(principal=assignment.principal, model=raw["requested_model"],
+            app = self._execution(principal=assignment.principal, model=raw["requested_model"],
                 reasoning=raw["requested_reasoning"], evidence_id=request["schedule_id"])
             return app.recover(schedule_id=request["schedule_id"], execute=True)
         if command == "manager-help-result":
@@ -167,7 +185,7 @@ class ManagerJourneyService:
             if (set(request) != {"command", "principal", "schedule_id", "report_ref", "generation"}
                     or request["principal"] != state["manager"] or request["generation"] != state["manager_generation"]):
                 raise PermissionError("help continuation recipient is stale or foreign")
-            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+            app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="manager-help-result")
             original = app._read(request["schedule_id"])
             if original.assignment_ref["id"] != state["assignment_ref"]["id"] or original.generation != request["generation"]:
@@ -193,17 +211,8 @@ class ManagerJourneyService:
             if set(request) - {"command", "operation", "setup", "request_key"}:
                 raise ValueError("operating setup cannot change the bound project or owner")
             state = self.server.state
-            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+            app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="operating-setup")
-            # The owning service's policy supplies allowance and criterion
-            # authority. Neither setup JSON nor transport chooses a new pool.
-            from .local_assessment_policy import LocalAssessmentPolicy
-            policy = self.commands.policy or state.get("assessment_policy")
-            if isinstance(policy, Mapping):
-                policy = LocalAssessmentPolicy.from_run_config(policy, state=state)
-            trusted = self.server.owner.role_runtime(due_port=self.server.due_port,
-                adapter=app.runtime.adapter, assessment_policy=policy)
-            app.runtime.acceptance_readiness = trusted.acceptance_readiness
             operation = request.get("operation", "read")
             if operation == "read":
                 if request.get("setup") is not None or request.get("request_key") is not None:
@@ -224,7 +233,7 @@ class ManagerJourneyService:
                     or request["principal"] != state["manager"]
                     or request["schedule_id"] != (state.get("manager_continuation") or {}).get("schedule_id")):
                 raise PermissionError("task-settlement continuation handle is stale or foreign")
-            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+            app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id=request["schedule_id"])
             due = app._read(request["schedule_id"])
             if not (due.host_evidence or {}).get("task_settlement_continuation"):
@@ -250,7 +259,7 @@ class ManagerJourneyService:
                     or worker.get("schedule_id") != request.get("schedule_id")):
                 raise PermissionError("worker-result continuation handle is stale or foreign")
             current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
-            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+            app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="manager-worker-result-" + worker["schedule_id"])
             result = app.continue_manager_from_worker(manager_schedule_id=current_id,
                 worker_schedule_id=worker["schedule_id"], execute=True)
@@ -291,7 +300,7 @@ class ManagerJourneyService:
                         "reason": "no retained successful same-manager anchor",
                         "current_schedule_id": current_id,
                         "next_action": "record the requested continuation report and return from the current native turn; the owner can consume it after settlement"}
-            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+            app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="manager-explicit-continuation")
             result = manager_continuation_from_command(request=request, execution=app,
                 anchor_schedule_id=anchor, current_schedule_id=current_id,
@@ -312,7 +321,7 @@ class ManagerJourneyService:
             if command != "finish-project" and (result.get("outcome") in {"completed", "replayed"}
                     or (result.get("completion") or {}).get("outcome") in {"completed", "replayed"}):
                 state = self.server.state
-                app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                app = self._execution(principal=state["manager"], model=state["requested_model"],
                     reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
                 result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
             return result
@@ -324,7 +333,7 @@ class ManagerJourneyService:
             if (not isinstance(worker, Mapping) or worker.get("principal") != request.get("principal")
                     or worker.get("schedule_id") != request.get("schedule_id")):
                 raise PermissionError("worker handle is stale or belongs to another recipient")
-            app = self.server._execution(principal=worker["principal"], model=worker["model"],
+            app = self._execution(principal=worker["principal"], model=worker["model"],
                 reasoning=worker["reasoning"], evidence_id=worker["schedule_id"])
             result = (app.start(schedule_id=worker["schedule_id"]) if command == "start-retained-worker" else
                       app.recover(schedule_id=worker["schedule_id"], execute=False))
@@ -334,7 +343,7 @@ class ManagerJourneyService:
                 result = {**result, "review_input": self.commands.review_input(request["task"])}
                 if result["completion_intents"]:
                     state = self.server.state
-                    manager_app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                    manager_app = self._execution(principal=state["manager"], model=state["requested_model"],
                         reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
                     result = {**result, "task_settlement_notification": self._retain_task_settlement(manager_app)}
                 if command == "start-retained-worker":
@@ -465,7 +474,7 @@ class ManagerJourneyService:
             raise ValueError("worker focus must describe 1..4000 characters of current intent")
         previous = (state.get("workers") or {}).get(task)
         if isinstance(previous, Mapping):
-            previous_app = self.server._execution(principal=previous["principal"], model=previous["model"],
+            previous_app = self._execution(principal=previous["principal"], model=previous["model"],
                 reasoning=previous["reasoning"], evidence_id=previous["schedule_id"])
             if previous.get("request_key") == key:
                 if previous.get("submission") != dict(request):
@@ -488,7 +497,7 @@ class ManagerJourneyService:
                             "retry_provider": False,
                             "reason": "existing task worker is unstarted, active or uncertain; reconcile that occurrence before a new send"}
         task_ref = state["task_refs"][task]
-        app = self.server._execution(principal=principal, model=model, reasoning=reasoning,
+        app = self._execution(principal=principal, model=model, reasoning=reasoning,
             evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20])
         instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
             principal=principal, model=model, reasoning=reasoning, focus=focus,
@@ -538,5 +547,6 @@ def install_manager_journey_service(server: Any, *, run_path: str | Path, worksp
     service = ManagerJourneyService(server=server, host=host, run_path=run_path,
         workspace=workspace, policy=policy, orchestrator_principal=orchestrator_principal,
         observe_schedules=observe_schedules, help_reply_authorizer=help_reply_authorizer)
+    server._execution = service._execution
     host.handler = service
     return service

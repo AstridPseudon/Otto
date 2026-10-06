@@ -16,6 +16,7 @@ from otto.portfolio.operating_setup import OperatingSetupError, evaluate_setup, 
 from otto.portfolio.manager_journey_service import ManagerJourneyService
 from tests import test_execution_application as owner_fixture
 from tests import test_manager_journey_command as journey_fixture
+from tests import test_manager_service_continuation as continuation_fixture
 
 
 class OperatingSetupTests(unittest.TestCase):
@@ -45,6 +46,71 @@ class OperatingSetupTests(unittest.TestCase):
         self.assertEqual(f.app.read_operating_setup(project_ref=f.project.ref.to_dict())["state"], "draft")
         self.assertEqual(f.app.activate_operating_setup(project_ref=f.project.ref.to_dict())["outcome"], "blocked")
         self.assertEqual(f.provider.calls, [])
+
+    def test_installed_policy_binds_outer_dispatch_of_same_preprovider_callback(self):
+        from otto.portfolio.manager_journey_service import install_manager_journey_service
+        fixture = continuation_fixture.ManagerServiceContinuationTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        f = fixture.fixture
+        anchor = f.app._read(fixture.anchor)
+        assessment = AssessmentModule(f.store, actor=f.actor)
+        scope = assessment.declare_scope("dispatch-required", parent_obligation=f.task.ref,
+            criteria=[{"id": "dispatch-check"}], protocol="focused", designated_approver="manager",
+            policy={"required_for_completion": True}, logical_request_key="dispatch-scope")
+        pool = LimitService(f.store).create_pool(ResourceRef(f.actor.authority, "limit", "dispatch-pool"),
+            capacity_units=1, cumulative_allowance_units=1, logical_request_key="dispatch-pool", actor=f.actor)
+        state = {"authority": f.actor.authority, "owner": "manager", "manager": "manager",
+            "assignment_ref": anchor.assignment_ref, "manager_generation": anchor.generation,
+            "project_ref": f.project.ref.to_dict(), "task_refs": {"PA02": f.task.ref.to_dict()},
+            "criterion_refs": {"C01": scope.criterion_refs[0].to_dict()}, "schedule_id": anchor.schedule_id,
+            "requested_model": "gpt-test", "requested_reasoning": "high",
+            "manager_continuation": {"schedule_id": anchor.schedule_id, "native_session_id": "manager-session"},
+            "assessment_policy": {"kind": "owner_local_bookkeeping", "local_only": True,
+                "purpose": "Installed dispatch check", "pool_id": "dispatch-pool", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "task_criterion_pairs": ["PA02/C01"]}}
+        policy = LocalAssessmentPolicy.from_run_config(state["assessment_policy"], state=state)
+        prepared_app = f.owner.execution_application(due_port=f.port, adapter=f.app.runtime.adapter,
+            clock=f.app.clock, assessment_policy=policy)
+        setup = {"schema": "otto.operating-setup.v1", "mode": "manual",
+            "roles": {"manager": anchor.schedule_id}, "acceptance_tasks": [f.task.ref.to_dict()],
+            "advisor_policy": {"mode": "disabled", "reason": "Explicit isolated manual supervision"}}
+        self.assertEqual(prepared_app.prepare_operating_setup(project_ref=state["project_ref"],
+            setup=setup, request_key="dispatch-setup")["outcome"], "prepared")
+        from otto.portfolio.manager_continuation_command import manager_continuation_from_command
+        pending = manager_continuation_from_command(request={"operation": "prepare", "report_key": fixture.key},
+            execution=prepared_app, anchor_schedule_id=fixture.anchor, current_schedule_id=fixture.anchor,
+            task_refs=state["task_refs"], native_session_id="manager-session", read_reports=fixture.reports,
+            preserve_execution_binding=True)
+        schedule = pending["continuation"]["schedule_id"]
+        before = f.port.read_due(schedule)
+        pool_before = LimitService(f.store).get_pool(pool.ref)
+        calls_before = len(f.provider.calls)
+        # Reproduce the real boundary: setup preparation had a policy while
+        # the host's subsequent execution factory omitted it.
+        failed = f.app.start(schedule_id=schedule)
+        self.assertEqual(failed["outcome"], "partial", failed)
+        self.assertIn("owner-bound assessment policy", failed["error"]["message"])
+        self.assertIsNone((f.port.read_due(schedule).get("host_evidence") or {}).get("gateway_attempt"))
+        self.assertEqual(len(f.provider.calls), calls_before)
+        host = SimpleNamespace(_closing=True, handler=None)
+        server = SimpleNamespace(owner=f.owner, portfolio=f.app.portfolio, state=state, due_port=f.port,
+            store=f.store, execution_host=host, _execution=lambda **_: f.app, _save_state=lambda: None)
+        service = install_manager_journey_service(server, run_path=f.temporary.name, workspace=f.temporary.name,
+            policy=state["assessment_policy"])
+        # The installed factory also serves host-owned entrypoint paths.
+        self.assertTrue(server._execution().read_operating_setup(project_ref=state["project_ref"])["ready"])
+        request = {"command": "manager-continue", "operation": "dispatch", "report_key": fixture.key}
+        result = host.handler(request)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        self.assertEqual(result["continuation"]["schedule_id"], schedule)
+        self.assertEqual(f.port.read_due(schedule)["target"], before["target"])
+        self.assertEqual(len(f.provider.calls), calls_before + 1)
+        self.assertEqual(LimitService(f.store).get_pool(pool.ref), pool_before)
+        repeat = service(request)
+        self.assertEqual(repeat["outcome"], "replayed", repeat)
+        self.assertEqual(repeat["continuation"]["schedule_id"], schedule)
+        self.assertEqual(len(f.provider.calls), calls_before + 1)
 
     def test_maintained_service_prepares_and_reads_setup_without_provider(self):
         f = self.f
