@@ -366,6 +366,87 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.assertEqual(f.port.read_due(prepared["schedule_id"]), next_due)
         self.assertEqual(len(f.provider.calls), 1)
 
+    def test_owner_corrective_task_preserves_old_acceptance_and_closes_only_after_genuine_review(self):
+        self.install_candidate()
+        f = self.fixture
+        candidate = f.app._read(self.anchor).target["mandate_ref"]
+        request = {"command": "review-task", "task": "J01", "request_key": "old-wrong-binding",
+            "candidate_ref": candidate, "source_refs": [candidate], "inspection": {"observed": "historical artifact prose"},
+            "judgments": {"C01": {"verdict": "PASS", "rationale": "old_pass", "evidence_refs": [candidate]}}}
+        with patch.object(self.host.handler.commands, "_instruction_document", return_value=False), \
+                patch.object(self.host.handler, "_retain_task_settlement", return_value={"outcome": "held"}):
+            old_review = self.wait_response(self.send("abcd", request))
+        self.assertEqual(old_review["completion"]["outcome"], "completed")
+        old = f.owner.graph.get(f.task.ref)
+        old_payload = json.loads(json.dumps(old.payload))
+        project = f.owner.graph.get(f.project.ref)
+        outcome = "Repair the promised artifact path and verify its actual contents under C01"
+        batch = f.owner.sheet.apply(project.ref, {"tasks": [{"id": "J02", "title": "Correct preserved artifact obligation",
+            "outcome": outcome, "acceptance": ["C01"]}]}, logical_request_key="corrective-task", actor=f.actor)
+        corrective = f.owner.graph.get(batch.mappings["J02"])
+        criterion = self.server.state["criterion_refs"]["C01"]
+        from otto.portfolio.manager_journey_command import _digest
+        content = {"schema": "otto.completed-task-correction.v1", "owner_actor": "manager",
+            "project_ref": batch.project.ref.to_dict(), "corrective_task_ref": corrective.ref.to_dict(),
+            "corrective_outcome_sha256": _digest(outcome), "criterion_refs": [criterion],
+            "replaces": [{"task_ref": old.ref.to_dict(), "completion_sha256": _digest(old.payload["completion"]),
+                "gate_refs": old.payload["completion"]["gate_refs"], "criterion_refs": [criterion]}]}
+        document = f.app.portfolio.create_document(batch.project.ref.to_dict(), actor="manager",
+            request_id="owner-correction-source", document_id="owner-correction-source", role="SOURCE", content=content)
+        source_ref = document["record"]["payload"]["current_revision"]
+        linked = f.owner.sheet.apply(batch.project.ref, {"metadata": {"owner_task_corrections": [source_ref]}},
+            logical_request_key="owner-correction-link", actor=f.actor)
+        self.server.state["project_ref"] = linked.project.ref.to_dict()
+        self.server.state["task_refs"]["J02"] = corrective.ref.to_dict()
+        policy = LocalAssessmentPolicy.from_run_config({"kind": "owner_local_bookkeeping", "local_only": True,
+            "purpose": "explicit correction bookkeeping without resetting prior consumption", "pool_id": "corrective-local",
+            "capacity_units": 1, "cumulative_allowance_units": 1, "task_criterion_pairs": ["J02/C01"]}, state=self.server.state)
+        self.host.handler.commands.policy = policy
+        project = f.owner.graph.get(f.project.ref)
+        self.assertEqual(self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task"))), (set(), []))
+        content_type = type(f.owner.content)
+        original_read = content_type.read
+        def tampered_read(port, ref, *args, **kwargs):
+            value = original_read(port, ref, *args, **kwargs)
+            if ref == ResourceRef.from_dict(source_ref):
+                value = json.loads(json.dumps(value, default=lambda item: item.to_dict()))
+                value["content"]["replaces"][0]["completion_sha256"] = "0" * 64
+            return value
+        with patch.object(content_type, "read", new=tampered_read), self.assertRaisesRegex(ValueError, "pin distinct preserved"):
+            self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task")))
+        self.assertEqual(f.owner.graph.get(old.ref).payload, old_payload)
+        f.provider.work_release.set()
+        admitted = self.wait_response(self.send("1111", {**self.worker_request(), "task": "J02", "route": "normal",
+            "principal": "corrective-worker", "request_key": "corrective-artifact-worker", "focus": outcome}))
+        settled = self.wait_response(Path(admitted["response_path"]))
+        self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
+        inputs = self.wait_response(self.send("2222", {"command": "review-input", "task": "J02"}))
+        reviewed = self.wait_response(self.send("3333", {"command": "review-task", "task": "J02",
+            "request_key": "corrective-genuine-review", "candidate_ref": inputs["candidate_ref"], "source_refs": inputs["source_refs"],
+            "inspection": {"observed": "actual promised path and criterion contents inspected"},
+            "judgments": {"C01": {"verdict": "PASS", "rationale": "corrected_artifact_pass", "evidence_refs": inputs["evidence_refs"]}}}))
+        self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
+        self.wait_response(Path(reviewed["task_settlement_notification"]["response_path"]))
+        project = f.owner.graph.get(f.project.ref)
+        rows = list(f.owner.graph.list(project=project.ref, kind="task"))
+        covered, proof = self.host.handler.commands._completed_task_corrections(project, rows)
+        self.assertEqual(covered, {old.ref.id})
+        self.assertEqual(proof[0]["candidate_ref"], inputs["candidate_ref"])
+        from herzchen.kernel.limits import LimitService
+        limits = LimitService(f.store)
+        self.assertEqual(limits.get_pool(ResourceRef(f.actor.authority, "limit", "journey-local")).cumulative_used_units, 1)
+        self.assertEqual(limits.get_pool(policy.pool_ref).cumulative_used_units, 1)
+        self.assertEqual(f.owner.graph.get(old.ref).payload, old_payload)
+        closed = self.wait_response(self.send("4444", {"command": "finish-project", "request_key": "corrected-terminal-close",
+            "dispositions": {name: {"status": "qualified", "rationale": "corrective obligation verified; old acceptance retained as history"}
+                             for name in ("acceptance", "publication", "remote", "runtime")}}))
+        self.assertEqual(closed["outcome"], "completed", closed)
+        self.assertEqual(f.owner.graph.get(old.ref).payload, old_payload)
+        project = f.owner.graph.get(f.project.ref)
+        self.assertEqual(project.lifecycle.value, "completed")
+        control = project.payload["lifecycle_control"]
+        self.assertIn("completed_task_corrections", json.dumps(control))
+
     def test_current_manager_lifecycle_read_uses_the_finite_owner_grant(self):
         f = self.fixture
         f.compose(owner_actor="service-owner", manager_actor="manager")

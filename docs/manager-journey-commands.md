@@ -99,6 +99,21 @@ holds project acceptance with the affected task refs. Inspect the retained
 records and obtain an authorized correction; do not relabel the candidate,
 reset the pool, or blindly submit another review.
 
+When an owner authorizes correction of a completed obligation, use a separate
+corrective task and explicit local bookkeeping allocation. Preserve original
+tasks, decisions and consumed units. Project sheet metadata can designate pinned
+owner-authored SOURCE documents with schema `otto.completed-task-correction.v1`.
+Each document pins the original completed task refs, completion hashes and gate
+refs, names their exact criterion coverage, and designates a corrective task and
+its authored outcome hash. This link does not accept or reopen either task.
+
+Ordinary project close recognizes that linkage only after the corrective task
+completes with genuine settled `wrk.result` candidate evidence and accepted
+coverage of every designated original criterion. Closeout records the correction
+source, preserved task refs, corrective task, candidate and gates in its acceptance
+evidence. Missing work, altered history, wrong owner/scope, incomplete coverage,
+instruction-only candidates and unsettled effects remain blocking.
+
 `completion-gate` is a read-only provisional predicate. It must be supplied the
 exact current candidate, accepted gate refs, and evidence refs when those exist;
 `clear` does not itself record acceptance. Use the existing manager assessment

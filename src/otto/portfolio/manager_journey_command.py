@@ -112,6 +112,93 @@ class ManagerJourneyCommands:
         return (document.get("role") == "mandate" or isinstance(content, Mapping) and
                 (content.get("schema") == "herzchen.instructions.v1" or "instruction_contract" in content))
 
+    def _completed_task_corrections(self, project: Any, tasks: list[Any]) -> tuple[set[str], list[Mapping[str, Any]]]:
+        """Validate owner-designated corrective obligations without rewriting PASS.
+
+        Public sheet metadata names immutable owner SOURCE documents. A link
+        alone is never acceptance: the corrective task must have genuinely
+        completed against every designated criterion using its retained worker
+        result. Old tasks, judgments and consumed allowance remain history.
+        """
+        refs = (project.payload.get("metadata") or {}).get("owner_task_corrections", [])
+        if not isinstance(refs, list) or len(refs) > 16:
+            raise ValueError("owner task corrections require at most 16 pinned SOURCE references")
+        by_id = {task.ref.id: task for task in tasks}
+        covered, evidence = set(), []
+        same_identity = lambda a, b: all(a.get(key) == b.get(key) for key in ("authority", "kind", "id"))
+        for raw in refs:
+            ref = ResourceRef.from_dict(raw)
+            value = self.owner.content.read(ref)
+            metadata = self.owner.content.read(ResourceRef(ref.authority, ref.kind, ref.id))
+            document, content = metadata.get("document") or {}, value.get("content") or {}
+            author = (metadata.get("revision") or {}).get("author") or {}
+            if (ref.kind != "dat.content.document" or not ref.revision
+                    or json_value(metadata.get("current_revision")) != ref.to_dict()
+                    or document.get("role") != "SOURCE" or document.get("maintainer") != self.state["owner"]
+                    or author.get("actor") != self.state["owner"] or author.get("authenticated") is not True
+                    or not same_identity(json_value(document.get("authoring_scope") or {}), project.ref.to_dict())
+                    or content.get("schema") != "otto.completed-task-correction.v1"
+                    or content.get("owner_actor") != self.state["owner"]
+                    or not same_identity(content.get("project_ref") or {}, project.ref.to_dict())):
+                raise PermissionError("task correction must be a current project-scoped immutable owner SOURCE")
+            designated = ResourceRef.from_dict(content["corrective_task_ref"])
+            corrective = by_id.get(designated.id)
+            replaces, criteria = content.get("replaces"), content.get("criterion_refs")
+            if (corrective is None or designated.authority != project.ref.authority or designated.kind != "work.task"
+                    or not isinstance(replaces, list) or not replaces or len(replaces) > 16
+                    or not isinstance(criteria, list) or not criteria
+                    or _digest(corrective.payload.get("outcome")) != content.get("corrective_outcome_sha256")):
+                raise ValueError("task correction has invalid corrective task/outcome/criterion coverage")
+            old_ids = []
+            required = []
+            for item in replaces:
+                old_ref = ResourceRef.from_dict(item["task_ref"])
+                old = by_id.get(old_ref.id)
+                completion = old.payload.get("completion") if old else None
+                if (old is None or old.ref != old_ref or old_ref.id == designated.id
+                        or old.lifecycle.value != "completed" or not isinstance(completion, Mapping)
+                        or _digest(completion) != item.get("completion_sha256")
+                        or json_value(completion.get("gate_refs")) != item.get("gate_refs")
+                        or old_ref.id in covered or old_ref.id in old_ids):
+                    raise ValueError("task correction does not pin distinct preserved completed obligations")
+                actual_criteria = [json_value(self.owner.graph.reader.get_identity(ResourceRef.from_dict(gate)).payload["criterion_ref"])
+                                   for gate in item["gate_refs"]]
+                if item.get("criterion_refs") != actual_criteria:
+                    raise ValueError("task correction does not cover the original accepted criterion obligations")
+                required.extend(actual_criteria)
+                old_ids.append(old_ref.id)
+            if {json.dumps(item, sort_keys=True) for item in required} != {json.dumps(item, sort_keys=True) for item in criteria}:
+                raise ValueError("corrective criteria must exactly cover the designated original obligations")
+            completion = corrective.payload.get("completion")
+            if corrective.lifecycle.value != "completed" or not isinstance(completion, Mapping):
+                continue
+            candidate = ResourceRef.from_dict(completion["candidate_ref"])
+            payload = self.owner.graph.reader.get_identity(candidate).payload.get("value") or {}
+            if (completion.get("task_ref") != designated.to_dict() or candidate.kind != "wrk.result"
+                    or payload.get("outcome") != "succeeded" or payload.get("context_digest_verified") is not True
+                    or payload.get("task_ref") != designated.to_dict()
+                    or candidate.to_dict() not in json_value(completion.get("evidence_refs", []))
+                    or completion.get("evidence_hashes", {}).get(candidate.kind + ":" + candidate.id + ":" + candidate.revision) != _digest(payload)
+                    or self._native_settlement(completion) is not None):
+                raise ValueError("corrective completion requires genuine exact settled worker candidate evidence")
+            accepted = []
+            for gate in completion["gate_refs"]:
+                decision = self.owner.graph.reader.get_identity(ResourceRef.from_dict(gate)).payload
+                result = self.owner.graph.reader.get_identity(ResourceRef.from_dict(decision["result_ref"])).payload
+                if (decision.get("disposition") != "accept" or decision.get("candidate_ref") != candidate.to_dict()
+                        or result.get("verdict") != "PASS" or result.get("candidate_ref") != candidate.to_dict()
+                        or result.get("parent_obligation_ref") != designated.to_dict()):
+                    raise ValueError("corrective acceptance does not bind the exact task/candidate")
+                accepted.append(json_value(decision["criterion_ref"]))
+            if {json.dumps(item, sort_keys=True) for item in accepted} != {json.dumps(item, sort_keys=True) for item in criteria}:
+                raise ValueError("corrective completion lacks accepted coverage of every designated obligation")
+            covered.update(old_ids)
+            evidence.append({"correction_ref": ref.to_dict(), "correction_sha256": _digest(content),
+                             "preserved_task_refs": [item["task_ref"] for item in replaces],
+                             "corrective_task_ref": corrective.ref.to_dict(), "candidate_ref": candidate.to_dict(),
+                             "gate_refs": json_value(completion["gate_refs"])})
+        return covered, evidence
+
     def review_task(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._authorize()
         key = self._key(request)
@@ -351,11 +438,12 @@ class ManagerJourneyCommands:
             return {"outcome": "held", "project_completion_recorded": False,
                     "reason": "all actual project tasks require committed completion evidence",
                     "provider_called": False}
+        corrected, correction_evidence = self._completed_task_corrections(project, tasks)
         invalid = []
         for task in tasks:
             completion = task.payload["completion"]
             candidate = ResourceRef.from_dict(completion["candidate_ref"]) if completion.get("candidate_ref") else None
-            if (candidate is None or self._instruction_document(candidate)
+            if task.ref.id not in corrected and (candidate is None or self._instruction_document(candidate)
                     or candidate.to_dict() not in json_value(completion.get("evidence_refs", []))):
                 invalid.append(task.ref.to_dict())
         if invalid:
@@ -403,6 +491,8 @@ class ManagerJourneyCommands:
             current = self.owner.graph.reader.get_identity(ResourceRef(project.ref.authority, project.ref.kind, project.ref.id))
             evidence = {"project_ref": current.ref.to_dict(), **dict(dispositions)}
             evidence["acceptance"] = {**dict(dispositions["acceptance"]), "task_refs": intent["task_refs"]}
+            if correction_evidence:
+                evidence["acceptance"]["completed_task_corrections"] = correction_evidence
             transition("pm-orchestrator-close", **common,
                 orchestrator_assignment=attribution["orchestrator"]["assignment_ref"], evidence=evidence)
         observation = observe_schedules(project.ref.id)
