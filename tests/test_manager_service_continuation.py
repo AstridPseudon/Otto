@@ -300,6 +300,35 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertEqual(f.port.read_due(prepared["schedule_id"]), callback)
         self.assertEqual(len(f.provider.calls), calls)
 
+    def test_worker_result_consumes_existing_unattempted_report_callback_without_stranding_it(self):
+        f = self.fixture
+        report_callback = manager_continuation_from_command(
+            request={"report_key": self.key, "operation": "prepare"}, execution=f.app,
+            anchor_schedule_id=self.anchor, current_schedule_id=self.anchor,
+            task_refs={"PA02": f.task.ref.to_dict()}, native_session_id="manager-session",
+            read_reports=self.reports, preserve_execution_binding=True)["continuation"]["schedule_id"]
+        before = f.port.read_due(report_callback)
+        reports = self.reports()
+        worker = f.app.assign_and_start(**f.request())
+        calls = len(f.provider.calls)
+        prepared = f.app.continue_manager_from_worker(manager_schedule_id=report_callback,
+            worker_schedule_id=worker["schedule_id"], execute=False)
+        self.assertEqual(prepared["schedule_id"], report_callback)
+        enriched = f.port.read_due(report_callback)
+        self.assertEqual(enriched["in_flight_request"], before["in_flight_request"])
+        self.assertTrue(enriched["message"].startswith(before["message"]))
+        self.assertEqual(self.reports(), reports)
+        self.assertIsNone((enriched.get("host_evidence") or {}).get("gateway_attempt"))
+        self.assertEqual(f.app.continue_manager_from_worker(manager_schedule_id=report_callback,
+            worker_schedule_id=worker["schedule_id"], execute=True)["outcome"], "succeeded")
+        f.compose()
+        # Even an old settled anchor finds the same delivered owner receipt.
+        repeated = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(repeated["outcome"], "replayed")
+        self.assertEqual(repeated["schedule_id"], report_callback)
+        self.assertEqual(len(f.provider.calls), calls + 1)
+
     def test_completed_task_refresh_never_changes_attempted_callbacks_or_nonmanager_roles(self):
         f = self.fixture
         prepared = manager_continuation_from_command(

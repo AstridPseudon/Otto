@@ -162,7 +162,12 @@ result and continue ready work, without inventing a manager progress report or
 accepting the task. If the manager is still active, the notification remains
 pending without preparing another occurrence or overlapping a native turn.
 Restart/duplicate delivery consumes the exact callback through its attempt
-fence. A completed task suppresses redundant result review; an unknown manager
+fence. If report preparation already committed an unattempted manager callback,
+the result is attached to that occurrence before delivery; the original report
+and its logical request remain intact. This avoids waiting for an unstarted
+turn or stranding a competing prepared occurrence. The retained result receipt
+also fences duplicate delivery through an older settled anchor.
+A completed task suppresses redundant result review; an unknown manager
 effect returns an actionable hold. Draining never admits a new native turn.
 
 Previously a manager could return while its worker was pending, and successful

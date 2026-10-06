@@ -794,6 +794,33 @@ class ExecutionApplication:
             return {"outcome": "held", "provider_called": False, "effects_started": False,
                     "reason": "reconcile the retained manager effect before worker-result continuation", "retry": False}
         existing = self.due_port.read_due(schedule)
+        if existing is None:
+            retained = [item for item in self.due_port.list_due({"project_ref": prior.project_ref,
+                "manager_ref": self.actor, "role": "manager", "recipient": current.principal})
+                if (item.get("host_evidence") or {}).get("worker_result_continuation") == evidence
+                and (item.get("assignment_ref") or {}).get("id") == current.ref.id
+                and item.get("generation") == current.generation
+                and (item.get("target") or {}).get("native_id") == prior.target.get("native_id")]
+            if len(retained) > 1:
+                raise OccurrencePreparationError("worker result has multiple retained manager deliveries")
+            if retained:
+                existing, schedule = retained[0], retained[0]["schedule_id"]
+        if (existing is None and prior.stop_state == "active" and prior.completion_state == "none"
+                and prior.purpose == "Canonical manager callback continuation"
+                and prior.delivery_state == "ready" and prior.in_flight_request is not None
+                and (prior.host_evidence or {}).get("gateway_attempt") is None):
+            # Startup/report preparation may already have committed the next
+            # intent. Deliver the result through it rather than waiting for an
+            # unstarted turn or stranding that existing occurrence.
+            self._verify_native_binding(current, prior.target["native_id"], manager_schedule_id)
+            prior = self._resources(prior)
+            self.due_port.save_due(prior.schedule_id, replace(prior,
+                instruction=prior.instruction + "\nInspect the observed settled worker result and continue ready work; worker success is not acceptance.",
+                message=(prior.message or "") + "\nObserved owner worker-result context:\n" +
+                    json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+                host_evidence={**(prior.host_evidence or {}), "worker_result_continuation": evidence}).to_dict(),
+                request_id=key + ":deliver-worker-result", expected_version=prior.version)
+            return self.recover(schedule_id=prior.schedule_id, execute=execute)
         if ((prior.stop_state != "completed" or prior.completion_state != "succeeded"
                 or prior.in_flight_request is not None) and prior.schedule_id != schedule):
             return {"outcome": "pending", "provider_called": False, "effects_started": False,
