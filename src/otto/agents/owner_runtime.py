@@ -473,6 +473,16 @@ class CanonicalRoleRuntime:
             resource_reader=self.operations.content_port,
             lifecycle="resume" if due.execution_mode == "continue_existing" else "launch", as_of=due.anchor,
         )
+        from otto.portfolio.role_context import configured_binding, selected_configuration
+        configuration = selected_configuration(prepared["canonical_evidence"]["supporting_context"])
+        selection = target.get("execution_selection", {})
+        for field in ("model", "reasoning"):
+            provenance = selection.get(field, {})
+            if provenance.get("source") == "selected_configuration":
+                configured = configured_binding(configuration, due.role)
+                if (configuration is None or provenance.get("ref") != configuration["ref"]
+                        or configured[field] != target["requested_" + field]):
+                    raise OwnerRoleRuntimeError("selected role " + field + " changed; prepare a current occurrence")
         validate_execution_contract(prepared, target.get("requested_profile", due.profile),
                                     execution_manager=due.role == "manager")
         return prepared
@@ -602,7 +612,7 @@ class CanonicalRoleRuntime:
             logical_request_key=logical_request_key, expected_generation=expected_generation,
         )
         from otto.attention import DueRecord
-        from otto.portfolio.operating_setup import OperatingSetupError, evaluate_setup, read_setup
+        from otto.portfolio.operating_setup import OperatingSetupError, delivery_context, evaluate_setup, read_setup
         due_readiness = DueRecord.from_dict(self.due_port.read_due(schedule_id))
         setup = None
         if (due_readiness.host_evidence or {}).get("gateway_attempt") is None:
@@ -673,6 +683,7 @@ class CanonicalRoleRuntime:
                     lifecycle=lifecycle, as_of=as_of,
                     required_resource_names=required_resource_names,
                     task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
+                    operating_context_reader=lambda: delivery_context(self, project_ref, current_due=due_readiness),
                 )
                 if (fresh_worker or fresh_role) and not prepared["canonical_evidence"].get("mandate_instruction_contract"):
                     raise OwnerRoleRuntimeError("fresh bounded role requires an exact owner execution mandate contract")
@@ -714,6 +725,7 @@ class CanonicalRoleRuntime:
             expected_generation=expected_generation, required_resource_names=required_resource_names,
             physical_session_id=physical_session_id, requested_model=requested_model,
             requested_reasoning=requested_reasoning, requested_profile=requested_profile,
+            operating_context_reader=lambda: delivery_context(self, project_ref, current_due=due_readiness),
         )
         if authorized_direct and role == "worker" and isinstance(result, Mapping) and result.get("outcome") == "succeeded":
             envelope = result.get("attempt")
@@ -748,6 +760,11 @@ class CanonicalRoleRuntime:
             expected_generation=expected_generation,
         )
         from .orchestrator_route import _canonical_operation_evidence, prepare_canonical_assignment_role_brief
+        due = self.due_port.read_due(schedule_id) or {}
+        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+        result = attempt.get("result")
+        resource = result.get("resource_evidence") if isinstance(result, Mapping) else None
+        retained_context = ((resource or {}).get("brief") or {}).get("context", {}).get("operating_setup")
 
         def current_brief_digest() -> str:
             prepared = prepare_canonical_assignment_role_brief(
@@ -759,16 +776,16 @@ class CanonicalRoleRuntime:
                 resource_reader=self.operations.content_port, lifecycle=lifecycle,
                 as_of=as_of, required_resource_names=required_resource_names,
                 task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
+                # Settlement verifies the admitted packet. A peer replacement
+                # or setup revision affects future turns, not this observation.
+                operating_context_reader=lambda: retained_context,
+                include_role_context="introduction" in ((resource or {}).get("brief") or {}).get("operating_core", {}),
             )
             return _canonical_operation_evidence(
                 prepared, owner=_assignment["principal"], task_ref=task_ref,
             )["brief_sha256"]
 
         capture.current_brief_reader = current_brief_digest
-        due = self.due_port.read_due(schedule_id) or {}
-        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
-        result = attempt.get("result")
-        resource = result.get("resource_evidence") if isinstance(result, Mapping) else None
         if role == "manager" and callable(capture.completed_scope_validator):
             capture.validate_completed_manager_result(result)
         elif (not isinstance(resource, Mapping)
@@ -959,6 +976,9 @@ class CanonicalRoleRuntime:
         from .orchestrator_route import (
             _canonical_operation_evidence, prepare_canonical_assignment_role_brief,
         )
+        due = self.due_port.read_due(schedule_id) or {}
+        original = (((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("result") or {})
+        retained_context = ((original.get("resource_evidence") or {}).get("brief") or {}).get("context", {}).get("operating_setup")
 
         def current_brief_digest() -> str:
             prepared = prepare_canonical_assignment_role_brief(
@@ -971,6 +991,8 @@ class CanonicalRoleRuntime:
                 lifecycle=lifecycle, as_of=as_of,
                 required_resource_names=required_resource_names,
                 task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
+                operating_context_reader=lambda: retained_context,
+                include_role_context="introduction" in ((original.get("resource_evidence") or {}).get("brief") or {}).get("operating_core", {}),
             )
             return _canonical_operation_evidence(
                 prepared, owner=replacement.get("logical_agent_id"), task_ref=task_ref,

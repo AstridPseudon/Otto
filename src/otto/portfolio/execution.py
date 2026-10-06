@@ -24,6 +24,8 @@ from .owner_readers import json_value, owner_ref, project_reader, task_reader
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
 
+_UNSPECIFIED_SESSION = object()
+
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(json_value(value), sort_keys=True,
@@ -256,8 +258,9 @@ class ExecutionApplication:
 
     def prepare_role(self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
                      assignment_ref: Mapping[str, Any], generation: int, mandate_ref: Mapping[str, Any],
-                     context_refs: tuple[Mapping[str, Any], ...], request_key: str, instruction: str,
-                     model: str, reasoning: str, profile: str, native_session_id: str | None = None,
+                     context_refs: tuple[Mapping[str, Any], ...] | None = None, request_key: str,
+                     instruction: str | None = None, model: str | None = None,
+                     reasoning: str | None = None, profile: str, native_session_id: Any = _UNSPECIFIED_SESSION,
                      binding_schedule_id: str | None = None,
                      allowance_ref: Mapping[str, Any] | None = None,
                      timeout_seconds: int = 1200) -> dict[str, Any]:
@@ -265,6 +268,8 @@ class ExecutionApplication:
 
         Native identity for a continuation is checked against the assignment's
         host binding or a prior owner-authorized occurrence, never roster text.
+        Omitted instructions/context/bindings come from the adopted BASE and
+        its selected role configuration; explicit overrides keep provenance.
         """
         if role not in {"worker", "manager", "orchestrator", "project_advisor"}:
             raise OccurrencePreparationError("unsupported execution role")
@@ -272,6 +277,37 @@ class ExecutionApplication:
         actual_role = "worker" if assignment.role == "executor" else assignment.role
         if actual_role != role:
             raise OccurrencePreparationError("execution role differs from current assignment")
+        from .resource_sync import resolve_assignment_attachments
+        from .role_context import configured_binding, selected_configuration, supporting_context
+        attachments = resolve_assignment_attachments(self.portfolio.operations._assignment_dict(assignment),
+            self.portfolio.operations.content_port, role=role)
+        if len(attachments) != 1 or attachments[0].get("required") is not True:
+            raise OccurrencePreparationError("role requires exactly one required adopted BASE resource")
+        base = attachments[0]
+        sources = supporting_context(base, self.portfolio.operations.content_port)
+        configuration = selected_configuration(sources)
+        configured = configured_binding(configuration, role)
+        selection = {}
+        values = {"model": model, "reasoning": reasoning}
+        for field in values:
+            if values[field] is None:
+                values[field] = configured.get(field)
+                selection[field] = {"source": "selected_configuration", "ref": None if configuration is None else configuration["ref"]}
+            else:
+                selection[field] = {"source": "explicit_override", "selected_configuration_ref": None if configuration is None else configuration["ref"]}
+            _text(values[field], field + "; select an adopted role configuration or supply an explicit override")
+        model, reasoning = values["model"], values["reasoning"]
+        selection["instruction"] = {"source": "adopted_BASE" if instruction is None else "explicit_override",
+                                     "ref": base["resource_ref"]}
+        if instruction is None:
+            instruction = base["content"]["instructions"]
+        selection["context_refs"] = {"source": "adopted_role_sources" if context_refs is None else "explicit_override"}
+        if context_refs is None:
+            context_refs = tuple([base["resource_ref"], mandate_ref, *[item["ref"] for item in sources]])
+        if native_session_id is _UNSPECIFIED_SESSION:
+            from otto.attention import native_target_identity
+            stored = assignment.session
+            native_session_id = stored if isinstance(stored, str) else native_target_identity(stored) if isinstance(stored, Mapping) else None
         _text(request_key, "request_key")
         _text(instruction, "instruction")
         validate_owner_timeout_seconds(timeout_seconds)
@@ -291,7 +327,8 @@ class ExecutionApplication:
         target = {"host": "local", "project_ref": dict(project_ref), "task_ref": dict(task_ref),
                   "assignment_ref": dict(assignment_ref), "mandate_ref": dict(mandate_ref),
                   "role": role, "principal": assignment.principal, "requested_model": model,
-                  "requested_reasoning": reasoning, "requested_profile": profile}
+                  "requested_reasoning": reasoning, "requested_profile": profile,
+                  "execution_selection": selection}
         if native_session_id is not None:
             target["native_id"] = native_session_id
         due = DueRecord(schedule_id=schedule, recipient=assignment.principal, instruction=instruction,

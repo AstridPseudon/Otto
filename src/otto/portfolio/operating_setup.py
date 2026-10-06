@@ -106,7 +106,8 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
     """Read a connected setup without changing due state, allowances or roles."""
     from otto.attention import DueRecord, native_target_identity
     config = normalize_setup(setup)
-    blockers, roles, dues = [], {}, {}
+    from .role_context import role_introduction
+    blockers, roles, dues, introductions = [], {}, {}, {}
     if (getattr(runtime.adapter, "require_host_context", False) is not True
             or not callable(getattr(runtime.adapter, "bind_owner_authorization", None))):
         blockers.append({"role": "host", "code": "host_authorization_unavailable",
@@ -136,15 +137,40 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             if native is None:
                 raise OperatingSetupError("selected role requires an actual bound conversation")
             assignment = prepared["assignment"]
+            principal = assignment["principal"]
+            principal_id = principal if isinstance(principal, str) else principal["id"]
+            if due.recipient != principal_id or due.target.get("principal") != principal:
+                raise OperatingSetupError("selected role recipient differs from canonical principal")
             session = assignment.get("payload", {}).get("session")
             bound = session if isinstance(session, str) else native_target_identity(session) if isinstance(session, Mapping) else None
-            admission = ((due.host_evidence or {}).get("gateway_attempt") or {}).get("delivery_admission") or {}
-            if bound != native and admission.get("physical_session_id") != native:
+            attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+            admission = attempt.get("delivery_admission") or {}
+            authorization = attempt.get("delivery_authorization") or {}
+            if bound is not None and bound != native:
+                raise OperatingSetupError("role conversation differs from current assignment binding")
+            if bound is None and (admission.get("physical_session_id") != native
+                    or authorization.get("physical_session_id") != native
+                    or authorization.get("assignment_ref") != due.assignment_ref
+                    or authorization.get("generation") != due.generation
+                    or authorization.get("project_ref") != due.target["project_ref"]
+                    or authorization.get("task_ref") != due.target["task_ref"]
+                    or authorization.get("role") != role or authorization.get("principal") != principal):
                 raise OperatingSetupError("role conversation is not backed by assignment or admitted delivery")
+            canonical = prepared["canonical_evidence"]
+            introduction = role_introduction(canonical)
             roles[role] = {"schedule_id": schedule, "principal": assignment["principal"],
                            "assignment_ref": due.assignment_ref, "generation": due.generation,
                            "conversation_id": native,
-                           "base_resource": prepared["canonical_evidence"]["base_resource"]["ref"]}
+                           "conversation_ref": {"host": due.target["host"], "native_id": native},
+                           "base_resource": canonical["base_resource"]["ref"],
+                           "mandate_ref": canonical["source_refs"]["mandate"],
+                           "task_ref": canonical["source_refs"]["task"],
+                           "execution": {"model": due.requested_model, "reasoning": due.requested_reasoning,
+                                         "profile": due.profile,
+                                         "selection": due.target.get("execution_selection", {"source": "explicit role occurrence"})}}
+            introductions[role] = {**introduction, "conversation_id": native,
+                                   "conversation_ref": roles[role]["conversation_ref"],
+                                   "execution": roles[role]["execution"]}
             dues[role] = due
             if role == "project_advisor" and due.allowance_ref is None:
                 raise OperatingSetupError("enabled advisor requires an adopted allowance")
@@ -156,6 +182,32 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
         except Exception as exc:
             blockers.append({"role": role, "code": type(exc).__name__, "message": str(exc)})
     help_ready = False
+    pairing = None
+    if "manager" in roles:
+        try:
+            loop = runtime.portfolio._issue_loop()
+            if loop is None:
+                raise OperatingSetupError("current manager assignment read port is unavailable")
+            manager = loop.ports.current_manager(project_ref)
+            if manager is None or json_value(manager.ref) != roles["manager"]["assignment_ref"]:
+                raise OperatingSetupError("setup differs from current canonical manager assignment")
+        except Exception as exc:
+            blockers.append({"role": "manager", "code": type(exc).__name__, "message": str(exc)})
+    if "project_advisor" in roles and "manager" in roles:
+        try:
+            from .advisor_pairing import establish_pairing
+            view = runtime.operations.sheet_port.export(ResourceRef.from_dict(project_ref))
+            current_assignments = [json_value(item) for item in view["project"]["observed"].get("assignments", ())]
+            # The public assignment projection carries exact refs and persisted
+            # manager linkage; selection is checked against all current roles.
+            pairing = establish_pairing(project_ref, current_assignments,
+                manager_conversation_ref=roles["manager"]["conversation_ref"],
+                advisor_conversation_ref=roles["project_advisor"]["conversation_ref"]).to_dict()
+            if (pairing["manager_ref"] != roles["manager"]["assignment_ref"]
+                    or pairing["advisor_ref"] != roles["project_advisor"]["assignment_ref"]):
+                raise OperatingSetupError("advisor pairing differs from selected canonical roles")
+        except Exception as exc:
+            blockers.append({"role": "project_advisor", "code": type(exc).__name__, "message": str(exc)})
     if config["mode"] == "autonomous" and "orchestrator" in roles and "manager" in roles:
         try:
             loop = runtime.portfolio._issue_loop()
@@ -191,5 +243,27 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             "capabilities": {"operational_help_delivery": help_ready,
                              "advisor": config["advisor_policy"]["mode"] == "enabled" and ready,
                              "manual_supervision": config["mode"] == "manual"},
-            "roles": roles, "advisor_policy": config["advisor_policy"],
+            "roles": roles, "introductions": introductions, "advisor_policy": config["advisor_policy"],
+            "advisor_pairing": pairing,
             "acceptance": acceptance, "blockers": blockers}
+
+
+def delivery_context(runtime: Any, project_ref: Mapping[str, Any], *, current_due: Any) -> dict[str, Any] | None:
+    """Project the current adopted setup into future packets; never send it."""
+    execution = {"role": current_due.role, "model": current_due.requested_model,
+                 "reasoning": current_due.requested_reasoning, "profile": current_due.profile,
+                 "selection": current_due.target.get("execution_selection", {"source": "explicit role occurrence"})}
+    setup = read_setup(runtime.operations, project_ref)
+    if setup is None:
+        return {"schema": "otto.operating-role-context.v1", "setup_state": "absent",
+                "current_execution": execution, "dispatch": False}
+    decision = evaluate_setup(runtime, project_ref, setup, current_due=current_due)
+    if not decision["ready"]:
+        raise OperatingSetupError("operating setup blocked: " + str(decision["blockers"]))
+    return {"schema": "otto.operating-role-context.v1", "setup_state": "adopted",
+            "current_execution": execution, "mode": decision["mode"],
+            "roles": decision["roles"], "introductions": decision["introductions"],
+            "advisor_policy": decision["advisor_policy"], "advisor_pairing": decision["advisor_pairing"],
+            "operational_help": {"ready": decision["capabilities"]["operational_help_delivery"],
+                                 "recipient": decision["roles"].get("orchestrator")},
+            "source": "current adopted operating setup and canonical role occurrences", "dispatch": False}

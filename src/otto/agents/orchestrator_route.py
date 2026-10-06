@@ -246,6 +246,8 @@ def prepare_canonical_assignment_role_brief(
     lifecycle: str, as_of: str, required_resource_names: Sequence[str] = (),
     task_ref: Mapping[str, Any] | None = None,
     task_reader: Callable[[Mapping[str, Any]], Any] | None = None,
+    operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
+    include_role_context: bool = True,
 ) -> dict[str, Any]:
     """Prepare role instructions only from current canonical owner reads.
 
@@ -267,6 +269,8 @@ def prepare_canonical_assignment_role_brief(
             raise OrchestratorRouteError(str(exc)) from exc
 
     canonical = canonical_read()
+    # Detach the first observation: a reader may reuse a mutable projection.
+    operating_context = None if operating_context_reader is None else json.loads(json.dumps(operating_context_reader()))
     render = canonical["render"]
     adopted = render["brief"]
     core = {
@@ -280,6 +284,13 @@ def prepare_canonical_assignment_role_brief(
         "links": adopted["links"],
     }
     context = {"canonical_snapshot": render["snapshot"], "project_state": render["project_state"]}
+    if include_role_context:
+        from otto.portfolio.role_context import role_introduction, selected_configuration
+        context["supporting_context"] = canonical["supporting_context"]
+        context["selected_configuration"] = selected_configuration(canonical["supporting_context"])
+        core["introduction"] = role_introduction(canonical)
+    if operating_context is not None:
+        context["operating_setup"] = operating_context
     if "mandate_instruction_contract" in canonical:
         context["mandate_instruction_contract"] = canonical["mandate_instruction_contract"]
 
@@ -300,6 +311,8 @@ def prepare_canonical_assignment_role_brief(
     fresh = canonical_read()
     if fresh["evidence_sha256"] != canonical["evidence_sha256"]:
         raise OrchestratorRouteError("canonical owner state changed during resource resolution")
+    if operating_context_reader is not None and not _same_value(operating_context, operating_context_reader()):
+        raise OrchestratorRouteError("operating role context changed during resource resolution")
     prepared["canonical_evidence"] = canonical
     return prepared
 
@@ -395,6 +408,7 @@ def invoke_canonical_assignment(
     physical_session_id: str | None = None,
     requested_model: str = "gpt-5.6-luna", requested_reasoning: str = "high",
     requested_profile: str = "default",
+    operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
 ) -> Any:
     """Prepare and deliver from canonical role/project/assignment records."""
     valid_pairs = {"invoke": {"launch", "replace"}, "resume": {"resume"}, "send": {"resume"}}
@@ -408,6 +422,7 @@ def invoke_canonical_assignment(
         lifecycle=lifecycle, as_of=as_of,
         required_resource_names=required_resource_names,
         task_ref=task_ref, task_reader=task_reader,
+        operating_context_reader=operating_context_reader,
     )
     assignment = prepared["assignment"]
     from otto.portfolio.operating_setup import validate_execution_contract

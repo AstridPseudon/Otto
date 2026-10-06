@@ -508,6 +508,13 @@ def prepare_canonical_operating_brief(
     if len(attachments) != 1:
         raise OperatingBriefError("assignment must pin exactly one adopted BASE role resource")
     base = attachments[0]
+    if base.get("required") is not True:
+        raise OperatingBriefError("adopted BASE role resource must be required")
+    from .role_context import RoleContextError, supporting_context
+    try:
+        sources = supporting_context(base, resource_reader)
+    except ValueError as exc:
+        raise OperatingBriefError(str(exc)) from exc
     base_content = base.get("content")
     if not isinstance(base_content, Mapping):
         raise OperatingBriefError("adopted BASE resource has no readable content")
@@ -565,6 +572,7 @@ def prepare_canonical_operating_brief(
             "content": base_content, "content_sha256": _digest(base_content)},
         "generation": generation,
         "render": rendered,
+        "supporting_context": sources,
     }
 
     explicit = mandate_payload.get("instruction_contract")
@@ -601,13 +609,17 @@ def prepare_canonical_operating_brief(
     fresh_task = None if task_pin is None else read(task_reader, task_pin, "task", current=True)
     try:
         fresh_attachments = resolve_assignment_attachments(fresh_assignment, resource_reader, role=role_value)
-    except ResourceSyncError as exc:
+        if len(fresh_attachments) != 1:
+            raise OperatingBriefError("adopted BASE role resource changed during refresh")
+        fresh_sources = supporting_context(fresh_attachments[0], resource_reader)
+    except (ResourceSyncError, RoleContextError) as exc:
         raise OperatingBriefError(f"adopted BASE resource refresh failed: {exc}") from exc
     comparisons = [(project, fresh_project), (assignment, fresh_assignment), (mandate_record, fresh_mandate)]
     if task is not None and fresh_task is not None:
         comparisons.append((task, fresh_task))
     if (any(_digest(before) != _digest(after) for before, after in comparisons)
-            or _digest(attachments) != _digest(fresh_attachments)):
+            or _digest(attachments) != _digest(fresh_attachments)
+            or _digest(sources) != _digest(fresh_sources)):
         raise OperatingBriefError("canonical owner state changed while preparing the brief")
     body["evidence_sha256"] = _digest(body)
     return _json_copy(body, "prepared brief")
