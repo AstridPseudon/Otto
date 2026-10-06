@@ -226,6 +226,69 @@ class OperatingSetupTests(unittest.TestCase):
         rows = OttoAssessment(assessment, f.actor).coverage(f.owner.graph.get(task).ref)
         self.assertEqual(rows["scope_count"], 1)
         self.assertEqual(rows["scopes"][0]["ref"], scope.ref.to_dict())
+        # Setup uses the current completed head; completion consumed the
+        # original accepted scope and must not create or spend another gate.
+        state = fixture.fixture.state
+        state["task_refs"]["PA01"] = f.owner.graph.get(task).ref.to_dict()
+        policy = LocalAssessmentPolicy.from_run_config(state["assessment_policy"], state=state)
+        commands = f.owner.manager_assessment(project_ref=state["project_ref"],
+            task_ref=state["task_refs"]["PA01"], manager_assignment_ref=state["assignment_ref"],
+            manager_actor=state["manager"], manager_generation=state["manager_generation"], assessment_policy=policy)
+        assessment.declare_scope("pending-task-scope", parent_obligation=ResourceRef.from_dict(state["task_refs"]["PA06"]),
+            protocol="adopted-protocol", criteria=[ResourceRef.from_dict(state["criterion_refs"]["C09"])],
+            designated_approver="manager", policy={"required_for_completion": True}, logical_request_key="pending-scope")
+        runtime = f.owner.role_runtime(due_port=f.port, adapter=f.app.runtime.adapter, assessment_policy=policy)
+        request = {"operation": "resolve-required-scope", "arguments": {},
+            "expected_task_ref": state["task_refs"]["PA01"],
+            "expected_assignment_ref": state["assignment_ref"], "expected_generation": state["manager_generation"]}
+        pool_before = LimitService(f.store).get_pool(policy.pool_ref)
+        counts_before = f.owner.graph.reader.snapshot_counts()
+        for _ in range(2):
+            self.assertEqual(commands.execute(request)["scope_ref"], scope.ref.to_dict())
+        ready = runtime.acceptance_readiness(state["project_ref"],
+            {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                "generation": state["manager_generation"]}, list(state["task_refs"].values()))
+        self.assertEqual(len(ready["required_scopes"]), 2)
+        self.assertFalse(ready["allowance_created"])
+        self.assertEqual(LimitService(f.store).get_pool(policy.pool_ref), pool_before)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), counts_before)
+        # The historical read never grants mutable assessment authority.
+        with self.assertRaisesRegex(PermissionError, "exact current task"):
+            commands.required_scope()
+        with self.assertRaisesRegex(PermissionError, "exact current task"):
+            commands.execute({**request, "operation": "freeze-input", "request_key": "no-rejudge",
+                "arguments": {"scope_ref": scope.ref.to_dict(), "candidate_ref": result["candidate_ref"],
+                    "criterion_refs": [criterion.to_dict()], "source_refs": [], "evidence_refs": [], "packet": {}}})
+        # A retained scope alone, or a later revision carrying a copied
+        # completion payload, cannot satisfy the exact transition predicate.
+        original_reader = commands._reader
+        identity = original_reader.get_identity(ResourceRef.from_dict(state["task_refs"]["PA01"]))
+        completion = identity.payload["completion"]
+        class ReadView:
+            def __init__(self, payload, receipt=None, missing=False):
+                self.payload, self.receipt, self.missing = payload, receipt, missing
+            def get_identity(self, ref):
+                return replace(identity, payload=self.payload)
+            def get_receipt(self, key):
+                return None if self.missing else self.receipt or original_reader.get_receipt(key)
+        receipt = original_reader.get_receipt(completion["logical_request_key"])
+        cases = [
+            ReadView({**identity.payload, "lifecycle": "pending"}),
+            ReadView({**identity.payload, "completion": {**completion, "disposition": "unknown"}}),
+            ReadView({**identity.payload, "completion": {**completion, "manager": "foreign"}}),
+            ReadView({**identity.payload, "completion": {**completion, "task_ref": state["task_refs"]["PA01"]}}),
+            ReadView({**identity.payload, "completion": {**completion, "assessment_gate_check": {
+                **completion["assessment_gate_check"], "scope_refs": [], "blockers": [{"code": "UNKNOWN"}]}}}),
+            ReadView(identity.payload, missing=True),
+            ReadView(identity.payload, receipt=replace(receipt, result_ref=task)),
+        ]
+        for view in cases:
+            with self.subTest(view=view):
+                commands._reader = view
+                with self.assertRaisesRegex(PermissionError, "completion proof"):
+                    commands.execute(request)
+        commands._reader = original_reader
+        self.assertEqual(commands.execute(request)["scope_ref"], scope.ref.to_dict())
         self.assertEqual(f.provider.calls, [])
 
     def test_missing_execution_contract_rejects_before_initialization_and_valid_request_recovers(self):

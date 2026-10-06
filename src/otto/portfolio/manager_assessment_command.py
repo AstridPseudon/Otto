@@ -71,7 +71,7 @@ class ManagerAssessmentCommands:
         self._authorize = authorize
         self._policy, self._pool_guard = policy, pool_guard
 
-    def required_scope(self, *, require: bool = True) -> Any:
+    def required_scope(self, *, require: bool = True, completed_read: bool = False) -> Any:
         """Resolve the one required scope without creating a competing gate."""
         self._authorize()
         rows = self._assessment.coverage(self._task)["scopes"]
@@ -81,11 +81,48 @@ class ManagerAssessmentCommands:
             return None
         if len(required) != 1:
             raise PermissionError("task must have exactly one required assessment scope; resolve owner scope configuration")
-        scope = self._scope(required[0].ref)
+        scope = required[0]
+        if completed_read and scope.parent_obligation_ref != self._task:
+            self._completed_scope(scope)
+        else:
+            scope = self._scope(scope.ref)
         expected = {criterion for task, criterion in self._policy.task_criterion_pairs if task == self._task}
         if set(scope.criterion_refs) != expected:
             raise PermissionError("required scope does not cover the exact configured task criteria")
         return scope
+
+    def _completed_scope(self, scope: Any) -> None:
+        """Read the scope consumed by the exact canonical completion transition.
+
+        Completion revises a task while its accepted assessment scope remains
+        pinned to the input revision. This is historical readiness evidence,
+        never authority to assess or accept another revision.
+        """
+        identity = self._reader.get_identity(self._task)
+        completion = {} if identity is None else identity.payload.get("completion", {})
+        gate = completion.get("assessment_gate_check", {}) if isinstance(completion, Mapping) else {}
+        key = completion.get("logical_request_key") if isinstance(completion, Mapping) else None
+        receipt = self._reader.get_receipt(key) if isinstance(key, str) and key else None
+        if (identity is None or identity.ref != self._task
+                or identity.payload.get("lifecycle") != "completed"
+                or not isinstance(completion, Mapping) or not isinstance(gate, Mapping)
+                or completion.get("task_ref") != scope.parent_obligation_ref.to_dict()
+                or completion.get("manager") != self._actor.actor
+                or completion.get("disposition") not in {
+                    "accept", "accepted", "accepted-for-task", "approved", "complete", "completed", "verified"}
+                or receipt is None or receipt.status.value != "committed"
+                or receipt.operation != "work.revise" or receipt.target != scope.parent_obligation_ref
+                or receipt.result_ref != self._task
+                or gate.get("required") is not True or gate.get("blockers") != []
+                or gate.get("scope_refs") != [scope.ref.to_dict()]
+                or not gate.get("accepted_decision_refs")
+                or gate.get("accepted_decision_refs") != completion.get("gate_refs")
+                or gate.get("candidate_ref") != completion.get("candidate_ref")):
+            raise PermissionError("required scope lacks the exact committed task completion proof")
+        for criterion in scope.criterion_refs:
+            self._policy.require_pair(self._task, criterion)
+        if scope.designated_approver != self._actor.actor or scope.authority not in {None, self._actor.authority}:
+            raise PermissionError("required assessment scope is not designated to this manager authority")
 
     def _ref(self, value: Any, field: str, *, kind: str | None = None,
              stable: bool = False) -> ResourceRef:
@@ -135,7 +172,7 @@ class ManagerAssessmentCommands:
         if op == "coverage":
             return {"outcome": "read", "coverage": self._assessment.coverage(self._task)}
         if op == "resolve-required-scope":
-            scope = self.required_scope()
+            scope = self.required_scope(completed_read=True)
             self._pool_guard()
             return {"outcome": "read", "scope_ref": scope.ref.to_dict(),
                     "criterion_refs": [ref.to_dict() for ref in scope.criterion_refs],
