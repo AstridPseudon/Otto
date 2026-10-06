@@ -93,7 +93,7 @@ def configured_binding(configuration: Mapping[str, Any] | None, role: str) -> Ma
 
 
 def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
-    from .operating_brief import ROLE_OPERATING_CONTRACTS
+    from .operating_brief import ROLE_CONTEXT_GUIDANCE, ROLE_OPERATING_CONTRACTS
     render = canonical["render"]
     state, snapshot = render["project_state"], render["snapshot"]
     project = state["project"]
@@ -109,6 +109,7 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
     return {"schema": "otto.role-introduction.v1", "role": canonical["role"],
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
             "generation": snapshot["generation"], "responsibility": ROLE_OPERATING_CONTRACTS[canonical["role"]],
+            "operating_guidance": dict(ROLE_CONTEXT_GUIDANCE[canonical["role"]]),
             "goal": {"ref": project["ref"], "title": project["payload"].get("title"),
                      "outcome": project["payload"].get("outcome")},
             "current_task": None if task is None else {"ref": task["ref"],

@@ -247,15 +247,42 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
     admission = attempt.get("delivery_admission") if isinstance(attempt, Mapping) else None
     observed = (isinstance(admission, Mapping) and isinstance(admission.get("physical_session_id"), str)
                 and admission["physical_session_id"] == roles.get("manager", {}).get("conversation_id"))
+    advice_enabled = config["advisor_policy"]["mode"] == "enabled"
+    if advice_enabled and not ready:
+        advice_state = "blocked"
+    elif advice_enabled:
+        advice_state = "ready"
+    else:
+        advice_state = "disabled"
+    if help_ready:
+        operational_help_state = "ready"
+    elif config["mode"] == "manual" and (manual_help or roles.get("orchestrator")):
+        operational_help_state = "host_only"
+    elif config["mode"] == "manual":
+        operational_help_state = "missing_destination"
+    else:
+        operational_help_state = "unavailable"
+    help_context = {
+        "advice": {"state": advice_state, "recipient": roles.get("project_advisor"),
+                   "requires": "an explicitly enabled advisor policy and its current paired role"},
+        "operational": {"state": operational_help_state,
+                         "recipient": manual_help or roles.get("orchestrator"),
+                         "requires": "a current orchestrator destination and supported host delivery"},
+        "continuation": "Read the retained delivery, apply the response, then use resolve-help; do not resend an unknown effect.",
+        "replacement": "After a role replacement, refresh assignment, generation and conversation before a future turn.",
+        "host_only": "Installation, transport and manual receipt inspection remain host actions; setup activation does not dispatch.",
+    }
     return {"schema": "otto.operating-readiness.v1", "mode": config["mode"],
             "state": "blocked" if blockers else "active" if observed else "held" if attempt else "ready",
             "ready": ready, "autonomous_ready": ready and config["mode"] == "autonomous",
             "execution_observed": observed, "dispatch": False,
             "capabilities": {"operational_help_delivery": help_ready,
-                             "advisor": config["advisor_policy"]["mode"] == "enabled" and ready,
+                             "advisor": advice_enabled and ready,
+                             "advice": advice_enabled and ready,
                              "manual_supervision": config["mode"] == "manual"},
             "roles": roles, "introductions": introductions, "advisor_policy": config["advisor_policy"],
             "advisor_pairing": pairing,
+            "help": help_context,
             "help_destination": manual_help or roles.get("orchestrator"),
             "acceptance": acceptance, "blockers": blockers}
 
@@ -278,5 +305,7 @@ def delivery_context(runtime: Any, project_ref: Mapping[str, Any], *, current_du
             "advisor_policy": decision["advisor_policy"], "advisor_pairing": decision["advisor_pairing"],
             "operational_help": {"ready": decision["capabilities"]["operational_help_delivery"],
                                  "recipient": decision["help_destination"],
-                                 "mode": "automatic" if decision["capabilities"]["operational_help_delivery"] else "manual"},
+                                 "mode": "automatic" if decision["capabilities"]["operational_help_delivery"] else "manual",
+                                 "state": decision["help"]["operational"]["state"]},
+            "help": decision["help"],
             "source": "current adopted operating setup and canonical role occurrences", "dispatch": False}

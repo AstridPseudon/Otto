@@ -4,6 +4,10 @@ This run uses the root-owned manager service and its maintained command client.
 The service owns canonical task, assignment, assessment, Due, and project records;
 this document is a concise entrypoint, not a second state store.
 
+For the setup/help distinction and recovery matrix, use the maintained
+[operating setup and help guide](operating-setup-and-help.md). This document
+keeps the longer worker, assessment and closeout journey.
+
 ## Read the current contract
 
 Read the actual owner goal, criteria, active configuration, current manager guide

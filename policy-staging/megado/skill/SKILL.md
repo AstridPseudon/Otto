@@ -118,6 +118,30 @@ The reply operates within user authorization; the oracle cannot grant missing de
 
 New managers follow the [manager communication policy](references/manager-communication.md): keep routine bookkeeping in canonical Otto records, coordinate directly with workers and peer managers, continue ready work without waiting for hourly supervision, and leave routine unsolicited updates out of root chat. The root pulls one consolidated portfolio summary hourly; interrupt only for an urgent actual user decision or imminent material loss.
 
+### Manager help and delivered role context
+
+The maintained manager role owns coordination, worker dispatch, substantive
+review and ordinary Otto bookkeeping. Normal implementation and repair use the
+adopted `worker_normal` route; a specifically justified XHARD assignment uses
+`worker_xhard`. The role does not silently become the implementation worker when
+dispatch is inconvenient. A blocked dispatch route is an operational-help
+request, while independent useful work continues.
+
+`request-advice` is for project judgment from the current paired advisor;
+`request-help` is for an operational blockage at the current help destination.
+Both requests carry the concrete problem, impact, evidence, requested decision
+and return condition. A delivered suggestion is not an owner prohibition, a
+delivery receipt is not resolution, and a host-only/manual action is not a
+provider effect. Read the exact retained delivery before retrying an unknown
+send. Missing destinations and role replacement require current owner
+assignment, generation and conversation context before continuation.
+
+Role introductions and setup results should expose these distinctions and the
+installed command entrypoint. They are projections of adopted owner records,
+not copied authority lists or a new context store. Installation or setup
+activation does not create roles, budgets, schedules, dispatch authority or
+project acceptance.
+
 Include this mandate in execution-capable manager briefs, not in leaf worker/reviewer briefs. Give each dispatch the complete succinct North Star, applicable goal/task constraints, current source identity and required evidence. Record actual model, command/tool, source, brief/result paths and digests, timing and exit status without secrets. A plan-only read-only fact check does not need execution-capable permissions.
 
 If the North Star or agreed goal changes, record the authoritative user instruction and updated digest; reconcile affected tasks and briefs before dispatch. Map changed criteria to their previous IDs and invalidate only affected evidence/approvals. Preserve unaffected results and existing review counters; do not silently give queued work a different contract. An adopted North Star records its source path and digest.

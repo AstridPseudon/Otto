@@ -8,6 +8,14 @@ Assign one persistent advisor to each manager under the adopted policy. Its conv
 
 The advisor chooses a concrete direction within the owner's mandate. The manager owns execution and routine decisions, proceeds with independent work, and returns contradictory evidence when needed. The advisor should resolve most difficulties locally, including insufficient briefs, excessive escalation and poor task decomposition. Rare escalation is an outcome of good context and authority, not a quota or a reason to conceal blockers. Owner-only decisions, genuine authority gaps and cross-project conflicts retain their proper destination.
 
+Advice and operational help are different paths. The advisor answers a bounded
+project-judgment request from the current paired conversation; it does not
+become the manager's operational-help destination, dispatch a worker, replace a
+role or impose an owner prohibition. A blocked route belongs to the current
+orchestrator/host help path. The manager may continue independent work while
+either request is pending, and must reconcile an unknown delivery before a
+retry.
+
 Give each side a short introduction. For the manager: “Your project advisor is [identity/reference], assigned under [owner mandate]. Ask it about consequential project uncertainty; execute its in-mandate decisions and continue independent work while waiting. Return concrete conflicting evidence, not a routine request for reassurance.” For the advisor: “You advise [manager/project]. Here are the goal, acceptance criteria, authority, plan/status, conversation references, current decisions and adopted allowance. Inspect underlying work and choose the shortest credible remaining route. You may correct your own earlier advice.” State delegated authority plainly; intimidation, obedience language or invented authority are not useful controls.
 
 Recover or replace a lost conversation from existing decisions and references, preserving assignments, authority and consumed allowances. Persistence saves context; it does not make old conversation memory current evidence.
@@ -37,6 +45,14 @@ These are prompts for judgment, not a required questionnaire/report at every wak
 ## Choose a direction and make it executable
 
 Use four ordinary dispositions in existing decision/report records: continue, watch, correct, or escalate. Healthy progress normally produces no manager or owner message. Watching means a named uncertainty and revisit condition, not repeated vague reminders. Escalation names the exact external decision and holds only its dependents.
+
+Every advice turn needs enough current context to identify the project,
+manager, assignment/generation, goal, acceptance criteria, mandate, relevant
+files/messages, paired conversations, last inspected position and open
+decision. A replacement or resumed conversation refreshes those references;
+conversation memory alone is not current evidence. Delivery and resolution are
+separate observations, and a retained continuation is the manager's next
+operation only after the response is read and applied.
 
 A correction should say: observed evidence and its implication; the selected next action and responsible owner; what can be dropped, combined or reused; the required proof and preserved constraints; and when to return for another decision. Include the worker route when dispatch is needed, resolving it through the adopted run configuration. Do not hand a lower-capability manager a menu of subtle alternatives and ask it to make the consequential choice the advisor was assigned to make. A bounded investigation is valid only with a named uncertainty, evidence sought and decision it unlocks.
 

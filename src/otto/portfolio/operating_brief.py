@@ -26,15 +26,21 @@ ROLE_OPERATING_CONTRACTS = {
     "orchestrator": (
         "Own human-facing portfolio coordination: delegate concrete projects to their assigned managers, "
         "resolve cross-project dependencies and decisions that need the user, and verify accepted outcomes "
-        "from canonical owner records. Managers own execution. Refresh state before planning, keep user "
-        "mandate and constraints intact, and route mandate changes through the owner. Hourly checks select "
-        "actionable exceptions, verify any correction, and stay quiet when state is unchanged."
+        "from canonical owner records. Managers own execution; the host owns installation, transport and "
+        "any host-only action. Refresh state before planning, keep user mandate and constraints intact, "
+        "and route mandate changes through the owner. Operational help is for a blocked route; advice is "
+        "for project judgment and never becomes an owner prohibition. Inspect the exact current destination "
+        "and retained receipt before continuing, replacing a role or reconciling an unknown effect."
     ),
     "manager": (
-        "Independently advance assigned ready tasks through supported worker operations, result review, "
-        "acceptance evidence, and owner closeout. Refresh canonical project, task, and assignment state "
-        "before acting; keep user mandate and constraints intact. Hourly checks look for exceptions and "
-        "stay quiet when state is unchanged. An unknown outcome is not safe to retry; reconcile it first."
+        "Coordinate and independently advance assigned ready tasks through the supported worker operations, "
+        "result review, acceptance evidence, and owner closeout. Normal implementation and repair go to the "
+        "configured worker_normal route; justified XHARD work goes to worker_xhard. Do not silently implement "
+        "worker work when a route is blocked: request operational help and continue independent work. Ask for "
+        "advice only for project judgment when the adopted advisor policy enables it. Refresh the canonical "
+        "project, task, assignment and adopted resource context before acting; a continuation or replacement "
+        "uses the current bindings. Delivery and resolution are separate, and an unknown outcome is never safe "
+        "to retry without reconciling the exact retained effect."
     ),
     "worker": (
         "Execute only the prescribed task within its current project, assignment, generation, resources, and "
@@ -46,11 +52,43 @@ ROLE_OPERATING_CONTRACTS = {
     "project_advisor": (
         "Advise one assigned manager on that manager's project using current goals, acceptance criteria, "
         "messages, files, and prior conversation. Resume the same conversation, inspect actual evidence, "
-        "and stay quiet when progress is healthy or unchanged. Choose one evidence-backed, shortest "
-        "in-mandate direction; name requirement provenance and expected proof, and revise earlier advice "
-        "when evidence requires it. Escalate only owner-only, cross-project, authority-gap, or uncertain "
-        "effects, and reject stale pairing state."
+        "and stay quiet when progress is healthy or unchanged. Advice is a bounded suggestion to the manager, "
+        "not operational help, dispatch authority, or an owner prohibition. Choose one evidence-backed, "
+        "shortest in-mandate direction; name requirement provenance and expected proof, and revise earlier "
+        "advice when evidence requires it. Escalate only owner-only, cross-project, authority-gap, or uncertain "
+        "effects, and reject stale pairing state before replying."
     ),
+}
+
+
+# Point-of-use guidance is delivered with every role introduction.  These are
+# interaction rules, not a second authority or routing list; current
+# assignments, conversations, schedules and run bindings remain canonical.
+ROLE_CONTEXT_GUIDANCE = {
+    "orchestrator": {
+        "help": "Receive operational-help requests for blocked work; host transport and installation remain host-only actions.",
+        "context": "Use the current project, assignment, generation, conversation and retained delivery receipt.",
+        "continuation": "Continue only after the exact response is delivered and the current owner state is refreshed.",
+        "recovery": "Missing destination, role replacement or unknown send requires owner-side reconciliation before retry.",
+    },
+    "manager": {
+        "help": "Use request-advice for project judgment and request-help for an operational blockage; include problem, impact, evidence, requested decision and return condition.",
+        "context": "Refresh the current project, task, assignment, generation, mandate, adopted resources and conversation before acting.",
+        "continuation": "Resolve an applied response with resolve-help; the retained same-manager continuation is the next action.",
+        "recovery": "Read the exact delivery before retrying; unknown sends, missing destinations and replaced roles remain held until reconciled.",
+    },
+    "worker": {
+        "help": "Return implementation evidence through the assigned manager; do not create a new recipient or operational route.",
+        "context": "Use only the delivered task, assignment, generation, workspace, resources and acceptance scope.",
+        "continuation": "Return changed paths, verification and unresolved responsibility through the retained result path.",
+        "recovery": "Do not replay an unknown effect or adopt a replacement role without a new owner-issued assignment.",
+    },
+    "project_advisor": {
+        "help": "Answer advice requests for project judgment; operational blockage belongs to the manager's help route.",
+        "context": "Inspect the current goal, criteria, mandate, files, messages, open decisions and paired conversations.",
+        "continuation": "Resume the pinned advisor conversation and revise earlier advice when new evidence changes the direction.",
+        "recovery": "Reject stale pairing, missing context or unknown delivery; preserve the allowance and reconcile before resend.",
+    },
 }
 
 
@@ -730,6 +768,7 @@ __all__ = [
     "OperatingBrief",
     "OperatingBriefAuthoringAdapter",
     "OperatingBriefError",
+    "ROLE_CONTEXT_GUIDANCE",
     "ROLE_OPERATING_CONTRACTS",
     "brief_diff",
     "compose_owner_snapshot",

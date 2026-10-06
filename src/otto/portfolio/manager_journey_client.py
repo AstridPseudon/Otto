@@ -163,23 +163,33 @@ def _review_ref(value: str) -> Any:
 def add_help_parsers(commands: Any) -> list[Any]:
     """Shared help operations; the owning surface supplies scope and actor."""
     parsers = []
-    for name, purpose in (("request-help", "operational blockage"), ("request-advice", "project judgment; requires enabled advisor policy")):
+    for name, purpose, recipient in (
+        ("request-help", "operational blockage", "the current orchestrator/help destination"),
+        ("request-advice", "project judgment; requires enabled advisor policy", "the current paired project advisor"),
+    ):
         request = commands.add_parser(name, help="request " + purpose,
-            description="Returns the exact recipient and retained delivery status separately from resolution. Continue independent useful work. Observe unknown deliveries; never resend blindly.")
+            description=("Send a bounded " + purpose + " request to " + recipient + ". Include the problem, impact, "
+                         "evidence, requested decision and return condition. The exact current recipient and "
+                         "retained delivery status are separate from resolution; continue independent useful work. "
+                         "If the destination is missing, the request remains unresolved. Reconcile an unknown "
+                         "delivery before any retry; do not resend blindly."))
         parsers.append(request)
         request.add_argument("--request-key", required=True)
         request.add_argument("--issue-key", required=True)
         for field in ("problem", "impact", "requested-decision", "return-condition"):
             request.add_argument("--" + field, required=True)
         request.add_argument("--evidence", required=True, type=json.loads)
-    read = commands.add_parser("read-help", help="read help/advice disposition and exact delivery receipts without dispatch")
+    read = commands.add_parser("read-help", help="read help/advice disposition and exact delivery receipts without dispatch",
+        description="Read the exact issue, recipient, destination and delivery receipt. A missing destination or unknown send is unresolved; this command does not resend or create a replacement role.")
     read.add_argument("--delivery-id", help="reconcile one retained delivery without resend")
-    reply = commands.add_parser("respond-help", help="bound recipient returns a response; automatically retains same-manager continuation")
+    reply = commands.add_parser("respond-help", help="bound recipient returns a response; automatically retains same-manager continuation",
+        description="Respond only from the current bound recipient. The response is advice or operational help, not automatic acceptance; the existing manager continuation is retained for the manager to inspect and act on.")
     reply.add_argument("--request-key", required=True)
     reply.add_argument("--issue-id", required=True)
     for field in ("authority-source", "response", "proposed-solution", "next-action"):
         reply.add_argument("--" + field, required=True)
-    resolve = commands.add_parser("resolve-help", help="manager records applied response evidence and continues ready work")
+    resolve = commands.add_parser("resolve-help", help="manager records applied response evidence and continues ready work",
+        description="Record what the manager actually applied and the next action. Refresh current assignment/generation/conversation after role replacement; a retained or unknown delivery must be reconciled before continuation.")
     resolve.add_argument("--request-key", required=True)
     resolve.add_argument("--issue-id", required=True)
     resolve.add_argument("--evidence", required=True, type=json.loads)
@@ -191,7 +201,11 @@ def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
     add_help_parsers(commands)
     setup = commands.add_parser("operating-setup", help="read or prepare draft/ready/active setup; activate only after shared readiness",
-        description="Preparation validates existing role schedules, adopted BASE, conversations, execution contracts and required acceptance scopes without provider work. Autonomous mode requires a real help delivery port and explicit enabled/disabled advisor policy. Manual mode remains explicitly supervised. Administrative project activation does not dispatch a manager.")
+        description=("Preparation validates existing role schedules, adopted BASE, conversations, execution contracts and "
+                     "required acceptance scopes without provider work. The result distinguishes advice from operational "
+                     "help, reports a missing destination or host-only/manual route, and names the current recovery path. "
+                     "Autonomous mode requires a real help delivery port and explicit enabled/disabled advisor policy. "
+                     "Manual mode remains explicitly supervised. Administrative project activation does not dispatch a manager."))
     setup.add_argument("--operation", choices=("read", "prepare", "activate"), default="read")
     setup.add_argument("--setup", type=json.loads, help="otto.operating-setup.v1 object: mode, roles (existing schedule IDs), advisor_policy, acceptance_tasks (exact refs)")
     setup.add_argument("--request-key", help="required for idempotent preparation; changed setup uses existing document authoring")
