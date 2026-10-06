@@ -759,10 +759,27 @@ class _ResponsibilityAssignmentsEngine:
 
     def list_observations(self, target: Any, *, kind: Optional[str] = None) -> Tuple[ObservationRecord, ...]:
         assignment = self.get(target)
-        rows = self.__writer.connection.execute("SELECT * FROM identities WHERE authority = ? AND kind IN (?, ?) ORDER BY id", (self.__writer.authority, RESULT_KIND, REPORT_KIND)).fetchall()
+        # Append operations already retain exact assignment streams. Read only
+        # their subject locators, never all projects' potentially large values.
+        # Existing UNIQUE(store_authority, stream, sequence) bounds this lookup;
+        # no migration or index is needed. Preserve public ordering by id.
+        kinds = ("result", "report") if kind is None else (kind,)
+        rows = []
+        for observation_kind in kinds:
+            if observation_kind not in {"result", "report"}:
+                continue
+            rows.extend(self.__writer.connection.execute(
+                "SELECT subject_authority, subject_kind, subject_id, subject_revision "
+                "FROM events WHERE store_authority = ? AND stream = ? ORDER BY sequence",
+                (self.__writer.authority, observation_kind + ":" + assignment.id)).fetchall())
         result = []
-        for row in rows:
-            identity = self.__writer.get_identity(ResourceRef(row["authority"], row["kind"], row["id"], row["current_revision"]))
+        seen = set()
+        for row in sorted(rows, key=lambda value: value["subject_id"]):
+            locator = (row["subject_authority"], row["subject_kind"], row["subject_id"])
+            if locator in seen or locator[1] not in {RESULT_KIND, REPORT_KIND}:
+                continue
+            seen.add(locator)
+            identity = self.__writer.get_identity(ResourceRef(*locator, row["subject_revision"]))
             if identity is None or identity.payload.get("assignment") != assignment.ref.to_dict():
                 continue
             if kind is not None and identity.payload.get("observation_kind") != kind:
