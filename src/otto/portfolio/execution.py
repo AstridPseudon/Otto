@@ -898,11 +898,12 @@ class ExecutionApplication:
 
     def continue_manager_after_tasks(self, *, manager_schedule_id: str,
                                      execute: bool = False) -> dict[str, Any]:
-        """Deliver committed terminal task facts once, without inventing a report.
+        """Deliver newly observed committed finishes and advance ordinary work.
 
-        This is a closeout inspection opportunity, not project acceptance. The
-        owner reads the complete project task set and retains a deterministic
-        occurrence across settlement, restart and repeated observation.
+        This is an inspection/advancement opportunity, not project acceptance.
+        The completed-task set identifies one deterministic occurrence across
+        settlement, restart and repeated observation. Unfinished tasks do not
+        prevent their manager from receiving a committed intermediate finish.
         """
         prior = self._read(manager_schedule_id)
         current = self._current(prior.assignment_ref, prior.generation)
@@ -921,8 +922,7 @@ class ExecutionApplication:
             task = task_reader(operations, project["ref"], ref)(_identity(ref))
             completion = task["payload"].get("completion")
             if task["lifecycle"] != "completed" or not isinstance(completion, Mapping):
-                return {"outcome": "idle", "provider_called": False,
-                        "reason": "project tasks still require ordinary work or finish", "retry": False}
+                continue
             completed.append({"task_ref": task["ref"], "completion_sha256": _digest(completion)})
         if not completed:
             return {"outcome": "idle", "provider_called": False, "reason": "no completed project tasks", "retry": False}
@@ -955,7 +955,7 @@ class ExecutionApplication:
         self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
         due = replace(due,
             instruction=("Inspect the committed project task completions and their authentic candidate/evidence bindings, "
-                "then carry out the remaining adopted project objective, including guarded project closeout when eligible. "
+                "then advance ready unfinished tasks through ordinary delegation and review, or carry out guarded project closeout when eligible. "
                 "Recorded task completion does not establish authentic artifact acceptance or project completion. "
                 "This invocation already delivers the observed finishes; do not redispatch it or await your own settlement. "
                 "Preserve prior decisions, completed tasks, budgets and uncertain effects; do not replay workers."),

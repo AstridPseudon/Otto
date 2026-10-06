@@ -3,6 +3,7 @@ import importlib.util
 from datetime import timedelta
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -27,7 +28,9 @@ class ManagerJourneyServiceTests(unittest.TestCase):
     def setUp(self):
         continuation.ManagerServiceContinuationTests.setUp(self)
         root = Path(__file__).resolve().parents[1]
-        baseline = root.parents[1] / "controller" / "manager_server_baseline.py"
+        fixture = os.environ.get("OTTO_OWNER_SERVICE_TEST_FIXTURE")
+        baseline = Path(fixture) if fixture else root.parents[1] / "controller" / "manager_server_baseline.py"
+        self.fixture_controller = baseline.parent
         if not baseline.exists():
             self.skipTest("owner service fixture is not installed")
         spec = importlib.util.spec_from_file_location("journey_service_fixture", baseline)
@@ -42,7 +45,7 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         controller = self.root / "controller"
         controller.mkdir()
         for name, value in {"HERE": controller, "WORKTREE": self.root,
-                            "RUN": root.parents[1], "EVIDENCE": self.root,
+                            "RUN": baseline.parent.parent, "EVIDENCE": self.root,
                             "STATE_PATH": self.root / "state.json"}.items():
             setattr(self.service, name, value)
         self.service.WORKER_RUN_CONFIG = self.service.RUN / "run.yaml"
@@ -233,7 +236,7 @@ class ManagerJourneyServiceTests(unittest.TestCase):
     def test_native_review_pending_own_settlement_automatically_continues_to_close(self):
         self.install_candidate()
         f = self.fixture
-        client = Path(__file__).resolve().parents[3] / "controller" / "manager_ctl.py"
+        client = self.fixture_controller / "manager_ctl.py"
         script = self.root / "ordinary-manager.py"
         script.write_text('''import importlib.util,json,sys
 from pathlib import Path
@@ -562,7 +565,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         release = self.root / "release-parent"
         receipt = self.root / "native-commands.json"
         script = self.root / "native-manager.py"
-        installed_client = Path(__file__).resolve().parents[3] / "controller" / "manager_ctl.py"
+        installed_client = self.fixture_controller / "manager_ctl.py"
         client = self.root / "manager_ctl.py"
         client.write_text(installed_client.read_text().replace("read_command_status(IPC, token)",
                                                              "read_command_status(IPC, token, pending_only=True)"))
@@ -655,6 +658,93 @@ if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
         self.assertEqual(terminal["outcome"], "completed", terminal)
         self.assertEqual(terminal["readback"]["lifecycle"], "completed")
         self.assertEqual(len(application.provider.calls), 3)
+
+    def test_deferred_intermediate_finish_wakes_same_manager_to_delegate_next_task(self):
+        self.install_candidate()
+        f = self.fixture
+        next_task = WorkGraph(f.store, actor=f.actor).create_task(f.project.ref,
+            title="Next useful delivery", logical_request_key="intermediate-next-task")
+        self.server.state["task_refs"]["J02"] = next_task.ref.to_dict()
+        client = self.fixture_controller / "manager_ctl.py"
+        next_request = {**self.worker_request(), "task": "J02", "principal": "next-worker",
+                        "request_key": "intermediate-next-worker", "focus": "Implement next useful delivery"}
+        script = self.root / "intermediate-manager.py"
+        script.write_text('''import importlib.util,json,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location("client",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
+client.IPC=Path(sys.argv[2]);client.HERE=client.IPC;client.SERVICE=client.IPC/"unused.sock"
+if sys.argv[3]=="review":
+    inputs=client.call({"command":"review-input","task":"J01"})
+    result=client.call({"command":"review-task","task":"J01","request_key":"intermediate-review",
+        "candidate_ref":inputs["candidate_ref"],"source_refs":inputs["source_refs"],"finish":False,
+        "inspection":{"observed":"genuine retained worker result inspected"},
+        "judgments":{"C01":{"verdict":"PASS","rationale":"retained_native_inspection_pass","evidence_refs":inputs["evidence_refs"]}}})
+    result=client.call({"command":"finish-task","task":"J01","request_key":"intermediate-finish","review_key":"intermediate-review"})
+elif sys.argv[3]=="advance":
+    result=client.call(json.loads(sys.argv[5]))
+else:
+    result=client.call({"command":"project-lifecycle-read","task":"J02"})
+Path(sys.argv[4]).write_text(json.dumps(result))
+''')
+        outer = self
+        phases = []
+        class OrdinaryManager(ProviderBinding):
+            def execute(self, request):
+                result = super().execute(request)
+                if request.identity.logical_agent_id == "manager" and self.options.get("delivered_brief"):
+                    phase = "review" if not phases else "advance" if len(phases) == 1 else "inspect"
+                    if phase == "advance":
+                        outer.assertIn("Observed owner task-settlement context:", self.options["prompt"])
+                        outer.assertIn("advance ready unfinished tasks", self.options["prompt"])
+                    phases.append(phase)
+                    child = subprocess.run([sys.executable, str(script), str(client), str(outer.directory), phase,
+                        str(outer.root / (phase + ".json")), json.dumps(next_request)],
+                        capture_output=True, text=True, timeout=20)
+                    if child.returncode: raise RuntimeError(child.stderr)
+                return result
+        f.app.runtime.adapter.binding_factory = lambda **options: OrdinaryManager(f.provider, options)
+        reports_before = self.reports()
+        f.provider.work_release.set()
+        first = self.wait_response(self.send("a101", self.worker_request()))
+        worker = self.wait_response(Path(first["response_path"]))
+        reviewed = self.wait_response(Path(worker["manager_result_notification"]["response_path"]))
+        reviewed_finish = json.loads((self.root / "review.json").read_text())
+        self.assertEqual(reviewed_finish["outcome"], "pending", reviewed_finish)
+        self.assertEqual(reviewed["completion_intents"][0]["result"]["outcome"], "completed")
+        notification = reviewed["task_settlement_notification"]
+        self.assertEqual(notification["outcome"], "admitted", notification)
+        advanced = self.wait_response(Path(notification["response_path"]))
+        self.assertEqual(advanced["outcome"], "succeeded", advanced)
+        self.assertEqual(advanced["task_settlement_notification"]["outcome"], "replayed")
+        self.assertEqual(advanced["task_settlement_notification"]["schedule_id"], advanced["schedule_id"])
+        next_worker = json.loads((self.root / "advance.json").read_text())
+        self.assertEqual(next_worker["outcome"], "admitted", next_worker)
+        settled_next = self.wait_response(Path(next_worker["response_path"]))
+        self.wait_response(Path(settled_next["manager_result_notification"]["response_path"]))
+        self.assertEqual(f.owner.graph.get(f.task.ref).lifecycle.value, "completed")
+        self.assertEqual(f.owner.graph.get(next_task.ref).lifecycle.value, "pending")
+        callback = f.port.read_due(advanced["schedule_id"])
+        facts = callback["host_evidence"]["task_settlement_continuation"]
+        self.assertEqual(len(facts["completed_tasks"]), 1)
+        self.assertEqual(facts["completed_tasks"][0]["task_ref"]["id"], f.task.ref.id)
+        calls = len(f.provider.calls)
+        self.host.close()
+        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
+                                  owner_path=self.directory / "manager-status-owner.json")
+        self.install_candidate()
+        self.host.start()
+        same = f.app.continue_manager_after_tasks(manager_schedule_id=advanced["schedule_id"], execute=True)
+        self.assertEqual(same["outcome"], "replayed", same)
+        self.assertEqual(same["schedule_id"], advanced["schedule_id"])
+        self.assertEqual(len(f.provider.calls), calls)
+        self.assertEqual(f.port.read_due(advanced["schedule_id"]), callback)
+        before = f.app._read(advanced["schedule_id"])
+        f.port.save_due(before.schedule_id, replace(before, completion_state="unknown").to_dict(),
+            request_id="intermediate-unknown-anchor", expected_version=before.version)
+        self.assertEqual(f.app.continue_manager_after_tasks(manager_schedule_id=before.schedule_id, execute=True)["outcome"], "held")
+        self.assertEqual(len(f.provider.calls), calls)
+        progress = lambda rows: [r for r in rows if r["value"].get("schema") == "otto.manager-progress.v1"]
+        self.assertEqual(progress(self.reports()), progress(reports_before))
 
     def test_current_report_intent_preserves_manager_execution_binding_across_tasks(self):
         self.install_candidate()

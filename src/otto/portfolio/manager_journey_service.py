@@ -132,6 +132,7 @@ class ManagerJourneyService:
                     requested_continuation={"settled_schedule_id": due.schedule_id})
                 result = {**result, "completion_intents": self.commands.settle_completion_intents()}
                 self._refresh_refs()
+                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
             return result
         if command == "review-input":
             if set(request) != {"command", "task"}:
