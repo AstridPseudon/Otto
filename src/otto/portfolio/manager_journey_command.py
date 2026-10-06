@@ -265,7 +265,10 @@ class ManagerJourneyCommands:
                     content = self.owner.content.read(ref)
                     if "content" in content:
                         digest = _digest(content["content"])
-                if ref.kind == "wrk.result" and isinstance(payload.get("value"), Mapping):
+                # Both public observation kinds retain their immutable body in
+                # value. Help replies/application reports are substantive
+                # evidence alongside worker results, not instruction packets.
+                if ref.kind in {"wrk.result", "wrk.report"} and isinstance(payload.get("value"), Mapping):
                     digest = _digest(payload["value"])
                 if not isinstance(digest, str) or len(digest) != 64:
                     raise ValueError("evidence has no retained content digest: " + ref.id)

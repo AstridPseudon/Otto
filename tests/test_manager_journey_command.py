@@ -2,6 +2,7 @@
 import unittest
 import argparse
 import json
+import hashlib
 
 from herzchen.contracts import ResourceRef, TransactionContext
 from herzchen.content import ContentDocument, ContentRevision
@@ -64,6 +65,42 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         pool = LimitService(self.application.store).get_pool(
             ResourceRef(self.application.actor.authority, "limit", "local-inspection"))
         self.assertEqual(pool.cumulative_used_units, 1)
+
+    def test_retained_help_reports_are_hashed_without_reauthoring_or_extra_charge(self):
+        f = self.application
+        assignment = self.fixture.manager
+        reply = f.owner.assignments.command_port.append_report(assignment.ref,
+            {"schema": "otto.issue.response.v1", "solution": "Observed actual help resolution"},
+            expected_generation=assignment.generation, logical_request_key="retained-help-reply", actor=f.actor)
+        application = f.owner.assignments.command_port.append_report(assignment.ref,
+            {"schema": "otto.issue.application.v1", "response_ref": reply.ref.to_dict(), "state": "resolved"},
+            expected_generation=assignment.generation, logical_request_key="retained-help-application", actor=f.actor)
+        request = self.request(candidate=self.source("connected-evidence"), key="report-evidence-review")
+        request["finish"] = False
+        reports = [reply.ref.to_dict(), application.ref.to_dict()]
+        request["source_refs"].extend(reports)
+        request["judgments"]["C01"]["evidence_refs"].extend(reports)
+        old_reports = [f.owner.graph.reader.get_identity(record.ref) for record in (reply, application)]
+        # An unretained report revision still fails before review/pool effects.
+        stale = {**request, "request_key": "stale-report-evidence",
+            "judgments": {"C01": {**request["judgments"]["C01"], "evidence_refs": [
+                request["candidate_ref"], {**reports[0], "revision": "rev-999"}]}}}
+        before = f.owner.graph.reader.snapshot_counts()
+        with self.assertRaises(ValueError): self.commands.review_task(stale)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), before)
+        accepted = self.commands.review_task(request)
+        self.assertEqual(accepted["outcome"], "accepted")
+        self.assertFalse(accepted["task_completion_recorded"])
+        for record in (reply, application):
+            expected = hashlib.sha256(json.dumps(record.value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            self.assertEqual(accepted["evidence_hashes"][record.ref.kind + ":" + record.ref.id + ":" + record.ref.revision], expected)
+        before = f.owner.graph.reader.snapshot_counts()
+        self.assertEqual(self.commands.review_task(request), accepted)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), before)
+        self.assertEqual([f.owner.graph.reader.get_identity(record.ref) for record in (reply, application)], old_reports)
+        pool = LimitService(f.store).get_pool(ResourceRef(f.actor.authority, "limit", "local-inspection"))
+        self.assertEqual(pool.cumulative_used_units, 1)
+        self.assertEqual(f.provider.calls, [])
 
     def test_existing_bound_pool_with_different_limits_is_rejected(self):
         policy = self.fixture.state["assessment_policy"]

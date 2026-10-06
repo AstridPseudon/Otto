@@ -1066,6 +1066,22 @@ class ExecutionApplication:
                     "reason": "reconcile the retained manager effect before task-settlement continuation", "retry": False}
         existing = self.due_port.read_due(schedule)
         if existing is not None:
+            # The completed-task set is deliberately stable across resource
+            # adoption. A successful notification from the same role epoch
+            # has already delivered that set; do not replay it under new
+            # resources or fail a later successfully settled manager turn.
+            if (existing.get("assignment_ref") != current.ref.to_dict()
+                    and _identity(existing.get("assignment_ref") or {}) == _identity(current.ref.to_dict())
+                    and existing.get("generation") == current.generation
+                    and existing.get("role") == "manager" and existing.get("recipient") == current.principal
+                    and existing["target"].get("native_id") == prior.target.get("native_id")
+                    and (existing.get("host_evidence") or {}).get("task_settlement_continuation") == evidence
+                    and existing.get("stop_state") == "completed"
+                    and existing.get("completion_state") == "succeeded"
+                    and existing.get("in_flight_request") is None):
+                return {"outcome": "already_observed", "provider_called": False,
+                        "schedule_id": schedule, "retry": False,
+                        "reason": "same task completions were delivered before resource adoption"}
             if ((existing.get("host_evidence") or {}).get("task_settlement_continuation") != evidence
                     or existing.get("assignment_ref") != current.ref.to_dict()
                     or existing.get("generation") != current.generation

@@ -39,6 +39,73 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         f = self.fixture
         return read_project_progress_reports(f.store.consumer(), f.project.ref.to_dict())
 
+    def test_settled_task_notification_is_not_replayed_after_public_resource_adoption(self):
+        from herzchen.contracts import ResourceRef
+        from herzchen.content.instructions import validate_instruction_content
+        from otto.portfolio.execution import OccurrencePreparationError, _digest
+        f = self.fixture
+        prior = f.app._read(self.anchor)
+        guide = next(ref for ref in prior.context_refs if ref != prior.target['mandate_ref'])
+        doc = f.app.portfolio.create_document(f.project.ref, actor='manager', request_id='completion-artifact',
+            document_id='completion-artifact', role='SOURCE', content={'observed': 'fixture artifact'})
+        artifact = doc['record']['payload']['current_revision']
+        from herzchen.domains.assessment import AssessmentModule
+        from herzchen.kernel.limits import LimitService
+        assessment = AssessmentModule(f.store, actor=f.actor)
+        scope = assessment.declare_scope('finish-scope', parent_obligation=f.task.ref,
+            protocol='fixture-inspection', criteria=[{'id': 'inspected', 'definition': 'Fixture artifact inspected'}],
+            designated_approver='manager', policy={'required_for_completion': True}, logical_request_key='finish-scope')
+        packet = assessment.freeze_input(scope.ref, packet={'observed': 'fixture artifact'},
+            consumed_refs=[ResourceRef.from_dict(artifact)], logical_request_key='finish-input')
+        pool = LimitService(f.store).create_pool(ResourceRef(f.actor.authority, 'limit', 'finish-allowance'),
+            capacity_units=1, cumulative_allowance_units=1, logical_request_key='finish-allowance', actor=f.actor)
+        judged = assessment.assess(scope.ref, candidate=ResourceRef.from_dict(artifact), criterion=scope.criterion_refs[0],
+            input_packet=packet.ref, verdict='PASS', limit_pool=pool.ref, logical_request_key='finish-judgment')
+        gate = assessment.accept(judged.ref, rationale='Observed fixture artifact',
+            evidence_refs=[ResourceRef.from_dict(artifact)], logical_request_key='finish-acceptance')
+        f.app.assignments.complete(f.task.ref, project=f.project.ref, assignment=prior.assignment_ref,
+            expected_generation=1, expected_project_revision=f.project.ref.revision,
+            expected_task_revision=f.task.ref.revision, disposition='accepted', evidence_refs=[artifact],
+            evidence_hashes={artifact['kind'] + ':' + artifact['id'] + ':' + artifact['revision']: _digest({'observed': 'fixture artifact'})},
+            gate_refs=[gate.ref.to_dict()], candidate_ref=artifact,
+            logical_request_key='fixture-real-finish', actor=f.actor)
+        old = f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=True)
+        self.assertEqual(old['outcome'], 'succeeded', old)
+        old_due = f.port.read_due(old['schedule_id'])
+        base = f.app.assignments.get(ResourceRef.from_dict(prior.assignment_ref))
+        content = f.owner.content.read(ResourceRef.from_dict(guide))['content']
+        current = f.app.assignments.adopt_resources(base.ref,
+            resources=[{'resource_ref': guide, 'resource_name': content['name'],
+                'content_digest': validate_instruction_content(content), 'required': True}],
+            expected_revision=base.revision, expected_generation=base.generation,
+            logical_request_key='new-resource-adoption', actor=f.actor)
+        mandate_content = f.owner.content.read(ResourceRef.from_dict(prior.target['mandate_ref']))['content']
+        current_task = f.owner.graph.get(f.task.ref).ref.to_dict()
+        made = f.app.portfolio.create_document(f.project.ref, actor='manager', request_id='current-mandate',
+            document_id='current-mandate', role='mandate', content={**mandate_content,
+                'assignment_ref': current.ref.to_dict(), 'task_ref': current_task,
+                'instruction_contract': {**mandate_content['instruction_contract'], 'task_ref': current_task}})
+        mandate = made['record']['payload']['current_revision']
+        prepared = f.app.prepare_role(role='manager', project_ref=f.project.ref.to_dict(), task_ref=current_task,
+            assignment_ref=current.ref.to_dict(), generation=1, mandate_ref=mandate,
+            context_refs=(guide, mandate), request_key='new-current-intent', instruction='Inspect remaining work',
+            model='gpt-test', reasoning='high', profile='workspace-write', native_session_id='manager-session')
+        settled = f.app.start(schedule_id=prepared['schedule_id'])
+        self.assertEqual(settled['outcome'], 'succeeded', settled)
+        calls = len(f.provider.calls); before = f.owner.graph.reader.snapshot_counts()
+        observed = f.app.continue_manager_after_tasks(manager_schedule_id=settled['schedule_id'], execute=True)
+        self.assertEqual(observed['outcome'], 'already_observed')
+        self.assertEqual(f.port.read_due(old['schedule_id']), old_due)
+        self.assertEqual(len(f.provider.calls), calls)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), before)
+        # Unknown historical delivery is not promoted to observed/success.
+        read_due = f.port.read_due
+        with patch.object(type(f.port), 'read_due', new=lambda port, schedule: (
+                {**old_due, 'completion_state': 'unknown'} if schedule == old['schedule_id'] else read_due(schedule))):
+            with self.assertRaisesRegex(OccurrencePreparationError, 'binding differs'):
+                f.app.continue_manager_after_tasks(manager_schedule_id=settled['schedule_id'], execute=True)
+        self.assertEqual(len(f.provider.calls), calls)
+
     def call(self, operation="prepare", current=None):
         f = self.fixture
         return manager_continuation_from_command(
