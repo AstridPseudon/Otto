@@ -139,10 +139,36 @@ class ExecutionHost:
             self._threads.append(thread)
             thread.start()
 
+    def _status_read(self, request: Mapping[str, Any]) -> Any:
+        """Read shared owner ports on the same SQLite custodian as commands.
+
+        Native transport waits pump the existing owner callback queue, so a
+        status read remains available without concurrent connection use.
+        Finite owner operations finish before status takes the command lane.
+        """
+        completed, result = threading.Event(), {}
+        while True:
+            with self._lock:
+                if self._external_waiting:
+                    self._owner_calls.put((lambda: self.handler(request), completed, result))
+                    break
+            # Do not block across a race into a native wait: on the next
+            # iteration that owner can receive this read through its pump.
+            if self._command_lock.acquire(blocking=False):
+                try:
+                    return self.handler(request)
+                finally:
+                    self._command_lock.release()
+            completed.wait(0.01)
+        completed.wait()
+        if "error" in result:
+            raise result["error"]
+        return result["value"]
+
     def _dispatch(self, request: Mapping[str, Any]) -> Any:
         try:
             if request.get("command") == "status":
-                return self.handler(request)
+                return self._status_read(request)
             with self._command_lock:
                 if self._closing and request.get("command") not in _REENTRANT_COMMANDS:
                     return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
