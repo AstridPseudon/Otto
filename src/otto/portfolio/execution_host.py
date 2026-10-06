@@ -40,6 +40,8 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
                                  "run-worker", "worker-status", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
                                  "review-input",
+                                 "request-help", "request-advice", "read-help", "respond-help", "resolve-help",
+                                 "start-retained-help",
                                  "project-lifecycle-read", "commit",
                                  "advisor-decision-state"})
 
@@ -49,7 +51,7 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
     if request.get("command") in _REENTRANT_COMMANDS:
         return "admitted"
     if (request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
-            or request.get("command") in {"manager-worker-result", "manager-task-settlement"}):
+            or request.get("command") in {"manager-worker-result", "manager-task-settlement", "manager-help-result"}):
         return "retained"  # Another native manager turn cannot overlap this one.
     return "held"
 
@@ -141,7 +143,7 @@ class ExecutionHost:
                 previous = getattr(_DISPATCH_CONTEXT, "value", None)
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
                     (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
-                    or request.get("command") in {"start-manager", "start-retained-worker", "manager-worker-result", "manager-task-settlement"})
+                    or request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result"})
                 try:
                     return self.handler(request)
                 finally:
@@ -221,7 +223,7 @@ class ExecutionHost:
                                   "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
                     else:
                         result = self._dispatch(request)
-                    if (command == "manager-worker-result" and result.get("outcome") == "pending"
+                    if (command in {"manager-worker-result", "manager-help-result"} and result.get("outcome") == "pending"
                             and result.get("provider_called") is False and result.get("effects_started") is False):
                         pending = self.directory / ("pending-" + token + ".json")
                         if not pending.exists():
@@ -351,7 +353,7 @@ class ExecutionHost:
             raise RuntimeError("worker submission requires its serialized command owner")
         if self._closing:
             raise RuntimeError("execution host is draining; no new worker may be admitted")
-        if request.get("command") not in {"start-retained-worker", "manager-worker-result", "manager-task-settlement"}:
+        if request.get("command") not in {"start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result"}:
             raise ValueError("only prepared work or an observed result/completion continuation may be retained")
         encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
         token = hashlib.sha256(encoded.encode()).hexdigest()

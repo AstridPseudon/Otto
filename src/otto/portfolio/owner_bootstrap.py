@@ -561,11 +561,11 @@ class PortfolioOwnerBootstrap:
             operations, due_port, delivery=issue_delivery,
         ))
 
-    def manager_application(self) -> Any:
+    def manager_application(self, *, due_port: Any = None, issue_delivery: Any = None) -> Any:
         """Compose the ordinary finite manager entry over this trusted owner."""
         from .manager_application import ManagerApplication
 
-        return ManagerApplication.from_owner(self)
+        return ManagerApplication.from_owner(self, due_port=due_port, issue_delivery=issue_delivery)
 
     def manager_assessment(self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
                            manager_assignment_ref: Mapping[str, Any], manager_actor: str,

@@ -160,8 +160,36 @@ def _review_ref(value: str) -> Any:
     return result
 
 
+def add_help_parsers(commands: Any) -> list[Any]:
+    """Shared help operations; the owning surface supplies scope and actor."""
+    parsers = []
+    for name, purpose in (("request-help", "operational blockage"), ("request-advice", "project judgment; requires enabled advisor policy")):
+        request = commands.add_parser(name, help="request " + purpose,
+            description="Returns the exact recipient and retained delivery status separately from resolution. Continue independent useful work. Observe unknown deliveries; never resend blindly.")
+        parsers.append(request)
+        request.add_argument("--request-key", required=True)
+        request.add_argument("--issue-key", required=True)
+        for field in ("problem", "impact", "requested-decision", "return-condition"):
+            request.add_argument("--" + field, required=True)
+        request.add_argument("--evidence", required=True, type=json.loads)
+    read = commands.add_parser("read-help", help="read help/advice disposition and exact delivery receipts without dispatch")
+    read.add_argument("--delivery-id", help="reconcile one retained delivery without resend")
+    reply = commands.add_parser("respond-help", help="bound recipient returns a response; automatically retains same-manager continuation")
+    reply.add_argument("--request-key", required=True)
+    reply.add_argument("--issue-id", required=True)
+    for field in ("authority-source", "response", "proposed-solution", "next-action"):
+        reply.add_argument("--" + field, required=True)
+    resolve = commands.add_parser("resolve-help", help="manager records applied response evidence and continues ready work")
+    resolve.add_argument("--request-key", required=True)
+    resolve.add_argument("--issue-id", required=True)
+    resolve.add_argument("--evidence", required=True, type=json.loads)
+    resolve.add_argument("--next-action", required=True)
+    return [*parsers, read, reply, resolve]
+
+
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
+    add_help_parsers(commands)
     setup = commands.add_parser("operating-setup", help="read or prepare draft/ready/active setup; activate only after shared readiness",
         description="Preparation validates existing role schedules, adopted BASE, conversations, execution contracts and required acceptance scopes without provider work. Autonomous mode requires a real help delivery port and explicit enabled/disabled advisor policy. Manual mode remains explicitly supervised. Administrative project activation does not dispatch a manager.")
     setup.add_argument("--operation", choices=("read", "prepare", "activate"), default="read")

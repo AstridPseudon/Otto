@@ -933,6 +933,86 @@ class ExecutionApplication:
             prepared = {**prepared, "due_version": reconciled.version}
         return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared
 
+    def continue_manager_from_help(self, *, manager_schedule_id: str,
+                                   report_ref: Mapping[str, Any], execute: bool = False) -> dict[str, Any]:
+        """Consume one response/applied outcome through retained manager continuation.
+
+        The report identity is the callback fence. It does not authorize its
+        proposed solution, replay an unknown turn, or change role ownership.
+        """
+        prior = self._read(manager_schedule_id)
+        current = self._current(prior.assignment_ref, prior.generation)
+        if (prior.role != "manager" or current.role != "manager" or current.principal != self.manager_actor
+                or _identity(current.scope.to_dict()) != _identity(prior.target["project_ref"])):
+            raise OccurrencePreparationError("help continuation requires the current project manager")
+        loop = self.portfolio._issue_loop()
+        if loop is None:
+            raise OccurrencePreparationError("owner help ports are unavailable")
+        reports = loop._issue_reports(prior.target["project_ref"])
+        report = next((r for r in reports if r.get("ref") == dict(report_ref)), None)
+        value = report.get("value") if report else None
+        if not isinstance(value, Mapping) or value.get("schema") not in {"otto.issue.response.v1", "otto.issue.outcome.v1"}:
+            raise OccurrencePreparationError("help continuation requires an exact retained response or applied outcome")
+        issue = next((i for i in loop.derive_issues(reports) if i["issue_id"] == value.get("issue_id")), None)
+        if issue is None or value.get("manager_generation") != current.generation:
+            raise OccurrencePreparationError("help response belongs to another manager generation")
+        if value["schema"] == "otto.issue.response.v1":
+            recipient = loop._recipient(prior.target["project_ref"], issue["purpose"])
+            if (value.get("awaiting") != "manager" or value.get("current_owner_ref") != current.ref.to_dict()
+                    or recipient is None or value.get("responding_assignment_ref") != json_value(recipient.ref)
+                    or value.get("responding_generation") != recipient.generation
+                    or report.get("assignment") != json_value(recipient.ref)):
+                raise OccurrencePreparationError("help response recipient is stale")
+        elif (value.get("disposition") != "resolved" or not value.get("evidence")
+                or value.get("manager_assignment_ref") != current.ref.to_dict()
+                or report.get("assignment") != current.ref.to_dict()):
+            raise OccurrencePreparationError("help outcome is not applied by this manager")
+        project = project_reader(self.portfolio.operations, prior.target["project_ref"])(_identity(prior.target["project_ref"]))
+        if project["lifecycle"] == "completed":
+            return {"outcome": "idle", "provider_called": False, "retry": False}
+        evidence = {"schema": "otto.help-continuation.v1", "report_ref": dict(report_ref),
+                    "issue_id": issue["issue_id"], "purpose": issue["purpose"],
+                    "report_sha256": _digest(value), "manager_assignment_ref": current.ref.to_dict(),
+                    "manager_generation": current.generation}
+        key = "help-result:" + _digest([current.ref.id, current.generation, report_ref])
+        schedule = "manager-help-callback-" + _digest(key)[:28]
+        if (prior.completion_state == "unknown" or
+                (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
+                or prior.stop_state == "completed" and prior.completion_state != "succeeded"):
+            return {"outcome": "held", "provider_called": False, "effects_started": False,
+                    "reason": "reconcile the retained manager effect before help continuation", "retry": False}
+        existing = self.due_port.read_due(schedule)
+        if existing is not None:
+            if ((existing.get("host_evidence") or {}).get("help_continuation") != evidence
+                    or existing["target"].get("native_id") != prior.target.get("native_id")):
+                raise OccurrencePreparationError("retained help continuation binding differs")
+            if prior.schedule_id != schedule and prior.stop_state != "completed":
+                return {"outcome": "pending", "provider_called": False, "effects_started": False, "retry": False}
+            return self.recover(schedule_id=schedule, execute=execute)
+        if prior.stop_state != "completed" or prior.completion_state != "succeeded" or prior.in_flight_request is not None:
+            return {"outcome": "pending", "provider_called": False, "effects_started": False,
+                    "reason": "manager must settle before help continuation", "retry": False}
+        guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
+        due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
+            assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds)
+        self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
+        due = replace(due, instruction=("Read the retained help/advice report and its current issue disposition. "
+            "Apply only actions authorized by your adopted mandate, record concrete application evidence through resolve-help, "
+            "and continue independent ready work through ordinary delegation and review. Advice is a suggestion; "
+            "receipt or response alone does not resolve a blockage. This invocation consumes the report; "
+            "do not redispatch it or wait for your own turn to settle. Preserve unknown effects and budgets."),
+            message="Observed help continuation context:\n" + json.dumps(evidence, sort_keys=True),
+            host_evidence={"help_continuation": evidence})
+        prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
+            assignments=self.assignments, binding=self.binding, due=due,
+            assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,
+            operation="resume", lifecycle="callback", request_key=key)
+        if prepared["outcome"] == "committed":
+            reconciled = self._resources(self._read(schedule))
+            prepared = {**prepared, "due_version": reconciled.version}
+        return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared
+
     def continue_manager_after_tasks(self, *, manager_schedule_id: str,
                                      execute: bool = False) -> dict[str, Any]:
         """Deliver newly observed committed finishes and advance ordinary work.

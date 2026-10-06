@@ -184,7 +184,7 @@ class ManagerApplication:
         self._operating_brief_reader_factory = operating_brief_reader_factory
 
     @classmethod
-    def from_owner(cls, owner: Any) -> "ManagerApplication":
+    def from_owner(cls, owner: Any, *, due_port: Any = None, issue_delivery: Any = None) -> "ManagerApplication":
         """Compose read/application facades from the supplied trusted bootstrap.
 
         Domain registration belongs to the host's explicit initialization
@@ -241,7 +241,12 @@ class ManagerApplication:
             or getattr(operations, "project_read_grant", None) is not grant
         ):
             raise ManagerCompositionError("project read grant is not bound to the manager principal")
-        portfolio = OttoPortfolio(operations)
+        if due_port is None:
+            portfolio = OttoPortfolio(operations)
+        else:
+            from .owner_issue_loop import compose_owner_issue_loop
+            portfolio = OttoPortfolio(operations, issue_loop=compose_owner_issue_loop(
+                operations, due_port, delivery=issue_delivery))
         visibility = ContextPacketService(store)
         raw_document_reader = ProjectDocumentReader(
             sheet_reader=owner.sheet,

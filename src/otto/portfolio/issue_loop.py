@@ -90,6 +90,8 @@ class IssueLoopPorts:
     due_records_for_project: Callable[[Mapping[str, Any]], Sequence[Mapping[str, Any]]]
     delivery: Any = None
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    current_advisor: Any = None
+    recipient_conversation: Any = None
 
 
 class IssueLoop:
@@ -102,6 +104,15 @@ class IssueLoop:
         if any(value is None for value in required):
             raise ValueError("assignment, DueRecord, authentication, and current-scope ports are required")
         self.ports = ports
+
+    def _recipient(self, project: Mapping[str, Any], purpose: str) -> Any:
+        if purpose == "advice":
+            if not callable(self.ports.current_advisor):
+                raise IssueLoopError("current advisor route is unavailable")
+            return self.ports.current_advisor(project)
+        if purpose != "operational_help":
+            raise IssueLoopError("purpose must be advice or operational_help")
+        return self.ports.current_supervisor(project)
 
     @staticmethod
     def _due_proves(due: Any, identity: Any) -> bool:
@@ -446,8 +457,11 @@ class IssueLoop:
             lifecycle = [item["value"] for item in items if item.get("value", {}).get("schema") in
                          {"otto.issue.v1", "otto.issue.outcome.v1"}]
             state = "resolved" if lifecycle and lifecycle[-1].get("schema") == "otto.issue.outcome.v1" and lifecycle[-1].get("disposition") == "resolved" else "open"
-            latest = items[-1]["value"]
+            # Delivery receipts describe transport, never semantic disposition.
+            latest = next(item["value"] for item in reversed(items)
+                          if item["value"].get("schema") != "otto.issue.delivery.v1")
             result.append({"issue_id": issue_id, "state": state,
+                "purpose": opened["value"].get("purpose", "operational_help"),
                 "project_ref": opened["value"].get("project_ref"),
                 "origin_assignment_ref": opened["value"].get("origin_assignment_ref"),
                 "current_owner_ref": latest.get("current_owner_ref") or opened["value"].get("origin_assignment_ref"),
@@ -459,7 +473,8 @@ class IssueLoop:
 
     def read_issues(self, *, project_ref: Any) -> dict[str, Any]:
         project = _ref(project_ref, "project_ref")
-        issues = self.derive_issues(self._issue_reports(project))
+        reports = self._issue_reports(project)
+        issues = self.derive_issues(reports)
         for issue in issues:
             opened = issue.get("opened_record", {})
             identity = opened.get("overdue_identity") if isinstance(opened, Mapping) else None
@@ -475,7 +490,7 @@ class IssueLoop:
                 continue
             try:
                 owner = (self.ports.current_manager(project) if issue.get("awaiting") == "manager"
-                         else self.ports.current_supervisor(project))
+                         else self._recipient(project, issue["purpose"]))
             except Exception:
                 owner = None
             if owner is not None:
@@ -483,6 +498,12 @@ class IssueLoop:
             else:
                 issue["current_owner_ref"] = None
                 issue["routing_state"] = "unresolved"
+        for issue in issues:
+            deliveries = [item["value"] for item in reports
+                if isinstance(item.get("value"), Mapping)
+                and item["value"].get("schema") == "otto.issue.delivery.v1"
+                and item["value"].get("issue_id") == issue["issue_id"]]
+            issue["deliveries"] = deliveries
         return {"outcome": "read", "issues": issues,
                 "read_side_effects": False, "dispatch": False, "launch": False}
 
@@ -495,12 +516,23 @@ class IssueLoop:
                   "current_owner_ref": recipient, "awaiting": "recipient",
                   "delivery_id": _stable("delivery", issue_id, request_key),
                   "state": "intent", "message": dict(message)}
+        intent["recipient_generation"] = _field(recipient_assignment, "generation")
+        intent["recipient_principal"] = _principal(recipient_assignment)
+        intent["recipient_conversation"] = _field(recipient_assignment, "session")
+        if callable(self.ports.recipient_conversation):
+            intent["recipient_conversation"] = self.ports.recipient_conversation(project, recipient_assignment)
         prior = [item.get("value") for item in self._issue_reports(project)
                  if isinstance(item.get("value"), Mapping)
                  and item["value"].get("schema") == "otto.issue.delivery.v1"
                  and item["value"].get("delivery_id") == intent["delivery_id"]]
         if prior:
-            terminal = next((item for item in reversed(prior) if item.get("state") in {"sent", "unknown"}), None)
+            original = prior[0]
+            if (original.get("recipient_assignment_ref") != recipient
+                    or "recipient_generation" in original and original["recipient_generation"] != intent["recipient_generation"]
+                    or "recipient_conversation" in original and original["recipient_conversation"] != intent["recipient_conversation"]):
+                return {"state": "stale", "delivery_id": intent["delivery_id"],
+                        "reason": "retained recipient differs; reconcile before routing again", "retry": False}
+            terminal = next((item for item in reversed(prior) if item.get("state") in {"sent", "unknown", "pending", "prepared", "unsupported"}), None)
             if terminal is not None:
                 return {"state": terminal["state"], "delivery_id": intent["delivery_id"],
                         "receipt": terminal.get("receipt"), "transport": terminal.get("transport"),
@@ -537,14 +569,14 @@ class IssueLoop:
         receipt = value.get("receipt")
         if state == "sent" and not isinstance(receipt, Mapping):
             state = "unknown"
-        if state in {"sent", "unknown"}:
+        if state in {"sent", "unknown", "pending", "prepared", "unsupported"}:
             self._append(recipient_assignment, {"schema": "otto.issue.delivery.v1", "issue_id": issue_id,
                 "project_ref": project, "delivery_id": intent["delivery_id"], "state": state,
                 "transport": value.get("transport", state), "receipt": _json(receipt, "receipt") if receipt is not None else None,
                 "message": dict(message)}, key="otto-issue-delivery-result:" + intent["delivery_id"],
                 actor=actor, generation=int(_field(recipient_assignment, "generation", 1)))
         return {**dict(value), "state": state, "delivery_id": intent["delivery_id"],
-                "retry": False if state in {"unknown", "sent"} else None}
+                "retry": False}
 
     def recover_delivery(self, *, project_ref: Any, delivery_id: str) -> dict[str, Any]:
         """Read/reconcile one existing delivery identity without sending again."""
@@ -578,7 +610,8 @@ class IssueLoop:
     def submit_issue(self, *, project_ref: Any, assignment_ref: Any, generation: int,
                      actor: str, issue_key: str, problem: str, evidence: Sequence[Any],
                      impact: str, requested_decision: str,
-                     return_condition: str, request_id: str) -> dict[str, Any]:
+                     return_condition: str, request_id: str,
+                     purpose: str = "operational_help") -> dict[str, Any]:
         project, assignment_ref = _ref(project_ref, "project_ref"), _ref(assignment_ref, "assignment_ref")
         actor, issue_key = _text(actor, "actor"), _text(issue_key, "issue_key")
         request_id = _text(request_id, "request_id")
@@ -591,11 +624,20 @@ class IssueLoop:
             raise IssueLoopError("evidence must be a sequence of references or facts")
         evidence_value = _json(list(evidence), "evidence")
         manager = self._manager(project, assignment_ref, actor, generation)
-        try:
-            supervisor = self.ports.current_supervisor(project)
-        except Exception:
-            supervisor = None
-        issue_id = _stable("issue", project.get("id"), issue_key)
+        if purpose == "advice":
+            # Explicit disabled policy fails before appending or consuming allowance.
+            supervisor = self._recipient(project, purpose)
+            if supervisor is None:
+                raise IssueLoopError("advisor is unavailable")
+        else:
+            if purpose != "operational_help":
+                raise IssueLoopError("purpose must be advice or operational_help")
+            try:
+                supervisor = self._recipient(project, purpose)
+            except Exception:
+                supervisor = None
+        issue_id = (_stable("issue", project.get("id"), issue_key) if purpose == "operational_help"
+                    else _stable("issue", project.get("id"), purpose, issue_key))
         project_reports = self._issue_reports(project)
         existing = next((item for item in self.derive_issues(project_reports)
                          if item["issue_id"] == issue_id), None)
@@ -605,9 +647,15 @@ class IssueLoop:
             and item["value"].get("issue_id") == issue_id
             and item["value"].get("request_id") == request_id), None)
         if existing is not None and existing["state"] == "open" and prior_submission is None:
+            original = next(item for item in project_reports if isinstance(item.get("value"), Mapping)
+                and item["value"].get("schema") == "otto.issue.v1" and item["value"].get("issue_id") == issue_id)
+            original_ref = _ref(original["ref"])
+            delivery = (self._route_delivery(project=project, issue_id=issue_id, recipient_assignment=supervisor,
+                actor=actor, message={"type": "issue", "issue_id": issue_id, "report_ref": original_ref},
+                request_key="submit:" + original_ref["id"]) if supervisor is not None
+                else {"state": "pending", "transport": "unsupported", "retry": False})
             return {"outcome": "existing", "issue_id": issue_id,
-                    "report_ref": next((ref for ref in existing["reports"] if isinstance(ref, Mapping)), None),
-                    "delivery": {"state": "pending", "transport": "unsupported"}, "reopened": False}
+                    "report_ref": original_ref, "delivery": delivery, "reopened": False}
         issue = {"schema": "otto.issue.v1", "issue_id": issue_id, "project_ref": project,
                  "origin_assignment_ref": (existing.get("origin_assignment_ref") if existing else assignment_ref),
                  "origin_generation": generation,
@@ -617,12 +665,14 @@ class IssueLoop:
                  "impact": _text(impact, "impact"),
                  "requested_decision": _text(requested_decision, "requested_decision"),
                  "return_condition": _text(return_condition, "return_condition"),
-                 "awaiting": "orchestrator", "observed_at": _stamp(self.ports.now()),
+                 "awaiting": "advisor" if purpose == "advice" else "orchestrator", "observed_at": _stamp(self.ports.now()),
                  "routing_state": "resolved" if supervisor is not None else "unresolved",
                  "routing_repair_owner": None if supervisor is not None else "activating_owner",
                  "reopens": (bool(prior_submission["value"].get("reopens")) if prior_submission is not None
                              else bool(existing and existing["state"] == "resolved")),
                  "issue_version": self._next_issue_version(project, issue_id), "request_id": request_id}
+        if purpose == "advice":
+            issue["purpose"] = purpose
         report = self._append_issue_record(project, manager, issue, request_id=request_id,
                               actor=actor, generation=generation)
         if supervisor is None:
@@ -642,13 +692,19 @@ class IssueLoop:
                          user_decision: Optional[str] = None) -> dict[str, Any]:
         project, issue_id = _ref(project_ref, "project_ref"), _text(issue_id, "issue_id")
         actor, request_id = _text(actor, "actor"), _text(request_id, "request_id")
-        supervisor = self.ports.current_supervisor(project)
+        issues = self.derive_issues(self._issue_reports(project))
+        issue = next((item for item in issues if item["issue_id"] == issue_id), None)
+        if issue is None:
+            raise IssueLoopError("issue does not exist in this project")
+        supervisor = self._recipient(project, issue["purpose"])
         if supervisor is None or _principal(supervisor) != actor:
-            raise IssueLoopError("actor is not the current accountable orchestrator")
+            raise IssueLoopError("actor is not the current issue recipient")
         for name, value in (("authority_source", authority_source), ("response", response),
                             ("proposed_solution", proposed_solution), ("next_action", next_action)):
             _text(value, name)
         user_only = user_decision is not None
+        if issue["purpose"] == "advice" and user_only:
+            raise IssueLoopError("advisor suggestions cannot become owner decisions")
         decision_value = _text(user_decision, "user_decision") if user_only else None
         for prior in self._issue_reports(project):
             value = prior.get("value")
@@ -661,11 +717,18 @@ class IssueLoop:
                 "awaiting": "user" if user_only else "manager", "request_id": request_id}
             if any(value.get(key) != expected_value for key, expected_value in expected.items()):
                 raise IssueLoopError("request_id was reused with changed issue input")
+            manager = self.ports.current_manager(project)
+            if (value.get("current_owner_ref") != _ref(_field(supervisor if user_only else manager, "ref"))
+                    or value.get("manager_generation", _field(manager, "generation")) != _field(manager, "generation")
+                    or value.get("responding_assignment_ref", _ref(_field(supervisor, "ref"))) != _ref(_field(supervisor, "ref"))):
+                raise IssueLoopError("retained response recipient is stale")
+            delivery = self._route_delivery(project=project, issue_id=issue_id, recipient_assignment=manager,
+                actor=actor, message={"type": "issue_response", "issue_id": issue_id, "report_ref": _ref(prior.get("ref"))},
+                request_key="response:" + _ref(prior.get("ref"))["id"]) if not user_only else None
             return {"outcome": "awaiting_user" if user_only else "responded", "issue_id": issue_id,
                 "report_ref": _ref(prior.get("ref"), "report_ref"),
                 "current_owner_ref": value.get("current_owner_ref"),
-                "delivery": {"state": "unknown", "transport": "unknown", "retry": False,
-                             "reason": "response_request_replayed"}, "replayed": True}
+                "delivery": delivery, "replayed": True}
         issues = self.derive_issues(self._issue_reports(project))
         issue = next((item for item in issues if item["issue_id"] == issue_id), None)
         if issue is None or issue["state"] != "open":
@@ -684,6 +747,10 @@ class IssueLoop:
                 "awaiting": "user" if user_only else "manager", "request_id": request_id,
                 "observed_at": _stamp(self.ports.now()),
                 "issue_version": self._next_issue_version(project, issue_id),
+                "responding_assignment_ref": _ref(_field(supervisor, "ref")),
+                "responding_generation": _field(supervisor, "generation"),
+                "manager_generation": _field(manager, "generation"),
+                "authority_kind": "suggestion" if issue["purpose"] == "advice" else "operational_response",
                 "current_owner_ref": (_ref(_field(supervisor, "ref")) if user_only else current_manager_ref),
                 }
         report = self._append_issue_record(project, supervisor, body, request_id=request_id,
@@ -767,13 +834,19 @@ class IssueLoop:
                     or _ref_id(latest.get("current_owner_ref")) != current_manager_ref["id"]
                     or response_record is None):
                 raise IssueLoopError("progress requires the current authorized manager response")
-        supervisor = self.ports.current_supervisor(project)
+        supervisor = self._recipient(project, issue["purpose"])
         if supervisor is None:
             raise IssueLoopError("current accountable orchestrator is unresolved")
+        if disposition in {"resolved", "progress"} and latest.get("responding_assignment_ref") is not None:
+            if (latest["responding_assignment_ref"] != _ref(_field(supervisor, "ref"))
+                    or latest.get("responding_generation") != _field(supervisor, "generation")
+                    or latest.get("manager_generation") != generation):
+                raise IssueLoopError("response recipient or manager generation is stale")
         body = {"schema": "otto.issue.outcome.v1", "issue_id": issue_id,
                 "project_ref": project, "disposition": disposition,
                 "evidence": evidence_value, "next_action": _text(next_action, "next_action") if next_action else "",
                 "applied_response_ref": response_record.get("ref") if response_record is not None else None,
+                "manager_assignment_ref": current_manager_ref, "manager_generation": generation,
                 "current_owner_ref": _ref(_field(supervisor, "ref")),
                 "awaiting": "orchestrator" if disposition != "resolved" else "none",
                 "request_id": request_id, "observed_at": _stamp(self.ports.now()),

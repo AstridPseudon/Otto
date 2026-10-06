@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .manager_journey_command import ManagerJourneyCommands
+from .owner_readers import json_value
 
 
 def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: Mapping[str, Any],
@@ -70,13 +71,15 @@ class ManagerJourneyService:
 
     def __init__(self, *, server: Any, host: Any, run_path: str | Path,
                  workspace: str | Path, policy: Any = None,
-                 orchestrator_principal: str | None = None, observe_schedules: Any = None) -> None:
+                 orchestrator_principal: str | None = None, observe_schedules: Any = None,
+                 help_reply_authorizer: Any = None) -> None:
         self.server, self.host = server, host
         self.run_path, self.workspace = Path(run_path).resolve(), Path(workspace).resolve()
         self.commands = ManagerJourneyCommands(owner=server.owner, portfolio=server.portfolio,
             state=server.state, policy=policy, due_port=server.due_port,
             settle_execution=self._settle_execution)
         self.orchestrator_principal, self.observe_schedules = orchestrator_principal, observe_schedules
+        self.help_reply_authorizer = help_reply_authorizer
 
     def _settle_execution(self, due: Mapping[str, Any]) -> Mapping[str, Any]:
         app = self.server._execution(principal=due["recipient"], model=due["requested_model"],
@@ -85,6 +88,60 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
+            return self._help(request)
+        if command == "start-retained-help":
+            self.commands._authorize()
+            if set(request) != {"command", "principal", "schedule_id", "delivery_id"}:
+                raise ValueError("retained help execution requires its exact delivery handle")
+            loop = self.server.portfolio._issue_loop()
+            reports = loop._issue_reports(self.server.state["project_ref"])
+            receipt = next((r["value"].get("receipt") for r in reports if isinstance(r.get("value"), Mapping)
+                and r["value"].get("schema") == "otto.issue.delivery.v1"
+                and r["value"].get("delivery_id") == request["delivery_id"]
+                and isinstance(r["value"].get("receipt"), Mapping)
+                and r["value"]["receipt"].get("schedule_id") == request["schedule_id"]), None)
+            if receipt is None:
+                raise PermissionError("help execution has no retained owner delivery receipt")
+            raw = self.server.due_port.read_due(request["schedule_id"])
+            assignment = self.server.owner.assignments.command_port.get(receipt["recipient_assignment_ref"])
+            current = loop._recipient(self.server.state["project_ref"], "advice" if assignment.role == "project_advisor" else "operational_help")
+            if (current is None or json_value(current.ref) != receipt["recipient_assignment_ref"]
+                    or assignment.principal != request["principal"] or assignment.generation != receipt["generation"]
+                    or not isinstance(raw, Mapping) or raw["assignment_ref"] != receipt["recipient_assignment_ref"]
+                    or raw["generation"] != receipt["generation"] or raw["target"].get("native_id") != receipt["conversation_id"]
+                    or assignment.role not in {"orchestrator", "project_advisor"}):
+                raise PermissionError("retained help recipient is stale")
+            app = self.server._execution(principal=assignment.principal, model=raw["requested_model"],
+                reasoning=raw["requested_reasoning"], evidence_id=request["schedule_id"])
+            return app.recover(schedule_id=request["schedule_id"], execute=True)
+        if command == "manager-help-result":
+            self.commands._authorize()
+            state = self.server.state
+            if (set(request) != {"command", "principal", "schedule_id", "report_ref", "generation"}
+                    or request["principal"] != state["manager"] or request["generation"] != state["manager_generation"]):
+                raise PermissionError("help continuation recipient is stale or foreign")
+            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                reasoning=state["requested_reasoning"], evidence_id="manager-help-result")
+            original = app._read(request["schedule_id"])
+            if original.assignment_ref["id"] != state["assignment_ref"]["id"] or original.generation != request["generation"]:
+                raise PermissionError("help continuation anchor is stale or foreign")
+            current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+            prepared = app.continue_manager_from_help(manager_schedule_id=current_id,
+                report_ref=request["report_ref"], execute=False)
+            if prepared.get("outcome") not in {"committed", "prepared", "replayed"}:
+                return prepared
+            if prepared["outcome"] == "replayed":
+                return prepared  # An old reply never replaces the current manager handle.
+            due = app._read(prepared["schedule_id"])
+            state["manager_continuation"] = {"schedule_id": due.schedule_id,
+                "native_session_id": due.target["native_id"], "outcome": "prepared",
+                "requested_continuation": {"settled_schedule_id": current_id}}
+            self.server._save_state()
+            result = app.recover(schedule_id=due.schedule_id, execute=True)
+            state["manager_continuation"]["outcome"] = result["outcome"]
+            self.server._save_state()
+            return result
         if command == "operating-setup":
             self.commands._authorize()
             if set(request) - {"command", "operation", "setup", "request_key"}:
@@ -244,6 +301,62 @@ class ManagerJourneyService:
                     result = {**result, "manager_result_notification": retained}
             return result
         return self.server.handle(request)
+
+    def _help(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Manager operations and the host-bound recipient reply over IssueLoop."""
+        self.commands._authorize()
+        state, command = self.server.state, request["command"]
+        portfolio = self.server.portfolio
+        loop = portfolio._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "provider_called": False, "reason": "owner issue ports are not bound"}
+        common = {"project_ref": state["project_ref"]}
+        manager = {**common, "assignment_ref": state["assignment_ref"],
+                   "generation": state["manager_generation"], "actor": state["manager"]}
+        if command == "read-help":
+            if set(request) - {"command", "delivery_id"}:
+                raise ValueError("read-help cannot override its bound project or actor")
+            if request.get("delivery_id"):
+                return loop.recover_delivery(**common, delivery_id=request["delivery_id"])
+            return portfolio.read_issues(**common)
+        key = self.commands._key(request)
+        if command in {"request-help", "request-advice"}:
+            fields = {"issue_key", "problem", "evidence", "impact", "requested_decision", "return_condition"}
+            if set(request) != {"command", "request_key", *fields}:
+                raise ValueError("help request requires concise problem/evidence/impact/decision/return condition; no routing overrides")
+            operation = portfolio.request_advice if command == "request-advice" else portfolio.request_help
+            result = operation(**manager, **{field: request[field] for field in fields}, request_id=key)
+            issue = next(i for i in loop.read_issues(**common)["issues"] if i["issue_id"] == result["issue_id"])
+            return {**result, "purpose": issue["purpose"], "resolution": issue["state"],
+                    "recipient_assignment_ref": issue["current_owner_ref"], "independent_work": "continue"}
+        if command == "respond-help":
+            fields = {"issue_id", "authority_source", "response", "proposed_solution", "next_action"}
+            if set(request) != {"command", "request_key", *fields}:
+                raise ValueError("help response cannot choose its own actor or recipient")
+            # Manager-accessible transport cannot impersonate its supervisor.
+            # A host binds an independently authenticated recipient reply port.
+            from herzchen.contracts import AuthenticatedActor
+            if not callable(self.help_reply_authorizer):
+                raise PermissionError("respond-help requires the host's authenticated recipient reply port")
+            responder = self.help_reply_authorizer(dict(request))
+            if (not isinstance(responder, AuthenticatedActor)
+                    or responder.authority != self.server.owner.binding.authority
+                    or responder.credential_ref != self.server.owner.binding.credential_ref):
+                raise PermissionError("help reply lacks owner-issued recipient authentication")
+            result = portfolio.respond_to_issue(**common, actor=responder.actor,
+                **{field: request[field] for field in fields}, request_id=key)
+        else:
+            if set(request) != {"command", "request_key", "issue_id", "evidence", "next_action"}:
+                raise ValueError("resolve-help requires application evidence and next action; no actor override")
+            result = portfolio.resolve_help(**manager, issue_id=request["issue_id"], evidence=request["evidence"],
+                next_action=request["next_action"], request_id=key)
+        if self.host is None or self.host._closing:
+            return {**result, "continuation": {"outcome": "held", "provider_called": False,
+                    "reason": "owner host must retain help continuation after restart", "retry": False}}
+        current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+        retained = self.host.submit({"command": "manager-help-result", "principal": state["manager"],
+            "generation": state["manager_generation"], "schedule_id": current_id, "report_ref": result["report_ref"]})
+        return {**result, "continuation": retained}
 
     def _retain_task_settlement(self, app: Any) -> Mapping[str, Any]:
         if self.host._closing:

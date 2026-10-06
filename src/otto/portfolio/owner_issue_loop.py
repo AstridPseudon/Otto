@@ -1,5 +1,7 @@
 """Production issue-loop composition using finite owner ports and current reads."""
 
+from __future__ import annotations
+
 from typing import Any, Mapping
 
 from .herzchen_binding import _json_value
@@ -19,6 +21,9 @@ class OwnerIssueReaders:
         ref = ResourceRef.from_dict(dict(value))
         if ref.authority != self.operations.binding.authority or ref.kind != "work.project":
             raise IssueLoopError("issue scope must be an owner-local project")
+        grant = getattr(self.operations, "project_read_grant", None)
+        if grant is not None and not grant.allows(ref):
+            raise IssueLoopError("issue project is outside the owner-issued project grant")
         current = self.operations.reader.get_record(ResourceRef(ref.authority, ref.kind, ref.id))
         if current is None:
             raise IssueLoopError("issue project is unavailable")
@@ -56,6 +61,69 @@ class OwnerIssueReaders:
             raise IssueLoopError("project supervision is stale")
         return assignment
 
+    def current_advisor(self, project: Mapping[str, Any]) -> Any:
+        from .operating_setup import read_setup
+        from .advisor_pairing import establish_pairing
+        from otto.attention import DueRecord
+        record = self.project(project)
+        setup = read_setup(self.operations, _json_value(record.ref))
+        if setup is None:
+            raise IssueLoopError("advice requires an adopted explicit advisor policy")
+        if setup["advisor_policy"]["mode"] == "disabled":
+            raise IssueLoopError("advisor_disabled: " + setup["advisor_policy"]["reason"])
+        dues = {}
+        for role in ("manager", "project_advisor"):
+            raw = self.due_port.read_due(setup["roles"][role])
+            if not isinstance(raw, Mapping):
+                raise IssueLoopError("advice role occurrence is unavailable")
+            dues[role] = DueRecord.from_dict(raw)
+        assignments = [_json_value(item) for item in
+            self.operations.sheet_port.export(record.ref)["project"]["observed"].get("assignments", ())]
+        pairing = establish_pairing(_json_value(record.ref), assignments,
+            manager_conversation_ref={"host": dues["manager"].target["host"], "native_id": dues["manager"].target["native_id"]},
+            advisor_conversation_ref={"host": dues["project_advisor"].target["host"], "native_id": dues["project_advisor"].target["native_id"]})
+        advisor = self.operations.assignments_port.get(pairing.advisor_ref)
+        for role, ref, generation in (("manager", pairing.manager_ref, pairing.manager_generation),
+                                      ("project_advisor", pairing.advisor_ref, pairing.generation)):
+            assignment = self.operations.assignments_port.get(ref)
+            due = dues[role]
+            if (_json_value(assignment.ref) != due.assignment_ref or generation != due.generation
+                    or assignment.principal != due.recipient or not self.active(assignment)
+                    or due.role != role or due.project_ref != record.ref.id
+                    or any(due.target["project_ref"].get(k) != getattr(record.ref, k) for k in ("authority", "kind", "id"))
+                    or self.conversation(project, assignment) != due.target["native_id"]):
+                raise IssueLoopError("advice pairing or conversation is stale")
+        if dues["project_advisor"].allowance_ref is None:
+            raise IssueLoopError("advice requires its adopted execution allowance")
+        return advisor
+
+    def conversation(self, project: Mapping[str, Any], assignment: Any) -> str | None:
+        from otto.attention import native_target_identity, DueRecord
+        from .operating_setup import read_setup
+        session = assignment.session
+        if session is not None:
+            return session if isinstance(session, str) else native_target_identity(session) if isinstance(session, Mapping) else None
+        # S02 also accepts exact admitted host bindings for assignments whose
+        # initial session field was absent. Never infer one from a role name.
+        setup = read_setup(self.operations, _json_value(self.project(project).ref))
+        schedule = setup["roles"].get(assignment.role) if setup else None
+        raw = self.due_port.read_due(schedule) if schedule else None
+        if not isinstance(raw, Mapping):
+            return None
+        due = DueRecord.from_dict(raw)
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        admission, authorization = attempt.get("delivery_admission") or {}, attempt.get("delivery_authorization") or {}
+        native = native_target_identity(due.target)
+        if (due.assignment_ref != _json_value(assignment.ref) or due.generation != assignment.generation
+                or due.recipient != assignment.principal or not native
+                or admission.get("physical_session_id") != native or authorization.get("physical_session_id") != native
+                or authorization.get("assignment_ref") != due.assignment_ref or authorization.get("generation") != due.generation
+                or authorization.get("project_ref") != due.target["project_ref"]
+                or authorization.get("task_ref") != due.target["task_ref"]
+                or authorization.get("role") != assignment.role or authorization.get("principal") != assignment.principal):
+            raise IssueLoopError("admitted help conversation is stale or unverified")
+        return native
+
     def facts(self, project: Mapping[str, Any], assignment: Any, actor: str) -> Mapping[str, Any]:
         from .intake import OttoPortfolio
 
@@ -72,11 +140,15 @@ class OwnerIssueReaders:
         seen = set()
         # Existing event subjects enumerate immutable reports across assignment
         # revisions and supervisor transfers; no parallel issue index is kept.
-        for event in self.operations.reader.list_events():
+        # The general project reader intentionally exposes only Work records.
+        # Owner composition scopes immutable observations here, before returning
+        # them to the finite issue surface (including old assignment revisions).
+        owner_reader = self.operations._owner_reader
+        for event in owner_reader.list_events():
             if event.subject.kind not in {"wrk.report", "wrk.result"} or event.subject.id in seen:
                 continue
             seen.add(event.subject.id)
-            observation = self.operations.reader.get_record(event.subject)
+            observation = owner_reader.get_record(event.subject)
             if observation is None:
                 continue
             payload = observation.payload
@@ -97,7 +169,7 @@ class OwnerIssueReaders:
     def due_records(self, project: Mapping[str, Any]) -> list[dict[str, Any]]:
         record = self.project(project)
         manager = self.current_manager(project)
-        ids = {event.subject.id for event in self.operations.reader.list_events()
+        ids = {event.subject.id for event in self.operations._owner_reader.list_events()
                if event.subject.kind == "otto.due-record"}
         result = []
         for schedule_id in sorted(ids):
@@ -114,10 +186,18 @@ def compose_owner_issue_loop(operations: Any, due_port: Any, *, delivery: Any = 
     if not all(callable(getattr(due_port, name, None)) for name in ("read_due", "save_due")):
         raise TypeError("due_port must expose finite read_due/save_due")
     readers = OwnerIssueReaders(operations, due_port)
+    supervisor = readers.current_supervisor
+    if callable(getattr(delivery, "current_supervisor", None)):
+        # A host may explicitly issue a bound manual supervisor for a project
+        # without autonomous orchestration. It still resolves a real assignment.
+        def supervisor(project):
+            current = readers.current_supervisor(project)
+            return current if current is not None else delivery.current_supervisor(project)
     return IssueLoop(IssueLoopPorts(
         assignments=operations.assignments_port, due_records=due_port,
         authenticate=operations.binding.authenticated_actor,
-        current_manager=readers.current_manager, current_supervisor=readers.current_supervisor,
+        current_manager=readers.current_manager, current_supervisor=supervisor,
         current_facts=readers.facts, reports_for_project=readers.reports,
-        due_records_for_project=readers.due_records, delivery=delivery,
+        due_records_for_project=readers.due_records, delivery=delivery, current_advisor=readers.current_advisor,
+        recipient_conversation=readers.conversation,
     ))

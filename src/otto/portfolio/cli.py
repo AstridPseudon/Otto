@@ -179,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     advisor.add_argument("--pin", action="append", default=[], help="exact owner resource ref JSON; repeat to pin advisor inputs")
     _add_format(advisor)
 
+    from .manager_journey_client import add_help_parsers
+    for help_parser in add_help_parsers(sub):
+        _add_project_actor(help_parser)
+        if help_parser.prog.endswith(("request-help", "request-advice", "resolve-help")):
+            help_parser.add_argument("--assignment-ref", required=True)
+            help_parser.add_argument("--generation", type=int, required=True)
+        _add_format(help_parser)
+
     brief = sub.add_parser("operating-brief", help="prepare the current manager brief from exact owner reads and adopted resources")
     brief.add_argument("--request-json", required=True, help="role, pinned project/task/assignment/mandate refs, generation and as-of time")
     _add_format(brief)
@@ -858,6 +866,29 @@ def main(
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
                 "operating_brief_injection": "Supply explicit canonical owner callbacks/readers through cli.main(argv, operating_brief_readers=...).",
             }
+        elif args.command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
+            project = _parse_ref(args.project_ref, "project_ref")
+            loop = portfolio._issue_loop()
+            if loop is None:
+                result = _surface_unavailable("otto.help.v1", "issue_ports_unavailable", "Host must bind the owner IssueLoop and delivery ports")
+            elif args.command == "read-help":
+                result = (loop.recover_delivery(project_ref=project, delivery_id=args.delivery_id) if args.delivery_id
+                          else portfolio.read_issues(project_ref=project))
+            else:
+                request = {"project_ref": project, "actor": args.actor, "request_id": args.request_key}
+                if args.command == "respond-help":
+                    request.update({field: getattr(args, field) for field in
+                        ("issue_id", "authority_source", "response", "proposed_solution", "next_action")})
+                    result = portfolio.respond_to_issue(**request)
+                else:
+                    request.update(assignment_ref=_parse_ref(args.assignment_ref, "assignment_ref"), generation=args.generation)
+                    if args.command == "resolve-help":
+                        request.update(issue_id=args.issue_id, evidence=args.evidence, next_action=args.next_action)
+                        result = portfolio.resolve_help(**request)
+                    else:
+                        request.update({field: getattr(args, field) for field in
+                            ("issue_key", "problem", "evidence", "impact", "requested_decision", "return_condition")})
+                        result = (portfolio.request_help if args.command == "request-help" else portfolio.request_advice)(**request)
         elif args.command == "create-pending":
             try:
                 edit = json.loads(args.edit_json)

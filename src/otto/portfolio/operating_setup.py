@@ -211,7 +211,8 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
     if config["mode"] == "autonomous" and "orchestrator" in roles and "manager" in roles:
         try:
             loop = runtime.portfolio._issue_loop()
-            if loop is None or not callable(getattr(loop.ports.delivery, "send", None)):
+            if (loop is None or not callable(getattr(loop.ports.delivery, "send", None))
+                    or getattr(loop.ports.delivery, "automatic", True) is False):
                 raise OperatingSetupError("autonomous setup requires a supported operational-help delivery port")
             manager = loop.ports.current_manager(project_ref)
             supervisor = loop.ports.current_supervisor(project_ref)
@@ -231,6 +232,16 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
         except Exception as exc:
             blockers.append({"role": "manager", "code": type(exc).__name__, "message": str(exc)})
     ready = not blockers
+    manual_help = None
+    if config["mode"] == "manual":
+        loop = runtime.portfolio._issue_loop()
+        describe = getattr(loop.ports.delivery, "describe", None) if loop else None
+        if callable(describe):
+            try:
+                manual_help = describe(project_ref)
+            except Exception as exc:
+                blockers.append({"role": "orchestrator", "code": type(exc).__name__, "message": str(exc)})
+                ready = False
     # An active lifecycle alone says nothing about a delivered manager turn.
     attempt = (dues["manager"].host_evidence or {}).get("gateway_attempt") if "manager" in dues else None
     admission = attempt.get("delivery_admission") if isinstance(attempt, Mapping) else None
@@ -245,6 +256,7 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
                              "manual_supervision": config["mode"] == "manual"},
             "roles": roles, "introductions": introductions, "advisor_policy": config["advisor_policy"],
             "advisor_pairing": pairing,
+            "help_destination": manual_help or roles.get("orchestrator"),
             "acceptance": acceptance, "blockers": blockers}
 
 
@@ -265,5 +277,6 @@ def delivery_context(runtime: Any, project_ref: Mapping[str, Any], *, current_du
             "roles": decision["roles"], "introductions": decision["introductions"],
             "advisor_policy": decision["advisor_policy"], "advisor_pairing": decision["advisor_pairing"],
             "operational_help": {"ready": decision["capabilities"]["operational_help_delivery"],
-                                 "recipient": decision["roles"].get("orchestrator")},
+                                 "recipient": decision["help_destination"],
+                                 "mode": "automatic" if decision["capabilities"]["operational_help_delivery"] else "manual"},
             "source": "current adopted operating setup and canonical role occurrences", "dispatch": False}

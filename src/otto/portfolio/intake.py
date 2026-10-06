@@ -279,6 +279,15 @@ class OttoPortfolio:
                     "issues": [], "read_side_effects": False}
         return loop.read_issues(project_ref=project_ref)
 
+    def request_help(self, **request: Any) -> dict[str, Any]:
+        return self.submit_issue(**request, purpose="operational_help")
+
+    def request_advice(self, **request: Any) -> dict[str, Any]:
+        return self.submit_issue(**request, purpose="advice")
+
+    def resolve_help(self, **request: Any) -> dict[str, Any]:
+        return self.record_issue_outcome(**request, disposition="resolved")
+
     @staticmethod
     def help() -> dict[str, Any]:
         return {
