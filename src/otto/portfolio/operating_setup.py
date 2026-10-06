@@ -117,18 +117,20 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             raw = runtime.due_port.read_due(schedule)
             if not isinstance(raw, Mapping):
                 raise OperatingSetupError("selected role schedule is unavailable")
-            due = DueRecord.from_dict(raw)
+            binding_due = DueRecord.from_dict(raw)
+            due = binding_due
             if current_due is not None and current_due.role == role:
                 if (any(current_due.assignment_ref.get(k) != due.assignment_ref.get(k)
                         for k in ("authority", "kind", "id")) or current_due.generation != due.generation
                         or native_target_identity(current_due.target) != native_target_identity(due.target)):
                     raise OperatingSetupError("execution differs from adopted role binding; refresh operating setup")
                 due = current_due
-            if (due.role != role or due.project_ref != project_ref["id"]
-                    or due.lifecycle_owner != runtime.actor or due.manager_ref != runtime.actor
-                    or any(due.target["project_ref"].get(k) != project_ref.get(k)
-                           for k in ("authority", "kind", "id"))):
-                raise OperatingSetupError("selected role occurrence is foreign")
+            for scoped in (binding_due, due):
+                if (scoped.role != role or scoped.project_ref != project_ref["id"]
+                        or scoped.lifecycle_owner != runtime.actor or scoped.manager_ref != runtime.actor
+                        or any(scoped.target["project_ref"].get(k) != project_ref.get(k)
+                               for k in ("authority", "kind", "id"))):
+                    raise OperatingSetupError("selected role occurrence is foreign")
             prepared = runtime.prepare_execution_readiness(due=due)
             if "mandate_instruction_contract" not in prepared["canonical_evidence"]:
                 raise OperatingSetupError("configured role requires an exact active execution mandate contract")
@@ -143,17 +145,22 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
                 raise OperatingSetupError("selected role recipient differs from canonical principal")
             session = assignment.get("payload", {}).get("session")
             bound = session if isinstance(session, str) else native_target_identity(session) if isinstance(session, Mapping) else None
-            attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+            # A newly prepared continuation has not acquired admission evidence
+            # yet. Its current resources/model are checked above; the adopted
+            # occurrence retains proof of this same generation's conversation.
+            attempt = (binding_due.host_evidence or {}).get("gateway_attempt") or {}
             admission = attempt.get("delivery_admission") or {}
             authorization = attempt.get("delivery_authorization") or {}
             if bound is not None and bound != native:
                 raise OperatingSetupError("role conversation differs from current assignment binding")
-            if bound is None and (admission.get("physical_session_id") != native
+            if bound is None and (binding_due.recipient != principal_id
+                    or binding_due.target.get("principal") != principal
+                    or admission.get("physical_session_id") != native
                     or authorization.get("physical_session_id") != native
-                    or authorization.get("assignment_ref") != due.assignment_ref
-                    or authorization.get("generation") != due.generation
-                    or authorization.get("project_ref") != due.target["project_ref"]
-                    or authorization.get("task_ref") != due.target["task_ref"]
+                    or authorization.get("assignment_ref") != binding_due.assignment_ref
+                    or authorization.get("generation") != binding_due.generation
+                    or authorization.get("project_ref") != binding_due.target["project_ref"]
+                    or authorization.get("task_ref") != binding_due.target["task_ref"]
                     or authorization.get("role") != role or authorization.get("principal") != principal):
                 raise OperatingSetupError("role conversation is not backed by assignment or admitted delivery")
             canonical = prepared["canonical_evidence"]
