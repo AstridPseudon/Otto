@@ -47,7 +47,8 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
     """Classify nested file operations without releasing owner custody."""
     if request.get("command") in _REENTRANT_COMMANDS:
         return "admitted"
-    if request.get("command") == "manager-continue" and request.get("operation") == "dispatch":
+    if (request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
+            or request.get("command") == "manager-worker-result"):
         return "retained"  # Another native manager turn cannot overlap this one.
     return "held"
 
@@ -139,7 +140,7 @@ class ExecutionHost:
                 previous = getattr(_DISPATCH_CONTEXT, "value", None)
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
                     (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
-                    or request.get("command") == "start-retained-worker")
+                    or request.get("command") in {"start-retained-worker", "manager-worker-result"})
                 try:
                     return self.handler(request)
                 finally:
@@ -219,6 +220,14 @@ class ExecutionHost:
                                   "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
                     else:
                         result = self._dispatch(request)
+                    if (command == "manager-worker-result" and result.get("outcome") == "pending"
+                            and result.get("provider_called") is False and result.get("effects_started") is False):
+                        pending = self.directory / ("pending-" + token + ".json")
+                        if not pending.exists():
+                            _atomic_json(pending, {**result, "request_id": token, "request_retained": True,
+                                "response_path": str(response),
+                                "next_action": "The owner retains this observed worker result until the same manager settles; do not resend it."})
+                        continue
                     _atomic_json(response, result)
                 (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
                 path.unlink(missing_ok=True)
@@ -330,7 +339,7 @@ class ExecutionHost:
         return result["value"]
 
     def submit(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Retain a prepared worker request on the existing durable owner lane.
+        """Retain prepared work/result delivery on the existing owner lane.
 
         Execution and canonical settlement stay on the command custodian, not
         an arbitrary child thread. Restart consumes the same prepared occurrence
@@ -341,8 +350,8 @@ class ExecutionHost:
             raise RuntimeError("worker submission requires its serialized command owner")
         if self._closing:
             raise RuntimeError("execution host is draining; no new worker may be admitted")
-        if request.get("command") != "start-retained-worker":
-            raise ValueError("only a prepared worker occurrence may be retained")
+        if request.get("command") not in {"start-retained-worker", "manager-worker-result"}:
+            raise ValueError("only a prepared worker or observed worker-result continuation may be retained")
         encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
         token = hashlib.sha256(encoded.encode()).hexdigest()
         path = self.directory / ("request-" + token + ".json")
@@ -356,7 +365,7 @@ class ExecutionHost:
         return {"outcome": "admitted", "schedule_id": request["schedule_id"],
                 "retained_handle": token, "response_path": str(response),
                 "provider_called": False, "retry_provider": False,
-                "next_command": "worker-status"}
+                "next_command": "worker-status" if request["command"] == "start-retained-worker" else "command-status"}
 
     def retain(self, *, name: str, operation: Callable[[], Any]) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""

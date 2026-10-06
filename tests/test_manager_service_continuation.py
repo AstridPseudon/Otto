@@ -236,6 +236,70 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertEqual(f.port.read_due(self.anchor), anchor_before)
         self.assertEqual(self.reports(), reports)
 
+    def test_worker_result_wakes_same_manager_without_a_progress_report_or_worker_replay(self):
+        f = self.fixture
+        worker = f.app.assign_and_start(**f.request())
+        before = f.port.read_due(worker["schedule_id"])
+        reports = self.reports()
+        calls = len(f.provider.calls)
+        prepared = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=False)
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        due = f.port.read_due(prepared["schedule_id"])
+        self.assertEqual(due["target"]["native_id"], "manager-session")
+        self.assertEqual(due["target"]["reported_task_ref"], before["target"]["task_ref"])
+        self.assertIn(worker["schedule_id"], due["instruction"])
+        self.assertIn("not task acceptance", due["instruction"])
+        result = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        self.assertEqual(len(f.provider.calls), calls + 1)
+        f.compose()
+        duplicate = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(duplicate["outcome"], "replayed")
+        self.assertEqual(len(f.provider.calls), calls + 1)
+        self.assertEqual(f.port.read_due(worker["schedule_id"]), before)
+        self.assertEqual(self.reports(), reports)
+        self.assertNotEqual(f.owner.graph.get(f.task.ref).lifecycle.value, "completed")
+
+    def test_worker_result_waits_for_manager_settlement_without_preparing_or_provider(self):
+        f = self.fixture
+        worker = f.app.assign_and_start(**f.request())
+        prior = f.app._read(self.anchor)
+        f.port.save_due(self.anchor, replace(prior, stop_state="active", completion_state="none",
+            in_flight_request="current-manager").to_dict(), request_id="fixture-manager-active", expected_version=prior.version)
+        calls = len(f.provider.calls)
+        pending = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(pending["outcome"], "pending")
+        self.assertFalse(pending["provider_called"])
+        self.assertFalse(pending["effects_started"])
+        self.assertEqual(len(f.provider.calls), calls)
+        live = f.app._read(self.anchor)
+        f.port.save_due(self.anchor, prior.to_dict(), request_id="fixture-manager-settled", expected_version=live.version)
+        result = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=False)
+        self.assertEqual(result["outcome"], "committed", result)
+
+    def test_unknown_manager_blocks_even_an_existing_unattempted_worker_result_callback(self):
+        f = self.fixture
+        worker = f.app.assign_and_start(**f.request())
+        prepared = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=False)
+        callback = f.port.read_due(prepared["schedule_id"])
+        prior = f.app._read(self.anchor)
+        f.port.save_due(self.anchor, replace(prior, completion_state="unknown").to_dict(),
+            request_id="fixture-current-manager-unknown", expected_version=prior.version)
+        calls = len(f.provider.calls)
+        held = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
+            worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(held["outcome"], "held")
+        self.assertFalse(held["provider_called"])
+        self.assertFalse(held["retry"])
+        self.assertEqual(f.port.read_due(prepared["schedule_id"]), callback)
+        self.assertEqual(len(f.provider.calls), calls)
+
     def test_completed_task_refresh_never_changes_attempted_callbacks_or_nonmanager_roles(self):
         f = self.fixture
         prepared = manager_continuation_from_command(

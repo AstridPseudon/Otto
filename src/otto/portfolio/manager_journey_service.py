@@ -85,6 +85,26 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "manager-worker-result":
+            self.commands._authorize()
+            state = self.server.state
+            worker = (state.get("workers") or {}).get(request.get("task"))
+            if (set(request) != {"command", "task", "principal", "schedule_id"}
+                    or not isinstance(worker, Mapping) or worker.get("principal") != request.get("principal")
+                    or worker.get("schedule_id") != request.get("schedule_id")):
+                raise PermissionError("worker-result continuation handle is stale or foreign")
+            current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                reasoning=state["requested_reasoning"], evidence_id="manager-worker-result-" + worker["schedule_id"])
+            result = app.continue_manager_from_worker(manager_schedule_id=current_id,
+                worker_schedule_id=worker["schedule_id"], execute=True)
+            if result.get("outcome") in {"succeeded", "replayed"}:
+                state["manager_continuation"] = {"schedule_id": result["schedule_id"],
+                    "native_session_id": app._read(result["schedule_id"]).target["native_id"],
+                    "outcome": result["outcome"], "requested_continuation": {"settled_schedule_id": result["schedule_id"]}}
+                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
+                self._refresh_refs()
+            return result
         if command == "project-lifecycle-read":
             # The operator is authorized by its exact manager assignment. The
             # finite owner read grant remains bound to the service issuer.
@@ -147,6 +167,14 @@ class ManagerJourneyService:
             if result.get("outcome") in {"succeeded", "replayed"}:
                 result = {**result, "completion_intents": self.commands.settle_completion_intents()}
                 self._refresh_refs()
+                if command == "start-retained-worker":
+                    if self.host._closing:
+                        retained = {"outcome": "held", "provider_called": False,
+                            "reason": "owner is draining; preserve worker result and prepare its manager continuation after restart"}
+                    else:
+                        retained = self.host.submit({"command": "manager-worker-result", "task": request["task"],
+                            "principal": worker["principal"], "schedule_id": worker["schedule_id"]})
+                    result = {**result, "manager_result_notification": retained}
             return result
         return self.server.handle(request)
 

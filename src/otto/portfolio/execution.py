@@ -749,6 +749,81 @@ class ExecutionApplication:
                 and receipt.get("native_id") == value["target"].get("native_id")
                 and receipt.get("reported_task_ref") == value["target"].get("reported_task_ref"))
 
+    def continue_manager_from_worker(self, *, manager_schedule_id: str,
+                                    worker_schedule_id: str, execute: bool = False) -> dict[str, Any]:
+        """Prepare one same-manager inspection turn from a settled worker result.
+
+        This owner observation is neither a manager progress report nor task
+        acceptance. Both original occurrences and the provider result remain
+        immutable. The deterministic callback is the restart/replay fence.
+        """
+        prior, worker = self._read(manager_schedule_id), self._read(worker_schedule_id)
+        result = ((worker.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}
+        if (prior.role != "manager" or worker.role != "worker"
+                or _identity(prior.target["project_ref"]) != _identity(worker.target["project_ref"])
+                or worker.stop_state != "completed" or worker.completion_state != "succeeded"
+                or worker.in_flight_request is not None or result.get("outcome") != "succeeded"
+                or result.get("context_digest_verified") is not True
+                or result.get("assignment_ref") != worker.assignment_ref
+                or result.get("generation") != worker.generation
+                or result.get("task_ref") != worker.target["task_ref"]):
+            raise OccurrencePreparationError("worker result continuation requires a verified settled same-project worker")
+        current = self._current(prior.assignment_ref, prior.generation)
+        worker_assignment = self.assignments.get(ResourceRef.from_dict(worker.assignment_ref))
+        if (current.principal != self.manager_actor or worker_assignment.payload.get("manager") != current.principal
+                or worker_assignment.principal != worker.recipient
+                or worker_assignment.role not in {"worker", "executor"}
+                or worker_assignment.generation != worker.generation):
+            raise OccurrencePreparationError("worker result belongs to another manager or assignment generation")
+        observed_task = task_reader(self.portfolio.operations, prior.target["project_ref"],
+            worker.target["task_ref"])(_identity(worker.target["task_ref"]))
+        if observed_task.get("lifecycle") == "completed":
+            return {"outcome": "idle", "provider_called": False,
+                    "reason": "worker task is already completed by the manager", "retry": False}
+        evidence = {"schema": "otto.worker-result-continuation.v1", "worker_schedule_id": worker.schedule_id,
+                    "worker_assignment_ref": worker.assignment_ref, "worker_generation": worker.generation,
+                    "worker_task_ref": worker.target["task_ref"], "worker_result_sha256": _digest(result),
+                    "observed_turn_id": result.get("observed_turn_id"),
+                    "physical_session_id": result.get("physical_session_id"),
+                    "acceptance": "unjudged worker result; task/project gates remain required"}
+        key = "worker-result:" + _digest([current.ref.id, current.generation, evidence])
+        schedule = "manager-worker-callback-" + _digest(key)[:28]
+        if (prior.completion_state == "unknown"
+                or (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
+                or prior.stop_state == "completed" and prior.completion_state != "succeeded"):
+            return {"outcome": "held", "provider_called": False, "effects_started": False,
+                    "reason": "reconcile the retained manager effect before worker-result continuation", "retry": False}
+        existing = self.due_port.read_due(schedule)
+        if ((prior.stop_state != "completed" or prior.completion_state != "succeeded"
+                or prior.in_flight_request is not None) and prior.schedule_id != schedule):
+            return {"outcome": "pending", "provider_called": False, "effects_started": False,
+                    "reason": "manager must settle before worker-result continuation", "retry": False}
+        if existing is not None:
+            if (existing.get("host_evidence") or {}).get("worker_result_continuation") != evidence:
+                raise OccurrencePreparationError("retained worker-result continuation evidence differs")
+            return self.recover(schedule_id=schedule, execute=execute)
+        guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
+        due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
+            assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds)
+        self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
+        due = replace(due, instruction=("Inspect the actual settled worker result on schedule " + worker.schedule_id +
+            ". Read its retained result and changed artifacts, substantively judge or correct that work through the "
+            "ordinary manager commands, then continue ready work toward the adopted project objective. "
+            "Worker transport success is not task acceptance or project completion. Preserve the existing worker "
+            "and uncertain effects; this invocation does not authorize worker replay."),
+            message="Observed owner worker-result context:\n" + json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+            target={**due.target, "reported_task_ref": worker.target["task_ref"]},
+            host_evidence={"worker_result_continuation": evidence})
+        prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
+            assignments=self.assignments, binding=self.binding, due=due,
+            assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,
+            operation="resume", lifecycle="callback", request_key=key)
+        if prepared["outcome"] == "committed":
+            reconciled = self._resources(self._read(schedule))
+            prepared = {**prepared, "due_version": reconciled.version}
+        return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared
+
     def continue_manager(self, *, schedule_id: str, execute: bool = True,
                          report_key: str | None = None, task_ref: Mapping[str, Any] | None = None,
                          reports: list[Mapping[str, Any]] | None = None,

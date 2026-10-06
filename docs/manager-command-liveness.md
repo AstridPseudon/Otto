@@ -155,3 +155,22 @@ turn. Do not put temporary startup-only work into the enduring mandate's
 continuation direction. A phase change uses public document/adoption and role
 preparation with a corrected brief, the same native manager and a distinct
 intent; attempted occurrences and their reports remain immutable.
+
+Successful worker settlement retains one deterministic result notification on
+the same owner command lane. It resumes the same manager to inspect the actual
+result and continue ready work, without inventing a manager progress report or
+accepting the task. If the manager is still active, the notification remains
+pending without preparing another occurrence or overlapping a native turn.
+Restart/duplicate delivery consumes the exact callback through its attempt
+fence. A completed task suppresses redundant result review; an unknown manager
+effect returns an actionable hold. Draining never admits a new native turn.
+
+Previously a manager could return while its worker was pending, and successful
+worker settlement only wrote the worker response. The startup continuation
+check had already run and found no explicit report; nothing woke the manager
+afterward. The connected regression now waits for the retained result wake,
+then traverses review, completion, continuation and terminal project close.
+Another lane regression covers worker-first settlement, pending result
+delivery until manager settlement, and duplicate notification without replay.
+These are fixture qualifications; authentic cold acceptance still needs the
+installed operator's artifacts, judgments and terminal records.

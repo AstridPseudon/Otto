@@ -1,6 +1,7 @@
 """Exercise the delivered service handler with only its provider substituted."""
 import importlib.util
 from datetime import timedelta
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
@@ -89,6 +90,39 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         return {"command": "run-worker", "task": "J01", "route": "xhard", "principal": "worker",
                 "request_key": "service-j01", "focus": "Inspect the bounded J01 seam"}
 
+    def test_worker_result_notification_stays_retained_until_manager_settlement(self):
+        self.install_candidate()
+        f = self.fixture
+        prior = f.app._read(self.anchor)
+        f.port.save_due(self.anchor, replace(prior, stop_state="active", completion_state="none",
+            in_flight_request="fixture-live-manager").to_dict(),
+            request_id="fixture-live-manager", expected_version=prior.version)
+        admitted = self.wait_response(self.send("1111", self.worker_request()))
+        f.provider.work_release.set()
+        settled = self.wait_response(Path(admitted["response_path"]))
+        self.assertEqual(settled["outcome"], "succeeded", settled)
+        notification = settled["manager_result_notification"]
+        response = Path(notification["response_path"])
+        pending = response.with_name(response.name.replace("response-", "pending-", 1))
+        deadline = time.monotonic() + 10
+        while not pending.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(pending.exists())
+        self.assertFalse(response.exists())
+        self.assertEqual(len(f.provider.calls), 2, "no concurrent second manager turn")
+        worker_before = f.port.read_due(admitted["schedule_id"])
+        live = f.app._read(self.anchor)
+        f.port.save_due(self.anchor, prior.to_dict(), request_id="fixture-manager-now-settled", expected_version=live.version)
+        resumed = self.wait_response(response)
+        self.assertEqual(resumed["outcome"], "succeeded", resumed)
+        self.assertFalse(pending.exists())
+        self.assertEqual(len(f.provider.calls), 3)
+        self.assertEqual(f.port.read_due(admitted["schedule_id"]), worker_before)
+        repeat = self.wait_response(self.send("2222", {"command": "manager-worker-result", "task": "J01",
+            "principal": "worker", "schedule_id": admitted["schedule_id"]}))
+        self.assertEqual(repeat["outcome"], "replayed", repeat)
+        self.assertEqual(len(f.provider.calls), 3)
+
     def test_baseline_real_run_worker_starves_nested_report_until_worker_returns(self):
         worker = self.send("1111", self.worker_request())
         started = self.fixture.provider.work_started.wait(20)
@@ -151,7 +185,10 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             self.assertEqual(repeated["retained_handle"], admitted["retained_handle"])
             self.assertEqual(len(application.provider.calls), 2)
             application.provider.work_release.set()
-            self.assertEqual(self.wait_response(Path(admitted["response_path"]))["outcome"], "succeeded")
+            settled_worker = self.wait_response(Path(admitted["response_path"]))
+            self.assertEqual(settled_worker["outcome"], "succeeded")
+            resumed = self.wait_response(Path(settled_worker["manager_result_notification"]["response_path"]))
+            self.assertEqual(resumed["outcome"], "succeeded", resumed)
             self.assertEqual(len(set(self.owner_threads)), 1)
         candidate = application.app.assignments.list_observations(ResourceRef.from_dict(admitted["assignment_ref"]), kind="result")[0].ref.to_dict()
         reviewed = self.wait_response(self.send("7777", {"command": "review-task", "task": "J01",
@@ -190,7 +227,7 @@ class ManagerJourneyServiceTests(unittest.TestCase):
                              for name in ("acceptance", "publication", "remote", "runtime")}}))
         self.assertEqual(closed["outcome"], "completed", closed)
         self.assertEqual(closed["readback"]["lifecycle"], "completed")
-        self.assertEqual(len(application.provider.calls), 3)
+        self.assertEqual(len(application.provider.calls), 4, "anchor, worker, result inspection and terminal continuation")
         self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-6.1-sol")
 
     def test_current_manager_lifecycle_read_uses_the_finite_owner_grant(self):
