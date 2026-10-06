@@ -426,7 +426,11 @@ class ManagerJourneyService:
                                          if name in previous}, "retry_provider": False}
             else:
                 due = self.server.due_port.read_due(previous["schedule_id"])
-                if not due or due.get("completion_state") != "succeeded":
+                from .worker_custody import permits_fresh_worker
+                released = (bool(due) and due.get("target", {}).get("task_ref") == state["task_refs"][task]
+                    and permits_fresh_worker(previous_app, previous_app._read(previous["schedule_id"]),
+                        request=request, model=model, reasoning=reasoning))
+                if not due or (due.get("completion_state") != "succeeded" and not released):
                     return {"outcome": "held", "schedule_id": previous["schedule_id"],
                             "retained_handle": previous.get("retained_handle"), "provider_called": False,
                             "retry_provider": False,
@@ -445,6 +449,10 @@ class ManagerJourneyService:
             return {**prepared, **{name: previous[name] for name in ("retained_handle", "response_path")
                                   if name in previous and previous.get("schedule_id") == prepared.get("schedule_id")},
                     "retry_provider": False}
+        if isinstance(previous, Mapping) and previous.get("schedule_id") != prepared["schedule_id"]:
+            history = state.setdefault("worker_history", {}).setdefault(task, [])
+            if not any(item.get("schedule_id") == previous["schedule_id"] for item in history):
+                history.append(dict(previous))
         state.setdefault("workers", {})[task] = {**prepared, "principal": principal,
                                                  "model": model, "reasoning": reasoning,
                                                  "request_key": key, "submission": dict(request)}

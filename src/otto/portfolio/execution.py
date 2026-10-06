@@ -762,6 +762,16 @@ class ExecutionApplication:
         settled = self.recover(schedule_id=schedule_id, execute=False)
         return {**settled, "runtime_result": json_value(result)}
 
+    def inspect_capacity_failed_worker(self, *, schedule_id: str) -> dict[str, Any]:
+        """Root owner readback of an exact native terminal capacity failure."""
+        from .worker_custody import inspect_capacity_failed_worker
+        return inspect_capacity_failed_worker(self, schedule_id=schedule_id)
+
+    def release_capacity_failed_worker(self, **request: Any) -> dict[str, Any]:
+        """Release only qualified old custody; preserve its UNKNOWN result."""
+        from .worker_custody import release_capacity_failed_worker
+        return release_capacity_failed_worker(self, **request)
+
     def recover(self, *, schedule_id: str, execute: bool = False) -> dict[str, Any]:
         """Reconstruct from owner records after parent exit or application restart."""
         due = self._read(schedule_id)
