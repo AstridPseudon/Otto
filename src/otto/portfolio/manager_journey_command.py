@@ -227,6 +227,7 @@ class ManagerJourneyCommands:
                 task_ref=manifest["task_ref"], manager_assignment_ref=manifest["assignment_ref"],
                 manager_actor=self.state["manager"], manager_generation=manifest["generation"],
                 assessment_policy=policy)
+            existing_scope = commands.required_scope(require=False)
             candidate = commands._ref(request.get("candidate_ref"), "candidate_ref")
             sources = commands._refs(request.get("source_refs"), "source_refs")
             criteria = [criterion for task, criterion in policy.task_criterion_pairs
@@ -283,10 +284,11 @@ class ManagerJourneyCommands:
                     "expected_generation": manifest["generation"]})["ref"]
 
             scope_id = "ordinary-" + _digest([manifest["task_ref"], aliases])[:28]
-            scope = execute("declare-scope", {"scope_ref": {
-                "authority": candidate.authority, "kind": "assessment.scope", "id": scope_id},
-                "criterion_refs": list(aliases.values()), "protocol": "ordinary-manager-judgment"}, "scope",
-                operation_key="journey-scope:" + scope_id)
+            scope = (existing_scope.ref.to_dict() if existing_scope is not None else
+                execute("declare-scope", {"scope_ref": {
+                    "authority": candidate.authority, "kind": "assessment.scope", "id": scope_id},
+                    "criterion_refs": list(aliases.values()), "protocol": "ordinary-manager-judgment"}, "scope",
+                    operation_key="journey-scope:" + scope_id))
             packet = execute("freeze-input", {"scope_ref": scope, "candidate_ref": candidate.to_dict(),
                 "criterion_refs": list(aliases.values()), "source_refs": [ref.to_dict() for ref in sources],
                 "evidence_refs": [ref.to_dict() for ref in evidence], "packet": inspection}, "input")

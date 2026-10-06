@@ -162,6 +162,11 @@ def _review_ref(value: str) -> Any:
 
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
+    setup = commands.add_parser("operating-setup", help="read or prepare draft/ready/active setup; activate only after shared readiness",
+        description="Preparation validates existing role schedules, adopted BASE, conversations, execution contracts and required acceptance scopes without provider work. Autonomous mode requires a real help delivery port and explicit enabled/disabled advisor policy. Manual mode remains explicitly supervised. Administrative project activation does not dispatch a manager.")
+    setup.add_argument("--operation", choices=("read", "prepare", "activate"), default="read")
+    setup.add_argument("--setup", type=json.loads, help="otto.operating-setup.v1 object: mode, roles (existing schedule IDs), advisor_policy, acceptance_tasks (exact refs)")
+    setup.add_argument("--request-key", help="required for idempotent preparation; changed setup uses existing document authoring")
     status = commands.add_parser("command-status", help="read one retained transport handle without another send")
     status.add_argument("--request-id", required=True)
     inputs = commands.add_parser("review-input", help="read exact retained worker candidate/evidence refs without judging or sending work")

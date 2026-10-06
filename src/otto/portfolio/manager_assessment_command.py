@@ -7,7 +7,7 @@ from herzchen.contracts import ResourceRef
 from .owner_readers import json_value
 
 
-OPERATIONS = ("declare-scope", "freeze-input", "select-candidate", "assess", "accept", "close-finding", "coverage")
+OPERATIONS = ("declare-scope", "resolve-required-scope", "freeze-input", "select-candidate", "assess", "accept", "close-finding", "coverage")
 
 
 def _bound_policy(policy: Any, state: Mapping[str, Any]) -> Any:
@@ -71,6 +71,22 @@ class ManagerAssessmentCommands:
         self._authorize = authorize
         self._policy, self._pool_guard = policy, pool_guard
 
+    def required_scope(self, *, require: bool = True) -> Any:
+        """Resolve the one required scope without creating a competing gate."""
+        self._authorize()
+        rows = self._assessment.coverage(self._task)["scopes"]
+        scopes = [self._assessment.get_scope(ResourceRef.from_dict(row["ref"])) for row in rows]
+        required = [scope for scope in scopes if scope.policy.get("required_for_completion") is True]
+        if not required and not require:
+            return None
+        if len(required) != 1:
+            raise PermissionError("task must have exactly one required assessment scope; resolve owner scope configuration")
+        scope = self._scope(required[0].ref)
+        expected = {criterion for task, criterion in self._policy.task_criterion_pairs if task == self._task}
+        if set(scope.criterion_refs) != expected:
+            raise PermissionError("required scope does not cover the exact configured task criteria")
+        return scope
+
     def _ref(self, value: Any, field: str, *, kind: str | None = None,
              stable: bool = False) -> ResourceRef:
         if not isinstance(value, Mapping):
@@ -106,6 +122,7 @@ class ManagerAssessmentCommands:
             raise ValueError("unknown assessment operation or missing arguments object")
         fields = {
             "declare-scope": {"scope_ref", "criterion_refs", "protocol"},
+            "resolve-required-scope": set(),
             "freeze-input": {"scope_ref", "candidate_ref", "criterion_refs", "source_refs", "evidence_refs", "packet"},
             "select-candidate": {"scope_ref", "candidate_ref", "criterion_ref", "rationale"},
             "assess": {"scope_ref", "candidate_ref", "criterion_ref", "input_ref", "verdict", "limit_pool_ref", "protocol_result", "findings"},
@@ -117,15 +134,29 @@ class ManagerAssessmentCommands:
             raise ValueError("unsupported assessment arguments: " + ", ".join(sorted(set(args) - fields)))
         if op == "coverage":
             return {"outcome": "read", "coverage": self._assessment.coverage(self._task)}
+        if op == "resolve-required-scope":
+            scope = self.required_scope()
+            self._pool_guard()
+            return {"outcome": "read", "scope_ref": scope.ref.to_dict(),
+                    "criterion_refs": [ref.to_dict() for ref in scope.criterion_refs],
+                    "designated_approver": scope.designated_approver,
+                    "limit_pool_ref": self._policy.pool_ref.to_dict()}
         key = request.get("request_key")
         if not isinstance(key, str) or not key.strip():
             raise ValueError("logical request key is required")
         ref = lambda field, kind=None: self._ref(args.get(field), field, kind=kind)
         common = {"logical_request_key": key}
         if op == "declare-scope":
+            criteria = self._criteria(args.get("criterion_refs"))
+            existing = self.required_scope(require=False)
+            if existing is not None:
+                if set(existing.criterion_refs) != set(criteria) or existing.protocol != args.get("protocol"):
+                    raise PermissionError("declaration conflicts with the existing required scope")
+                return {"outcome": "replayed", "ref": existing.ref.to_dict(),
+                        "required_scope_reused": True}
             record = self._assessment.declare_scope(
                 self._ref(args.get("scope_ref"), "scope_ref", kind="assessment.scope", stable=True),
-                parent_obligation=self._task, criteria=self._criteria(args.get("criterion_refs")),
+                parent_obligation=self._task, criteria=criteria,
                 protocol=args.get("protocol"), designated_approver=self._actor.actor,
                 authority=self._actor.authority, review_required=True, allow_no_review=False,
                 policy={"required_for_completion": True}, **common)
@@ -207,6 +238,8 @@ class ManagerAssessmentCommands:
             self._policy.require_pair(self._task, criterion)
         if scope.parent_obligation_ref != self._task:
             raise PermissionError("assessment scope is not bound to the exact current task")
+        if scope.designated_approver != self._actor.actor or scope.authority not in {None, self._actor.authority}:
+            raise PermissionError("required assessment scope is not designated to this manager authority")
         return scope
 
     def _input(self, ref: ResourceRef, scope: Any, candidate: ResourceRef, criterion: ResourceRef) -> None:

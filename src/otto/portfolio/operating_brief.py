@@ -569,7 +569,7 @@ def prepare_canonical_operating_brief(
 
     explicit = mandate_payload.get("instruction_contract")
     if explicit is not None:
-        if (role_value not in {"worker", "manager", "project_advisor"} or task_pin is None or mandate_state != "active"
+        if (role_value not in {"worker", "manager", "orchestrator", "project_advisor"} or task_pin is None or mandate_state != "active"
                 or mandate_payload.get("dispatch_enabled") is not True
                 or mandate_payload.get("task_ref") != task_pin
                 or mandate_payload.get("assignment_ref") != assignment_pin
@@ -588,8 +588,8 @@ def prepare_canonical_operating_brief(
             raise OperatingBriefError("manager execution mandate lacks exact workspace-write effect profile")
         if task_state == "completed" and "canonical_manager_commands" not in contract["allowed_operations"]:
             raise OperatingBriefError("completed task requires ordinary project manager command authority")
-        if role_value == "project_advisor" and contract["authority"].get("effect_profile") is not None:
-            raise OperatingBriefError("project advisor mandate cannot grant a workspace-write effect profile")
+        if role_value in {"orchestrator", "project_advisor"} and contract["authority"].get("effect_profile") is not None:
+            raise OperatingBriefError(role_value + " mandate cannot grant a workspace-write effect profile")
         body["mandate_instruction_contract"] = {
             "source_ref": mandate_pin, "task_ref": task_pin, "assignment_ref": assignment_pin,
             "generation": generation, "dispatch_enabled": True, "instruction_contract": contract,

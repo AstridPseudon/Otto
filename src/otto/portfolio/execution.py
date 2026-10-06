@@ -60,6 +60,51 @@ class ExecutionApplication:
     def _now(self) -> str:
         return self.clock().isoformat().replace("+00:00", "Z")
 
+    def prepare_operating_setup(self, *, project_ref: Mapping[str, Any],
+                                setup: Mapping[str, Any], request_key: str) -> dict[str, Any]:
+        """Validate and adopt setup using one existing project document.
+
+        This prepares roles already issued by supported owner operations and
+        performs no provider work. To change a setup, publish a new revision
+        through ordinary document authoring; replay never replaces identities.
+        """
+        from .operating_setup import evaluate_setup, normalize_setup, setup_reference
+        project = owner_ref(project_ref, "project_ref")
+        _text(request_key, "request_key")
+        config = normalize_setup(setup)
+        decision = evaluate_setup(self.runtime, project, config)
+        if not decision["ready"]:
+            return {"outcome": "blocked", "readiness": decision, "provider_called": False}
+        document = self.portfolio.create_document(project, actor=self.actor,
+            request_id=request_key, document_id=setup_reference(project).id,
+            role="operating_setup", content=config)
+        return {"outcome": "prepared", "setup_ref": self._document_revision(document, "operating setup"),
+                "readiness": decision, "provider_called": False}
+
+    def read_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
+        """Read draft/ready/active separately from administrative lifecycle."""
+        from .operating_setup import evaluate_setup, read_setup
+        project = owner_ref(project_ref, "project_ref")
+        current = project_reader(self.portfolio.operations, project)(_identity(project))
+        if current["ref"] != project:
+            raise OccurrencePreparationError("operating setup project revision is stale")
+        setup = read_setup(self.portfolio.operations, project)
+        if setup is None:
+            return {"outcome": "read", "schema": "otto.operating-readiness.v1", "state": "draft", "ready": False,
+                    "autonomous_ready": False, "execution_observed": False, "dispatch": False,
+                    "canonical_lifecycle": current["lifecycle"],
+                    "next_action": "prepare_operating_setup with explicit mode, roles and advisor policy"}
+        return {"outcome": "read", **evaluate_setup(self.runtime, project, setup), "canonical_lifecycle": current["lifecycle"]}
+
+    def activate_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
+        """Start the configured manager through the shared runtime admission guard."""
+        from .operating_setup import read_setup
+        decision = self.read_operating_setup(project_ref=project_ref)
+        if not decision["ready"]:
+            return {"outcome": "blocked", "readiness": decision, "provider_called": False}
+        setup = read_setup(self.portfolio.operations, project_ref)
+        return self.start(schedule_id=setup["roles"]["manager"])
+
     def _current(self, ref: Mapping[str, Any], generation: int) -> Any:
         current = self.assignments.get(ResourceRef.from_dict(ref))
         if current.ref.to_dict() != dict(ref) or current.generation != generation:

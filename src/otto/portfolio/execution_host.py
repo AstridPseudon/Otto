@@ -141,7 +141,7 @@ class ExecutionHost:
                 previous = getattr(_DISPATCH_CONTEXT, "value", None)
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
                     (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
-                    or request.get("command") in {"start-retained-worker", "manager-worker-result", "manager-task-settlement"})
+                    or request.get("command") in {"start-manager", "start-retained-worker", "manager-worker-result", "manager-task-settlement"})
                 try:
                     return self.handler(request)
                 finally:
@@ -367,6 +367,73 @@ class ExecutionHost:
                 "retained_handle": token, "response_path": str(response),
                 "provider_called": False, "retry_provider": False,
                 "next_command": "worker-status" if request["command"] == "start-retained-worker" else "command-status"}
+
+    def rearm_pre_effect_worker_notification(self, request: Mapping[str, Any], *,
+                                            expected_response_sha256: str) -> Mapping[str, Any]:
+        """Closed-owner recovery of the same held worker observation handle.
+
+        Never retries worker execution. The canonical handler still validates
+        the settled worker/manager and fences its deterministic callback. The
+        historical HELD bytes and an explicit transport reconciliation remain.
+        """
+        if (not isinstance(expected_response_sha256, str) or len(expected_response_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in expected_response_sha256)):
+            raise ValueError("exact held response digest required")
+        if self._threads or self._children or self._active_files:
+            raise RuntimeError("close the owner before retained notification recovery")
+        if self.owner_path.exists():
+            try:
+                os.kill(int(json.loads(self.owner_path.read_text())["pid"]), 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise RuntimeError("another live owner holds this notification")
+        if (set(request) != {"command", "task", "principal", "schedule_id"}
+                or request.get("command") != "manager-worker-result"):
+            raise ValueError("only the exact retained worker-result observation may be recovered")
+        encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
+        token = hashlib.sha256(encoded.encode()).hexdigest()
+        response = self.directory / ("response-" + token + ".json")
+        path = self.directory / ("request-" + token + ".json")
+        history = self.directory / ("reconciled-response-" + token + "-" + expected_response_sha256 + ".json")
+        receipt_path = self.directory / ("reconciliation-" + token + ".json")
+        receipt = {"schema": "otto.pre-effect-worker-notification-reconciliation.v1",
+            "retained_handle": token, "request": dict(request),
+            "source_response_sha256": expected_response_sha256,
+            "source_response_path": str(history), "provider_called": False,
+            "effect": "same_worker_observation_rearmed_after_owner_reconciliation"}
+        if receipt_path.exists():
+            if json.loads(receipt_path.read_text()) != receipt:
+                raise ValueError("retained notification reconciliation changed")
+            if hashlib.sha256(history.read_bytes()).hexdigest() != expected_response_sha256:
+                raise ValueError("historical held response changed")
+            if response.exists() and hashlib.sha256(response.read_bytes()).hexdigest() == expected_response_sha256:
+                if not path.exists(): _atomic_json(path, dict(request))
+                response.unlink()
+            elif not response.exists() and not path.exists():
+                _atomic_json(path, dict(request))
+            return {**receipt, "replayed": True}
+        raw = response.read_bytes()
+        held = json.loads(raw)
+        if (hashlib.sha256(raw).hexdigest() != expected_response_sha256
+                or held != {"outcome": "held", "provider_called": False, "effects_started": False,
+                    "retry": False, "reason": "reconcile the retained manager effect before worker-result continuation"}):
+            raise ValueError("notification is not the exact proven pre-effect held result")
+        if history.exists():
+            if history.read_bytes() != raw:
+                raise ValueError("historical response differs")
+        else:
+            fd = os.open(history, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        if path.exists():
+            if json.loads(path.read_text()) != dict(request):
+                raise ValueError("retained notification request changed")
+        else:
+            _atomic_json(path, dict(request))
+        _atomic_json(receipt_path, receipt)
+        response.unlink()
+        return {**receipt, "replayed": False}
 
     def retain(self, *, name: str, operation: Callable[[], Any]) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""

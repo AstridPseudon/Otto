@@ -117,6 +117,26 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             raise OwnerRoleRuntimeError("current owner delivery authorization does not match recipient")
         return deepcopy(dict(authorization))
 
+    def _completed_admission(self, attempt: Mapping[str, Any]) -> Mapping[str, Any]:
+        admission = attempt.get("delivery_admission")
+        if admission is not None:
+            return admission
+        proof = attempt.get("delivery_admission_reconciliation") or {}
+        prior = proof.get("source_unknown") or {}
+        result = attempt.get("result") or {}
+        digest = lambda body: hashlib.sha256(json.dumps(_json(body), ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if (proof.get("schema") == "otto.owner-native-admission-reconciliation.v1"
+                and proof.get("resolver") == self.lifecycle_owner
+                and proof.get("effect") == "retained_completed_native_turn_no_provider_replay"
+                and digest(prior) == proof.get("source_unknown_sha256")
+                and prior.get("operation") == "invoke" and prior.get("outcome") == "unknown"
+                and proof.get("physical_session_id") == result.get("physical_session_id")
+                and proof.get("observed_turn_id") == result.get("observed_turn_id")
+                and proof.get("task_bound_evidence_sha256") == digest(result.get("task_bound_evidence"))):
+            return proof
+        return {}
+
     def verify_completed_delivery(self, logical_request_key: str, physical_session_id: str,
                                   brief_sha256: str, authorization: Mapping[str, Any]) -> Mapping[str, Any]:
         """Verify an admitted manager result after its authorized state effects.
@@ -133,7 +153,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             raise OwnerRoleRuntimeError(str(failure))
         record = self._record()
         attempt = None if record is None else self._attempt(record)
-        admission = (attempt or {}).get("delivery_admission") or {}
+        admission = self._completed_admission(attempt or {})
         if (record is None or self._scope_error(record, self.assignment_ref, self.generation, logical_request_key)
                 or attempt is None or attempt.get("state") not in {"claimed", "result"}
                 or attempt.get("logical_request_key") != logical_request_key
@@ -169,7 +189,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             expected_profile=value.get("requested_profile"), expected_read_targets=contract.get("read_targets"),
             expected_read_scope=contract.get("read_scope"))
         evidence = parsed["task_bound_evidence"]
-        admission = (self._attempt(self._record()) or {}).get("delivery_admission") or {}
+        admission = self._completed_admission(self._attempt(self._record()) or {})
         if (evidence != value.get("task_bound_evidence") or evidence.get("owner_delivery_authorization") != authorization
                 or evidence.get("delivered_brief_digest") != digest(brief)
                 or evidence.get("delivered_contract_digest") != digest(contract)
@@ -407,7 +427,8 @@ class CanonicalRoleRuntime:
     def __init__(self, *, operations: Any, portfolio: Any, due_port: Any,
                  adapter: Any, actor: str,
                  runtime_probe: Optional[Callable[[], Optional[Mapping[str, Any]]]] = None,
-                 result_capture_factory: Optional[Callable[..., HerzchenAttemptCapture]] = None) -> None:
+                 result_capture_factory: Optional[Callable[..., HerzchenAttemptCapture]] = None,
+                 acceptance_readiness: Any = None, allowance_readiness: Any = None) -> None:
         required = ("reader", "assignments_port", "content_port", "binding")
         if operations is None or any(getattr(operations, name, None) is None for name in required):
             raise TypeError("operations must be the finite owner-backed Herzchen operations")
@@ -428,6 +449,33 @@ class CanonicalRoleRuntime:
         self.actor = actor
         self.runtime_probe = runtime_probe
         self.result_capture_factory = result_capture_factory
+        self.acceptance_readiness = acceptance_readiness
+        self.allowance_readiness = allowance_readiness
+
+    def prepare_execution_readiness(self, *, due: Any) -> Mapping[str, Any]:
+        """Resolve exact BASE and execution scope without admitting an effect."""
+        from .orchestrator_route import prepare_canonical_assignment_role_brief
+        from otto.portfolio.operating_setup import validate_execution_contract
+        target = due.target
+        for field, expected in (("requested_model", due.requested_model),
+                                ("requested_reasoning", due.requested_reasoning),
+                                ("requested_profile", due.profile)):
+            if not isinstance(expected, str) or not expected.strip() or target.get(field) != expected:
+                raise OwnerRoleRuntimeError("role occurrence " + field + " is missing or conflicts with target")
+        prepared = prepare_canonical_assignment_role_brief(
+            role=due.role, project_ref=target["project_ref"], task_ref=target["task_ref"],
+            assignment_ref=due.assignment_ref, mandate_ref=target["mandate_ref"],
+            expected_generation=due.generation,
+            project_reader=self._project_reader(target["project_ref"]),
+            task_reader=self._task_reader(target["project_ref"], target["task_ref"]),
+            assignment_reader=self._assignment_reader(due.assignment_ref),
+            mandate_reader=self._mandate_reader(target["project_ref"], target["mandate_ref"]),
+            resource_reader=self.operations.content_port,
+            lifecycle="resume" if due.execution_mode == "continue_existing" else "launch", as_of=due.anchor,
+        )
+        validate_execution_contract(prepared, target.get("requested_profile", due.profile),
+                                    execution_manager=due.role == "manager")
+        return prepared
 
     @staticmethod
     def _resource_ref(value: Mapping[str, Any]) -> Any:
@@ -553,6 +601,17 @@ class CanonicalRoleRuntime:
             mandate_ref=mandate_ref, schedule_id=schedule_id,
             logical_request_key=logical_request_key, expected_generation=expected_generation,
         )
+        from otto.attention import DueRecord
+        from otto.portfolio.operating_setup import OperatingSetupError, evaluate_setup, read_setup
+        due_readiness = DueRecord.from_dict(self.due_port.read_due(schedule_id))
+        setup = None
+        if (due_readiness.host_evidence or {}).get("gateway_attempt") is None:
+            self.prepare_execution_readiness(due=due_readiness)
+            setup = read_setup(self.operations, project_ref)
+            if setup is not None:
+                decision = evaluate_setup(self, project_ref, setup, current_due=due_readiness)
+                if not decision["ready"]:
+                    raise OperatingSetupError("operating setup blocked: " + json.dumps(decision["blockers"], sort_keys=True))
         result_owner = None
         if authorized_direct and role == "worker":
             if self.result_capture_factory is None:
@@ -598,6 +657,12 @@ class CanonicalRoleRuntime:
             )
 
             def current_brief_digest() -> str:
+                if setup is not None:
+                    if read_setup(self.operations, project_ref) != setup:
+                        raise OperatingSetupError("adopted operating setup changed before delivery")
+                    decision = evaluate_setup(self, project_ref, setup, current_due=due_readiness)
+                    if not decision["ready"]:
+                        raise OperatingSetupError("operating setup changed before delivery: " + json.dumps(decision["blockers"], sort_keys=True))
                 prepared = prepare_canonical_assignment_role_brief(
                     role=role, project_ref=project_ref, assignment_ref=assignment_ref,
                     mandate_ref=mandate_ref, expected_generation=expected_generation,
@@ -616,8 +681,7 @@ class CanonicalRoleRuntime:
                 )["brief_sha256"]
 
             capture.current_brief_reader = current_brief_digest
-            if fresh_worker or fresh_role:
-                current_brief_digest()  # Reject missing/setup/conflicting contracts before any provider claim/delivery.
+            current_brief_digest()  # Reject invalid launch/resume contracts before any provider claim/delivery.
             adapter = self.adapter.bind_owner_authorization(
                 lambda session_id, brief_sha256: capture.authorize_delivery(
                     logical_request_key, session_id, brief_sha256,
@@ -721,6 +785,159 @@ class CanonicalRoleRuntime:
             published = capture.publish_analytical_result(result, result_owner)
         accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
         return {**accepted, "published_analytical_result": published}
+
+    def reconcile_fresh_manager_result(self, *, schedule_id: str,
+                                       expected_unknown_sha256: str,
+                                       validate_only: bool = False) -> Mapping[str, Any]:
+        """Reparse a retained completed fresh-manager turn; never invoke a provider.
+
+        Only the missing first-work admission defect is eligible. The trusted
+        native reader supplies the trace, including overlap/terminal checks.
+        The original UNKNOWN and separate historical admission proof remain
+        explicit; this does not invent an original live admission callback.
+        """
+        from pathlib import Path
+        from herzchen.adapters.host import _native_host_context
+        from herzchen.contracts import HostIdentity, HostOperation, HostRequest, ResourceRef
+        from .herzchen_adapter import HerzchenCodexAdapter
+        digest = lambda body: hashlib.sha256(json.dumps(_json(body), ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        due = self.due_port.read_due(schedule_id) or {}
+        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+        prior = attempt.get("result") or {}
+        receipt = attempt.get("delivery_admission_reconciliation")
+        if (receipt and receipt.get("source_unknown_sha256") == expected_unknown_sha256
+                and prior.get("outcome") == "succeeded"):
+            return {"outcome": "reconciled", "replayed": True, "provider_called": False,
+                    "admission_reconciliation": receipt}
+        if (due.get("execution_mode") != "fresh_manager" or due.get("role") != "manager"
+                or attempt.get("state") != "result" or attempt.get("delivery_admission") is not None
+                or prior.get("operation") != "invoke" or prior.get("outcome") != "unknown"
+                or prior.get("delivery_state") != "unknown"
+                or prior.get("context_digest_verified") is not True
+                or prior.get("error") != {"code": "authorized_result_unverified",
+                    "message": "completed manager result differs from the exact admitted native claim"}
+                or digest(prior) != expected_unknown_sha256):
+            raise OwnerRoleRuntimeError("not the exact retained fresh-manager missing-admission result")
+        for other in self.due_port.list_due():
+            if other.get("schedule_id") == schedule_id:
+                continue
+            active = (other.get("host_evidence") or {}).get("gateway_attempt") or {}
+            if (other.get("project_ref") == due.get("project_ref")
+                    and (active.get("state") == "claimed" or other.get("host_state") == "running")):
+                raise OwnerRoleRuntimeError("settle the overlapping owner occurrence before native reconciliation")
+        _, _, capture = self._binding(role="manager", project_ref=prior["project_ref"],
+            task_ref=prior["task_ref"], assignment_ref=prior["assignment_ref"],
+            mandate_ref=due["target"]["mandate_ref"], schedule_id=schedule_id,
+            logical_request_key=prior["logical_request_key"], expected_generation=prior["generation"])
+        if not callable(capture.completed_scope_validator) or capture.completed_scope_validator():
+            raise OwnerRoleRuntimeError("exact canonical-manager assignment/mandate custody is unavailable")
+        record = capture._record()
+        if (capture._scope_error(record, capture.assignment_ref, capture.generation, prior["logical_request_key"])
+                or prior.get("logical_request_key") != due.get("in_flight_request")
+                or prior.get("requested_profile") != due.get("profile")
+                or prior.get("requested_model") != due.get("requested_model")
+                or prior.get("requested_reasoning") != due.get("requested_reasoning")
+                or prior.get("native_session_id") != prior.get("physical_session_id")):
+            raise OwnerRoleRuntimeError("retained request no longer has exact owner/session/profile custody")
+        reader = getattr(self.adapter, "trusted_thread_reader", None)
+        if not callable(reader):
+            raise OwnerRoleRuntimeError("trusted native metadata reader required; caller-supplied proof is insufficient")
+        session, turn = prior["physical_session_id"], prior["observed_turn_id"]
+        qualified = reader(session)
+        thread = qualified.get("thread") or {}
+        if thread.get("id") != session or not isinstance(thread.get("path"), str):
+            raise OwnerRoleRuntimeError("trusted native metadata differs from retained session")
+        raw = Path(thread["path"]).read_bytes()
+        records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        active, completed, selected = set(), [], []
+        for line, event in zip([line for line in raw.splitlines() if line.strip()], records):
+            payload = event.get("payload") or {}
+            identity = payload.get("turn_id")
+            if event.get("type") == "session_meta":
+                if (payload.get("id") or payload.get("session_id")) != session:
+                    raise OwnerRoleRuntimeError("native trace session metadata differs")
+            if event.get("type") == "event_msg":
+                if payload.get("type") == "task_started":
+                    active.add(identity)
+                elif payload.get("type") in {"task_complete", "task_aborted"}:
+                    active.discard(identity)
+                    if payload.get("type") == "task_complete": completed.append(identity)
+            if event.get("type") == "session_meta" or identity == turn:
+                selected.append(line.decode())
+        if active or not completed or completed[-1] != turn:
+            raise OwnerRoleRuntimeError("retained target is not the latest completed native turn without overlap")
+        authorization = attempt.get("delivery_authorization") or {}
+        brief = prior["resource_evidence"]["brief"]
+        contract = brief["instruction_contract"]
+        expected = {"status": "authorized", "logical_request_key": prior["logical_request_key"],
+            "physical_session_id": session, "project_ref": capture.project_ref,
+            "task_ref": capture.task_ref, "assignment_ref": capture.assignment_ref,
+            "generation": capture.generation, "role": "manager", "principal": capture.principal,
+            "lifecycle_owner": self.actor, "brief_sha256": digest(brief)}
+        if (any(authorization.get(key) != value for key, value in expected.items())
+                or contract != capture.manager_command_contract
+                or prior["resource_evidence"]["brief_sha256"] != digest(brief)):
+            raise OwnerRoleRuntimeError("retained native authorization or current manager contract differs")
+        retained = prior["raw_result"]
+        if (retained.get("verification_failures") or retained.get("work_receipt", {}).get("outcome") != "succeeded"
+                or retained.get("work_receipt", {}).get("operation") != "resume"
+                or retained.get("initialization_envelope", {}).get("host_evidence", {}).get("invocation_turn_verified") is not True):
+            raise OwnerRoleRuntimeError("retained READY/work transport is not an exact successful fresh-manager sequence")
+        initialization = retained["initialization_envelope"]
+        initial_receipt = retained.get("initialization_receipt") or {}
+        initial_turn = initialization["host_evidence"].get("turn_id")
+        if (initialization.get("physical_session_id") != session
+                or initial_receipt.get("identity", {}).get("physical_session_id") != session
+                or initial_receipt.get("outcome") != "succeeded"
+                or initial_receipt.get("operation") != "invoke"
+                or initial_turn == turn or initial_turn not in completed
+                or completed.index(initial_turn) >= completed.index(turn)):
+            raise OwnerRoleRuntimeError("retained native initialization/work lineage differs")
+        request = HostRequest(HostOperation.RESUME, HostIdentity(prior["logical_agent_id"], session),
+            ResourceRef.from_dict(prior["task_ref"]), prior["requested_profile"])
+        context = _native_host_context(selected, request=request, session_id=session, turn_id=turn,
+            delivered_brief=brief, delivered_authorization=authorization)
+        if context != retained["work_envelope"]["host_evidence"]["otto_host_turn_context"]:
+            raise OwnerRoleRuntimeError("actual native trace differs from original retained host context")
+        observed = HerzchenCodexAdapter._observed_context(context, expected_session_id=session,
+            expected_turn_id=turn, expected_profile=prior["requested_profile"],
+            expected_read_targets=contract.get("read_targets"), expected_read_scope=contract.get("read_scope"))
+        evidence = observed["task_bound_evidence"]
+        if (evidence != prior["task_bound_evidence"] or evidence.get("owner_delivery_authorization") != authorization
+                or evidence.get("delivered_brief_digest") != digest(brief)
+                or evidence.get("delivered_contract_digest") != digest(contract)
+                or evidence.get("task_ref") != capture.task_ref or evidence.get("assignment_ref") != capture.assignment_ref
+                or evidence.get("generation") != capture.generation
+                or observed["model"] != due["requested_model"] or observed["reasoning"] != due["requested_reasoning"]
+                or prior.get("observed_model") != observed["model"] or prior.get("observed_reasoning") != observed["reasoning"]):
+            raise OwnerRoleRuntimeError("completed native evidence differs from exact task/model/assignment authorization")
+        proof = {"schema": "otto.owner-native-admission-reconciliation.v1", "resolver": self.actor,
+            "effect": "retained_completed_native_turn_no_provider_replay", "native_turn_started": True,
+            "physical_session_id": session, "observed_turn_id": turn,
+            "initialization_turn_id": initial_turn, "native_operation": "resume",
+            "source_unknown_sha256": expected_unknown_sha256, "source_unknown": deepcopy(prior),
+            "trace_sha256": hashlib.sha256(raw).hexdigest(), "task_bound_evidence_sha256": digest(evidence)}
+        if validate_only:
+            return {"outcome": "qualified", "provider_called": False,
+                    "admission_reconciliation": proof, "store_mutated": False}
+        if receipt is not None and receipt != proof:
+            raise OwnerRoleRuntimeError("historical admission reconciliation changed")
+        if capture.completed_scope_validator():
+            raise OwnerRoleRuntimeError("canonical manager custody changed during native qualification")
+        if receipt is None:
+            # Use the record read before qualification: an intervening owner CAS
+            # must conflict rather than replace any newly recorded effects.
+            capture._save(record, {**attempt, "delivery_admission_reconciliation": proof},
+                "otto-native-admission-reconcile:" + prior["logical_request_key"] + ":" + expected_unknown_sha256)
+        capture.validate_completed_manager_result(prior)
+        replacement = deepcopy(prior)
+        replacement.update(outcome="succeeded", delivery_state="done", unknown_reason=None, error=None)
+        reconciled = capture.reconcile_unknown_result(prior["logical_request_key"], replacement,
+            resolver=self.actor, trace_sha256=proof["trace_sha256"],
+            parser_revision="otto.fresh-manager-native-admission.v1")
+        return {"outcome": "reconciled", "provider_called": False,
+                "admission_reconciliation": proof, "result_reconciliation": reconciled["reconciliation"]}
 
     def reconcile_worker_result(
         self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],

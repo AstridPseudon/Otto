@@ -656,10 +656,12 @@ class PortfolioOwnerBootstrap:
                 "purpose": assessment_policy.purpose, "local_only": True, "provider_called": False}
 
     def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
-                              manager_actor: str | None = None) -> Any:
+                              manager_actor: str | None = None, assessment_policy: Any = None,
+                              issue_delivery: Any = None) -> Any:
         """Issue maintained execution commands over the existing finite ports."""
         from .execution import ExecutionApplication
-        runtime = self.role_runtime(due_port=due_port, adapter=adapter)
+        runtime = self.role_runtime(due_port=due_port, adapter=adapter,
+                                    assessment_policy=assessment_policy, issue_delivery=issue_delivery)
         kwargs = {} if clock is None else {"clock": clock}
         return ExecutionApplication(portfolio=runtime.portfolio,
             assignments=self.assignments.command_port, due_port=due_port,
@@ -692,7 +694,7 @@ class PortfolioOwnerBootstrap:
         return SerializedAttentionPort(create, lambda recipient: json_value(packets.list_attention(recipient)))
 
     def role_runtime(self, *, due_port: Any, adapter: Any, runtime_probe: Any = None,
-                     issue_delivery: Any = None) -> Any:
+                     issue_delivery: Any = None, assessment_policy: Any = None) -> Any:
         """Compose a role runtime from finite clients without exposing Store.
 
         The caller supplies the already-issued finite DueRecord port and host
@@ -723,10 +725,41 @@ class PortfolioOwnerBootstrap:
                 raise PermissionError(error)
             return capture
 
+        def acceptance_readiness(project_ref: Mapping[str, Any], manager: Mapping[str, Any],
+                                 tasks: Any) -> Mapping[str, Any]:
+            if assessment_policy is None:
+                raise PermissionError("operating setup requires the owner-bound assessment policy and existing allowance")
+            scopes = []
+            for task in tasks:
+                commands = self.manager_assessment(project_ref=project_ref, task_ref=task,
+                    manager_assignment_ref=manager["assignment_ref"], manager_actor=manager["principal"],
+                    manager_generation=manager["generation"], assessment_policy=assessment_policy)
+                scopes.append(commands.execute({"operation": "resolve-required-scope", "arguments": {},
+                    "expected_task_ref": task, "expected_assignment_ref": manager["assignment_ref"],
+                    "expected_generation": manager["generation"]}))
+            expected = {task.to_dict()["id"] for task, _ in assessment_policy.task_criterion_pairs}
+            if {task["id"] for task in tasks} != expected:
+                raise PermissionError("operating setup must resolve every task in the owner assessment policy")
+            return {"required_scopes": scopes, "allowance_created": False}
+
+        from herzchen.kernel import LimitService
+        limits = LimitService(self.store)
+
+        def allowance_readiness(value: Mapping[str, Any]) -> None:
+            from herzchen.contracts import ResourceRef
+            ref = ResourceRef.from_dict(value)
+            if ref.authority != owner_actor.authority or ref.kind != "limit" or ref.revision is not None:
+                raise PermissionError("advisor allowance must select an existing owner pool")
+            pool = limits.get_pool(ref)
+            if pool is None or pool.remaining_allowance_units < 1:
+                raise PermissionError("advisor allowance is missing or exhausted")
+
         return CanonicalRoleRuntime(
             operations=operations, portfolio=portfolio, due_port=due_port,
             adapter=adapter, actor=self.owner_actor.actor, runtime_probe=runtime_probe,
             result_capture_factory=result_capture,
+            acceptance_readiness=acceptance_readiness,
+            allowance_readiness=allowance_readiness,
         )
 
 

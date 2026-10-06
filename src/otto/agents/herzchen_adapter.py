@@ -417,7 +417,11 @@ class HerzchenCodexAdapter:
                   source_verifier: Any = None, timeout_brief: Any = None) -> Any:
         from otto.portfolio.execution_host import ExecutionHost
         recipient_authorizer = ExecutionHost.owner_callback(recipient_authorizer)
-        native_start_callback = ExecutionHost.owner_callback(self._turn_started_callback)
+        # The inert READY initializer has no delivery authorization. Only its
+        # subsequent authorized work turn may enter the owner admission ledger.
+        native_start_callback = ExecutionHost.owner_callback(
+            None if self._owner_authorizer is not None and recipient_authorizer is None
+            else self._turn_started_callback)
         cursor_queue = None
         if model_projection is not None and brief["context"]["canonical_snapshot"]["generation"] >= 11:
             recipient = model_projection["owner_context"].get("recipient_permission_contract", {})

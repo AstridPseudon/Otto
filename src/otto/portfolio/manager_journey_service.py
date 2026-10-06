@@ -85,6 +85,35 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "operating-setup":
+            self.commands._authorize()
+            if set(request) - {"command", "operation", "setup", "request_key"}:
+                raise ValueError("operating setup cannot change the bound project or owner")
+            state = self.server.state
+            app = self.server._execution(principal=state["manager"], model=state["requested_model"],
+                reasoning=state["requested_reasoning"], evidence_id="operating-setup")
+            # The owning service's policy supplies allowance and criterion
+            # authority. Neither setup JSON nor transport chooses a new pool.
+            from .local_assessment_policy import LocalAssessmentPolicy
+            policy = self.commands.policy or state.get("assessment_policy")
+            if isinstance(policy, Mapping):
+                policy = LocalAssessmentPolicy.from_run_config(policy, state=state)
+            trusted = self.server.owner.role_runtime(due_port=self.server.due_port,
+                adapter=app.runtime.adapter, assessment_policy=policy)
+            app.runtime.acceptance_readiness = trusted.acceptance_readiness
+            operation = request.get("operation", "read")
+            if operation == "read":
+                if request.get("setup") is not None or request.get("request_key") is not None:
+                    raise ValueError("operating setup read takes no preparation fields")
+                return app.read_operating_setup(project_ref=state["project_ref"])
+            if operation == "prepare":
+                return app.prepare_operating_setup(project_ref=state["project_ref"],
+                    setup=request.get("setup"), request_key=request.get("request_key"))
+            if operation == "activate":
+                if request.get("setup") is not None or request.get("request_key") is not None:
+                    raise ValueError("activate uses only the adopted setup")
+                return app.activate_operating_setup(project_ref=state["project_ref"])
+            raise ValueError("unknown operating setup operation")
         if command == "manager-task-settlement":
             self.commands._authorize()
             state = self.server.state

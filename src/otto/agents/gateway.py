@@ -1574,6 +1574,7 @@ class OttoGateway:
                     "error": result["error"],
                 })
             return result
+        started_session_id = responsibility.physical_session_id
         restore_thread_callback = None
         restore_turn_callback = None
         callback_installed = False
@@ -1584,10 +1585,12 @@ class OttoGateway:
             prior_callback = setter(None)
 
             def on_thread_started(physical_session_id: str) -> None:
+                nonlocal started_session_id
                 recorder(
                     key, physical_session_id,
                     process_created=responsibility.operation == "invoke",
                 )
+                started_session_id = physical_session_id
                 if callable(prior_callback):
                     prior_callback(physical_session_id)
 
@@ -1599,14 +1602,15 @@ class OttoGateway:
             getattr(self.attempt_capture, "record_delivery_admission", None)
             if self.attempt_capture is not None else None
         )
-        if (owner_bound and responsibility.operation in {"resume", "send"} and key
-                and callable(turn_setter) and callable(admission_recorder)
-                and responsibility.physical_session_id):
+        if (owner_bound and key and callable(turn_setter) and callable(admission_recorder)
+                and (responsibility.operation in {"resume", "send"}
+                     or (responsibility.operation == "invoke"
+                         and getattr(self.attempt_capture, "role", None) == "manager"))):
             prior_turn_callback = turn_setter(None)
 
             def on_turn_started(observed_turn_id: str, observed_at: str) -> None:
                 admission_recorder(
-                    key, responsibility.physical_session_id,
+                    key, started_session_id,
                     observed_turn_id, observed_at,
                 )
                 if callable(prior_turn_callback):

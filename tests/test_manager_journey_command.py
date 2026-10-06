@@ -1,6 +1,7 @@
 """Ordinary explicit judgment uses real assessment/completion/lifecycle APIs."""
 import unittest
 import argparse
+import json
 
 from herzchen.contracts import ResourceRef, TransactionContext
 from herzchen.content import ContentDocument, ContentRevision
@@ -124,12 +125,14 @@ class ManagerJourneyCommandTests(unittest.TestCase):
     def test_client_definitions_request_judgment_without_owner_pins_or_pool_fields(self):
         parser = argparse.ArgumentParser()
         add_manager_journey_parsers(parser.add_subparsers(dest="command", required=True))
+        candidate = self.source('parser-candidate')
+        source = self.source('parser-source')
         request = vars(parser.parse_args(["review-task", "--task", "J01", "--request-key", "review",
-            "--candidate-ref", '{"id":"candidate"}', "--source-ref", '{"id":"source"}',
+            "--candidate-ref", json.dumps(candidate), "--source-ref", json.dumps(source),
             "--judgments", '{"C01":{"verdict":"PASS"}}', "--inspection", '{"observed":"check"}',
             "--review-only"]))
         self.assertFalse(request["finish"])
-        self.assertEqual(request["source_refs"], [{"id": "source"}])
+        self.assertEqual(request["source_refs"], [source])
         self.assertFalse(any(name in request for name in ("actor", "pool", "expected_task_ref")))
 
     def test_current_reassigned_manager_can_review_and_close_with_distinct_orchestrator_epoch(self):

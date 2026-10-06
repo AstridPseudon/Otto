@@ -65,7 +65,7 @@ print(json.dumps({"type": "turn.completed", "turn_id": turn}), flush=True)
 
 
 class ManagerBootstrapRecoveryTests(unittest.TestCase):
-    def test_missing_contract_stops_work_then_owner_reassign_resumes_same_session(self):
+    def test_missing_contract_stops_before_initializer_or_native_session(self):
         f = application.ExecutionApplicationTests()
         f.setUp()
         self.addCleanup(f.doCleanups)
@@ -98,69 +98,16 @@ class ManagerBootstrapRecoveryTests(unittest.TestCase):
         f.port.reconcile_assignment_resources(original.schedule_id, assignment_ref=assignment.ref.to_dict(),
             request_id="bootstrap-manager:resources", expected_version=created["version"])
         failed = f.app.start(schedule_id=original.schedule_id)
-        self.assertEqual(failed["outcome"], "unknown", failed)
+        self.assertEqual(failed["outcome"], "partial", failed)
+        self.assertEqual(failed["stage"], "runtime")
+        self.assertEqual(failed["error"]["code"], "OperatingSetupError")
         retained = f.port.read_due(original.schedule_id)
-        raw = retained["host_evidence"]["gateway_attempt"]["result"]["raw_result"]
-        self.assertTrue(raw["initialization_envelope"]["host_evidence"]["invocation_turn_verified"])
-        self.assertEqual(raw["initialization_receipt"]["identity"]["physical_session_id"], SESSION)
-        self.assertEqual(raw["work_envelope"]["delivery_state"], "not_started")
-        self.assertEqual(raw["work_envelope"]["reconciliation"], "trusted recipient authorization is not exact")
-        self.assertIsNone(raw["work_envelope"]["process_id"])
-        submitted = [json.loads(line) for line in (root / "submitted.jsonl").read_text().splitlines()]
-        self.assertEqual(len(submitted), 1)
-        self.assertIn("Return READY", submitted[0]["prompt"])
-        self.assertNotIn("Begin the full authorized project", submitted[0]["prompt"])
-
-        rebound = f.app.assignments.reassign(assignment.ref, principal="manager", session=SESSION,
-            reason="Owner verified READY-only initialization and exact pre-work contract failure",
-            expected_generation=1, logical_request_key="owner-session-recovery", actor=f.actor)
-        content = f.owner.content.read(ResourceRef.from_dict(guide))["content"]
-        adopted = f.app.assignments.adopt_resources(rebound.ref,
-            resources=[{"resource_ref": guide, "resource_name": content["name"],
-                "content_digest": validate_instruction_content(content), "required": True}],
-            expected_revision=rebound.revision, expected_generation=2,
-            logical_request_key="recovered-guide-adoption", actor=f.actor)
-        contract = f.request()["instruction_contract"]
-        contract["authority"]["owner_actor"] = "manager"
-        contract["authority"]["effect_profile"] = "workspace-write-manager"
-        contract["allowed_operations"].append("canonical_manager_commands")
-        contract["authority"]["permitted_effects"].append("canonical_manager_commands")
-        mandate = f.app.portfolio.create_document(f.project.ref.to_dict(), actor="manager",
-            request_id="recovered-mandate", document_id="recovered-mandate", role="mandate",
-            content={"role": "manager", "scope_ref": f.project.ref.to_dict(), "status": "active",
-                "dispatch_enabled": True, "task_ref": f.task.ref.to_dict(),
-                "assignment_ref": adopted.ref.to_dict(), "generation": 2,
-                "brief": {"role": "manager", "mandate": "Complete the project"},
-                "instruction_contract": contract})
-        current_mandate = mandate["record"]["payload"]["current_revision"]
-        instruction = "Continue the actual full request intact: café, J01–J04; suggestions are advice."
-        prepared = f.app.prepare_role(role="manager", project_ref=f.project.ref.to_dict(),
-            task_ref=f.task.ref.to_dict(), assignment_ref=adopted.ref.to_dict(), generation=2,
-            mandate_ref=current_mandate, context_refs=(guide, current_mandate),
-            request_key="recovered-manager-work", instruction=instruction, model="gpt-test",
-            reasoning="high", profile="workspace-write", native_session_id=SESSION)
-        self.assertEqual(prepared["outcome"], "committed", prepared)
-        success = f.app.start(schedule_id=prepared["schedule_id"])
-        self.assertEqual(success["outcome"], "succeeded", success)
-        self.assertEqual(f.port.read_due(original.schedule_id), retained)
-        self.assertEqual(adopted.generation, 2)
-        self.assertEqual(adopted.history[-1]["session"], SESSION)
-        result = success["result"]
-        self.assertEqual(result["physical_session_id"], SESSION)
-        self.assertEqual(result["observed_turn_id"], "work-turn")
-        self.assertIsNone(result["raw_result"]["initialization_envelope"])
-        submitted = [json.loads(line) for line in (root / "submitted.jsonl").read_text().splitlines()]
-        self.assertEqual([row["resume"] for row in submitted], [False, True])
-        self.assertIn(instruction, submitted[1]["prompt"])
-        self.assertIn(SESSION, submitted[1]["argv"])
-        brief = result["resource_evidence"]["brief"]
-        self.assertIn(json.dumps(brief, sort_keys=True, ensure_ascii=False, separators=(",", ":")), submitted[1]["prompt"])
-        evidence = result["task_bound_evidence"]
-        self.assertEqual(evidence["owner_delivery_authorization"]["brief_sha256"],
-                         result["resource_evidence"]["brief_sha256"])
-        duplicate = f.app.start(schedule_id=prepared["schedule_id"])
-        self.assertEqual(duplicate["outcome"], "replayed")
-        self.assertEqual(len((root / "submitted.jsonl").read_text().splitlines()), 2)
+        self.assertIsNone((retained.get("host_evidence") or {}).get("gateway_attempt"))
+        self.assertFalse((root / "submitted.jsonl").exists())
+        self.assertFalse((root / "native.jsonl").exists())
+        # A missing contract now fails before initialization. Genuine READY/work
+        # recovery, including exact same-session evidence, is exercised by
+        # test_fresh_manager_admission through the real CLI composition.
 
 
 if __name__ == "__main__":

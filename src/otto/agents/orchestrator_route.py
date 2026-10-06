@@ -410,6 +410,8 @@ def invoke_canonical_assignment(
         task_ref=task_ref, task_reader=task_reader,
     )
     assignment = prepared["assignment"]
+    from otto.portfolio.operating_setup import validate_execution_contract
+    validate_execution_contract(prepared, requested_profile)
     evidence = _canonical_operation_evidence(prepared, owner=owner, task_ref=task_ref)
     if not isinstance(request, Mapping):
         raise OrchestratorRouteError("request must be an object")
