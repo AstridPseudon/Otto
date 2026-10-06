@@ -9,7 +9,8 @@ A selected configuration is an ordinary DAT document pinned in BASE
 ``supporting_refs``. Its content has ``schema: otto.role-configuration.v1``,
 ``roles`` (the adopted run's slot-to-model/reasoning bindings), and
 ``role_bindings`` (execution-role-to-slot selection). Optional
-``tool_entrypoints`` maps execution roles to the installed host command.
+``tool_entrypoints`` maps execution roles to the installed host command;
+``role_policies`` supplies selected policy text for each execution role.
 Other supporting documents retain their own roles, content and provenance.
 """
 from __future__ import annotations
@@ -106,9 +107,17 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
     entrypoint = tools.get(canonical["role"])
     if entrypoint is not None and (not isinstance(entrypoint, str) or not entrypoint.strip()):
         raise RoleContextError("selected role tool entrypoint must be non-blank text")
+    policies = configuration["content"].get("role_policies", {}) if configuration else {}
+    if not isinstance(policies, Mapping):
+        raise RoleContextError("selected configuration role_policies must be an object")
+    policy = policies.get(canonical["role"])
+    if policy is not None and (not isinstance(policy, str) or not policy.strip()):
+        raise RoleContextError("selected role policy must be non-blank text")
     return {"schema": "otto.role-introduction.v1", "role": canonical["role"],
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
             "generation": snapshot["generation"], "responsibility": ROLE_OPERATING_CONTRACTS[canonical["role"]],
+            "selected_policy": policy,
+            "selected_policy_source": configuration["ref"] if policy else None,
             "operating_guidance": dict(ROLE_CONTEXT_GUIDANCE[canonical["role"]]),
             "goal": {"ref": project["ref"], "title": project["payload"].get("title"),
                      "outcome": project["payload"].get("outcome")},

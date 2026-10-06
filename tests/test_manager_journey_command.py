@@ -6,6 +6,7 @@ import hashlib
 
 from herzchen.contracts import ResourceRef, TransactionContext
 from herzchen.content import ContentDocument, ContentRevision
+from herzchen.content.instructions import validate_instruction_content
 from herzchen.kernel.limits import LimitService
 from otto.portfolio.manager_journey_command import ManagerJourneyCommands
 from otto.portfolio.manager_journey_client import add_manager_journey_parsers
@@ -111,6 +112,48 @@ class ManagerJourneyCommandTests(unittest.TestCase):
             logical_request_key="controller-wrong-pool-setup", actor=self.application.actor)
         with self.assertRaises(PermissionError):
             self.commands.review_task(self.request(key="wrong-pool-review"))
+
+    def test_accepted_review_finishes_after_same_generation_resource_adoption_without_reassessment(self):
+        request = {**self.request(key="accepted-before-adoption"), "finish": False}
+        accepted = self.commands.review_task(request)
+        self.assertEqual(accepted["outcome"], "accepted")
+        f = self.application; manager = self.fixture.manager
+        content = {"schema": "herzchen.instructions.v1", "name": "updated-manager-guide",
+            "entrypoint": "MANAGER.md", "instructions": "Use the newly adopted installed command",
+            "bundle_digest": hashlib.sha256(b"Use the newly adopted installed command").hexdigest(),
+            "export_manifest_digest": "new-selected-pack", "required": True, "supporting_refs": []}
+        made = f.app.portfolio.create_document(f.project.ref.to_dict(), actor="manager",
+            request_id="updated-manager-guide", document_id=content["name"], content=content)
+        ref = made["record"]["payload"]["current_revision"]
+        adopted = f.owner.assignments.command_port.adopt_resources(manager.ref,
+            resources=[{"resource_ref": ref, "resource_name": content["name"],
+                "content_digest": validate_instruction_content(content), "required": True}],
+            expected_revision=manager.revision, expected_generation=manager.generation,
+            logical_request_key="adopt-corrected-guide", actor=f.actor)
+        self.fixture.state["assignment_ref"] = adopted.ref.to_dict()
+        limits = LimitService(f.store); poolref = ResourceRef(f.actor.authority, "limit", "local-inspection")
+        before = limits.get_pool(poolref)
+        result = self.commands.finish_task({"command": "finish-task", "task": "PA01",
+            "request_key": "finish-retained-accepted", "review_key": request["request_key"]})
+        self.assertEqual(result["outcome"], "completed", result)
+        self.assertEqual(limits.get_pool(poolref), before)
+        retained = self.commands._journal(request["request_key"], "review", adopted_history=True)
+        self.assertEqual(retained["gate_refs"], accepted["gate_refs"])
+        self.assertEqual(retained["candidate_ref"], accepted["candidate_ref"])
+        self.assertEqual(f.provider.calls, [])
+        reassigned = f.owner.assignments.command_port.reassign(adopted.ref,
+            principal="manager", reason="new generation", expected_generation=adopted.generation,
+            logical_request_key="reassigned-after-accepted", actor=f.actor)
+        self.fixture.state.update(assignment_ref=reassigned.ref.to_dict(), manager_generation=reassigned.generation)
+        self.assertIsNone(self.commands._journal(request["request_key"], "review", adopted_history=True))
+        with self.assertRaisesRegex(ValueError, "retained explicit accepted"):
+            self.commands.finish_task({"task": "PA01", "request_key": "foreign-generation-finish", "review_key": request["request_key"]})
+        foreign = f.owner.assignments.command_port.reassign(reassigned.ref,
+            principal="another-manager", reason="another manager", expected_generation=reassigned.generation,
+            logical_request_key="foreign-manager-after-accepted", actor=f.actor)
+        self.fixture.state.update(assignment_ref=foreign.ref.to_dict(), manager_generation=foreign.generation, manager="another-manager")
+        self.assertIsNone(self.commands._journal(request["request_key"], "review", adopted_history=True))
+        self.assertEqual(limits.get_pool(poolref), before)
 
     def test_rework_never_accepts_and_repaired_evidence_uses_same_required_scope(self):
         request = self.request(verdict="REWORK")

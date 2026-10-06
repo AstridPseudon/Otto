@@ -502,9 +502,20 @@ class ManagerJourneyService:
         instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
             principal=principal, model=model, reasoning=reasoning, focus=focus,
             workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter)
+        from .resource_sync import resolve_assignment_attachments
+        from .role_context import supporting_context
+        manager = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(state["assignment_ref"]))
+        attachments = resolve_assignment_attachments({"ref": manager.ref.to_dict(), "role": manager.role,
+            "generation": manager.generation, "payload": manager.payload},
+            self.server.owner.content.command_port, role="manager")
+        bases = [item for item in attachments if item["required"]]
+        if len(bases) != 1:
+            raise ValueError("worker delegation requires exactly one current adopted manager BASE")
+        sources = supporting_context(bases[0], self.server.owner.content.command_port)
         prepared = app.assign_worker(project_ref=state["project_ref"], task_ref=task_ref,
             principal=principal, request_key=key, instructions=instruction, instruction_contract=contract,
-            brief=brief, model=model, reasoning=reasoning, timeout_seconds=1200)
+            brief=brief, model=model, reasoning=reasoning, timeout_seconds=1200,
+            supporting_refs=[source["ref"] for source in sources])
         if prepared.get("outcome") not in {"committed", "prepared"}:
             previous = (state.get("workers") or {}).get(task) or {}
             return {**prepared, **{name: previous[name] for name in ("retained_handle", "response_path")

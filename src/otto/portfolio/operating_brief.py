@@ -34,9 +34,9 @@ ROLE_OPERATING_CONTRACTS = {
     ),
     "manager": (
         "Coordinate and independently advance assigned ready tasks through the supported worker operations, "
-        "result review, acceptance evidence, and owner closeout. Normal implementation and repair go to the "
-        "configured worker_normal route; justified XHARD work goes to worker_xhard. Do not silently implement "
-        "worker work when a route is blocked: request operational help and continue independent work. Ask for "
+        "result review, acceptance evidence, and owner closeout under the adopted project policy. Follow its "
+        "delegation and implementation responsibilities. When a supported route is blocked, request "
+        "operational help and continue independent work. Ask for "
         "advice only for project judgment when the adopted advisor policy enables it. Refresh the canonical "
         "project, task, assignment and adopted resource context before acting; a continuation or replacement "
         "uses the current bindings. Delivery and resolution are separate, and an unknown outcome is never safe "

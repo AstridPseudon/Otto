@@ -142,6 +142,14 @@ not copied authority lists or a new context store. Installation or setup
 activation does not create roles, budgets, schedules, dispatch authority or
 project acceptance.
 
+The selected role configuration carries this manager policy and the host's
+verified `tool_entrypoint`. Use the command emitted in the current role
+introduction, with its interpreter and installed path, to read `--help` and
+`operating-setup --operation read`. A repository wrapper or uninstalled module
+is not the installed command. Future worker packets inherit the manager's
+current adopted supporting pins; explicit normal/XHARD routing keeps its own
+model selection and provenance.
+
 Include this mandate in execution-capable manager briefs, not in leaf worker/reviewer briefs. Give each dispatch the complete succinct North Star, applicable goal/task constraints, current source identity and required evidence. Record actual model, command/tool, source, brief/result paths and digests, timing and exit status without secrets. A plan-only read-only fact check does not need execution-capable permissions.
 
 If the North Star or agreed goal changes, record the authoritative user instruction and updated digest; reconcile affected tasks and briefs before dispatch. Map changed criteria to their previous IDs and invalidate only affected evidence/approvals. Preserve unaffected results and existing review counters; do not silently give queued work a different contract. An adopted North Star records its source path and digest.

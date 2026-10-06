@@ -8,6 +8,8 @@ import hashlib
 import json
 import re
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from herzchen.content import ContentDocument, ContentRevision
 from herzchen.content.instructions import validate_instruction_content
@@ -138,6 +140,76 @@ class RoleContextTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "succeeded", {k: result.get(k) for k in ("stage", "error", "next_action")})
         self.assertEqual(self.packet()["context"]["selected_configuration"]["ref"], ref)
         self.assertEqual(self.packet()["context"]["operating_setup"]["current_execution"]["model"], "gpt-test")
+
+    def test_selected_manager_policy_is_provenance_bearing_and_not_a_core_default(self):
+        for selected in ("Megado: delegate normal implementation to worker_normal and justified XHARD to worker_xhard.",
+                         "Other pack: the manager implements directly under this project's policy."):
+            with self.subTest(policy=selected):
+                case = RoleContextTests(); case.setUp(); self.addCleanup(case.doCleanups)
+                config = case.configuration(); config["role_policies"] = {"manager": selected}
+                ref = case.document("run_configuration", config)
+                _manager, schedule, _request = case.role(sources=[ref])
+                result = case.f.app.start(schedule_id=schedule)
+                self.assertEqual(result["outcome"], "succeeded", result.get("error"))
+                intro = case.packet()["operating_core"]["introduction"]
+                self.assertEqual(intro["selected_policy"], selected)
+                self.assertEqual(intro["selected_policy_source"], ref)
+                self.assertNotIn("worker_normal", intro["responsibility"])
+                self.assertNotIn("worker_xhard", intro["responsibility"])
+        _manager, schedule, _request = self.role()
+        self.assertEqual(self.f.app.start(schedule_id=schedule)["outcome"], "succeeded")
+        self.assertIsNone(self.packet()["operating_core"]["introduction"]["selected_policy"])
+
+    def test_ordinary_worker_inherits_current_adopted_configuration_and_installed_command(self):
+        from otto.portfolio.manager_journey_service import ManagerJourneyService
+        config = self.configuration()
+        config["role_bindings"]["worker"] = "worker_normal"
+        config["roles"]["worker_normal"] = {"model": "gpt-test", "reasoning": "high"}
+        command = "/verified/python3 /verified/controller/manager_ctl.py help --format text"
+        config["tool_entrypoints"]["worker"] = command
+        ref = self.document("run_configuration", config)
+        manager, _schedule, _request = self.role(sources=[ref])
+        f = self.f; root = Path(f.temporary.name).resolve()
+        (root / "run.yaml").write_text(json.dumps({"roles": {
+            "worker_normal": {"model": "gpt-test", "reasoning": "high"},
+            "worker_xhard": {"model": "gpt-xhard-test", "reasoning": "high"}}}))
+        state = {"project_ref": f.project.ref.to_dict(), "task_refs": {"S06": f.task.ref.to_dict()},
+            "assignment_ref": manager.ref.to_dict(), "manager_generation": manager.generation, "manager": "manager"}
+        host = SimpleNamespace(_closing=False, submit=lambda _: {"outcome": "admitted"})
+        server = SimpleNamespace(owner=f.owner, portfolio=f.app.portfolio, state=state,
+            due_port=f.port, _execution=lambda **_: f.app, _save_state=lambda: None)
+        service = ManagerJourneyService(server=server, host=host, workspace=root, run_path=root)
+        request = {"command": "run-worker", "task": "S06", "route": "normal", "principal": "worker",
+            "request_key": "selected-worker", "focus": "Read the delivered installed command"}
+        prepared = service._submit_worker(request)
+        self.assertEqual(prepared["outcome"], "admitted", prepared)
+        self.assertEqual(f.provider.calls, [])
+        self.assertEqual(f.app._read(prepared["schedule_id"]).context_refs[2:], (ref,))
+        self.assertEqual(f.app.start(schedule_id=prepared["schedule_id"])["outcome"], "succeeded")
+        intro = self.packet()["operating_core"]["introduction"]
+        self.assertEqual(intro["tool_entrypoint"], command)
+        self.assertEqual(intro["tool_entrypoint_source"], ref)
+        # A selected default worker slot does not replace the explicit XHARD
+        # route. Both receive the same adopted policy/host command provenance.
+        f.app.runtime.adapter.requested_model = "gpt-xhard-test"
+        xhard = service._submit_worker({**request, "route": "xhard", "request_key": "xhard-worker", "principal": "xhard"})
+        due = f.app._read(xhard["schedule_id"])
+        self.assertEqual(due.requested_model, "gpt-xhard-test")
+        self.assertEqual(due.target["execution_selection"]["model"],
+            {"source": "explicit_override", "selected_configuration_ref": ref})
+        self.assertEqual(f.app.start(schedule_id=due.schedule_id)["outcome"], "succeeded")
+        self.assertEqual(self.packet()["operating_core"]["introduction"]["tool_entrypoint"], command)
+        self.assertEqual(self.packet()["context"]["operating_setup"]["current_execution"]["model"], "gpt-xhard-test")
+        calls = len(f.provider.calls)
+        retained = service._submit_worker({**request, "route": "xhard", "request_key": "xhard-worker", "principal": "xhard"})
+        self.assertEqual(retained["outcome"], "replayed")
+        self.assertEqual(len(f.provider.calls), calls)
+        before = len(f.port.list_due())
+        self.revise(ref, {**config, "changed": "new command requires readoption"})
+        with self.assertRaisesRegex(ValueError, "stale"):
+            service._submit_worker({**request, "request_key": "new-worker", "principal": "next-worker"})
+        self.assertEqual(len(f.port.list_due()), before)
+        self.assertEqual(len(f.provider.calls), 2)
 
     def test_required_source_missing_rejects_sparse_preparation_without_due_or_provider(self):
         missing = {"authority": self.f.actor.authority, "kind": "dat.content.document", "id": "missing-goal", "revision": "rev-1"}

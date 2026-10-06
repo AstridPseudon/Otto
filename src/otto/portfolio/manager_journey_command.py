@@ -39,7 +39,7 @@ class ManagerJourneyCommands:
             raise PermissionError("ordinary judgment requires the current bound manager")
         return self.owner.binding.authenticated_actor(self.state["manager"])
 
-    def _journal(self, key: str, stage: str, value: Any = None) -> Any:
+    def _journal(self, key: str, stage: str, value: Any = None, *, adopted_history: bool = False) -> Any:
         actor = self._authorize()
         port = self.owner.assignments.command_port
         assignment = ResourceRef.from_dict(self.state["assignment_ref"])
@@ -47,6 +47,37 @@ class ManagerJourneyCommands:
         reports = port.list_observations(assignment, kind="report")
         prior = next((report.value for report in reports
                       if report.value.get("logical_request_key") == identity), None)
+        if prior is None and adopted_history and value is None and stage in {"review", "intent"}:
+            # A resource adoption revises the assignment, while an accepted
+            # review remains pinned to the original generation. Resolve only
+            # this exact immutable journal ID through authenticated adoption
+            # events; never treat reassignment as continuation of acceptance.
+            record_id = "report-" + hashlib.sha256((assignment.id + ":" + identity).encode()).hexdigest()[:28]
+            record = self.owner.graph.reader.get_identity(ResourceRef(assignment.authority, "wrk.report", record_id))
+            current = port.get(assignment)
+            ancestors = {assignment}
+            events = {event.subject: event for event in self.owner.graph.reader.list_events(stream="assignment:" + assignment.id)
+                      if event.event_type == "work.assignment.resources-adopted"}
+            cursor = assignment
+            while cursor in events:
+                event = events[cursor]; payload = event.effects.get("result_payload", {})
+                base = payload.get("resource_adoption_base_ref")
+                if (not isinstance(base, Mapping) or payload.get("generation") != current.generation
+                        or payload.get("principal") != current.principal or payload.get("role") != "manager"
+                        or payload.get("scope") != current.scope.to_dict()
+                        or payload.get("manager") != current.payload.get("manager")
+                        or event.actor.actor != (current.payload.get("manager") or current.principal)):
+                    break
+                cursor = ResourceRef.from_dict(base)
+                if (cursor.authority, cursor.kind, cursor.id) != (assignment.authority, assignment.kind, assignment.id) or cursor in ancestors:
+                    break
+                ancestors.add(cursor)
+            if (record is not None and record.payload.get("generation") == current.generation
+                    and record.payload.get("observation_kind") == "report"
+                    and ResourceRef.from_dict(record.payload["assignment"]) in ancestors):
+                candidate = record.payload.get("value", {})
+                if candidate.get("schema") == "otto.manager-journey.v1" and candidate.get("logical_request_key") == identity:
+                    prior = candidate
         if prior is not None:
             if value is not None and prior["content"] != value:
                 raise ValueError("ordinary request key was reused with changed input")
@@ -332,12 +363,16 @@ class ManagerJourneyCommands:
         prior = self._journal(key, "finish-intent")
         if prior is not None and prior != dict(request):
             raise ValueError("task finish request key was reused with changed input")
-        reviewed = self._journal(request.get("review_key"), "review")
-        manifest = self._journal(request.get("review_key"), "intent")
+        reviewed = self._journal(request.get("review_key"), "review", adopted_history=True)
+        manifest = self._journal(request.get("review_key"), "intent", adopted_history=True)
         if reviewed is None or manifest is None or reviewed["outcome"] != "accepted":
             raise ValueError("finish-task requires retained explicit accepted judgment")
         if manifest["request"]["task"] != request.get("task"):
             raise PermissionError("review belongs to another task")
+        if (manifest["generation"] != self.state["manager_generation"]
+                or any(manifest["assignment_ref"].get(k) != self.state["assignment_ref"].get(k) for k in ("authority", "kind", "id"))
+                or manifest["task_ref"] != self.state["task_refs"][request["task"]]):
+            raise PermissionError("accepted review task or manager generation changed")
         self._journal(key, "finish-intent", dict(request))
         settlement = self._native_settlement(reviewed)
         if settlement is not None:

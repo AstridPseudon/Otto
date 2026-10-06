@@ -155,7 +155,8 @@ class ExecutionApplication:
                       principal: str, request_key: str, instructions: str,
                       instruction_contract: Mapping[str, Any], brief: Mapping[str, Any],
                       model: str, reasoning: str, profile: str = "workspace-write",
-                      timeout_seconds: int = 1200) -> dict[str, Any]:
+                      timeout_seconds: int = 1200,
+                      supporting_refs: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
         """Assign and prepare a worker using the existing public owner commands."""
         project = owner_ref(project_ref, "project_ref")
         task = owner_ref(task_ref, "task_ref")
@@ -172,9 +173,20 @@ class ExecutionApplication:
             raise OccurrencePreparationError("worker operating brief is required")
         normalize_instruction_contract(instruction_contract)
         OperatingBrief.from_mapping(brief, role="worker")
+        # Validate explicit owner pins before the first assignment/document effect.
+        # The ordinary manager service supplies its adopted sources; caller prose
+        # cannot select another policy or an installed command.
+        from .role_context import selected_configuration, supporting_context
+        sources = supporting_context({"resource_ref": project,
+            "content": {"supporting_refs": [] if supporting_refs is None else supporting_refs}},
+            self.portfolio.operations.content_port)
+        pins = [source["ref"] for source in sources]
+        configuration = selected_configuration(sources)
+        selection = {field: {"source": "explicit_override", "selected_configuration_ref":
+            None if configuration is None else configuration["ref"]} for field in ("model", "reasoning")}
         schedule = "worker-" + _digest([project, request_key])[:28]
         semantic = _digest([project, task, principal, instructions, instruction_contract,
-                            brief, model, reasoning, profile, timeout_seconds])
+                            brief, model, reasoning, profile, timeout_seconds] + ([pins] if pins else []))
         existing = self.due_port.read_due(schedule)
         if existing is not None:
             if (existing.get("invocation_identity") != request_key + ":" + semantic
@@ -189,7 +201,7 @@ class ExecutionApplication:
             content = {"schema": "herzchen.instructions.v1", "name": name,
                        "entrypoint": "WORKER_BRIEF.md", "bundle_digest": hashlib.sha256(instructions.encode()).hexdigest(),
                        "export_manifest_digest": semantic, "required": True,
-                       "supporting_refs": [], "instructions": instructions}
+                       "supporting_refs": pins, "instructions": instructions}
             guide = self.portfolio.create_document(project, actor=self.actor,
                 request_id=request_key + ":guide", document_id=name, content=content)
             guide_ref = self._document_revision(guide, "worker guide")
@@ -229,7 +241,8 @@ class ExecutionApplication:
             target = {"host": "local", "project_ref": project, "task_ref": task,
                       "assignment_ref": assignment.ref.to_dict(), "mandate_ref": mandate_ref,
                       "role": "worker", "principal": principal, "requested_model": model,
-                      "requested_reasoning": reasoning, "requested_profile": profile}
+                      "requested_reasoning": reasoning, "requested_profile": profile,
+                      "execution_selection": selection}
             due = DueRecord(schedule_id=schedule, recipient=principal, instruction=instructions,
                 profile=profile, anchor=at, due_at=at, last_covered_slot=0,
                 invocation_identity=request_key + ":" + semantic,
@@ -238,7 +251,7 @@ class ExecutionApplication:
                 assignment_ref=assignment.ref.to_dict(), generation=assignment.generation,
                 target=target, role="worker", purpose="delegated-worker", lifecycle_owner=self.actor,
                 execution_mode="fresh_bounded_worker", requested_model=model,
-                requested_reasoning=reasoning, context_refs=(guide_ref, mandate_ref),
+                requested_reasoning=reasoning, context_refs=(guide_ref, mandate_ref, *pins),
                 result_owner=self.actor, timeout_seconds=timeout_seconds)
             prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
                 assignments=self.assignments, binding=self.binding, due=due,

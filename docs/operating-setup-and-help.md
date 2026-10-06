@@ -7,8 +7,12 @@ second context store.
 
 ## Setup and activation
 
-Use the installed client or `python -m otto.portfolio.cli --help` to find the
-bound command surface. `operating-setup read` is a read-only view. `prepare`
+Use the exact `tool_entrypoint` in your delivered role introduction to find the
+bound command surface. Its `tool_entrypoint_source` identifies the adopted role
+configuration. Invoke that command as emitted, including its interpreter and
+absolute installed path; do not substitute a repository wrapper or an
+uninstalled Python module. The host records this command in the selected role
+configuration before role preparation. `operating-setup read` is a read-only view. `prepare`
 validates the existing role schedules, BASE/resource revisions, conversations,
 execution contracts, advisor policy, help route and acceptance scope without a
 provider call. `activate` uses the adopted setup only after the same readiness

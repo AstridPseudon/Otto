@@ -25,3 +25,8 @@ destination is unresolved, and a host-only action remains host custody. Read a
 retained delivery receipt before retrying an unknown send. After a response is
 actually applied, use the existing same-manager continuation and record the
 next action; do not create a new request merely to continue.
+
+For command discovery, invoke the exact `tool_entrypoint` emitted by the
+current introduction and inspect its adopted configuration provenance. Use
+that bound client for help and setup reads; do not replace it with a repository
+wrapper or guess a Python module installation.
