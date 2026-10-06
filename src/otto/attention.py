@@ -1024,12 +1024,45 @@ class _DueRecordOwnerEngine:
             current = None if ref is None else self._writer.get_identity(ref)
             if evidence.get("gateway_attempt") is not None and current is not None and current.payload.get("resource_adoptions") and adoption is None:
                 raise StateConflictError("instruction adoption requires DueRecord reconciliation before claim")
+            if adoption is not None and self._stale_manager_stop_only(schedule_id, record, current, ref):
+                return self._save_due(schedule_id, record, request_id=request_id, expected_version=expected_version)
             if adoption is not None:
                 if current is None or current.ref != ref or current.payload.get("generation") != record.get("generation"):
                     raise StateConflictError("assignment changed before owner CAS")
                 if adoption.get("assignment_ref") != ref.to_dict() or adoption.get("generation") != record.get("generation") or adoption.get("digest") != current.payload.get("resource_adoption_digest") or adoption.get("revision") != current.payload.get("resource_adoption_revision"):
                     raise StateConflictError("instruction adoption changed before owner CAS")
             return self._save_due(schedule_id, record, request_id=request_id, expected_version=expected_version)
+
+    def _stale_manager_stop_only(self, schedule_id: str, desired: Mapping[str, JSONValue],
+                                 assignment: Any, old_ref: Any) -> bool:
+        """Stop old custody after one same-generation instruction adoption.
+
+        This grants no recovery or replay. Every old execution/evidence field
+        stays byte-equivalent in the owner value; only the lifecycle owner may
+        stop it. Current assignment and exact Due CAS share this transaction.
+        """
+        if assignment is None or old_ref is None or assignment.ref == old_ref:
+            return False
+        before = self.read_due(schedule_id)
+        if before is None or before.get("stop_state") != "active":
+            return False
+        wanted = dict(before, stop_state="stopped")
+        if _json_copy(desired, "record") != wanted:
+            return False
+        payload = assignment.payload
+        scope = payload.get("scope") or {}
+        target = before.get("target") or {}
+        return (before.get("role") == "manager" and payload.get("role") == "manager"
+                and payload.get("resource_adoption_base_ref") == old_ref.to_dict()
+                and payload.get("generation") == before.get("generation")
+                and payload.get("principal") == before.get("recipient")
+                and target.get("principal") == before.get("recipient")
+                and scope.get("authority") == self._writer.authority
+                and scope.get("kind") == "work.project" and scope.get("id") == before.get("project_ref")
+                and before.get("lifecycle_owner") == self._actor.actor
+                and before.get("owner") == self._actor.actor
+                and before.get("assignment_ref") == old_ref.to_dict()
+                and target.get("assignment_ref") == old_ref.to_dict())
 
     def _save_due(
         self,
