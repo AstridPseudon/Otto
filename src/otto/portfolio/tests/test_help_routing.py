@@ -12,12 +12,12 @@ import threading
 import time
 import unittest
 
-from herzchen.contracts import ResourceRef
+from herzchen.contracts import AuthenticatedActor, ResourceRef
 from herzchen.domains.work import WorkGraph
 from otto.portfolio.execution_host import ExecutionHost, _nested_capability
 from otto.portfolio.help_delivery import BoundHelpDelivery, ExecutionHelpDelivery
 from otto.portfolio.issue_loop import IssueLoopError
-from otto.portfolio.manager_journey_service import ManagerJourneyService
+from otto.portfolio.manager_journey_service import ManagerJourneyService, install_manager_journey_service
 from otto.portfolio.owner_issue_loop import OwnerIssueReaders
 from tests import test_execution_application as owner_fixture
 
@@ -56,10 +56,24 @@ class HelpRoutingTests(unittest.TestCase):
         self.server = SimpleNamespace(owner=f.owner, portfolio=self.portfolio, state=self.state, due_port=f.port,
             _execution=lambda **_: f.app, _save_state=lambda: None, handle=lambda r: {"outcome": "unsupported"})
         self.directory = Path(f.temporary.name) / "help-ipc"
-        self.host = ExecutionHost(directory=self.directory, handler=lambda r: self.service(r))
-        self.service = ManagerJourneyService(server=self.server, host=self.host,
-            run_path=f.temporary.name, workspace=f.temporary.name, orchestrator_principal="root",
-            help_reply_authorizer=lambda _: f.binding.authenticated_actor("root"))
+        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle)
+        self.server.execution_host = self.host
+        self.service = self.install_service(lambda _: f.binding.authenticated_actor("root"))
+
+    def install_service(self, authorizer=None):
+        service = install_manager_journey_service(self.server,
+            run_path=self.f.temporary.name, workspace=self.f.temporary.name,
+            orchestrator_principal="root", help_reply_authorizer=authorizer)
+        self.assertIsInstance(service, ManagerJourneyService)
+        self.assertIs(self.server.execution_host, self.host)
+        self.assertIs(service.host, self.host)
+        self.assertIs(self.host.handler, service)
+        return service
+
+    def effects(self):
+        return (self.readers.reports(self.f.project.ref.to_dict()),
+                self.f.port.list_due(), self.f.provider.calls[:],
+                sorted(path.name for path in self.directory.glob("request-*.json")))
 
     def request(self, **updates):
         return {"command": "request-help", "request_key": "help-request", "issue_key": "dispatch-blocked",
@@ -318,6 +332,80 @@ class HelpRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(PermissionError, "authenticated recipient reply port"):
             self.service(self.reply(requested["issue_id"]))
         self.assertEqual(self.service({"command": "read-help"})["issues"][0]["awaiting"], "orchestrator")
+
+    def test_installer_without_reply_port_rejects_file_ipc_response_before_effects(self):
+        self.service = self.install_service()
+        self.host.start()
+        self.addCleanup(self.host.close)
+        requested = self.wait_response(self.send("d1", self.request()))
+        before = self.effects()[:3]
+        result = self.wait_response(self.send("d2", self.reply(requested["issue_id"])))
+        self.assertEqual(result["outcome"], "error", result)
+        self.assertIn("authenticated recipient reply port", result["message"])
+        self.assertEqual(self.effects()[:3], before)
+        self.assertFalse(any(json.loads(path.read_text()).get("command") == "manager-help-result"
+                             for path in self.directory.glob("request-*.json")))
+
+    def test_installed_reply_rejects_foreign_authentication_and_wrong_actor_without_effects(self):
+        requested = self.service(self.request())
+        binding = self.f.binding
+        for responder, error, message in (
+                ({"actor": "root"}, PermissionError, "owner-issued recipient authentication"),
+                (AuthenticatedActor("foreign", "root", binding.credential_ref), PermissionError,
+                 "owner-issued recipient authentication"),
+                (AuthenticatedActor(binding.authority, "root", "foreign-credential"), PermissionError,
+                 "owner-issued recipient authentication"),
+                (binding.authenticated_actor("manager"), IssueLoopError, "current issue recipient")):
+            with self.subTest(responder=responder):
+                self.service = self.install_service(lambda _, responder=responder: responder)
+                before = self.effects()
+                with self.assertRaisesRegex(error, message):
+                    self.service(self.reply(requested["issue_id"]))
+                self.assertEqual(self.effects(), before)
+
+    def test_installed_reply_rejects_identity_overrides_before_authentication(self):
+        requested = self.service(self.request())
+        authenticated = []
+        self.service = self.install_service(lambda request: authenticated.append(request)
+                                            or self.f.binding.authenticated_actor("root"))
+        for override in ({"actor": "root"}, {"recipient": "root"},
+                         {"project_ref": self.f.project.ref.to_dict()}):
+            with self.subTest(override=override):
+                before = self.effects()
+                with self.assertRaisesRegex(ValueError, "cannot choose its own actor or recipient"):
+                    self.service(self.reply(requested["issue_id"], **override))
+                self.assertEqual(self.effects(), before)
+        self.assertEqual(authenticated, [])
+
+    def test_installed_reply_rejects_same_principal_stale_supervisor_generation(self):
+        requested = self.service(self.request())
+        self.f.app.assignments.reassign(self.supervisor.ref, principal="root", session="root-session",
+            expected_generation=1, logical_request_key="same-principal-supervisor", actor=self.f.actor)
+        before = self.effects()
+        with self.assertRaisesRegex(IssueLoopError, "stale"):
+            self.service(self.reply(requested["issue_id"]))
+        self.assertEqual(self.effects(), before)
+
+    def test_installed_reply_rejects_stale_manager_before_authentication_or_effects(self):
+        requested = self.service(self.request())
+        authenticated = []
+        self.service = self.install_service(lambda request: authenticated.append(request)
+                                            or self.f.binding.authenticated_actor("root"))
+        self.f.app.assignments.reassign(self.manager.ref, principal="manager", session="manager-session",
+            expected_generation=1, logical_request_key="same-principal-manager", actor=self.f.actor)
+        before = self.effects()
+        with self.assertRaisesRegex(PermissionError, "current bound manager"):
+            self.service(self.reply(requested["issue_id"]))
+        self.assertEqual(self.effects(), before)
+        self.assertEqual(authenticated, [])
+
+    def test_installed_reply_rejects_missing_recipient_without_effects(self):
+        requested = self.service(self.request())
+        self.loop.ports = replace(self.loop.ports, current_supervisor=lambda _: None)
+        before = self.effects()
+        with self.assertRaisesRegex(IssueLoopError, "current issue recipient"):
+            self.service(self.reply(requested["issue_id"]))
+        self.assertEqual(self.effects(), before)
 
     def test_duplicate_issue_with_another_request_key_reports_original_delivery(self):
         calls = []

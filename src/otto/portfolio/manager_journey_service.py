@@ -373,6 +373,12 @@ class ManagerJourneyService:
             operation = portfolio.request_advice if command == "request-advice" else portfolio.request_help
             result = operation(**manager, **{field: request[field] for field in fields}, request_id=key)
             issue = next(i for i in loop.read_issues(**common)["issues"] if i["issue_id"] == result["issue_id"])
+            # Opening or replaying a help request is not a response to consume.
+            # The manager continuation is retained only after the authenticated
+            # recipient has returned a response, or after the manager has
+            # recorded its application through resolve-help. In particular, a
+            # missing recipient must remain an unresolved routed issue rather
+            # than becoming a malformed callback attempt.
             return {**result, "purpose": issue["purpose"], "resolution": issue["state"],
                     "recipient_assignment_ref": issue["current_owner_ref"], "independent_work": "continue"}
         if command == "respond-help":
@@ -513,17 +519,24 @@ class ManagerJourneyService:
 
 def install_manager_journey_service(server: Any, *, run_path: str | Path, workspace: str | Path,
                                     policy: Any = None, orchestrator_principal: str | None = None,
-                                    observe_schedules: Any = None) -> ManagerJourneyService:
+                                    observe_schedules: Any = None,
+                                    help_reply_authorizer: Any = None) -> ManagerJourneyService:
     """Owner adoption hook, called once after the existing server.start().
 
     The owner installs a tested source snapshot, adds this handler composition,
     and adds the matching client parsers. No live controller or canonical state
     is edited by a worker. Closeout capabilities must be deliberately supplied
     by that owner; missing capabilities return a precise held result.
+
+    help_reply_authorizer is an optional host-owned authentication port. It
+    must authenticate the recipient's current project, assignment, generation
+    and conversation independently of request fields. Omitting it disables
+    respond-help. IssueLoop also checks the actor against the current recipient
+    before recording the response or routing a continuation.
     """
     host = server.execution_host
     service = ManagerJourneyService(server=server, host=host, run_path=run_path,
         workspace=workspace, policy=policy, orchestrator_principal=orchestrator_principal,
-        observe_schedules=observe_schedules)
+        observe_schedules=observe_schedules, help_reply_authorizer=help_reply_authorizer)
     host.handler = service
     return service
