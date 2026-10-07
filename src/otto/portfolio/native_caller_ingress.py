@@ -158,6 +158,12 @@ def managed_caller_binding(server: Any, authorization: dict[str, Any]) -> Any:
     from .execution_operations import manager_continuation_schedule_id
     schedules.add(manager_continuation_schedule_id(authorization["assignment_ref"],
         authorization["logical_request_key"]))
+    # The automatic result callback can be authorized before its host locator
+    # is updated, just like an explicit report callback. Its canonical key
+    # derives one exact Due; captured authorization must still match below.
+    if authorization["logical_request_key"].startswith("worker-result:"):
+        from .execution_operations import manager_worker_result_schedule_id
+        schedules.add(manager_worker_result_schedule_id(authorization["logical_request_key"]))
     schedules.update(value.get("schedule_id") for value in state.get("workers", {}).values())
     matches = []
     for schedule in sorted(value for value in schedules if isinstance(value, str)):

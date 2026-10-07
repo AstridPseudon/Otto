@@ -17,7 +17,7 @@ from herzchen.content.instructions import validate_instruction_content
 from otto.attention import DueRecord
 from .execution_operations import (
     OccurrencePreparationError, build_manager_callback_due,
-    derive_manager_continuation_request, manager_continuation_schedule_id, prepare_current_assignment_occurrence,
+    derive_manager_continuation_request, manager_continuation_schedule_id, manager_worker_result_schedule_id, prepare_current_assignment_occurrence,
     validate_owner_timeout_seconds,
 )
 from .owner_readers import json_value, owner_ref, project_reader, task_reader
@@ -962,7 +962,7 @@ class ExecutionApplication:
                     "physical_session_id": result.get("physical_session_id"),
                     "acceptance": "unjudged worker result; task/project gates remain required"}
         key = "worker-result:" + _digest([current.ref.id, current.generation, evidence])
-        schedule = "manager-worker-callback-" + _digest(key)[:28]
+        schedule = manager_worker_result_schedule_id(key)
         if (prior.completion_state == "unknown"
                 or (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
                 or prior.stop_state == "completed" and prior.completion_state != "succeeded"):

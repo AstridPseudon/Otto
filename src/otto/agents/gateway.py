@@ -1605,7 +1605,7 @@ class OttoGateway:
         if (owner_bound and key and callable(turn_setter) and callable(admission_recorder)
                 and (responsibility.operation in {"resume", "send"}
                      or (responsibility.operation == "invoke"
-                         and getattr(self.attempt_capture, "role", None) == "manager"))):
+                         and getattr(self.attempt_capture, "role", None) in {"manager", "worker"}))):
             prior_turn_callback = turn_setter(None)
 
             def on_turn_started(observed_turn_id: str, observed_at: str) -> None:

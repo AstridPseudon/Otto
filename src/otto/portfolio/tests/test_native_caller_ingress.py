@@ -119,6 +119,29 @@ class NativeCallerIngressTests(unittest.TestCase):
         self.assertEqual(binding.schedule_id, continued["schedule_id"])
         self.assertEqual(self.c.f.app.caller_context(binding)["principal"], "manager")
 
+    def test_worker_result_callback_binding_precedes_locator_refresh_without_inventory(self):
+        from types import SimpleNamespace
+        from otto.portfolio.native_caller_ingress import managed_caller_binding
+        from otto.portfolio.execution_operations import manager_worker_result_schedule_id
+        from unittest.mock import patch
+        manager = self.bindings["manager"]
+        worker = self.c.f.app.assign_and_start(**self.c.f.request())
+        self.assertEqual(worker["outcome"], "succeeded", worker)
+        continued = self.c.f.app.continue_manager_from_worker(
+            manager_schedule_id=manager.schedule_id, worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(continued["outcome"], "succeeded", continued)
+        due = self.c.f.port.read_due(continued["schedule_id"])
+        authorization = due["host_evidence"]["gateway_attempt"]["delivery_authorization"]
+        self.assertEqual(manager_worker_result_schedule_id(authorization["logical_request_key"]), due["schedule_id"])
+        server = SimpleNamespace(state={"schedule_id": manager.schedule_id, "workers": {}},
+            due_port=self.c.f.port, binding=self.c.f.binding)
+        with patch.object(type(self.c.f.port), "list_due", side_effect=AssertionError("global inventory")):
+            binding = managed_caller_binding(server, authorization)
+            self.assertEqual(binding.schedule_id, due["schedule_id"])
+            with self.assertRaisesRegex(PermissionError, "unique exact managed"):
+                managed_caller_binding(server, dict(authorization, generation=2))
+        self.assertEqual(self.c.f.app.caller_context(binding)["principal"], "manager")
+
     def test_distinct_callback_pins_current_adapter_without_rewriting_legacy_anchor(self):
         from otto.portfolio.execution_operations import build_manager_callback_due
         prior = self.c.f.app._read(self.bindings["manager"].schedule_id)

@@ -196,6 +196,14 @@ def manager_continuation_schedule_id(assignment_ref: Mapping[str, Any], report_k
     return "manager-callback-" + hashlib.sha256(value).hexdigest()[:28]
 
 
+def manager_worker_result_schedule_id(request_key: str) -> str:
+    """Exact worker-result callback identity, before host locator refresh."""
+    if not isinstance(request_key, str) or not request_key.startswith("worker-result:"):
+        raise ValueError("worker-result request key required")
+    value = json.dumps(request_key, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return "manager-worker-callback-" + hashlib.sha256(value).hexdigest()[:28]
+
+
 def _manager_report_context(report: Mapping[str, Any], value: Mapping[str, Any]) -> dict[str, Any] | None:
     """Carry bounded evidence from the exact durable report, without granting acceptance.
 

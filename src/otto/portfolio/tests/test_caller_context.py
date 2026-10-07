@@ -151,7 +151,10 @@ class CallerContextTests(unittest.TestCase):
         self.assertEqual(self.effects, [])
 
     def test_worker_context_uses_retained_native_readback_without_an_admission_field(self):
-        result = self.f.app.assign_and_start(**self.f.request())
+        # Legacy retained workers may lack the newly captured live admission.
+        from otto.agents.herzchen_adapter import HerzchenCodexAdapter
+        with patch.object(HerzchenCodexAdapter, "set_turn_started_callback", lambda self, callback: None):
+            result = self.f.app.assign_and_start(**self.f.request())
         self.assertEqual(result["outcome"], "succeeded", result)
         assignment = self.f.app.assignments.get(ResourceRef.from_dict(result["assignment_ref"]))
         due = self.f.app._read(result["schedule_id"])
