@@ -923,6 +923,11 @@ def build_manager_callback_due(
         "assignment_ref": dict(assignment_ref),
         "mandate_ref": dict(mandate_ref),
         "native_id": session,
+        # The prepared callback has no native admission of its own. Retain
+        # the exact settled owner occurrence that authenticated this session.
+        "native_binding": {"schedule_id": prior.schedule_id,
+            "due_sha256": hashlib.sha256(json.dumps(prior.to_dict(), sort_keys=True,
+                separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()},
     })
     return replace(
         prior,

@@ -372,6 +372,26 @@ class ExecutionApplication:
             return
         if schedule_id is not None:
             value = self._read(schedule_id).to_dict()
+            pin = value["target"].get("native_binding")
+            if (value.get("host_evidence") or {}).get("gateway_attempt") is None and pin is not None:
+                if (not isinstance(pin, Mapping) or set(pin) != {"schedule_id", "due_sha256"}
+                        or pin["schedule_id"] == schedule_id):
+                    raise OccurrencePreparationError("prepared native binding requires one exact settled anchor")
+                proof = self._read(pin["schedule_id"]).to_dict()
+                # One hop terminates in actual settled admission, never another
+                # unattempted callback. A native ID or a chain alone is no proof.
+                prior_ref, proof_ref = value.get("assignment_ref") or {}, proof.get("assignment_ref") or {}
+                if (pin["due_sha256"] != _digest(proof)
+                        or not (proof.get("host_evidence") or {}).get("gateway_attempt")
+                        or proof.get("stop_state") != "completed" or proof.get("completion_state") != "succeeded"
+                        or proof.get("in_flight_request") is not None
+                        or any(prior_ref.get(k) != proof_ref.get(k) for k in ("authority", "kind", "id"))
+                        or (proof_ref != prior_ref and assignment.payload.get("resource_adoption_base_ref") != proof_ref)
+                        or any(value.get(k) != proof.get(k) for k in ("generation", "role", "recipient", "manager_ref", "lifecycle_owner"))
+                        or _identity(value["target"]["project_ref"]) != _identity(proof["target"]["project_ref"])
+                        or value["target"].get("native_id") != session or proof["target"].get("native_id") != session):
+                    raise OccurrencePreparationError("prepared native binding differs from its settled owner anchor")
+                value = proof
             attempt = (value.get("host_evidence") or {}).get("gateway_attempt") or {}
             authorization = attempt.get("delivery_authorization") or {}
             admission = attempt.get("delivery_admission") or {}
@@ -759,7 +779,7 @@ class ExecutionApplication:
         """Invoke a prepared occurrence or recover its existing effect/result."""
         due = self._read(schedule_id)
         attempt = (due.host_evidence or {}).get("gateway_attempt")
-        if attempt is not None or due.stop_state != "active":
+        if attempt is not None or due.stop_state != "active" or due.host_state == "paused":
             return self.recover(schedule_id=schedule_id, execute=False)
         try:
             due = self._resources(due)
@@ -796,11 +816,23 @@ class ExecutionApplication:
         result = attempt.get("result") if isinstance(attempt, Mapping) else None
         handle = {"schedule_id": schedule_id, "assignment_ref": due.assignment_ref,
                   "generation": due.generation, "due_version": due.version}
+        if due.stop_state == "stopped":
+            # A stop is terminal for this occurrence, including after legitimate
+            # resource adoption. Reading its historical pins is not admission or
+            # settlement under a newer assignment. Keep even a null result held.
+            return {**handle, "outcome": "stopped", "result": result,
+                    "in_flight_request": due.in_flight_request,
+                    "reconciliation_required": attempt is not None and not isinstance(result, Mapping),
+                    "provider_called": False, "retry": False,
+                    "next_action": "inspect retained evidence; a stopped occurrence cannot resume"}
         if due.stop_state == "completed":
             self._current(due.assignment_ref, due.generation)
             return {**handle, "outcome": "replayed", "completion_state": due.completion_state,
                     "result": result or due.last_result, "next_action": "inspect result and accept or correct the task"}
         if attempt is None:
+            if due.host_state == "paused":
+                return {**handle, "outcome": "paused", "provider_called": False, "retry": False,
+                        "next_action": "reconcile the exact paused host trigger before resuming"}
             due = self._resources(due)
             if execute:
                 return self.start(schedule_id=schedule_id)

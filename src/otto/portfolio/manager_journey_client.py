@@ -272,6 +272,12 @@ def add_help_parsers(commands: Any) -> list[Any]:
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
     add_help_parsers(commands)
+    control = commands.add_parser("execution-control", help="drain host admission or inspect, stop and recover an exact owned occurrence",
+        description="Drain retains admitted children and transport handles; the host closes after they settle. Stop permanently fences one occurrence. Resume reconciles its retained effect first and never repeats a provider call. A paused trigger requires exact host reconciliation; process restart and installation remain host actions.")
+    control.add_argument("--operation", choices=("read", "recover", "stop", "resume", "drain"), default="read")
+    control.add_argument("--schedule-id", help="current manager or retained worker schedule; cannot select another project's occurrence")
+    control.add_argument("--request-key", help="required for stop")
+    control.add_argument("--expected-version", type=int, help="exact Due version required for stop")
     author = commands.add_parser("project-authoring", help="create an inert pending sibling, open or check in project.json through the live owner",
         description="Requires installed host owner authentication. project.json is a semantic projection; generated session and revision bases remain in EDT. A conflict preserves local edits; activation is separate.")
     author.add_argument("--operation", choices=("create", "open", "check-in", "read", "import-folder", "export-folder", "release"), default="read")

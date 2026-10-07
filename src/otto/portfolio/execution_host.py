@@ -14,6 +14,10 @@ import queue
 from pathlib import Path
 import socket
 import threading
+import math
+import subprocess
+import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from .owner_readers import json_value
@@ -43,7 +47,19 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
                                  "request-help", "request-advice", "read-help", "respond-help", "resolve-help",
                                  "start-retained-help",
                                  "project-lifecycle-read", "commit",
-                                 "advisor-decision-state"})
+                                 "advisor-decision-state", "execution-control"})
+
+
+def _starts_work(request: Mapping[str, Any]) -> bool:
+    # Some nested commands can settle evidence AND admit a new effect. Keep
+    # their original file handle while draining; read-only worker-status and
+    # finite child bookkeeping continue through the same custodian.
+    return (request.get("command") in {"start-manager", "run-worker",
+                "start-retained-worker", "start-retained-help", "manager-worker-result",
+                "manager-task-settlement", "manager-help-result", "request-help", "request-advice"}
+            or request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
+            or request.get("command") == "operating-setup" and request.get("operation") == "activate"
+            or request.get("command") == "execution-control" and request.get("operation") == "resume")
 
 
 def _nested_capability(request: Mapping[str, Any]) -> str:
@@ -59,6 +75,8 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
             and not set(request) - {"command", "operation", "setup", "request_key"}
             and request.get("setup") is None and request.get("request_key") is None):
         return "admitted"
+    if request.get("command") == "execution-control" and request.get("operation") == "resume":
+        return "retained"
     if request.get("command") in _REENTRANT_COMMANDS:
         return "admitted"
     if (request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
@@ -175,11 +193,15 @@ class ExecutionHost:
             if request.get("command") == "status":
                 return self._status_read(request)
             with self._command_lock:
+                if self._closing and _starts_work(request):
+                    return {"outcome": "held", "reason": "owner host is draining",
+                            "provider_called": False, "effects_started": False, "retry": False}
                 if self._closing and request.get("command") not in _REENTRANT_COMMANDS:
                     return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
                 previous = getattr(_DISPATCH_CONTEXT, "value", None)
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
                     (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
+                    or (request.get("command") == "execution-control" and request.get("operation") == "resume")
                     or request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result"})
                 try:
                     return self.handler(request)
@@ -257,7 +279,7 @@ class ExecutionHost:
                     acquired = self._command_lock.acquire(blocking=False)
                     if not acquired:
                         continue
-                    if self._closing and _nested_capability(request) == "retained":
+                    if self._closing and _starts_work(request):
                         continue
                 with self._lock:
                     if token in self._active_files:
@@ -466,9 +488,12 @@ class ExecutionHost:
             return {**receipt, "replayed": True}
         raw = response.read_bytes()
         held = json.loads(raw)
-        if (hashlib.sha256(raw).hexdigest() != expected_response_sha256
-                or held != {"outcome": "held", "provider_called": False, "effects_started": False,
-                    "retry": False, "reason": "reconcile the retained manager effect before worker-result continuation"}):
+        pre_effect = (held == {"outcome": "held", "provider_called": False, "effects_started": False,
+                    "retry": False, "reason": "reconcile the retained manager effect before worker-result continuation"}
+            or held == {"outcome": "error", "error": "OccurrencePreparationError",
+                "message": "native session has no current owner assignment binding",
+                "next_action": "inspect the exact canonical request before retry"})
+        if hashlib.sha256(raw).hexdigest() != expected_response_sha256 or not pre_effect:
             raise ValueError("notification is not the exact proven pre-effect held result")
         if history.exists():
             if history.read_bytes() != raw:
@@ -508,8 +533,7 @@ class ExecutionHost:
 
     def close(self) -> None:
         """Keep commands/status available while retained children settle."""
-        with self._lock:
-            self._closing = True
+        self.begin_drain()
         while True:
             with self._lock:
                 children = tuple(self._children)
@@ -535,6 +559,146 @@ class ExecutionHost:
             if value.get("pid") == os.getpid():
                 self.owner_path.unlink()
                 self._owns_owner_file = False
+
+    def begin_drain(self) -> Mapping[str, Any]:
+        """Stop admission without joining the command that requests the drain.
+
+        The owning service calls close after its loop observes draining. This
+        leaves admitted work and status on their original serialized lane.
+        """
+        with self._lock:
+            self._closing = True
+        return {"outcome": "draining", "provider_called": False, "retry": False}
+
+    @property
+    def draining(self) -> bool:
+        return self._closing
+
+    def wait_until_stopped(self, stop_requested: Callable[[], bool], *, poll_seconds: float = 0.2) -> None:
+        """Existing service-loop seam for an explicit marker or command drain.
+
+        The owner then closes this host and its Store in its normal finally
+        block. No marker is removed, no occurrence is reactivated, and no new
+        service is launched here.
+        """
+        if isinstance(poll_seconds, bool) or not isinstance(poll_seconds, (int, float)) or not math.isfinite(poll_seconds) or poll_seconds <= 0:
+            raise ValueError("poll_seconds must be finite positive seconds")
+        while not self.draining and not stop_requested():
+            self._commands_stop.wait(poll_seconds)
+        self.begin_drain()
+
+    @staticmethod
+    def supervise(*, argv: list[str], receipt_path: str | Path,
+                  source_identity: Mapping[str, Any], reconcile: Callable[[Any], Mapping[str, Any]],
+                  disposition: Callable[[], str], request_stop: Callable[[Any], None],
+                  max_restarts: int = 2, restart_delay: float = 0.25,
+                  max_restart_delay: float = 5.0,
+                  process_factory: Callable[..., Any] = subprocess.Popen) -> Mapping[str, Any]:
+        """Bounded recovery of this owner service process, never its provider.
+
+        Trusted host composition supplies current source/runtime identity,
+        exact-effect reconciliation and graceful stop transport. Reconciliation
+        must explicitly return ready before EVERY spawn. Pending/unknown effects
+        hold; process exits do not prove absence of a provider effect. Stop and
+        pause are checked before admission, during service life and backoff.
+        Each exit is an immutable receipt; reusing its path cannot reset limits.
+        """
+        if not argv or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in argv):
+            raise ValueError("argv must contain an explicit installed command")
+        if isinstance(max_restarts, bool) or not isinstance(max_restarts, int) or max_restarts < 0:
+            raise ValueError("max_restarts must be a nonnegative integer")
+        for delay in (restart_delay, max_restart_delay):
+            if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or delay <= 0:
+                raise ValueError("restart delays must be finite positive seconds")
+        if max_restart_delay < restart_delay:
+            raise ValueError("max_restart_delay must bound restart_delay")
+        identity = json_value(source_identity)
+        if not isinstance(identity, dict) or not identity:
+            raise ValueError("source/runtime identity is required")
+        path = Path(receipt_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Reserve this supervision identity before any launch; even an unknown
+        # launch/wait cannot be retried using the same path and fresh counters.
+        with path.open("x") as stream:
+            json.dump({"schema": "otto.owner-host-supervision.v1", "argv": argv,
+                       "source_identity": identity, "max_restarts": max_restarts,
+                       "restart_delay": restart_delay, "max_restart_delay": max_restart_delay}, stream)
+            stream.flush(); os.fsync(stream.fileno())
+        exits = []
+        delay = restart_delay
+
+        def save_exit(receipt: Mapping[str, Any]) -> None:
+            target = path.with_name(path.name + f".exit-{receipt['index']}.json")
+            # Immutable observation, not a replaceable status locator.
+            with target.open("x") as stream:
+                json.dump(receipt, stream, sort_keys=True)
+                stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
+            exits.append(receipt)
+
+        def state() -> str:
+            value = disposition()
+            if value not in {"active", "stopped", "paused"}:
+                raise ValueError("host disposition must be active, stopped or paused")
+            return value
+
+        def outcome(value: str, **fields: Any) -> Mapping[str, Any]:
+            return {"outcome": value, "exit_receipts": exits, "supervision_path": str(path),
+                    "provider_replayed": False, **fields}
+
+        for index in range(max_restarts + 1):
+            current = state()
+            if current != "active":
+                return outcome(current)
+            decision = json_value(reconcile(exits[-1] if exits else None))
+            if not isinstance(decision, Mapping) or decision.get("ready") is not True:
+                return outcome("held", reconciliation=decision)
+            current = state()
+            if current != "active":
+                return outcome(current)
+            started_at = datetime.now(timezone.utc).isoformat()
+            started = time.monotonic()
+            try:
+                process = process_factory(argv, stdin=subprocess.DEVNULL)
+                stopped = False
+                while True:
+                    current = state()
+                    if current != "active" and not stopped:
+                        request_stop(process)  # Supported drain, never kill.
+                        stopped = True
+                    try:
+                        code = process.wait(timeout=0.05)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except Exception as exc:
+                receipt = {"schema": "otto.owner-host-exit.v1", "index": index,
+                    "started_at": started_at, "ended_at": datetime.now(timezone.utc).isoformat(),
+                    "duration_seconds": time.monotonic() - started, "exit_status": None,
+                    "source_identity": identity, "reconciliation": decision,
+                    "error": {"code": type(exc).__name__, "message": str(exc)}}
+                save_exit(receipt)
+                return outcome("unknown", retry=False)
+            receipt = {"schema": "otto.owner-host-exit.v1", "index": index,
+                "pid": process.pid, "started_at": started_at,
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": time.monotonic() - started, "exit_status": code,
+                "source_identity": identity, "reconciliation": decision}
+            save_exit(receipt)
+            current = state()
+            if current != "active":
+                return outcome(current)
+            if code == 0:
+                return outcome("closed")
+            if index == max_restarts:
+                return outcome("restart_exhausted", retry=False)
+            deadline = time.monotonic() + delay
+            while time.monotonic() < deadline:
+                current = state()
+                if current != "active":
+                    return outcome(current)
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+            delay = min(delay * 2, max_restart_delay)
+        raise AssertionError("bounded host loop did not return")
 
     def __enter__(self) -> "ExecutionHost":
         self.start()

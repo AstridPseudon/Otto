@@ -313,6 +313,8 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "execution-control":
+            return self._execution_control(request)
         if command == "project-authoring":
             return self._project_authoring(request)
         if command == "status":
@@ -521,6 +523,58 @@ class ManagerJourneyService:
                     result = {**result, "manager_result_notification": retained}
             return result
         return self.server.handle(request)
+
+    def _execution_control(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Use current service bindings and existing Due/host recovery ports."""
+        self.commands._authorize()
+        if set(request) - {"command", "operation", "schedule_id", "request_key", "expected_version"}:
+            raise ValueError("execution control cannot change the bound owner or assignment")
+        operation = request.get("operation", "read")
+        if operation not in {"read", "recover", "stop", "resume", "drain"}:
+            raise ValueError("unsupported execution control operation")
+        if operation == "drain":
+            if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
+                raise ValueError("drain takes no occurrence fields")
+            return self.host.begin_drain()
+        state = self.server.state
+        schedule = request.get("schedule_id")
+        allowed = {state["schedule_id"], (state.get("manager_continuation") or {}).get("schedule_id")}
+        allowed.update(w.get("schedule_id") for w in (state.get("workers") or {}).values())
+        if not isinstance(schedule, str) or not schedule or schedule not in allowed:
+            raise PermissionError("execution control requires a current retained occurrence")
+        raw = self.server.due_port.read_due(schedule)
+        project_id = state["project_ref"]["id"]
+        project = raw.get("project_ref") if isinstance(raw, Mapping) else None
+        if (project.get("id") if isinstance(project, Mapping) else project) != project_id:
+            raise PermissionError("occurrence belongs to another project")
+        app = self._execution(principal=raw["recipient"], model=raw["requested_model"],
+            reasoning=raw["requested_reasoning"], evidence_id="execution-control-" + schedule)
+        due = app._read(schedule)  # Existing authenticated owner fence.
+        if operation == "stop":
+            from otto.attention import DurableAttention
+            version, key = request.get("expected_version"), request.get("request_key")
+            if (not isinstance(key, str) or not key.strip() or isinstance(version, bool)
+                    or not isinstance(version, int) or version < 1):
+                raise ValueError("stop requires request_key and exact expected_version")
+            return DurableAttention(None, due_port=self.server.due_port).stop(schedule,
+                request_id=key, expected_version=version, project_ref=due.project_ref,
+                manager_ref=due.manager_ref, generation=due.generation, lifecycle_owner=app.actor)
+        if request.get("request_key") is not None or request.get("expected_version") is not None:
+            raise ValueError("read/recover/resume take only the exact schedule")
+        if operation == "read":
+            from .execution_operations import compact_operation_status
+            return {"outcome": "read", **compact_operation_status(raw),
+                    "occurrence": {key: raw.get(key) for key in ("schedule_id", "version",
+                        "assignment_ref", "generation", "stop_state", "host_state",
+                        "completion_state", "in_flight_request")}, "provider_called": False}
+        reconciled = app.recover(schedule_id=schedule, execute=False)
+        if operation == "resume" and reconciled.get("outcome") == "prepared":
+            if due.role == "manager":
+                readiness = app.read_operating_setup(project_ref=state["project_ref"])
+                if not readiness.get("ready"):
+                    return {"outcome": "blocked", "readiness": readiness, "provider_called": False}
+            return app.start(schedule_id=schedule)
+        return reconciled
 
     def _project_authoring(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Finite sibling authoring on the existing owner lane; never dispatch."""

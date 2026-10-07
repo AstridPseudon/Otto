@@ -488,6 +488,9 @@ class Tests(unittest.TestCase):
             completion_state: str = "succeeded"
             completion_evidence: dict | None = None
             host_evidence: dict | None = None
+            def to_dict(self):
+                from dataclasses import asdict
+                return asdict(self)
         prior = ManagerDue(target={"native_id": "session"}, last_result={"physical_session_id": "session"})
         result = build_manager_callback_due(
             prior, schedule_id="next", request_key="callback-v1", assignment_ref=REF,

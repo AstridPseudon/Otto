@@ -42,6 +42,74 @@ class OperatingSetupTests(unittest.TestCase):
         return {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": schedule},
                 "advisor_policy": {"mode": "disabled", "reason": "Owner supervises this bounded run"}, "acceptance_tasks": []}
 
+    def test_pending_callback_keeps_settled_native_proof_for_worker_result(self):
+        from otto.attention import DueRecord
+        from otto.portfolio.execution import _digest
+        from otto.portfolio.execution_operations import prepare_current_assignment_occurrence
+        from herzchen.content.instructions import validate_instruction_content
+        f = self.f
+        manager, guide, mandate = f.role_handles("manager", "manager", None)
+        at = f.app.clock().isoformat()
+        target = {"host": "local", "native_id": "actual-manager-session", "role": "manager", "principal": "manager",
+            "project_ref": f.project.ref.to_dict(), "task_ref": f.task.ref.to_dict(),
+            "assignment_ref": manager.ref.to_dict(), "mandate_ref": mandate,
+            "requested_model": "gpt-test", "requested_reasoning": "high", "requested_profile": "workspace-write"}
+        # The owner bootstrap issues the initial exact native occurrence. Its
+        # proof below comes from an actual authorized provider fixture turn.
+        initial = DueRecord(schedule_id="owner-bootstrap-native", recipient="manager", instruction="Inspect project",
+            profile="workspace-write", anchor=at, due_at=at, last_covered_slot=0, invocation_identity="bootstrap-native",
+            in_flight_request="bootstrap-native", delivery_state="ready", owner="manager", project_ref=f.project.id,
+            manager_ref="manager", assignment_ref=manager.ref.to_dict(), generation=manager.generation,
+            target=target, role="manager", lifecycle_owner="manager", execution_mode="continue_existing",
+            requested_model="gpt-test", requested_reasoning="high", context_refs=(guide, mandate), result_owner="manager", timeout_seconds=1200)
+        prepare_current_assignment_occurrence(due_port=f.port, assignments=f.app.assignments,
+            binding=f.binding, due=initial, assignment_ref=manager.ref.to_dict(), assignment_owner="manager",
+            operation="resume", lifecycle="resume", request_key="owner-bootstrap-native")
+        started = f.app.start(schedule_id=initial.schedule_id)
+        self.assertEqual(started["outcome"], "succeeded", started)
+        anchor = f.port.read_due(initial.schedule_id)
+        self.assertIsNone(manager.session)
+        from otto.portfolio.execution_operations import build_manager_callback_due
+        callback = build_manager_callback_due(f.app._read(initial.schedule_id), schedule_id="pending-finish-callback",
+            request_key="pending-finish", assignment_ref=manager.ref.to_dict(), guide_ref=guide,
+            mandate_ref=mandate, due_at=at, timeout_seconds=1200)
+        prepare_current_assignment_occurrence(due_port=f.port, assignments=f.app.assignments,
+            binding=f.binding, due=callback, assignment_ref=manager.ref.to_dict(), assignment_owner="manager",
+            operation="resume", lifecycle="callback", request_key="pending-finish")
+        pending = f.port.read_due(callback.schedule_id)
+        self.assertIsNone((pending.get("host_evidence") or {}).get("gateway_attempt"))
+        self.assertEqual(pending["target"]["native_binding"], {"schedule_id": initial.schedule_id, "due_sha256": _digest(anchor)})
+        f.app._verify_native_binding(manager, "actual-manager-session", callback.schedule_id)
+        # A correct-looking session cannot authorize an inexact anchor, cycle,
+        # foreign epoch/principal, or a second unattempted proof hop.
+        original_read = f.app._read
+        from unittest.mock import patch
+        for pin in ({"schedule_id": initial.schedule_id, "due_sha256": "0" * 64},
+                    {"schedule_id": callback.schedule_id, "due_sha256": _digest(pending)}):
+            bad = replace(callback, target={**callback.target, "native_binding": pin})
+            with patch.object(f.app, "_read", side_effect=lambda schedule, bad=bad: bad if schedule == callback.schedule_id else original_read(schedule)):
+                with self.assertRaises(ValueError):
+                    f.app._verify_native_binding(manager, "actual-manager-session", callback.schedule_id)
+        for field, value in (("generation", 2), ("recipient", "foreign"), ("completion_state", "unknown")):
+            forged = replace(original_read(initial.schedule_id), **{field: value})
+            bad = replace(callback, target={**callback.target, "native_binding": {
+                "schedule_id": initial.schedule_id, "due_sha256": _digest(forged.to_dict())}})
+            with patch.object(f.app, "_read", side_effect=lambda schedule, bad=bad, forged=forged:
+                              bad if schedule == callback.schedule_id else forged if schedule == initial.schedule_id else original_read(schedule)):
+                with self.assertRaises(ValueError):
+                    f.app._verify_native_binding(manager, "actual-manager-session", callback.schedule_id)
+        worker = f.app.assign_and_start(**f.request())
+        self.assertEqual(worker["outcome"], "succeeded", worker)
+        delivered = f.app.continue_manager_from_worker(manager_schedule_id=callback.schedule_id,
+            worker_schedule_id=worker["schedule_id"], execute=True)
+        self.assertEqual(delivered["outcome"], "succeeded", delivered)
+        self.assertEqual(delivered["schedule_id"], callback.schedule_id)
+        count = len(f.provider.calls)
+        self.assertEqual(count, 3)
+        self.assertEqual(f.app.recover(schedule_id=callback.schedule_id, execute=True)["outcome"], "replayed")
+        self.assertEqual(len(f.provider.calls), count)
+        self.assertEqual(f.port.read_due(initial.schedule_id), anchor)
+
     def test_adopted_resource_continuation_retains_actual_native_binding_for_setup_and_admission(self):
         from otto.attention import DueRecord
         from otto.portfolio.execution import _digest

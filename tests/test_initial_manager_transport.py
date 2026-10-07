@@ -75,3 +75,24 @@ class InitialManagerTransportTests(unittest.TestCase):
             self.assertEqual(json.loads((root / ("request-" + token + ".json")).read_text()), request)
             self.assertTrue(host.rearm_pre_effect_worker_notification(request,
                 expected_response_sha256=hashlib.sha256(raw).hexdigest())["replayed"])
+
+    def test_exact_binding_preparation_error_rearms_observation_not_worker_execution(self):
+        request = {'command': 'manager-worker-result', 'task': 'D04', 'principal': 'worker', 'schedule_id': 'worker-d04'}
+        token = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            response = root / ('response-' + token + '.json')
+            host = ExecutionHost(directory=root, handler=lambda _: self.fail('rearm must not dispatch'))
+            base = {'outcome': 'error', 'error': 'OccurrencePreparationError',
+                'message': 'native session has no current owner assignment binding',
+                'next_action': 'inspect the exact canonical request before retry'}
+            for changed in ({**base, 'error': 'UnknownProviderError'}, {**base, 'outcome': 'unknown'}):
+                raw = json.dumps(changed).encode(); response.write_bytes(raw)
+                with self.assertRaises(ValueError):
+                    host.rearm_pre_effect_worker_notification(request, expected_response_sha256=hashlib.sha256(raw).hexdigest())
+                self.assertEqual(response.read_bytes(), raw)
+            raw = json.dumps(base).encode(); response.write_bytes(raw)
+            result = host.rearm_pre_effect_worker_notification(request, expected_response_sha256=hashlib.sha256(raw).hexdigest())
+            self.assertEqual(Path(result['source_response_path']).read_bytes(), raw)
+            self.assertEqual(json.loads((root / ('request-' + token + '.json')).read_text()), request)
+            self.assertFalse(result['provider_called'])
