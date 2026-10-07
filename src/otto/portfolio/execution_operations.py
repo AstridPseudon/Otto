@@ -13,7 +13,7 @@ import hashlib
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from herzchen.contracts import ResourceRef
 
@@ -288,14 +288,30 @@ def derive_manager_continuation_request(
     }
 
 
-def read_project_progress_reports(reader: Any, project_ref: Mapping[str, Any]) -> list[dict[str, Any]]:
+def read_project_progress_reports(reader: Any, project_ref: Mapping[str, Any], *,
+                                  assignment_refs: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Read immutable manager progress through the owner's public event reader."""
 
     if not all(callable(getattr(reader, name, None)) for name in ("list_events", "get_record")):
         raise OccurrencePreparationError("owner event reader is unavailable")
     reports: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for event in reader.list_events():
+    if assignment_refs is None:
+        events = ((event, None) for event in reader.list_events())
+    else:
+        # The owner supplies all assignments from the selected canonical
+        # ProjectSheet, including historical/project/task roles. Narrow the
+        # existing immutable event reader before it hydrates native history.
+        ids = []
+        for assignment in assignment_refs:
+            if (not isinstance(assignment, Mapping) or assignment.get("authority") != project_ref.get("authority")
+                    or assignment.get("kind") != "wrk.assignment" or not isinstance(assignment.get("id"), str)
+                    or not assignment["id"]):
+                raise OccurrencePreparationError("progress report streams require exact local assignment references")
+            if assignment["id"] not in ids:
+                ids.append(assignment["id"])
+        events = ((event, identity) for identity in sorted(ids) for event in reader.list_events(stream="report:" + identity))
+    for event, stream_assignment in events:
         subject = getattr(event, "subject", None)
         if getattr(subject, "kind", None) != "wrk.report" or subject.id in seen:
             continue
@@ -311,6 +327,10 @@ def read_project_progress_reports(reader: Any, project_ref: Mapping[str, Any]) -
         ref = getattr(record, "ref", None)
         assignment = payload.get("assignment")
         if not isinstance(assignment, Mapping) or not hasattr(ref, "to_dict"):
+            continue
+        if stream_assignment is not None and (assignment.get("id") != stream_assignment
+                or assignment.get("kind") != "wrk.assignment"
+                or assignment.get("authority") != project_ref.get("authority")):
             continue
         reports.append({
             "ref": ref.to_dict(), "assignment": dict(assignment),

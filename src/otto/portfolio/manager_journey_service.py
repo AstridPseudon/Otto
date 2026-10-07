@@ -125,7 +125,12 @@ class ManagerJourneyService:
         view = json_value(sheet.export(ResourceRef.from_dict(project_ref)))
         if not isinstance(view, Mapping):
             raise ValueError("current project status readback is not an object")
-        reports = read_project_progress_reports(self.server.store.consumer(), project_ref)
+        observed = [view.get("project", {}).get("observed", {})]
+        observed.extend(task.get("observed", {}) for task in view.get("tasks", ()) if isinstance(task, Mapping))
+        assignment_refs = [item["ref"] for projection in observed if isinstance(projection, Mapping)
+                           for item in projection.get("assignments", ()) if isinstance(item, Mapping) and "ref" in item]
+        reports = read_project_progress_reports(self.server.store.consumer(), project_ref,
+                                               assignment_refs=assignment_refs)
         loop = self.server.portfolio._issue_loop()
         help_read = loop.read_issues(project_ref=project_ref) if loop is not None else {"issues": []}
         issues = help_read.get("issues", []) if isinstance(help_read, Mapping) else []

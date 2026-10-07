@@ -398,6 +398,52 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["ref"]["id"], "report-1")
 
+    def test_progress_streams_preserve_project_reports_across_assignments_and_generations(self):
+        from tests.test_execution_application import ExecutionApplicationTests
+        from herzchen.contracts import ResourceRef
+        f = ExecutionApplicationTests()
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        port = f.owner.assignments.command_port
+        first = port.assign(f.project.ref, role="manager", principal="manager", manager="manager",
+            session="old-session", pins=[], logical_request_key="progress-old", actor=f.actor)
+        other = port.assign(f.project.ref, role="orchestrator", principal="manager", manager="manager",
+            session="root-session", pins=[], logical_request_key="progress-root", actor=f.actor)
+        retained = []
+        for assignment, label in ((first, "old-manager"), (other, "root-note")):
+            retained.append(port.append_report(assignment.ref,
+                {"project_ref": f.project.ref.to_dict(), "summary": label},
+                expected_generation=assignment.generation, logical_request_key="report-" + label, actor=f.actor))
+        current = port.reassign(first.ref, principal="manager", expected_generation=first.generation,
+            logical_request_key="progress-reassignment", actor=f.actor)
+        retained.append(port.append_report(current.ref,
+            {"project_ref": f.project.ref.to_dict(), "summary": "new-manager"},
+            expected_generation=current.generation, logical_request_key="report-new-manager", actor=f.actor))
+        # Project attribution must still filter out a foreign linked project
+        # even when its report is on one of the selected assignment streams.
+        port.append_report(other.ref, {"project_ref": {**f.project.ref.to_dict(), "id": "foreign"}},
+            expected_generation=other.generation, logical_request_key="report-foreign", actor=f.actor)
+        reader = f.store.consumer()
+        expected = read_project_progress_reports(reader, f.project.ref.to_dict())
+        streams = []
+        class ExactReader:
+            def list_events(self, *, stream=None):
+                if stream is None: raise AssertionError("global event hydration is forbidden")
+                streams.append(stream)
+                return reader.list_events(stream=stream)
+            def get_record(self, ref): return reader.get_record(ref)
+        observed = read_project_progress_reports(ExactReader(), f.project.ref.to_dict(),
+            assignment_refs=[current.ref.to_dict(), first.ref.to_dict(), other.ref.to_dict()])
+        self.assertEqual(observed, expected)
+        self.assertEqual({row["ref"]["id"] for row in observed}, {row.ref.id for row in retained})
+        self.assertEqual(streams, sorted({"report:" + first.ref.id, "report:" + other.ref.id}))
+        self.assertEqual({row["value"]["summary"] for row in observed}, {"old-manager", "root-note", "new-manager"})
+        self.assertEqual(read_project_progress_reports(ExactReader(), f.project.ref.to_dict(), assignment_refs=[]), [])
+        with self.assertRaises(OccurrencePreparationError):
+            read_project_progress_reports(ExactReader(), f.project.ref.to_dict(),
+                assignment_refs=[{**first.ref.to_dict(), "authority": "foreign"}])
+        self.assertEqual(f.provider.calls, [])
+
     def test_settled_manager_builds_same_session_callback(self):
         prior = type("ManagerDue", (), {
             "stop_state": "completed", "completion_state": "succeeded",
