@@ -415,6 +415,30 @@ def _extended_timeout_brief(brief, model, reasoning):
         and spec.get("manifest_sha256") == "9d72c9b3efa302900a37cd279829285b823f70e57bc7e15d744570d05c7f45fe")
 
 
+def native_caller_permission_overrides(worktree: str, writable_roots: tuple[str, ...], socket_path: str) -> list[str]:
+    """Trusted host-selected workspace profile with a managed one-socket grant.
+
+    The network proxy feature is a BOOLEAN. Merely adding its nested fields
+    or enabling direct network does not constrain traffic. No legacy sandbox
+    flag may accompany this profile: it would override default_permissions.
+    """
+    if (not isinstance(socket_path, str) or not os.path.isabs(socket_path)
+            or ".." in Path(socket_path).parts or "\x00" in socket_path
+            or len(os.fsencode(socket_path)) > 103):
+        raise ValueError("one absolute bounded Unix socket address required")
+    profile = "otto-native-caller"
+    values = [f'default_permissions="{profile}"', 'features.network_proxy=true',
+              f'permissions.{profile}.extends=":workspace"',
+              f'permissions.{profile}.network.enabled=true',
+              f'permissions.{profile}.network.mode="limited"',
+              f'permissions.{profile}.network.domains={{}}',
+              f'permissions.{profile}.network.unix_sockets={{' + json.dumps(socket_path) + '="allow"}']
+    roots = dict.fromkeys((os.path.realpath(worktree), *writable_roots))
+    values.append(f'permissions.{profile}.workspace_roots={{' +
+                  ','.join(json.dumps(root) + '=true' for root in roots) + '}')
+    return values
+
+
 class CodexCliBinding(HostPort):
     """Opt-in receiving binding for the observed local Codex executable.
 
@@ -437,6 +461,7 @@ class CodexCliBinding(HostPort):
                  native_start_callback: Optional[Callable[[str, str], None]] = None,
                  native_process_observer: Optional[Callable[..., Any]] = None,
                  writable_roots: tuple[str, ...] = (),
+                 native_caller_socket: Optional[str] = None,
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
                  source_verifier: Any = None, monotonic_clock: Callable[[], float] = time.monotonic) -> None:
@@ -446,6 +471,11 @@ class CodexCliBinding(HostPort):
         if any(not os.path.isabs(value) or not os.path.isdir(value) for value in roots) or len(set(roots)) != len(roots):
             raise ValueError("writable_roots must be distinct existing absolute directories")
         self.writable_roots = roots
+        if native_caller_socket is not None:
+            native_caller_permission_overrides(worktree, roots, native_caller_socket)
+            if not callable(native_process_observer):
+                raise ValueError("Unix caller socket requires the trusted native process observer")
+        self.native_caller_socket = native_caller_socket
         self.receipt_path = native_receipt_path or receipt_path
         self.prompt = prompt
         self.evidence_path = evidence_path
@@ -589,9 +619,21 @@ class CodexCliBinding(HostPort):
         # not silently broaden them. Requested argv is not observed evidence.
         command = [self.launcher, "exec", "-C", self.worktree, "-m", self.model,
                    "-c", f"model_reasoning_effort={self.reasoning}",
-                   "-s", request.requested_profile, "-c", 'approval_policy="never"',
+                   "-c", 'approval_policy="never"',
                    "--ignore-user-config", "--ignore-rules", "--json"]
-        if request.requested_profile == "workspace-write":
+        if self.native_caller_socket is not None and request.operation == HostOperation.RESUME:
+            if request.requested_profile != "workspace-write" or not callable(self._recipient_authorizer):
+                return (HostReceipt(request.operation, HostOutcome.UNSUPPORTED, request.identity,
+                                    request.identity.logical_agent_id, request.requested_profile,
+                                    observed_runner=RUNNER_ID,
+                                    unsupported_reason="socket grant requires an owner-authorized workspace-write resume"),
+                        {"delivery_state": "not_started", "reconciliation": "socket grant requires an owner-authorized workspace-write resume"})
+            for value in native_caller_permission_overrides(self.worktree, self.writable_roots, self.native_caller_socket):
+                command.extend(["-c", value])
+        else:
+            command.extend(["-s", request.requested_profile])
+        if request.requested_profile == "workspace-write" and not (
+                self.native_caller_socket is not None and request.operation == HostOperation.RESUME):
             for root in self.writable_roots:
                 command.extend(["--add-dir", root])
         if request.operation == HostOperation.RESUME:

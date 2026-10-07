@@ -141,6 +141,39 @@ class NativeCallerIngressTests(unittest.TestCase):
             self.assertEqual(self.c.f.app.native_adapter_identity(), "owner-pinned-route-v1")
         self.c.f.app.runtime.adapter = original
 
+    def test_scoped_socket_profile_is_host_selected_and_omits_legacy_override(self):
+        from herzchen.adapters.host import CodexCliBinding, native_caller_permission_overrides
+        from herzchen.contracts import HostRequest, HostIdentity, HostOperation
+        from unittest.mock import patch
+        path=str(self.root / "exact.sock")
+        values=native_caller_permission_overrides(str(self.root), (), path)
+        self.assertIn('features.network_proxy=true',values)
+        self.assertIn('permissions.otto-native-caller.network.mode="limited"',values)
+        self.assertIn('permissions.otto-native-caller.network.domains={}',values)
+        self.assertEqual([v for v in values if '.network.unix_sockets=' in v],
+            ['permissions.otto-native-caller.network.unix_sockets={'+json.dumps(path)+'="allow"}'])
+        for invalid in ('relative.sock','/tmp/../socket','/tmp/'+'x'*104):
+            with self.assertRaises(ValueError):native_caller_permission_overrides(str(self.root),(),invalid)
+        with self.assertRaises(ValueError):CodexCliBinding(str(self.root),native_caller_socket=path)
+        adapter=CodexCliBinding(str(self.root),native_caller_socket=path,
+            native_process_observer=lambda *a:lambda:None,recipient_authorizer=lambda request:{})
+        with patch('herzchen.adapters.host.subprocess.Popen',side_effect=OSError('test boundary')) as popen:
+            adapter.execute(HostRequest(HostOperation.RESUME,HostIdentity('fixture','native'),self.c.f.task.ref,'workspace-write'))
+            argv=popen.call_args.args[0]
+            self.assertNotIn('-s',argv)
+            self.assertNotIn('--add-dir',argv)
+            self.assertIn('default_permissions="otto-native-caller"',argv)
+        denied=CodexCliBinding(str(self.root),native_caller_socket=path,
+            native_process_observer=lambda *a:lambda:None)
+        with patch('herzchen.adapters.host.subprocess.Popen') as popen:
+            denied.execute(HostRequest(HostOperation.RESUME,HostIdentity('fixture','native'),self.c.f.task.ref,'workspace-write'))
+            popen.assert_not_called()
+        from otto.agents.herzchen_adapter import HerzchenCodexAdapter
+        adapter=HerzchenCodexAdapter(owner='fixture',source=str(self.root),worktree=str(self.root),launcher=sys.executable,
+            native_caller_socket=path,native_process_observer=lambda *a:lambda:None)
+        bound=adapter.bind_owner_authorization(lambda *a:{})
+        self.assertEqual(bound.native_caller_socket,path)
+
     def test_host_spawn_observer_is_resume_only_and_cleans_exact_process(self):
         from herzchen.adapters.host import CodexCliBinding
         from herzchen.contracts import HostRequest, HostIdentity, HostOperation

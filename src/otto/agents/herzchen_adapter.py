@@ -141,12 +141,14 @@ class HerzchenCodexAdapter:
         owner_completed_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
         source_verifier_factory: Optional[Callable[..., Any]] = None,
         writable_roots: Sequence[str] = (),
+        native_caller_socket: Optional[str] = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.owner = _text(owner, "owner")
         self.source = _text(source, "source")
         self.worktree = _text(worktree, "worktree")
         self.writable_roots = tuple(_text(value, "writable_roots") for value in writable_roots)
+        self.native_caller_socket = native_caller_socket
         self.launcher = _text(launcher, "launcher")
         self.requested_model = _text(requested_model, "requested_model")
         self.requested_reasoning = _text(requested_reasoning, "requested_reasoning")
@@ -182,7 +184,7 @@ class HerzchenCodexAdapter:
             owner_completed_verifier=completed_verifier, native_process_observer=self.native_process_observer,
             trusted_thread_reader=self.trusted_thread_reader,
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
-            writable_roots=self.writable_roots,
+            writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
         )
         bound._turn_started_callback = self._turn_started_callback
         return bound
@@ -455,7 +457,7 @@ class HerzchenCodexAdapter:
                 recipient_authorizer=recipient_authorizer,
                 native_start_callback=native_start_callback,
                 native_process_observer=ExecutionHost.owner_callback(self.native_process_observer),
-                writable_roots=self.writable_roots,
+                writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
         else:
@@ -472,6 +474,7 @@ class HerzchenCodexAdapter:
                    if self._turn_started_callback is not None else {}),
                 **({"native_process_observer": ExecutionHost.owner_callback(self.native_process_observer)}
                    if self.native_process_observer is not None else {}),
+                **({"native_caller_socket": self.native_caller_socket} if self.native_caller_socket is not None else {}),
                 **receiving, **bounded,
             )
         if self.host_adapter_factory is None:
