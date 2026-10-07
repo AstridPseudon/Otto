@@ -99,6 +99,26 @@ class NativeCallerIngressTests(unittest.TestCase):
         with self.host._lock: self.host._external_waiting = 0
         self.assertFalse(thread.is_alive()); self.assertEqual(result, {"outcome": "read"})
 
+    def test_report_continuation_launch_binding_uses_exact_callback_before_locator_refresh(self):
+        from types import SimpleNamespace
+        from otto.portfolio.native_caller_ingress import managed_caller_binding
+        original = self.bindings["manager"]
+        assignment = self.c.f.app.assignments.get(original.assignment_ref)
+        self.c.f.app.assignments.append_report(assignment.ref,
+            {"schema": "otto.manager-progress.v1", "project_ref": self.c.f.project.ref.to_dict(),
+             "task_alias": "task", "continue_requested": True, "next_action": "Inspect installed caller context.",
+             "logical_request_key": "future-binding-proof", "recorded_at": "2026-10-07T00:00:00+00:00"},
+            expected_generation=1, logical_request_key="future-binding-report", actor=self.c.f.actor)
+        continued = self.c.f.app.continue_manager(schedule_id=original.schedule_id, report_key="future-binding-proof")
+        self.assertEqual(continued["outcome"], "succeeded", continued)
+        due = self.c.f.port.read_due(continued["schedule_id"])
+        authorization = due["host_evidence"]["gateway_attempt"]["delivery_authorization"]
+        server = SimpleNamespace(state={"schedule_id": original.schedule_id, "workers": {}},
+            due_port=self.c.f.port, binding=self.c.f.binding)
+        binding = managed_caller_binding(server, authorization)
+        self.assertEqual(binding.schedule_id, continued["schedule_id"])
+        self.assertEqual(self.c.f.app.caller_context(binding)["principal"], "manager")
+
     def test_distinct_callback_pins_current_adapter_without_rewriting_legacy_anchor(self):
         from otto.portfolio.execution_operations import build_manager_callback_due
         prior = self.c.f.app._read(self.bindings["manager"].schedule_id)

@@ -152,10 +152,17 @@ def managed_caller_binding(server: Any, authorization: dict[str, Any]) -> Any:
     from .identity_context import HostCallerBinding
     state = server.state
     schedules = {state.get("schedule_id"), (state.get("manager_continuation") or {}).get("schedule_id")}
+    # Explicit report continuations may be executing before the host locator
+    # is refreshed. Their ordinary deterministic identity is a bounded exact
+    # lookup; never substitute a locator or scan unrelated Due payloads.
+    from .execution_operations import manager_continuation_schedule_id
+    schedules.add(manager_continuation_schedule_id(authorization["assignment_ref"],
+        authorization["logical_request_key"]))
     schedules.update(value.get("schedule_id") for value in state.get("workers", {}).values())
     matches = []
     for schedule in sorted(value for value in schedules if isinstance(value, str)):
         due = server.due_port.read_due(schedule)
+        if not isinstance(due, dict): continue
         attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
         if attempt.get("delivery_authorization") == authorization:
             matches.append(due)
