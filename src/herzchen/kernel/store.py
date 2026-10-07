@@ -999,6 +999,31 @@ class Store:
             ).fetchone()
             return None if row is None else self._identity_from_row(row)
 
+    def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
+        """Current owner references matching exact string fields, before hydration.
+
+        This narrows the existing identity reader; it creates no scope or
+        authority. Paths are structural names, values and paths are SQL
+        parameters, and historical event payloads are never materialized.
+        """
+        if not isinstance(kind, str) or not kind.strip() or not isinstance(payload_matches, Mapping) or not payload_matches:
+            raise ValueError("identity kind and exact payload predicates required")
+        clauses, args = ["authority = ?", "kind = ?"], [self.authority, kind]
+        for path, value in payload_matches.items():
+            if (not isinstance(path, tuple) or not path or len(path) > 8
+                    or not all(isinstance(part, str) and part and part.replace('_', '').isalnum() for part in path)
+                    or not isinstance(value, str)):
+                raise ValueError("identity payload predicates require structural paths and string values")
+            json_path = '$.' + '.'.join(path)
+            clauses.extend(["json_type(payload_json, ?) = 'text'", "json_extract(payload_json, ?) = ?"])
+            args.extend([json_path, json_path, value])
+        with self._transaction_lock:
+            self._require_open()
+            rows = self._connection.execute(
+                "SELECT authority, kind, id, current_revision FROM identities WHERE " +
+                " AND ".join(clauses) + " ORDER BY id", args).fetchall()
+            return tuple(ResourceRef(row[0], row[1], row[2], row[3]) for row in rows)
+
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.get_identity(ref)
 
@@ -1776,6 +1801,9 @@ class DomainHandler:
     def get_identity(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self._owner.get_identity(ref)
 
+    def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
+        return self._owner.find_identity_refs(kind=kind, payload_matches=payload_matches)
+
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self._owner.get_record(ref)
 
@@ -1855,6 +1883,9 @@ class ConsumerStore:
 
     def get_identity(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_identity(ref)
+
+    def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
+        return self.__owner.find_identity_refs(kind=kind, payload_matches=payload_matches)
 
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_record(ref)

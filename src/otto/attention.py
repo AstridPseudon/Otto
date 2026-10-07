@@ -97,7 +97,7 @@ def _required_text(value: Any, field_name: str) -> str:
 
 _TRIGGER_SCOPE_FIELDS = frozenset({
     "schedule_id", "project_ref", "manager_ref", "role", "recipient",
-    "lifecycle_owner", "execution_mode", "stop_state",
+    "lifecycle_owner", "execution_mode", "stop_state", "native_adapter", "native_session_id",
 })
 
 
@@ -115,7 +115,10 @@ def _trigger_scope(scope: Optional[Mapping[str, JSONValue]]) -> dict[str, str]:
 
 
 def _matches_trigger_scope(value: Mapping[str, JSONValue], scope: Mapping[str, str]) -> bool:
-    return all(value.get(key) == expected for key, expected in scope.items())
+    native = {"native_adapter": (value.get("target") or {}).get("native_adapter"),
+              "native_session_id": (((value.get("host_evidence") or {}).get("gateway_attempt") or {}).get("delivery_authorization") or {}).get("physical_session_id")}
+    return all((native.get(key) if key in native else value.get(key)) == expected
+               for key, expected in scope.items())
 
 
 def _reference_identity(value: Any, field_name: str) -> tuple[str, str, str]:
@@ -911,9 +914,18 @@ class _DueRecordOwnerEngine:
         return value
 
     def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:
-        """Project current records from the owner's public event read API."""
+        """Read current records; exact native scopes avoid historical payload hydration."""
 
         normalized = _trigger_scope(scope)
+        if {"native_adapter", "native_session_id"}.intersection(normalized) and callable(getattr(self._writer, "find_identity_refs", None)):
+            paths = {"native_adapter": ("target", "native_adapter"),
+                     "native_session_id": ("host_evidence", "gateway_attempt", "delivery_authorization", "physical_session_id")}
+            refs = self._writer.find_identity_refs(kind="otto.due-record",
+                payload_matches={paths[key]: value for key, value in normalized.items() if key in paths})
+            # Current records, not prior matching events: replacement or
+            # changed pins must not recover a superseded native capability.
+            return tuple(value for ref in refs for value in (self.read_due(ref.id),)
+                         if value is not None and _matches_trigger_scope(value, normalized))
         latest: dict[str, tuple[int, int, dict[str, JSONValue]]] = {}
         for event in self._writer.list_events():
             if event.event_type != "otto.due-record.changed":

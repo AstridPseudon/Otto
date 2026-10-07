@@ -86,7 +86,8 @@ def resolve_caller_context(application: Any, binding: HostCallerBinding) -> dict
     application._verify_native_binding(assignment, binding.native_session_id, binding.schedule_id)
     # Detect reuse from existing current occurrence/assignment records. IDs are
     # adapter-qualified; historical replaced generations are not new callers.
-    for other in application.due_port.list_due():
+    for other in application.due_port.list_due({"native_adapter": binding.adapter,
+                                               "native_session_id": binding.native_session_id}):
         if other.get("schedule_id") == binding.schedule_id:
             continue
         other_target = other.get("target") or {}

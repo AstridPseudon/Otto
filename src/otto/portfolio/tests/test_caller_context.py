@@ -4,6 +4,7 @@ from pathlib import Path
 from hashlib import sha256
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -171,8 +172,42 @@ class CallerContextTests(unittest.TestCase):
             request_key="reused-session", model="gpt-test", reasoning="high", profile="read-only")
         prepared = self.f.app.prepare_role(**request)
         self.assertEqual(self.f.app.start(schedule_id=prepared["schedule_id"])["outcome"], "succeeded")
-        with self.assertRaisesRegex(PermissionError, "reused"):
-            self.f.app.caller_context(binding)
+        from herzchen.kernel.store import Store
+        # The real durable port must retain the cross-assignment fence without
+        # hydrating unrelated historical Due events.
+        with patch.object(Store, "list_events", side_effect=AssertionError("global history hydration")):
+            with self.assertRaisesRegex(PermissionError, "reused"):
+                self.f.app.caller_context(binding)
+        current = self.f.app.assignments.reassign(assignment.ref, principal=assignment.principal,
+            session="replacement-orchestrator-session", expected_generation=1,
+            logical_request_key="replace-reused-session", actor=self.f.actor)
+        self.assertEqual(current.generation, 2)
+        with patch.object(Store, "list_events", side_effect=AssertionError("global history hydration")):
+            self.assertEqual(self.f.app.caller_context(binding)["principal"], binding.actor.actor)
+
+    def test_exact_native_due_selector_avoids_event_payloads_and_has_no_read_effects(self):
+        binding = self.caller()
+        other = self.caller("orchestrator")
+        scope = {"native_adapter": binding.adapter, "native_session_id": binding.native_session_id}
+        expected = tuple(due for due in self.f.port.list_due() if
+            due["target"].get("native_adapter") == binding.adapter and
+            ((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("delivery_authorization", {}).get("physical_session_id") == binding.native_session_id)
+        counts = self.f.store.consumer().snapshot_counts()
+        from herzchen.kernel.store import Store
+        with patch.object(Store, "list_events", side_effect=AssertionError("global history hydration")):
+            self.assertEqual(self.f.port.list_due(scope), expected)
+            self.assertEqual(self.f.app.caller_context(binding)["principal"], binding.actor.actor)
+            self.assertEqual(self.f.port.list_due(dict(scope, native_adapter="different-adapter")), ())
+            self.assertEqual(self.f.port.list_due(dict(scope, native_session_id=other.native_session_id)),
+                self.f.port.list_due({"native_adapter": other.adapter, "native_session_id": other.native_session_id}))
+            self.assertEqual(self.f.port.list_due(dict(scope, recipient=other.actor.actor)), ())
+        self.assertEqual(self.f.store.consumer().snapshot_counts(), counts)
+        self.assertEqual(len(self.f.provider.calls), 2)
+        reader = self.f.store.consumer()
+        for predicates in ({}, {("target.native_adapter",): binding.adapter},
+                           {("target", "native_adapter"): True}, {("",): binding.adapter}):
+            with self.assertRaises(ValueError):
+                reader.find_identity_refs(kind="otto.due-record", payload_matches=predicates)
 
     def test_manager_authorization_distinguishes_child_target_and_cross_caller_payload_reuse(self):
         manager = self.caller(); self.caller("orchestrator")
