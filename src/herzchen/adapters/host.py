@@ -991,7 +991,7 @@ def capture_native_cli_candidate(text: str, *, expected_session_id: str | None) 
         return unsupported('native_session_unavailable')
     if base['capture_utf8_bytes'] > 32 * 1024 * 1024:
         return unsupported('native_capture_over_budget')
-    sessions=[];started=False;complete=False;pending={};seen=set();records=[];messages=[];commands=[]
+    sessions=[];started=False;complete=False;pending={};seen=set();records=[];messages=[];commands=[];file_changes=[]
     try:
         for position,raw in enumerate(text.splitlines()):
             event=json.loads(raw)
@@ -1025,7 +1025,7 @@ def capture_native_cli_candidate(text: str, *, expected_session_id: str | None) 
             if item.get('type')=='command_execution':
                 prior=pending.pop(ident,None)
                 if (prior is None or prior.get('command')!=item.get('command')
-                        or item.get('status')!='completed' or type(item.get('exit_code')) is not int
+                        or item.get('status') not in {'completed','failed'} or type(item.get('exit_code')) is not int
                         or not isinstance(item.get('command'),str) or not isinstance(item.get('aggregated_output'),str)
                         or 'stdout' in item or 'stderr' in item):
                     return unsupported('native_command_incomplete_or_unverifiable',records)
@@ -1034,6 +1034,20 @@ def capture_native_cli_candidate(text: str, *, expected_session_id: str | None) 
                 retained['aggregate_output']={'sha256':hashlib.sha256(body).hexdigest(),'utf8_bytes':len(body),
                                               'representation':'aggregated_output','completeness':'NOT_OBSERVED'}
                 commands.append(retained)
+            elif item.get('type')=='file_change':
+                prior=pending.pop(ident,None)
+                changes=item.get('changes')
+                if (set(item)!={'id','type','changes','status'} or prior is None
+                        or prior.get('type')!='file_change' or prior.get('status')!='in_progress'
+                        or prior.get('changes')!=changes or item.get('status')!='completed'
+                        or not isinstance(changes,list) or not 1 <= len(changes) <= 256
+                        or any(not isinstance(change,dict) or set(change)!={'path','kind'}
+                               or not isinstance(change['path'],str) or not change['path'].strip()
+                               or len(change['path'])>4096 or change['kind'] not in {'add','update','delete'}
+                               for change in changes)):
+                    return unsupported('native_file_change_incomplete_or_unverifiable',records)
+                # Carrier provenance only: file edits supply no task or command authority.
+                file_changes.append(retained)
             elif item.get('type')=='agent_message' and isinstance(item.get('text'),str):
                 pending.pop(ident,None);messages.append(retained)
             else:return unsupported('unsupported_native_item',records)
@@ -1048,7 +1062,7 @@ def capture_native_cli_candidate(text: str, *, expected_session_id: str | None) 
     return {**base,'status':'native_completed_unverified','session_id':sessions[0],
             'unsupported_reason':'native_owner_join_unavailable',
             'missing_joins':['turn_id','delivered_brief','permission_context','owner_source_verification'],
-            'native_records':records,'commands':commands,'final_candidate':{**final,
+            'native_records':records,'commands':commands,'file_changes':file_changes,'final_candidate':{**final,
                 'text_sha256':hashlib.sha256(body).hexdigest(),'utf8_bytes':len(body),'phase_observed':False}}
 
 
@@ -1617,9 +1631,22 @@ def _native_host_context(
         if delivered_authorization is None or permissions is None or len(completions) != 1:
             return None
         finals = []
+        advisories = []
         ids = [users[0][0]["id"]] + [item["id"] for item, _, _ in commands]
         for item, event_ref, position, payload in messages:
-            if (set(item) != {"type", "id", "content", "phase"}
+            advisory = set(item) == {"type", "id", "content", "phase", "delivery", "questions"}
+            if advisory:
+                questions = item["questions"]
+                if (item["delivery"] != "async" or item["phase"] != "final_answer"
+                        or not isinstance(questions, list) or not 1 <= len(questions) <= 3
+                        or any(not isinstance(q, Mapping) or set(q) != {"title", "options"}
+                               or not isinstance(q["title"], str) or not q["title"].strip()
+                               or len(q["title"]) > 16384
+                               or not isinstance(q["options"], list) or not 2 <= len(q["options"]) <= 3
+                               or any(not isinstance(o, str) or not o.strip() or len(o) > 4096 for o in q["options"])
+                               for q in questions)):
+                    return None
+            if ((not advisory and set(item) != {"type", "id", "content", "phase"})
                     or not isinstance(item["id"], str) or not item["id"].strip()
                     or not isinstance(item["phase"], str)
                     or item["phase"] not in {"commentary", "final_answer"}
@@ -1633,7 +1660,13 @@ def _native_host_context(
                     or payload["started_at_ms"] > payload["completed_at_ms"]):
                 return None
             ids.append(item["id"])
-            if item["phase"] == "final_answer":
+            if advisory:
+                text = item["content"][0]["text"]
+                if not text.strip() or len(text.encode("utf-8")) > 65536:
+                    return None
+                advisories.append({"item": dict(item), "host_record": event_ref,
+                                   "authority": "none", "terminal": False})
+            elif item["phase"] == "final_answer":
                 finals.append((item["content"][0]["text"], event_ref, position, payload))
         if len(set(ids)) != len(ids) or len(finals) != 1:
             return None
@@ -1671,6 +1704,8 @@ def _native_host_context(
             "host_record": event_ref,
         }
         final_text = [text]
+        if advisories:
+            output["advisory_items"] = advisories
     if linked_context_read and not final_text:
         return None
     result_digest = _digest_json(output)

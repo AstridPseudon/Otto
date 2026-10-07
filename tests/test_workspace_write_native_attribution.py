@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from herzchen.adapters.host import (
-    CodexCliBinding, _digest_json, _native_host_context, _owner_delivery_appendix,
+    CodexCliBinding, capture_native_cli_candidate, _digest_json, _native_host_context, _owner_delivery_appendix,
     _select_invocation_turn,
 )
 from herzchen.contracts.model import HostIdentity, HostOperation, HostRequest, ResourceRef
@@ -29,7 +29,7 @@ def _line(event_type, payload):
     return json.dumps({"type": event_type, "payload": payload}, separators=(",", ":"))
 
 
-def _context(profile, *, delayed_command_started_at_ms=None):
+def _context(profile, *, delayed_command_started_at_ms=None, advisory=None, omit_final=False):
     brief = {
         "instruction_contract": {
             "task_ref": TARGET.to_dict(),
@@ -82,6 +82,13 @@ def _context(profile, *, delayed_command_started_at_ms=None):
         _line("event_msg", {"type": "task_complete", "turn_id": TURN,
                             "completed_at": 1}),
     ])
+    if advisory is not None:
+        lines.insert(-2, _line("event_msg", {
+            "type": "item_completed", "turn_id": TURN, "thread_id": SESSION,
+            "started_at_ms": 90, "completed_at_ms": 90, "item": advisory,
+        }))
+    if omit_final:
+        lines.pop(-2)
     if delayed_command_started_at_ms is not None:
         lines.append(_line("event_msg", {
             "type": "item_completed", "turn_id": TURN, "thread_id": SESSION,
@@ -213,6 +220,43 @@ class WorkspaceWriteAttributionTests(unittest.TestCase):
         self.assertEqual(output["command_execution"], {
             "status": "completed", "command_count": 3, "nonzero_exit_count": 1,
         })
+
+    def test_async_scope_question_is_nonterminal_not_authority(self):
+        question = {"type": "AgentMessage", "id": "scope-question", "phase": "final_answer",
+                    "delivery": "async", "questions": [{"title": "Which scope?", "options": ["One", "Two"]}],
+                    "content": [{"type": "Text", "text": "Which scope?"}]}
+        value = _context("workspace-write", advisory=question)
+        self.assertEqual(value["worker_content"], ["Repair complete; tests pass."])
+        output = value["task_bound_evidence"]["operation_result"]["output"]
+        self.assertEqual(output["command_execution"]["command_count"], 3)
+        self.assertEqual(output["advisory_items"][0]["authority"], "none")
+        self.assertFalse(output["advisory_items"][0]["terminal"])
+        self.assertIsNone(_context("workspace-write", advisory=question, omit_final=True))
+        for malformed in ({**question, "delivery": "sync"}, {**question, "questions": []},
+                          {**question, "id": "final-1"}, {**question, "unexpected": True}):
+            with self.subTest(malformed=malformed):
+                self.assertIsNone(_context("workspace-write", advisory=malformed))
+
+    def test_cli_file_change_retains_provenance_without_command_authority(self):
+        command = {"id": "cmd", "type": "command_execution", "command": "test"}
+        change = {"id": "edit", "type": "file_change", "changes": [{"path": "/tmp/source.py", "kind": "update"}]}
+        def capture(changes=change, completed=True):
+            events = [{"type": "thread.started", "thread_id": SESSION}, {"type": "turn.started"},
+                      {"type": "item.started", "item": command},
+                      {"type": "item.completed", "item": {**command, "status": "failed", "exit_code": 1, "aggregated_output": "test failed before repair"}},
+                      {"type": "item.started", "item": {**change, "status": "in_progress"}}]
+            if completed:
+                events.append({"type": "item.completed", "item": {**changes, "status": "completed"}})
+            events += [{"type": "item.completed", "item": {"id": "final", "type": "agent_message", "text": "done"}},
+                       {"type": "turn.completed"}]
+            return capture_native_cli_candidate("\n".join(map(json.dumps, events)), expected_session_id=SESSION)
+        value = capture()
+        self.assertEqual(value["status"], "native_completed_unverified")
+        self.assertFalse(value["task_bound"])
+        self.assertEqual(len(value["commands"]), 1)
+        self.assertEqual(len(value["file_changes"]), 1)
+        self.assertEqual(capture(completed=False)["status"], "unsupported")
+        self.assertEqual(capture({**change, "changes": [{"path": "/tmp/foreign.py", "kind": "update"}]})["status"], "unsupported")
 
     def test_read_only_failed_command_remains_unattributed(self):
         self.assertIsNone(_context("read-only"))
