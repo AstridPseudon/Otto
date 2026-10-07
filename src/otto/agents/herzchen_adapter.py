@@ -137,6 +137,7 @@ class HerzchenCodexAdapter:
         require_host_context: bool = False,
         owner_authorizer: Optional[Callable[[str, str], Mapping[str, Any]]] = None,
         owner_delivery_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
+        native_process_observer: Optional[Callable[..., Any]] = None,
         owner_completed_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
         source_verifier_factory: Optional[Callable[..., Any]] = None,
         writable_roots: Sequence[str] = (),
@@ -159,6 +160,7 @@ class HerzchenCodexAdapter:
         self._owner_completed_verifier = owner_completed_verifier
         self._owner_authorizer = owner_authorizer
         self._owner_delivery_verifier = owner_delivery_verifier
+        self.native_process_observer = native_process_observer
         self.source_verifier_factory, self.monotonic_clock = source_verifier_factory, monotonic_clock
         self._source_verifier = None
         self._thread_started_callback: Optional[Callable[[str], None]] = None
@@ -177,7 +179,7 @@ class HerzchenCodexAdapter:
             turn_context_reader=self.turn_context_reader, host_context_path=self.host_context_path,
             native_trace_path=self.native_trace_path, require_host_context=self.require_host_context,
             owner_authorizer=authorizer, owner_delivery_verifier=verifier,
-            owner_completed_verifier=completed_verifier,
+            owner_completed_verifier=completed_verifier, native_process_observer=self.native_process_observer,
             trusted_thread_reader=self.trusted_thread_reader,
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
             writable_roots=self.writable_roots,
@@ -452,6 +454,7 @@ class HerzchenCodexAdapter:
                 trusted_thread_reader=self.trusted_thread_reader,
                 recipient_authorizer=recipient_authorizer,
                 native_start_callback=native_start_callback,
+                native_process_observer=ExecutionHost.owner_callback(self.native_process_observer),
                 writable_roots=self.writable_roots,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
@@ -467,6 +470,8 @@ class HerzchenCodexAdapter:
                 **({"cursor_queue": cursor_queue} if cursor_queue is not None else {}),
                 **({"native_start_callback": native_start_callback}
                    if self._turn_started_callback is not None else {}),
+                **({"native_process_observer": ExecutionHost.owner_callback(self.native_process_observer)}
+                   if self.native_process_observer is not None else {}),
                 **receiving, **bounded,
             )
         if self.host_adapter_factory is None:

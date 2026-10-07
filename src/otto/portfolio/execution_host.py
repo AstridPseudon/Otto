@@ -98,7 +98,7 @@ class ExecutionHost:
                  owner_path: str | Path | None = None,
                  socket_path: str | Path | None = None,
                  caller_binding_reader: Any = None, caller_context_resolver: Any = None,
-                 caller_authorizer: Any = None) -> None:
+                 caller_authorizer: Any = None, owner_file_compatibility: bool = False) -> None:
         self.directory = Path(directory)
         self.handler = handler
         if (caller_binding_reader is None) != (caller_context_resolver is None):
@@ -111,6 +111,9 @@ class ExecutionHost:
         self.caller_binding_reader = caller_binding_reader
         self.caller_context_resolver = caller_context_resolver
         self.caller_authorizer = caller_authorizer
+        if type(owner_file_compatibility) is not bool:
+            raise TypeError("owner_file_compatibility must be explicit")
+        self.owner_file_compatibility = owner_file_compatibility
         self.owner_path = self.directory / "owner.json" if owner_path is None else Path(owner_path)
         self.socket_path = None if socket_path is None else Path(socket_path)
         self._socket: socket.socket | None = None
@@ -207,7 +210,9 @@ class ExecutionHost:
         identity_read = request.get("command") in {"whoami", "effective-context"}
         claims = {"caller_principal", "caller_assignment_ref", "caller_generation", "caller_native_session_id",
                   "logical_agent_id", "caller_context", "host_caller_binding"}
-        if self.caller_binding_reader is None:
+        compatibility_file = (self.owner_file_compatibility
+            and getattr(ingress, "transport", None) == "file-ipc")
+        if self.caller_binding_reader is None or compatibility_file:
             if identity_read or claims.intersection(request):
                 return {"outcome": "held", "reason": "trusted per-request caller binding is unavailable",
                         "next_action": "use an owner-supported identity-bearing host ingress",
@@ -240,7 +245,7 @@ class ExecutionHost:
 
     def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
         try:
-            if request.get("command") == "status":
+            if request.get("command") in {"status", "whoami", "effective-context"}:
                 return self._status_read(request, lambda: self._call_bound(request, ingress))
             with self._command_lock:
                 if self._closing and _starts_work(request):

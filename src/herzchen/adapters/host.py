@@ -435,6 +435,7 @@ class CodexCliBinding(HostPort):
                  trusted_thread_reader: Optional[Callable[[str], Mapping[str, Any]]] = None,
                  recipient_authorizer: Optional[Callable[[HostRequest], Mapping[str, Any]]] = None,
                  native_start_callback: Optional[Callable[[str, str], None]] = None,
+                 native_process_observer: Optional[Callable[..., Any]] = None,
                  writable_roots: tuple[str, ...] = (),
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
@@ -452,6 +453,9 @@ class CodexCliBinding(HostPort):
         self.trusted_thread_reader = trusted_thread_reader
         self._recipient_authorizer = recipient_authorizer
         self._native_start_callback = native_start_callback
+        if native_process_observer is not None and not callable(native_process_observer):
+            raise TypeError("native_process_observer must be a host capability")
+        self._native_process_observer = native_process_observer
         self._delivery_consumed = False
         self.timeout_brief = None if timeout_brief is None else json.loads(json.dumps(timeout_brief))
         self.extended_timeout = _extended_timeout_brief(self.timeout_brief, model, reasoning)
@@ -737,10 +741,24 @@ class CodexCliBinding(HostPort):
                         raise ValueError("exact native message admission is unavailable")
                     turn_id, admitted_at = admitted
                 self._native_start_callback(turn_id, admitted_at)
+        caller_cleanup = None
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, cwd=self.worktree,
                                        env=os.environ.copy(), start_new_session=True)
+            if request.operation == HostOperation.RESUME and self._native_process_observer is not None:
+                try:
+                    cleanup = self._native_process_observer(process, delivered_authorization)
+                    if not callable(cleanup):
+                        raise TypeError("native caller observer must return exact lifetime cleanup")
+                    caller_cleanup = cleanup
+                except Exception as exc:
+                    _terminate_owned_process(process)
+                    return (HostReceipt(request.operation, HostOutcome.UNKNOWN, request.identity,
+                        request.identity.logical_agent_id, request.requested_profile,
+                        observed_runner=RUNNER_ID, unsupported_reason="native_caller_registration_failed"),
+                        {"delivery_state": "unknown", "reconciliation": str(exc), "command": command,
+                         "started_at": started, "process_id": process.pid})
             if request.operation == HostOperation.RESUME and not self.extended_timeout:
                 stdout, stderr, exit_status, _ = _communicate_after_native_start(
                     process, prompt,
@@ -776,6 +794,9 @@ class CodexCliBinding(HostPort):
                                 observed_runner=RUNNER_ID, unsupported_reason="codex_launcher_os_error"),
                     {"command": command, "started_at": started, "stderr": str(exc),
                      "delivery_state": "unknown"})
+        finally:
+            if caller_cleanup is not None:
+                caller_cleanup()
         observed_session = None
         observed_turn_id = None
         native_turn_started = False

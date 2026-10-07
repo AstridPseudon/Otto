@@ -122,7 +122,12 @@ class ExecutionApplication:
 
     def native_adapter_identity(self) -> str:
         adapter = type(self.runtime.adapter)
-        return adapter.__module__ + "." + adapter.__name__
+        identity = getattr(self.runtime.adapter, "adapter_identity", None)
+        if identity is None:
+            return adapter.__module__ + "." + adapter.__name__
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError("host adapter identity must be an explicit stable route")
+        return identity
 
     def _document_revision(self, result: Mapping[str, Any], field: str) -> Mapping[str, Any]:
         """Resolve a document revision from either response envelope or owner readback."""

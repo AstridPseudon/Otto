@@ -64,3 +64,33 @@ host must supply a production trusted ingress and adopt the candidate before
 D06 can prove authentication. D04 update/future-boundary composition and D05
 authoring/history/overview UX remain separate responsibilities. No owner state,
 runtime, publication or acceptance is changed by this source implementation.
+
+
+## Maintained native-process ingress
+
+`NativeProcessCallerIngress` authenticates an accepted Unix socket using its
+kernel peer audit token (including process version) and a bounded, rechecked
+process ancestry with birth identities.
+Only the actual owner-created authorized RESUME Popen lifetime is registered by
+the optional `CodexCliBinding.native_process_observer`; inert initialization is
+excluded. Registration is marshalled to the serialized owner, pins the exact
+canonical launch binding, and is removed on every transport exit. Arbitrary
+same-UID processes, filenames, caller JSON, copied native IDs, reparented or
+reused PIDs and dead registered processes cannot supply that capability.
+Canonical caller resolution still checks current assignment/generation, exact
+adapter/session admission and direction access on every request.
+
+The finite `caller_client` sends no identity selector. Identity reads share the
+existing status owner pump during native work. An explicitly composed legacy
+owner file lane remains compatibility custody and cannot perform identity reads
+or inject caller claims; it is not represented as authenticated native ingress.
+Owner reopen does not revive process custody from historical evidence. A new
+authorized process must establish its genuine transport origin again.
+
+Focused tests use actual OS processes and accepted Unix sockets on supported
+macOS hosts, with canonical Store/provider fixtures. Other platforms require a
+version-qualified peer authenticator and otherwise fail closed. This verifies the
+live OS authentication mechanism; actual installed Codex descendant placement,
+sandbox socket access and newly delivered direction are separately observed
+through prospective installed role turns. Unsupported process placement fails
+closed rather than inferring a caller from display names or request contents.
