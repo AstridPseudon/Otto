@@ -363,6 +363,10 @@ class FiniteWorkOperations:
             return self._create_from_template(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.open":
             return self._open_existing(payload, request_id=request_id, actor=actor)
+        if operation in {"work.project.folder-import", "work.project.folder-export", "work.project.folder-check-in", "work.project.folder-release"}:
+            return self._project_folder(operation, payload, request_id=request_id, actor=actor)
+        if operation in {"work.project.checkout", "work.project.check-in"}:
+            return self._project_authoring(operation, payload, request_id=request_id, actor=actor)
         if operation == "work.pending.edit":
             return self._revise(payload, request_id=request_id, actor=actor)
         if operation in {"work.pending.revisit", "work.pending.prerequisite-satisfied"}:
@@ -832,7 +836,7 @@ class FiniteWorkOperations:
         snapshot["snapshot_digest"] = digest
         return {"outcome": "exported", "snapshot": snapshot, "snapshot_digest": digest, "request_id": request_id, "event_ids": []}
 
-    def _replay_import(self, *, before: Any, computed_digest: str, request_id: str) -> Mapping[str, Any]:
+    def _replay_import(self, *, before: Any, computed_digest: str, request_id: str) -> Optional[Mapping[str, Any]]:
         """Return the original import result without re-running its writes.
 
         Import has several child commands (adoption, document creation, and
@@ -880,12 +884,9 @@ class FiniteWorkOperations:
             }
         saved = metadata.get("otto_transfer_result") if isinstance(metadata, Mapping) else None
         if not isinstance(saved, Mapping):
-            return {
-                "outcome": "error",
-                "error": {"code": "replay_state_unavailable", "message": "original import result manifest is missing", "operation": "work.project.import"},
-                "replayed": False,
-                "event_ids": [],
-            }
+            # Parent input is already frozen in the creation receipt/metadata;
+            # resume its same child receipts rather than creating a new project.
+            return None
         result = dict(saved)
         result["outcome"] = "replayed"
         result["replayed"] = True
@@ -901,6 +902,28 @@ class FiniteWorkOperations:
         return result
 
     def _import_project(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        try:
+            result = self._import_project_steps(payload, request_id=request_id, actor=actor)
+        except Exception as exc:
+            if self._receipt(request_id) is None or type(exc).__name__ == "ReplayConflictError":
+                raise
+            result = {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)}}
+        parent = self._receipt(request_id)
+        if (parent is None or result.get("outcome") != "error"
+                or result.get("error", {}).get("code") in {"replay_conflict", "invalid_transfer_snapshot", "transfer_digest_mismatch"}):
+            return result
+        snapshot = payload.get("snapshot", {})
+        keys = [request_id + ":adoption", request_id + ":result"]
+        keys += [request_id + ":document:" + str(index) for index in range(len(snapshot.get("documents", ())))]
+        keys += [request_id + ":document-link:" + str(index) for index in range(len(snapshot.get("document_links", ())))]
+        receipts = [self._receipt(key) for key in keys]
+        return {**result, "outcome": "partial", "atomic": False, "project_ref": _json_value(parent.result_ref),
+                "committed": [_receipt_dict(receipt) for receipt in receipts if receipt is not None],
+                "pending_request_keys": [key for key, receipt in zip(keys, receipts) if receipt is None],
+                "recovery": "Inspect retained receipts and resume the exact snapshot and request key.",
+                "execution": False, "dispatch": False}
+
+    def _import_project_steps(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Passively import a project snapshot through ProjectSheet adoption.
 
         Import creates one new pending project in the destination authority,
@@ -924,9 +947,16 @@ class FiniteWorkOperations:
         computed_digest = sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         if supplied_digest != computed_digest:
             return {"outcome": "error", "error": {"code": "transfer_digest_mismatch", "message": "snapshot digest does not match its public records", "operation": "work.project.import"}, "event_ids": []}
+        from .project_folder import validate_transfer
+        try:
+            validate_transfer(snapshot)
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"outcome": "rejected", "error": {"code": "invalid_transfer_provenance", "message": str(exc)}, "event_ids": []}
         before = self._receipt(request_id)
         if before is not None:
-            return self._replay_import(before=before, computed_digest=computed_digest, request_id=request_id)
+            replay = self._replay_import(before=before, computed_digest=computed_digest, request_id=request_id)
+            if replay is not None:
+                return replay
         edit_payload = source.get("payload") if isinstance(source.get("payload"), Mapping) else source
         title = edit_payload.get("title") or edit_payload.get("name") or "Imported pending project"
         outcome = edit_payload.get("outcome", "")
@@ -947,7 +977,7 @@ class FiniteWorkOperations:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
             raise
-        target_ref = created.ref
+        target_ref = self._receipt(request_id).result_ref
         raw_tasks = list(snapshot.get("tasks", ()))
         task_ids = {}
         for item in raw_tasks:
@@ -1516,6 +1546,10 @@ class FiniteWorkOperations:
         }
 
     def _open_existing(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self.create_open_port is not None:
+            opened = self._project_authoring("work.project.checkout", payload, request_id=request_id, actor=actor)
+            return {**opened, "opened": {**opened, "status": opened["outcome"]},
+                    "replayed": opened["outcome"] == "replayed"}
         if self.authoring_port is None:
             return self._unsupported("work.pending.open", request_id=request_id, code="canonical_authoring_port_unavailable", message="accepted AuthoringSessionService command port was not injected")
         actor_value = self._actor(actor)
@@ -1530,6 +1564,43 @@ class FiniteWorkOperations:
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "authoring.open"}, "replayed": False, "event_ids": []}
             raise
         return self._receipt_result(request_id, outcome="replayed" if before is not None else getattr(result, "status", "opened"), project_ref=_json_value(ref), opened=self._open_dict(result), replayed=before is not None)
+
+    def _project_folder(self, operation, payload, *, request_id, actor):
+        if self.create_open_port is None:
+            return self._unsupported(operation, request_id=request_id, code="project_authoring_unavailable")
+        arguments = {**dict(payload), "actor": self._actor(actor), "request_id": request_id}
+        methods = {"work.project.folder-import": "import_project_folder",
+                   "work.project.folder-export": "export_project_folder",
+                   "work.project.folder-check-in": "finish_project_folder",
+                   "work.project.folder-release": "release_project_folder"}
+        try:
+            return _json_value(getattr(self.create_open_port, methods[operation])(**arguments))
+        except Exception as exc:
+            code = type(exc).__name__
+            parent = self._receipt(request_id + ":project") if operation == "work.project.folder-import" else None
+            if parent is not None and code not in {"ReplayConflictError", "VersionConflictError"}:
+                return {"outcome": "partial", "atomic": False, "project_ref": _json_value(parent.result_ref),
+                    "committed": [_receipt_dict(parent)], "pending": list(payload.get("files", {})),
+                    "error": {"code": code, "message": str(exc)},
+                    "recovery": "Inspect retained receipts and resume the exact input and request key.",
+                    "execution": False, "dispatch": False}
+            return {"outcome": "conflict" if code in {"ReplayConflictError", "VersionConflictError"} else "rejected",
+                    "error": {"code": code, "message": str(exc)}, "execution": False, "dispatch": False}
+
+    def _project_authoring(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self.create_open_port is None:
+            return self._unsupported(operation, request_id=request_id, code="project_authoring_unavailable")
+        arguments = {"project_ref": payload["project_ref"], "actor": self._actor(actor), "request_id": request_id}
+        try:
+            if operation == "work.project.checkout":
+                return _json_value(self.create_open_port.open_project_sheet(**arguments))
+            return _json_value(self.create_open_port.finish_project_sheet(**arguments,
+                session_id=payload["session_id"], project_json=payload["project_json"]))
+        except Exception as exc:
+            if type(exc).__name__ in {"ReplayConflictError", "VersionConflictError"}:
+                return {"outcome": "conflict", "error": {"code": "replay_conflict" if type(exc).__name__ == "ReplayConflictError" else "stale_base", "message": str(exc)},
+                        "execution": False, "dispatch": False}
+            raise
 
     def _attention(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         observation = {"kind": "revisit" if operation.endswith("revisit") else "prerequisite-satisfied", "payload": dict(payload), "dispatch": False}
@@ -2167,11 +2238,17 @@ class FiniteWorkOperations:
         if "outcome" in edit:
             changes["outcome"] = edit["outcome"]
         before = self._owner_reader.get_receipt(request_id)
+        project_ref = ResourceRef.from_dict(payload["project_ref"])
+        if project_ref.revision is None:
+            return {"outcome": "conflict", "error": {"code": "stale_base", "message": "pending edit requires the current project revision"},
+                    "replayed": False, "event_ids": []}
         try:
-            record = self.port.revise(ResourceRef.from_dict(payload["project_ref"]), **changes)
+            record = self.port.revise(project_ref, base_revision=project_ref.revision, **changes)
         except Exception as exc:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.edit"}, "replayed": False, "event_ids": []}
+            if type(exc).__name__ == "VersionConflictError":
+                return {"outcome": "conflict", "error": {"code": "stale_base", "message": str(exc)}, "replayed": False, "event_ids": []}
             raise
         receipt = self._owner_reader.get_receipt(request_id)
         observed = self._owner_reader.get_record(record.ref)

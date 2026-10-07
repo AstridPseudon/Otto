@@ -50,6 +50,10 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
     """Classify nested file operations without releasing owner custody."""
     # Setup inspection is finite and inert; prepare/activate stay held during
     # the admitted native wait and cannot acquire another execution effect.
+    if (request.get("command") == "project-authoring"
+            and request.get("operation", "read") in {"create", "open", "check-in", "read", "import-folder", "export-folder", "release"}
+            and not set(request) - {"command", "operation", "request_key", "edit", "project_ref", "project_json", "session_id", "files", "document_changes"}):
+        return "admitted"  # Finite authenticated owner authoring, including siblings.
     if (request.get("command") == "operating-setup"
             and request.get("operation", "read") == "read"
             and not set(request) - {"command", "operation", "setup", "request_key"}

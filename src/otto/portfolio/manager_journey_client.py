@@ -173,6 +173,51 @@ def command_result_summary(value: Any) -> Any:
                     ("state", "completed", "settled", "schedule_id", "request_id", "project_completion_recorded",
                      "lifecycle", "reconciliation", "accepted", "supported", "operation", "command", "reason")
                     if key in item and isinstance(item[key], (str, bool, int, type(None), dict, list))}
+    handoff = value.get("handoff")
+    if isinstance(handoff, dict):
+        compact_handoff = {key: handoff[key] for key in
+                           ("schema", "as_of", "lifecycle", "envelope_sha256", "next_action")
+                           if key in handoff and isinstance(handoff[key], (str, bool, int, type(None), dict))}
+        for section in ("manager_assignment", "current_occurrence", "effective_context", "budget"):
+            item = handoff.get(section)
+            if isinstance(item, dict):
+                compact_handoff[section] = {
+                    key: item[key] for key in ("state", "role", "principal", "generation", "status", "session",
+                                                "schedule_id", "version", "delivery_state", "completion_state",
+                                                "stop_state", "physical_session_id", "in_flight_request",
+                                                "last_completed_request", "provider_called", "source_sha256",
+                                                "retained_command",
+                                                "instruction_sha256", "evidence_sha256", "source_refs", "base_resource",
+                                                "pool_ref", "capacity_units", "remaining_allowance_units",
+                                                "available_capacity_units", "cumulative_used_units")
+                    if key in item and isinstance(item[key], (str, bool, int, type(None), dict))
+                }
+        for section in ("tasks", "results", "reports", "decisions"):
+            rows = handoff.get(section)
+            if isinstance(rows, list):
+                compact_handoff[section] = []
+                for row in rows[:64]:
+                    if not isinstance(row, dict):
+                        continue
+                    compact_handoff[section].append({
+                        key: row[key] for key in ("ref", "source_ref", "result_ref", "task_ref", "assignment_ref",
+                                                   "generation", "title", "lifecycle", "state", "status", "terminal",
+                                                   "assessed", "accepted", "disposition", "evidence_refs", "source_sha256")
+                        if key in row and isinstance(row[key], (str, bool, int, type(None), dict, list))
+                    })
+        outstanding = handoff.get("outstanding")
+        if isinstance(outstanding, dict):
+            compact_handoff["outstanding"] = {
+                key: outstanding[key] for key in ("effects", "help_state", "blockers")
+                if key in outstanding and isinstance(outstanding[key], (dict, list))
+            }
+        inventory = handoff.get("inventory")
+        if isinstance(inventory, dict):
+            compact_handoff["inventory"] = {
+                key: inventory[key] for key in ("state", "outcome", "read_only", "native_observation", "historical_reuse")
+                if key in inventory and isinstance(inventory[key], (str, bool, int, type(None)))
+            }
+        summary["handoff"] = compact_handoff
     return summary
 
 
@@ -227,6 +272,16 @@ def add_help_parsers(commands: Any) -> list[Any]:
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
     add_help_parsers(commands)
+    author = commands.add_parser("project-authoring", help="create an inert pending sibling, open or check in project.json through the live owner",
+        description="Requires installed host owner authentication. project.json is a semantic projection; generated session and revision bases remain in EDT. A conflict preserves local edits; activation is separate.")
+    author.add_argument("--operation", choices=("create", "open", "check-in", "read", "import-folder", "export-folder", "release"), default="read")
+    author.add_argument("--request-key")
+    author.add_argument("--edit", type=json.loads)
+    author.add_argument("--project-ref", type=json.loads)
+    author.add_argument("--project-json", type=json.loads)
+    author.add_argument("--session-id")
+    author.add_argument("--files", type=json.loads, help="explicit bounded relative paths to UTF-8 text; raw import never fabricates transfer refs")
+    author.add_argument("--document-changes", type=json.loads, help="explicit add/edit/move/unlink actions; commits are resumable per document")
     setup = commands.add_parser("operating-setup", help="read or prepare draft/ready/active setup; activate only after shared readiness",
         description=("Preparation validates existing role schedules, adopted BASE, conversations, execution contracts and "
                      "required acceptance scopes without provider work. The result distinguishes advice from operational "

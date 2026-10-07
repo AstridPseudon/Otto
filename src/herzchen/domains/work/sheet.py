@@ -267,6 +267,10 @@ class _ProjectSheetEngine:
     create_pending_project = create_pending
     create = create_pending
 
+    def validate_edit(self, sheet: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Validate semantic author input without changing any owner record."""
+        return self._validate_sheet(sheet)
+
     def apply(
         self,
         project: Any,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,6 +12,7 @@ from herzchen.contracts import ResourceRef
 from .manager_journey_command import ManagerJourneyCommands
 from .execution_operations import compact_project_status, read_project_progress_reports
 from .owner_readers import json_value
+from .manager_handoff import compose_manager_handoff
 
 
 def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: Mapping[str, Any],
@@ -75,7 +77,7 @@ class ManagerJourneyService:
     def __init__(self, *, server: Any, host: Any, run_path: str | Path,
                  workspace: str | Path, policy: Any = None,
                  orchestrator_principal: str | None = None, observe_schedules: Any = None,
-                 help_reply_authorizer: Any = None) -> None:
+                 help_reply_authorizer: Any = None, authoring_authorizer: Any = None) -> None:
         self.server, self.host = server, host
         self._host_execution = server._execution
         self.run_path, self.workspace = Path(run_path).resolve(), Path(workspace).resolve()
@@ -84,6 +86,7 @@ class ManagerJourneyService:
             settle_execution=self._settle_execution)
         self.orchestrator_principal, self.observe_schedules = orchestrator_principal, observe_schedules
         self.help_reply_authorizer = help_reply_authorizer
+        self.authoring_authorizer = authoring_authorizer
 
     def _execution(self, **options: Any) -> Any:
         """Bind every execution path to the installed owner's assessment policy.
@@ -126,7 +129,7 @@ class ManagerJourneyService:
         loop = self.server.portfolio._issue_loop()
         help_read = loop.read_issues(project_ref=project_ref) if loop is not None else {"issues": []}
         issues = help_read.get("issues", []) if isinstance(help_read, Mapping) else []
-        occurrences = self.server.due_port.list_due()
+        occurrences = self._known_occurrences(state)
         current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state.get("schedule_id")
         operation = self.server.due_port.read_due(current_id) if current_id else None
         operation = dict(operation) if isinstance(operation, Mapping) else {}
@@ -141,15 +144,172 @@ class ManagerJourneyService:
             view, task_refs=state["task_refs"], reports=reports, occurrences=occurrences,
             help_issues=issues, required_scope=state.get("required_scope"), operation=operation,
         )
+        handoff = self._handoff(view=view, status=status, operation=operation,
+            occurrences=occurrences, help_issues=issues)
         return {
             "outcome": "ok", "project_ref": project_ref,
             "task_refs": state["task_refs"], "workers": state.get("workers", {}),
             "manager": state.get("manager"), "manager_assignment_ref": state.get("assignment_ref"),
+            "handoff": handoff,
             "status": status, **status,
         }
 
+    def _known_occurrences(self, state: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """Read only exact handles already named by the current owner state."""
+        ids: list[str] = []
+        for value in (state.get("schedule_id"), (state.get("manager_continuation") or {}).get("schedule_id")):
+            if isinstance(value, str) and value and value not in ids:
+                ids.append(value)
+        for worker in (state.get("workers") or {}).values():
+            if isinstance(worker, Mapping) and isinstance(worker.get("schedule_id"), str):
+                if worker["schedule_id"] not in ids:
+                    ids.append(worker["schedule_id"])
+        rows = []
+        for schedule_id in ids[:128]:
+            value = self.server.due_port.read_due(schedule_id)
+            if isinstance(value, Mapping):
+                rows.append(dict(value))
+        return rows
+
+    def _effective_context(self, operation: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Prepare current instructions through the trusted owner readers."""
+        target = operation.get("target") if isinstance(operation.get("target"), Mapping) else {}
+        project_ref = target.get("project_ref") or self.server.state.get("project_ref")
+        assignment_ref = operation.get("assignment_ref") or self.server.state.get("assignment_ref")
+        mandate_ref = target.get("mandate_ref") or operation.get("mandate_ref")
+        task_ref = target.get("task_ref")
+        generation = operation.get("generation") or self.server.state.get("manager_generation")
+        if not all(isinstance(value, Mapping) for value in (project_ref, assignment_ref, mandate_ref)):
+            return {"state": "unknown", "reason": "current occurrence has no complete instruction refs"}
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            return {"state": "unknown", "reason": "current assignment generation is unavailable"}
+        try:
+            from .operating_brief import prepare_canonical_operating_brief
+            from .owner_readers import assignment_reader, mandate_reader, project_reader, task_reader
+            operations = self.server.portfolio.operations
+            kwargs: dict[str, Any] = {
+                "role": "manager", "project_ref": project_ref,
+                "assignment_ref": assignment_ref, "mandate_ref": mandate_ref,
+                "expected_generation": generation,
+                "project_reader": project_reader(operations, project_ref),
+                "assignment_reader": assignment_reader(operations, assignment_ref),
+                "mandate_reader": mandate_reader(operations, project_ref, mandate_ref),
+                "resource_reader": operations.content_port,
+                "as_of": self._as_of(),
+            }
+            if isinstance(task_ref, Mapping):
+                kwargs["task_ref"] = task_ref
+                kwargs["task_reader"] = task_reader(operations, project_ref, task_ref)
+            prepared = prepare_canonical_operating_brief(**kwargs)
+            render = prepared.get("render") if isinstance(prepared.get("render"), Mapping) else {}
+            base = prepared.get("base_resource") if isinstance(prepared.get("base_resource"), Mapping) else {}
+            contract = prepared.get("mandate_instruction_contract")
+            contract_view = None
+            if isinstance(contract, Mapping):
+                contract_view = {key: contract.get(key) for key in
+                    ("source_ref", "task_ref", "assignment_ref", "generation", "dispatch_enabled")
+                    if key in contract}
+            role_instructions = render.get("role_instructions")
+            instruction_preview = role_instructions[:2048] if isinstance(role_instructions, str) else None
+            return {
+                "state": "known", "role": prepared.get("role"),
+                "generation": prepared.get("generation"),
+                "source_refs": prepared.get("source_refs"),
+                "base_resource": {key: base.get(key) for key in ("ref", "revision", "content_sha256") if key in base},
+                "instruction_sha256": self._digest_text(role_instructions),
+                "role_instructions": instruction_preview,
+                "role_instructions_truncated": isinstance(role_instructions, str) and len(role_instructions) > len(instruction_preview or ""),
+                "mandate_instruction_contract": contract_view,
+                "evidence_sha256": prepared.get("evidence_sha256"),
+            }
+        except Exception as exc:
+            return {"state": "unknown", "reason": "current operating brief unavailable", "error": str(exc)[:512],
+                    "source_refs": {"project": project_ref, "assignment": assignment_ref, "mandate": mandate_ref}}
+
+    @staticmethod
+    def _digest_text(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _as_of() -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _budget(self) -> Mapping[str, Any]:
+        configured = self.server.state.get("assessment_policy")
+        if not isinstance(configured, Mapping):
+            return {"state": "unknown", "reason": "owner assessment policy is unavailable"}
+        try:
+            from herzchen.contracts import ResourceRef
+            from herzchen.kernel import LimitService
+            pool_value = configured.get("pool_ref")
+            if pool_value is None:
+                pool_value = {"authority": self.server.state["authority"], "kind": "limit", "id": configured["pool_id"]}
+            pool = LimitService(self.server.store).get_pool(ResourceRef.from_dict(pool_value))
+            if pool is None:
+                return {"state": "unknown", "pool_ref": pool_value, "reason": "owner limit pool is missing"}
+            return {"state": "known", "pool_ref": pool.ref.to_dict(),
+                    "capacity_units": pool.capacity_units,
+                    "cumulative_allowance_units": pool.cumulative_allowance_units,
+                    "held_units": pool.held_units,
+                    "cumulative_used_units": pool.cumulative_used_units,
+                    "available_capacity_units": pool.available_capacity_units,
+                    "remaining_allowance_units": pool.remaining_allowance_units,
+                    "local_only": configured.get("local_only") is True,
+                    "source": "owner.limit.reader"}
+        except Exception as exc:
+            return {"state": "unknown", "reason": "owner limit read failed", "error": str(exc)[:512]}
+
+    def _handoff(self, *, view: Mapping[str, Any], status: Mapping[str, Any],
+                 operation: Mapping[str, Any], occurrences: Sequence[Mapping[str, Any]],
+                 help_issues: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+        state = self.server.state
+        project_ref = state["project_ref"]
+        assignment = None
+        try:
+            from herzchen.contracts import ResourceRef
+            current = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(state["assignment_ref"]))
+            assignment = self.server.portfolio.operations._assignment_dict(current)
+        except Exception:
+            assignment = {"ref": state.get("assignment_ref"), "principal": state.get("manager"),
+                          "generation": state.get("manager_generation"), "role": "manager", "status": "unknown"}
+        inventory = {"state": "unknown", "reason": "manager inventory unavailable"}
+        try:
+            raw_inventory = self.server.portfolio.manager_inventory(actor=state["owner"])
+            if isinstance(raw_inventory, Mapping):
+                matches = [item for item in raw_inventory.get("projects", [])
+                           if isinstance(item, Mapping) and item.get("project_ref") == project_ref]
+                inventory = {key: raw_inventory.get(key) for key in
+                             ("outcome", "read_only", "native_observation", "historical_reuse") if key in raw_inventory}
+                inventory["state"] = "known"
+                inventory["project"] = matches[0] if matches else {"project_ref": project_ref, "state": "unknown"}
+        except Exception as exc:
+            inventory = {"state": "unknown", "reason": "manager inventory read failed", "error": str(exc)[:512]}
+        inbox = {}
+        try:
+            inbox = self.server.portfolio.manager_inbox(project_ref, actor=state["owner"], limit=128, safety_scan=True)
+        except Exception as exc:
+            inbox = {"error": str(exc)[:512]}
+        current_id = operation.get("schedule_id")
+        current = next((item for item in occurrences if item.get("schedule_id") == current_id), operation)
+        history = [item for item in occurrences if item.get("schedule_id") != current_id]
+        return compose_manager_handoff(
+            project_ref=project_ref, project=view.get("project"), assignment=assignment,
+            assignment_ref=state.get("assignment_ref"), current_occurrence=current,
+            historical_occurrences=history, effective_context=self._effective_context(operation),
+            status=status, tasks=inbox.get("tasks", []) if isinstance(inbox, Mapping) else [],
+            results=inbox.get("results", []) if isinstance(inbox, Mapping) else [],
+            reports=inbox.get("reports", []) if isinstance(inbox, Mapping) else [],
+            decisions=inbox.get("decisions", []) if isinstance(inbox, Mapping) else [],
+            help_state={"state": "known", "issues": list(help_issues)[:128]}, budget=self._budget(),
+            inventory=inventory, as_of=self._as_of(),
+        )
+
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "project-authoring":
+            return self._project_authoring(request)
         if command == "status":
             return self._status(request)
         if command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
@@ -357,6 +517,55 @@ class ManagerJourneyService:
             return result
         return self.server.handle(request)
 
+    def _project_authoring(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Finite sibling authoring on the existing owner lane; never dispatch."""
+        if not callable(self.authoring_authorizer):
+            return {"outcome": "denied", "reason": "host owner authoring authentication is not installed", "provider_called": False}
+        actor = self.authoring_authorizer(request)
+        if actor != self.server.owner.owner_actor:
+            raise PermissionError("project authoring requires the authenticated service owner")
+        allowed = {"command", "operation", "request_key", "edit", "project_ref", "project_json", "session_id", "files", "document_changes"}
+        if set(request) - allowed:
+            raise ValueError("project authoring cannot change the bound owner or choose an execution operation")
+        values = {key: value for key, value in request.items() if value is not None}
+        operation = values.get("operation", "read")
+        common = {"command", "operation"}
+        fields = {"create": {"request_key", "edit"}, "open": {"request_key", "project_ref"},
+                  "check-in": {"request_key", "project_ref", "project_json", "session_id"}, "read": {"project_ref"},
+                  "import-folder": {"request_key", "project_json", "files"},
+                  "export-folder": {"request_key", "project_ref"},
+                  "release": {"request_key", "project_ref", "session_id"}}
+        if operation == "check-in" and "document_changes" in values:
+            fields["check-in"].add("document_changes")
+        if operation not in fields or set(values) != common | fields[operation]:
+            raise ValueError("project authoring requires exactly the fields for its selected operation")
+        from .intake import OttoPortfolio
+        portfolio = OttoPortfolio(self.server.owner.consumer_operations())
+        options = {"actor": actor.actor, "request_id": values.get("request_key")}
+        if operation == "release":
+            return portfolio.release_project(values["project_ref"], session_id=values["session_id"], **options)
+        if operation == "import-folder":
+            return portfolio.import_folder(**options, project_json=values["project_json"], files=values["files"])
+        if operation == "export-folder":
+            return portfolio.export_folder(values["project_ref"], **options)
+        if operation == "create":
+            return portfolio.create_pending(**options, edit=values["edit"], open_project=False, orchestrated=False)
+        if operation == "open":
+            return portfolio.checkout_project(values["project_ref"], **options)
+        if operation == "check-in":
+            return portfolio.check_in_project(values["project_ref"], session_id=values["session_id"],
+                project_json=values["project_json"], document_changes=values.get("document_changes"), **options)
+        # Owner authentication issues an exact finite read grant for this
+        # sibling. No persisted project roster or second writer is introduced.
+        from .herzchen_binding import ProjectReadGrant
+        ref = ResourceRef.from_dict(values["project_ref"])
+        operations = self.server.owner.consumer_operations()
+        grant = ProjectReadGrant(actor, (ref.id,), "host-owner-authoring", "v1")
+        from .herzchen_binding import FiniteWorkOperations
+        scoped = FiniteWorkOperations(port=operations.port, reader=self.server.owner.graph.reader,
+            binding=self.server.owner.binding, project_read_grant=grant)
+        return OttoPortfolio(scoped).read_pending(ref, actor=actor.actor)
+
     def _help(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Manager operations and the host-bound recipient reply over IssueLoop."""
         self.commands._authorize()
@@ -540,7 +749,7 @@ class ManagerJourneyService:
 def install_manager_journey_service(server: Any, *, run_path: str | Path, workspace: str | Path,
                                     policy: Any = None, orchestrator_principal: str | None = None,
                                     observe_schedules: Any = None,
-                                    help_reply_authorizer: Any = None) -> ManagerJourneyService:
+                                    help_reply_authorizer: Any = None, authoring_authorizer: Any = None) -> ManagerJourneyService:
     """Owner adoption hook, called once after the existing server.start().
 
     The owner installs a tested source snapshot, adds this handler composition,
@@ -553,11 +762,18 @@ def install_manager_journey_service(server: Any, *, run_path: str | Path, worksp
     and conversation independently of request fields. Omitting it disables
     respond-help. IssueLoop also checks the actor against the current recipient
     before recording the response or routing a continuation.
+
+    authoring_authorizer is a separate optional host-owned caller boundary.
+    It must authenticate the service owner's caller independently of JSON
+    fields and return the bound owner actor. Omitting it disables sibling
+    project authoring. This installs finite authoring in the same owner lane;
+    it never admits a provider invocation or changes manager custody.
     """
     host = server.execution_host
     service = ManagerJourneyService(server=server, host=host, run_path=run_path,
         workspace=workspace, policy=policy, orchestrator_principal=orchestrator_principal,
-        observe_schedules=observe_schedules, help_reply_authorizer=help_reply_authorizer)
+        observe_schedules=observe_schedules, help_reply_authorizer=help_reply_authorizer,
+        authoring_authorizer=authoring_authorizer)
     server._execution = service._execution
     host.handler = service
     return service

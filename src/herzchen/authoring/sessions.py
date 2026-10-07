@@ -941,6 +941,7 @@ class _AuthoringSessionServiceEngine:
         pending: Optional[bool] = None,
         retirement_manifest: Optional[Sequence[str]] = None,
         retirement_guard: Optional[object] = None,
+        snapshot_digest: Optional[str] = None,
     ) -> FinishResult:
         """Serialize the complete typed finish operation on the common owner."""
         with self.__writer.transaction():
@@ -949,6 +950,7 @@ class _AuthoringSessionServiceEngine:
                 expected_base_revision=expected_base_revision, apply=apply,
                 pending=pending, retirement_manifest=retirement_manifest,
                 retirement_guard=retirement_guard,
+                snapshot_digest=snapshot_digest,
             )
 
     def _finish_locked(
@@ -963,11 +965,16 @@ class _AuthoringSessionServiceEngine:
         pending: Optional[bool] = None,
         retirement_manifest: Optional[Sequence[str]] = None,
         retirement_guard: Optional[object] = None,
+        snapshot_digest: Optional[str] = None,
     ) -> FinishResult:
         if mode not in {"manual", "idle"}:
             raise ValueError("finish mode must be manual or idle")
         with self._finish_lock:
             request_payload = {"session": handle.session_id, "mode": mode, "expected_base_revision": expected_base_revision, "pending": pending}
+            if snapshot_digest is not None:
+                if not isinstance(snapshot_digest, str) or len(snapshot_digest) != 64 or any(c not in "0123456789abcdef" for c in snapshot_digest):
+                    raise ValueError("snapshot_digest must be a SHA-256 digest")
+                request_payload["snapshot_digest"] = snapshot_digest
             digest = self._request_digest("finish", request_id, request_payload, target=handle.scope, actor=handle.actor)
             prior = self._prior_receipt(request_id, digest)
             if prior is not None:
@@ -1004,6 +1011,8 @@ class _AuthoringSessionServiceEngine:
                     raise InvalidSessionError("capture-failure recovery result was not durably bound")
                 return recovered
             base_expected = expected_base_revision or checkout.base_revision
+            if snapshot_digest is not None and snap.digest != snapshot_digest:
+                return self._reject_finish(handle, request_id, digest, checkout, snap, "snapshot digest mismatch", CaptureError, retirement_guard=retirement_guard)
             if base_expected != checkout.base_revision:
                 return self._reject_finish(handle, request_id, digest, checkout, snap, "base revision mismatch", BaseRevisionMismatchError, retirement_guard=retirement_guard)
             is_pending = checkout.target_kind in {"project", "project-sheet", "pending-project"} and (pending if pending is not None else bool(record.payload.get("pending"))) and snap.data == b64decode(record.payload.get("draft_bytes_b64", ""))

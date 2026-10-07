@@ -1018,6 +1018,50 @@ class OttoPortfolio:
         request_id, actor = self._request(request_id, actor)
         return self._execute("work.pending.open", {"project_ref": _ref(project_ref)}, request_id=request_id, actor=actor)
 
+    def checkout_project(self, project_ref: Any, *, actor: str, request_id: str) -> dict[str, Any]:
+        """Return editable project.json and an opaque EDT session; no activation."""
+        request_id, actor = self._request(request_id, actor)
+        return self._execute("work.project.checkout", {"project_ref": _ref(project_ref)}, request_id=request_id, actor=actor)
+
+    def check_in_project(self, project_ref: Any, *, session_id: str, project_json: Mapping[str, Any],
+                         actor: str, request_id: str, document_changes: Optional[Sequence[Mapping[str, Any]]] = None) -> dict[str, Any]:
+        """Commit semantic project/task edits through the existing owner finish."""
+        request_id, actor = self._request(request_id, actor)
+        if document_changes is not None:
+            return self._execute("work.project.folder-check-in", {"project_ref": _ref(project_ref),
+                "session_id": _text(session_id, "session_id"), "project_json": dict(project_json),
+                "document_changes": list(document_changes)}, request_id=request_id, actor=actor)
+        return self._execute("work.project.check-in", {"project_ref": _ref(project_ref),
+            "session_id": _text(session_id, "session_id"),
+            "project_json": _json_copy(dict(project_json), field="project_json")}, request_id=request_id, actor=actor)
+
+    def release_project(self, project_ref: Any, *, session_id: str, actor: str, request_id: str) -> dict[str, Any]:
+        """Release checkout custody, retaining local files for explicit rebase."""
+        return self._execute("work.project.folder-release", {"project_ref": _ref(project_ref),
+            "session_id": _text(session_id, "session_id")}, request_id=request_id, actor=actor)
+
+    def export_project(self, project_ref: Any, *, document_refs: Sequence[Any] = (),
+                       association_refs: Sequence[Any] = (), actor: str, request_id: str) -> dict[str, Any]:
+        """Export selected canonical records for a distinct owner transfer."""
+        return self._execute("work.project.export", {"project_ref": _ref(project_ref),
+            "document_refs": [_ref(ref) for ref in document_refs],
+            "association_refs": [_ref(ref) for ref in association_refs]}, request_id=request_id, actor=actor)
+
+    def import_project(self, snapshot: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
+        """Import a trusted source-owner export; raw files use import_folder."""
+        return self._execute("work.project.import", {"snapshot": dict(snapshot)}, request_id=request_id, actor=actor)
+
+    def import_folder(self, *, project_json: Mapping[str, Any], files: Mapping[str, str],
+                      actor: str, request_id: str) -> dict[str, Any]:
+        """Import explicit text files as target-owned pending documents; resumable."""
+        return self._execute("work.project.folder-import", {"project_json": dict(project_json),
+            "files": dict(files)}, request_id=request_id, actor=actor)
+
+    def export_folder(self, project_ref: Any, *, actor: str, request_id: str) -> dict[str, Any]:
+        """Export a raw text package; canonical transfer remains a separate API."""
+        return self._execute("work.project.folder-export", {"project_ref": _ref(project_ref)},
+            request_id=request_id, actor=actor)
+
     def revisit(self, project_ref: Any, revisit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         if not isinstance(revisit, Mapping) or not revisit:

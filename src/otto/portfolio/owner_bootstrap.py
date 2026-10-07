@@ -164,7 +164,10 @@ def _call_owner_materializer(materializer: Any, **values: Any) -> Any:
     return materializer(**{key: value for key, value in values.items() if key in accepted})
 
 
-class _CreateAndOpenOwnerEngine:
+from .project_folder import ProjectFolderOwner
+
+
+class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
     """Owner-only composition over the accepted ProjectSheet and EDT services."""
 
     def __init__(self, store: Any, *, sheet: Any, authoring: Any, materializer: Any = None) -> None:
@@ -173,6 +176,13 @@ class _CreateAndOpenOwnerEngine:
         self.sheet = sheet
         self.authoring = authoring
         self.materializer = materializer
+        from herzchen.content import ContentCommandHandler
+        from herzchen.content.packets import ContextPacketService
+        from herzchen.content import domain_contribution as content_contribution
+        self.content = ContentCommandHandler(store)
+        # Folder visibility only needs the already admitted DAT domain.
+        # Its sealed handler cannot mutate the unrelated attention domain.
+        self.folder_visibility = ContextPacketService(store.domain_handler((content_contribution(),)))
 
     def _planned_project_ref(self, project_request_key: str) -> Any:
         from herzchen.contracts import ResourceRef
@@ -271,6 +281,121 @@ class _CreateAndOpenOwnerEngine:
             "checkout_path": handle.checkout_path,
         }
 
+    def _project_draft(self, project: Any, request_id: str, actor: Any = None) -> dict[str, Any]:
+        """Generate semantic bytes and CAS pins from the same owner read."""
+        view = _json_value(self.sheet.export(project))
+        authored = view["project"]["authored"]
+        # Operational metadata and observations never enter project.json.
+        fields = ("title", "outcome", "scope", "approach", "acceptance", "protocol", "custom")
+        draft = {key: authored[key] for key in fields if key in authored}
+        tasks = []
+        bases = {}
+        for task in view["tasks"]:
+            ref = task["ref"]
+            bases[ref["id"]] = ref["revision"]
+            value = {key: val for key, val in task["authored"].items()
+                     if key in view["definitions"]["task_editable"] and key not in {"metadata", "fields", "lifecycle"}}
+            value["id"] = ref["id"]
+            tasks.append(value)
+        draft["tasks"] = tasks
+        files, documents = self._folder_tree(project, actor) if actor is not None else ({}, {})
+        return {"document_files": files, "document_bases": documents,
+                "ref": view["project"]["ref"], "base_task_revisions": bases,
+                "project_json": draft, "open_request_key": request_id}
+
+    @staticmethod
+    def _draft_bytes(draft: Mapping[str, Any]) -> bytes:
+        return json.dumps(dict(draft), ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")
+
+    def open_project_sheet(self, *, project_ref: Any, actor: Any, request_id: str) -> Mapping[str, Any]:
+        """Open a semantic project.json projection; generated pins stay in EDT."""
+        from herzchen.contracts import AuthenticatedActor, ResourceRef
+        from herzchen.kernel import VersionConflictError
+        if not isinstance(actor, AuthenticatedActor) or actor.authority != self.authority:
+            raise PermissionError("project authoring requires an owner-bound actor")
+        ref = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        if ref.authority != self.authority or ref.kind != "work.project" or ref.revision is None:
+            raise ValueError("project checkout requires an exact owner project revision")
+        scope = ResourceRef(self.authority, "authoring-scope", ref.id)
+        previous = self.reader.get_identity(scope)
+        prior = self.reader.get_receipt(request_id)
+        if prior is not None:
+            state = None if previous is None else previous.payload.get("project")
+            if (not isinstance(state, Mapping) or state.get("open_request_key") != request_id
+                    or state.get("ref") != ref.to_dict()):
+                from herzchen.contracts import ReplayConflictError
+                raise ReplayConflictError("checkout key differs from the retained project session")
+        else:
+            state = self._project_draft(ref, request_id, actor=actor)
+            if state["ref"] != ref.to_dict():
+                raise VersionConflictError("project checkout base is stale")
+
+        def materialize(checkout: Any, initial_bytes: bytes) -> Mapping[str, Any]:
+            result = {} if self.materializer is None else _call_owner_materializer(
+                self.materializer, checkout=checkout, initial_bytes=initial_bytes, project=ref)
+            result = dict(result) if isinstance(result, Mapping) else {"path": result}
+            result["project"] = state
+            return self._folder_materialize(result, state.get("document_files", {}))
+
+        opened = self.authoring.open(ref, actor, request_id=request_id, target_kind="project-sheet",
+            base_revision=ref.revision, initial_content=self._draft_bytes(state["project_json"]),
+            project=state, materialize=materialize, pending=True, purpose="otto", activity="editing")
+        return {"outcome": opened.status, "project_ref": ref.to_dict(),
+                "session_id": None if opened.handle is None else opened.handle.session_id,
+                "target_kind": "project-sheet", "base_revision": ref.revision,
+                "project_json": state["project_json"], "document_files": state.get("document_files", {}),
+                "error": opened.error,
+                "execution": False, "dispatch": False}
+
+    def finish_project_sheet(self, *, project_ref: Any, session_id: str, project_json: Mapping[str, Any],
+                             actor: Any, request_id: str) -> Mapping[str, Any]:
+        """Apply one WRK sheet and retire its EDT session in the common transaction."""
+        from herzchen.contracts import AuthoringCheckout, ResourceRef
+        from herzchen.authoring.sessions import SessionHandle
+        from herzchen.kernel import VersionConflictError
+        ref = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        if ref.authority != self.authority or ref.kind != "work.project" or ref.revision is None:
+            raise ValueError("project check-in requires its exact checkout project revision")
+        record = self.reader.get_identity(ResourceRef(self.authority, "authoring-scope", ref.id))
+        state = None if record is None else record.payload.get("project")
+        if not isinstance(state, Mapping) or state.get("ref") != ref.to_dict() or "base_task_revisions" not in state:
+            raise PermissionError("project check-in has no matching owner-issued checkout")
+        checkout = AuthoringCheckout.from_dict(record.payload["checkout"])
+        if checkout.actor != actor or checkout.session_id != session_id:
+            raise PermissionError("project check-in actor or session differs from checkout")
+        handle = SessionHandle(ResourceRef(self.authority, "authoring-scope", ref.id), checkout.target_scope, checkout.target_kind, actor,
+            session_id, checkout.token, checkout.fence, checkout.base_revision, record.payload.get("checkout_path"))
+        data = self._draft_bytes(self._json_mapping(project_json, "project_json"))
+
+        if self.reader.get_receipt(request_id) is None:
+            current = _json_value(self.sheet.export(ref))
+            bases = {task["ref"]["id"]: task["ref"]["revision"] for task in current["tasks"]}
+            if current["project"]["ref"] != state["ref"] or bases != state["base_task_revisions"]:
+                return {"outcome": "conflict", "error": {"code": "stale_base", "message": "project or task checkout bases are stale"},
+                        "session_id": session_id, "execution": False, "dispatch": False}
+
+        def apply(snapshot: Any, _checkout: Any, **_: Any) -> None:
+            self.authoring.authorize_mutation(handle, checkout.target_scope, token=handle.token, fence=handle.fence,
+                expected_base_revision=handle.base_revision)
+            current = _json_value(self.sheet.export(ref))
+            bases = {task["ref"]["id"]: task["ref"]["revision"] for task in current["tasks"]}
+            if bases != state["base_task_revisions"]:
+                raise VersionConflictError("project task bases are stale")
+            self.sheet.apply(ref, json.loads(snapshot.data.decode("utf-8")), actor=actor,
+                base_revision=ref.revision, logical_request_key=request_id + ":sheet")
+
+        finished = self.authoring.finish(handle, request_id=request_id, mode="manual", capture=data,
+            apply=apply, pending=False, expected_base_revision=handle.base_revision,
+            snapshot_digest=sha256(data).hexdigest())
+        sheet_receipt = self.reader.get_receipt(request_id + ":sheet")
+        snapshot_ref = (finished.final_snapshot.ref if finished.final_snapshot is not None
+                        else None if finished.checkout is None else finished.checkout.final_snapshot_ref)
+        return {"outcome": finished.status, "project_ref": _json_value(sheet_receipt.result_ref if sheet_receipt is not None else self.reader.get_identity(ref).ref),
+                "session_id": session_id, "receipt": _json_value(finished.receipt),
+                "sheet_receipt": _json_value(sheet_receipt), "error": finished.error,
+                "snapshot_ref": _json_value(snapshot_ref), "snapshot_sha256": sha256(data).hexdigest(),
+                "recovery_pending": finished.recovery_pending, "execution": False, "dispatch": False}
+
     def create_pending_and_open(
         self,
         *,
@@ -311,6 +436,12 @@ class _CreateAndOpenOwnerEngine:
 
         project_key = request_id + ":project"
         target = self._planned_project_ref(project_key)
+        previous_scope = self.reader.get_identity(ResourceRef(self.authority, "authoring-scope", target.id))
+        if self.reader.get_receipt(request_id) is not None and previous_scope is not None:
+            previous_state = previous_scope.payload.get("project")
+            if isinstance(previous_state, Mapping) and previous_state.get("open_request_key", request_id) != request_id:
+                from herzchen.contracts import ReplayConflictError
+                raise ReplayConflictError("create key belongs to a retired authoring session")
 
         def create_project(*_args: Any, **_kwargs: Any) -> ResourceRef:
             created = self.sheet.create_pending(
@@ -339,8 +470,15 @@ class _CreateAndOpenOwnerEngine:
         def materialize(checkout: Any, initial_bytes: bytes, *, project: Any) -> Mapping[str, Any]:
             if not isinstance(project, ResourceRef) or not self._same_identity(project, target):
                 raise RuntimeError("ProjectSheet returned a project identity outside the reserved authoring scope")
+            from herzchen.authoring.sessions import SessionHandle
+            state = self._project_draft(project, request_id)
+            initial_bytes = self._draft_bytes(state["project_json"])
+            handle = SessionHandle(ResourceRef(self.authority, "authoring-scope", target.id),
+                checkout.target_scope, checkout.target_kind, checkout.actor, checkout.session_id,
+                checkout.token, checkout.fence, checkout.base_revision)
+            self.authoring.autosave(handle, request_id=request_id + ":initial-sheet", snapshot=initial_bytes)
             if self.materializer is None:
-                return {"project": project}
+                return {"project": state}
             observed = _call_owner_materializer(
                 self.materializer,
                 checkout=checkout,
@@ -349,9 +487,9 @@ class _CreateAndOpenOwnerEngine:
             )
             if isinstance(observed, Mapping):
                 result = dict(observed)
-                result["project"] = project
+                result["project"] = state
                 return result
-            return {"path": observed, "project": project}
+            return {"path": observed, "project": state}
 
         logical_request = {
             "title": title,
@@ -404,6 +542,8 @@ class _CreateAndOpenOwnerEngine:
             "project_ref": project_ref or opened.project_ref,
             "session_id": None if handle is None else handle.session_id,
             "handle": self._handle_value(handle),
+            "project_json": None if scope_record is None or not isinstance(scope_record.payload.get("project"), Mapping)
+                else scope_record.payload["project"].get("project_json"),
             "checkout": opened.checkout,
             "target_kind": None if handle is None else handle.target_kind,
             "base_revision": None if handle is None else handle.base_revision,

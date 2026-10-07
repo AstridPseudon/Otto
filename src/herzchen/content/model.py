@@ -28,6 +28,7 @@ from herzchen.contracts import (
 CONTENT_SCHEMA_REVISION = "dat-content.v1"
 CONTENT_DOMAIN_ID = "dat.content"
 CONTENT_OWNER = "dat"
+PROJECT_FILES_NAMESPACE = "project.files"
 
 
 class ContentError(ContractError):
@@ -46,6 +47,20 @@ def _text(value: Any, field: str) -> str:
     if "/" in value or "\\" in value or "://" in value:
         raise ContentError(f"{field} must be an opaque identity")
     return value
+
+
+def document_path(value: Any) -> str:
+    """One portable, clean relative file alias, independent of DAT identity."""
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or any(ord(char) < 32 for char in value)
+            or any(char in value for char in "\\:#?%")
+            or any(part in {"", ".", ".."} for part in value.split("/"))):
+        raise ContentError("document path must be a clean relative POSIX file path")
+    return value
+
+
+def _association_key(namespace: str, key: str) -> str:
+    return document_path(key) if namespace == PROJECT_FILES_NAMESPACE else _text(key, "key")
 
 
 def _json_content(value: Any, field: str = "content") -> Any:
@@ -228,7 +243,10 @@ class DocumentAssociation:
     def __post_init__(self) -> None:
         _ref(self.subject, "subject")
         _text(self.namespace, "namespace")
-        _text(self.key, "key")
+        _association_key(self.namespace, self.key)
+        if self.namespace == PROJECT_FILES_NAMESPACE:
+            # Membership follows stable subject identity across project edits.
+            object.__setattr__(self, "subject", ResourceRef(self.subject.authority, self.subject.kind, self.subject.id))
         if not isinstance(self.document, ReferenceBinding):
             raise ContentError("document must be a ReferenceBinding")
         if self.document.ref.kind == "document-association":
@@ -261,7 +279,9 @@ def association_identity(subject: ResourceRef, namespace: str, key: str) -> str:
     """Derive a stable edge identity without making a local foreign key."""
     _ref(subject, "subject")
     _text(namespace, "namespace")
-    _text(key, "key")
+    _association_key(namespace, key)
+    if namespace == PROJECT_FILES_NAMESPACE:
+        subject = ResourceRef(subject.authority, subject.kind, subject.id)
     material = canonical_json({"subject": subject, "namespace": namespace, "key": key})
     return "link-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 

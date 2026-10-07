@@ -363,6 +363,7 @@ class _WorkGraphEngine:
         aliases: Sequence[str] = (),
         fields: Optional[Mapping[str, Any]] = None,
         lifecycle: Optional[Union[Lifecycle, str]] = None,
+        base_revision: Optional[str] = None,
         logical_request_key: Optional[str] = None,
         actor: Any = None,
     ) -> WorkRecord:
@@ -377,10 +378,18 @@ class _WorkGraphEngine:
             "fields": None if fields is None else dict(fields),
             "lifecycle": lifecycle.value if isinstance(lifecycle, Lifecycle) else lifecycle,
         }
+        # A revisioned target already binds this base in the original request
+        # digest. Keep earlier finite-edit receipts replayable after adoption.
+        if base_revision is not None and (not isinstance(request_payload["target"], Mapping)
+                                         or request_payload["target"].get("revision") != base_revision):
+            request_payload["base_revision"] = base_revision
         replay = self._replay_revision(request_key, request_payload, actor, "work.revised")
         if replay is not None:
             return self._replay_result(replay)
         record = self._require(target)
+        if base_revision is not None and record.revision != base_revision:
+            from herzchen.kernel import VersionConflictError
+            raise VersionConflictError("work revision base is stale")
         changes = self._revision_changes(record, title=title, name=name, outcome=outcome, add_alias=add_alias, aliases=aliases, fields=fields, lifecycle=lifecycle)
         ensure_completed_task_unchanged(record, changes)
         self._validate_payload(changes)

@@ -15,7 +15,7 @@ import re
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import Any, Mapping, Optional, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 
 
 MAX_SEARCH_DOCUMENTS = 500
@@ -250,7 +250,11 @@ class ProjectDocumentOperations:
 
         href = _text(relative_link, "relative_link")
         parts = urlsplit(href)
-        if parts.scheme or parts.netloc or parts.path.startswith("/") or "\\" in parts.path:
+        try:
+            link_path = unquote(parts.path, errors="strict")
+        except UnicodeError:
+            return {"outcome": "unavailable", "reason": "relative_link_required", "read_only": True}
+        if parts.scheme or parts.netloc or link_path.startswith("/") or "\\" in link_path or any(ord(char) < 32 for char in link_path):
             return {"outcome": "unavailable", "reason": "relative_link_required", "read_only": True}
         source = _ref(source_document_ref, field="source_document_ref")
         project = _ref(project_ref, field="project_ref")
@@ -264,6 +268,9 @@ class ProjectDocumentOperations:
             member for member in source_item.get("memberships", ())
             if isinstance(member.get("key"), str) and member.get("key", "").strip()
         ]
+        file_members = [member for member in path_members if member.get("namespace") == "project.files"]
+        if file_members:
+            path_members = file_members
         if source_path is not None:
             source_path = _text(source_path, "source_path").strip()
             path_members = [member for member in path_members if member.get("key") == source_path]
@@ -272,13 +279,14 @@ class ProjectDocumentOperations:
         if len(path_members) != 1:
             return {"outcome": "unavailable", "read_only": True}
         source_path = path_members[0]["key"]
-        normalized = posixpath.normpath(posixpath.join(posixpath.dirname(source_path), parts.path))
+        normalized = (source_path if not link_path else
+                      posixpath.normpath(posixpath.join(posixpath.dirname(source_path), link_path)))
         if normalized in {"", ".", ".."} or normalized.startswith("../"):
             return {"outcome": "unavailable", "reason": "relative_link_escapes_project", "read_only": True}
         candidates = []
         for item in listed.get("documents", ()):
             for member in item.get("memberships", ()):
-                if member.get("key") == normalized:
+                if member.get("key") == normalized and (not file_members or member.get("namespace") == "project.files"):
                     candidate_ref = _ref(item.get("document_ref"))
                     if _identity(candidate_ref) not in {_identity(value) for value in candidates}:
                         candidates.append(candidate_ref)

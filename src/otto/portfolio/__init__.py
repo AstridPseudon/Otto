@@ -70,6 +70,7 @@ from .advisor_delivery import (
     ExactSessionDelivery,
 )
 from .manager_inventory import ManagerInventoryError, ManagerInventoryReader
+from .manager_handoff import ManagerHandoffError, compose_manager_handoff
 from .lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
 from .resource_drift import ResourceDriftError, apply_resource_sync_action, select_resource_sync_action
 from .orchestrator_placement import (
@@ -134,6 +135,8 @@ __all__ = [
     "validate_resource_evidence",
     "ManagerInventoryError",
     "ManagerInventoryReader",
+    "ManagerHandoffError",
+    "compose_manager_handoff",
     "ManagerContinuity",
     "ManagerContinuityError",
     "OccurrencePreparationError",
