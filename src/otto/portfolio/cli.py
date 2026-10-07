@@ -190,6 +190,61 @@ def build_parser() -> argparse.ArgumentParser:
     brief = sub.add_parser("operating-brief", help="prepare the current manager brief from exact owner reads and adopted resources")
     brief.add_argument("--request-json", required=True, help="role, pinned project/task/assignment/mandate refs, generation and as-of time")
     _add_format(brief)
+
+    direction = sub.add_parser("direction", help="read and explicitly author owner-bound direction")
+    direction_sub = direction.add_subparsers(dest="direction_command", required=True)
+    direction_read = direction_sub.add_parser("read", help="read latest, adopted and effective direction state")
+    direction_read.add_argument("--actor", required=True)
+    direction_read.add_argument("--subject-ref", required=True)
+    direction_read.add_argument("--assignment-ref")
+    direction_read.add_argument("--generation", type=int)
+    _add_format(direction_read)
+    direction_context = direction_sub.add_parser("effective-context", help="read attributed effective direction inputs")
+    direction_context.add_argument("--actor", required=True)
+    direction_context.add_argument("--assignment-ref", required=True)
+    direction_context.add_argument("--generation", required=True, type=int)
+    direction_context.add_argument("--project-ref", required=True)
+    direction_context.add_argument("--task-ref")
+    _add_format(direction_context)
+    direction_whoami = direction_sub.add_parser("whoami", help="read trusted caller context")
+    direction_whoami.add_argument("--actor", required=True)
+    _add_format(direction_whoami)
+    direction_bind = direction_sub.add_parser("initial-bind", help="bind an unbound responsibility to an owned direction document")
+    direction_bind.add_argument("--actor", required=True)
+    direction_bind.add_argument("--subject-ref", required=True)
+    direction_bind.add_argument("--document-ref", required=True)
+    direction_bind.add_argument("--request-key", required=True)
+    _add_format(direction_bind)
+    direction_draft = direction_sub.add_parser("draft", help="append direction content without adopting it")
+    direction_draft.add_argument("--actor", required=True)
+    direction_draft.add_argument("--subject-ref", required=True)
+    direction_draft.add_argument("--content", required=True)
+    direction_draft.add_argument("--request-key", required=True)
+    direction_draft.add_argument("--expected-revision")
+    _add_format(direction_draft)
+    direction_update = direction_sub.add_parser("update", help="explicitly adopt one exact direction revision")
+    direction_update.add_argument("--actor", required=True)
+    direction_update.add_argument("--subject-ref", required=True)
+    direction_update.add_argument("--revision-ref")
+    direction_update.add_argument("--content")
+    direction_update.add_argument("--binding-ref")
+    direction_update.add_argument("--request-key", required=True)
+    direction_update.add_argument("--expected-revision")
+    direction_update.add_argument("--assignment-ref")
+    direction_update.add_argument("--generation", type=int)
+    direction_update.add_argument("--assignment-resources")
+    direction_update.add_argument("--assignment-guard-ref")
+    _add_format(direction_update)
+    direction_history = direction_sub.add_parser("history", help="read immutable direction and adoption history")
+    direction_history.add_argument("--actor", required=True)
+    direction_history.add_argument("--subject-ref", required=True)
+    _add_format(direction_history)
+    direction_overview = direction_sub.add_parser("overview", help="read a bounded permission-scoped direction overview")
+    direction_overview.add_argument("--actor", required=True)
+    direction_overview.add_argument("--subjects", help="JSON array of existing canonical subject/inventory rows")
+    direction_overview.add_argument("--limit", type=int, default=50)
+    direction_overview.add_argument("--cursor")
+    _add_format(direction_overview)
     return parser
 
 
@@ -604,6 +659,7 @@ def _operating_brief_command(
             project_reader=readers["project_reader"], assignment_reader=assignment_reader,
             mandate_reader=readers["mandate_reader"], resource_reader=resource_reader,
             task_reader=readers.get("task_reader") if task_pin is not None else None,
+            direction_context_reader=readers.get("direction_context_reader"),
         )
     except (OperatingBriefError, ResourceSyncError, ValueError, KeyError) as exc:
         return {
@@ -805,6 +861,7 @@ def main(
     operating_brief_reader_factory: Any = None,
     staged_bundle_context: Any = None,
     bound_actor: Optional[str] = None,
+    direction_operations: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -852,6 +909,7 @@ def main(
                     "task_completion": "OttoPortfolio.complete_task -> existing work owner completion guard",
                     "project_advisor_pair": "OttoPortfolio.pair_project_advisor -> existing ProjectSheet and ResponsibilityAssignments ports",
                     "operating_brief": "resolve_assignment_attachments -> prepare_canonical_operating_brief",
+                    "direction": "DirectionSurface read/effective-context/whoami/initial-bind/draft/update/history/overview",
                 },
                 "integration_state": {
                     "assessment_coverage": "available only when the accepted OttoAssessment facade is injected",
@@ -865,6 +923,7 @@ def main(
                 "assessment_injection": "Supply the accepted OttoAssessment facade through cli.main(argv, assessment=...).",
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
                 "operating_brief_injection": "Supply explicit canonical owner callbacks/readers through cli.main(argv, operating_brief_readers=...).",
+                "direction_injection": "Supply the owner-issued DirectionSurface through cli.main(argv, direction_operations=...).",
             }
         elif args.command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
             project = _parse_ref(args.project_ref, "project_ref")
@@ -950,12 +1009,75 @@ def main(
                 args, operating_brief_readers, staged_bundle_context,
                 reader_factory=operating_brief_reader_factory,
             )
+        elif args.command == "direction":
+            result = _direction_command(args, direction_operations)
         else:
             result = _document_command(args, document_operations or getattr(portfolio, "document_operations", None))
     except (ValueError, PortfolioError) as exc:
         result = _request_error(str(exc))
     _emit(result, getattr(args, "format", "json"))
     return _exit_code(result)
+
+
+def _direction_command(args: argparse.Namespace, operations: Any) -> dict[str, Any]:
+    if operations is None:
+        return _surface_unavailable(
+            "otto.direction-surface.v1", "direction_operations_unavailable",
+            "Inject the owner-issued DirectionSurface at cli.main(..., direction_operations=...).",
+        )
+    command = args.direction_command
+    actor = args.actor
+    if command == "read":
+        kwargs = {"subject": _parse_ref(args.subject_ref, "subject_ref"), "actor": actor}
+        if args.assignment_ref:
+            kwargs["assignment_ref"] = _parse_ref(args.assignment_ref, "assignment_ref")
+        if args.generation is not None:
+            kwargs["generation"] = args.generation
+        return operations.read(**kwargs)
+    if command == "effective-context":
+        return operations.effective_context(
+            assignment_ref=_parse_ref(args.assignment_ref, "assignment_ref"),
+            generation=args.generation, project_ref=_parse_ref(args.project_ref, "project_ref"),
+            task_ref=_parse_ref(args.task_ref, "task_ref") if args.task_ref else None, actor=actor)
+    if command == "whoami":
+        return operations.whoami(actor=actor)
+    if command == "initial-bind":
+        return operations.initial_bind(
+            _parse_ref(args.subject_ref, "subject_ref"), _parse_ref(args.document_ref, "document_ref"),
+            logical_request_key=args.request_key, actor=actor)
+    if command == "draft":
+        content = _parse_json(args.content, "content")
+        if not isinstance(content, Mapping):
+            raise ValueError("content must be a JSON object")
+        return operations.draft(_parse_ref(args.subject_ref, "subject_ref"), content,
+                                logical_request_key=args.request_key,
+                                expected_revision=args.expected_revision, actor=actor)
+    if command == "update":
+        content = None if args.content is None else _parse_json(args.content, "content")
+        if content is not None and not isinstance(content, Mapping):
+            raise ValueError("content must be a JSON object")
+        resources = None if args.assignment_resources is None else _parse_json(args.assignment_resources, "assignment_resources")
+        return operations.update(
+            _parse_ref(args.subject_ref, "subject_ref"),
+            _parse_ref(args.revision_ref, "revision_ref", pinned=True) if args.revision_ref else None,
+            content=content,
+            expected_binding_ref=_parse_ref(args.binding_ref, "binding_ref", pinned=True) if args.binding_ref else None,
+            logical_request_key=args.request_key, expected_revision=args.expected_revision,
+            assignment_ref=_parse_ref(args.assignment_ref, "assignment_ref") if args.assignment_ref else None,
+            expected_generation=args.generation, assignment_resources=resources,
+            # Assignment actor is host-bound and is intentionally not a CLI
+            # identity selector; absent binding yields a recoverable partial.
+            assignment_actor=None,
+            expected_assignment_guard_ref=_parse_ref(args.assignment_guard_ref, "assignment_guard_ref", pinned=True) if args.assignment_guard_ref else None,
+            actor=actor)
+    if command == "history":
+        return operations.history(_parse_ref(args.subject_ref, "subject_ref"), actor=actor)
+    if command == "overview":
+        subjects = None if args.subjects is None else _parse_json(args.subjects, "subjects")
+        if subjects is not None and not isinstance(subjects, list):
+            raise ValueError("subjects must be a JSON array")
+        return operations.overview(subjects, actor=actor, limit=args.limit, cursor=args.cursor)
+    return _request_error(f"unsupported direction command: {command}", code="unsupported_command")
 
 
 def _document_command(args: argparse.Namespace, document_operations: Any) -> dict[str, Any]:

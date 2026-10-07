@@ -115,6 +115,15 @@ class ExecutionApplication:
             raise OccurrencePreparationError("execution actor does not own the assignment")
         return current
 
+    def caller_context(self, binding: Any) -> Mapping[str, Any]:
+        """Read identity/direction from a host-supplied binding, never JSON IDs."""
+        from .identity_context import resolve_caller_context
+        return resolve_caller_context(self, binding)
+
+    def native_adapter_identity(self) -> str:
+        adapter = type(self.runtime.adapter)
+        return adapter.__module__ + "." + adapter.__name__
+
     def _document_revision(self, result: Mapping[str, Any], field: str) -> Mapping[str, Any]:
         """Resolve a document revision from either response envelope or owner readback."""
         record = result.get("record")
@@ -177,9 +186,16 @@ class ExecutionApplication:
         # The ordinary manager service supplies its adopted sources; caller prose
         # cannot select another policy or an installed command.
         from .role_context import selected_configuration, supporting_context
+        from .direction_context import direction_inputs
+        direction_reader = getattr(self.portfolio.operations, "direction_context_reader", None)
+        directions = [] if direction_reader is None else direction_reader(
+            assignment_ref=None, generation=None, project_ref=project, task_ref=task)
+        required_inputs = direction_inputs(directions)
+        declared_refs = list(supporting_refs or [])
+        declared_refs.extend(item["ref"] for item in required_inputs if item["ref"] not in declared_refs)
         sources = supporting_context({"resource_ref": project,
-            "content": {"supporting_refs": [] if supporting_refs is None else supporting_refs}},
-            self.portfolio.operations.content_port)
+            "content": {"supporting_refs": declared_refs}},
+            self.portfolio.operations.content_port, exact_direction_inputs=required_inputs)
         pins = [source["ref"] for source in sources]
         configuration = selected_configuration(sources)
         selection = {field: {"source": "explicit_override", "selected_configuration_ref":
@@ -239,6 +255,7 @@ class ExecutionApplication:
             stage = "due"
             at = self._now()
             target = {"host": "local", "project_ref": project, "task_ref": task,
+                      "native_adapter": self.native_adapter_identity(),
                       "assignment_ref": assignment.ref.to_dict(), "mandate_ref": mandate_ref,
                       "role": "worker", "principal": principal, "requested_model": model,
                       "requested_reasoning": reasoning, "requested_profile": profile,
@@ -297,7 +314,13 @@ class ExecutionApplication:
         if len(attachments) != 1 or attachments[0].get("required") is not True:
             raise OccurrencePreparationError("role requires exactly one required adopted BASE resource")
         base = attachments[0]
-        sources = supporting_context(base, self.portfolio.operations.content_port)
+        from .direction_context import direction_inputs
+        direction_reader = getattr(self.portfolio.operations, "direction_context_reader", None)
+        directions = [] if direction_reader is None else direction_reader(
+            assignment_ref=assignment_ref, generation=generation, project_ref=project_ref, task_ref=task_ref)
+        required_inputs = direction_inputs(directions)
+        sources = supporting_context(base, self.portfolio.operations.content_port,
+            exact_direction_inputs=required_inputs)
         configuration = selected_configuration(sources)
         configured = configured_binding(configuration, role)
         selection = {}
@@ -317,6 +340,10 @@ class ExecutionApplication:
         selection["context_refs"] = {"source": "adopted_role_sources" if context_refs is None else "explicit_override"}
         if context_refs is None:
             context_refs = tuple([base["resource_ref"], mandate_ref, *[item["ref"] for item in sources]])
+        # Overrides affect optional context only. Required direction and its
+        # declared inputs stay in the retained occurrence and native brief.
+        context_refs = tuple(list(context_refs) + [item["ref"] for item in required_inputs
+                            if item["ref"] not in context_refs])
         if native_session_id is _UNSPECIFIED_SESSION:
             from otto.attention import native_target_identity
             stored = assignment.session
@@ -338,6 +365,7 @@ class ExecutionApplication:
             raise OccurrencePreparationError("manager requires its existing native session")
         at = self._now()
         target = {"host": "local", "project_ref": dict(project_ref), "task_ref": dict(task_ref),
+                  "native_adapter": self.native_adapter_identity(),
                   "assignment_ref": dict(assignment_ref), "mandate_ref": dict(mandate_ref),
                   "role": role, "principal": assignment.principal, "requested_model": model,
                   "requested_reasoning": reasoning, "requested_profile": profile,
@@ -479,6 +507,7 @@ class ExecutionApplication:
         validate_owner_timeout_seconds(timeout_seconds)
         at = self._now()
         target = {"host": "local", "native_id": session, "delivery_id": delivery_id,
+                  "native_adapter": self.native_adapter_identity(),
                   "project_ref": dict(project_ref), "task_ref": dict(task_ref),
                   "assignment_ref": assignment.ref.to_dict(), "mandate_ref": dict(mandate_ref),
                   "role": "manager", "principal": assignment.principal,

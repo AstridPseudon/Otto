@@ -728,6 +728,12 @@ class _ProjectBatchesEngine:
     def _write_document_change(self, tx: Any, change: Mapping[str, Any]) -> None:
         document = change["document"]
         current = self.__writer.get_identity(document)
+        # Recheck inside the transaction: a direction may have been created
+        # after sheet validation but before this write acquired owner custody.
+        from herzchen.content.direction_contract import is_primary_direction
+        if current is not None and (is_primary_direction(current.payload)
+                or (current.payload.get("document") or {}).get("role") == "direction"):
+            raise WorkValidationError("direction changes require owner binding or DAT immutable revision authoring")
         revision = change["revision"]
         revision_ref = ResourceRef(document.authority, "dat.content.revision", "revision-" + hashlib.sha256((document.id + ":" + revision).encode()).hexdigest()[:28], revision)
         revision_payload = {"record_type": "dat.content.revision", "document": document, "revision": revision, "content": change["content"], "author": change.get("author"), "initial": current is None}
@@ -797,6 +803,9 @@ class _ProjectBatchesEngine:
                     if self.__writer.get_reference(binding) is None and self.__writer.get_identity(ResourceRef(binding.authority, binding.kind, binding.id)) is None and binding.id not in changed_document_ids:
                         raise WorkValidationError("pinned document revision is not retained")
                 namespace = _opaque(raw.get("namespace", "work"), "document namespace")
+                from herzchen.content.direction_contract import PRIMARY_DIRECTION_NAMESPACE
+                if namespace == PRIMARY_DIRECTION_NAMESPACE:
+                    raise WorkValidationError("primary direction binding requires the owner direction operation")
                 key = _opaque(raw.get("key", "document"), "document link key")
                 ident = ResourceRef(self.__writer.authority, "dat.content.association", "link-" + hashlib.sha256(canonical_json({"subject": owner, "namespace": namespace, "key": key}).encode()).hexdigest()[:28])
                 payload = {"record_type": "dat.content.association", "subject": owner, "namespace": namespace, "key": key, "document": ReferenceBinding(ResourceRef(binding.authority, binding.kind, binding.id, binding.revision), "pinned" if binding.revision else "current"), "active": True}
@@ -807,6 +816,12 @@ class _ProjectBatchesEngine:
             if not isinstance(raw, Mapping):
                 raise WorkValidationError(f"document change[{index}] must be an object")
             document = self._document_ref(raw.get("document_ref", raw.get("document")))
+            from herzchen.content.direction_contract import is_primary_direction
+            current = self.__writer.get_identity(ResourceRef(document.authority, document.kind, document.id))
+            if current is not None and is_primary_direction(current.payload):
+                raise WorkValidationError("document changes cannot overwrite a primary direction binding")
+            if current is not None and (current.payload.get("document") or {}).get("role") == "direction":
+                raise WorkValidationError("direction content changes must use DAT immutable revision authoring")
             content = raw.get("content")
             if content is None and "body" in raw:
                 content = raw["body"]

@@ -439,6 +439,7 @@ def prepare_canonical_operating_brief(
     as_of: str,
     task_ref: Optional[Mapping[str, Any]] = None,
     task_reader: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+    direction_context_reader: Any = None,
 ) -> dict[str, Any]:
     """Prepare a brief only from exact records returned by trusted owner readers.
 
@@ -553,8 +554,14 @@ def prepare_canonical_operating_brief(
     if base.get("required") is not True:
         raise OperatingBriefError("adopted BASE role resource must be required")
     from .role_context import RoleContextError, supporting_context
+    from .direction_context import direction_inputs
+    def read_directions() -> list[dict[str, Any]]:
+        return [] if direction_context_reader is None else direction_context_reader(
+            assignment_ref=assignment_pin, generation=expected_generation,
+            project_ref=project_pin, task_ref=task_pin)
     try:
-        sources = supporting_context(base, resource_reader)
+        directions = read_directions()
+        sources = supporting_context(base, resource_reader, exact_direction_inputs=direction_inputs(directions))
     except ValueError as exc:
         raise OperatingBriefError(str(exc)) from exc
     base_content = base.get("content")
@@ -591,6 +598,8 @@ def prepare_canonical_operating_brief(
         "assignment_ref": assignment_pin,
         "generation": generation,
         "principal": principal_value,
+        "responsibility_ref": assignment_payload.get("responsibility_ref"),
+        "native_session": assignment_payload.get("session"),
         "assignment_state": assignment_state,
         "mandate_ref": mandate_pin,
         "mandate_state": mandate_state,
@@ -615,6 +624,7 @@ def prepare_canonical_operating_brief(
         "generation": generation,
         "render": rendered,
         "supporting_context": sources,
+        "direction_context": directions,
     }
 
     explicit = mandate_payload.get("instruction_contract")
@@ -653,7 +663,9 @@ def prepare_canonical_operating_brief(
         fresh_attachments = resolve_assignment_attachments(fresh_assignment, resource_reader, role=role_value)
         if len(fresh_attachments) != 1:
             raise OperatingBriefError("adopted BASE role resource changed during refresh")
-        fresh_sources = supporting_context(fresh_attachments[0], resource_reader)
+        fresh_directions = read_directions()
+        fresh_sources = supporting_context(fresh_attachments[0], resource_reader,
+            exact_direction_inputs=direction_inputs(fresh_directions))
     except (ResourceSyncError, RoleContextError) as exc:
         raise OperatingBriefError(f"adopted BASE resource refresh failed: {exc}") from exc
     comparisons = [(project, fresh_project), (assignment, fresh_assignment), (mandate_record, fresh_mandate)]
@@ -663,6 +675,8 @@ def prepare_canonical_operating_brief(
             or _digest(attachments) != _digest(fresh_attachments)
             or _digest(sources) != _digest(fresh_sources)):
         raise OperatingBriefError("canonical owner state changed while preparing the brief")
+    if _digest(directions) != _digest(fresh_directions):
+        raise OperatingBriefError("canonical direction changed while preparing the brief")
     body["evidence_sha256"] = _digest(body)
     return _json_copy(body, "prepared brief")
 

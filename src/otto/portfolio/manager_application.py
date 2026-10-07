@@ -164,6 +164,7 @@ class ManagerApplication:
         "assessment",
         "completion_owner",
         "_operating_brief_reader_factory",
+        "direction_operations",
     )
 
     def __init__(
@@ -175,6 +176,7 @@ class ManagerApplication:
         assessment: Any,
         completion_owner: Any,
         operating_brief_reader_factory: Any,
+        direction_operations: Any = None,
     ) -> None:
         self._actor = actor
         self.portfolio = portfolio
@@ -182,6 +184,7 @@ class ManagerApplication:
         self.assessment = assessment
         self.completion_owner = completion_owner
         self._operating_brief_reader_factory = operating_brief_reader_factory
+        self.direction_operations = direction_operations
 
     @classmethod
     def from_owner(cls, owner: Any, *, due_port: Any = None, issue_delivery: Any = None) -> "ManagerApplication":
@@ -327,6 +330,56 @@ class ManagerApplication:
                 return values
             raise ManagerCompositionError("unsupported operating-brief reader phase")
 
+        direction_operations = None
+        registered_direction = {item.domain_id for item in store.registered_domains()}
+        if {"otto.direction-bindings", "otto.direction-adoption"}.issubset(registered_direction):
+            def direction_occurrences(*, subject_ref: Any, actor: Any) -> list[Mapping[str, Any]]:
+                if due_port is None or not callable(getattr(due_port, "list_due", None)):
+                    raise PermissionError("delivered occurrence reader is unavailable")
+                subject = subject_ref if isinstance(subject_ref, ResourceRef) else ResourceRef.from_dict(subject_ref)
+                rows = []
+                for due in due_port.list_due():
+                    if not isinstance(due, Mapping) or not isinstance(due.get("assignment_ref"), Mapping):
+                        continue
+                    try:
+                        assignment = owner.assignments.command_port.get(
+                            ResourceRef.from_dict(due["assignment_ref"]))
+                    except Exception:
+                        continue
+                    responsibility = assignment.payload.get("responsibility_ref")
+                    if not isinstance(responsibility, Mapping):
+                        continue
+                    if (responsibility.get("authority"), responsibility.get("kind"), responsibility.get("id")) != (
+                            subject.authority, subject.kind, subject.id):
+                        continue
+                    target = due.get("target") if isinstance(due.get("target"), Mapping) else {}
+                    attempt = ((due.get("host_evidence") or {}).get("gateway_attempt")
+                               if isinstance(due.get("host_evidence"), Mapping) else {}) or {}
+                    result = attempt.get("result") if isinstance(attempt.get("result"), Mapping) else {}
+                    evidence = result.get("task_bound_evidence") if isinstance(result.get("task_bound_evidence"), Mapping) else {}
+                    resources = result.get("resource_evidence") if isinstance(result.get("resource_evidence"), Mapping) else {}
+                    rows.append({"schedule_id": due.get("schedule_id"),
+                                 "assignment_ref": due.get("assignment_ref"),
+                                 "generation": due.get("generation"),
+                                 "occurrence_ref": {"schedule_id": due.get("schedule_id"),
+                                                     "logical_request_key": due.get("in_flight_request") or due.get("last_completed_request")},
+                                 "direction_refs": due.get("context_refs", []),
+                                 "delivery_status": "delivered" if result.get("context_digest_verified") is True else due.get("completion_state", "unknown"),
+                                 "delivered_brief_digest": evidence.get("delivered_brief_digest"),
+                                 "delivered_brief": resources.get("brief"),
+                                 "rendered_evidence": result.get("task_bound_evidence"),
+                                 "retained_ref": due.get("ref") or due.get("schedule_id")})
+                return rows
+
+            direction_operations = owner.direction_surface(
+                context_reader=operations.direction_context_reader,
+                occurrence_reader=direction_occurrences,
+                inventory_reader=lambda *, actor: [
+                    item.get("project_ref") for item in portfolio.list_projects(actor=actor).get("projects", ())
+                    if isinstance(item, Mapping) and isinstance(item.get("project_ref"), Mapping)
+                ],
+            )
+
         return cls(
             actor=actor.actor,
             portfolio=portfolio,
@@ -337,6 +390,7 @@ class ManagerApplication:
                 completion_blockers=partial(owner.assignments.completion_blockers, actor=actor),
             ),
             operating_brief_reader_factory=brief_readers,
+            direction_operations=direction_operations,
         )
 
     def run(self, argv: Optional[list[str]] = None) -> int:
@@ -350,6 +404,7 @@ class ManagerApplication:
             assessment=self.assessment,
             completion_owner=self.completion_owner,
             operating_brief_reader_factory=self._operating_brief_reader_factory,
+            direction_operations=self.direction_operations,
             bound_actor=self._actor,
         )
 

@@ -27,11 +27,13 @@ class RoleContextError(ValueError):
     """A declared role source is missing, stale, or incompatible."""
 
 
-def supporting_context(base: Mapping[str, Any], reader: Any) -> list[dict[str, Any]]:
+def supporting_context(base: Mapping[str, Any], reader: Any, *, exact_direction_inputs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     refs = base.get("content", {}).get("supporting_refs", [])
     if not isinstance(refs, list) or len(refs) > 32:
         raise RoleContextError("BASE supporting_refs must be a bounded list")
     result, seen = [], {}
+    authorized = {tuple(item["ref"][k] for k in ("authority", "kind", "id")): item
+                  for item in (exact_direction_inputs or [])}
     for raw in refs:
         ref = owner_ref(raw, "BASE supporting reference")
         identity = tuple(ref[k] for k in ("authority", "kind", "id"))
@@ -42,6 +44,12 @@ def supporting_context(base: Mapping[str, Any], reader: Any) -> list[dict[str, A
                 raise RoleContextError("BASE supporting context has conflicting revisions")
             continue
         seen[identity] = ref
+        if identity in authorized:
+            item = authorized[identity]
+            if ref != item["ref"]:
+                raise RoleContextError("BASE conflicts with scope-authorized direction input: " + ref["id"])
+            result.append(dict(item, source="scope-authorized assignment direction", adopted_by=base["resource_ref"]))
+            continue
         try:
             observed = json_value(reader.read(ResourceRef.from_dict({k: ref[k] for k in ("authority", "kind", "id")})))
         except Exception as exc:
@@ -57,6 +65,8 @@ def supporting_context(base: Mapping[str, Any], reader: Any) -> list[dict[str, A
                 or "content" not in revision):
             raise RoleContextError("required supporting context is missing or stale; adopt current BASE: " + ref["id"])
         content = revision["content"]
+        if document.get("role") == "direction":
+            raise RoleContextError("direction pin has no applicable scope authorization: " + ref["id"])
         digest = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":"),
                                            ensure_ascii=False).encode()).hexdigest()
         result.append({"ref": ref, "document_role": document.get("role"), "content": content,
@@ -116,6 +126,14 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
     return {"schema": "otto.role-introduction.v1", "role": canonical["role"],
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
             "generation": snapshot["generation"], "responsibility": ROLE_OPERATING_CONTRACTS[canonical["role"]],
+            "responsibility_ref": snapshot.get("responsibility_ref"),
+            "launch_context": {"informational": True, "credential": False,
+                "principal": snapshot["principal"], "role": canonical["role"],
+                "responsibility_ref": snapshot.get("responsibility_ref"),
+                "assignment_ref": snapshot["assignment_ref"], "generation": snapshot["generation"],
+                "native_session": snapshot.get("native_session"),
+                "direction_refs": [item["effective_ref"] for item in canonical.get("direction_context", [])],
+                "identity_read": "effective-context (requires a trusted per-request host binding)"},
             "selected_policy": policy,
             "selected_policy_source": configuration["ref"] if policy else None,
             "operating_guidance": dict(ROLE_CONTEXT_GUIDANCE[canonical["role"]]),

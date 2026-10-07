@@ -6,9 +6,11 @@ from typing import Any, ContextManager, Mapping, Optional, Protocol
 from herzchen.command_ports import command_facade
 
 from herzchen.contracts import CommandEnvelope, CommandReceipt, ResourceRef, TransactionContext
+from .direction_contract import is_primary_direction
 
 from .model import (
     CONTENT_SCHEMA_REVISION,
+    ContentError,
     ContentDocument,
     ContentRevision,
     DocumentAssociation,
@@ -187,6 +189,17 @@ class _ContentCommandHandlerEngine:
     def _mutate_with_revision(self, envelope: CommandEnvelope, document: ContentDocument, revision: ContentRevision, payload: Mapping[str, Any], *, event_type: str) -> CommandReceipt:
         assert self.__writer is not None
         with self.__writer.transaction() as transaction:
+            if envelope.target != document.ref:
+                raise ContentError("document mutation target must match document identity")
+            self._guard_direction_target(envelope.target)
+            current = self.__writer.get_identity(document.ref)
+            if current is not None and (current.payload.get("document") or {}).get("role") == "direction":
+                retained = ContentDocument.from_dict(current.payload["document"])
+                if envelope.operation == "dat.content.document.create" and self.__writer.get_receipt(envelope.context.logical_request_key) is None:
+                    raise ContentError("existing direction must be edited by appending immutable revisions")
+                if any(getattr(document, key) != getattr(retained, key) for key in
+                       ("ref", "role", "authoring_scope", "import_mode", "source_ref", "writable")):
+                    raise ContentError("direction identity, ownership and scope cannot change through content edits")
             # Mutate the document head first so replay/conflict is decided by
             # FND before the auxiliary immutable revision row is considered.
             receipt = self.__writer.mutate(
@@ -205,6 +218,12 @@ class _ContentCommandHandlerEngine:
                 transaction=transaction,
             )
             return receipt
+
+    def _guard_direction_target(self, target: ResourceRef, association: Any = None) -> None:
+        assert self.__writer is not None
+        current = self.__writer.get_identity(target)
+        if is_primary_direction(association) or (current is not None and is_primary_direction(current.payload)):
+            raise ContentError("primary direction binding requires the owner direction operation; replacement and unlink are unavailable")
 
     def _execute_document_create(self, envelope: CommandEnvelope) -> CommandReceipt:
         document = envelope.payload.get("document")
@@ -237,6 +256,7 @@ class _ContentCommandHandlerEngine:
             raise ContentError("link target does not match association identity")
         assert self.__writer is not None
         with self.__writer.transaction() as transaction:
+            self._guard_direction_target(target, association)
             return self.__writer.mutate(
                 CommandEnvelope(envelope.operation, envelope.schema_revision, envelope.target, envelope.context, self._association_payload(association, active=True)),
                 event_type="dat.content.linked",
@@ -253,6 +273,7 @@ class _ContentCommandHandlerEngine:
             raise ContentError("unlink target does not match association identity")
         assert self.__writer is not None
         with self.__writer.transaction() as transaction:
+            self._guard_direction_target(target, association)
             return self.__writer.mutate(
                 CommandEnvelope(envelope.operation, envelope.schema_revision, envelope.target, envelope.context, self._association_payload(association, active=False)),
                 event_type="dat.content.unlinked",

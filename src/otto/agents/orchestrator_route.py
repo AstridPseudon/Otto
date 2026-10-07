@@ -248,6 +248,7 @@ def prepare_canonical_assignment_role_brief(
     task_reader: Callable[[Mapping[str, Any]], Any] | None = None,
     operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
     include_role_context: bool = True,
+    direction_context_reader: Any = None,
 ) -> dict[str, Any]:
     """Prepare role instructions only from current canonical owner reads.
 
@@ -264,6 +265,7 @@ def prepare_canonical_assignment_role_brief(
                 project_reader=project_reader, assignment_reader=assignment_reader,
                 mandate_reader=mandate_reader, resource_reader=resource_reader, as_of=as_of,
                 task_ref=task_ref, task_reader=task_reader,
+                direction_context_reader=direction_context_reader,
             )
         except OperatingBriefError as exc:
             raise OrchestratorRouteError(str(exc)) from exc
@@ -284,6 +286,9 @@ def prepare_canonical_assignment_role_brief(
         "links": adopted["links"],
     }
     context = {"canonical_snapshot": render["snapshot"], "project_state": render["project_state"]}
+    # Mandatory on all routes, including callback/override preparation which
+    # omits the optional generic role introduction.
+    context["direction_context"] = canonical["direction_context"]
     if include_role_context:
         from otto.portfolio.role_context import role_introduction, selected_configuration
         context["supporting_context"] = canonical["supporting_context"]
@@ -408,6 +413,7 @@ def invoke_canonical_assignment(
     physical_session_id: str | None = None,
     requested_model: str = "gpt-5.6-luna", requested_reasoning: str = "high",
     requested_profile: str = "default",
+    direction_context_reader: Any = None,
     operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
 ) -> Any:
     """Prepare and deliver from canonical role/project/assignment records."""
@@ -423,6 +429,7 @@ def invoke_canonical_assignment(
         required_resource_names=required_resource_names,
         task_ref=task_ref, task_reader=task_reader,
         operating_context_reader=operating_context_reader,
+        direction_context_reader=direction_context_reader,
     )
     assignment = prepared["assignment"]
     from otto.portfolio.operating_setup import validate_execution_contract

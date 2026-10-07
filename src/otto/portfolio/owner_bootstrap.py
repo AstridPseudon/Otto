@@ -689,7 +689,58 @@ class PortfolioOwnerBootstrap:
             orchestration_port=self.orchestration_port,
             orchestration_portfolio=self.orchestration_portfolio,
             project_read_grant=self.project_read_grant,
+            direction_context_reader=self._direction_context_reader(),
         )
+
+    def _direction_context_reader(self) -> Any:
+        # Read capability only: neither registering domains nor exposing bind
+        # or adopt to workers. The explicit owner setup remains the issuer.
+        def read(*, assignment_ref: Any, generation: Any, project_ref: Any, task_ref: Any = None) -> Any:
+            from .direction import DirectionBindings, DOMAIN_ID, ADOPTION_DOMAIN_ID
+            from .direction_context import read_direction_context
+            registered = {item.domain_id for item in self.store.registered_domains()}
+            if DOMAIN_ID not in registered:
+                return []
+            from herzchen.contracts import ResourceRef
+            project = ResourceRef.from_dict(project_ref)
+            if self.project_read_grant is None or not self.project_read_grant.allows(project):
+                raise PermissionError("direction context is outside the current project read grant")
+            if ADOPTION_DOMAIN_ID not in registered:
+                raise ValueError("direction adoption reader unavailable; complete owner direction setup")
+            directions = DirectionBindings(self.store, owner_actor=self.owner_actor)
+            return read_direction_context(directions, actor=self.owner_actor,
+                assignment_ref=assignment_ref, generation=generation, project_ref=project_ref, task_ref=task_ref)
+        return read
+
+    def direction_bindings(self) -> Any:
+        """Issue the narrow owner direction capability, without role adoption.
+
+        This explicit composition registers binding and exact scope adoption. Ordinary
+        manager/worker facades receive no broader direction authority.
+        """
+        from .direction import DirectionBindings, register_direction_bindings
+        register_direction_bindings(self.store)
+        return DirectionBindings(self.store, owner_actor=self.owner_actor,
+                                 assignment_port=self.assignments.command_port)
+
+    def direction_surface(self, *, context_reader: Any = None,
+                          caller_context_reader: Any = None,
+                          inventory_reader: Any = None,
+                          occurrence_reader: Any = None,
+                          allowed_project: Any = None) -> Any:
+        """Issue the bounded D05 direction read/authoring projection.
+
+        The projection reuses the owner-issued D01-D04 capability.  Inventory
+        and trusted caller bindings remain host-supplied; this method does not
+        create a roster, context store, or native/session history.
+        """
+        from .direction_surface import DirectionSurface
+        return DirectionSurface(self.direction_bindings(), actor=self.owner_actor,
+                                context_reader=context_reader,
+                                caller_context_reader=caller_context_reader,
+                                inventory_reader=inventory_reader,
+                                occurrence_reader=occurrence_reader,
+                                allowed_project=allowed_project)
 
     def portfolio(self, *, due_port: Any, issue_delivery: Any = None) -> Any:
         """Issue the ordinary portfolio API with owner-backed check-in/issue ports."""

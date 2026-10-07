@@ -40,6 +40,7 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 _DISPATCH_CONTEXT = threading.local()
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
+                                 "effective-context", "whoami",
                                  "manager-assessment", "manager-assessment-pool",
                                  "run-worker", "worker-status", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
@@ -95,9 +96,21 @@ class ExecutionHost:
 
     def __init__(self, *, directory: str | Path, handler: Callable[[Mapping[str, Any]], Any],
                  owner_path: str | Path | None = None,
-                 socket_path: str | Path | None = None) -> None:
+                 socket_path: str | Path | None = None,
+                 caller_binding_reader: Any = None, caller_context_resolver: Any = None,
+                 caller_authorizer: Any = None) -> None:
         self.directory = Path(directory)
         self.handler = handler
+        if (caller_binding_reader is None) != (caller_context_resolver is None):
+            raise ValueError("trusted ingress reader and canonical caller resolver must be supplied together")
+        if caller_authorizer is not None and caller_binding_reader is None:
+            raise ValueError("caller authorization requires a trusted ingress binding")
+        if any(value is not None and not callable(value) for value in
+               (caller_binding_reader, caller_context_resolver, caller_authorizer)):
+            raise TypeError("caller ingress capabilities must be host-injected callables")
+        self.caller_binding_reader = caller_binding_reader
+        self.caller_context_resolver = caller_context_resolver
+        self.caller_authorizer = caller_authorizer
         self.owner_path = self.directory / "owner.json" if owner_path is None else Path(owner_path)
         self.socket_path = None if socket_path is None else Path(socket_path)
         self._socket: socket.socket | None = None
@@ -162,7 +175,7 @@ class ExecutionHost:
             self._threads.append(thread)
             thread.start()
 
-    def _status_read(self, request: Mapping[str, Any]) -> Any:
+    def _status_read(self, request: Mapping[str, Any], operation: Any = None) -> Any:
         """Read shared owner ports on the same SQLite custodian as commands.
 
         Native transport waits pump the existing owner callback queue, so a
@@ -170,16 +183,17 @@ class ExecutionHost:
         Finite owner operations finish before status takes the command lane.
         """
         completed, result = threading.Event(), {}
+        operation = operation or (lambda: self.handler(request))
         while True:
             with self._lock:
                 if self._external_waiting:
-                    self._owner_calls.put((lambda: self.handler(request), completed, result))
+                    self._owner_calls.put((operation, completed, result))
                     break
             # Do not block across a race into a native wait: on the next
             # iteration that owner can receive this read through its pump.
             if self._command_lock.acquire(blocking=False):
                 try:
-                    return self.handler(request)
+                    return operation()
                 finally:
                     self._command_lock.release()
             completed.wait(0.01)
@@ -188,10 +202,46 @@ class ExecutionHost:
             raise result["error"]
         return result["value"]
 
-    def _dispatch(self, request: Mapping[str, Any]) -> Any:
+    def _call_bound(self, request: Mapping[str, Any], ingress: Any) -> Any:
+        from .identity_context import HostCallerBinding, check_caller_claims
+        identity_read = request.get("command") in {"whoami", "effective-context"}
+        claims = {"caller_principal", "caller_assignment_ref", "caller_generation", "caller_native_session_id",
+                  "logical_agent_id", "caller_context", "host_caller_binding"}
+        if self.caller_binding_reader is None:
+            if identity_read or claims.intersection(request):
+                return {"outcome": "held", "reason": "trusted per-request caller binding is unavailable",
+                        "next_action": "use an owner-supported identity-bearing host ingress",
+                        "provider_called": False, "effects_started": False}
+            # Compatibility lane remains explicitly owner custody. It makes
+            # no claim to authenticate the original file/socket submitter.
+            return self.handler(request)
+        try:
+            binding = self.caller_binding_reader(ingress)
+            if not isinstance(binding, HostCallerBinding):
+                raise PermissionError("host ingress has no trusted caller binding")
+            context = self.caller_context_resolver(binding)
+            clean = check_caller_claims(context, request)
+            if identity_read:
+                if set(clean) != {"command"}:
+                    raise PermissionError("effective-context reads only the bound caller; administrative targets need a separate authorized command")
+                return {"outcome": "read", "caller_context": context, "provider_called": False, "effects_started": False}
+            authorizer = self.caller_authorizer or getattr(self.handler, "authorize_caller", None)
+            if not callable(authorizer):
+                raise PermissionError("command has no caller-aware owner authorization")
+            if authorizer(context, clean) is False:
+                raise PermissionError("owner command authorization rejected this caller")
+        except Exception as exc:
+            return {"outcome": "error", "error": type(exc).__name__, "message": str(exc),
+                    "provider_called": False, "effects_started": False,
+                    "next_action": "refresh the trusted caller binding and current owner authorization"}
+        result = self.handler(clean)
+        return dict(result, caller_context=context,
+                    target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean})
+
+    def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
         try:
             if request.get("command") == "status":
-                return self._status_read(request)
+                return self._status_read(request, lambda: self._call_bound(request, ingress))
             with self._command_lock:
                 if self._closing and _starts_work(request):
                     return {"outcome": "held", "reason": "owner host is draining",
@@ -204,7 +254,7 @@ class ExecutionHost:
                     or (request.get("command") == "execution-control" and request.get("operation") == "resume")
                     or request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result"})
                 try:
-                    return self.handler(request)
+                    return self._call_bound(request, ingress)
                 finally:
                     _DISPATCH_CONTEXT.value = previous
         except Exception as exc:
@@ -228,7 +278,8 @@ class ExecutionHost:
                         if not part:
                             break
                         raw += part
-                    result = self._dispatch(json.loads(raw))
+                    from .identity_context import HostIngress
+                    result = self._dispatch(json.loads(raw), ingress=HostIngress("unix-socket", connection))
                     connection.sendall(json.dumps(json_value(result), sort_keys=True).encode())
                 except (OSError, ValueError) as exc:
                     self.failures["socket"] = {"code": type(exc).__name__, "message": str(exc)}
@@ -293,7 +344,8 @@ class ExecutionHost:
                                   "retry": False, "request_retained": False,
                                   "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
                     else:
-                        result = self._dispatch(request)
+                        from .identity_context import HostIngress
+                        result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
                     if (command in {"manager-worker-result", "manager-help-result"} and result.get("outcome") == "pending"
                             and result.get("provider_called") is False and result.get("effects_started") is False):
                         pending = self.directory / ("pending-" + token + ".json")

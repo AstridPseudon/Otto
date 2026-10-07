@@ -195,6 +195,7 @@ class FiniteWorkOperations:
         orchestration_portfolio: Any = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
         content_command_guard: Any = None,
+        direction_context_reader: Any = None,
     ) -> None:
         if port is None or reader is None:
             raise ValueError("port and reader are required for the canonical binding")
@@ -212,6 +213,7 @@ class FiniteWorkOperations:
         self.sheet_port = sheet_port
         self.content_port = content_port
         self.content_command_guard = content_command_guard
+        self.direction_context_reader = direction_context_reader
         self.assignments_port = assignments_port
         if lifecycle_port is not None:
             _LIFECYCLE_PORTS[id(self)] = lifecycle_port

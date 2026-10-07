@@ -23,6 +23,7 @@ from herzchen.contracts import (
     TransactionContext,
     canonical_json,
 )
+from .direction_contract import PRIMARY_DIRECTION_NAMESPACE
 
 
 CONTENT_SCHEMA_REVISION = "dat-content.v1"
@@ -244,7 +245,7 @@ class DocumentAssociation:
         _ref(self.subject, "subject")
         _text(self.namespace, "namespace")
         _association_key(self.namespace, self.key)
-        if self.namespace == PROJECT_FILES_NAMESPACE:
+        if self.namespace in {PROJECT_FILES_NAMESPACE, PRIMARY_DIRECTION_NAMESPACE}:
             # Membership follows stable subject identity across project edits.
             object.__setattr__(self, "subject", ResourceRef(self.subject.authority, self.subject.kind, self.subject.id))
         if not isinstance(self.document, ReferenceBinding):
@@ -280,7 +281,7 @@ def association_identity(subject: ResourceRef, namespace: str, key: str) -> str:
     _ref(subject, "subject")
     _text(namespace, "namespace")
     _association_key(namespace, key)
-    if namespace == PROJECT_FILES_NAMESPACE:
+    if namespace in {PROJECT_FILES_NAMESPACE, PRIMARY_DIRECTION_NAMESPACE}:
         subject = ResourceRef(subject.authority, subject.kind, subject.id)
     material = canonical_json({"subject": subject, "namespace": namespace, "key": key})
     return "link-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]

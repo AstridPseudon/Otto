@@ -382,6 +382,8 @@ class HerzchenCodexAdapter:
             "logical_request_key": logical_key,
             "prompt": prompt,
         }
+        if isinstance(request.get("launch_context"), Mapping):
+            value["launch_context"] = dict(request["launch_context"])
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         request_digest = _digest(value)
         return (

@@ -201,6 +201,7 @@ class ManagerJourneyService:
                 "assignment_reader": assignment_reader(operations, assignment_ref),
                 "mandate_reader": mandate_reader(operations, project_ref, mandate_ref),
                 "resource_reader": operations.content_port,
+                "direction_context_reader": getattr(operations, "direction_context_reader", None),
                 "as_of": self._as_of(),
             }
             if isinstance(task_ref, Mapping):
@@ -226,6 +227,7 @@ class ManagerJourneyService:
                 "role_instructions": instruction_preview,
                 "role_instructions_truncated": isinstance(role_instructions, str) and len(role_instructions) > len(instruction_preview or ""),
                 "mandate_instruction_contract": contract_view,
+                "direction_context": prepared.get("direction_context", []),
                 "evidence_sha256": prepared.get("evidence_sha256"),
             }
         except Exception as exc:
@@ -311,6 +313,19 @@ class ManagerJourneyService:
             help_state={"state": "known", "issues": list(help_issues)[:128]}, budget=self._budget(),
             inventory=inventory, as_of=self._as_of(),
         )
+
+    def authorize_caller(self, context: Mapping[str, Any], request: Mapping[str, Any]) -> None:
+        """A tool caller cannot inherit this service's single manager custody.
+
+        Child/administrative targets remain command-specific and explicit.
+        Operational reply grants keep their existing separate ingress.
+        """
+        state = self.server.state
+        self.commands._authorize()
+        if (context.get("role") != "manager" or context.get("principal") != state["manager"]
+                or context.get("assignment_ref") != state["assignment_ref"]
+                or context.get("generation") != state["manager_generation"]):
+            raise PermissionError("caller is not the current manager of this command service")
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
@@ -827,7 +842,20 @@ class ManagerJourneyService:
         bases = [item for item in attachments if item["required"]]
         if len(bases) != 1:
             raise ValueError("worker delegation requires exactly one current adopted manager BASE")
-        sources = supporting_context(bases[0], self.server.owner.content.command_port)
+        from .direction_context import direction_inputs
+        reader = getattr(self.server.portfolio.operations, "direction_context_reader", None)
+        directions = [] if reader is None else reader(assignment_ref=manager.ref.to_dict(), generation=manager.generation,
+            project_ref=state["project_ref"], task_ref=task_ref)
+        sources = supporting_context(bases[0], self.server.owner.content.command_port,
+            exact_direction_inputs=direction_inputs(directions))
+        # A child consumes overall/project/task direction plus its own durable
+        # responsibility, never the parent's responsibility-specific primary.
+        parent_inputs = {tuple(scope["effective_ref"][key] for key in ("authority", "kind", "id"))
+            for scope in directions if scope["kind"] == "responsibility"}
+        shared_inputs = {tuple(item["ref"][key] for key in ("authority", "kind", "id"))
+            for scope in directions if scope["kind"] != "responsibility" for item in scope["inputs"]}
+        sources = [source for source in sources if
+            tuple(source["ref"][key] for key in ("authority", "kind", "id")) not in parent_inputs - shared_inputs]
         prepared = app.assign_worker(project_ref=state["project_ref"], task_ref=task_ref,
             principal=principal, request_key=key, instructions=instruction, instruction_contract=contract,
             brief=brief, model=model, reasoning=reasoning, timeout_seconds=1200,
