@@ -58,7 +58,10 @@ class OwnerAuthoringIngressTests(unittest.TestCase):
             self.f.owner.binding.authenticated_actor("foreign"))["state"],"available")
         self.assertEqual(self.service(request),observed)
         self.assertEqual(self.f.finish(opened)["outcome"],"finished")
-        self.assertEqual(self.service(request)["state"],"available")
+        fresh={**request,"request_key":"after-finish-read"}
+        fresh_receipt=self.ingress.publish({"schema":self.ingress.schema,"request":fresh})
+        self.assertNotEqual(fresh_receipt["request_id"],receipt["request_id"])
+        self.assertEqual(self.service(json.loads(Path(fresh_receipt["request_path"]).read_text()))["state"],"available")
 
     def test_actor_operation_override_and_foreign_grant_rejected(self):
         for patch in ({'actor': 'owner'}, {'command': 'execution-control'}, {'command': 'manager-replace'}):

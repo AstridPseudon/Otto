@@ -594,6 +594,12 @@ class ManagerJourneyService:
                   "import-folder": {"request_key", "project_json", "files"},
                   "export-folder": {"request_key", "project_ref"},
                   "release": {"request_key", "project_ref", "session_id"}, "current-scope": set()}
+        # A fresh transport correlation for an inert read does not create an
+        # authoring request or mutation; old response files remain immutable.
+        if operation in {"read", "current-scope"} and "request_key" in values:
+            if not isinstance(values["request_key"], str) or not values["request_key"].strip():
+                raise ValueError("read correlation key must be nonempty text")
+            fields[operation].add("request_key")
         if operation == "check-in" and "document_changes" in values:
             fields["check-in"].add("document_changes")
         if operation not in fields or set(values) != common | fields[operation]:

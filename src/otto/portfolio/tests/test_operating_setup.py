@@ -584,6 +584,23 @@ class OperatingSetupTests(unittest.TestCase):
                     commands.execute(request)
         commands._reader = original_reader
         self.assertEqual(commands.execute(request)["scope_ref"], scope.ref.to_dict())
+        # A genuine same-principal session handover changes the current
+        # assignment generation. It does not reopen completed task scopes.
+        adopted = f.owner.assignments.command_port.reassign(
+            ResourceRef.from_dict(state["assignment_ref"]), principal=state["manager"],
+            session="genuine-replacement-session", expected_generation=1,
+            logical_request_key="scope-read-replacement", actor=f.actor)
+        counts_after_binding = f.owner.graph.reader.snapshot_counts()
+        replacement_ready = runtime.acceptance_readiness(state["project_ref"],
+            {"assignment_ref": adopted.ref.to_dict(), "principal": state["manager"],
+             "generation": adopted.generation}, configured_tasks)
+        self.assertEqual(replacement_ready, historical)
+        self.assertEqual(LimitService(f.store).get_pool(policy.pool_ref), pool_before)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), counts_after_binding)
+        with self.assertRaises(PermissionError):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": adopted.ref.to_dict(), "principal": "foreign",
+                 "generation": adopted.generation}, configured_tasks)
         self.assertEqual(f.provider.calls, [])
 
     def test_missing_execution_contract_rejects_before_initialization_and_valid_request_recovers(self):

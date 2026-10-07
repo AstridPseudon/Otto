@@ -35,6 +35,31 @@ class OwnerManagerReplacementTests(unittest.TestCase):
         self.assertEqual(self.acquisitions,[self.schedule])
         self.assertEqual(self.f.app._read(self.schedule).generation,1)
 
+    def test_current_context_can_refresh_identical_BASE_in_the_new_generation(self):
+        def context(assignment,generation,native):
+            current=self.f.app.assignments.get(assignment['ref'])
+            adopted=self.f.app.assignments.adopt_resources(current.ref,
+                resources=current.payload['resource_adoptions'],expected_revision=current.revision,
+                expected_generation=generation,logical_request_key='replacement-BASE',actor=self.f.actor)
+            return {'assignment_ref':adopted.ref.to_dict(),'generation':generation,'conversation':native}
+        self.port.context_builder=context
+        result=self.port.replace(schedule_id=self.schedule,request_key='replace-adopted')
+        self.assertEqual(result['status'],'ready',result)
+        current=self.f.app.assignments.get(self.manager.ref)
+        self.assertEqual(result['assignment']['ref'],current.ref.to_dict())
+        self.assertEqual(current.generation,2)
+        self.assertEqual(len(self.f.provider.calls),1)
+        self.assertEqual(len(self.acquisitions),1)
+
+    def test_unrelated_context_revision_is_not_resource_adoption_proof(self):
+        self.port.context_builder=lambda assignment,generation,native: {
+            'assignment_ref':{**assignment['ref'],'revision':'rev-999'},
+            'generation':generation,'conversation':native}
+        result=self.port.replace(schedule_id=self.schedule,request_key='replace-inexact-context')
+        self.assertEqual(result['status'],'recoverable',result)
+        self.assertEqual(result['error']['code'],'current_context_delivery_failed')
+        self.assertEqual(len(self.acquisitions),1)
+
     def test_unknown_old_effect_never_initializes_or_reassigns(self):
         prior=self.f.app._read(self.schedule)
         unknown=replace(prior,completion_state='unknown')

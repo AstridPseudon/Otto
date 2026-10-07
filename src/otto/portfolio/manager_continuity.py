@@ -400,7 +400,24 @@ class ManagerContinuity:
             context = _mapping(context, "current_context")
             context_ref = context.get("assignment_ref") or context.get("responsibility_ref")
             if context_ref is not None and not _same(_ref(context_ref), _ref(new_assignment)):
-                raise ManagerContinuityError("delivered context assignment is stale")
+                # Refreshing identical immutable BASE for the new generation
+                # is a public resource-adoption CAS. Resolve that exact one
+                # transition through the canonical reader, never context JSON.
+                refreshed = _mapping(self.assignment_reader(_ref(new_assignment)), "current_assignment")
+                before_ref = _ref(new_assignment)
+                payload = refreshed.get("payload") or {}
+                if (not _same(_ref(context_ref), _ref(refreshed))
+                        or not isinstance(payload, Mapping)
+                        or not _same(payload.get("resource_adoption_base_ref"), before_ref)
+                        or _field(refreshed, "generation") != new_generation
+                        or not _same(_field(refreshed, "session"), replacement_session)
+                        or _field(refreshed, "principal") != principal
+                        or any(not _same(_field(refreshed, name), _field(new_assignment, name))
+                               for name in ("scope", "role", "pins", "history", "resource_adoptions"))):
+                    raise ManagerContinuityError("delivered context assignment is stale")
+                new_assignment = refreshed
+                result["assignment"] = refreshed
+                result["recovery"]["assignment_ref"] = _ref(refreshed)
             if context.get("generation") is not None and context.get("generation") != new_generation:
                 raise ManagerContinuityError("delivered context generation is stale")
             result["current_context"] = context
