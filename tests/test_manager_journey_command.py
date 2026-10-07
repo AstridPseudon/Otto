@@ -67,6 +67,45 @@ class ManagerJourneyCommandTests(unittest.TestCase):
             ResourceRef(self.application.actor.authority, "limit", "local-inspection"))
         self.assertEqual(pool.cumulative_used_units, 1)
 
+    def test_completed_finish_replays_exact_receipt_then_settles_later_task(self):
+        first = self.commands.review_task(self.request(key="first-review"))
+        self.fixture.state["task_refs"]["PA01"] = first["completion"]["task_ref"]
+        second = self.commands.review_task({**self.request(alias="PA06", key="second-review"), "finish": False})
+        self.assertEqual(second["outcome"], "accepted")
+        finish = {"command": "finish-task", "task": "PA06", "request_key": "second-finish", "review_key": "second-review"}
+        self.commands._journal(finish["request_key"], "finish-intent", finish)
+        limits = LimitService(self.application.store)
+        poolref = ResourceRef(self.application.actor.authority, "limit", "local-inspection")
+        before = limits.get_pool(poolref)
+        settled = self.commands.settle_completion_intents()
+        by_key = {r["request_key"]: r["result"] for r in settled}
+        self.assertEqual(by_key["first-review:finish"]["outcome"], "replayed")
+        self.assertEqual(by_key["second-finish"]["outcome"], "completed")
+        self.assertEqual(by_key["first-review:finish"]["task_ref"], first["completion"]["task_ref"])
+        self.assertEqual(limits.get_pool(poolref), before)
+        self.assertEqual(self.application.provider.calls, [])
+
+    def test_completed_finish_rejects_changed_task_key_and_generation_without_effects(self):
+        reviewed = self.commands.review_task(self.request(key="completed-review"))
+        state = self.fixture.state
+        state["task_refs"]["PA01"] = reviewed["completion"]["task_ref"]
+        finish = self.commands._journal("completed-review:finish", "finish-intent")
+        before = self.application.owner.graph.reader.snapshot_counts()
+        with self.assertRaises(PermissionError):
+            self.commands.finish_task({**finish, "request_key": "different-finish"})
+        state["task_refs"]["PA01"] = state["task_refs"]["PA06"]
+        with self.assertRaises(PermissionError): self.commands.finish_task(finish)
+        state["task_refs"]["PA01"] = reviewed["completion"]["task_ref"]
+        state["manager_generation"] += 1
+        with self.assertRaises(PermissionError): self.commands.finish_task(finish)
+        self.assertEqual(self.application.owner.graph.reader.snapshot_counts(), before)
+        state["manager_generation"] -= 1
+        state["task_refs"]["PA01"] = {**reviewed["completion"]["task_ref"], "revision": "rev-999"}
+        before = self.application.owner.graph.reader.snapshot_counts()
+        with self.assertRaises(PermissionError): self.commands.finish_task(finish)
+        self.assertEqual(self.application.owner.graph.reader.snapshot_counts(), before)
+        self.assertEqual(self.application.provider.calls, [])
+
     def test_retained_help_reports_are_hashed_without_reauthoring_or_extra_charge(self):
         f = self.application
         assignment = self.fixture.manager

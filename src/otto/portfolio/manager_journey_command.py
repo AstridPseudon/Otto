@@ -370,9 +370,22 @@ class ManagerJourneyCommands:
         if manifest["request"]["task"] != request.get("task"):
             raise PermissionError("review belongs to another task")
         if (manifest["generation"] != self.state["manager_generation"]
-                or any(manifest["assignment_ref"].get(k) != self.state["assignment_ref"].get(k) for k in ("authority", "kind", "id"))
-                or manifest["task_ref"] != self.state["task_refs"][request["task"]]):
+                or any(manifest["assignment_ref"].get(k) != self.state["assignment_ref"].get(k) for k in ("authority", "kind", "id"))):
             raise PermissionError("accepted review task or manager generation changed")
+        if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
+            # Completion itself advances the task revision. A later worker
+            # settlement revisits this retained finish intent, so only the
+            # exact already-committed completion may cross that revision fence.
+            # The owner completion API still verifies the original replay
+            # digest; no new completion or native settlement is attempted.
+            self._completed_finish(request, prior, manifest, reviewed)
+            return self.portfolio.complete_task(manifest["project_ref"], manifest["task_ref"],
+                self.state["assignment_ref"], actor=self.state["manager"], request_id="journey:" + key,
+                expected_generation=self.state["manager_generation"],
+                expected_project_revision=manifest["project_ref"]["revision"],
+                expected_task_revision=manifest["task_ref"]["revision"], disposition="accepted",
+                evidence_refs=reviewed["evidence_refs"], evidence_hashes=reviewed["evidence_hashes"],
+                gate_refs=reviewed["gate_refs"], candidate_ref=reviewed["candidate_ref"])
         self._journal(key, "finish-intent", dict(request))
         settlement = self._native_settlement(reviewed)
         if settlement is not None:
@@ -405,6 +418,30 @@ class ManagerJourneyCommands:
         return {"outcome": "pending", "completion_intent": key, "owner_result": result,
                 "retry_provider": False,
                 "next_action": "inspect completion prerequisites; settle retained native evidence if required; repeat this exact finish request"}
+
+    def _completed_finish(self, request: Mapping[str, Any], prior: Any,
+                          manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> None:
+        """Require exact canonical proof before replaying a completed task finish."""
+        current = ResourceRef.from_dict(self.state["task_refs"][request["task"]])
+        original = ResourceRef.from_dict(manifest["task_ref"])
+        record = self.owner.graph.reader.get_identity(current)
+        key = "journey:" + request["request_key"]
+        receipt = self.owner.graph.reader.get_receipt(key)
+        completion = {} if record is None else record.payload.get("completion", {})
+        expected = {"logical_request_key": key, "manager": self.state["manager"],
+                    "assignment_ref": self.state["assignment_ref"], "generation": self.state["manager_generation"],
+                    "task_ref": manifest["task_ref"], "task_revision": original.revision,
+                    "project_ref": manifest["project_ref"], "project_revision": manifest["project_ref"]["revision"],
+                    "disposition": "accepted", "candidate_ref": reviewed["candidate_ref"],
+                    "evidence_refs": reviewed["evidence_refs"], "evidence_hashes": reviewed["evidence_hashes"],
+                    "gate_refs": reviewed["gate_refs"]}
+        if (prior != dict(request) or record is None or record.ref != current
+                or (current.authority, current.kind, current.id) != (original.authority, original.kind, original.id)
+                or record.payload.get("lifecycle") != "completed" or not isinstance(completion, Mapping)
+                or any(completion.get(field) != value for field, value in expected.items())
+                or receipt is None or receipt.status.value != "committed" or receipt.operation != "work.revise"
+                or receipt.target != original or receipt.result_ref != current):
+            raise PermissionError("accepted review task or manager generation changed")
 
     def settle_completion_intents(self) -> list[Mapping[str, Any]]:
         """Fulfill already accepted explicit finishes after native owner settlement."""
