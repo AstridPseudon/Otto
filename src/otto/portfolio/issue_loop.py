@@ -588,23 +588,44 @@ class IssueLoop:
         if not records:
             return {"outcome": "unknown", "delivery_id": delivery_id,
                     "error": {"code": "delivery_intent_missing"}, "retry": False}
+        # Transport status and semantic response are distinct. Manual pending
+        # receipts must still expose the immutable report the delivery names.
+        intent = next((record for record in records if record.get("state") == "intent"), None)
+        message = intent.get("message") if isinstance(intent, Mapping) else None
+        linked = next((report for report in reports if isinstance(message, Mapping)
+            and report.get("ref") == message.get("report_ref")
+            and isinstance(report.get("value"), Mapping)
+            and report["value"].get("issue_id") == intent.get("issue_id")), None)
+        context = {}
+        if linked is not None:
+            import hashlib
+            import json
+            body = dict(linked["value"])
+            context = {"issue_id": intent["issue_id"], "message_type": message.get("type"),
+                "report_ref": linked["ref"], "report_sha256": hashlib.sha256(json.dumps(body,
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
+                "retained_report": body}
+            if message.get("type") == "issue_response" and body.get("schema") == "otto.issue.response.v1":
+                context.update(next_action=body.get("next_action"), supported_application={
+                    "command": "resolve-help", "issue_id": intent["issue_id"],
+                    "requires": "current manager authority and concrete application evidence; existing resolution guards apply"})
         recorded = records[-1]
         if recorded.get("state") == "sent":
-            return {"outcome": "sent", "delivery_id": delivery_id,
+            return {**context, "outcome": "sent", "delivery_id": delivery_id,
                     "receipt": recorded.get("receipt"), "retry": False}
         readback = getattr(self.ports.delivery, "read_delivery", None) if self.ports.delivery is not None else None
         if not callable(readback):
-            return {"outcome": "unknown", "delivery_id": delivery_id,
+            return {**context, "outcome": "unknown", "delivery_id": delivery_id,
                     "transport": "unsupported", "retry": False}
         try:
             value = readback(delivery_id)
         except Exception as exc:
-            return {"outcome": "unknown", "delivery_id": delivery_id,
+            return {**context, "outcome": "unknown", "delivery_id": delivery_id,
                     "transport": "unknown", "error": str(exc), "retry": False}
         if not isinstance(value, Mapping):
-            return {"outcome": "unknown", "delivery_id": delivery_id,
+            return {**context, "outcome": "unknown", "delivery_id": delivery_id,
                     "transport": "unknown", "retry": False}
-        return {**dict(value), "delivery_id": delivery_id,
+        return {**dict(value), **context, "delivery_id": delivery_id,
                 "outcome": value.get("outcome", "unknown"), "retry": False}
 
     def submit_issue(self, *, project_ref: Any, assignment_ref: Any, generation: int,

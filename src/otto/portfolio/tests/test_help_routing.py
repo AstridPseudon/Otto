@@ -134,6 +134,41 @@ class HelpRoutingTests(unittest.TestCase):
         self.assertFalse(decision["autonomous_ready"])
         self.assertFalse(decision["capabilities"]["operational_help_delivery"])
 
+    def test_pending_response_read_and_continuation_deliver_exact_owner_constraints(self):
+        constraint = "Do NOT execute review-task or finish-task; no correction allowance is authorized."
+        issue = self.service(self.request())
+        self.host._closing = True  # Reply is recorded without dispatching in this closed fixture.
+        response = self.service(self.reply(issue["issue_id"], next_action=constraint))
+        return_id = response["delivery"]["delivery_id"]
+        self.assertNotEqual(return_id, issue["delivery"]["delivery_id"])
+        self.assertIn("Manager reads", response["delivery"]["next_action"])
+        observed = self.service({"command": "read-help", "delivery_id": return_id})
+        self.assertEqual(observed["outcome"], "pending")
+        self.assertFalse(observed["retry"])
+        self.assertEqual(observed["next_action"], constraint)
+        self.assertEqual(observed["retained_report"]["next_action"], constraint)
+        self.assertEqual(observed["report_ref"], response["report_ref"])
+        self.assertEqual(self.f.app.start(schedule_id=self.anchor)["outcome"], "succeeded")
+        prepared = self.f.app.continue_manager_from_help(manager_schedule_id=self.anchor,
+            report_ref=response["report_ref"], execute=False)
+        callback = self.f.app._read(prepared["schedule_id"])
+        context = json.loads(callback.message.split("\n", 1)[1])
+        self.assertEqual(context["retained_report"]["next_action"], constraint)
+        self.assertEqual(context["return_delivery"]["delivery_id"], return_id)
+        self.assertEqual(context["return_delivery"]["read_help"]["delivery_id"], return_id)
+        self.assertEqual(context["report_sha256"], observed["report_sha256"])
+        before = callback.to_dict()
+        replay = self.f.app.continue_manager_from_help(manager_schedule_id=self.anchor,
+            report_ref=response["report_ref"], execute=False)
+        self.assertEqual(replay["schedule_id"], callback.schedule_id)
+        self.assertEqual(self.f.app._read(callback.schedule_id).to_dict(), before)
+        # Unknown transport retains the semantic response without claiming delivery.
+        self.delivery.reader = lambda _: {"outcome": "unknown", "transport": "manual"}
+        unknown = self.service({"command": "read-help", "delivery_id": return_id})
+        self.assertEqual(unknown["outcome"], "unknown")
+        self.assertEqual(unknown["next_action"], constraint)
+        self.assertFalse(unknown["retry"])
+
     def test_disabled_advice_has_no_reports_sends_or_allowance_effect(self):
         before = self.readers.reports(self.f.project.ref.to_dict())
         with self.assertRaisesRegex(IssueLoopError, "advisor_disabled"):

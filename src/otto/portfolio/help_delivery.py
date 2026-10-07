@@ -87,7 +87,9 @@ class BoundHelpDelivery:
                             "recipient_assignment_ref": intent["recipient_assignment_ref"],
                             "generation": assignment.generation, "principal": assignment.principal,
                             "conversation_id": native, "notification_sent": False},
-                "next_action": "Accountable supervisor inspects the retained help report and returns respond-help; independent useful work continues."}
+                "next_action": ("Manager reads the exact retained response and owner constraints, then records authorized application through resolve-help; independent ready work continues."
+                    if assignment.role == "manager" and intent["message"].get("type") == "issue_response" else
+                    "Accountable supervisor inspects the retained help report and returns respond-help; independent useful work continues.")}
 
     def read_delivery(self, delivery_id: str) -> Any:
         if callable(self.reader):

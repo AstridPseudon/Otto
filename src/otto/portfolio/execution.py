@@ -1056,12 +1056,39 @@ class ExecutionApplication:
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
             due_at=self._now(), timeout_seconds=prior.timeout_seconds)
         self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
-        due = replace(due, instruction=("Read the retained help/advice report and its current issue disposition. "
+        return_intents = [item["value"] for item in reports
+            if isinstance(item.get("value"), Mapping)
+            and item["value"].get("schema") == "otto.issue.delivery.v1" and item["value"].get("state") == "intent"
+            and item["value"].get("issue_id") == issue["issue_id"]
+            and (item["value"].get("message") or {}).get("type") == "issue_response"
+            and (item["value"].get("message") or {}).get("report_ref") == dict(report_ref)
+            and item["value"].get("recipient_assignment_ref") == current.ref.to_dict()
+            and item["value"].get("recipient_generation") == current.generation
+            and item["value"].get("recipient_principal") == current.principal
+            and item["value"].get("recipient_conversation") == prior.target.get("native_id")]
+        if len(return_intents) > 1:
+            raise OccurrencePreparationError("help response has multiple current return deliveries")
+        returned = None
+        if return_intents:
+            intent = return_intents[0]
+            terminal = next((item["value"] for item in reversed(reports)
+                if isinstance(item.get("value"), Mapping)
+                and item["value"].get("schema") == "otto.issue.delivery.v1"
+                and item["value"].get("delivery_id") == intent["delivery_id"]
+                and item["value"].get("state") != "intent"), intent)
+            returned = {"delivery_id": intent["delivery_id"], "state": terminal.get("state"), "retry": False,
+                "read_help": {"command": "read-help", "delivery_id": intent["delivery_id"]}}
+        # Existing callback evidence/identity and attempted replay remain stable.
+        # Only new delivered messages gain the full authenticated actionable body.
+        delivered_context = {**evidence, "retained_report": dict(value), "return_delivery": returned,
+            "supported_application": {"command": "resolve-help", "issue_id": issue["issue_id"],
+                "requires": "current manager authority and concrete application evidence; preserve retained owner constraints"}}
+        due = replace(due, instruction=("Read the full retained help/advice report and its owner next_action constraints below before acting. "
             "Apply only actions authorized by your adopted mandate, record concrete application evidence through resolve-help, "
             "and continue independent ready work through ordinary delegation and review. Advice is a suggestion; "
             "receipt or response alone does not resolve a blockage. This invocation consumes the report; "
             "do not redispatch it or wait for your own turn to settle. Preserve unknown effects and budgets."),
-            message="Observed help continuation context:\n" + json.dumps(evidence, sort_keys=True),
+            message="Observed help continuation context:\n" + json.dumps(delivered_context, sort_keys=True),
             host_evidence={"help_continuation": evidence})
         prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
             assignments=self.assignments, binding=self.binding, due=due,
