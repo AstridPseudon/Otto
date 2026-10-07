@@ -311,6 +311,15 @@ class Tests(unittest.TestCase):
         unknown = compact_operation_status()
         self.assertIsNone(unknown["canonical_project_completion"]["project_completion_recorded"])
 
+    def test_pending_manager_remedy_uses_transport_handle_never_schedule_id(self):
+        operation = {"schedule_id": "manager-finish-callback-name", "role": "manager",
+            "delivery_state": "returned", "completion_state": "none", "stop_state": "active"}
+        for handle, command in ((None, "status"), ("manager-finish-callback-name", "status"),
+                                ("8f" * 32, "command-status --request-id " + "8f" * 32)):
+            with self.subTest(handle=handle):
+                value = compact_operation_status({**operation, "retained_handle": handle})
+                self.assertEqual(value["supported_next_remedy"]["command"], command)
+
     def test_project_status_exposes_current_layers_without_globalizing_old_unknown(self):
         task_ref = {"authority": "owner", "kind": "work.task", "id": "task-1", "revision": "rev-2"}
         view = {"project": {"ref": {"id": "project-1"}, "observed": {

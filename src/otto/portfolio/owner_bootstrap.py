@@ -869,8 +869,28 @@ class PortfolioOwnerBootstrap:
                                  tasks: Any) -> Mapping[str, Any]:
             if assessment_policy is None:
                 raise PermissionError("operating setup requires the owner-bound assessment policy and existing allowance")
-            scopes = []
-            for task in tasks:
+            from herzchen.contracts import ResourceRef
+            scopes, completed_readbacks = [], []
+            for configured_task in tasks:
+                task = configured_task
+                ref = ResourceRef.from_dict(configured_task)
+                current = self.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+                if current is not None and current.ref.to_dict() != configured_task:
+                    # Immutable setup selects the completion input revision.
+                    # Only that exact committed transition can supply a current
+                    # read; assessment/result mutation capabilities stay strict.
+                    completion = current.payload.get("completion") or {}
+                    key = completion.get("logical_request_key")
+                    receipt = self.graph.reader.get_receipt(key) if isinstance(key, str) else None
+                    if (current.payload.get("lifecycle") != "completed"
+                            or completion.get("task_ref") != configured_task
+                            or receipt is None or receipt.status.value != "committed"
+                            or receipt.operation != "work.revise" or receipt.target != ref
+                            or receipt.result_ref != current.ref):
+                        raise PermissionError("setup acceptance task lacks exact committed completion predecessor")
+                    task = current.ref.to_dict()
+                    completed_readbacks.append({"configured_task_ref": configured_task,
+                        "current_task_ref": task, "completion_request_key": key})
                 commands = self.manager_assessment(project_ref=project_ref, task_ref=task,
                     manager_assignment_ref=manager["assignment_ref"], manager_actor=manager["principal"],
                     manager_generation=manager["generation"], assessment_policy=assessment_policy)
@@ -880,7 +900,7 @@ class PortfolioOwnerBootstrap:
             expected = {task.to_dict()["id"] for task, _ in assessment_policy.task_criterion_pairs}
             if {task["id"] for task in tasks} != expected:
                 raise PermissionError("operating setup must resolve every task in the owner assessment policy")
-            return {"required_scopes": scopes, "allowance_created": False}
+            return {"required_scopes": scopes, "completed_task_readbacks": completed_readbacks, "allowance_created": False}
 
         from herzchen.kernel import LimitService
         limits = LimitService(self.store)

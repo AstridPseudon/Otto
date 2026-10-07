@@ -348,6 +348,73 @@ class OperatingSetupTests(unittest.TestCase):
         self.assertEqual(commands._assessment.coverage(f.task.ref)["scope_count"], 2)
         self.assertEqual(f.provider.calls, [])
 
+    def test_adopted_setup_before_peer_completion_allows_next_worker_readiness(self):
+        fixture = journey_fixture.ManagerJourneyCommandTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        f, state = fixture.application, fixture.fixture.state
+        from herzchen.content.instructions import validate_instruction_content
+        worker = f.app.assign_worker(**f.request())
+        guide = worker["guide_ref"]
+        content = f.owner.content.read(ResourceRef.from_dict(guide))["content"]
+        base = fixture.fixture.manager
+        manager = f.owner.assignments.command_port.adopt_resources(base.ref,
+            resources=[{"resource_ref": guide, "resource_name": content["name"],
+                "content_digest": validate_instruction_content(content), "required": True}],
+            expected_revision=base.revision, expected_generation=base.generation,
+            logical_request_key="peer-manager-adopt", actor=f.actor)
+        state["assignment_ref"] = manager.ref.to_dict()
+        contract = f.request()["instruction_contract"]
+        contract["authority"]["owner_actor"] = "manager"
+        contract["authority"]["effect_profile"] = "workspace-write-manager"
+        contract["allowed_operations"].append("canonical_manager_commands")
+        contract["authority"]["permitted_effects"].append("canonical_manager_commands")
+        made = f.app.portfolio.create_document(state["project_ref"], actor="manager",
+            request_id="peer-manager-mandate", document_id="peer-manager-mandate", role="mandate",
+            content={"role": "manager", "scope_ref": state["project_ref"], "status": "active",
+                "dispatch_enabled": True, "task_ref": f.task.ref.to_dict(), "assignment_ref": manager.ref.to_dict(),
+                "generation": 1, "brief": {"role": "manager", "mandate": "Advance remaining work"},
+                "instruction_contract": contract})
+        mandate = made["record"]["payload"]["current_revision"]
+        policy = LocalAssessmentPolicy.from_run_config(state["assessment_policy"], state=state)
+        app = f.owner.execution_application(due_port=f.port, adapter=f.app.runtime.adapter,
+            clock=f.app.clock, assessment_policy=policy)
+        role = app.prepare_role(role="manager", project_ref=state["project_ref"], task_ref=f.task.ref.to_dict(),
+            assignment_ref=manager.ref.to_dict(), generation=1, mandate_ref=mandate,
+            context_refs=(guide, mandate), request_key="peer-completion-manager", instruction="Advance remaining delivery",
+            model="gpt-test", reasoning="high", profile="workspace-write", native_session_id="retained-manager")
+        configured = list(state["task_refs"].values())
+        assessment = AssessmentModule(f.store, actor=f.actor)
+        for alias, criterion in (("PA01", "C01"), ("PA06", "C09")):
+            assessment.declare_scope("peer-scope-" + alias, parent_obligation=ResourceRef.from_dict(state["task_refs"][alias]),
+                protocol="existing-pairs", criteria=[ResourceRef.from_dict(state["criterion_refs"][criterion])],
+                designated_approver="manager", policy={"required_for_completion": True}, logical_request_key="peer-scope-" + alias)
+        f.owner.create_manager_assessment_pool(project_ref=state["project_ref"], task_ref=f.task.ref.to_dict(),
+            manager_assignment_ref=manager.ref.to_dict(), manager_actor="manager", manager_generation=1,
+            logical_request_key="peer-pool", assessment_policy=policy)
+        config = {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": role["schedule_id"]},
+            "advisor_policy": {"mode": "disabled", "reason": "No advisor authorized"}, "acceptance_tasks": configured}
+        prepared = app.prepare_operating_setup(project_ref=state["project_ref"], setup=config, request_key="before-peer-finish")
+        self.assertEqual(prepared["outcome"], "prepared", prepared)
+        # The configured manager's execution task remains pending; a separate
+        # acceptance task completes, as Portable D03 did before D04 startup.
+        result = fixture.commands.review_task(fixture.request(alias="PA06", key="peer-review"))
+        self.assertEqual(result["completion"]["outcome"], "completed", result)
+        state["task_refs"]["PA06"] = result["completion"]["task_ref"]
+        current_policy = LocalAssessmentPolicy.from_run_config(state["assessment_policy"], state=state)
+        current = f.owner.execution_application(due_port=f.port, adapter=f.app.runtime.adapter,
+            clock=f.app.clock, assessment_policy=current_policy)
+        pool_before = LimitService(f.store).get_pool(current_policy.pool_ref)
+        from otto.portfolio.operating_setup import read_setup
+        setup_before = read_setup(current.portfolio.operations, state["project_ref"])
+        candidate = current.assign_worker(**{**f.request(), "request_key": "after-peer-completion"})
+        started = current.start(schedule_id=candidate["schedule_id"])
+        self.assertEqual(started["outcome"], "succeeded", started)
+        self.assertEqual(len(f.provider.calls), 1)
+        self.assertEqual(read_setup(current.portfolio.operations, state["project_ref"]), setup_before)
+        self.assertEqual(setup_before["acceptance_tasks"], configured)
+        self.assertEqual(LimitService(f.store).get_pool(current_policy.pool_ref), pool_before)
+
     def test_ordinary_review_finishes_adopted_scope_without_owner_ratification(self):
         fixture = journey_fixture.ManagerJourneyCommandTests()
         fixture.setUp()
@@ -388,6 +455,26 @@ class OperatingSetupTests(unittest.TestCase):
         ready = runtime.acceptance_readiness(state["project_ref"],
             {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
                 "generation": state["manager_generation"]}, list(state["task_refs"].values()))
+        # A public setup admitted before finish retains the old exact task ref.
+        # Readiness alone follows its exact completion transition to the head.
+        configured_tasks = [task.to_dict(), state["task_refs"]["PA06"]]
+        historical = runtime.acceptance_readiness(state["project_ref"],
+            {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                "generation": state["manager_generation"]}, configured_tasks)
+        self.assertEqual(historical["required_scopes"], ready["required_scopes"])
+        self.assertEqual(historical["completed_task_readbacks"][0]["configured_task_ref"], task.to_dict())
+        self.assertEqual(historical["completed_task_readbacks"][0]["current_task_ref"], state["task_refs"]["PA01"])
+        with self.assertRaisesRegex(PermissionError, "completion predecessor"):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": state["assignment_ref"], "principal": state["manager"], "generation": 1},
+                [{**task.to_dict(), "revision": "rev-999"}, state["task_refs"]["PA06"]])
+        with self.assertRaises(PermissionError):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": state["assignment_ref"], "principal": state["manager"], "generation": 2}, configured_tasks)
+        with self.assertRaisesRegex(PermissionError, "revision changed"):
+            f.owner.manager_assessment(project_ref=state["project_ref"], task_ref=task.to_dict(),
+                manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
+                manager_generation=1, assessment_policy=policy)
         self.assertEqual(len(ready["required_scopes"]), 2)
         self.assertFalse(ready["allowance_created"])
         self.assertEqual(LimitService(f.store).get_pool(policy.pool_ref), pool_before)

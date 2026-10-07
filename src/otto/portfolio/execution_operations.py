@@ -448,7 +448,10 @@ def _next_supported_remedy(
                 command = "worker-status --task {0} --principal {1} --schedule-id {2}".format(
                     operation["task"], operation["principal"], schedule)
             else:
-                command = "command-status --request-id " + schedule
+                handle = operation.get("retained_handle")
+                command = ("command-status --request-id " + handle
+                    if isinstance(handle, str) and handle and all(c in "0123456789abcdef" for c in handle)
+                    else "status")
             return {"supported": True, "operation": "reconcile-settlement", "command": command,
                     "reason": "settle the retained operation without a provider retry"}
     if blockers:
