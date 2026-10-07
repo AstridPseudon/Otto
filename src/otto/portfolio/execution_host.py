@@ -708,6 +708,60 @@ class ExecutionHost:
         self.close()
 
     @staticmethod
+    def supervise_owner_service(*, argv: list[str], cwd: str | Path,
+                                stdin_fifo: str | Path, log_path: str | Path,
+                                receipt_path: str | Path, source_identity: Mapping[str, Any],
+                                reconcile: Callable[[Any], Mapping[str, Any]],
+                                disposition: Callable[[], str], request_stop: Callable[[Any], None],
+                                max_restarts: int = 2, restart_delay: float = 0.25,
+                                max_restart_delay: float = 5.0,
+                                on_spawn: Callable[[Any], None] | None = None) -> Mapping[str, Any]:
+        """Compose bounded supervision with an independently owned stdin FIFO.
+
+        Trusted host composition supplies paths and effect reconciliation. The
+        FIFO remains live across tool/terminal lifetimes; it is neither caller
+        IPC nor another durable queue. This adds no admission or restart policy
+        beyond supervise, and never removes an explicit stop/pause marker.
+        """
+        import stat
+        fifo, log = Path(stdin_fifo), Path(log_path)
+        metadata = fifo.lstat()
+        if (not stat.S_ISFIFO(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600):
+            raise PermissionError("owner stdin requires an independently owned mode0600 FIFO")
+
+        def spawn(command: list[str], **_ignored: Any) -> Any:
+            flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(fifo, flags)
+            output = None
+            try:
+                held = os.fstat(fd)
+                if (held.st_dev, held.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise PermissionError("owner stdin FIFO changed before spawn")
+                output = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                info = os.fstat(output)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                    raise PermissionError("owner log requires a mode0600 owned regular file")
+                process = subprocess.Popen(command, cwd=cwd, stdin=fd, stdout=output,
+                    stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+                if on_spawn is not None:
+                    try:
+                        on_spawn(process)  # Trusted host receipt, never caller routing.
+                    except BaseException:
+                        request_stop(process)
+                        process.wait()  # Drain the launched owner; never orphan/retry it.
+                        raise
+                return process
+            finally:
+                os.close(fd)
+                if output is not None: os.close(output)
+
+        return ExecutionHost.supervise(argv=argv, receipt_path=receipt_path,
+            source_identity=source_identity, reconcile=reconcile, disposition=disposition,
+            request_stop=request_stop, max_restarts=max_restarts, restart_delay=restart_delay,
+            max_restart_delay=max_restart_delay, process_factory=spawn)
+
+    @staticmethod
     def reconcile_trigger(*, attention: Any, executor: Any, schedule_id: str,
                           request_id: str, actor: str, desired_state: str = "active",
                           expected_version: int | None = None, project_ref: str | None = None,

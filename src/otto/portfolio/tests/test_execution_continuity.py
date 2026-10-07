@@ -380,3 +380,36 @@ class HostContinuityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class InstalledOwnerCompositionTests(unittest.TestCase):
+    def test_supervised_real_child_receives_private_fifo_and_retains_exit(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); fifo = root / 'root.stdin'; os.mkfifo(fifo, 0o600)
+            fd = os.open(fifo, os.O_RDWR)
+            try:
+                os.write(fd, b'authenticated-root-input\n')
+                calls = []
+                result = ExecutionHost.supervise_owner_service(
+                    argv=[sys.executable, '-u', '-c', 'import sys; print(sys.stdin.readline().strip())'],
+                    cwd=root, stdin_fifo=fifo, log_path=root / 'owner.log', receipt_path=root / 'supervision.json',
+                    source_identity={'installed': 'exact-digest'}, reconcile=lambda prior: calls.append(prior) or {'ready': True},
+                    disposition=lambda: 'active', request_stop=lambda _: self.fail('no stop requested'), max_restarts=1)
+                self.assertEqual(result['outcome'], 'closed')
+                self.assertEqual((root / 'owner.log').read_text().strip(), 'authenticated-root-input')
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(result['exit_receipts'][0]['exit_status'], 0)
+                self.assertFalse(result['provider_replayed'])
+            finally: os.close(fd)
+
+    def test_private_fifo_composition_rejects_symlink_before_admission(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); fifo = root / 'root.stdin'; os.mkfifo(fifo, 0o600)
+            link = root / 'caller.stdin'; link.symlink_to(fifo)
+            with self.assertRaises(PermissionError):
+                ExecutionHost.supervise_owner_service(argv=[sys.executable], cwd=root, stdin_fifo=link,
+                    log_path=root / 'owner.log', receipt_path=root / 'supervision.json', source_identity={'installed':'digest'},
+                    reconcile=lambda _: self.fail('symlink must fail before reconciliation'), disposition=lambda:'active', request_stop=lambda _:None)
+            self.assertFalse((root / 'supervision.json').exists())
