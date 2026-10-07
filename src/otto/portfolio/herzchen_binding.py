@@ -2180,24 +2180,9 @@ class FiniteWorkOperations:
             "event_ids": self._events_for(receipt),
         }
 
-    def _pending_projects(self, parent_ref: Any = None) -> list[Any]:
-        """Read pending projects through the sealed consumer reader.
-
-        The consumer reader exposes event history and record lookup, but no
-        generic query or SQL surface.  Reconstructing the finite project index
-        from public work subjects keeps listing read-only and preserves the
-        owner/consumer boundary.
-        """
-
+    def _pending_projects(self, parent_ref: Any = None, *, grant: ProjectReadGrant) -> list[Any]:
+        """Read current pending records only for the authenticated finite grant."""
         from herzchen.contracts import ResourceRef
-
-        latest: dict[tuple[str, str, str], ResourceRef] = {}
-        for event in self._owner_reader.list_events():
-            subject = getattr(event, "subject", None)
-            if subject is None or getattr(subject, "kind", None) != "work.project":
-                continue
-            key = (subject.authority, subject.kind, subject.id)
-            latest[key] = ResourceRef(subject.authority, subject.kind, subject.id)
 
         parent_identity = None
         if parent_ref is not None:
@@ -2205,7 +2190,8 @@ class FiniteWorkOperations:
             parent_identity = (parent.authority, parent.kind, parent.id)
 
         records = []
-        for ref in latest.values():
+        for project_id in sorted(grant.project_ids):
+            ref = ResourceRef(grant.principal.authority, "work.project", project_id)
             record = self._owner_reader.get_record(ref)
             if record is None:
                 continue
@@ -2417,7 +2403,7 @@ class FiniteWorkOperations:
                     return self._project_read_denied()
                 if not grant.allows(parent_ref):
                     return self._project_read_denied()
-            records = [record for record in self._pending_projects(parent) if grant.allows(getattr(record, "ref", None))]
+            records = [record for record in self._pending_projects(parent, grant=grant) if grant.allows(getattr(record, "ref", None))]
             return {
                 "outcome": "listed",
                 "records": [_record_dict(record) for record in records],

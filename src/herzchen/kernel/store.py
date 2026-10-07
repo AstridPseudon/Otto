@@ -1637,12 +1637,14 @@ class Store:
 
     def list_events(self, *, stream: Optional[str] = None,
                     subjects: Optional[Sequence[ResourceRef]] = None,
+                    subject_kinds: Optional[Sequence[str]] = None,
                     assessment_parent: Optional[ResourceRef] = None) -> Tuple[EventEnvelope, ...]:
         """Read existing events, with optional owner predicates before hydration.
 
         Assessment history follows its persisted declaration/parent links,
         including historical scope events when a current record is missing.
-        These predicates narrow an existing reader; they issue no read grant.
+        Subject kinds retain cross-stream attribution while excluding unrelated
+        payloads. These predicates narrow an existing reader; they issue no read grant.
         """
         clauses, args = [], []
         if stream is not None:
@@ -1659,6 +1661,17 @@ class Store:
                            "json_extract(wanted.value, '$.kind') = e.subject_kind AND "
                            "json_extract(wanted.value, '$.id') = e.subject_id)")
             args.append(_json([ref.to_dict() for ref in subjects]))
+        if subject_kinds is not None:
+            if isinstance(subject_kinds, (str, bytes)):
+                raise ValueError("event subject kinds must be a sequence of nonempty kind names")
+            subject_kinds = tuple(subject_kinds)
+            if not all(isinstance(kind, str) and kind.strip() for kind in subject_kinds):
+                raise ValueError("event subject kinds must be nonempty kind names")
+            if not subject_kinds:
+                return ()
+            clauses.extend(["e.store_authority = ?",
+                "e.subject_kind IN (SELECT value FROM json_each(?))"])
+            args.extend([self.authority, _json(subject_kinds)])
         if assessment_parent is not None:
             if (not isinstance(assessment_parent, ResourceRef)
                     or assessment_parent.authority != self.authority or stream != "assessment"):
@@ -1777,10 +1790,13 @@ class DomainHandler:
 
     def list_events(self, *, stream: Optional[str] = None,
                     subjects: Optional[Sequence[ResourceRef]] = None,
+                    subject_kinds: Optional[Sequence[str]] = None,
                     assessment_parent: Optional[ResourceRef] = None) -> Tuple[EventEnvelope, ...]:
         kwargs = {"stream": stream}
         if subjects is not None:
             kwargs["subjects"] = subjects
+        if subject_kinds is not None:
+            kwargs["subject_kinds"] = subject_kinds
         if assessment_parent is not None:
             kwargs["assessment_parent"] = assessment_parent
         return self._owner.list_events(**kwargs)
@@ -1854,10 +1870,13 @@ class ConsumerStore:
 
     def list_events(self, *, stream: Optional[str] = None,
                     subjects: Optional[Sequence[ResourceRef]] = None,
+                    subject_kinds: Optional[Sequence[str]] = None,
                     assessment_parent: Optional[ResourceRef] = None) -> Tuple[EventEnvelope, ...]:
         kwargs = {"stream": stream}
         if subjects is not None:
             kwargs["subjects"] = subjects
+        if subject_kinds is not None:
+            kwargs["subject_kinds"] = subject_kinds
         if assessment_parent is not None:
             kwargs["assessment_parent"] = assessment_parent
         return self.__owner.list_events(**kwargs)

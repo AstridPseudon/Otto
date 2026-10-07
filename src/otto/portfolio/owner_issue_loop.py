@@ -139,12 +139,13 @@ class OwnerIssueReaders:
         result = []
         seen = set()
         # Existing event subjects enumerate immutable reports across assignment
-        # revisions and supervisor transfers; no parallel issue index is kept.
+        # revisions and supervisor transfers; the kind predicate excludes large
+        # unrelated Due event payloads before hydration. No issue index is kept.
         # The general project reader intentionally exposes only Work records.
         # Owner composition scopes immutable observations here, before returning
         # them to the finite issue surface (including old assignment revisions).
         owner_reader = self.operations._owner_reader
-        for event in owner_reader.list_events():
+        for event in owner_reader.list_events(subject_kinds=("wrk.report", "wrk.result")):
             if event.subject.kind not in {"wrk.report", "wrk.result"} or event.subject.id in seen:
                 continue
             seen.add(event.subject.id)

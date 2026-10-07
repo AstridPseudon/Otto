@@ -302,7 +302,7 @@ def _effective_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     instructions = value.get("role_instructions")
     if isinstance(instructions, str):
         result["role_instructions"] = instructions[:2048]
-        result["role_instructions_truncated"] = len(instructions) > 2048
+        result["role_instructions_truncated"] = value.get("role_instructions_truncated") is True or len(instructions) > 2048
         result.setdefault("instruction_sha256", _digest(instructions))
     if value.get("state") == "unknown" and "reason" in value:
         result["reason"] = _text(value.get("reason"))

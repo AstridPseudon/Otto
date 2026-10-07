@@ -57,6 +57,21 @@ class ManagerHandoffTests(unittest.TestCase):
         )
         self.assertEqual(accepted["current_occurrence"]["state"], "accepted")
 
+    def test_preclipped_instruction_preview_retains_full_source_digest_and_flag(self):
+        for text, upstream, expected in (("x" * 2048, True, True), ("complete", False, False),
+                                         ("x" * 2049, False, True)):
+            with self.subTest(upstream=upstream, length=len(text)):
+                result = compose_manager_handoff(project_ref=PROJECT,
+                    effective_context={"state": "known", "role_instructions": text,
+                        "role_instructions_truncated": upstream, "instruction_sha256": "full-retained-guide-digest",
+                        "source_refs": {"guide": {"authority": "owner", "kind": "dat.content.document", "id": "guide", "revision": "rev-1"}}},
+                    as_of="2026-10-07T00:00:00Z")
+                context = result["effective_context"]["value"]
+                self.assertEqual(context["role_instructions_truncated"], expected)
+                self.assertEqual(context["instruction_sha256"], "full-retained-guide-digest")
+                self.assertEqual(len(context["role_instructions"]), min(len(text), 2048))
+                self.assertEqual(context["source_refs"]["guide"]["revision"], "rev-1")
+
 
 if __name__ == "__main__":
     unittest.main()
