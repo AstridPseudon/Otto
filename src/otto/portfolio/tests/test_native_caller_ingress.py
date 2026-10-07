@@ -99,6 +99,19 @@ class NativeCallerIngressTests(unittest.TestCase):
         with self.host._lock: self.host._external_waiting = 0
         self.assertFalse(thread.is_alive()); self.assertEqual(result, {"outcome": "read"})
 
+    def test_distinct_callback_pins_current_adapter_without_rewriting_legacy_anchor(self):
+        from otto.portfolio.execution_operations import build_manager_callback_due
+        prior = self.c.f.app._read(self.bindings["manager"].schedule_id)
+        legacy = replace(prior, target={key: value for key, value in prior.target.items() if key != "native_adapter"})
+        before = legacy.to_dict()
+        callback = build_manager_callback_due(legacy, schedule_id="future-context", request_key="future-context",
+            assignment_ref=legacy.assignment_ref, guide_ref=legacy.context_refs[0],
+            mandate_ref=legacy.target["mandate_ref"], due_at=legacy.due_at,
+            timeout_seconds=legacy.timeout_seconds, native_adapter="current-owner-route")
+        self.assertEqual(callback.target["native_adapter"], "current-owner-route")
+        self.assertEqual(legacy.to_dict(), before)
+        self.assertEqual(callback.target["native_binding"]["schedule_id"], legacy.schedule_id)
+
     def test_explicit_host_adapter_identity_survives_import_and_script_modules(self):
         original = self.c.f.app.runtime.adapter
         first = type("Pinned", (), {"__module__": "operating_service", "adapter_identity": "owner-pinned-route-v1"})()

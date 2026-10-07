@@ -895,6 +895,7 @@ def build_manager_callback_due(
     mandate_ref: Mapping[str, Any],
     due_at: str,
     timeout_seconds: int,
+    native_adapter: str | None = None,
 ) -> Any:
     """Derive the next same-session manager callback from a settled Due.
 
@@ -929,6 +930,12 @@ def build_manager_callback_due(
             "due_sha256": hashlib.sha256(json.dumps(prior.to_dict(), sort_keys=True,
                 separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()},
     })
+    if native_adapter is not None:
+        if not isinstance(native_adapter, str) or not native_adapter.strip():
+            raise OccurrencePreparationError("callback requires the current host adapter identity")
+        # This is a distinct prospective occurrence. Historical target/admission
+        # pins remain untouched; recovered callbacks retain their original route.
+        next_target["native_adapter"] = native_adapter
     return replace(
         prior,
         schedule_id=schedule_id,

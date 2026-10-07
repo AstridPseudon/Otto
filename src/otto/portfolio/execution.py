@@ -1007,7 +1007,8 @@ class ExecutionApplication:
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
-            due_at=self._now(), timeout_seconds=prior.timeout_seconds)
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds,
+            native_adapter=self.native_adapter_identity())
         self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
         due = replace(due, instruction=("Inspect the actual settled worker result on schedule " + worker.schedule_id +
             ". Read its retained result and changed artifacts, substantively judge or correct that work through the "
@@ -1088,7 +1089,8 @@ class ExecutionApplication:
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
-            due_at=self._now(), timeout_seconds=prior.timeout_seconds)
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds,
+            native_adapter=self.native_adapter_identity())
         self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
         return_intents = [item["value"] for item in reports
             if isinstance(item.get("value"), Mapping)
@@ -1204,7 +1206,8 @@ class ExecutionApplication:
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
-            due_at=self._now(), timeout_seconds=prior.timeout_seconds)
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds,
+            native_adapter=self.native_adapter_identity())
         self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
         due = replace(due,
             instruction=("Inspect the committed project task completions and their authentic candidate/evidence bindings, "
@@ -1253,7 +1256,8 @@ class ExecutionApplication:
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
-            due_at=self._now(), timeout_seconds=prior.timeout_seconds)
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds,
+            native_adapter=self.native_adapter_identity())
         self._verify_native_binding(current, due.target["native_id"], prior.schedule_id)
         context = request.get("report_context")
         if preserve_execution_binding:
