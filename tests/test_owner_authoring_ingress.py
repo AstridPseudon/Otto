@@ -43,6 +43,23 @@ class OwnerAuthoringIngressTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             restarted.authorize(retained)
 
+    def test_exact_current_actor_scope_is_read_without_releasing_or_leaking_tokens(self):
+        ref=self.f.create()
+        opened=self.f.open(ref)
+        request={"command":"project-authoring","operation":"current-scope"}
+        receipt=self.ingress.publish({"schema":self.ingress.schema,"request":request})
+        observed=self.service(json.loads(Path(receipt["request_path"]).read_text()))
+        self.assertEqual(observed["state"],"occupied",observed)
+        self.assertEqual(observed["session_id"],opened["session_id"])
+        self.assertEqual(observed["target_ref"]["id"],ref["id"])
+        self.assertNotIn("token",observed)
+        self.assertNotIn("fence",observed)
+        self.assertEqual(self.f.owner.authoring.read_current_actor(
+            self.f.owner.binding.authenticated_actor("foreign"))["state"],"available")
+        self.assertEqual(self.service(request),observed)
+        self.assertEqual(self.f.finish(opened)["outcome"],"finished")
+        self.assertEqual(self.service(request)["state"],"available")
+
     def test_actor_operation_override_and_foreign_grant_rejected(self):
         for patch in ({'actor': 'owner'}, {'command': 'execution-control'}, {'command': 'manager-replace'}):
             with self.subTest(patch=patch), self.assertRaises(PermissionError):

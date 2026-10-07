@@ -8,6 +8,7 @@ native process manager, or replacement authority.
 from __future__ import annotations
 
 import json
+from dataclasses import fields, is_dataclass
 from typing import Any, Callable, Mapping, Optional
 
 
@@ -25,6 +26,8 @@ def _json(value: Any) -> Any:
     to_dict = getattr(value, "to_dict", None)
     if callable(to_dict):
         return _json(to_dict())
+    if is_dataclass(value):
+        return {field.name: _json(getattr(value, field.name)) for field in fields(value)}
     return str(value)
 
 

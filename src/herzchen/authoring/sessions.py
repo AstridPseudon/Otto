@@ -378,6 +378,30 @@ class _AuthoringSessionServiceEngine:
         holder = bool(actor and self._active(payload) and self._payload_checkout(payload).actor == actor)  # type: ignore[union-attr]
         return self._masked_read(scope, payload, holder=holder)
 
+    def read_current_actor(self, actor: AuthenticatedActor) -> Mapping[str, Any]:
+        """Read only this authenticated actor's existing occupancy, never a roster.
+
+        The exact EDT actor record names the scope. Cross-check its current
+        checkout before exposing recovery locators; no token/fence is returned.
+        """
+        if not isinstance(actor, AuthenticatedActor) or actor.authority != self.__writer.authority:
+            raise InvalidSessionError("authenticated authoring actor authority differs")
+        actor_record = _as_record(self.__writer.get_identity(_actor_key(actor, actor.authority)))
+        if actor_record is None or not self._actor_active(actor_record.payload):
+            return {"state": "available", "scope_ref": None, "session_id": None, "read_only": True}
+        scope = ResourceRef.from_dict(actor_record.payload["scope"])
+        record = _as_record(self.__writer.get_identity(_scope_key(scope)))
+        checkout = None if record is None else self._payload_checkout(record.payload)
+        if (checkout is None or checkout.actor != actor or checkout.state != AuthoringState.OPEN
+                or checkout.session_id != actor_record.payload.get("session_id")):
+            raise InvalidSessionError("actor occupancy is not backed by its exact active checkout")
+        return {"state": "occupied", "scope_ref": scope.to_dict(),
+                "target_ref": checkout.target_scope.to_dict(), "session_id": checkout.session_id,
+                "base_revision": checkout.base_revision, "purpose": record.payload.get("purpose"),
+                "activity": record.payload.get("activity"), "checkout_path": record.payload.get("checkout_path"),
+                "snapshot_ref": record.payload.get("snapshot_ref"), "read_only": True,
+                "next_action": "Inspect/preserve this draft before exact public check-in or release; read does not authorize release"}
+
     def _request_digest(
         self, operation: str, request_id: str, values: Mapping[str, Any],
         *, target: ResourceRef, actor: AuthenticatedActor,

@@ -593,7 +593,7 @@ class ManagerJourneyService:
                   "check-in": {"request_key", "project_ref", "project_json", "session_id"}, "read": {"project_ref"},
                   "import-folder": {"request_key", "project_json", "files"},
                   "export-folder": {"request_key", "project_ref"},
-                  "release": {"request_key", "project_ref", "session_id"}}
+                  "release": {"request_key", "project_ref", "session_id"}, "current-scope": set()}
         if operation == "check-in" and "document_changes" in values:
             fields["check-in"].add("document_changes")
         if operation not in fields or set(values) != common | fields[operation]:
@@ -601,6 +601,8 @@ class ManagerJourneyService:
         from .intake import OttoPortfolio
         portfolio = OttoPortfolio(self.server.owner.consumer_operations())
         options = {"actor": actor.actor, "request_id": values.get("request_key")}
+        if operation == "current-scope":
+            return {"outcome": "read", **self.server.owner.authoring.read_current_actor(actor), "provider_called": False}
         if operation == "release":
             return portfolio.release_project(values["project_ref"], session_id=values["session_id"], **options)
         if operation == "import-folder":

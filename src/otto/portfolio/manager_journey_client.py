@@ -280,7 +280,7 @@ def add_manager_journey_parsers(commands: Any) -> None:
     control.add_argument("--expected-version", type=int, help="exact Due version required for stop")
     author = commands.add_parser("project-authoring", help="create an inert pending sibling, open or check in project.json through the live owner",
         description="Requires installed host owner authentication. project.json is a semantic projection; generated session and revision bases remain in EDT. A conflict preserves local edits; activation is separate.")
-    author.add_argument("--operation", choices=("create", "open", "check-in", "read", "import-folder", "export-folder", "release"), default="read")
+    author.add_argument("--operation", choices=("create", "open", "check-in", "read", "import-folder", "export-folder", "release", "current-scope"), default="read")
     author.add_argument("--request-key")
     author.add_argument("--edit", type=json.loads)
     author.add_argument("--project-ref", type=json.loads)
