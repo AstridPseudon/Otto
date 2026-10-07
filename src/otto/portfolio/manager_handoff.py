@@ -105,7 +105,11 @@ def _occurrence(value: Any, *, current: bool = False) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         return {"state": "unknown", "current": current, "reason": "occurrence_not_available"}
     target = raw.get("target") if isinstance(raw.get("target"), Mapping) else {}
+    host = raw.get("host_evidence") if isinstance(raw.get("host_evidence"), Mapping) else {}
+    attempt = host.get("gateway_attempt", raw.get("gateway_attempt"))
+    attempt = attempt if isinstance(attempt, Mapping) else None
     last_result = raw.get("last_result") if isinstance(raw.get("last_result"), Mapping) else {}
+    retained_result = attempt.get("result") if attempt and isinstance(attempt.get("result"), Mapping) else {}
     result = {
         "current": current,
         "schedule_id": raw.get("schedule_id"),
@@ -124,21 +128,27 @@ def _occurrence(value: Any, *, current: bool = False) -> dict[str, Any]:
         "context_refs": _bounded_refs(raw.get("context_refs")),
         "in_flight_request": raw.get("in_flight_request"),
         "last_completed_request": raw.get("last_completed_request"),
-        "provider_called": (raw.get("gateway_attempt") is not None) or bool(raw.get("provider_called")),
+        "provider_called": attempt is not None or bool(raw.get("provider_called")),
+        "provider_called_scope": "retained_occurrence_attempt",
         "physical_session_id": last_result.get("physical_session_id") or target.get("native_id"),
         "result_ref": _ref(raw.get("result_ref") or last_result.get("result_ref")),
+        "observed_turn_id": last_result.get("observed_turn_id") or retained_result.get("observed_turn_id"),
         "result_sha256": _digest(last_result) if last_result else None,
         "source_sha256": _digest(raw),
     }
+    if result["result_ref"] is None:
+        result["result_ref_reason"] = ("manager_occurrence_has_no_analytical_result_ref"
+                                       if raw.get("role") == "manager" else "not_exposed_by_occurrence")
+    if result["state"] == "pending" and raw.get("in_flight_request") is None and attempt is not None:
+        result["state"] = "unknown"
+        result["reason"] = "retained_attempt_without_terminal_result"
     result["retained_command"] = {
         "state": result["state"],
         "request_id": result["in_flight_request"] or result["last_completed_request"],
         "provider_called": result["provider_called"],
+        "provider_called_scope": result["provider_called_scope"],
         "result_ref": result["result_ref"],
     }
-    if result["state"] == "pending" and raw.get("in_flight_request") is None and raw.get("gateway_attempt") is not None:
-        result["state"] = "unknown"
-        result["reason"] = "retained_attempt_without_terminal_result"
     return result
 
 
@@ -179,18 +189,33 @@ def _task_rows(tasks: Any) -> list[dict[str, Any]]:
         readiness = (raw.get("readiness") if isinstance(raw.get("readiness"), Mapping)
                      else observed.get("readiness") if isinstance(observed.get("readiness"), Mapping)
                      else {})
+        if isinstance(readiness.get("value"), Mapping):
+            readiness = {**readiness["value"], **{key: readiness[key] for key in ("eligibility", "stale") if key in readiness}}
         result_rows = observed.get("results") if isinstance(observed.get("results"), list) else []
         result_refs = raw.get("result_refs") or [row.get("ref") for row in result_rows if isinstance(row, Mapping)]
         evidence_refs = raw.get("evidence_refs") or authored.get("evidence_refs")
         lifecycle = raw.get("lifecycle") or observed.get("lifecycle") or authored.get("lifecycle")
+        if isinstance(lifecycle, Mapping):
+            lifecycle = lifecycle.get("value")
         accepted = raw.get("accepted_current_evidence") or observed.get("accepted_current_evidence")
         accepted_projection = None
         if isinstance(accepted, Mapping):
             accepted_projection = {
                 "state": _state(accepted),
+                "value": accepted.get("value"),
+                "reason": _text(accepted.get("reason")),
                 "refs": _bounded_refs(accepted.get("evidence_refs") or accepted.get("refs")),
                 "sha256": _digest(accepted),
             }
+            evidence = accepted.get("evidence")
+            if isinstance(evidence, Mapping):
+                accepted_projection["evidence"] = {
+                    "decision_ref": _ref(evidence.get("decision_ref")),
+                    "decision_refs": _bounded_refs(evidence.get("decision_refs")),
+                    "result_ref": _ref(evidence.get("result_ref")),
+                    "evidence_refs": _bounded_refs(evidence.get("evidence_refs")),
+                    "disposition": evidence.get("disposition"),
+                }
         elif accepted is not None:
             accepted_projection = _text(accepted)
         rows.append({
@@ -257,18 +282,28 @@ def _decision_rows(values: Any) -> list[dict[str, Any]]:
     if not isinstance(values, (list, tuple)):
         return []
     rows: list[dict[str, Any]] = []
+    selected: list[tuple[Any, Any]] = []
     for item in values[:_MAX_ITEMS]:
+        group = _json(item)
+        if isinstance(group, Mapping) and isinstance(group.get("decisions"), (list, tuple)):
+            selected.extend((decision, group.get("subject")) for decision in group["decisions"][:_MAX_ITEMS])
+        else:
+            selected.append((item, None))
+    for item, subject in selected[:_MAX_ITEMS]:
         raw = _json(item)
         if not isinstance(raw, Mapping):
             continue
         value = raw.get("value") if isinstance(raw.get("value"), Mapping) else raw
         rows.append({
             "ref": _ref(raw.get("ref") or value.get("ref")),
-            "task_ref": _ref(raw.get("task_ref") or value.get("task_ref")),
+            "task_ref": _ref(raw.get("task_ref") or value.get("task_ref") or subject),
             "assignment_ref": _ref(raw.get("assignment_ref") or value.get("assignment_ref")),
             "generation": raw.get("generation", value.get("generation")),
-            "status": _state(raw.get("status") or value.get("status") or value.get("outcome")),
+            "status": _state(raw.get("status") or value.get("status") or value.get("outcome") or value.get("disposition")),
             "disposition": value.get("disposition"),
+            "candidate_ref": _ref(value.get("candidate_ref")),
+            "criterion_ref": _ref(value.get("criterion_ref")),
+            "assessment_result_ref": _ref(value.get("assessment_result_ref")),
             "accepted": value.get("accepted"),
             "evidence_refs": _bounded_refs(value.get("evidence_refs")),
             "source_sha256": _digest(raw),

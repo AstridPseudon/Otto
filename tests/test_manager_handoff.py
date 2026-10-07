@@ -1,6 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from otto.portfolio.manager_handoff import compose_manager_handoff
+from otto.portfolio.manager_journey_service import ManagerJourneyService
 
 
 PROJECT = {"authority": "owner", "kind": "work.project", "id": "project-1", "revision": "rev-2"}
@@ -71,6 +74,72 @@ class ManagerHandoffTests(unittest.TestCase):
                 self.assertEqual(context["instruction_sha256"], "full-retained-guide-digest")
                 self.assertEqual(len(context["role_instructions"]), min(len(text), 2048))
                 self.assertEqual(context["source_refs"]["guide"]["revision"], "rev-1")
+
+    def test_due_and_project_sheet_wire_shapes_preserve_execution_and_decisions(self):
+        decision = {"authority": "owner", "kind": "decision", "id": "decision-1", "revision": "rev-1"}
+        evidence = {"authority": "owner", "kind": "wrk.result", "id": "result-1", "revision": "rev-1"}
+        current = {"schedule_id": "manager", "role": "manager", "completion_state": "succeeded",
+                   "stop_state": "completed", "delivery_state": "returned", "in_flight_request": None,
+                   "provider_called": False,  # This read did not invoke a provider.
+                   "host_evidence": {"gateway_attempt": {"result": {"outcome": "succeeded", "observed_turn_id": "turn-1"}}},
+                   "last_result": {"outcome": "succeeded", "physical_session_id": "session-1", "observed_turn_id": "turn-1"}}
+        task = {"ref": TASK, "title": "Completed work", "lifecycle": {"state": "known", "value": "completed"},
+                "readiness": {"state": "known", "value": {"status": "completed"}, "stale": False},
+                "accepted_current_evidence": {"state": "known", "value": True,
+                    "evidence": {"decision_refs": [decision], "result_ref": evidence, "disposition": "accepted"}}}
+        result = compose_manager_handoff(project_ref=PROJECT, current_occurrence=current, tasks=[task],
+            decisions=[{"subject": TASK, "decisions": [{"ref": decision, "disposition": "accept",
+                "candidate_ref": evidence, "assessment_result_ref": evidence}], "waiting": [], "read_only": True}],
+            as_of="2026-10-07T00:00:00Z")
+        occurrence = result["current_occurrence"]
+        self.assertTrue(occurrence["provider_called"])
+        self.assertEqual(occurrence["provider_called_scope"], "retained_occurrence_attempt")
+        self.assertEqual(occurrence["observed_turn_id"], "turn-1")
+        self.assertIsNone(occurrence["result_ref"])
+        self.assertEqual(occurrence["result_ref_reason"], "manager_occurrence_has_no_analytical_result_ref")
+        self.assertEqual(result["decisions"][0]["ref"], decision)
+        self.assertEqual(result["decisions"][0]["task_ref"], TASK)
+        self.assertEqual(result["decisions"][0]["status"], "accepted")
+        projected = result["tasks"][0]
+        self.assertEqual(projected["title"], "Completed work")
+        self.assertEqual(projected["state"], "terminal")
+        self.assertEqual(projected["readiness"]["status"], "completed")
+        self.assertTrue(projected["accepted_current_evidence"]["value"])
+        self.assertEqual(projected["accepted_current_evidence"]["evidence"]["decision_refs"], [decision])
+
+    def test_completed_lifecycle_does_not_imply_verified_acceptance_or_execution(self):
+        result = compose_manager_handoff(project_ref=PROJECT,
+            current_occurrence={"role": "worker", "completion_state": "none", "in_flight_request": "prepared"},
+            tasks=[{"ref": TASK, "lifecycle": {"state": "known", "value": "completed"},
+                "accepted_current_evidence": {"state": "unknown", "value": None,
+                    "reason": "accepted_decision_evidence_not_independently_verified"}}],
+            decisions=[{"subject": TASK, "decisions": []}], as_of="2026-10-07T00:00:00Z")
+        self.assertFalse(result["current_occurrence"]["provider_called"])
+        self.assertEqual(result["decisions"], [])
+        self.assertEqual(result["tasks"][0]["accepted_current_evidence"]["state"], "unknown")
+        self.assertIsNone(result["tasks"][0]["accepted_current_evidence"]["value"])
+
+    def test_service_uses_rich_inbox_task_rows_instead_of_lifecycle_summary(self):
+        # These are the two distinct wire rows returned by derive_manager_inbox.
+        summary = {"ref": TASK, "lifecycle": "completed", "readiness": {"status": "completed"}}
+        row = {"ref": TASK, "title": "Canonical completed task",
+               "lifecycle": {"state": "known", "value": "completed"},
+               "accepted_current_evidence": {"state": "known", "value": True,
+                                             "evidence": {"decision_refs": [ASSIGNMENT]}}}
+        portfolio = Mock()
+        portfolio.operations._assignment_dict.return_value = {"ref": ASSIGNMENT, "principal": "manager"}
+        portfolio.manager_inventory.return_value = {"projects": []}
+        portfolio.manager_inbox.return_value = {"tasks": [summary], "task_rows": [row]}
+        service = object.__new__(ManagerJourneyService)
+        service.server = SimpleNamespace(state={"project_ref": PROJECT, "assignment_ref": ASSIGNMENT, "owner": "owner"},
+                                         owner=Mock(), portfolio=portfolio)
+        service._effective_context = lambda operation: {}
+        service._budget = lambda: {}
+        service._as_of = lambda: "2026-10-07T00:00:00Z"
+        result = service._handoff(view={}, status={}, operation={}, occurrences=[], help_issues=[])
+        self.assertEqual(result["tasks"][0]["title"], "Canonical completed task")
+        self.assertTrue(result["tasks"][0]["accepted_current_evidence"]["value"])
+        self.assertEqual(result["tasks"][0]["state"], "terminal")
 
 
 if __name__ == "__main__":

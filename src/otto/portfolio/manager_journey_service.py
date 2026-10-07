@@ -154,6 +154,7 @@ class ManagerJourneyService:
         return {
             "outcome": "ok", "project_ref": project_ref,
             "task_refs": state["task_refs"], "workers": state.get("workers", {}),
+            "workers_state_basis": "retained launch snapshots; current execution is in handoff occurrences",
             "manager": state.get("manager"), "manager_assignment_ref": state.get("assignment_ref"),
             "handoff": handoff,
             "status": status, **status,
@@ -303,7 +304,7 @@ class ManagerJourneyService:
             project_ref=project_ref, project=view.get("project"), assignment=assignment,
             assignment_ref=state.get("assignment_ref"), current_occurrence=current,
             historical_occurrences=history, effective_context=self._effective_context(operation),
-            status=status, tasks=inbox.get("tasks", []) if isinstance(inbox, Mapping) else [],
+            status=status, tasks=inbox.get("task_rows", inbox.get("tasks", [])) if isinstance(inbox, Mapping) else [],
             results=inbox.get("results", []) if isinstance(inbox, Mapping) else [],
             reports=inbox.get("reports", []) if isinstance(inbox, Mapping) else [],
             decisions=inbox.get("decisions", []) if isinstance(inbox, Mapping) else [],
