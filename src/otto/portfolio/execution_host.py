@@ -215,6 +215,18 @@ class ExecutionHost:
         for path in sorted(self.directory.glob("request-*.json")):
             token = path.name[len("request-"):-len(".json")]
             if not token or any(char not in "0123456789abcdef" for char in token):
+                if not status:
+                    # Keep rejected bytes as diagnostic evidence. Never dispatch
+                    # an invalid handle or let two serving threads race a reply.
+                    with self._lock:
+                        rejection = self.directory / ("response-" + token + ".json")
+                        if not rejection.exists():
+                            _atomic_json(rejection, {"outcome": "rejected", "error": {"code": "invalid_request_id",
+                                "message": "transport handle must be nonempty lowercase hexadecimal"},
+                                "request_id": token, "request_path": str(path),
+                                "request_retained": True, "request_dispatched": False,
+                                "provider_called": False, "effects_started": False, "retry": False,
+                                "next_action": "Inspect the rejected request; use a valid fresh handle only for an explicitly corrected intent."})
                 continue
             response = self.directory / ("response-" + token + ".json")
             acquired = False

@@ -40,7 +40,10 @@ ROLE_OPERATING_CONTRACTS = {
         "advice only for project judgment when the adopted advisor policy enables it. Refresh the canonical "
         "project, task, assignment and adopted resource context before acting; a continuation or replacement "
         "uses the current bindings. Delivery and resolution are separate, and an unknown outcome is never safe "
-        "to retry without reconciling the exact retained effect."
+        "to retry without reconciling the exact retained effect. For criteria that explicitly require installed "
+        "behavior, verify the current adopted source/runtime and preflight evidence before review or finish. "
+        "If only host adoption, measurement, or setup is missing, request operational help with the evidence "
+        "and return condition; an actual candidate defect remains an ordinary REWORK finding."
     ),
     "worker": (
         "Execute only the prescribed task within its current project, assignment, generation, resources, and "
@@ -74,6 +77,7 @@ ROLE_CONTEXT_GUIDANCE = {
     "manager": {
         "help": "Use request-advice for project judgment and request-help for an operational blockage; include problem, impact, evidence, requested decision and return condition.",
         "context": "Refresh the current project, task, assignment, generation, mandate, adopted resources and conversation before acting.",
+        "installed_evidence": "For criteria that explicitly require installed behavior, verify the current adopted source/runtime and preflight evidence before review or finish. If only host adoption, measurement, or setup is missing, request operational help with the evidence and return condition; an actual candidate defect remains an ordinary REWORK finding.",
         "continuation": "Resolve an applied response with resolve-help; the retained same-manager continuation is the next action.",
         "recovery": "Read the exact delivery before retrying; unknown sends, missing destinations and replaced roles remain held until reconciled.",
     },

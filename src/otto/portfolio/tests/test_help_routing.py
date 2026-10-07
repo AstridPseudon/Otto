@@ -189,6 +189,56 @@ class HelpRoutingTests(unittest.TestCase):
         self.assertIn(result["outcome"], {"partial", "blocked"})
         self.assertEqual(self.f.provider.calls, before)
 
+    def test_active_manager_receives_own_help_application_without_confirmation_turn(self):
+        from unittest.mock import patch
+        from tests.test_execution_application import ProviderBinding
+        self.assertEqual(self.f.app.start(schedule_id=self.anchor)["outcome"], "succeeded")
+        requested = self.service(self.request())
+        outer = self
+        applied = {}
+        class ApplyingManager(ProviderBinding):
+            def execute(self, request):
+                result = super().execute(request)
+                # Stub provider invokes the real file/owner pump after actual
+                # gateway authorization and native-start callbacks, before
+                # terminal capture. It does not access Store on this thread.
+                applied.update(outer.wait_response(outer.send("b104", {
+                    "command": "resolve-help", "request_key": "active-help-application",
+                    "issue_id": requested["issue_id"], "evidence": [{"observed": "bound reply applied"}],
+                    "next_action": "Continue the genuinely ready work"})))
+                return result
+        self.f.app.runtime.adapter.binding_factory = lambda **options: ApplyingManager(self.f.provider, options)
+        original = self.service._receiving_manager_application
+        captured = {}
+        def checked(schedule):
+            raw = self.f.port.read_due(schedule)
+            captured.update(raw)
+            result = original(schedule)
+            self.assertTrue(result, raw)
+            # Every changed identity/uncertainty fence requires the existing
+            # retained callback instead of treating another turn as informed.
+            for changed in ({"generation": 2}, {"recipient": "other"}, {"completion_state": "unknown"},
+                            {"stop_state": "completed"}, {"assignment_ref": {**raw["assignment_ref"], "revision": "foreign"}},
+                            {"host_evidence": {**raw["host_evidence"], "gateway_attempt": {
+                                **raw["host_evidence"]["gateway_attempt"], "result": {"outcome": "unknown"}}}}):
+                with patch.object(type(self.f.port), "read_due", return_value={**raw, **changed}):
+                    self.assertFalse(original(schedule))
+            return result
+        self.host.start()
+        self.addCleanup(self.host.close)
+        with patch.object(self.service, "_receiving_manager_application", side_effect=checked):
+            reply = self.wait_response(self.send("b103", self.reply(requested["issue_id"])))
+            callback = self.wait_response(Path(reply["continuation"]["response_path"]))
+        self.assertEqual(callback["outcome"], "succeeded", callback)
+        self.assertEqual(applied["outcome"], "recorded", applied)
+        self.assertEqual(applied["state"], "resolved")
+        self.assertEqual(applied["continuation"]["outcome"], "observed-current-manager")
+        self.assertFalse(applied["continuation"]["continuation_required"])
+        self.assertEqual(len(self.f.provider.calls), 2)  # initial + response, no self-confirmation
+        self.assertEqual(self.service({"command": "read-help"})["issues"][0]["state"], "resolved")
+        self.assertFalse(original(captured["schedule_id"]))  # terminal/out-of-turn never suppresses
+        self.assertEqual(list(self.directory.glob("request-*.json")), [])
+
     def test_reply_and_application_use_retained_automatic_same_manager_continuations(self):
         self.assertEqual(self.f.app.start(schedule_id=self.anchor)["outcome"], "succeeded")
         self.host.start()

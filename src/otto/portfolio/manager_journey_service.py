@@ -629,9 +629,48 @@ class ManagerJourneyService:
             return {**result, "continuation": {"outcome": "held", "provider_called": False,
                     "reason": "owner host must retain help continuation after restart", "retry": False}}
         current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+        if command == "resolve-help" and self._receiving_manager_application(current_id):
+            # The current turn receives the canonical application below. A new
+            # turn merely confirming its own application adds no decision.
+            # Task settlement remains separate: a pending finish still wakes
+            # the manager after native custody has actually settled.
+            return {**result, "continuation": {"outcome": "observed-current-manager",
+                "schedule_id": current_id, "report_ref": result["report_ref"],
+                "provider_called": False, "retry": False, "continuation_required": False,
+                "next_action": "Continue useful work in this admitted turn; the committed application is returned here."}}
         retained = self.host.submit({"command": "manager-help-result", "principal": state["manager"],
             "generation": state["manager_generation"], "schedule_id": current_id, "report_ref": result["report_ref"]})
         return {**result, "continuation": retained}
+
+    def _receiving_manager_application(self, schedule_id: str) -> bool:
+        """Require the exact live admitted manager before omitting a self-wake."""
+        if self.host is None or self.host._closing or not self.host._external_waiting:
+            return False
+        state = self.server.state
+        due = self.server.due_port.read_due(schedule_id)
+        if not isinstance(due, Mapping):
+            return False
+        target = due.get("target") or {}
+        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+        admission, authorization = attempt.get("delivery_admission") or {}, attempt.get("delivery_authorization") or {}
+        native = (state.get("manager_continuation") or {}).get("native_session_id")
+        return (due.get("role") == "manager" and due.get("recipient") == state["manager"]
+            and due.get("assignment_ref") == state["assignment_ref"]
+            and due.get("generation") == state["manager_generation"]
+            and due.get("project_ref") == state["project_ref"]["id"]
+            and all((target.get("project_ref") or {}).get(key) == state["project_ref"].get(key)
+                    for key in ("authority", "kind", "id"))
+            and due.get("lifecycle_owner") == state["owner"] and due.get("manager_ref") == state["owner"]
+            and due.get("stop_state") == "active" and due.get("completion_state") == "none"
+            and bool(due.get("in_flight_request")) and not attempt.get("result")
+            and isinstance(native, str) and bool(native) and target.get("native_id") == native
+            and admission.get("native_turn_started") is True and admission.get("physical_session_id") == native
+            and authorization.get("status") == "authorized" and authorization.get("physical_session_id") == native
+            and authorization.get("assignment_ref") == due["assignment_ref"]
+            and authorization.get("generation") == due["generation"]
+            and authorization.get("project_ref") == target.get("project_ref")
+            and authorization.get("task_ref") == target.get("task_ref")
+            and authorization.get("role") == "manager" and authorization.get("principal") == state["manager"])
 
     def _retain_task_settlement(self, app: Any) -> Mapping[str, Any]:
         if self.host._closing:

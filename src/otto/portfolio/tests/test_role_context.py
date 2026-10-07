@@ -121,6 +121,10 @@ class RoleContextTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "succeeded", {k: result.get(k) for k in ("stage", "error", "next_action")})
         packet = self.packet()
         self.assertIn("delegate implementation", packet["operating_core"]["operating_contract"])
+        installed_evidence = packet["operating_core"]["introduction"]["operating_guidance"]["installed_evidence"]
+        self.assertIn("criteria that explicitly require installed behavior", installed_evidence)
+        self.assertIn("request operational help", installed_evidence)
+        self.assertIn("ordinary REWORK finding", installed_evidence)
         self.assertEqual(packet["context"]["selected_configuration"]["ref"], configuration)
         self.assertEqual([s["ref"] for s in packet["context"]["supporting_context"]], [configuration, goal, skill])
         operating = packet["context"]["operating_setup"]
