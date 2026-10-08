@@ -120,19 +120,19 @@ class ManagerCorrectionPlanningTests(unittest.TestCase):
                     threads['owner']=threading.get_ident()
                     def native():
                         threads['native']=threading.get_ident()
-                        (root/'request-1111.json').write_text(json.dumps(request))
-                        deadline=time.monotonic()+4
-                        while time.monotonic()<deadline:
-                            if (root/'response-1111.json').exists():
-                                result=json.loads((root/'response-1111.json').read_text())
-                                self.assertEqual(result['outcome'],'authored',result)
-                                ready.set();return {'outcome':'succeeded'}
-                            time.sleep(.01)
-                        raise AssertionError('pending task authoring self-waited')
+                        from otto.portfolio.caller_client import call
+                        result=call(str(root/'owner.sock'), request, timeout=4)
+                        self.assertEqual(result['outcome'],'authored',result)
+                        ready.set();return {'outcome':'succeeded'}
                     return ExecutionHost.external_call(native)
                 threads['planning']=threading.get_ident()
                 return self.commands.author_tasks(value)
-            host=ExecutionHost(directory=root,handler=handler)
+            from otto.portfolio.identity_context import HostCallerBinding
+            binding=HostCallerBinding(self.f.actor,self.fixture.manager.ref,1,'fixture','native','manager')
+            context={'principal':self.fixture.state['manager'],'assignment_ref':self.fixture.state['assignment_ref'],'generation':1,'role':'manager','native_session':{'id':'native'}}
+            host=ExecutionHost(directory=root,socket_path=root/'owner.sock',handler=handler,
+                caller_binding_reader=lambda ingress:binding,caller_context_resolver=lambda binding:context,
+                caller_authorizer=lambda context,request:True,owner_file_compatibility=True)
             try:
                 host.start();(root/'request-aaaa.json').write_text(json.dumps({'command':'start-manager'}))
                 self.assertTrue(ready.wait(6))
@@ -140,3 +140,19 @@ class ManagerCorrectionPlanningTests(unittest.TestCase):
                 self.assertNotEqual(threads['native'],threads['planning'])
                 self.assertIn('FIX01',self.fixture.state['task_refs'])
             finally:host.close()
+
+    def test_planning_requires_authenticated_ingress_and_client_selects_it(self):
+        import tempfile
+        from pathlib import Path
+        from otto.portfolio.execution_host import ExecutionHost
+        from otto.portfolio.identity_context import HostIngress
+        from otto.portfolio.manager_journey_client import requires_native_caller
+        called=[]
+        with tempfile.TemporaryDirectory() as directory:
+            host=ExecutionHost(directory=Path(directory),handler=lambda request:called.append(request),owner_file_compatibility=True)
+            result=host._dispatch(self.request(),ingress=HostIngress('file-ipc','request'))
+            self.assertEqual(result['outcome'],'held')
+            self.assertFalse(result['effects_started'])
+            self.assertEqual(called,[])
+        self.assertTrue(requires_native_caller('task-list-author'))
+        self.assertFalse(requires_native_caller('review-task'))

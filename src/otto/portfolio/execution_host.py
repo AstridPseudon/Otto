@@ -214,7 +214,7 @@ class ExecutionHost:
         compatibility_file = (self.owner_file_compatibility
             and getattr(ingress, "transport", None) == "file-ipc")
         if self.caller_binding_reader is None or compatibility_file:
-            if identity_read or claims.intersection(request):
+            if identity_read or request.get("command") == "task-list-author" or claims.intersection(request):
                 return {"outcome": "held", "reason": "trusted per-request caller binding is unavailable",
                         "next_action": "use an owner-supported identity-bearing host ingress",
                         "provider_called": False, "effects_started": False}
@@ -246,7 +246,9 @@ class ExecutionHost:
 
     def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
         try:
-            if request.get("command") in {"status", "whoami", "effective-context"}:
+            # The manager-only planning write uses the same custodian pump,
+            # with socket peer authorization before its finite public effect.
+            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author"}:
                 return self._status_read(request, lambda: self._call_bound(request, ingress))
             with self._command_lock:
                 if self._closing and _starts_work(request):

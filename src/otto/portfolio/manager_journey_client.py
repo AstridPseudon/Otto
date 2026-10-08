@@ -8,6 +8,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+def requires_native_caller(command: str) -> bool:
+    """New manager planning requires the existing identity-bearing ingress."""
+    return command in {"whoami", "effective-context", "task-list-author"}
+
+
 FINISH_PROJECT_EXAMPLE = (
     "ottoctl finish-project --request-key local-project-close-v1 --dispositions '"
     '{"acceptance":{"status":"passed","rationale":"All actual tasks retain accepted candidates and committed completion"},'
