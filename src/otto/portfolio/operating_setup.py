@@ -151,7 +151,17 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             # occurrence retains proof of this same generation's conversation.
             conversation_due = binding_due
             proof_pin = due.target.get("native_binding")
-            if bound is None and proof_pin is not None:
+            current_attempt = (binding_due.host_evidence or {}).get("gateway_attempt") or {}
+            current_admission = current_attempt.get("delivery_admission") or {}
+            current_authorization = current_attempt.get("delivery_authorization") or {}
+            admitted_current = current_admission.get("native_turn_started") is True
+            if admitted_current and (current_authorization.get("status") != "authorized"
+                    or current_authorization.get("lifecycle_owner") != binding_due.lifecycle_owner):
+                raise OperatingSetupError("current native admission is not owner authenticated")
+            # Once this exact occurrence has actual admission, its own full
+            # authorization below proves the conversation. The prior pin is
+            # provenance for preparation, including fresh targets without IDs.
+            if bound is None and proof_pin is not None and not admitted_current:
                 import hashlib
                 import json
                 if not isinstance(proof_pin, Mapping) or set(proof_pin) != {"schedule_id", "due_sha256"}:

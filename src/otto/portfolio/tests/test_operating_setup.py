@@ -42,6 +42,35 @@ class OperatingSetupTests(unittest.TestCase):
         return {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": schedule},
                 "advisor_policy": {"mode": "disabled", "reason": "Owner supervises this bounded run"}, "acceptance_tasks": []}
 
+    def test_settled_callback_uses_own_admission_after_fresh_initial_target(self):
+        from copy import deepcopy
+        from otto.portfolio.execution import _digest
+        self.test_pending_callback_keeps_settled_native_proof_for_worker_result()
+        f = self.f
+        records = f.port.list_due()
+        current = next(v for v in records if v["role"] == "manager"
+            and v["schedule_id"] != "owner-bootstrap-native"
+            and v["completion_state"] == "succeeded")
+        proof = deepcopy(f.port.read_due("owner-bootstrap-native"))
+        proof["target"]["native_id"] = None  # genuine fresh-manager target shape
+        raw = deepcopy(current)
+        raw["target"]["native_binding"] = {"schedule_id":proof["schedule_id"], "due_sha256":_digest(proof)}
+        config = {"schema":"otto.operating-setup.v1", "mode":"manual",
+            "roles":{"manager":raw["schedule_id"]},
+            "advisor_policy":{"mode":"disabled","reason":"Fixture owner"}, "acceptance_tasks":[]}
+        original = f.app.runtime.due_port
+        f.app.runtime.due_port = SimpleNamespace(read_due=lambda schedule:
+            raw if schedule == raw["schedule_id"] else proof if schedule == proof["schedule_id"] else original.read_due(schedule))
+        try:
+            self.assertTrue(evaluate_setup(f.app.runtime,f.project.ref.to_dict(),config)["ready"])
+            for field,value in (("generation",2),("principal","foreign"),("physical_session_id","foreign"),("status","unverified")):
+                bad = deepcopy(current)
+                bad["host_evidence"]["gateway_attempt"]["delivery_authorization"][field] = value
+                f.app.runtime.due_port = SimpleNamespace(read_due=lambda schedule,bad=bad:
+                    bad if schedule == bad["schedule_id"] else original.read_due(schedule))
+                self.assertFalse(evaluate_setup(f.app.runtime,f.project.ref.to_dict(),config)["ready"],field)
+        finally:f.app.runtime.due_port=original
+
     def test_pending_callback_keeps_settled_native_proof_for_worker_result(self):
         from otto.attention import DueRecord
         from otto.portfolio.execution import _digest
