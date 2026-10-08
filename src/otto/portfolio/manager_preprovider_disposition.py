@@ -73,7 +73,7 @@ def _scope(execution, anchor, current, selected, native_session_id):
             or receipt.get("operation") != "resume" or receipt.get("outcome") != "unknown"
             or receipt.get("unsupported_reason") != "recipient_context_unavailable"
             or envelope.get("unsupported_error") != "recipient_context_unavailable"
-            or envelope.get("reconciliation") != "app_server_cleanup_failed"
+            or envelope.get("reconciliation") not in {"app_server_cleanup_failed", "unsupported_cli_identity"}
             or envelope.get("delivery_state") != "not_started"
             or envelope.get("fnd_receipt") != receipt
             or identity.get("logical_agent_id") != assignment.principal
@@ -101,7 +101,7 @@ def _scope(execution, anchor, current, selected, native_session_id):
         "manager_principal": assignment.principal, "generation": callback.generation,
         "native_session_id": native_session_id, "task_ref": callback.target["task_ref"],
         "mandate_ref": callback.target["mandate_ref"], "mandate_content_sha256": diagnostic["mandate_content_sha256"],
-        "unsupported_error": "recipient_context_unavailable", "reconciliation": "app_server_cleanup_failed",
+        "unsupported_error": "recipient_context_unavailable", "reconciliation": envelope["reconciliation"],
         "provider_called": False, "native_turn_started": False, "unknown_attempt_preserved": True}
 
 

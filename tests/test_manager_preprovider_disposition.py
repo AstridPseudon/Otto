@@ -27,9 +27,10 @@ class ManagerPreproviderDispositionTests(unittest.TestCase):
         adapter = f.app.runtime.adapter
         # The maintained receiving binding fails at the actual recipient trace
         # read; Popen is an executable-boundary tripwire, never a substitute API.
+        self_outer = self
         class FailedRecipientReader:
             def read_with_deadline(self, session_id, deadline):
-                raise RuntimeError("app_server_cleanup_failed")
+                raise RuntimeError(getattr(self_outer, "reader_error", "app_server_cleanup_failed"))
         with patch.object(adapter, "binding_factory", None), patch.object(adapter,
                 "trusted_thread_reader", FailedRecipientReader()), \
                 patch("herzchen.adapters.host.subprocess.Popen", side_effect=AssertionError("provider reached")) as launch:
@@ -146,6 +147,18 @@ class ManagerPreproviderDispositionTests(unittest.TestCase):
                 self.assertEqual(self.call("preprovider-status")["outcome"], "rejected")
         self.assertEqual(self.reports(), before_reports)
         self.assertEqual(len(f.provider.calls), self.provider_calls)
+
+
+class ManagerUnsupportedCliDispositionTests(unittest.TestCase):
+    """A rejected new CLI digest never reached the native process boundary."""
+    reader_error = "unsupported_cli_identity"
+    reports = ManagerPreproviderDispositionTests.reports
+    dispose = ManagerPreproviderDispositionTests.dispose
+    call = ManagerPreproviderDispositionTests.call
+    setUp = ManagerPreproviderDispositionTests.setUp
+    disposition = ManagerPreproviderDispositionTests.disposition
+    test_exact_rejection_is_append_only = ManagerPreproviderDispositionTests.test_authentic_append_preserves_both_unknowns_and_global_dispatch_guard
+    test_positive_or_missing_effect_evidence_rejects = ManagerPreproviderDispositionTests.test_missing_or_positive_transport_evidence_is_never_dispositioned
 
 
 if __name__ == "__main__": unittest.main()
