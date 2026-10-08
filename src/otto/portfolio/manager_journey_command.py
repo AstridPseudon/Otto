@@ -96,6 +96,102 @@ class ManagerJourneyCommands:
             raise ValueError("request_key must be 1..160 exact characters")
         return key
 
+    def author_tasks(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Manager decisions and pending work through the existing sheet; no dispatch.
+
+        A review is evidence, never task or budget authority. The manager's
+        report retains dispositions, then the typed batch retains its own
+        receipt. Reusing the exact key can finish local alias readback after
+        a committed batch without repeating canonical work.
+        """
+        self._authorize()
+        if set(request) != {"command", "request_key", "base_revision", "review_ref", "dispositions", "tasks"}:
+            raise ValueError("task authoring requires exact planning fields")
+        key = self._key(request)
+        original = self._journal(key, "planning-input")
+        if original is not None and original != dict(request):
+            raise ValueError("planning key was reused with changed input")
+        review_ref = ResourceRef.from_dict(request["review_ref"])
+        if review_ref.kind not in {"wrk.report", "wrk.result"} or not review_ref.revision:
+            raise ValueError("review_ref must pin an existing report or result")
+        record = self.owner.graph.reader.get_identity(review_ref)
+        if record is None or record.ref != review_ref:
+            raise PermissionError("review evidence is not the exact retained record")
+        assignment = self.owner.assignments.command_port.get(record.payload["assignment"])
+        project = ResourceRef.from_dict(self.state["project_ref"])
+        scope = assignment.scope
+        if scope.kind == "wrk.task":
+            task = self.owner.graph.reader.get_identity(scope)
+            scope = ResourceRef.from_dict(task.payload["project_ref"])
+        if (scope.authority, scope.kind, scope.id) != (project.authority, project.kind, project.id):
+            raise PermissionError("review evidence belongs to another project")
+        dispositions, tasks = request["dispositions"], request["tasks"]
+        if not isinstance(dispositions, list) or not dispositions or len(dispositions) > 32:
+            raise ValueError("supply 1..32 explicit finding dispositions")
+        seen = set()
+        for item in dispositions:
+            if not isinstance(item, Mapping) or set(item) - {"finding_id", "decision", "reason", "task", "route", "routing_rationale", "revisit"}:
+                raise ValueError("unsupported finding disposition fields")
+            finding = item.get("finding_id")
+            if not isinstance(finding, str) or not finding.strip() or finding in seen:
+                raise ValueError("finding IDs must be nonblank and unique")
+            seen.add(finding)
+            if item.get("decision") not in {"accept", "merge", "defer", "reject"} or not isinstance(item.get("reason"), str) or not item["reason"].strip():
+                raise ValueError("each disposition requires a decision and reason")
+            if item["decision"] in {"accept", "merge"}:
+                if (not isinstance(item.get("task"), str) or not item["task"].strip()
+                        or item.get("route") not in {"normal", "xhard"}
+                        or not isinstance(item.get("routing_rationale"), str) or not item["routing_rationale"].strip()):
+                    raise ValueError("accepted correction needs a task and independent normal/XHARD rationale")
+            elif item["decision"] == "defer" and (not isinstance(item.get("revisit"), str) or not item["revisit"].strip()):
+                raise ValueError("deferred finding needs its concrete revisit condition")
+        if not isinstance(tasks, list) or len(tasks) > 32:
+            raise ValueError("tasks must be a bounded typed sheet batch")
+        sheet = self.portfolio.operations.sheet_port
+        sheet.validate_edit({"tasks": tasks})  # Protected fields fail before journal or batch.
+        keys = []
+        for task in tasks:
+            alias = task.get("id", task.get("alias"))
+            if not isinstance(alias, str) or not alias.strip() or alias in keys:
+                raise ValueError("each authored task needs one unique alias or existing ID")
+            keys.append(alias)
+            if task.get("lifecycle", "pending") != "pending" or task.get("withdraw"):
+                raise ValueError("correction authoring only creates/edits pending work")
+        for item in dispositions:
+            if item["decision"] in {"accept", "merge"} and item["task"] not in set(keys) | set(self.state["task_refs"]):
+                raise ValueError("accepted finding must name an existing or authored task")
+        retained = self._journal(key, "planning-authored")
+        if original is None and request["base_revision"] != project.revision:
+            raise PermissionError("planning base does not match the current project")
+        self._journal(key, "planning-input", dict(request))
+        if retained is None:
+            if tasks:
+                result = self.portfolio.author_task_list(project, tasks, actor=self.state["manager"],
+                    request_id="journey:" + key + ":tasks", base_revision=request["base_revision"])
+                if result.get("outcome") != "authored":
+                    return result  # Exact input is retained; no readiness or quota was granted.
+            else:
+                result = {"outcome": "authored", "project_ref": project.to_dict(), "task_refs": {}, "task_count": 0}
+            retained = self._journal(key, "planning-authored", result)
+        self.state["project_ref"] = retained["project_ref"]
+        for alias, value in retained["task_refs"].items():
+            current = self.owner.graph.reader.get_identity(ResourceRef.from_dict(value))
+            if current is None or current.payload.get("project_ref", {}).get("id") != project.id:
+                raise PermissionError("authored task readback is outside the current project")
+            old = self.state["task_refs"].get(alias)
+            if old is not None and old["id"] != current.ref.id:
+                raise PermissionError("authored alias would replace an unrelated current task")
+            # A typed edit may select the canonical ID instead of its local
+            # alias. Refresh every existing alias of that exact identity;
+            # retained worker/assignment pins remain untouched.
+            for existing_alias, existing_ref in tuple(self.state["task_refs"].items()):
+                if all(existing_ref[name] == current.ref.to_dict()[name] for name in ("authority", "kind", "id")):
+                    self.state["task_refs"][existing_alias] = current.ref.to_dict()
+            self.state["task_refs"][alias] = current.ref.to_dict()
+        return {**retained, "dispositions": dispositions, "provider_called": False, "dispatch": False, "launch": False,
+                "readiness_granted": False, "assessment_authority_granted": False,
+                "next_action": "Inspect current task readiness and adopted scope before normal/XHARD run-worker. Missing acceptance scope, allowance or role-context adoption requires the existing owner setup path; task authoring grants none."}
+
     def review_input(self, alias: str) -> Mapping[str, Any]:
         """Expose the exact retained worker observation, never an automatic PASS."""
         self._authorize()

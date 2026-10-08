@@ -372,6 +372,10 @@ class ManagerJourneyService:
             return editor.dispatch(request, actor=self.authoring_authorizer(request))
         if command == "project-authoring":
             return self._project_authoring(request)
+        if command == "task-list-author":
+            result = self.commands.author_tasks(request)
+            self.server._save_state()
+            return result
         if command == "status":
             return self._status(request)
         if command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:

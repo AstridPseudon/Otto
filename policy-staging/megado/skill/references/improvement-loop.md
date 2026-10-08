@@ -20,6 +20,31 @@ Apply a plan, priority, dependency, brief or resource-allocation adjustment thro
 
 The follow-through is: **review → orchestrator decision → actual plan/assignment change → execution → verification of effect**. A report, a new ticket or an “adopted” label alone is not implementation. Preserve the distinction between action queued, action carried out, and benefit observed; an implemented improvement can still have an uncertain or negative effect.
 
+## Use the delivered planning operation
+
+Reviewer corrections are structured proposals in the existing result/report,
+not a second queue. Pending canonical tasks are real project work and remain
+manager-authored. For each finding record accept, merge, defer (with its owner
+and revisit condition), or reject, using the current evidence. Preserve completed
+or superseded findings instead of reopening them to satisfy a new report.
+
+In an installed manager service, `task-list-author` records those dispositions
+and applies only typed pending tasks through `OttoPortfolio.author_task_list`
+and `ProjectSheet.apply`. Supply the pinned `review_ref`, current project
+`base_revision`, `request_key`, `dispositions` and `tasks`. A merge may name an
+existing task; defer/reject can use an empty task batch. The returned canonical
+mapping makes new aliases available to the existing `run-worker` operation.
+This does not create criterion scope, assessment allowance, role adoption or
+dispatch authority. Use the normal readiness/setup path and report its concrete
+missing prerequisite before launching an affected task. Keep running assignments
+on their admitted pins; host-only adoption remains an owner operation. An exact
+key/input reuses retained planning/batch receipts after a partial result.
+
+The manager chooses normal/XHARD independently from the reviewer suggestion,
+using the existing irreducible-reasoning criteria and selected run model slots.
+Then use ordinary `run-worker --task ALIAS --route normal|xhard` with a bounded
+brief. Scope/budget changes still need the existing authorized owner route.
+
 ## Apply an amendment coherently, not only to the summary
 
 Use the ordinary plan-edit/batch path. Identify the current scope and base revision, originating decision, intended task/dependency/ownership changes, relevant instructions, and the affected responsibilities the manager actually knows about. Link the existing decision and operation receipt rather than maintain a second change register. The manager supplies the affected set; software may validate explicit references but does not infer a universal semantic impact graph.

@@ -832,7 +832,9 @@ class OttoPortfolio:
             receipt = getattr(batch, "receipt", None)
             return {"outcome": "authored", "project_ref": _json_copy(ref.to_dict() if hasattr(ref, "to_dict") else ref),
                     "replayed": bool(getattr(receipt, "replayed", False)),
-                    "task_count": len(task_values), "dispatch": False, "launch": False}
+                    "task_count": len(task_values),
+                    "task_refs": {key: value.to_dict() for key, value in batch.mappings.items()},
+                    "dispatch": False, "launch": False}
         except Exception as exc:
             return {"outcome": "error", "error": {"code": "task_list_authoring_failed",
                                                         "message": str(exc), "operation": "work.tasklist.apply"}}

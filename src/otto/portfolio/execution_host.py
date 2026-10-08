@@ -44,7 +44,7 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
                                  "manager-assessment", "manager-assessment-pool",
                                  "run-worker", "worker-status", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
-                                 "review-input",
+                                 "review-input", "task-list-author",
                                  "request-help", "request-advice", "read-help", "respond-help", "resolve-help",
                                  "start-retained-help",
                                  "project-lifecycle-read", "commit",

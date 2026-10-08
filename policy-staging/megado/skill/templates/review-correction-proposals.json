@@ -1,0 +1,16 @@
+{
+  "proposals_only": true,
+  "findings": [{
+    "finding_id": "FINDING-ID",
+    "class": "implementation_defect",
+    "criterion": "EXISTING-CRITERION",
+    "evidence_refs": ["EXACT-RETAINED-REF"],
+    "problem": "Observed in-scope failure",
+    "proposed_correction": "Bounded outcome to implement",
+    "scope": "Existing project and owned paths",
+    "suggested_task": "CORRECTION-ALIAS",
+    "route": "normal",
+    "routing_rationale": "Explain irreducible reasoning needs independently of severity",
+    "verification": "Named discriminating check and expected result"
+  }]
+}

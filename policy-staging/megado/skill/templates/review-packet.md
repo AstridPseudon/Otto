@@ -13,3 +13,15 @@ Changed correction scope and retained unaffected evidence:
 Accessible input manifest / observation cutoff / missing material:
 
 Return the supported verdict and evidence, no finding quota. Keep optional advice separate. For each blocker identify its criterion, precise proof and correction; distinguish objective check-based closure from a new judgment. Do not invent new scope, extra reviews, permissions or budget. The protocol defines routing and counts; the packet creates none.
+
+Executable correction proposals (ordinary report, not canonical tasks):
+Return zero or more findings with stable `finding_id`, exact `evidence_refs`,
+`criterion`, `problem`, `proposed_correction`, `scope`, `suggested_task`,
+`route` (`normal` or `xhard`), independent `routing_rationale`, and
+`verification`. The route classifies correction difficulty separately from
+reviewer difficulty or finding severity. Mark optional, stale/completed and
+out-of-scope suggestions explicitly; they do not automatically create work.
+Use [the correction proposal example](review-correction-proposals.json).
+The manager accepts, merges into existing work, defers with a revisit condition,
+or rejects with a reason. Reviewers stay read-only and never create pending
+canonical tasks, dispatch workers, grant allowance or rewrite accepted history.

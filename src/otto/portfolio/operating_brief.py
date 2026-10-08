@@ -43,7 +43,11 @@ ROLE_OPERATING_CONTRACTS = {
         "to retry without reconciling the exact retained effect. For criteria that explicitly require installed "
         "behavior, verify the current adopted source/runtime and preflight evidence before review or finish. "
         "If only host adoption, measurement, or setup is missing, request operational help with the evidence "
-        "and return condition; an actual candidate defect remains an ordinary REWORK finding."
+        "and return condition; an actual candidate defect remains an ordinary REWORK finding. "
+        "Reconcile reviewer correction proposals against current evidence: accept, merge, defer with a revisit "
+        "condition, or reject with a reason. Use task-list-author for pending canonical tasks and alias readback, "
+        "then existing normal/XHARD run-worker only after current scope/readiness is satisfied. Task authoring "
+        "grants no acceptance, execution or additional allowance; retain completed findings and prior debits."
     ),
     "worker": (
         "Execute only the prescribed task within its current project, assignment, generation, resources, and "
@@ -77,6 +81,7 @@ ROLE_CONTEXT_GUIDANCE = {
     "manager": {
         "help": "Use request-advice for project judgment and request-help for an operational blockage; include problem, impact, evidence, requested decision and return condition.",
         "context": "Refresh the current project, task, assignment, generation, mandate, adopted resources and conversation before acting.",
+        "planning": "Reviewer reports propose correction tasks with independent normal/XHARD rationale. The manager records accept/merge/defer/reject and uses task-list-author with the pinned report/result, current project revision, typed pending tasks and exact request key. Reuse the key/input after partial progress. Missing scope/adoption/allowance requires existing owner setup before dispatch; never reopen completed work merely to file advice.",
         "installed_evidence": "For criteria that explicitly require installed behavior, verify the current adopted source/runtime and preflight evidence before review or finish. If only host adoption, measurement, or setup is missing, request operational help with the evidence and return condition; an actual candidate defect remains an ordinary REWORK finding.",
         "continuation": "Resolve an applied response with resolve-help; the retained same-manager continuation is the next action.",
         "recovery": "Read the exact delivery before retrying; unknown sends, missing destinations and replaced roles remain held until reconciled.",

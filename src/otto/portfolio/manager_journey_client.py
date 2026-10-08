@@ -312,6 +312,13 @@ def add_help_parsers(commands: Any) -> list[Any]:
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
     add_help_parsers(commands)
+    planning = commands.add_parser("task-list-author", help="record manager finding dispositions and author pending correction tasks; never dispatch or grant review budget")
+    planning.add_argument("--request-key", required=True)
+    planning.add_argument("--base-revision", required=True)
+    planning.add_argument("--review-ref", required=True, type=json.loads)
+    planning.add_argument("--dispositions", required=True, type=json.loads)
+    planning.add_argument("--tasks", required=True, type=json.loads,
+                          help="typed ProjectSheet pending tasks; protected/accepted fields cannot be authored")
     control = commands.add_parser("execution-control", help="drain host admission or inspect, stop and recover an exact owned occurrence",
         description="Drain retains admitted children and transport handles; the host closes after they settle. Stop permanently fences one occurrence. Resume reconciles its retained effect first and never repeats a provider call. A paused trigger requires exact host reconciliation; process restart and installation remain host actions.")
     control.add_argument("--operation", choices=("read", "recover", "stop", "resume", "drain"), default="read")
