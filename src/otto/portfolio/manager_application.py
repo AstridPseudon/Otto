@@ -153,6 +153,40 @@ class _ScopedDocumentOperations:
         # The existing authoring session owner checks this write operation.
         return self.__delegate.finish_edit(*args, **kwargs)
 
+    def edit_status(self, *args: Any, **kwargs: Any) -> Any:
+        # EDT checks the current actor/token/fence before exposing the handle.
+        return self.__delegate.edit_status(*args, **kwargs)
+
+    def session_inventory(self, *args: Any, **kwargs: Any) -> Any:
+        # Inventory is scoped to the same project grant as document reads.
+        return self.__delegate.session_inventory(*args, **kwargs) if self._allowed(args, kwargs) else _scope_denied()
+
+    def resume_edit(self, *args: Any, **kwargs: Any) -> Any:
+        # A supplied handle is still revalidated by EDT; the project grant is
+        # an additional host visibility boundary.
+        return self.__delegate.resume_edit(*args, **kwargs) if self._allowed(args, kwargs) else _scope_denied()
+
+    def discard_edit(self, *args: Any, **kwargs: Any) -> Any:
+        return self.__delegate.discard_edit(*args, **kwargs)
+
+    def release_edit(self, *args: Any, **kwargs: Any) -> Any:
+        return self.__delegate.release_edit(*args, **kwargs)
+
+    def recover_edit(self, *args: Any, **kwargs: Any) -> Any:
+        return self.__delegate.recover_edit(*args, **kwargs)
+
+    def autosave_edit(self, *args: Any, **kwargs: Any) -> Any:
+        # Draft autosave is recoverability; explicit finish_edit remains the
+        # only document check-in/publication operation on this facade.
+        return self.__delegate.autosave_edit(*args, **kwargs)
+
+    def idle_close_edit(self, *args: Any, **kwargs: Any) -> Any:
+        # The host timer/poller invokes one existing one-shot boundary; it does
+        # not become a scheduler or acquire a second authoring authority.
+        return self.__delegate.idle_close_edit(*args, **kwargs)
+
+    idle_checkin_edit = idle_close_edit
+
 
 class ManagerApplication:
     """Finite manager CLI composition; it holds no bootstrap or Store handle."""
@@ -187,7 +221,8 @@ class ManagerApplication:
         self.direction_operations = direction_operations
 
     @classmethod
-    def from_owner(cls, owner: Any, *, due_port: Any = None, issue_delivery: Any = None) -> "ManagerApplication":
+    def from_owner(cls, owner: Any, *, due_port: Any = None, issue_delivery: Any = None,
+                   idle_lifecycle: Any = None, document_authoring: Any = None) -> "ManagerApplication":
         """Compose read/application facades from the supplied trusted bootstrap.
 
         Domain registration belongs to the host's explicit initialization
@@ -259,9 +294,10 @@ class ManagerApplication:
         document_reader = _ScopedDocumentReader(raw_document_reader, grant, binding)
         raw_document_operations = ProjectDocumentOperations(
             document_reader=document_reader,
-            authoring=DocumentAuthoringHandler(store),
+            authoring=document_authoring or DocumentAuthoringHandler(store),
             context_reader=_ScopedBacklinkReader(visibility, operations.reader, grant, binding),
             sheet_reader=owner.sheet,
+            idle_lifecycle=idle_lifecycle,
         )
         document_operations = _ScopedDocumentOperations(raw_document_operations, document_reader, grant, binding)
         assessment_owner = AssessmentModule(store, actor=actor)

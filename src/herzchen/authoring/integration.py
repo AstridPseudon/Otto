@@ -386,7 +386,13 @@ class AuthoringLifecycle:
     def _released(result: SemanticFinishResult) -> bool:
         finish = result.finish
         if finish is not None and result.status == "rejected" and finish.final_snapshot is not None:
-            return True
+            # Validation rejection retains the open authoring session so the
+            # owner can correct the draft.  It is not a terminal release and
+            # must never enter the physical-cleanup path.
+            return bool(
+                finish.checkout is not None
+                and finish.checkout.state != AuthoringState.OPEN
+            )
         return bool(
             finish is not None and finish.checkout is not None
             and finish.checkout.state != AuthoringState.OPEN

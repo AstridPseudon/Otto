@@ -56,6 +56,9 @@ class IdleCloseResult:
     cleanup: Optional[CleanupObservation] = None
     recovery_pending: bool = False
     error: Optional[str] = None
+    failure_status: Optional[str] = None
+    durable: bool = False
+    recovery_actions: tuple[str, ...] = ()
 
     @property
     def released(self) -> bool:
@@ -106,7 +109,12 @@ class IdleCloseService:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.finish_adapter = finish if isinstance(finish, SemanticFinishAdapter) else None
-        self.service = finish.service if isinstance(finish, SemanticFinishAdapter) else finish if isinstance(finish, AuthoringSessionService) else None
+        self.service = (
+            finish.service if isinstance(finish, SemanticFinishAdapter)
+            else finish if isinstance(finish, AuthoringSessionService)
+            else owner_local_command_port(finish) if hasattr(finish, "record_failure")
+            else None
+        )
         self._finish = finish
         self._cleanup = cleanup
         self._clock = clock
@@ -120,6 +128,19 @@ class IdleCloseService:
         if self.service is None:
             return None
         return self.service.reader.get_identity(handle.scope)
+
+    def _durable_failure(self, handle: SessionHandle, *, request_id: str, status: str, error: Optional[str]) -> tuple[bool, tuple[str, ...]]:
+        """Persist a host-observed failure through EDT's metadata receipt."""
+        if self.service is None:
+            return False, ()
+        try:
+            result = self.service.record_failure(
+                handle, request_id=request_id, status=status, error=error,
+            )
+            return bool(result.get("durable")), tuple(result.get("recovery_actions", ()))
+        except BaseException:
+            # An uncertain metadata write must not be presented as durable.
+            return False, ()
 
     def declare_content_edit(self, handle: SessionHandle, *, timestamp: Optional[Any] = None, request_id: Optional[str] = None) -> float:
         """Persist the host's last content-edit timestamp for idle policy.
@@ -359,16 +380,19 @@ class IdleCloseService:
             raise ValueError("inactivity_seconds must be non-negative")
         assertion = getattr(retirement_guard, "assert_held", None)
         if not callable(assertion):
+            durable, actions = self._durable_failure(handle, request_id=request_id + ":failure", status="writer_active", error="authenticated retirement exclusion is required")
             return IdleCloseResult(
                 "writer_active", handle.scope, handle.session_id,
-                recovery_pending=True, error="authenticated retirement exclusion is required",
+                recovery_pending=True, error="authenticated retirement exclusion is required", failure_status="writer_active", durable=durable, recovery_actions=actions,
             )
         try:
             assertion(checkout_root)
         except BaseException as exc:
+            error = str(exc) or "authenticated retirement exclusion is not held"
+            durable, actions = self._durable_failure(handle, request_id=request_id + ":failure", status="writer_active", error=error)
             return IdleCloseResult(
                 "writer_active", handle.scope, handle.session_id,
-                recovery_pending=True, error=str(exc) or "authenticated retirement exclusion is not held",
+                recovery_pending=True, error=error, failure_status="writer_active", durable=durable, recovery_actions=actions,
             )
         current = self._record(handle)
         if current is not None:
@@ -386,14 +410,18 @@ class IdleCloseService:
         edit = self.last_content_edit(handle, last_content_edit)
         observed = self._clock() if now is None else _epoch(now)
         if edit is None:
-            return IdleCloseResult("recovery_pending", handle.scope, handle.session_id, recovery_pending=True, error="last content-edit timestamp is unavailable")
+            error = "last content-edit timestamp is unavailable"
+            durable, actions = self._durable_failure(handle, request_id=request_id + ":failure", status="recovery_pending", error=error)
+            return IdleCloseResult("recovery_pending", handle.scope, handle.session_id, recovery_pending=True, error=error, failure_status="recovery_pending", durable=durable, recovery_actions=actions)
         idle_for = max(0.0, observed - edit)
         if idle_for < inactivity_seconds:
             return IdleCloseResult("not_idle", handle.scope, handle.session_id, idle_for, edit)
         try:
             self._quiesce(quiesce, writer_check)
         except BaseException as exc:
-            return IdleCloseResult("writer_active", handle.scope, handle.session_id, idle_for, edit, recovery_pending=True, error=str(exc))
+            error = str(exc) or "writer quiescence is unavailable"
+            durable, actions = self._durable_failure(handle, request_id=request_id + ":failure", status="writer_active", error=error)
+            return IdleCloseResult("writer_active", handle.scope, handle.session_id, idle_for, edit, recovery_pending=True, error=error, failure_status="writer_active", durable=durable, recovery_actions=actions)
 
         files = registered_files
         if files is None and current is not None:
@@ -423,13 +451,27 @@ class IdleCloseService:
                     **dict(hook_kwargs or {}),
                 )
         except BaseException as exc:
-            return IdleCloseResult("recovery_pending", handle.scope, handle.session_id, idle_for, edit, recovery_pending=True, error=str(exc))
-        result = IdleCloseResult(finish.status, handle.scope, handle.session_id, idle_for, edit, finish, recovery_pending=finish.recovery_pending, error=finish.error)
+            error = str(exc) or "idle check-in could not be attempted"
+            status = "writer_active" if any(value in error.casefold() for value in ("writer", "quiescen", "managed")) else "recovery_pending"
+            durable, actions = self._durable_failure(handle, request_id=request_id + ":failure", status=status, error=error)
+            return IdleCloseResult("recovery_pending", handle.scope, handle.session_id, idle_for, edit, recovery_pending=True, error=error, failure_status=status, durable=durable, recovery_actions=actions)
+        result = IdleCloseResult(
+            finish.status, handle.scope, handle.session_id, idle_for, edit, finish,
+            recovery_pending=finish.recovery_pending, error=finish.error,
+            failure_status=getattr(getattr(finish, "finish", None), "failure_status", None),
+            durable=bool(getattr(getattr(finish, "finish", None), "durable", False)),
+            recovery_actions=tuple(getattr(getattr(finish, "finish", None), "recovery_actions", ())),
+        )
         # Capture/persistence/application uncertainty intentionally retains the
         # physical files.  A rejected draft is durable and released, so it is
         # safe to clean only after that preservation boundary has completed.
         if finish.status == "failed" and finish.recovery_pending:
-            return IdleCloseResult("recovery_pending", handle.scope, handle.session_id, idle_for, edit, finish, recovery_pending=True, error=finish.error)
+            return IdleCloseResult("recovery_pending", handle.scope, handle.session_id, idle_for, edit, finish, recovery_pending=True, error=finish.error, failure_status=getattr(finish, "failure_status", "recovery_pending"), durable=bool(getattr(finish, "finish", None) and getattr(finish.finish, "durable", False)), recovery_actions=tuple(getattr(finish, "recovery_actions", ())))
+        if finish.status == "rejected":
+            # Validation rejection retains the open session and materialized
+            # draft for correction.  Cleanup is only legal after a terminal
+            # release/commit handoff.
+            return result
         if finish.status not in {"finished", "pending_released", "rejected", "already_finished", "replayed"} or finish.finish is None:
             return result
         if self.service is not None:
@@ -444,6 +486,8 @@ class IdleCloseService:
                 return IdleCloseResult(
                     "cleanup_pending", handle.scope, handle.session_id, idle_for, edit,
                     finish, observation, recovery_pending=True, error=observation.error,
+                    failure_status="cleanup_pending", durable=True,
+                    recovery_actions=("retry_cleanup", "retain_materialization"),
                 )
         exact_files = files
         if finish.snapshot is not None:
@@ -475,9 +519,10 @@ class IdleCloseService:
                     if callable(marker):
                         marker()
             except BaseException as exc:
-                return IdleCloseResult("cleanup_pending", handle.scope, handle.session_id, idle_for, edit, finish, observation, recovery_pending=True, error=str(exc))
+                return IdleCloseResult("cleanup_pending", handle.scope, handle.session_id, idle_for, edit, finish, observation, recovery_pending=True, error=str(exc), failure_status="cleanup_pending", durable=False, recovery_actions=("retry_cleanup", "retain_materialization"))
         status = "closed_cleaned" if observation.status == CleanupStatus.COMPLETE else "cleanup_pending"
-        return IdleCloseResult(status, handle.scope, handle.session_id, idle_for, edit, finish, observation, recovery_pending=observation.status != CleanupStatus.COMPLETE, error=observation.error or finish.error)
+        final_status = "checked_in" if status == "closed_cleaned" and finish.status in {"finished", "already_finished", "replayed"} else "cleanup_pending"
+        return IdleCloseResult(status, handle.scope, handle.session_id, idle_for, edit, finish, observation, recovery_pending=observation.status != CleanupStatus.COMPLETE, error=observation.error or finish.error, failure_status=final_status, durable=True, recovery_actions=() if final_status == "checked_in" else ("retry_cleanup", "retain_materialization"))
 
     def check(self, *args: Any, **kwargs: Any) -> IdleCloseResult:
         return self.close_if_idle(*args, **kwargs)

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import time
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
 from herzchen.command_ports import command_facade
 
@@ -87,12 +88,34 @@ class DocumentDraft:
 
 
 @dataclass(frozen=True)
+class DocumentEditProjection:
+    """Host eligibility view; only a current EDT handle grants mutation.
+
+    Resume, discard, recover and release require the same authenticated actor
+    and current token/fence, validated by EDT. A forgotten UI handle does not
+    grant takeover: restoring/releasing it requires an explicit trusted owner
+    recovery operation. This projection cannot supply that authority.
+    """
+
+    target: ResourceRef
+    scope: Optional[ResourceRef]
+    actor: AuthenticatedActor
+    base_revision: Optional[str]
+    import_mode: Optional[str]
+    read_only: bool
+    eligible: bool
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class DocumentMaterialisation:
     target: ResourceRef
     scope: ResourceRef
     open_result: OpenResult
     document: Optional[ContentDocument]
     current_revision: Optional[ResourceRef]
+    projection: Optional[DocumentEditProjection] = None
+    refusal_receipt: Any = None
 
     @property
     def handle(self) -> SessionHandle:
@@ -124,6 +147,37 @@ class DocumentFinishResult:
     fresh_snapshot: Optional[Snapshot] = None
     schema_errors: Tuple[str, ...] = ()
     temporary_preserved: bool = False
+
+
+@dataclass(frozen=True)
+class DocumentAutosaveResult:
+    """A recoverable editor-buffer save, explicitly separate from check-in.
+
+    The host supplies an atomic editor-buffer value.  EDT stores that value
+    through its existing draft snapshot writer; a filesystem mtime is not an
+    editor save and cannot advance inactivity.  ``last_content_edit`` is
+    written only after a changed buffer has been durably autosaved.  Writer
+    quiescence is a separate host contract for idle check-in capture, not a
+    claim inferred from this buffer save.
+    """
+
+    status: str
+    target: ResourceRef
+    scope: ResourceRef
+    session_id: str
+    changed: bool
+    snapshot_ref: Optional[ResourceRef] = None
+    snapshot_digest: Optional[str] = None
+    last_content_edit: Optional[float] = None
+    nonpublishing: bool = True
+    recovery_pending: bool = False
+    error: Optional[str] = None
+    receipt: Any = None
+    durable: bool = False
+
+    @property
+    def saved(self) -> bool:
+        return self.status == "saved"
 
 
 def _target_ref(target: Union[ResourceRef, ContentDocument]) -> ResourceRef:
@@ -356,8 +410,16 @@ class _DocumentAuthoringHandlerEngine:
         allowed_fields: Sequence[str] = (),
         materialize: Optional[Callable[..., Any]] = None,
     ) -> DocumentMaterialisation:
+        requested = _target_ref(target)
+        if requested.authority != self.reader.authority or actor.authority != self.reader.authority:
+            raise ScopeAuthorizationError("document and actor must belong to the authoring authority")
+        if requested.revision is not None:
+            raise ScopeAuthorizationError("pinned document revisions cannot be authored")
         target_ref = _document_key(_target_ref(target))
-        document = target if isinstance(target, ContentDocument) else self._read_document(target_ref)
+        # Existing canonical metadata wins over a caller-supplied document.
+        document = self._read_document(target_ref)
+        if document is None and isinstance(target, ContentDocument):
+            document = target
         if document is not None and (
             not document.writable
             or document.import_mode != "owned"
@@ -365,6 +427,8 @@ class _DocumentAuthoringHandlerEngine:
         ):
             raise ScopeAuthorizationError("read-only external attachments cannot be authored")
         scope = self.resolve_scope(target_ref, document=document, parent_scope=parent_scope)
+        if scope.authority != self.reader.authority or scope.revision is not None:
+            raise ScopeAuthorizationError("document has no canonical writable scope")
         current = self._current_revision(target_ref) if document is not None else None
         if initial_content is None and current is not None:
             initial_content = self.content.read(current).get("content", {})
@@ -384,6 +448,256 @@ class _DocumentAuthoringHandlerEngine:
         return DocumentMaterialisation(target_ref, scope, opened, document, current)
 
     materialize = materialise
+
+    def edit_projection(
+        self, target: ResourceRef, actor: AuthenticatedActor, *,
+        parent_scope: Optional[ResourceRef] = None,
+    ) -> DocumentEditProjection:
+        """Resolve an existing document's capability from fresh owner records.
+
+        Exact revision refs are read-only even when they pin the current head.
+        Caller-supplied metadata never substitutes for the canonical document.
+        """
+        if not isinstance(target, ResourceRef) or not isinstance(actor, AuthenticatedActor):
+            raise TypeError("edit projection requires a typed target and authenticated actor")
+        if actor.authority != self.reader.authority:
+            raise ScopeAuthorizationError("actor is outside the document authority")
+        scope = None
+        document = None
+        current = None
+        reason = None
+        if target.authority != self.reader.authority:
+            reason = "foreign_document"
+        else:
+            document = self._read_document(target)
+            if document is None:
+                reason = "unsupported_document"
+            else:
+                try:
+                    scope = self.resolve_scope(target, document=document)
+                except ScopeAuthorizationError:
+                    reason = "scope_ineligible"
+                if reason is None and (scope.authority != self.reader.authority
+                                       or scope.revision is not None
+                                       or (parent_scope is not None and scope != parent_scope)):
+                    reason = "scope_ineligible"
+                current = self._current_revision(target)
+                if reason is None:
+                    if target.revision is not None or document.import_mode == "pinned":
+                        reason = "pinned_document"
+                    elif document.import_mode != "owned":
+                        reason = "imported_document"
+                    elif not document.writable or document.access_mode not in {"write", "append"}:
+                        reason = "read_only_document"
+                    elif current is None:
+                        reason = "unsupported_document"
+        return DocumentEditProjection(
+            target, scope, actor, current.revision if current is not None else None,
+            document.import_mode if document is not None else None,
+            reason is not None, reason is None, reason,
+        )
+
+    def refuse_edit(
+        self, target: ResourceRef, actor: AuthenticatedActor, *,
+        request_id: str, reason: str,
+    ) -> Any:
+        """Retain a host visibility/scope refusal without exposing doc metadata."""
+        return self.authoring.refuse_open(target, actor, request_id=request_id, reason=reason)
+
+    def open_owned(
+        self, target: ResourceRef, actor: AuthenticatedActor, *,
+        request_id: str, parent_scope: Optional[ResourceRef] = None,
+    ) -> DocumentMaterialisation:
+        """Open an eligible existing master using ordinary EDT materialisation."""
+        projection = self.edit_projection(target, actor, parent_scope=parent_scope)
+        if not projection.eligible:
+            receipt = self.authoring.refuse_open(
+                target, actor, request_id=request_id, reason=projection.reason,
+                scope=projection.scope,
+            )
+            scope = projection.scope or ResourceRef(self.reader.authority, "document", target.id)
+            return DocumentMaterialisation(
+                target, scope, OpenResult("ineligible", scope, waitable=False, error=projection.reason),
+                None, None, projection, receipt,
+            )
+        # Keep EDT's durable reservation before its physical materializer.
+        # Materialise freshly reads the canonical base and exact opening
+        # content together; never pair a host's stale bytes with a newer base.
+        opened = self.materialise(target, actor, request_id=request_id, parent_scope=projection.scope)
+        projection = DocumentEditProjection(
+            target, opened.scope, actor,
+            opened.open_result.handle.base_revision if opened.open_result.handle is not None
+            else (opened.current_revision.revision if opened.current_revision is not None else None),
+            opened.document.import_mode, False, True,
+        )
+        return DocumentMaterialisation(
+            opened.target, opened.scope, opened.open_result, opened.document,
+            opened.current_revision, projection,
+        )
+
+    def edit_status(self, materialisation: DocumentMaterialisation, actor: AuthenticatedActor) -> Mapping[str, Any]:
+        """Holder-only projection; status reads never restore or release handles."""
+        handle = materialisation.handle
+        self._authorize(materialisation.target, actor, handle, token=handle.token,
+                        fence=handle.fence, base_revision=handle.base_revision,
+                        document=self._read_document(materialisation.target))
+        checkout = self.authoring.validate_session(handle)
+        return {"projection": self.edit_projection(materialisation.target, actor),
+                "handle": handle, "checkout": checkout,
+                "handle_authority": "same_authenticated_actor_and_current_token_fence",
+                "abandoned_handle_authority": "explicit_trusted_owner_recovery_required"}
+
+    def session_inventory(
+        self,
+        actor: AuthenticatedActor,
+        *,
+        handles: Sequence[SessionHandle] = (),
+    ) -> Mapping[str, Any]:
+        """Expose the EDT-owned inventory without adding host-side history."""
+        return self.authoring.session_inventory(actor, handles=handles)
+
+    def resume(
+        self,
+        target: Union[ResourceRef, ContentDocument],
+        actor: AuthenticatedActor,
+        handle: SessionHandle,
+        *,
+        parent_scope: Optional[ResourceRef] = None,
+    ) -> DocumentMaterialisation:
+        """Resume only the exact open session represented by ``handle``."""
+        if not isinstance(handle, SessionHandle):
+            raise InvalidSessionError("resume requires an owner-issued session handle")
+        target_ref = _target_ref(target)
+        document = self._read_document(target_ref)
+        if document is None and isinstance(target, ContentDocument):
+            document = target
+        scope = self.resolve_scope(target_ref, document=document, parent_scope=parent_scope)
+        if handle.target_scope != scope or handle.actor != actor:
+            raise ScopeAuthorizationError("resume handle is not for this target and actor")
+        opened = self.authoring.resume(handle)
+        current = self._current_revision(target_ref)
+        projection = DocumentEditProjection(
+            target_ref, scope, actor, handle.base_revision,
+            document.import_mode if document is not None else "owned", False, True,
+        )
+        return DocumentMaterialisation(target_ref, scope, opened, document, current, projection)
+
+    def discard(self, materialisation: DocumentMaterialisation, actor: AuthenticatedActor, *, request_id: str) -> FinishResult:
+        """Explicitly release a draft; retention/cleanup remains visible."""
+        handle = materialisation.handle
+        self._authorize(materialisation.target, actor, handle, token=handle.token,
+                        fence=handle.fence, base_revision=handle.base_revision,
+                        document=self._read_document(materialisation.target))
+        return self.authoring.discard(handle, request_id=request_id)
+
+    def release(self, materialisation: DocumentMaterialisation, actor: AuthenticatedActor, *, request_id: str) -> FinishResult:
+        """Release through the existing EDT authority without publication."""
+        handle = materialisation.handle
+        self._authorize(materialisation.target, actor, handle, token=handle.token,
+                        fence=handle.fence, base_revision=handle.base_revision,
+                        document=self._read_document(materialisation.target))
+        return self.authoring.release(handle, request_id=request_id)
+
+    def recover(self, materialisation: DocumentMaterialisation, actor: AuthenticatedActor) -> Mapping[str, Any]:
+        """Read retained recovery state using the exact owner-issued handle."""
+        handle = materialisation.handle
+        document = self._read_document(materialisation.target)
+        scope = self.resolve_scope(materialisation.target, document=document)
+        if handle.target_scope != scope or handle.actor != actor:
+            raise ScopeAuthorizationError("recovery handle is not for this target and actor")
+        return self.authoring.recover(handle)
+
+    def recover_session(self, actor: AuthenticatedActor, session_id: str) -> Mapping[str, Any]:
+        """Recover a named lost-handle session only by explicit owner action."""
+        return self.authoring.owner_recover(actor, session_id)
+
+    def discard_session(self, actor: AuthenticatedActor, session_id: str, *, request_id: str) -> FinishResult:
+        """Discard a named lost-handle session without publication."""
+        return self.authoring.owner_discard(actor, session_id, request_id=request_id)
+
+    def release_session(self, actor: AuthenticatedActor, session_id: str, *, request_id: str) -> FinishResult:
+        """Release a named lost-handle session without publication."""
+        return self.authoring.owner_release(actor, session_id, request_id=request_id)
+
+    def autosave(
+        self,
+        materialisation: DocumentMaterialisation,
+        editor_buffer: Any,
+        *,
+        request_id: str,
+        content_edit_at: Optional[float] = None,
+        activity: str = "editing",
+    ) -> DocumentAutosaveResult:
+        """Persist one editor-buffer draft without publishing a DAT revision.
+
+        The caller must pass the bytes/value captured from the editor's own
+        save boundary.  This method never reads a checkout file or treats a
+        scan, heartbeat, timer poll, or filesystem timestamp as a content
+        edit.  A changed buffer is first sent through EDT's existing
+        ``AuthoringSessionService.autosave`` snapshot path; only then is the
+        persisted inactivity timestamp advanced.  Idle check-in still needs
+        its own writer/quiescence proof before using the one-shot close path.
+        """
+        if not isinstance(materialisation, DocumentMaterialisation):
+            raise TypeError("materialisation must be the owner-issued document edit session")
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("request_id must be non-blank")
+        if not isinstance(activity, str) or not activity.strip():
+            raise ValueError("activity must be non-blank")
+        if content_edit_at is not None:
+            if isinstance(content_edit_at, bool) or not isinstance(content_edit_at, (int, float)):
+                raise TypeError("content_edit_at must be numeric")
+            content_edit_at = float(content_edit_at)
+
+        handle = materialisation.handle
+        document = self._read_document(materialisation.target)
+        self._authorize(
+            materialisation.target, handle.actor, handle,
+            token=handle.token, fence=handle.fence,
+            base_revision=handle.base_revision, document=document,
+        )
+        raw = _bytes(editor_buffer)
+        digest = hashlib.sha256(raw).hexdigest()
+        record = self.authoring.reader.get_identity(handle.scope)
+        if record is None:
+            raise InvalidSessionError("scope is not admitted")
+        payload = record.payload
+        existing_digest = payload.get("draft_digest")
+        existing_ref = payload.get("draft_snapshot_ref")
+        existing_ref = ResourceRef.from_dict(existing_ref) if isinstance(existing_ref, Mapping) else None
+        existing_edit = payload.get("last_content_edit_at", payload.get("last_content_edit"))
+        existing_edit = float(existing_edit) if existing_edit is not None else None
+        if existing_digest == digest:
+            return DocumentAutosaveResult(
+                "unchanged", materialisation.target, handle.scope, handle.session_id,
+                False, existing_ref, digest, existing_edit,
+                receipt=None, durable=True,
+            )
+
+        try:
+            # Passing raw bytes delegates snapshot identity, storage, refs and
+            # replay semantics to the existing EDT draft writer.
+            saved = self.authoring.autosave(
+                handle, request_id=request_id, snapshot=raw, activity=activity,
+            )
+            edit_at = time.time() if content_edit_at is None else content_edit_at
+            self.authoring.record_content_edit(
+                handle, request_id=request_id + ":content-edit", timestamp=edit_at,
+            )
+        except BaseException as exc:
+            return DocumentAutosaveResult(
+                "recovery_pending", materialisation.target, handle.scope,
+                handle.session_id, True,
+                getattr(locals().get("saved", None), "ref", None),
+                getattr(locals().get("saved", None), "digest", digest),
+                existing_edit, recovery_pending=True, error=str(exc), durable=False,
+            )
+        receipt = self.__writer.get_receipt(request_id)
+        return DocumentAutosaveResult(
+            "saved", materialisation.target, handle.scope, handle.session_id,
+            True, saved.ref, saved.digest, edit_at, receipt=receipt,
+            durable=receipt is not None,
+        )
 
     def lifecycle_handler(self, materialisation: DocumentMaterialisation, *, request_id: str) -> Any:
         """Return the DAT semantic hooks for the shared EDT finish boundary."""
@@ -710,7 +1024,7 @@ SchemaError = SchemaValidationError
 
 
 __all__ = [
-    "AUTHORING_SCHEMA_REVISION", "DocumentDraft", "DocumentMaterialisation", "DocumentApplyResult", "DocumentFinishResult",
+    "AUTHORING_SCHEMA_REVISION", "DocumentDraft", "DocumentEditProjection", "DocumentMaterialisation", "DocumentApplyResult", "DocumentFinishResult", "DocumentAutosaveResult",
     "DocumentAuthoringError", "SchemaValidationError", "SchemaError", "ScopeAuthorizationError", "DraftPersistenceError",
     "DocumentAuthoringHandler", "DocumentAuthoring",
 ]
