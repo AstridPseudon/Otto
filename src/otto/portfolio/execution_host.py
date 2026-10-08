@@ -349,6 +349,16 @@ class ExecutionHost:
                                   "retry": False, "request_retained": False,
                                   "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
                     else:
+                        if command in _REENTRANT_COMMANDS and not _starts_work(request):
+                            # This is transport progress, not an assertion that
+                            # effects are absent. Publish before synchronous
+                            # finite work so a child need not wait on itself.
+                            pending = self.directory / ("pending-" + token + ".json")
+                            _atomic_json(pending, {"outcome": "pending", "terminal": False,
+                                "request_id": token, "request_retained": True,
+                                "request_state": "processing", "response_path": str(response),
+                                "retry": False,
+                                "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
                         from .identity_context import HostIngress
                         result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
                     if (command in {"manager-worker-result", "manager-help-result"} and result.get("outcome") == "pending"

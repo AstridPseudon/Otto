@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import argparse
+import time
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +56,13 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
     try:
         pending = json.loads((root / ("pending-" + request_id + ".json")).read_text())
     except FileNotFoundError:
-        return None
+        request = root / ("request-" + request_id + ".json")
+        if not request.is_file():
+            return None
+        return {"outcome": "pending", "terminal": False, "request_id": request_id,
+                "request_retained": True, "request_state": "queued_or_processing",
+                "response_path": str(response), "retry": False,
+                "next_action": "This exact request has no terminal reply yet. Observe command-status with this handle; do not resend or infer owner death."}
     if (pending.get("outcome") != "pending" or pending.get("request_id") != request_id
             or pending.get("request_retained") is not True or pending.get("response_path") != str(response)):
         raise ValueError("pending transport receipt differs from the exact request")
@@ -75,6 +82,31 @@ def read_command_response(directory: str | Path, request_id: str) -> Any:
     if status["response_utf8_bytes"] <= 64 * 1024:
         return json.loads(Path(status["response_path"]).read_text())
     return status
+
+
+def wait_command_response(directory: str | Path, request_id: str, *, timeout_seconds: float = 2.0) -> Any:
+    """Bound client waiting without cancelling, replaying or judging effects.
+
+    The exact owner request and response remain durable. A pending receipt is
+    transport state only: it says nothing about provider or canonical effects.
+    """
+    import math
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be finite and positive")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        result = read_command_response(directory, request_id)
+        if result is not None:
+            return result
+        pending = read_command_status(directory, request_id, pending_only=True)
+        if pending is not None and pending.get("request_state") not in {"queued_or_processing", "processing"}:
+            return pending
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return pending or {"outcome": "unavailable", "terminal": False,
+                "request_id": request_id, "retry": False,
+                "next_action": "No exact request or response is visible. Inspect the retained handle and owner receipts; this read does not establish owner death or authorize replay."}
+        time.sleep(min(.05, remaining))
 
 
 def command_result_summary(value: Any) -> Any:
