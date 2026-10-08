@@ -320,15 +320,24 @@ def add_manager_journey_parsers(commands: Any) -> None:
     author.add_argument("--session-id")
     author.add_argument("--files", type=json.loads, help="explicit bounded relative paths to UTF-8 text; raw import never fabricates transfer refs")
     author.add_argument("--document-changes", type=json.loads, help="explicit add/edit/move/unlink actions; commits are resumable per document")
-    setup = commands.add_parser("operating-setup", help="read or prepare draft/ready/active setup; activate only after shared readiness",
+    setup = commands.add_parser("operating-setup", help="preview/apply/read/update current-project setup; activate only after shared readiness",
         description=("Preparation validates existing role schedules, adopted BASE, conversations, execution contracts and "
                      "required acceptance scopes without provider work. The result distinguishes advice from operational "
                      "help, reports a missing destination or host-only/manual route, and names the current recovery path. "
                      "Autonomous mode requires a real help delivery port and explicit enabled/disabled advisor policy. "
-                     "Manual mode remains explicitly supervised. Administrative project activation does not dispatch a manager."))
-    setup.add_argument("--operation", choices=("read", "prepare", "activate"), default="read")
-    setup.add_argument("--setup", type=json.loads, help="otto.operating-setup.v1 object: mode, roles (existing schedule IDs), advisor_policy, acceptance_tasks (exact refs)")
-    setup.add_argument("--request-key", help="required for idempotent preparation; changed setup uses existing document authoring")
+                     "Manual mode remains explicitly supervised. Preview is read-only; apply/update never dispatch. "
+                     "Compose existing assignments using otto.operating-composition.v1: mode, roles, advisor_policy, "
+                     "acceptance_tasks, optional defaults (model/reasoning/timeout_seconds). Each role selects a schedule "
+                     "ID or an object with assignment_ref, generation, task_ref, mandate_ref and optional prepare_role "
+                     "overrides. Omitted model/session/context follow adopted role sources; role values override defaults. "
+                     "Directions must already be adopted through direction/authoring operations. Read returns setup_ref; "
+                     "update requires that exact ref. After partial apply, reuse the same request key/input and inspect "
+                     "returned handles. UNKNOWN, paused or stopped effects require exact occurrence reconciliation."))
+    setup.add_argument("--operation", choices=("read", "prepare", "preview", "apply", "update", "activate"), default="read")
+    setup.add_argument("--setup", type=json.loads, help="otto.operating-composition.v1 assignment bindings, or otto.operating-setup.v1 existing schedules")
+    setup.add_argument("--request-key", help="required for preview/apply/update/prepare; retain exact key/input for recovery")
+    setup.add_argument("--expected-setup-ref", type=json.loads, default=argparse.SUPPRESS,
+                       help="exact setup_ref from read, required for update and its preview")
     status = commands.add_parser("command-status", help="read one retained transport handle without another send")
     status.add_argument("--request-id", required=True)
     inputs = commands.add_parser("review-input", help="read exact retained worker candidate/evidence refs without judging or sending work")

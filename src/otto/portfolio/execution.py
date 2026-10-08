@@ -62,6 +62,18 @@ class ExecutionApplication:
     def _now(self) -> str:
         return self.clock().isoformat().replace("+00:00", "Z")
 
+    def compose_operating_setup(self, *, project_ref: Mapping[str, Any], operation: str,
+                                setup: Mapping[str, Any], request_key: str,
+                                expected_setup_ref: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Preview/apply/update existing role bindings without dispatching them.
+
+        See operating_composition for the bounded public input contract. Roles,
+        directions and model policy remain adopted owner records.
+        """
+        from .operating_composition import compose_setup
+        return compose_setup(self, project_ref=project_ref, operation=operation,
+            setup=setup, request_key=request_key, expected_setup_ref=expected_setup_ref)
+
     def prepare_operating_setup(self, *, project_ref: Mapping[str, Any],
                                 setup: Mapping[str, Any], request_key: str) -> dict[str, Any]:
         """Validate and adopt setup using one existing project document.
@@ -70,13 +82,23 @@ class ExecutionApplication:
         performs no provider work. To change a setup, publish a new revision
         through ordinary document authoring; replay never replaces identities.
         """
-        from .operating_setup import evaluate_setup, normalize_setup, setup_reference
+        from .operating_setup import evaluate_setup, normalize_setup, setup_reference, read_setup
         project = owner_ref(project_ref, "project_ref")
         _text(request_key, "request_key")
         config = normalize_setup(setup)
+        current = project_reader(self.portfolio.operations, project)(_identity(project))
+        if current["ref"] != project:
+            raise OccurrencePreparationError("operating setup project revision is stale")
+        existing = read_setup(self.portfolio.operations, project)
+        if existing is not None and existing != config:
+            raise OccurrencePreparationError("setup already exists; use operating-setup update with its exact setup_ref")
         decision = evaluate_setup(self.runtime, project, config)
         if not decision["ready"]:
             return {"outcome": "blocked", "readiness": decision, "provider_called": False}
+        if existing is not None:
+            observed = json_value(self.portfolio.operations.content_port.read(setup_reference(project)))
+            return {"outcome": "prepared", "replayed": True, "setup_ref": observed["current_revision"],
+                    "readiness": decision, "provider_called": False}
         document = self.portfolio.create_document(project, actor=self.actor,
             request_id=request_key, document_id=setup_reference(project).id,
             role="operating_setup", content=config)
@@ -85,7 +107,7 @@ class ExecutionApplication:
 
     def read_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
         """Read draft/ready/active separately from administrative lifecycle."""
-        from .operating_setup import evaluate_setup, read_setup
+        from .operating_setup import evaluate_setup, read_setup, setup_reference
         project = owner_ref(project_ref, "project_ref")
         current = project_reader(self.portfolio.operations, project)(_identity(project))
         if current["ref"] != project:
@@ -96,7 +118,10 @@ class ExecutionApplication:
                     "autonomous_ready": False, "execution_observed": False, "dispatch": False,
                     "canonical_lifecycle": current["lifecycle"],
                     "next_action": "prepare_operating_setup with explicit mode, roles and advisor policy"}
-        return {"outcome": "read", **evaluate_setup(self.runtime, project, setup), "canonical_lifecycle": current["lifecycle"]}
+        observed = json_value(self.portfolio.operations.content_port.read(setup_reference(project)))
+        return {"outcome": "read", **evaluate_setup(self.runtime, project, setup),
+                "setup": setup, "setup_ref": observed["current_revision"],
+                "canonical_lifecycle": current["lifecycle"]}
 
     def activate_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
         """Start the configured manager through the shared runtime admission guard."""
@@ -298,7 +323,7 @@ class ExecutionApplication:
                      reasoning: str | None = None, profile: str, native_session_id: Any = _UNSPECIFIED_SESSION,
                      binding_schedule_id: str | None = None,
                      allowance_ref: Mapping[str, Any] | None = None,
-                     timeout_seconds: int = 1200) -> dict[str, Any]:
+                     timeout_seconds: int = 1200, preview: bool = False) -> dict[str, Any]:
         """Prepare an already-assigned role from exact public owner handles.
 
         Native identity for a continuation is checked against the assignment's
@@ -363,6 +388,14 @@ class ExecutionApplication:
         if prior is not None:
             if prior.get("invocation_identity") != request_key + ":" + semantic:
                 raise OccurrencePreparationError("request key was reused with changed role input")
+            if preview:
+                # Project the unfinished resource reconciliation without
+                # mutating it. An attempted occurrence keeps its actual pins.
+                due = DueRecord.from_dict(prior)
+                if (due.host_evidence or {}).get("gateway_attempt") is None:
+                    due = replace(due, assignment_ref=dict(assignment_ref),
+                                  target={**due.target, "assignment_ref": dict(assignment_ref)})
+                return {"outcome": "preview", "schedule_id": schedule, "due": due.to_dict(), "retained": True}
             return self.recover(schedule_id=schedule, execute=False)
         if native_session_id is not None:
             self._verify_native_binding(assignment, native_session_id, binding_schedule_id)
@@ -392,6 +425,8 @@ class ExecutionApplication:
                 "fresh_bounded_worker" if role == "worker" else "fresh_bounded_role",
             requested_model=model, requested_reasoning=reasoning, context_refs=context_refs,
             result_owner=self.actor, timeout_seconds=timeout_seconds)
+        if preview:
+            return {"outcome": "preview", "schedule_id": schedule, "due": due.to_dict(), "retained": False}
         return prepare_current_assignment_occurrence(due_port=self.due_port, assignments=self.assignments,
             binding=self.binding, due=due, assignment_ref=assignment_ref, assignment_owner=self.manager_actor,
             operation="resume" if native_session_id else "invoke",

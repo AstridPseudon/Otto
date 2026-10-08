@@ -396,12 +396,18 @@ class ManagerJourneyService:
             return result
         if command == "operating-setup":
             self.commands._authorize()
-            if set(request) - {"command", "operation", "setup", "request_key"}:
+            if set(request) - {"command", "operation", "setup", "request_key", "expected_setup_ref"}:
                 raise ValueError("operating setup cannot change the bound project or owner")
             state = self.server.state
             app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="operating-setup")
             operation = request.get("operation", "read")
+            if operation in {"preview", "apply", "update"}:
+                return app.compose_operating_setup(project_ref=state["project_ref"], operation=operation,
+                    setup=request.get("setup"), request_key=request.get("request_key"),
+                    expected_setup_ref=request.get("expected_setup_ref"))
+            if request.get("expected_setup_ref") is not None:
+                raise ValueError("expected_setup_ref belongs only to setup preview/update")
             if operation == "read":
                 if request.get("setup") is not None or request.get("request_key") is not None:
                     raise ValueError("operating setup read takes no preparation fields")

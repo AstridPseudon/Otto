@@ -226,6 +226,31 @@ class FiniteWorkOperations:
     def _actor(self, actor: str) -> Any:
         return self.binding.authenticated_actor(actor)
 
+    def read_document_receipt(self, *, project_ref: Mapping[str, Any], document_ref: Mapping[str, Any],
+                              request_id: str, actor: str) -> Optional[Mapping[str, Any]]:
+        """Read one exact receipt for an owned document in the existing grant.
+
+        This finite projection exposes no arbitrary receipt or Store access.
+        It is used to recover a committed setup response without re-execution.
+        """
+        from herzchen.contracts import ResourceRef
+        project = ResourceRef.from_dict(project_ref)
+        document = ResourceRef.from_dict(document_ref)
+        grant = self._read_grant(actor)
+        if grant is None or not grant.allows(project) or document.kind != "dat.content.document":
+            raise PermissionError("document receipt is outside the project read grant")
+        stable = ResourceRef(document.authority, document.kind, document.id)
+        observed = _json_value(self.content_port.read(stable))
+        metadata = observed.get("document", {})
+        scope = metadata.get("authoring_scope", {})
+        if (metadata.get("maintainer") != actor or any(scope.get(k) != project_ref.get(k)
+                for k in ("authority", "kind", "id"))):
+            raise PermissionError("document receipt is outside current owner custody")
+        receipt = _receipt_dict(self._receipt(request_id))
+        if receipt is None or receipt.get("target") != stable.to_dict():
+            return None
+        return receipt
+
     def _read_grant(self, actor: str) -> Optional[ProjectReadGrant]:
         grant = self.project_read_grant
         return grant if grant is not None and grant.principal == self._actor(actor) else None

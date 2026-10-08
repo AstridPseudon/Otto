@@ -102,7 +102,8 @@ def validate_execution_contract(prepared: Mapping[str, Any], profile: str, *, ex
         raise OperatingSetupError(role + " cannot use a workspace-write execution contract")
 
 
-def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[str, Any], *, current_due: Any = None) -> dict[str, Any]:
+def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[str, Any], *, current_due: Any = None,
+                   due_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Read a connected setup without changing due state, allowances or roles."""
     from otto.attention import DueRecord, native_target_identity
     config = normalize_setup(setup)
@@ -114,7 +115,7 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
                          "message": "operating setup requires the verified owner host adapter"})
     for role, schedule in config["roles"].items():
         try:
-            raw = runtime.due_port.read_due(schedule)
+            raw = (due_overrides or {}).get(schedule) or runtime.due_port.read_due(schedule)
             if not isinstance(raw, Mapping):
                 raise OperatingSetupError("selected role schedule is unavailable")
             binding_due = DueRecord.from_dict(raw)

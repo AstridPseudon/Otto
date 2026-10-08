@@ -65,16 +65,17 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
 
 def _nested_capability(request: Mapping[str, Any]) -> str:
     """Classify nested file operations without releasing owner custody."""
-    # Setup inspection is finite and inert; prepare/activate stay held during
+    # Setup inspection/preview are finite and inert; apply/update/prepare/activate stay held during
     # the admitted native wait and cannot acquire another execution effect.
     if (request.get("command") == "project-authoring"
             and request.get("operation", "read") in {"create", "open", "check-in", "read", "import-folder", "export-folder", "release", "current-scope"}
             and not set(request) - {"command", "operation", "request_key", "edit", "project_ref", "project_json", "session_id", "files", "document_changes"}):
         return "admitted"  # Finite authenticated owner authoring, including siblings.
     if (request.get("command") == "operating-setup"
-            and request.get("operation", "read") == "read"
-            and not set(request) - {"command", "operation", "setup", "request_key"}
-            and request.get("setup") is None and request.get("request_key") is None):
+            and request.get("operation", "read") in {"read", "preview"}
+            and not set(request) - {"command", "operation", "setup", "request_key", "expected_setup_ref"}
+            and (request.get("operation") == "preview" or request.get("setup") is None
+                 and request.get("request_key") is None and request.get("expected_setup_ref") is None)):
         return "admitted"
     if request.get("command") == "execution-control" and request.get("operation") == "resume":
         return "retained"
