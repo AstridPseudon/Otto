@@ -136,6 +136,14 @@ def _occurrence(value: Any, *, current: bool = False) -> dict[str, Any]:
         "result_sha256": _digest(last_result) if last_result else None,
         "source_sha256": _digest(raw),
     }
+    result["schedule"] = {
+        key: raw.get(key) for key in (
+            "schedule_id", "anchor", "interval_seconds", "due_at", "next_due_at",
+            "last_due_at", "last_activity_at", "next_activity_at", "last_tick_at",
+            "last_invoked_at", "last_result_at", "last_completed_at", "completed_at",
+            "delivered_at", "paused_at", "missed_ticks", "coalesced_ticks",
+        ) if key in raw and isinstance(raw.get(key), (str, int, float, bool, type(None)))
+    }
     if result["result_ref"] is None:
         result["result_ref_reason"] = ("manager_occurrence_has_no_analytical_result_ref"
                                        if raw.get("role") == "manager" else "not_exposed_by_occurrence")
@@ -331,7 +339,10 @@ def _bounded_items(value: Any) -> list[Any]:
 def _effective_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in ("state", "role", "generation", "instruction_sha256", "evidence_sha256",
-                "source_refs", "base_resource", "mandate_instruction_contract"):
+                "source_refs", "base_resource", "mandate_instruction_contract",
+                "assignment_ref", "responsibility_ref", "directive_revisions",
+                "resource_revisions", "remit", "selected_project_set", "current_outcomes",
+                "dependencies", "next_actor", "next_action", "available_commands"):
         if key in value and isinstance(value[key], (str, bool, int, type(None), dict, list)):
             result[key] = _json(value[key])
     instructions = value.get("role_instructions")
@@ -365,6 +376,183 @@ def _inventory_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _progress_projection(status: Mapping[str, Any], reports: Any) -> dict[str, Any]:
+    """Expose the latest useful progress without embedding a report body."""
+
+    candidates: list[tuple[str, Mapping[str, Any], Any]] = []
+    for key in ("last_useful_progress", "last_progress", "latest_progress"):
+        value = status.get(key)
+        if isinstance(value, Mapping):
+            candidates.append((str(value.get("recorded_at", "")), value, value))
+        elif isinstance(value, str) and value.strip():
+            candidates.append((str(status.get("recorded_at", "")), {}, value))
+    for report in reports if isinstance(reports, (list, tuple)) else ():
+        raw = _json(report)
+        if not isinstance(raw, Mapping):
+            continue
+        value = raw.get("value") if isinstance(raw.get("value"), Mapping) else raw
+        if not isinstance(value, Mapping):
+            continue
+        summary = value.get("useful_progress") or value.get("progress") or value.get("summary") or value.get("note")
+        if summary:
+            candidates.append((str(value.get("recorded_at", "")), raw, value))
+    if not candidates:
+        return {"state": "unknown", "summary": None, "reason": "no useful progress observation"}
+    _, source, value = max(candidates, key=lambda item: item[0])
+    if isinstance(value, Mapping):
+        summary = _text(value.get("useful_progress") or value.get("progress") or value.get("summary") or value.get("note"))
+        recorded_at = value.get("recorded_at")
+        next_actor = value.get("next_actor") or value.get("recipient")
+        next_action = value.get("next_action") or value.get("action")
+    else:
+        summary, recorded_at, next_actor, next_action = _text(value), None, None, None
+    return {
+        "state": "known" if summary else "unknown",
+        "summary": summary,
+        "recorded_at": recorded_at,
+        "next_actor": _json(next_actor) if next_actor is not None else None,
+        "next_action": _text(next_action),
+        "source_ref": _ref(source.get("ref") or source.get("source_ref")) if isinstance(source, Mapping) else None,
+        "source_sha256": _digest(source),
+    }
+
+
+def _advisory_projection(values: Any, reports: Any, decisions: Any, *, accountable: Mapping[str, Any]) -> dict[str, Any]:
+    """Project advisory findings and dispositions as small attributed rows."""
+
+    candidates: list[Any] = ([values] if isinstance(values, Mapping)
+                             else list(values) if isinstance(values, (list, tuple)) else [])
+    if not candidates:
+        for item in reports if isinstance(reports, (list, tuple)) else ():
+            raw = _json(item)
+            value = raw.get("value") if isinstance(raw, Mapping) and isinstance(raw.get("value"), Mapping) else raw
+            if isinstance(value, Mapping) and any(key in value for key in ("advisory", "finding", "recommendation", "advice")):
+                candidates.append(raw)
+        for item in decisions if isinstance(decisions, (list, tuple)) else ():
+            raw = _json(item)
+            if isinstance(raw, Mapping) and (raw.get("source") in {"advisory", "project_advisor"} or raw.get("purpose") == "advisory"):
+                candidates.append(raw)
+    rows: list[dict[str, Any]] = []
+    for item in candidates[:_MAX_ITEMS]:
+        raw = _json(item)
+        if not isinstance(raw, Mapping):
+            continue
+        value = raw.get("value") if isinstance(raw.get("value"), Mapping) else raw
+        if not isinstance(value, Mapping):
+            continue
+        finding = value.get("finding") or value.get("advisory") or value.get("recommendation") or value.get("advice") or value.get("summary")
+        disposition = value.get("disposition") or value.get("decision") or value.get("status") or value.get("outcome")
+        if finding is None and disposition is None:
+            continue
+        rows.append({
+            "finding": _text(finding),
+            "disposition": _text(disposition),
+            "recorded_at": value.get("recorded_at"),
+            "recipient": value.get("recipient") or value.get("accountable_recipient"),
+            "source_ref": _ref(raw.get("ref") or raw.get("source_ref")),
+            "evidence_refs": _bounded_refs(value.get("evidence_refs") or value.get("refs")),
+            "source_sha256": _digest(raw),
+        })
+    disposition = rows[-1].get("disposition") if rows else None
+    return {
+        "state": "known" if rows else "unknown",
+        "findings": rows,
+        "disposition": disposition or ("none" if not rows else "unresolved"),
+        "accountable_recipient": {
+            "principal": accountable.get("principal"),
+            "assignment_ref": accountable.get("ref"),
+        },
+    }
+
+
+def _feedback_routing(help_value: Any, assignment: Mapping[str, Any], effective: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe where useful feedback goes without inventing a recipient."""
+
+    routes = [{
+        "operation": "return_progress",
+        "recipient": assignment.get("principal"),
+        "assignment_ref": assignment.get("ref"),
+        "state": "available" if assignment.get("ref") else "unknown",
+    }]
+    if isinstance(help_value, Mapping):
+        destination = help_value.get("recipient") or help_value.get("current_owner_ref") or help_value.get("destination")
+        issues = help_value.get("issues")
+        if destination is None and isinstance(issues, (list, tuple)) and issues:
+            issue = issues[-1] if isinstance(issues[-1], Mapping) else {}
+            deliveries = issue.get("deliveries") if isinstance(issue, Mapping) else ()
+            delivery = deliveries[-1] if isinstance(deliveries, (list, tuple)) and deliveries and isinstance(deliveries[-1], Mapping) else {}
+            destination = issue.get("current_owner_ref") or issue.get("recipient") or delivery.get("recipient") or delivery.get("destination")
+        routes.append({
+            "operation": "request-help",
+            "recipient": _json(destination) if destination is not None else None,
+            "issue_id": help_value.get("issue_id"),
+            "delivery_id": help_value.get("delivery_id"),
+            "state": help_value.get("state", help_value.get("status", "unknown")),
+        })
+    routes.append({
+        "operation": "request-advice",
+        "recipient": None,
+        "state": "enabled_only_when_advisor_policy_is_enabled",
+    })
+    return {
+        "accountable_recipient": {"principal": assignment.get("principal"), "assignment_ref": assignment.get("ref")},
+        "routes": routes,
+        "instructions": "Return useful progress to the accountable assignment; use request-help for blockage and request-advice only when enabled.",
+        "source_refs": [ref for ref in (effective.get("assignment_ref"), effective.get("responsibility_ref")) if isinstance(ref, Mapping)],
+    }
+
+
+def _point_of_use(effective: Mapping[str, Any], help_value: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep actionable role instructions beside the compact operational view."""
+
+    return {
+        "instructions": effective.get("role_instructions"),
+        "instructions_truncated": effective.get("role_instructions_truncated") is True,
+        "instruction_sha256": effective.get("instruction_sha256"),
+        "commands": effective.get("available_commands", {}),
+        "current_context": {
+            key: effective.get(key) for key in (
+                "assignment_ref", "responsibility_ref", "generation", "directive_revisions",
+                "resource_revisions", "remit", "selected_project_set", "current_outcomes",
+                "dependencies", "next_actor", "next_action",
+            ) if key in effective
+        },
+        "help": {
+            "operational": "request-help(problem, impact, evidence, requested decision, return condition)",
+            "advice": "request-advice(problem, impact, evidence, requested decision, return condition)",
+            "read": "read current canonical state before continuing or retrying",
+            "state": help_value.get("state", help_value.get("status", "unknown")),
+        },
+    }
+
+
+def _setup_projection(value: Any) -> dict[str, Any]:
+    """Join the current setup read without copying role instruction bodies."""
+
+    if not isinstance(value, Mapping):
+        return {"state": "unknown", "reason": "operating setup readback unavailable"}
+    result = {
+        key: _json(value[key]) for key in (
+            "state", "ready", "autonomous_ready", "execution_observed", "dispatch",
+            "capabilities", "advisor_policy", "advisor_pairing", "help", "help_destination",
+            "blockers", "setup_ref", "canonical_lifecycle", "next_action",
+        ) if key in value
+    }
+    roles = value.get("roles")
+    if isinstance(roles, Mapping):
+        result["roles"] = {
+            str(role): {
+                key: _json(binding[key]) for key in (
+                    "schedule_id", "principal", "assignment_ref", "generation",
+                    "conversation_ref", "base_resource", "mandate_ref", "task_ref", "execution",
+                ) if key in binding
+            }
+            for role, binding in roles.items()
+            if isinstance(binding, Mapping)
+        }
+    return result or {"state": "unknown", "reason": "operating setup readback was empty"}
+
+
 def compose_manager_handoff(
     *,
     project_ref: Mapping[str, Any],
@@ -379,6 +567,8 @@ def compose_manager_handoff(
     results: Sequence[Mapping[str, Any]] = (),
     reports: Sequence[Mapping[str, Any]] = (),
     decisions: Sequence[Mapping[str, Any]] = (),
+    advisory_findings: Sequence[Mapping[str, Any]] = (),
+    operating_setup: Mapping[str, Any] | None = None,
     help_state: Mapping[str, Any] | None = None,
     budget: Mapping[str, Any] | None = None,
     inventory: Mapping[str, Any] | None = None,
@@ -402,6 +592,12 @@ def compose_manager_handoff(
     inventory_value = _inventory_projection(inventory_raw) if isinstance(inventory_raw, Mapping) else {
         "state": "unknown", "reason": "inventory reader unavailable"
     }
+    progress = _progress_projection(status_value, reports)
+    advisory_input = advisory_findings or status_value.get("advisory_findings", ())
+    advisory = _advisory_projection(advisory_input, reports, decisions, accountable=assignment_value)
+    feedback = _feedback_routing(help_value, assignment_value, effective)
+    point_of_use = _point_of_use(effective, help_value if isinstance(help_value, Mapping) else {})
+    setup = _setup_projection(operating_setup)
     operation_status = status_value.get("operation_status") if isinstance(status_value.get("operation_status"), Mapping) else status_value
     next_action = operation_status.get("supported_next_remedy") if isinstance(operation_status, Mapping) else None
     envelope: dict[str, Any] = {
@@ -417,6 +613,22 @@ def compose_manager_handoff(
             "value": effective if effective else None,
             "source_sha256": _digest(effective),
         },
+        "responsibilities": {
+            "manager": assignment_value,
+            "effective_context": {"state": effective.get("state", "unknown"),
+                                  "source_sha256": _digest(effective),
+                                  "assignment_ref": effective.get("assignment_ref"),
+                                  "generation": effective.get("generation")},
+            "selected_project_set": effective.get("selected_project_set", [project_pin]),
+            "next_actor": effective.get("next_actor"),
+            "next_action": effective.get("next_action"),
+        },
+        "schedule": current.get("schedule", {}),
+        "last_useful_progress": progress,
+        "advisory": advisory,
+        "feedback_routing": feedback,
+        "point_of_use": point_of_use,
+        "operating_setup": setup,
         "tasks": _task_rows(tasks),
         "results": _observations(results),
         "reports": _observations(reports),
@@ -445,6 +657,7 @@ def compose_manager_handoff(
             "inventory": _source(inventory_value),
             "help": _source(help_value),
             "budget": _source(budget_value),
+            "operating_setup": _source(setup, ref_value=setup.get("setup_ref")),
         },
     }
     envelope["envelope_sha256"] = _digest(envelope)

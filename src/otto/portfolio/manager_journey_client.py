@@ -210,7 +210,8 @@ def command_result_summary(value: Any) -> Any:
         compact_handoff = {key: handoff[key] for key in
                            ("schema", "as_of", "lifecycle", "envelope_sha256", "next_action")
                            if key in handoff and isinstance(handoff[key], (str, bool, int, type(None), dict))}
-        for section in ("manager_assignment", "current_occurrence", "effective_context", "budget"):
+        for section in ("manager_assignment", "current_occurrence", "effective_context", "budget", "schedule",
+                        "last_useful_progress", "advisory", "feedback_routing", "point_of_use", "responsibilities"):
             item = handoff.get(section)
             if isinstance(item, dict):
                 compact_handoff[section] = {
@@ -221,8 +222,15 @@ def command_result_summary(value: Any) -> Any:
                                                 "retained_command",
                                                 "instruction_sha256", "evidence_sha256", "source_refs", "base_resource",
                                                 "pool_ref", "capacity_units", "remaining_allowance_units",
-                                                "available_capacity_units", "cumulative_used_units")
-                    if key in item and isinstance(item[key], (str, bool, int, type(None), dict))
+                                                "available_capacity_units", "cumulative_used_units", "anchor",
+                                                "interval_seconds", "due_at", "next_due_at", "last_due_at",
+                                                "last_activity_at", "next_activity_at", "last_tick_at", "last_invoked_at",
+                                                "last_result_at", "last_completed_at", "completed_at", "delivered_at",
+                                                "paused_at", "missed_ticks", "coalesced_ticks", "summary", "recorded_at",
+                                                "next_actor", "next_action", "findings", "disposition", "accountable_recipient",
+                                                "routes", "instructions", "instructions_truncated", "commands", "current_context",
+                                                "manager", "effective_context", "selected_project_set")
+                    if key in item and isinstance(item[key], (str, bool, int, type(None), dict, list))
                 }
         for section in ("tasks", "results", "reports", "decisions"):
             rows = handoff.get(section)

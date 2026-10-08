@@ -530,6 +530,38 @@ def prepare_canonical_operating_brief(
     assignment_scope = assignment.get("scope_ref", assignment.get("scope", assignment_payload.get("scope_ref", assignment_payload.get("scope"))))
     scope_matches_project = _same_identity(assignment_scope, project_pin, "assignment.scope")
     scope_matches_task = task_pin is not None and _reference_matches(assignment_scope, task_pin, "assignment.scope")
+    if not (scope_matches_project or scope_matches_task) and role_value == "orchestrator":
+        # A portfolio orchestrator may be reused for several independent
+        # projects, but only through the owner-authored supervision relation
+        # on this exact project.  The relation is a join, not a broad grant:
+        # it must pin the same portfolio-scoped assignment and generation.
+        scope_value = _owner_payload(assignment).get("scope", assignment_scope)
+        supervision = _owner_payload(project).get("metadata", {})
+        supervision = supervision.get("otto_orchestrator") if isinstance(supervision, Mapping) else None
+        relation_assignment = supervision.get("assignment_ref") if isinstance(supervision, Mapping) else None
+        relation_portfolio = supervision.get("portfolio_ref") if isinstance(supervision, Mapping) else None
+        relation_project = supervision.get("project_ref") if isinstance(supervision, Mapping) else None
+        portfolio_scope = isinstance(scope_value, Mapping) and scope_value.get("kind") == "wrk.portfolio"
+        exact_assignment = relation_assignment == assignment_pin if isinstance(relation_assignment, Mapping) else False
+        exact_project = (
+            isinstance(relation_project, Mapping)
+            and _same_identity(relation_project, project_pin, "supervision.project_ref")
+        )
+        exact_portfolio = (
+            portfolio_scope
+            and isinstance(relation_portfolio, Mapping)
+            and _same_identity(relation_portfolio, scope_value, "supervision.portfolio_ref")
+        )
+        if (
+            isinstance(supervision, Mapping)
+            and supervision.get("schema") == "otto.orchestrator.supervision.v2"
+            and exact_assignment
+            and exact_project
+            and exact_portfolio
+            and supervision.get("assignment_revision") == assignment_pin.get("revision")
+            and supervision.get("generation") == expected_generation
+        ):
+            scope_matches_project = True
     if not (scope_matches_project or scope_matches_task):
         raise OperatingBriefError("assignment scope is outside the requested project/task")
 

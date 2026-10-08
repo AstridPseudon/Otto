@@ -20,6 +20,7 @@ import json
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
+from .operating_brief import ROLE_OPERATING_CONTRACTS
 from .owner_readers import json_value, owner_ref
 
 
@@ -103,6 +104,109 @@ def configured_binding(configuration: Mapping[str, Any] | None, role: str) -> Ma
     return value
 
 
+def _project_set(project: Mapping[str, Any], project_ref: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the owner-selected project set without inferring a portfolio."""
+    payload = project.get("payload") if isinstance(project.get("payload"), Mapping) else project
+    metadata = payload.get("metadata") if isinstance(payload, Mapping) else None
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    selected = None
+    for source in (payload, metadata):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("selected_project_refs", "selected_projects", "project_set", "supervised_project_refs"):
+            if key in source:
+                selected = source[key]
+                break
+        if selected is not None:
+            break
+    if selected is None:
+        selected = [project_ref]
+    if not isinstance(selected, (list, tuple)) or not selected:
+        raise RoleContextError("selected project set must be a non-empty list")
+    result = []
+    seen = set()
+    for item in selected:
+        if not isinstance(item, Mapping) or any(not isinstance(item.get(key), str) or not item[key].strip()
+                                                for key in ("authority", "kind", "id")):
+            raise RoleContextError("selected project set contains an invalid project reference")
+        if item["kind"] != "work.project" or item["authority"] != project_ref["authority"]:
+            raise RoleContextError("selected project set contains a foreign project")
+        identity = tuple(item[key] for key in ("authority", "kind", "id"))
+        if identity not in seen:
+            result.append({key: item[key] for key in ("authority", "kind", "id", "revision") if key in item})
+            seen.add(identity)
+    current = tuple(project_ref[key] for key in ("authority", "kind", "id"))
+    if current not in seen:
+        raise RoleContextError("selected project set omits the current project")
+    return result
+
+
+def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoint: str,
+                                 identity_commands: tuple[str, ...] = ("effective-context", "whoami")) -> dict[str, Any]:
+    """Project durable role context while retaining only canonical pins and bounded state."""
+    render = canonical.get("render")
+    if not isinstance(render, Mapping):
+        raise RoleContextError("canonical role context has no render")
+    state = render.get("project_state")
+    snapshot = render.get("snapshot")
+    brief = render.get("brief")
+    if not isinstance(state, Mapping) or not isinstance(snapshot, Mapping) or not isinstance(brief, Mapping):
+        raise RoleContextError("canonical role context is incomplete")
+    project = state.get("project")
+    task = state.get("task")
+    if not isinstance(project, Mapping) or not isinstance(project.get("ref"), Mapping):
+        raise RoleContextError("canonical role context has no project")
+    project_payload = project.get("payload") if isinstance(project.get("payload"), Mapping) else {}
+    task_payload = task.get("payload") if isinstance(task, Mapping) and isinstance(task.get("payload"), Mapping) else {}
+    continuation = brief.get("continuation") if isinstance(brief.get("continuation"), Mapping) else {}
+    next_actor = continuation.get("next_actor", continuation.get("actor"))
+    if next_actor is None:
+        next_actor = task_payload.get("next_actor", project_payload.get("next_actor"))
+    next_action = continuation.get("next_action", continuation.get("action"))
+    directions = canonical.get("direction_context", [])
+    if not isinstance(directions, list):
+        raise RoleContextError("canonical direction context must be a list")
+    directive_revisions = []
+    for scope in directions:
+        if not isinstance(scope, Mapping):
+            raise RoleContextError("canonical direction context contains an invalid scope")
+        effective = scope.get("effective_ref")
+        if isinstance(effective, Mapping):
+            directive_revisions.append({key: effective[key] for key in ("authority", "kind", "id", "revision") if key in effective})
+    base = canonical.get("base_resource") if isinstance(canonical.get("base_resource"), Mapping) else {}
+    resources = []
+    if isinstance(base.get("ref"), Mapping):
+        resources.append({"ref": dict(base["ref"]), "adopted_revision": base.get("revision"),
+                          "content_sha256": base.get("content_sha256")})
+    for item in canonical.get("supporting_context", ()):
+        if isinstance(item, Mapping) and isinstance(item.get("ref"), Mapping):
+            resources.append({"ref": dict(item["ref"]), "content_sha256": item.get("content_sha256"),
+                              "source": item.get("source")})
+    return {
+        "schema": "otto.effective-role-context.v1",
+        "assignment_ref": snapshot.get("assignment_ref"),
+        "responsibility_ref": snapshot.get("responsibility_ref"),
+        "generation": snapshot.get("generation"),
+        "directive_context": [dict(item) for item in directions],
+        "directive_revisions": directive_revisions,
+        "resource_revisions": resources,
+        "remit": {"role": canonical.get("role"), "mandate": brief.get("mandate"),
+                  "responsibility": ROLE_OPERATING_CONTRACTS.get(canonical.get("role"))},
+        "selected_project_set": _project_set(project, project["ref"]),
+        "current_outcomes": {
+            "project": {"ref": project["ref"], "lifecycle": project.get("lifecycle"),
+                        "outcome": project_payload.get("outcome"), "title": project_payload.get("title")},
+            "task": None if task is None else {"ref": task.get("ref"), "lifecycle": task.get("lifecycle"),
+                                                "outcome": task_payload.get("outcome"), "title": task_payload.get("title")},
+        },
+        "dependencies": task_payload.get("dependencies", project_payload.get("dependencies", [])),
+        "next_actor": next_actor,
+        "next_action": next_action,
+        "available_commands": {"tool_entrypoint": tool_entrypoint,
+                               "identity_reads": list(identity_commands)},
+    }
+
+
 def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
     from .operating_brief import ROLE_CONTEXT_GUIDANCE, ROLE_OPERATING_CONTRACTS
     render = canonical["render"]
@@ -123,6 +227,8 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
     policy = policies.get(canonical["role"])
     if policy is not None and (not isinstance(policy, str) or not policy.strip()):
         raise RoleContextError("selected role policy must be non-blank text")
+    tool_entrypoint = entrypoint or "python -m otto.portfolio.cli help --format text"
+    effective_context = effective_context_projection(canonical, tool_entrypoint=tool_entrypoint)
     return {"schema": "otto.role-introduction.v1", "role": canonical["role"],
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
             "generation": snapshot["generation"], "responsibility": ROLE_OPERATING_CONTRACTS[canonical["role"]],
@@ -146,6 +252,7 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
             "user_constraints": brief["user_constraints"], "operational_constraints": brief["operational_constraints"],
             "links": brief["links"], "base_resource": canonical["base_resource"]["ref"],
             "supporting_refs": [item["ref"] for item in canonical.get("supporting_context", [])],
-            "tool_entrypoint": entrypoint or "python -m otto.portfolio.cli help --format text",
+            "tool_entrypoint": tool_entrypoint,
             "tool_entrypoint_source": configuration["ref"] if entrypoint else "installed Otto portfolio help",
+            "effective_context": effective_context,
             "source": "canonical owner records and adopted role resources", "dispatch": False}

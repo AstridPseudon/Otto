@@ -266,10 +266,20 @@ class _OrchestrationEngine:
         if assignment.principal != actor.actor:
             raise WorkValidationError("caller assignment principal does not authenticate this actor")
 
-    def _relation(self, *, default_ref: ResourceRef, assignment: ResponsibilityAssignment, request_key: str) -> dict[str, Any]:
+    def _relation(self, *, default_ref: ResourceRef, assignment: ResponsibilityAssignment,
+                  project_ref: ResourceRef, request_key: str) -> dict[str, Any]:
         return {
             "schema": "otto.orchestrator.supervision.v2",
             "portfolio_ref": self.portfolio_ref.to_dict(),
+            # Keep the project join explicit.  The relation is stored inside
+            # the project record, but the pin makes selected-project reads
+            # fail closed if a relation is copied or attached elsewhere.
+            # New projects are materialized at rev-1; transfers retain the
+            # current pinned revision supplied by their caller.
+            "project_ref": ResourceRef(
+                self.authority, "work.project", project_ref.id,
+                project_ref.revision or "rev-1",
+            ).to_dict(),
             "assignment_ref": ResourceRef(self.authority, "wrk.assignment", assignment.id, _current_revision(assignment)).to_dict(),
             "assignment_revision": _current_revision(assignment),
             "generation": int(assignment.generation),
@@ -399,7 +409,8 @@ class _OrchestrationEngine:
                 supplied_generation=None if assignment_generation is None else int(assignment_generation),
                 expected_default_revision=None if expected_default_revision is None else _revision(expected_default_revision, "expected_default_revision"),
             )
-            relation = self._relation(default_ref=pointer_ref, assignment=assignment, request_key=request_key)
+            relation = self._relation(default_ref=pointer_ref, assignment=assignment,
+                                      project_ref=project_ref, request_key=request_key)
             batch = self.batches.create_pending_project(
                 title=title,
                 outcome=outcome,
@@ -501,11 +512,23 @@ class _OrchestrationEngine:
             existing = metadata.get(SUPERVISION_KEY)
             if not isinstance(existing, Mapping) or not _same_identity(ResourceRef.from_dict(existing["assignment_ref"]), current.ref):
                 raise WorkValidationError("current supervision does not match the transfer fence")
+            existing_portfolio = existing.get("portfolio_ref")
+            existing_project = existing.get("project_ref")
+            stored_portfolio = _ref(existing_portfolio, authority=self.authority,
+                                    kind=PORTFOLIO_KIND, field="stored portfolio_ref")
+            stored_project = _ref(existing_project, authority=self.authority,
+                                  kind="work.project", field="stored project_ref")
+            if (not _same_identity(stored_portfolio, self.portfolio_ref)
+                    or not _same_identity(stored_project, project)
+                    or existing.get("assignment_revision") != _current_revision(current)
+                    or existing.get("generation") != current.generation):
+                raise WorkValidationError("current supervision scope or assignment fence is stale")
             pointer_ref = self._default_ref()
             pointer = self._writer.get_identity(pointer_ref)
             if pointer is None:
                 raise WorkValidationError("default pointer is absent")
-            relation = self._relation(default_ref=pointer_ref, assignment=target, request_key=existing.get("request_id", request_key))
+            relation = self._relation(default_ref=pointer_ref, assignment=target,
+                                      project_ref=project, request_key=existing.get("request_id", request_key))
             updated = dict(record.payload)
             updated["metadata"] = dict(metadata, **{SUPERVISION_KEY: relation})
             receipt = self._writer.mutate(envelope, identity_payload=updated, event_type=TRANSFER_EVENT, result_ref=ResourceRef(self.authority, "work.project", project.id, "rev-" + str(record.version + 1)), before_refs=(record.ref, current.ref), after_refs=(target.ref,), effects={"from_assignment": current.ref.to_dict(), "to_assignment": target.ref.to_dict()}, stream="work:" + project.id, transaction=tx)

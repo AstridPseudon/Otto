@@ -149,13 +149,18 @@ class ManagerJourneyService:
             view, task_refs=state["task_refs"], reports=reports, occurrences=occurrences,
             help_issues=issues, required_scope=state.get("required_scope"), operation=operation,
         )
+        operating_setup = self._operating_setup(state)
         handoff = self._handoff(view=view, status=status, operation=operation,
+            operating_setup=operating_setup,
             occurrences=occurrences, help_issues=issues)
         return {
             "outcome": "ok", "project_ref": project_ref,
             "task_refs": state["task_refs"], "workers": state.get("workers", {}),
             "workers_state_basis": "retained launch snapshots; current execution is in handoff occurrences",
             "manager": state.get("manager"), "manager_assignment_ref": state.get("assignment_ref"),
+            # Status is a bounded projection; the dedicated operating-setup
+            # command remains the full role-introduction/readiness readback.
+            "operating_setup": handoff["operating_setup"],
             "handoff": handoff,
             "status": status, **status,
         }
@@ -176,6 +181,23 @@ class ManagerJourneyService:
             if isinstance(value, Mapping):
                 rows.append(dict(value))
         return rows
+
+    def _operating_setup(self, state: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Read the adopted setup through the same owner-bound execution path."""
+
+        try:
+            app = self._execution(
+                principal=state["manager"], model=state["requested_model"],
+                reasoning=state["requested_reasoning"], evidence_id="operating-setup-status",
+            )
+            return app.read_operating_setup(project_ref=state["project_ref"])
+        except Exception as exc:
+            # Status remains a useful bounded read when setup is absent or the
+            # older host has not exposed its setup reader yet.
+            return {"outcome": "read", "state": "unknown", "ready": False,
+                    "dispatch": False, "provider_called": False,
+                    "reason": "operating setup readback unavailable",
+                    "error": str(exc)[:512]}
 
     def _effective_context(self, operation: Mapping[str, Any]) -> Mapping[str, Any]:
         """Prepare current instructions through the trusted owner readers."""
@@ -210,6 +232,13 @@ class ManagerJourneyService:
             prepared = prepare_canonical_operating_brief(**kwargs)
             render = prepared.get("render") if isinstance(prepared.get("render"), Mapping) else {}
             base = prepared.get("base_resource") if isinstance(prepared.get("base_resource"), Mapping) else {}
+            from .role_context import effective_context_projection, selected_configuration
+            configuration = selected_configuration(prepared.get("supporting_context", []))
+            tools = configuration["content"].get("tool_entrypoints", {}) if configuration else {}
+            tool_entrypoint = tools.get("manager") if isinstance(tools, Mapping) else None
+            if not isinstance(tool_entrypoint, str) or not tool_entrypoint.strip():
+                tool_entrypoint = "python -m otto.portfolio.cli help --format text"
+            effective = effective_context_projection(prepared, tool_entrypoint=tool_entrypoint)
             contract = prepared.get("mandate_instruction_contract")
             contract_view = None
             if isinstance(contract, Mapping):
@@ -228,6 +257,7 @@ class ManagerJourneyService:
                 "role_instructions_truncated": isinstance(role_instructions, str) and len(role_instructions) > len(instruction_preview or ""),
                 "mandate_instruction_contract": contract_view,
                 "direction_context": prepared.get("direction_context", []),
+                **effective,
                 "evidence_sha256": prepared.get("evidence_sha256"),
             }
         except Exception as exc:
@@ -271,7 +301,8 @@ class ManagerJourneyService:
 
     def _handoff(self, *, view: Mapping[str, Any], status: Mapping[str, Any],
                  operation: Mapping[str, Any], occurrences: Sequence[Mapping[str, Any]],
-                 help_issues: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+                 help_issues: Sequence[Mapping[str, Any]],
+                 operating_setup: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         state = self.server.state
         project_ref = state["project_ref"]
         assignment = None
@@ -310,6 +341,9 @@ class ManagerJourneyService:
             results=inbox.get("results", []) if isinstance(inbox, Mapping) else [],
             reports=inbox.get("reports", []) if isinstance(inbox, Mapping) else [],
             decisions=inbox.get("decisions", []) if isinstance(inbox, Mapping) else [],
+            advisory_findings=(inbox.get("advisory_findings", inbox.get("advisory", ()))
+                               if isinstance(inbox, Mapping) else []),
+            operating_setup=operating_setup,
             help_state={"state": "known", "issues": list(help_issues)[:128]}, budget=self._budget(),
             inventory=inventory, as_of=self._as_of(),
         )

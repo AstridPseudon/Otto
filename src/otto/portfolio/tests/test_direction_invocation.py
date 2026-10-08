@@ -100,6 +100,12 @@ class DirectionInvocationTests(unittest.TestCase):
                 self.assertFalse(launch["credential"])
                 self.assertEqual(launch["direction_refs"], pins)
                 self.assertEqual(launch["responsibility_ref"], assignment.payload["responsibility_ref"])
+                effective = packet["operating_core"]["introduction"]["effective_context"]
+                self.assertEqual(effective["directive_revisions"], pins)
+                self.assertEqual(effective["selected_project_set"], [f.project.ref.to_dict()])
+                self.assertEqual(effective["current_outcomes"]["project"]["ref"], f.project.ref.to_dict())
+                self.assertEqual(effective["current_outcomes"]["task"]["ref"], f.task.ref.to_dict())
+                self.assertEqual(effective["available_commands"]["identity_reads"], ["effective-context", "whoami"])
 
     def test_new_draft_is_not_selected_and_continuation_keeps_attributed_direction(self):
         assignment, pins, request = self.directed_role()

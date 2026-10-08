@@ -614,6 +614,21 @@ def _versioned_reference_matches(expected: Mapping[str, JSONValue], observed: An
     return observed_revision == expected_revision
 
 
+def _capability_identity(value: Mapping[str, JSONValue], fields: Sequence[str], field_name: str) -> Optional[str]:
+    """Read an optional explicit provider/adapter identity from evidence."""
+
+    for field in fields:
+        if field not in value:
+            continue
+        identity = value[field]
+        if isinstance(identity, Mapping):
+            identity = identity.get("id") or identity.get("identity") or identity.get("name")
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError(f"{field_name}.{field} must be non-blank text")
+        return identity
+    return None
+
+
 def validate_execution_configuration(
     record: DueRecord,
     *,
@@ -641,12 +656,79 @@ def validate_execution_configuration(
     capability_revision = capability_evidence.get("revision") or capability_evidence.get("version")
     if not isinstance(capability_revision, str) or not capability_revision.strip():
         return _configuration_error("capability_version_required", "capability evidence requires a revision or version")
+    if capability_evidence.get("supported") is False or capability_evidence.get("available") is False:
+        return _configuration_error(
+            "unsupported_provider",
+            "capability evidence explicitly marks the provider route unavailable",
+            capability_revision=capability_revision,
+        )
+    try:
+        target = record.target if isinstance(record.target, Mapping) else {}
+        expected_adapter = _capability_identity(
+            target, ("native_adapter", "adapter_identity", "adapter"), "target"
+        )
+        expected_provider = _capability_identity(
+            target, ("provider_identity", "provider"), "target"
+        )
+        observed_adapter = _capability_identity(
+            capability_evidence, ("native_adapter", "adapter_identity", "adapter"), "capability_evidence"
+        )
+        observed_provider = _capability_identity(
+            capability_evidence, ("provider_identity", "provider"), "capability_evidence"
+        )
+    except ValueError as exc:
+        return _configuration_error("invalid_capability_evidence", str(exc))
+    if expected_adapter is not None and observed_adapter is not None and expected_adapter != observed_adapter:
+        return _configuration_error(
+            "unsupported_provider",
+            "capability evidence does not identify the configured adapter",
+            requested_adapter=expected_adapter,
+            observed_adapter=observed_adapter,
+        )
+    if expected_provider is not None and observed_provider is not None and expected_provider != observed_provider:
+        return _configuration_error(
+            "unsupported_provider",
+            "capability evidence does not identify the configured provider",
+            requested_provider=expected_provider,
+            observed_provider=observed_provider,
+        )
     models = capability_evidence.get("models")
     if not isinstance(models, Mapping):
         return _configuration_error("invalid_capability_evidence", "capability evidence requires a models object")
     model_capability = models.get(requested_model)
     if not isinstance(model_capability, Mapping):
         return _configuration_error("unsupported_model", "requested model is absent from capability evidence", requested_model=requested_model)
+    if model_capability.get("supported") is False or model_capability.get("available") is False:
+        return _configuration_error(
+            "unsupported_model",
+            "model capability explicitly marks the requested model unavailable",
+            requested_model=requested_model,
+        )
+    try:
+        model_adapter = _capability_identity(
+            model_capability, ("native_adapter", "adapter_identity", "adapter"), "model_capability"
+        )
+        model_provider = _capability_identity(
+            model_capability, ("provider_identity", "provider"), "model_capability"
+        )
+    except ValueError as exc:
+        return _configuration_error("invalid_capability_evidence", str(exc), requested_model=requested_model)
+    if expected_adapter is not None and model_adapter is not None and expected_adapter != model_adapter:
+        return _configuration_error(
+            "unsupported_provider",
+            "model capability does not identify the configured adapter",
+            requested_model=requested_model,
+            requested_adapter=expected_adapter,
+            observed_adapter=model_adapter,
+        )
+    if expected_provider is not None and model_provider is not None and expected_provider != model_provider:
+        return _configuration_error(
+            "unsupported_provider",
+            "model capability does not identify the configured provider",
+            requested_model=requested_model,
+            requested_provider=expected_provider,
+            observed_provider=model_provider,
+        )
     supported_reasoning = model_capability.get("reasoning") or model_capability.get("reasoning_efforts") or model_capability.get("supported_reasoning")
     if not isinstance(supported_reasoning, (list, tuple, set, frozenset)):
         return _configuration_error("invalid_capability_evidence", "model capability requires reasoning choices", requested_model=requested_model)
@@ -705,7 +787,12 @@ def validate_execution_configuration(
         "outcome": "configuration_supported",
         "schedule_id": record.schedule_id,
         "requested": {"model": requested_model, "reasoning": requested_reasoning},
-        "capability": {"revision": capability_revision, "supported": True},
+        "capability": {
+            "revision": capability_revision,
+            "supported": True,
+            **({"adapter_identity": observed_adapter} if observed_adapter is not None else {}),
+            **({"provider_identity": observed_provider} if observed_provider is not None else {}),
+        },
         "context": {
             "versions_verified": True,
             "refs": requested_context,

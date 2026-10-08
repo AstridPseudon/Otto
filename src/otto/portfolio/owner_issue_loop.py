@@ -52,10 +52,25 @@ class OwnerIssueReaders:
         relation = record.payload.get("metadata", {}).get("otto_orchestrator")
         if not isinstance(relation, Mapping):
             return None
+        if relation.get("schema") != "otto.orchestrator.supervision.v2":
+            raise IssueLoopError("supervision relation has an unsupported schema")
+        relation_project = relation.get("project_ref")
+        if (not isinstance(relation_project, Mapping)
+                or any(relation_project.get(key) != getattr(record.ref, key)
+                       for key in ("authority", "kind", "id"))):
+            raise IssueLoopError("supervision relation is outside the selected project")
         ref = relation.get("assignment_ref")
         if not isinstance(ref, Mapping) or ref.get("authority") != record.ref.authority:
             raise IssueLoopError("supervision assignment is foreign or unavailable")
         assignment = self.operations.assignments_port.get(ref)
+        scope = _json_value(getattr(assignment, "scope", None))
+        portfolio = relation.get("portfolio_ref")
+        if (not isinstance(portfolio, Mapping) or not isinstance(scope, Mapping)
+                or any(portfolio.get(key) != scope.get(key)
+                       for key in ("authority", "kind", "id"))
+                or scope.get("kind") != "wrk.portfolio"
+                or relation.get("assignment_revision") != getattr(assignment.ref, "revision", None)):
+            raise IssueLoopError("supervision assignment scope or revision is stale")
         if (assignment.role != "orchestrator" or not self.active(assignment)
                 or assignment.generation != relation.get("generation")):
             raise IssueLoopError("project supervision is stale")

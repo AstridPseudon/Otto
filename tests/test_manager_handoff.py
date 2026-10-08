@@ -119,6 +119,32 @@ class ManagerHandoffTests(unittest.TestCase):
         self.assertEqual(result["tasks"][0]["accepted_current_evidence"]["state"], "unknown")
         self.assertIsNone(result["tasks"][0]["accepted_current_evidence"]["value"])
 
+    def test_operational_view_exposes_schedule_progress_advice_and_feedback_routes(self):
+        advisory_ref = {"authority": "owner", "kind": "wrk.report", "id": "advice-1", "revision": "rev-1"}
+        result = compose_manager_handoff(
+            project_ref=PROJECT,
+            assignment={"ref": ASSIGNMENT, "role": "manager", "principal": "manager", "generation": 2},
+            current_occurrence={"schedule_id": "manager-due", "interval_seconds": 3600,
+                                "due_at": "2026-10-08T01:00:00Z", "last_completed_at": "2026-10-08T00:00:00Z"},
+            effective_context={"state": "known", "assignment_ref": ASSIGNMENT,
+                               "selected_project_set": [PROJECT], "next_actor": "manager",
+                               "next_action": "inspect", "available_commands": {"status": "read"},
+                               "role_instructions": "Read the current state before acting.",
+                               "instruction_sha256": "guide-digest"},
+            reports=[{"ref": advisory_ref, "value": {"summary": "Worker produced useful progress.",
+                                                        "recorded_at": "2026-10-08T00:30:00Z"}}],
+            advisory_findings=[{"ref": advisory_ref, "finding": "Continue the bounded repair.",
+                                "disposition": "continue", "evidence_refs": [advisory_ref]}],
+            as_of="2026-10-08T01:00:00Z",
+        )
+        self.assertEqual(result["schedule"]["interval_seconds"], 3600)
+        self.assertEqual(result["last_useful_progress"]["summary"], "Worker produced useful progress.")
+        self.assertEqual(result["advisory"]["disposition"], "continue")
+        self.assertEqual(result["advisory"]["findings"][0]["evidence_refs"], [advisory_ref])
+        self.assertEqual(result["feedback_routing"]["routes"][0]["recipient"], "manager")
+        self.assertEqual(result["point_of_use"]["commands"], {"status": "read"})
+        self.assertEqual(result["responsibilities"]["selected_project_set"], [PROJECT])
+
     def test_service_uses_rich_inbox_task_rows_instead_of_lifecycle_summary(self):
         # These are the two distinct wire rows returned by derive_manager_inbox.
         summary = {"ref": TASK, "lifecycle": "completed", "readiness": {"status": "completed"}}
