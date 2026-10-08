@@ -428,7 +428,8 @@ class CanonicalRoleRuntime:
                  adapter: Any, actor: str,
                  runtime_probe: Optional[Callable[[], Optional[Mapping[str, Any]]]] = None,
                  result_capture_factory: Optional[Callable[..., HerzchenAttemptCapture]] = None,
-                 acceptance_readiness: Any = None, allowance_readiness: Any = None) -> None:
+                 acceptance_readiness: Any = None, allowance_readiness: Any = None,
+                 completed_task_readiness: Any = None) -> None:
         required = ("reader", "assignments_port", "content_port", "binding")
         if operations is None or any(getattr(operations, name, None) is None for name in required):
             raise TypeError("operations must be the finite owner-backed Herzchen operations")
@@ -451,6 +452,7 @@ class CanonicalRoleRuntime:
         self.result_capture_factory = result_capture_factory
         self.acceptance_readiness = acceptance_readiness
         self.allowance_readiness = allowance_readiness
+        self.completed_task_readiness = completed_task_readiness
 
     def prepare_execution_readiness(self, *, due: Any) -> Mapping[str, Any]:
         """Resolve exact BASE and execution scope without admitting an effect."""
@@ -462,18 +464,23 @@ class CanonicalRoleRuntime:
                                 ("requested_profile", due.profile)):
             if not isinstance(expected, str) or not expected.strip() or target.get(field) != expected:
                 raise OwnerRoleRuntimeError("role occurrence " + field + " is missing or conflicts with target")
+        read_task = self._task_reader(target["project_ref"], target["task_ref"])
+        if callable(self.completed_task_readiness):
+            read_task = self.completed_task_readiness(due) or read_task
         prepared = prepare_canonical_assignment_role_brief(
             role=due.role, project_ref=target["project_ref"], task_ref=target["task_ref"],
             assignment_ref=due.assignment_ref, mandate_ref=target["mandate_ref"],
             expected_generation=due.generation,
             project_reader=self._project_reader(target["project_ref"]),
-            task_reader=self._task_reader(target["project_ref"], target["task_ref"]),
+            task_reader=read_task,
             assignment_reader=self._assignment_reader(due.assignment_ref),
             mandate_reader=self._mandate_reader(target["project_ref"], target["mandate_ref"]),
             resource_reader=self.operations.content_port,
             direction_context_reader=getattr(self.operations, "direction_context_reader", None),
             lifecycle="resume" if due.execution_mode == "continue_existing" else "launch", as_of=due.anchor,
         )
+        if hasattr(read_task, "completion_readback"):
+            prepared["canonical_evidence"]["completed_task_readback"] = deepcopy(read_task.completion_readback)
         from otto.portfolio.role_context import configured_binding, selected_configuration
         configuration = selected_configuration(prepared["canonical_evidence"]["supporting_context"])
         selection = target.get("execution_selection", {})

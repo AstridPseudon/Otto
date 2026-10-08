@@ -103,6 +103,65 @@ def task_reader(
     return read
 
 
+def completed_occurrence_task_reader(reader: Any, due: Any, assignment: Any) -> Any:
+    """Inspect a settled delivery's exact committed completion input only.
+
+    This reader cannot prepare an effect: callers use it solely for readiness
+    of an already succeeded occurrence. Prospective/native invocation readers
+    retain current-revision fences.
+    """
+    import hashlib
+    import json
+    from herzchen.contracts import ResourceRef
+    task = ResourceRef.from_dict(due.target["task_ref"])
+    current = reader.get_identity(ResourceRef(task.authority, task.kind, task.id))
+    if current is None or current.ref == task:
+        return None
+    completion = current.payload.get("completion") or {}
+    key = completion.get("logical_request_key")
+    receipt = reader.get_receipt(key) if isinstance(key, str) else None
+    attempt = due.host_evidence.get("gateway_attempt") if isinstance(due.host_evidence, Mapping) else None
+    attempt = attempt if isinstance(attempt, Mapping) else {}
+    result, authorization, admission = (attempt.get(name) or {} for name in ("result", "delivery_authorization", "delivery_admission"))
+    resource = result.get("resource_evidence") or {}
+    brief = resource.get("brief")
+    digest = None if not isinstance(brief, Mapping) else hashlib.sha256(json.dumps(json_value(brief),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assignment_ref = json_value(assignment.ref)
+    if (due.role != "manager" or due.completion_state != "succeeded" or due.stop_state != "completed"
+            or due.in_flight_request is not None or assignment_ref != due.assignment_ref
+            or assignment.generation != due.generation or assignment.principal != due.recipient
+            or current.payload.get("lifecycle") != "completed" or completion.get("task_ref") != task.to_dict()
+            or completion.get("assignment_ref") != assignment_ref or completion.get("generation") != due.generation
+            or completion.get("manager") != due.recipient
+            or receipt is None or receipt.status.value != "committed" or receipt.operation != "work.revise"
+            or receipt.target != task or receipt.result_ref != current.ref
+            or result.get("outcome") != "succeeded" or result.get("context_digest_verified") is not True
+            or any(result.get(k) != v for k,v in (("assignment_ref",assignment_ref),("generation",due.generation),
+                ("task_ref",task.to_dict()),("project_ref",due.target["project_ref"])))
+            or admission.get("native_turn_started") is not True
+            or admission.get("physical_session_id") != result.get("physical_session_id")
+            or admission.get("observed_turn_id") != result.get("observed_turn_id")
+            or digest is None or digest != resource.get("brief_sha256") or digest != authorization.get("brief_sha256")):
+        raise OwnerRoleRuntimeError("settled readiness lacks exact delivered completion predecessor")
+    historical = ((brief.get("context") or {}).get("project_state") or {}).get("task") or {}
+    if historical.get("ref") != task.to_dict() or not isinstance(historical.get("payload"), Mapping):
+        raise OwnerRoleRuntimeError("settled readiness completion input is unavailable in delivered snapshot")
+    parent = historical["payload"].get("project_ref") or {}
+    if any(parent.get(k) != due.target["project_ref"].get(k) for k in ("authority","kind","id")):
+        raise OwnerRoleRuntimeError("settled readiness task belongs to another project")
+    def read(identity):
+        if owner_ref(identity, "historical task lookup", revision=False) != {
+                k:task.to_dict()[k] for k in ("authority","kind","id")}:
+            raise OwnerRoleRuntimeError("settled readiness escaped its completion input")
+        return {"ref":task.to_dict(),"project_ref":due.target["project_ref"],
+            "lifecycle":historical["payload"].get("lifecycle"),"payload":json_value(historical["payload"])}
+    read.completion_readback = {"scope":"settled_delivery_completion_input", "effect_admission":False,
+        "delivered_task_ref":task.to_dict(),"current_completed_task_ref":json_value(current.ref),
+        "completion_request_key":key}
+    return read
+
+
 def assignment_reader(operations: Any, assignment_pin: Mapping[str, Any]) -> Callable[[Mapping[str, Any]], Any]:
     """Read the exact assignment through its existing finite owner port."""
     expected = owner_ref(assignment_pin, "assignment_ref")

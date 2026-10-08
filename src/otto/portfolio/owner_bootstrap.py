@@ -965,12 +965,21 @@ class PortfolioOwnerBootstrap:
             if pool is None or pool.remaining_allowance_units < 1:
                 raise PermissionError("advisor allowance is missing or exhausted")
 
+        def completed_task_readiness(due: Any) -> Any:
+            from .owner_readers import completed_occurrence_task_reader
+            from herzchen.contracts import ResourceRef
+            if due.stop_state != "completed" or due.completion_state != "succeeded":
+                return None
+            assignment = assignments.get(ResourceRef.from_dict(due.assignment_ref))
+            return completed_occurrence_task_reader(result_reader, due, assignment)
+
         return CanonicalRoleRuntime(
             operations=operations, portfolio=portfolio, due_port=due_port,
             adapter=adapter, actor=self.owner_actor.actor, runtime_probe=runtime_probe,
             result_capture_factory=result_capture,
             acceptance_readiness=acceptance_readiness,
             allowance_readiness=allowance_readiness,
+            completed_task_readiness=completed_task_readiness,
         )
 
 
