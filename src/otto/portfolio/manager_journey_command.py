@@ -360,9 +360,20 @@ class ManagerJourneyCommands:
         key = self._key(request)
         if set(request) - {"command", "task", "request_key", "review_key"}:
             raise ValueError("unsupported task finish fields")
+        if request.get("command", "finish-task") != "finish-task":
+            raise ValueError("task finish command discriminator differs")
         prior = self._journal(key, "finish-intent")
-        if prior is not None and prior != dict(request):
-            raise ValueError("task finish request key was reused with changed input")
+        semantic = {k: v for k, v in request.items() if k != "command"}
+        if prior is not None:
+            if prior.get("command", "finish-task") != "finish-task":
+                raise ValueError("retained task finish command discriminator differs")
+            if {k: v for k, v in prior.items() if k != "command"} != semantic:
+                raise ValueError("task finish request key was reused with changed input")
+            # Preserve immutable legacy request bytes/digest; command merely
+            # selects this public operation and is not a new business input.
+            request = dict(prior)
+        else:
+            request = semantic
         reviewed = self._journal(request.get("review_key"), "review", adopted_history=True)
         manifest = self._journal(request.get("review_key"), "intent", adopted_history=True)
         if reviewed is None or manifest is None or reviewed["outcome"] != "accepted":

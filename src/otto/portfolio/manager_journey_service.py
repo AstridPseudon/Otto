@@ -427,6 +427,10 @@ class ManagerJourneyService:
             result = app.recover(schedule_id=due.schedule_id, execute=True)
             state["manager_continuation"]["outcome"] = result["outcome"]
             self.server._save_state()
+            if result.get("outcome") in {"succeeded", "replayed"}:
+                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
+                self._refresh_refs()
+                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
             return result
         if command == "operating-setup":
             self.commands._authorize()
