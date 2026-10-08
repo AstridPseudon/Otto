@@ -1192,7 +1192,9 @@ class _DueRecordOwnerEngine:
             # Ordinary manager/worker saves are identity-local and must not
             # materialize every historical Due event before each mutation.
             conflict = None
-            if value.get("role") == "project_advisor" and value.get("in_flight_request"):
+            if (value.get("role") == "project_advisor" and value.get("in_flight_request")
+                    and not (isinstance(current_value, Mapping)
+                             and current_value.get("in_flight_request"))):
                 conflict = _advisor_claim_conflict(
                     self.list_due(), schedule_id=schedule_id,
                     current=current_value if isinstance(current_value, Mapping) else None,

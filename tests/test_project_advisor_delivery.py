@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from herzchen.contracts import AuthenticatedActor, ResourceRef
 from herzchen.kernel.limits import LimitService
@@ -1227,14 +1228,28 @@ class OwnerAdmissionTests(unittest.TestCase):
                     "baseline", baseline, request_id="claim:baseline",
                     expected_version=baseline["version"],
                 )
+                # A retained claim's ordinary save must remain identity-local,
+                # even when it still fences a second advisor claim.
+                retained = dict(engine.read_due("baseline"))
+                retained["host_state"] = "unknown"
+                with patch.object(engine, "list_due", wraps=engine.list_due) as inventory:
+                    engine.save_due(
+                        "baseline", retained, request_id="observe:baseline",
+                        expected_version=retained["version"],
+                    )
+                    inventory.assert_not_called()
+                self.assertEqual(engine.read_due("baseline")["in_flight_request"], "claim-baseline")
                 followup = dict(engine.read_due("followup"))
                 followup.update(in_flight_request="claim-followup", last_covered_slot=0,
                                 delivery_state="ready")
-                with self.assertRaisesRegex(StateConflictError, "already in flight"):
-                    engine.save_due(
-                        "followup", followup, request_id="claim:followup",
-                        expected_version=followup["version"],
-                    )
+                with patch.object(engine, "list_due", wraps=engine.list_due) as inventory:
+                    with self.assertRaisesRegex(StateConflictError, "already in flight"):
+                        engine.save_due(
+                            "followup", followup, request_id="claim:followup",
+                            expected_version=followup["version"],
+                        )
+                    inventory.assert_called_once_with()
+                self.assertIsNone(engine.read_due("followup")["in_flight_request"])
             finally:
                 store.close()
 
