@@ -19,28 +19,115 @@ class InboxCursorError(ValueError):
     """The caller supplied a cursor outside this view's scope."""
 
 
+class InboxValueError(ValueError):
+    """A projection input cannot be represented completely within read bounds."""
+
+
+# Per value/read-local traversal bounds, comfortably above observed owner data.
+_MAX_VALUE_NODES = 200_000
+_MAX_NORMALIZED_DEPTH = 256  # also bounds subsequent ordinary JSON encoding
+_MAX_EXPANDED_NODES = 500_000  # shared graphs must not explode when JSON encoded
+_MAX_REFERENCE_DEPTH = 4096
+
+
 def _safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _safe(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_safe(item) for item in value]
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        return _safe(to_dict())
-    to_json = getattr(value, "to_json", None)
-    if callable(to_json):
-        return json.loads(to_json())
-    if hasattr(value, "value"):
-        return _safe(value.value)
-    return str(value)
+    """Normalize once per object, with iterative cycle/depth/work checks."""
+    root: list[Any] = [None]
+    memo: dict[int, tuple[Any, Any]] = {}
+    heights: dict[int, int] = {}
+    active: set[int] = set()
+    weights: dict[int, int] = {}
+    stack = [("visit", value, 0, root, 0)]
+    visits = 0
+    while stack:
+        action, item, depth, parent, key = stack.pop()
+        if action == "finish":
+            result = parent[key]
+            children = list(result.values()) if isinstance(result, dict) else result if isinstance(result, list) else ()
+            weight = 1 + sum(weights.get(id(child), 1) for child in children)
+            height = 1 + max((heights.get(id(child), 0) for child in children), default=0) if isinstance(result, (dict, list)) else 0
+            if depth + height > _MAX_NORMALIZED_DEPTH:
+                raise InboxValueError("inbox normalized value exceeds depth limit")
+            if weight > _MAX_EXPANDED_NODES:
+                raise InboxValueError("inbox value exceeds expanded-node limit")
+            if isinstance(result, (dict, list)):
+                weights[id(result)] = weight
+                heights[id(result)] = height
+            # Retain originals: temporary conversion dictionaries may otherwise
+            # be collected and have their ids reused within this normalization.
+            memo[id(item)] = (item, result)
+            active.remove(id(item))
+            continue
+        visits += 1
+        if visits > _MAX_VALUE_NODES or depth > _MAX_NORMALIZED_DEPTH:
+            raise InboxValueError("inbox value exceeds node/depth limit")
+        if item is None or isinstance(item, (str, int, float, bool)):
+            parent[key] = item
+            continue
+        ident = id(item)
+        if ident in active:
+            raise InboxValueError("inbox value contains a cycle or self-returning conversion")
+        if ident in memo:
+            result = memo[ident][1]
+            if depth + heights.get(id(result), 0) > _MAX_NORMALIZED_DEPTH:
+                raise InboxValueError("inbox shared value exceeds depth limit")
+            parent[key] = result
+            continue
+        active.add(ident)
+        stack.append(("finish", item, depth, parent, key))
+        if isinstance(item, Mapping):
+            if visits + len(stack) + len(item) > _MAX_VALUE_NODES:
+                raise InboxValueError("inbox mapping exceeds node limit")
+            result = {}
+            parent[key] = result
+            stack.extend(("visit", child, depth + 1, result, str(name)) for name, child in reversed(list(item.items())))
+        elif isinstance(item, (tuple, list)):
+            if visits + len(stack) + len(item) > _MAX_VALUE_NODES:
+                raise InboxValueError("inbox sequence exceeds node limit")
+            result = [None] * len(item)
+            parent[key] = result
+            stack.extend(("visit", item[index], depth + 1, result, index) for index in reversed(range(len(item))))
+        else:
+            to_dict = getattr(item, "to_dict", None)
+            to_json = getattr(item, "to_json", None)
+            if callable(to_dict):
+                converted = to_dict()
+            elif callable(to_json):
+                try:
+                    converted = json.loads(to_json())
+                except (ValueError, TypeError, RecursionError) as exc:
+                    raise InboxValueError("inbox JSON conversion is invalid or too deep") from exc
+            elif hasattr(item, "value"):
+                converted = item.value
+            else:
+                converted = str(item)
+            stack.append(("visit", converted, depth + 1, parent, key))
+    return root[0]
 
 
 def _ref(value: Any) -> Optional[dict[str, Any]]:
-    value = _safe(value)
-    if not isinstance(value, Mapping):
-        return None
+    # Inspect only the current reference fields, never normalize its subtree.
+    # Preserve typed-reference conversions without touching mapping children.
+    seen: dict[int, Any] = {}
+    while not isinstance(value, Mapping):
+        if value is None or isinstance(value, (str, int, float, bool, list, tuple)):
+            return None
+        if id(value) in seen or len(seen) >= 32:
+            raise InboxValueError("inbox reference conversion cycles or exceeds limit")
+        seen[id(value)] = value
+        to_dict = getattr(value, "to_dict", None)
+        to_json = getattr(value, "to_json", None)
+        if callable(to_dict):
+            value = to_dict()
+        elif callable(to_json):
+            try:
+                value = json.loads(to_json())
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise InboxValueError("inbox reference JSON conversion is invalid or too deep") from exc
+        elif hasattr(value, "value"):
+            value = value.value
+        else:
+            return None
     if not all(isinstance(value.get(key), str) and value.get(key).strip() for key in ("authority", "kind", "id")):
         return None
     if "revision" in value and value.get("revision") is not None and (not isinstance(value.get("revision"), str) or not value.get("revision", "").strip()):
@@ -96,17 +183,76 @@ def _cursor_decode(value: str, scope: str) -> dict[str, Any]:
     return payload
 
 
+class WorkViewCursorError(ValueError):
+    """A task-view cursor is malformed, stale, or bound to another query."""
+
+
+def encode_work_view_cursor(*, scope: str, offset: int, snapshot: str) -> str:
+    payload = {"format": "otto.portfolio-work.cursor.v1", "scope": scope, "offset": offset, "snapshot": snapshot}
+    payload["integrity"] = _digest(payload)
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_work_view_cursor(value: str, *, scope: str, snapshot: str) -> int:
+    if not isinstance(value, str) or not value:
+        raise WorkViewCursorError("cursor must be a non-empty token")
+    try:
+        raw = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("cursor is not an object")
+        integrity = payload.pop("integrity")
+        if integrity != _digest(payload):
+            raise ValueError("cursor integrity mismatch")
+    except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+        raise WorkViewCursorError("cursor is malformed") from exc
+    if payload.get("format") != "otto.portfolio-work.cursor.v1" or payload.get("scope") != scope:
+        raise WorkViewCursorError("cursor scope does not match this work view")
+    if payload.get("snapshot") != snapshot:
+        raise WorkViewCursorError("owner records changed; restart pagination")
+    offset = payload.get("offset")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise WorkViewCursorError("cursor offset is malformed")
+    return offset
+
+
 def _ref_values(value: Any) -> set[tuple[str, str, str]]:
     found: set[tuple[str, str, str]] = set()
-    if isinstance(value, Mapping):
-        item = _identity(value)
-        if item is not None:
-            found.add(item)
-        for child in value.values():
-            found.update(_ref_values(child))
-    elif isinstance(value, (tuple, list)):
-        for child in value:
-            found.update(_ref_values(child))
+    visited: set[int] = set()
+    active: set[int] = set()
+    stack = [(False, value, 0)]
+    work = 0
+    while stack:
+        leave, item, depth = stack.pop()
+        if not isinstance(item, (Mapping, tuple, list)):
+            continue
+        ident = id(item)
+        if leave:
+            active.remove(ident)
+            visited.add(ident)
+            continue
+        if ident in active:
+            raise InboxValueError("inbox reference traversal contains a cycle")
+        if ident in visited:
+            continue
+        work += 1
+        if work > _MAX_VALUE_NODES or depth > _MAX_REFERENCE_DEPTH or len(item) > _MAX_VALUE_NODES:
+            raise InboxValueError("inbox reference traversal exceeds node/depth limit")
+        active.add(ident)
+        stack.append((True, item, depth))
+        if isinstance(item, Mapping):
+            ref = _identity(item)
+            if ref is not None:
+                found.add(ref)
+            children = item.values()
+        else:
+            children = item
+        children = list(children)
+        work += len(children)
+        if work > _MAX_VALUE_NODES:
+            raise InboxValueError("inbox reference traversal exceeds node limit")
+        stack.extend((False, child, depth + 1) for child in reversed(children))
     return found
 
 
@@ -166,7 +312,7 @@ def _schema(value: Mapping[str, Any]) -> str:
 def _is_native_attachment(value: Mapping[str, Any]) -> bool:
     schema = _schema(value)
     outcome = str(value.get("outcome", "")).lower()
-    return "native_attachment" in schema or value.get("native_attachment") is not None or outcome.startswith("native_worker_")
+    return "native_attachment" in schema or schema.endswith(".native_child_assignment.v1") or value.get("native_attachment") is not None or outcome.startswith("native_worker_")
 
 
 def _is_assessment(value: Mapping[str, Any]) -> bool:
@@ -291,6 +437,180 @@ def _evidence_basis(value: Mapping[str, Any]) -> bool:
     return bool(_evidence_validation(value)["basis"])
 
 
+def _task_aliases(authored: Mapping[str, Any]) -> list[str]:
+    """Return owner-authored aliases without substituting native IDs."""
+    metadata = authored.get("metadata")
+    if isinstance(metadata, Mapping):
+        source_alias = metadata.get("source_alias")
+        if isinstance(source_alias, str) and source_alias.strip():
+            # Imported rows carry native aliases at the top level; the
+            # importer preserves the original label in metadata.
+            return [source_alias]
+    primary = authored.get("alias")
+    values = [primary] if isinstance(primary, str) and primary.strip() else []
+    aliases = authored.get("aliases", ())
+    if isinstance(aliases, str):
+        aliases = (aliases,)
+    if isinstance(aliases, (list, tuple)):
+        values.extend(value for value in aliases if isinstance(value, str) and value.strip())
+    return list(dict.fromkeys(values))
+
+
+def _task_applicability(authored: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose explicit applicability declarations without inventing defaults."""
+    sources: list[tuple[str, Any]] = [("authored", authored)]
+    for key in ("fields", "metadata", "custom"):
+        nested = authored.get(key)
+        if isinstance(nested, Mapping):
+            sources.append((f"authored.{key}", nested))
+    for prefix, source in sources:
+        for key in ("applicability", "applicability_state", "applicable", "applies", "deferred", "conditional"):
+            if key not in source:
+                continue
+            value = _safe(source[key])
+            if key in {"deferred", "conditional"} and value is True:
+                state = key
+            elif key in {"applicable", "applies"} and value is False:
+                state = "not_applicable"
+            elif key in {"applicable", "applies"} and value is True:
+                state = "applicable"
+            elif isinstance(value, Mapping):
+                raw_state = value.get("state", value.get("status"))
+                state = str(raw_state).strip().lower().replace("-", "_") if isinstance(raw_state, str) else "unknown"
+            elif isinstance(value, str):
+                normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+                state = normalized if normalized in {"applicable", "not_applicable", "conditional", "deferred", "unknown"} else "unknown"
+            else:
+                state = "unknown"
+            return {"state": state, "value": value, "source": f"{prefix}.{key}"}
+    metadata = authored.get("metadata")
+    if isinstance(metadata, Mapping):
+        for key in ("applicability_guard", "source_status"):
+            value = metadata.get(key)
+            if value is None:
+                continue
+            state = {
+                "conditional": "conditional",
+                "deferred": "deferred",
+                "deferred_external_followup": "deferred",
+            }.get(value, "unknown") if isinstance(value, str) else "unknown"
+            # Source lifecycle labels such as not_started are not evidence
+            # of applicability. Preserve their uncertainty and provenance.
+            return {"state": state, "value": _safe(value), "source": f"authored.metadata.{key}"}
+    return {"state": "unknown", "value": None, "source": None}
+
+
+def _task_observation(task_ref: Any, attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize explicit task-scoped execution facts, never lifecycle guesses."""
+    related = [item for item in attempts if _same_identity(item.get("task_ref"), task_ref)]
+    source_refs = [_ref(item.get("source_ref")) for item in related if _ref(item.get("source_ref")) is not None]
+    if not related:
+        return {"state": "unknown", "known": False, "reason": "no_execution_observation", "source_refs": []}
+    terminal = [item for item in related if item.get("terminal") is True]
+    running = [item for item in related if item.get("status") == "running" and item.get("terminal") is False]
+    active: list[Mapping[str, Any]] = []
+    conflict = False
+    for dispatch in running:
+        dispatch_ref = dispatch.get("source_ref") if dispatch.get("observation_kind") == "dispatch" else dispatch.get("dispatch_ref")
+        same_assignment = [item for item in terminal if item.get("assignment_ref") == dispatch.get("assignment_ref") and item.get("generation") == dispatch.get("generation")]
+        if any(dispatch_ref is not None and _exact_ref(item.get("dispatch_ref"), dispatch_ref) for item in same_assignment):
+            continue
+        if same_assignment:
+            conflict = True
+        else:
+            active.append(dispatch)
+    if len(active) == 1 and not conflict:
+        current = active[0]
+        return {"state": "active", "known": True, "reason": "owner_dispatch_observed_without_terminal_result", "source_refs": source_refs, "current_ref": _ref(current.get("source_ref")), "assignment_ref": _ref(current.get("assignment_ref")), "generation": current.get("generation")}
+    if active or conflict:
+        return {"state": "unknown", "known": False, "reason": "execution_observations_conflict_or_are_ambiguous", "source_refs": source_refs}
+    statuses = {str(item.get("status", "unknown")) for item in terminal}
+    state = "succeeded" if statuses == {"success"} else "failed" if statuses == {"failure"} else "unknown"
+    return {"state": state, "known": state != "unknown", "reason": "terminal_owner_observation" if state != "unknown" else "terminal_result_unknown_or_conflicting", "source_refs": source_refs}
+
+
+def _task_rows(source_tasks: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]], bindings: Sequence[Mapping[str, Any]], attempts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    summaries = {_identity(item.get("ref")): item for item in tasks if _identity(item.get("ref")) is not None}
+    rows: list[dict[str, Any]] = []
+    for source in source_tasks:
+        ref = _ref(source.get("ref"))
+        if ref is None:
+            continue
+        authored = source.get("authored") if isinstance(source.get("authored"), Mapping) else {}
+        summary = summaries.get(_identity(ref), {})
+        aliases = _task_aliases(authored)
+        assignments = [item for item in bindings if _same_identity(item.get("scope_ref"), ref)]
+        owners = [{"assignment_ref": _ref(item.get("source_ref")), "principal": _safe(item.get("principal")), "role": item.get("role"), "generation": item.get("generation"), "assignment_status": item.get("status", "unknown")} for item in assignments]
+        deps = summary.get("dependencies", ()) if isinstance(summary.get("dependencies", ()), (list, tuple)) else ()
+        reasons = []
+        for dep in deps:
+            if not isinstance(dep, Mapping):
+                continue
+            if dep.get("revision_changed") is True:
+                reason, severity = "prerequisite_revision_changed", "blocking"
+            elif dep.get("lifecycle") is None:
+                reason, severity = "prerequisite_state_unknown", "unknown"
+            elif str(dep.get("lifecycle")).lower() != "completed":
+                reason, severity = "prerequisite_not_completed", "blocking"
+            elif dep.get("expected_revision") is None:
+                reason, severity = "prerequisite_expected_revision_unknown", "unknown"
+            else:
+                continue
+            reasons.append({"ref": _ref(dep.get("ref")), "reason": reason, "severity": severity, "expected_revision": dep.get("expected_revision"), "observed_ref": _ref(dep.get("observed_ref"))})
+        readiness = summary.get("readiness") if isinstance(summary.get("readiness"), Mapping) else {}
+        related_attempts = [item for item in attempts if _same_identity(item.get("task_ref"), ref)]
+        verifications = [item.get("verification") for item in related_attempts if isinstance(item.get("verification"), Mapping)]
+        accepted = []
+        accepted_unverified = []
+        conflict = False
+        for item in related_attempts:
+            verification = item.get("verification")
+            if not isinstance(verification, Mapping):
+                continue
+            if verification.get("chain_conflict") or not verification.get("valid"):
+                conflict = True
+            disposition = str(verification.get("disposition", "")).strip().lower()
+            if verification.get("valid") is True and not verification.get("chain_conflict") and disposition in {"accepted", "accepted-for-task", "success", "succeeded"} and not verification.get("remaining_obligations"):
+                decision_refs = verification.get("decision_refs", ())
+                evidence = {
+                    "decision_ref": _ref(verification.get("decision_ref") or verification.get("current_ref")),
+                    "decision_refs": [_ref(value) for value in decision_refs if _ref(value) is not None],
+                    "result_ref": _ref(item.get("result_ref") or item.get("source_ref")),
+                    "evidence_refs": [_ref(value) for value in verification.get("evidence_refs", ()) if _ref(value) is not None],
+                    "disposition": disposition,
+                }
+                (accepted if verification.get("evidence_verification") == "verified" else accepted_unverified).append(evidence)
+        accepted_evidence = ({"state": "known", "value": True, "evidence": accepted[0]} if len(accepted) == 1 and not accepted_unverified and not conflict else {"state": "unknown", "value": None, "reason": "current_acceptance_is_ambiguous_or_conflicted"} if len(accepted) > 1 or conflict else {"state": "unknown", "value": None, "reason": "accepted_decision_evidence_not_independently_verified", "evidence": accepted_unverified[0]} if accepted_unverified else {"state": "known", "value": False, "reason": "no_current_verified_accepted_evidence"})
+        evidence_refs: dict[str, dict[str, Any]] = {}
+        result_refs = []
+        for item in related_attempts:
+            result_ref = _ref(item.get("result_ref") or item.get("source_ref"))
+            if result_ref is not None:
+                result_refs.append(result_ref)
+            attempt_value = item.get("attempt") if isinstance(item.get("attempt"), Mapping) else {}
+            verification = item.get("verification") if isinstance(item.get("verification"), Mapping) else {}
+            for source in (attempt_value, verification):
+                raw_refs = source.get("evidence_refs", ())
+                candidates = raw_refs if isinstance(raw_refs, (list, tuple)) else (raw_refs,) if isinstance(raw_refs, Mapping) else ()
+                for evidence in candidates:
+                    evidence_ref = _ref(evidence)
+                    if evidence_ref is not None and evidence_ref.get("revision"):
+                        evidence_refs[json.dumps(evidence_ref, sort_keys=True)] = evidence_ref
+        lifecycle = summary.get("lifecycle")
+        rows.append({
+            "ref": ref, "source_aliases": aliases, "title": authored.get("title") or authored.get("name"), "authored": _safe(authored),
+            "lifecycle": {"state": "known" if isinstance(lifecycle, str) and lifecycle.strip() else "unknown", "value": lifecycle},
+            "readiness": {"state": "known" if readiness else "unknown", "value": _safe(readiness), "eligibility": summary.get("eligibility", "unknown"), "stale": bool(summary.get("stale", False))},
+            "applicability": _task_applicability(authored), "observation": _task_observation(ref, attempts),
+            "dependencies": _safe(deps), "dependency_reasons": reasons, "owner_assignments": owners,
+            "owner": {"state": "known" if len(owners) == 1 and owners[0].get("principal") is not None else "unknown", "value": owners[0] if len(owners) == 1 and owners[0].get("principal") is not None else None},
+            "evidence_refs": [evidence_refs[key] for key in sorted(evidence_refs)], "result_refs": result_refs,
+            "accepted_current_evidence": accepted_evidence,
+            "source_refs": {"task": ref, "assignments": [_ref(item.get("source_ref")) for item in assignments if _ref(item.get("source_ref")) is not None]},
+        })
+    return rows
+
+
 def _explicit_disposition(value: Mapping[str, Any]) -> Optional[str]:
     disposition = value.get("disposition")
     if isinstance(disposition, str) and disposition.strip().lower() in _DISPOSITIONS:
@@ -386,6 +706,7 @@ def derive_manager_inbox(
     events: Sequence[Mapping[str, Any]] = (),
     cursor: Optional[str] = None,
     dependency_records: Optional[Mapping[tuple[str, str, str], Mapping[str, Any]]] = None,
+    completion_verifications: Optional[Mapping[tuple[str, str, str], Mapping[str, Any]]] = None,
     limit: int = 100,
     safety_scan: bool = True,
 ) -> dict[str, Any]:
@@ -398,13 +719,17 @@ def derive_manager_inbox(
         raise ValueError("project sheet reader returned no project")
     scope = _scope_key(project)
     project_ref = _ref(project.get("ref"))
+    owner_completion_facts = completion_verifications or {}
     task_views = [item for item in source.get("tasks", ()) if isinstance(item, Mapping)]
     refs = _ref_values(source)
     relevant_events = []
+    relevant_ref_sets = []
     for event in events:
-        event_refs = _ref_values(event)
+        normalized = _safe(event)
+        event_refs = _ref_values(normalized)
         if not event_refs or refs.intersection(event_refs):
-            relevant_events.append(_safe(event))
+            relevant_events.append(normalized)
+            relevant_ref_sets.append(event_refs)
     reconciliation = _event_reconciliation(scope, relevant_events, cursor, limit)
     attempts: list[dict[str, Any]] = []
     attention: list[dict[str, Any]] = []
@@ -436,7 +761,7 @@ def derive_manager_inbox(
             if isinstance(assignment, Mapping):
                 payload = assignment.get("payload", assignment)
                 if isinstance(payload, Mapping):
-                    bindings.append({"source_ref": _ref(assignment.get("ref")), "scope_ref": payload.get("scope"), "role": payload.get("role"), "principal": payload.get("principal"), "generation": payload.get("generation"), "status": payload.get("status"), "history": payload.get("history", [])})
+                    bindings.append({"source_ref": _ref(assignment.get("ref")), "scope_ref": payload.get("scope"), "role": payload.get("role"), "principal": payload.get("principal"), "generation": payload.get("generation"), "status": payload.get("status"), "pins": _safe(payload.get("pins", ())), "history": payload.get("history", [])})
         for kind in ("dispatches", "results", "reports"):
             values = observed.get(kind, ())
             if not isinstance(values, (list, tuple)):
@@ -479,6 +804,9 @@ def derive_manager_inbox(
                         "task_ref": normalize_ref(payload.get("task_ref"), "work.task") or owner_task_ref,
                         "native_id": payload.get("worker_native_id") or payload.get("native_id") or payload.get("native_session_id"),
                         "native_session": payload.get("worker_native_session") or payload.get("native_session_id"),
+                        "result_ref": normalize_ref(payload.get("result_ref") or payload.get("worker_result_ref"), "wrk.result"),
+                        "dispatch_ref": normalize_ref(payload.get("dispatch_ref") or payload.get("worker_dispatch_ref"), "wrk.dispatch"),
+                        "target_supplied": any(key in payload for key in ("result_ref", "worker_result_ref", "dispatch_ref", "worker_dispatch_ref")),
                         "status": str(payload.get("outcome", payload.get("status", "observed"))).strip().lower() or "observed",
                         "value": _safe(payload),
                     }
@@ -535,6 +863,7 @@ def derive_manager_inbox(
                 observation = {
                     "source_ref": source_ref,
                     "result_ref": result_ref,
+                    "dispatch_ref": source_ref if kind == "dispatches" else normalize_ref(attempt.get("dispatch_ref") or payload.get("dispatch_ref") or payload.get("worker_dispatch_ref"), "wrk.dispatch"),
                     "assignment_ref": attempt_assignment,
                     "generation": generation,
                     "assignment_generation": payload.get("assignment_generation", generation),
@@ -553,9 +882,9 @@ def derive_manager_inbox(
                 }
                 attempts.append(observation)
 
-    # Join native identity observations to the exact attempt scope.  Native
-    # IDs alone are intentionally insufficient because they can recur across
-    # projects or generations.
+    # Resolve all claims before applying any, so report order cannot choose
+    # a winner. Shared assignment/context is not a worker execution identity.
+    claims: dict[int, list[dict[str, Any]]] = {}
     for attachment in attachments:
         def optional_context_matches(left: Any, right: Any) -> bool:
             # Context is optional on legacy result records.  When both sides
@@ -565,22 +894,79 @@ def derive_manager_inbox(
                 return True
             return _compatible_ref(left, right)
 
-        matches = [item for item in attempts if (
+        matches = [index for index, item in enumerate(attempts) if (
             _exact_ref(item.get("assignment_ref"), attachment.get("assignment_ref"))
             and item.get("generation") == attachment.get("generation")
             and optional_context_matches(item.get("scope_ref"), attachment.get("scope_ref"))
             and optional_context_matches(item.get("task_ref"), attachment.get("task_ref"))
         )]
-        attachment["joined"] = bool(matches)
-        for item in matches:
-            native_id = attachment.get("native_id")
-            if native_id:
-                item["native_id"] = native_id
-                item["native_id_source_ref"] = attachment.get("source_ref")
-                item["native_identity_observed"] = True
-                # Attachment proves identity, not current handle liveness.
-                if item.get("native_handle_state") == "unobserved":
-                    item["native_handle_state"] = "observed"
+        value = attachment["value"]
+        for field, aliases in (("result_ref", ("result_ref", "worker_result_ref")), ("dispatch_ref", ("dispatch_ref", "worker_dispatch_ref"))):
+            # Every supplied target must agree, including aliases. Malformed,
+            # unpinned or contradictory targets must never fall back to scope.
+            for alias in aliases:
+                if alias in value:
+                    target = normalize_ref(value[alias], "wrk.result" if field == "result_ref" else "wrk.dispatch")
+                    matches = [index for index in matches if _exact_ref(attempts[index].get(field), target)]
+        if not attachment["target_supplied"] and len(matches) != 1:
+            matches = []
+        generation = attachment.get("generation")
+        native_id = attachment.get("native_id")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1 or not isinstance(native_id, str) or not native_id.strip():
+            matches = []
+        attachment["joined"] = False
+        attachment["join_status"] = "unmatched_or_ambiguous"
+        for index in matches:
+            claims.setdefault(index, []).append(attachment)
+
+    # A result and its dispatch are one exact execution chain. Collect both
+    # captured identities and pending claims for the whole chain before any
+    # join, including claims targeting different results of that dispatch.
+    chains: dict[str, list[int]] = {}
+    for index, item in enumerate(attempts):
+        dispatch_ref = item.get("dispatch_ref")
+        assignment_ref = item.get("assignment_ref")
+        generation = item.get("generation")
+        exact_chain = (
+            _exact_ref(dispatch_ref, dispatch_ref)
+            and _exact_ref(assignment_ref, assignment_ref)
+            and isinstance(generation, int) and not isinstance(generation, bool)
+            and generation > 0
+        )
+        key = _digest([dispatch_ref, assignment_ref, generation]) if exact_chain else f"observation-{index}"
+        chains.setdefault(key, []).append(index)
+    conflicts = set()
+    for members in chains.values():
+        identities = set()
+        candidates = []
+        for index in members:
+            native_id = attempts[index].get("native_id")
+            if isinstance(native_id, str) and native_id.strip():
+                identities.add(native_id)
+            candidates.extend(claims.get(index, ()))
+        identities.update(candidate["native_id"] for candidate in candidates)
+        if len(identities) > 1:
+            for index in members:
+                attempts[index]["native_identity_conflict"] = True
+            conflicts.update(id(candidate) for candidate in candidates)
+    for index, candidates in claims.items():
+        eligible = [candidate for candidate in candidates if id(candidate) not in conflicts]
+        for candidate in candidates:
+            if id(candidate) in conflicts:
+                candidate["join_status"] = "conflicting_native_identity"
+        if not eligible:
+            continue
+        eligible.sort(key=lambda candidate: _digest(candidate.get("source_ref")))
+        item = attempts[index]
+        item["native_id"] = eligible[0]["native_id"]
+        item["native_id_source_ref"] = eligible[0]["source_ref"]
+        item["native_identity_observed"] = True
+        # Identity evidence never asserts that a native handle is still live.
+        if item.get("native_handle_state") == "unobserved":
+            item["native_handle_state"] = "observed"
+        for candidate in eligible:
+            candidate["joined"] = True
+            candidate["join_status"] = "joined"
 
     # Normalize and validate manager verification/correction chains.  A
     # pending hourly/review record never enters this path, even if it carries
@@ -680,6 +1066,38 @@ def derive_manager_inbox(
             "value": value,
             "target": target,
         }
+        if completion is not None and task_ref is not None and node["valid"]:
+            owner_facts = owner_completion_facts.get(_identity(task_ref))
+            if isinstance(owner_facts, Mapping):
+                owner_task_ref = owner_facts.get("task_ref")
+                owner_result_ref = normalize_ref(owner_facts.get("result_ref"), "wrk.result")
+                owner_candidate_ref = _ref(owner_facts.get("candidate_ref"))
+                owner_decision_refs = [
+                    _ref(value) for value in owner_facts.get("accepted_decision_refs", ())
+                    if _ref(value) is not None
+                ]
+                owner_gates = [
+                    _ref(value) for value in target_value.get("gate_refs", ())
+                    if _ref(value) is not None
+                ] if isinstance(target_value.get("gate_refs", ()), (list, tuple)) else []
+                exact_decision_gates = bool(owner_decision_refs) and all(
+                    any(_exact_ref(decision, gate) for gate in owner_gates)
+                    for decision in owner_decision_refs
+                )
+                exact_owner_join = bool(
+                    owner_facts.get("verified") is True
+                    and _same_identity(owner_task_ref, task_ref)
+                    and owner_facts.get("completion") == _safe(target_value)
+                    and _exact_ref(owner_result_ref, result_ref)
+                    and _exact_ref(owner_candidate_ref, target_value.get("candidate_ref"))
+                    and exact_decision_gates
+                    and owner_facts.get("evidence_verification") == "verified"
+                )
+                if exact_owner_join:
+                    node["evidence_verification"] = "verified"
+                    node["decision_refs"] = owner_decision_refs
+                    node["decision_ref"] = owner_decision_refs[0] if len(owner_decision_refs) == 1 else None
+                    node["evidence_refs"] = _safe(owner_facts.get("evidence_refs", ()))
         if node["assignment_ref"] is None and target is not None:
             node["assignment_ref"] = target.get("assignment_ref")
         if node["generation"] is None and target is not None:
@@ -806,6 +1224,8 @@ def derive_manager_inbox(
                 "evidence_refs": node.get("evidence_refs"),
                 "evidence_valid": node.get("evidence_valid"),
                 "evidence_verification": node.get("evidence_verification"),
+                "decision_refs": node.get("decision_refs", ()),
+                "decision_ref": node.get("decision_ref"),
                 "valid": node.get("valid"),
                 "diagnostic_reasons": list(node.get("diagnostic_reasons", ())),
                 "manager_assignment_ref": node.get("manager_assignment_ref"),
@@ -844,6 +1264,9 @@ def derive_manager_inbox(
             "manager": provenance_node.get("manager") if provenance_node is not None else None,
             "manager_authority": provenance_node.get("manager_authority", "unknown") if provenance_node is not None else "unknown",
             "evidence_verification": current.get("evidence_verification", "unknown") if current is not None else "unknown",
+            "decision_refs": current.get("decision_refs", ()) if current is not None else (),
+            "decision_ref": current.get("decision_ref") if current is not None else None,
+            "evidence_refs": current.get("evidence_refs", ()) if current is not None else (),
             "history": history,
             "remaining_obligations": _safe((current.get("value", {}) if current else {}).get("remaining_obligations", ())) if current else (),
         }
@@ -889,7 +1312,8 @@ def derive_manager_inbox(
 
     for attachment in attachments:
         if not attachment.get("joined"):
-            attention.append({"key": "attention-" + sha256((scope + ":attachment:" + json.dumps(attachment.get("source_ref"), sort_keys=True)).encode()).hexdigest()[:28], "reason": "native_attachment_without_exact_result", "status": attachment.get("status"), "source_ref": attachment.get("source_ref"), "assignment_ref": attachment.get("assignment_ref"), "generation": attachment.get("generation"), "retry_allowed": False, "acknowledged": False, "dispatch": False, "launch": False})
+            reason = "native_attachment_conflicting_execution_identity" if attachment.get("join_status") == "conflicting_native_identity" else "native_attachment_without_exact_result"
+            attention.append({"key": "attention-" + sha256((scope + ":attachment:" + json.dumps(attachment.get("source_ref"), sort_keys=True)).encode()).hexdigest()[:28], "reason": reason, "status": attachment.get("status"), "source_ref": attachment.get("source_ref"), "assignment_ref": attachment.get("assignment_ref"), "generation": attachment.get("generation"), "retry_allowed": False, "acknowledged": False, "dispatch": False, "launch": False})
     for report in unknown_reports:
         attention.append({"key": "attention-" + sha256((scope + ":unknown-report:" + json.dumps(report.get("source_ref"), sort_keys=True)).encode()).hexdigest()[:28], "reason": "unknown_report_shape", "status": "unknown", "source_ref": report.get("source_ref"), "assignment_ref": report.get("assignment_ref"), "generation": report.get("generation"), "retry_allowed": False, "acknowledged": False, "dispatch": False, "launch": False})
     for observation in attempts:
@@ -916,7 +1340,7 @@ def derive_manager_inbox(
         dependency_states = []
         stale = False
         task_identity = _identity(owner_ref)
-        task_events = [event for event in relevant_events if task_identity in _ref_values(event)]
+        task_events = [event for event, event_refs in zip(relevant_events, relevant_ref_sets) if task_identity in event_refs]
         task_created_at = min((str(event.get("recorded_at", "")) for event in task_events), default="")
         for dep in authored.get("dependencies", ()) if isinstance(authored.get("dependencies", ()), (list, tuple)) else ():
             dep_ref = _ref(dep)
@@ -985,7 +1409,7 @@ def derive_manager_inbox(
     decisions = list(source.get("decision_context", ()))
     if isinstance(project_observed.get("decision_context"), (list, tuple)):
         decisions.extend(project_observed["decision_context"])
-    return {"outcome": "read", "schema": "otto.manager-inbox.v1", "scope": {"ref": project_ref, "key": scope, "parent": project.get("authored", {}).get("parent") if isinstance(project.get("authored"), Mapping) else None, "children": [{"ref": item.get("ref"), "parent": (item.get("authored", {}).get("parent") if isinstance(item.get("authored"), Mapping) else None) or project_ref} for item in task_views]}, "manager": {"assignments": by_scope_manager, "count": len(by_scope_manager), "all_scopes": [item for item in bindings if item.get("role") == "manager"]}, "tasks": tasks, "assignments": bindings, "attempts": attempts, "observations": attempts, "results": [item for item in attempts if item.get("observation_kind") == "result"], "reports": [item for item in attempts if item.get("observation_kind") == "report"], "attachments": attachments, "bookkeeping": bookkeeping, "verifications": verifications, "diagnostics": diagnostics, "attention": list(unique_attention.values()), "decisions": decisions, "readiness": _safe(source.get("readiness", project_observed.get("readiness", {}))), "dispatch": False, "launch": False, "acknowledged": False, "read_side_effects": False, "reconciliation": reconciliation, "safety_scan": {"performed": bool(safety_scan), "bounded": True, "limit": max(1, min(int(limit), 1000)), "source_refs": sorted(refs)}, "unknown": unknown, "source_refs": {"project": project_ref, "tasks": [_ref(item.get("ref")) for item in task_views if _ref(item.get("ref")) is not None], "attachments": [item.get("source_ref") for item in attachments], "bookkeeping": [item.get("source_ref") for item in bookkeeping], "verifications": [item.get("source_ref") for item in verifications if item.get("source_ref") is not None], "diagnostics": [item.get("source_ref") for item in diagnostics if item.get("source_ref") is not None]}}
+    return {"outcome": "read", "schema": "otto.manager-inbox.v1", "scope": {"ref": project_ref, "key": scope, "parent": project.get("authored", {}).get("parent") if isinstance(project.get("authored"), Mapping) else None, "children": [{"ref": item.get("ref"), "parent": (item.get("authored", {}).get("parent") if isinstance(item.get("authored"), Mapping) else None) or project_ref} for item in task_views]}, "manager": {"assignments": by_scope_manager, "count": len(by_scope_manager), "all_scopes": [item for item in bindings if item.get("role") == "manager"]}, "tasks": tasks, "task_rows": _task_rows(task_views, tasks, bindings, attempts), "assignments": bindings, "attempts": attempts, "observations": attempts, "results": [item for item in attempts if item.get("observation_kind") == "result"], "reports": [item for item in attempts if item.get("observation_kind") == "report"], "attachments": attachments, "bookkeeping": bookkeeping, "verifications": verifications, "diagnostics": diagnostics, "attention": list(unique_attention.values()), "decisions": decisions, "readiness": _safe(source.get("readiness", project_observed.get("readiness", {}))), "dispatch": False, "launch": False, "acknowledged": False, "read_side_effects": False, "reconciliation": reconciliation, "safety_scan": {"performed": bool(safety_scan), "bounded": True, "limit": max(1, min(int(limit), 1000)), "source_refs": sorted(refs)}, "unknown": unknown, "source_refs": {"project": project_ref, "tasks": [_ref(item.get("ref")) for item in task_views if _ref(item.get("ref")) is not None], "attachments": [item.get("source_ref") for item in attachments], "bookkeeping": [item.get("source_ref") for item in bookkeeping], "verifications": [item.get("source_ref") for item in verifications if item.get("source_ref") is not None], "diagnostics": [item.get("source_ref") for item in diagnostics if item.get("source_ref") is not None]}}
 
 
-__all__ = ["InboxCursorError", "derive_manager_inbox"]
+__all__ = ["InboxCursorError", "WorkViewCursorError", "decode_work_view_cursor", "derive_manager_inbox", "encode_work_view_cursor"]

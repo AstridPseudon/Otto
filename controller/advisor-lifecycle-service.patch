@@ -1,0 +1,27 @@
+--- a/controller/launch_manager_once.py
++++ b/controller/launch_manager_once.py
+@@ -984,6 +984,24 @@
+                 read_settings=lambda identity: read_persisted_automation_settings(
+                     automation_directory, identity, parse_toml=tomllib.loads),
+             )
++        if command == "advisor-followup-lifecycle":
++            from herzchen.kernel.limits import LimitService
++            from otto.portfolio.advisor_lifecycle import exercise_advisor_lifecycle
++            from otto.portfolio.advisor_host_command import read_persisted_automation_settings
++            try:
++                import tomllib
++            except ImportError:
++                from pip._vendor import tomli as tomllib
++            advisor, pairing, loop = self._advisor_delivery_loop()
++            automation_directory = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "automations"
++            return exercise_advisor_lifecycle(
++                request=request, pairing=pairing, advisor_principal=advisor["principal"],
++                actor=self.state["owner"], loop=loop, allowance=LimitService(self.store),
++                authenticate=self.binding.authenticated_actor,
++                read_settings=lambda identity: read_persisted_automation_settings(
++                    automation_directory, identity, parse_toml=tomllib.loads),
++                live_dispatch=self.dispatch_scheduled_project_advisor_followup,
++            )
+         if command == "advisor-followup":
+             from otto.portfolio.advisor_followup_command import advisor_followup_from_command
+             return advisor_followup_from_command(

@@ -407,6 +407,38 @@ class DeterministicHostExecutor:
         return receipt
 
 
+def host_trigger_capabilities(*, attention: Any, record: Any, executor: Any = None,
+                              persisted_readback_available: bool = False) -> dict[str, Any]:
+    """Describe independent seams; presence/readback never proves host firing."""
+    port = attention.host_port
+    evidence = record.host_evidence if isinstance(record.host_evidence, Mapping) else {}
+    return {
+        "direct_owner_port": {
+            "supplied": port is not None,
+            "ensure_read_pause_available": port is not None and all(callable(getattr(port, name, None))
+                for name in ("ensure_trigger", "read_trigger", "pause_trigger")),
+        },
+        "external_effect_bridge": {
+            "implementation_available": (all(callable(getattr(attention, name, None))
+                for name in ("prepare_host", "acknowledge_host"))
+                and all(callable(getattr(DeterministicHostExecutor, name, None))
+                    for name in ("execute", "recover"))),
+            "owner_prepare_available": callable(getattr(attention, "prepare_host", None)),
+            "execute_recover_contract": "DeterministicHostExecutor",
+            "supported_host_operation": AUTOMATION_UPDATE,
+            "executor_in_this_process": executor is not None and all(callable(getattr(executor, name, None))
+                for name in ("execute", "recover")),
+            "tool_host_context": "external root/tool caller supplies automation_update",
+            "persisted_readback_available": persisted_readback_available,
+            "owner_acknowledge_available": callable(getattr(attention, "acknowledge_host", None)),
+            "retained_effect_present": isinstance(evidence.get("effect"), Mapping),
+            "retained_readback_exact": evidence.get("readback_exact") is True,
+        },
+        "scheduled_callback": {"observed": False, "evidence_status": "unproven"},
+        "owner_terminal_state_suspends_external_automation": False,
+    }
+
+
 class SerializedAutomationUpdateAdapter:
     """Deserialize one owner effect and pass generated fields to the host.
 

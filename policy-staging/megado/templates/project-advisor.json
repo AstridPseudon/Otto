@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "id": "megado.project_advisor_seed",
+  "version": "1.0.0",
+  "protocol": "megado.project_advisor",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "minLength": 1
+      },
+      "outcome": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": ["title", "outcome"],
+    "additionalProperties": false
+  },
+  "seed": {
+    "work": [
+      {
+        "local_id": "effort",
+        "kind": "effort",
+        "title": {
+          "$param": "title"
+        },
+        "outcome": {
+          "$param": "outcome"
+        }
+      },
+      {
+        "local_id": "advisor-policy",
+        "kind": "task",
+        "parent": {
+          "$local": "effort"
+        },
+        "title": "Adopt the project-advisor policy explicitly",
+        "outcome": "Bind one persistent project advisor and its allowance; installation alone activates no supervision.",
+        "custom": {
+          "megado": {
+            "policy_resource": "protocols/project-advisor.json",
+            "role": "project_advisor",
+            "oracle_binding": "oracle",
+            "adoption_required": true,
+            "active_by_default": false,
+            "no_automatic_dispatch": true
+          }
+        }
+      }
+    ],
+    "links": [],
+    "documents": [],
+    "document_links": [],
+    "assessments": [],
+    "status": "planning_only"
+  },
+  "notes": "This is a resource-only policy seed. It creates no assignment, timer, conversation, allowance, dispatch, or owner write until the project instance adopts those through existing operations."
+}

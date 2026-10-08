@@ -12,6 +12,8 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
+from .resource_sync import ResourceSyncError, validate_resource_evidence
+
 
 class SteadyStateError(ValueError):
     """The proposed replacement or manager packet is outside ORC-06 scope."""
@@ -143,6 +145,8 @@ def build_manager_action_packet(
     rollback_disposition: Mapping[str, Any],
     retirement_disposition: Mapping[str, Any],
     source_lineage: Mapping[str, Any],
+    resource_evidence: Mapping[str, Any] | None = None,
+    require_resource_evidence: bool = False,
 ) -> dict[str, Any]:
     """Render one later owner action without executing it."""
 
@@ -166,6 +170,21 @@ def build_manager_action_packet(
     lineage = _copy(dict(source_lineage)) if isinstance(source_lineage, Mapping) else None
     if not rollback or not retirement or not lineage:
         raise SteadyStateError("rollback, retirement, and source lineage dispositions are required")
+    if not isinstance(require_resource_evidence, bool):
+        raise SteadyStateError("require_resource_evidence must be boolean")
+    if resource_evidence is None and require_resource_evidence:
+        raise SteadyStateError("resource evidence is required before this manager action")
+    evidence = None
+    if resource_evidence is not None:
+        try:
+            evidence = validate_resource_evidence(
+                resource_evidence,
+                role="manager",
+                responsibility_ref=assignment,
+                generation=gen,
+            )
+        except ResourceSyncError as exc:
+            raise SteadyStateError(str(exc)) from exc
     stable = {
         "schema": _PACKET_SCHEMA,
         "owner_api": api,
@@ -181,6 +200,8 @@ def build_manager_action_packet(
         "retirement_disposition": retirement,
         "source_lineage": lineage,
     }
+    if evidence is not None:
+        stable["resource_evidence"] = evidence
     packet_sha = _digest(stable)
     return {
         **stable,

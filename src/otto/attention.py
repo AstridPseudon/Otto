@@ -19,13 +19,22 @@ trusted persistence port.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 
 
 JSONValue = Any
+
+NATIVE_TARGET_KEYS = ("native_id", "physical_session_id", "conversation_id", "agent_id", "thread_id", "session_id", "id")
+
+def native_target_identity(target: Mapping[str, Any]) -> Optional[str]:
+    """Return an explicit, unambiguous existing-session identity only."""
+    values = [_required_text(target[key], "target." + key) for key in NATIVE_TARGET_KEYS if key in target]
+    if len(set(values)) > 1:
+        raise ValueError("target native session aliases conflict")
+    return values[0] if values else None
 
 
 class AttentionError(RuntimeError):
@@ -86,6 +95,108 @@ def _required_text(value: Any, field_name: str) -> str:
     return value
 
 
+_TRIGGER_SCOPE_FIELDS = frozenset({
+    "schedule_id", "project_ref", "manager_ref", "role", "recipient",
+    "lifecycle_owner", "execution_mode", "stop_state", "native_adapter", "native_session_id",
+})
+
+
+def _trigger_scope(scope: Optional[Mapping[str, JSONValue]]) -> dict[str, str]:
+    """Validate the small public scope accepted by trigger listing."""
+
+    if scope is None:
+        return {}
+    if not isinstance(scope, Mapping):
+        raise TypeError("trigger scope must be a JSON object")
+    unknown = set(scope) - _TRIGGER_SCOPE_FIELDS
+    if unknown:
+        raise ValueError("unsupported trigger scope field(s): " + ", ".join(sorted(str(item) for item in unknown)))
+    return {str(key): _required_text(value, f"scope.{key}") for key, value in scope.items()}
+
+
+def _matches_trigger_scope(value: Mapping[str, JSONValue], scope: Mapping[str, str]) -> bool:
+    native = {"native_adapter": (value.get("target") or {}).get("native_adapter"),
+              "native_session_id": (((value.get("host_evidence") or {}).get("gateway_attempt") or {}).get("delivery_authorization") or {}).get("physical_session_id")}
+    return all((native.get(key) if key in native else value.get(key)) == expected
+               for key, expected in scope.items())
+
+
+def _reference_identity(value: Any, field_name: str) -> tuple[str, str, str]:
+    """Read the identity portion of a public ResourceRef-shaped value."""
+
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        value = value.to_dict()
+    if isinstance(value, Mapping):
+        authority, kind, identity = (value.get(key) for key in ("authority", "kind", "id"))
+    else:
+        authority, kind, identity = (getattr(value, key, None) for key in ("authority", "kind", "id"))
+    _required_text(authority, f"{field_name}.authority")
+    _required_text(kind, f"{field_name}.kind")
+    _required_text(identity, f"{field_name}.id")
+    return authority, kind, identity
+
+
+def _assignment_value(assignment: Any, field_name: str) -> Any:
+    if isinstance(assignment, Mapping):
+        return assignment.get(field_name)
+    return getattr(assignment, field_name, None)
+
+
+def _same_advisor_inspection_scope(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Identify records that must not launch overlapping advisor inspections."""
+
+    if left.get("role") != "project_advisor" or right.get("role") != "project_advisor":
+        return False
+    left_assignment = left.get("assignment_ref")
+    right_assignment = right.get("assignment_ref")
+    return all(left.get(key) == right.get(key) for key in (
+        "project_ref", "recipient", "generation", "lifecycle_owner",
+    )) and left_assignment == right_assignment
+
+
+def _advisor_claim_conflict(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    schedule_id: str,
+    current: Optional[Mapping[str, Any]],
+    desired: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    """Return an existing cross-record claim for one new advisor claim."""
+
+    if desired.get("role") != "project_advisor" or not desired.get("in_flight_request"):
+        return None
+    if isinstance(current, Mapping) and current.get("in_flight_request"):
+        return None
+    for candidate in records:
+        if (candidate.get("schedule_id") != schedule_id
+                and candidate.get("stop_state") == "active"
+                and candidate.get("in_flight_request")
+                and not _advisor_gateway_terminal(candidate)
+                and _same_advisor_inspection_scope(candidate, desired)):
+            return candidate
+    return None
+
+
+def _advisor_gateway_terminal(record: Mapping[str, Any]) -> bool:
+    """True only for an authoritative non-unknown owner gateway result."""
+
+    host_evidence = record.get("host_evidence")
+    gateway_attempt = (host_evidence.get("gateway_attempt")
+                       if isinstance(host_evidence, Mapping) else None)
+    gateway_result = (gateway_attempt.get("result")
+                      if isinstance(gateway_attempt, Mapping) else None)
+    current_request = record.get("in_flight_request")
+    return bool(
+        isinstance(current_request, str) and bool(current_request)
+        and isinstance(gateway_attempt, Mapping)
+        and gateway_attempt.get("state") == "result"
+        and isinstance(gateway_result, Mapping)
+        and gateway_result.get("logical_request_key") == current_request
+        and gateway_result.get("outcome") == "succeeded"
+        and gateway_result.get("delivery_state") in {"done", "completed"}
+    )
+
+
 @dataclass(frozen=True)
 class DueRecord:
     """The small durable record needed to resume one responsibility.
@@ -120,8 +231,13 @@ class DueRecord:
     # a scheduler ledger or a second persistence path.
     project_ref: Optional[str] = None
     manager_ref: Optional[str] = None
+    assignment_ref: Optional[Mapping[str, JSONValue]] = None
+    allowance_ref: Optional[Mapping[str, JSONValue]] = None
     generation: int = 1
     due_reasons: tuple[str, ...] = ()
+    # Exact accepted manager check-ins stay with their schedule after later
+    # callbacks clear the mutable last-completion fields.
+    accepted_checkins: tuple[Mapping[str, JSONValue], ...] = ()
     delivered_at: Optional[str] = None
     delivery_evidence: Optional[Mapping[str, JSONValue]] = None
     completed_at: Optional[str] = None
@@ -138,6 +254,12 @@ class DueRecord:
     lifecycle_owner: Optional[str] = None
     host_state: str = "unknown"
     host_evidence: Optional[Mapping[str, JSONValue]] = None
+    execution_mode: str = "continue_existing"
+    requested_model: Optional[str] = None
+    requested_reasoning: Optional[str] = None
+    context_refs: tuple[Mapping[str, JSONValue], ...] = ()
+    result_owner: Optional[str] = None
+    timeout_seconds: Optional[int] = None
 
     def __post_init__(self) -> None:
         _required_text(self.schedule_id, "schedule_id")
@@ -158,9 +280,112 @@ class DueRecord:
         for field_name, value in (("project_ref", self.project_ref), ("manager_ref", self.manager_ref)):
             if value is not None:
                 _required_text(value, field_name)
+        if self.assignment_ref is not None:
+            assignment_ref = _json_copy(self.assignment_ref, "assignment_ref")
+            if not isinstance(assignment_ref, Mapping):
+                raise TypeError("assignment_ref must be a JSON object")
+            _reference_identity(assignment_ref, "assignment_ref")
+            object.__setattr__(self, "assignment_ref", assignment_ref)
+        if self.allowance_ref is not None:
+            allowance_ref = _json_copy(self.allowance_ref, "allowance_ref")
+            if not isinstance(allowance_ref, Mapping):
+                raise TypeError("allowance_ref must be a JSON object")
+            _reference_identity(allowance_ref, "allowance_ref")
+            object.__setattr__(self, "allowance_ref", allowance_ref)
         for field_name, value in (("role", self.role), ("purpose", self.purpose), ("message", self.message), ("lifecycle_owner", self.lifecycle_owner)):
             if value is not None:
                 _required_text(value, field_name)
+        if self.execution_mode not in {"continue_existing", "fresh_bounded_worker", "fresh_bounded_role", "fresh_manager"}:
+            raise ValueError("execution_mode must be continue_existing, fresh_bounded_worker, fresh_bounded_role, or fresh_manager")
+        for field_name, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("result_owner", self.result_owner)):
+            if value is not None:
+                _required_text(value, field_name)
+        if self.timeout_seconds is not None and (isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0):
+            raise ValueError("timeout_seconds must be a positive integer")
+        if self.execution_mode == "fresh_bounded_worker":
+            if self.requested_model is None or self.requested_reasoning is None:
+                raise ValueError("fresh_bounded_worker requires requested_model and requested_reasoning")
+            if not self.context_refs:
+                raise ValueError("fresh_bounded_worker requires context_refs")
+            if self.result_owner is None:
+                raise ValueError("fresh_bounded_worker requires result_owner")
+            from .agents.source_verification import t01_timeout_scope
+            extended = self.timeout_seconds == 4620 and t01_timeout_scope({**(self.target or {}),
+                "generation":self.generation,"requested_model":self.requested_model,
+                "requested_reasoning":self.requested_reasoning,"profile":self.profile})
+            if self.timeout_seconds is None or (self.timeout_seconds > 1920 and not extended):
+                raise ValueError("fresh_bounded_worker timeout exceeds its exact task admission")
+            if self.role != "worker" or not isinstance(self.target, Mapping):
+                raise ValueError("fresh_bounded_worker requires a logical worker target")
+            _required_text(self.lifecycle_owner, "lifecycle_owner")
+            _required_text(self.manager_ref, "manager_ref")
+            _required_text(self.project_ref, "project_ref")
+            target = self.target
+            if any(key in target for key in NATIVE_TARGET_KEYS):
+                raise ValueError("fresh_bounded_worker must not supply a native session alias")
+            principal = target.get("principal")
+            principal_id = principal.get("id") if isinstance(principal, Mapping) else principal
+            if target.get("role") != "worker" or principal_id != self.recipient:
+                raise ValueError("fresh worker principal/role must match logical recipient")
+            for name in ("project_ref", "task_ref", "assignment_ref", "mandate_ref"):
+                ref = target.get(name)
+                if not isinstance(ref, Mapping):
+                    raise ValueError("fresh worker requires exact target." + name)
+                for field in ("authority", "kind", "id", "revision"):
+                    _required_text(ref.get(field), "target." + name + "." + field)
+            if target["project_ref"]["id"] != self.project_ref or (self.assignment_ref is not None and target["assignment_ref"] != self.assignment_ref):
+                raise ValueError("fresh worker project/assignment binding conflicts")
+            for key, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("requested_profile", self.profile)):
+                if key in target and target[key] != value:
+                    raise ValueError("fresh worker target configuration conflicts with DueRecord")
+            for ref in self.context_refs:
+                if not isinstance(ref, Mapping): raise ValueError("fresh context refs must be exact references")
+                for key in ("authority", "kind", "id", "revision"): _required_text(ref.get(key), "context_refs." + key)
+        if self.execution_mode == "fresh_bounded_role":
+            if self.role not in {"orchestrator", "project_advisor"} or not isinstance(self.target, Mapping):
+                raise ValueError("fresh_bounded_role requires an orchestrator or project_advisor target")
+            if self.requested_model is None or self.requested_reasoning is None or not self.context_refs:
+                raise ValueError("fresh_bounded_role requires requested model, reasoning, and context")
+            if self.timeout_seconds is None or self.timeout_seconds > 1920:
+                raise ValueError("fresh_bounded_role requires a finite supported timeout")
+            target = self.target
+            if any(key in target for key in NATIVE_TARGET_KEYS):
+                raise ValueError("fresh_bounded_role must not fabricate a native session alias")
+            principal = target.get("principal")
+            principal_id = principal.get("id") if isinstance(principal, Mapping) else principal
+            if target.get("role") != self.role or principal_id != self.recipient:
+                raise ValueError("fresh bounded role principal/role must match logical recipient")
+            for name in ("project_ref", "task_ref", "assignment_ref", "mandate_ref"):
+                ref = target.get(name)
+                if not isinstance(ref, Mapping):
+                    raise ValueError("fresh_bounded_role requires exact target." + name)
+                for field in ("authority", "kind", "id", "revision"):
+                    _required_text(ref.get(field), "target." + name + "." + field)
+            for key, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("requested_profile", self.profile)):
+                if target.get(key) != value:
+                    raise ValueError("fresh bounded role target configuration conflicts with DueRecord")
+        if self.execution_mode == "fresh_manager":
+            if (self.role != "manager" or not isinstance(self.target, Mapping)
+                    or self.requested_model is None or self.requested_reasoning is None
+                    or self.timeout_seconds is None or self.timeout_seconds > 1920 or not self.context_refs):
+                raise ValueError("fresh_manager requires a bounded configured manager target and context")
+            target = self.target
+            if any(key in target for key in NATIVE_TARGET_KEYS):
+                raise ValueError("fresh_manager must not fabricate a native session alias")
+            principal = target.get("principal")
+            principal_id = principal.get("id") if isinstance(principal, Mapping) else principal
+            if target.get("role") != "manager" or principal_id != self.recipient:
+                raise ValueError("fresh manager principal/role must match logical recipient")
+            for name in ("project_ref", "task_ref", "assignment_ref", "mandate_ref"):
+                ref = target.get(name)
+                if not isinstance(ref, Mapping):
+                    raise ValueError("fresh_manager requires exact target." + name)
+                for field in ("authority", "kind", "id", "revision"):
+                    _required_text(ref.get(field), "target." + name + "." + field)
+            for key, value in (("requested_model", self.requested_model), ("requested_reasoning", self.requested_reasoning), ("requested_profile", self.profile)):
+                if target.get(key) != value:
+                    raise ValueError("fresh manager target configuration conflicts with DueRecord")
+        object.__setattr__(self, "context_refs", tuple(_json_copy(item, "context_refs") for item in self.context_refs))
         if self.target is not None:
             if not isinstance(self.target, Mapping):
                 raise TypeError("target must be a JSON object")
@@ -169,9 +394,9 @@ class DueRecord:
                 raise TypeError("target must be a JSON object")
             if not _required_text(target.get("host") or target.get("host_id"), "target.host"):
                 raise ValueError("target.host must be non-blank text")
-            identity = next((target.get(key) for key in ("native_id", "conversation_id", "agent_id", "thread_id", "id") if target.get(key)), None)
-            if not _required_text(identity, "target.native_id"):
-                raise ValueError("target.native_id must be non-blank text")
+            if self.execution_mode == "continue_existing":
+                identity = native_target_identity(target)
+                _required_text(identity, "target.native_id")
             object.__setattr__(self, "target", target)
         if isinstance(self.generation, bool) or not isinstance(self.generation, int) or self.generation < 1:
             raise ValueError("generation must be a positive integer")
@@ -190,6 +415,10 @@ class DueRecord:
         if self.host_state not in {"unknown", "pending", "active", "paused", "failed"}:
             raise ValueError("unsupported host_state")
         object.__setattr__(self, "outstanding_decisions", tuple(_json_copy(item, "outstanding_decisions") for item in self.outstanding_decisions))
+        if any(not isinstance(item, Mapping) for item in self.accepted_checkins):
+            raise TypeError("accepted_checkins must contain JSON objects")
+        object.__setattr__(self, "accepted_checkins", tuple(
+            _json_copy(item, "accepted_checkins") for item in self.accepted_checkins))
         if self.last_result is not None:
             object.__setattr__(self, "last_result", _json_copy(self.last_result, "last_result"))
         if self.delivery_evidence is not None:
@@ -213,12 +442,20 @@ class DueRecord:
             "owner": self.owner,
             "project_ref": self.project_ref,
             "manager_ref": self.manager_ref,
+            "assignment_ref": None if self.assignment_ref is None else dict(self.assignment_ref),
+            "allowance_ref": None if self.allowance_ref is None else dict(self.allowance_ref),
             "generation": self.generation,
             "target": None if self.target is None else dict(self.target),
             "role": self.role,
             "purpose": self.purpose,
             "message": self.message,
             "lifecycle_owner": self.lifecycle_owner,
+            "execution_mode": self.execution_mode,
+            "requested_model": self.requested_model,
+            "requested_reasoning": self.requested_reasoning,
+            "context_refs": [dict(item) for item in self.context_refs],
+            "result_owner": self.result_owner,
+            "timeout_seconds": self.timeout_seconds,
         }
 
     def to_dict(self) -> dict[str, JSONValue]:
@@ -235,6 +472,7 @@ class DueRecord:
             "last_result": None if self.last_result is None else dict(self.last_result),
             "version": self.version,
             "due_reasons": list(self.due_reasons),
+            "accepted_checkins": [dict(item) for item in self.accepted_checkins],
             "delivered_at": self.delivered_at,
             "delivery_evidence": None if self.delivery_evidence is None else dict(self.delivery_evidence),
             "completed_at": self.completed_at,
@@ -260,14 +498,329 @@ class DueRecord:
             last_completed_request=value.get("last_completed_request"), last_result=value.get("last_result"),
             version=int(value.get("version", 0)),
             project_ref=value.get("project_ref"), manager_ref=value.get("manager_ref"),
+            assignment_ref=value.get("assignment_ref"),
+            allowance_ref=value.get("allowance_ref"),
             generation=int(value.get("generation", 1)), due_reasons=tuple(value.get("due_reasons", ())),
+            accepted_checkins=tuple(value.get("accepted_checkins", ())),
             delivered_at=value.get("delivered_at"), delivery_evidence=value.get("delivery_evidence"),
             completed_at=value.get("completed_at"), completion_evidence=value.get("completion_evidence"),
             completion_state=value.get("completion_state", "none"),
             target=value.get("target"), role=value.get("role"), purpose=value.get("purpose"),
             message=value.get("message"), lifecycle_owner=value.get("lifecycle_owner"),
             host_state=value.get("host_state", "unknown"), host_evidence=value.get("host_evidence"),
+            execution_mode=value.get("execution_mode", "continue_existing"),
+            requested_model=value.get("requested_model"), requested_reasoning=value.get("requested_reasoning"),
+            context_refs=tuple(value.get("context_refs", ())), result_owner=value.get("result_owner"),
+            timeout_seconds=value.get("timeout_seconds"),
         )
+
+
+def trigger_configuration_view(record: DueRecord) -> dict[str, JSONValue]:
+    """Return a read-only, owner-record-backed trigger configuration view.
+
+    This is deliberately a projection of the existing DueRecord.  It does not
+    resolve an external role registry, reserve allowance, or launch a host.
+    Those capabilities remain separate owner concerns until their public
+    contracts exist.
+    """
+
+    if not isinstance(record, DueRecord):
+        raise TypeError("record must be a DueRecord")
+    next_due: Optional[str]
+    if record.stop_state != "active":
+        next_due = None
+    elif record.interval_seconds is None:
+        next_due = record.due_at
+    else:
+        next_slot = max(record.last_covered_slot + 1, 0)
+        next_due = _iso(_parse_iso(record.anchor) + timedelta(seconds=next_slot * record.interval_seconds))
+    if record.stop_state != "active":
+        readiness = "stopped"
+    elif record.in_flight_request is not None:
+        readiness = "in_flight"
+    elif record.host_state in {"failed", "paused"}:
+        readiness = "host_blocked"
+    else:
+        readiness = "ready"
+    return {
+        "schedule_id": record.schedule_id,
+        "recipient": record.recipient,
+        "role": record.role,
+        "target": None if record.target is None else dict(record.target),
+        "scope": {
+            "project_ref": record.project_ref,
+            "manager_ref": record.manager_ref,
+            "assignment_ref": None if record.assignment_ref is None else dict(record.assignment_ref),
+            "allowance_ref": None if record.allowance_ref is None else dict(record.allowance_ref),
+            "generation": record.generation,
+            "lifecycle_owner": record.lifecycle_owner,
+        },
+        "purpose": record.purpose,
+        "intended_action": record.message or record.instruction,
+        "cadence": {
+            "anchor": record.anchor,
+            "interval_seconds": record.interval_seconds,
+            "due_at": record.due_at,
+            "next_due": next_due,
+        },
+        "execution": {
+            "mode": record.execution_mode,
+            "requested_model": record.requested_model,
+            "requested_reasoning": record.requested_reasoning,
+            "context_refs": [dict(item) for item in record.context_refs],
+            "result_owner": record.result_owner,
+            "timeout_seconds": record.timeout_seconds,
+            "allowance_ref": None if record.allowance_ref is None else dict(record.allowance_ref),
+        },
+        "state": {
+            "stop_state": record.stop_state,
+            "host_state": record.host_state,
+            "delivery_state": record.delivery_state,
+            "completion_state": record.completion_state,
+            "version": record.version,
+            "readiness": readiness,
+        },
+    }
+
+
+def _configuration_error(code: str, message: str, **details: JSONValue) -> dict[str, JSONValue]:
+    error = {"code": code, "message": message}
+    error.update(details)
+    return {"outcome": "rejected", "error": error, "automatic_action": False}
+
+
+def _context_identity(value: Any, field_name: str) -> tuple[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be an object")
+    identity = value.get("id") or value.get("path") or value.get("name")
+    version = value.get("revision") or value.get("sha256") or value.get("digest")
+    _required_text(identity, f"{field_name}.id")
+    _required_text(version, f"{field_name}.version")
+    return identity, version
+
+
+def _versioned_reference_matches(expected: Mapping[str, JSONValue], observed: Any, field_name: str) -> bool:
+    try:
+        expected_identity = _reference_identity(expected, field_name)
+        observed_identity = _reference_identity(observed, field_name)
+    except (TypeError, ValueError):
+        return False
+    if expected_identity != observed_identity:
+        return False
+    expected_revision = expected.get("revision")
+    if expected_revision is None:
+        return True
+    observed_revision = observed.get("revision") if isinstance(observed, Mapping) else getattr(observed, "revision", None)
+    return observed_revision == expected_revision
+
+
+def _capability_identity(value: Mapping[str, JSONValue], fields: Sequence[str], field_name: str) -> Optional[str]:
+    """Read an optional explicit provider/adapter identity from evidence."""
+
+    for field in fields:
+        if field not in value:
+            continue
+        identity = value[field]
+        if isinstance(identity, Mapping):
+            identity = identity.get("id") or identity.get("identity") or identity.get("name")
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError(f"{field_name}.{field} must be non-blank text")
+        return identity
+    return None
+
+
+def validate_execution_configuration(
+    record: DueRecord,
+    *,
+    capability_evidence: Mapping[str, JSONValue],
+    context_evidence: Sequence[Mapping[str, JSONValue]] = (),
+    allowance_evidence: Optional[Mapping[str, JSONValue]] = None,
+) -> dict[str, JSONValue]:
+    """Validate a requested configuration without invoking a provider.
+
+    Capability, context, and allowance values are caller-supplied public
+    evidence.  This function proves only that the requested configuration is
+    supported by those values; it never reserves allowance or observes model
+    execution.
+    """
+
+    if not isinstance(record, DueRecord):
+        return _configuration_error("invalid_record", "record must be a DueRecord")
+    try:
+        requested_model = _required_text(record.requested_model, "requested_model")
+        requested_reasoning = _required_text(record.requested_reasoning, "requested_reasoning")
+    except ValueError as exc:
+        return _configuration_error("requested_configuration_missing", str(exc))
+    if not isinstance(capability_evidence, Mapping):
+        return _configuration_error("invalid_capability_evidence", "capability evidence must be an object")
+    capability_revision = capability_evidence.get("revision") or capability_evidence.get("version")
+    if not isinstance(capability_revision, str) or not capability_revision.strip():
+        return _configuration_error("capability_version_required", "capability evidence requires a revision or version")
+    if capability_evidence.get("supported") is False or capability_evidence.get("available") is False:
+        return _configuration_error(
+            "unsupported_provider",
+            "capability evidence explicitly marks the provider route unavailable",
+            capability_revision=capability_revision,
+        )
+    try:
+        target = record.target if isinstance(record.target, Mapping) else {}
+        expected_adapter = _capability_identity(
+            target, ("native_adapter", "adapter_identity", "adapter"), "target"
+        )
+        expected_provider = _capability_identity(
+            target, ("provider_identity", "provider"), "target"
+        )
+        observed_adapter = _capability_identity(
+            capability_evidence, ("native_adapter", "adapter_identity", "adapter"), "capability_evidence"
+        )
+        observed_provider = _capability_identity(
+            capability_evidence, ("provider_identity", "provider"), "capability_evidence"
+        )
+    except ValueError as exc:
+        return _configuration_error("invalid_capability_evidence", str(exc))
+    if expected_adapter is not None and observed_adapter is not None and expected_adapter != observed_adapter:
+        return _configuration_error(
+            "unsupported_provider",
+            "capability evidence does not identify the configured adapter",
+            requested_adapter=expected_adapter,
+            observed_adapter=observed_adapter,
+        )
+    if expected_provider is not None and observed_provider is not None and expected_provider != observed_provider:
+        return _configuration_error(
+            "unsupported_provider",
+            "capability evidence does not identify the configured provider",
+            requested_provider=expected_provider,
+            observed_provider=observed_provider,
+        )
+    models = capability_evidence.get("models")
+    if not isinstance(models, Mapping):
+        return _configuration_error("invalid_capability_evidence", "capability evidence requires a models object")
+    model_capability = models.get(requested_model)
+    if not isinstance(model_capability, Mapping):
+        return _configuration_error("unsupported_model", "requested model is absent from capability evidence", requested_model=requested_model)
+    if model_capability.get("supported") is False or model_capability.get("available") is False:
+        return _configuration_error(
+            "unsupported_model",
+            "model capability explicitly marks the requested model unavailable",
+            requested_model=requested_model,
+        )
+    try:
+        model_adapter = _capability_identity(
+            model_capability, ("native_adapter", "adapter_identity", "adapter"), "model_capability"
+        )
+        model_provider = _capability_identity(
+            model_capability, ("provider_identity", "provider"), "model_capability"
+        )
+    except ValueError as exc:
+        return _configuration_error("invalid_capability_evidence", str(exc), requested_model=requested_model)
+    if expected_adapter is not None and model_adapter is not None and expected_adapter != model_adapter:
+        return _configuration_error(
+            "unsupported_provider",
+            "model capability does not identify the configured adapter",
+            requested_model=requested_model,
+            requested_adapter=expected_adapter,
+            observed_adapter=model_adapter,
+        )
+    if expected_provider is not None and model_provider is not None and expected_provider != model_provider:
+        return _configuration_error(
+            "unsupported_provider",
+            "model capability does not identify the configured provider",
+            requested_model=requested_model,
+            requested_provider=expected_provider,
+            observed_provider=model_provider,
+        )
+    supported_reasoning = model_capability.get("reasoning") or model_capability.get("reasoning_efforts") or model_capability.get("supported_reasoning")
+    if not isinstance(supported_reasoning, (list, tuple, set, frozenset)):
+        return _configuration_error("invalid_capability_evidence", "model capability requires reasoning choices", requested_model=requested_model)
+    if requested_reasoning not in supported_reasoning:
+        return _configuration_error("unsupported_reasoning", "requested reasoning is absent from capability evidence", requested_model=requested_model, requested_reasoning=requested_reasoning)
+    if not isinstance(context_evidence, (list, tuple)):
+        return _configuration_error("invalid_context_evidence", "context evidence must be a sequence")
+    available_context: dict[str, str] = {}
+    for index, item in enumerate(context_evidence):
+        try:
+            context_id, context_version = _context_identity(item, f"context_evidence[{index}]")
+        except ValueError as exc:
+            return _configuration_error("invalid_context_evidence", str(exc))
+        prior = available_context.get(context_id)
+        if prior is not None and prior != context_version:
+            return _configuration_error("ambiguous_context", "context evidence contains multiple versions", context_id=context_id)
+        available_context[context_id] = context_version
+    requested_context: list[dict[str, JSONValue]] = []
+    for index, item in enumerate(record.context_refs):
+        try:
+            context_id, context_version = _context_identity(item, f"context_refs[{index}]")
+        except ValueError as exc:
+            return _configuration_error("invalid_context_reference", str(exc))
+        observed_version = available_context.get(context_id)
+        if observed_version is None:
+            return _configuration_error("context_missing", "requested context is absent from evidence", context_id=context_id)
+        if observed_version != context_version:
+            return _configuration_error("context_version_mismatch", "requested context version is not current", context_id=context_id, requested_version=context_version, observed_version=observed_version)
+        requested_context.append(dict(item))
+    if record.assignment_ref is None:
+        return _configuration_error("assignment_ref_required", "allowance validation requires an owner-bound assignment reference")
+    if record.allowance_ref is None:
+        return _configuration_error("allowance_ref_required", "configuration requires an allowance reference")
+    if not isinstance(allowance_evidence, Mapping):
+        return _configuration_error("allowance_evidence_required", "allowance evidence is required")
+    observed_allowance_ref = allowance_evidence.get("ref")
+    if not _versioned_reference_matches(record.allowance_ref, observed_allowance_ref, "allowance_ref"):
+        return _configuration_error("allowance_ref_mismatch", "allowance evidence does not match the configured allowance")
+    observed_assignment_ref = allowance_evidence.get("assignment_ref")
+    allowance_assignment = record.assignment_ref
+    adoption = (record.host_evidence or {}).get("resource_adoption")
+    if isinstance(adoption, Mapping) and adoption.get("assignment_ref") == record.assignment_ref and adoption.get("generation") == record.generation:
+        predecessor = adoption.get("allowance_assignment_ref")
+        if isinstance(predecessor, Mapping) and _reference_identity(predecessor, "allowance_assignment_ref") == _reference_identity(record.assignment_ref, "assignment_ref"):
+            allowance_assignment = predecessor
+    if not _versioned_reference_matches(allowance_assignment, observed_assignment_ref, "assignment_ref"):
+        return _configuration_error("allowance_assignment_mismatch", "allowance evidence is not linked to the configured assignment")
+    if allowance_evidence.get("generation") != record.generation:
+        return _configuration_error("allowance_generation_mismatch", "allowance evidence generation is stale")
+    if allowance_evidence.get("available") is not True:
+        return _configuration_error("allowance_unavailable", "allowance evidence is not available")
+    remaining = allowance_evidence.get("remaining")
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or remaining <= 0:
+        return _configuration_error("allowance_exhausted", "allowance evidence has no remaining capacity")
+    return {
+        "outcome": "configuration_supported",
+        "schedule_id": record.schedule_id,
+        "requested": {"model": requested_model, "reasoning": requested_reasoning},
+        "capability": {
+            "revision": capability_revision,
+            "supported": True,
+            **({"adapter_identity": observed_adapter} if observed_adapter is not None else {}),
+            **({"provider_identity": observed_provider} if observed_provider is not None else {}),
+        },
+        "context": {
+            "versions_verified": True,
+            "refs": requested_context,
+            "manifest": {
+                "requested": requested_context,
+                "supplied": sorted(
+                    (dict(item) for item in context_evidence),
+                    key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                ),
+            },
+            "manifest_digest": _digest({
+                "requested": requested_context,
+                "supplied": sorted(
+                    (dict(item) for item in context_evidence),
+                    key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                ),
+            }),
+        },
+        "allowance": {
+            "ref": dict(record.allowance_ref),
+            "assignment_ref": dict(record.assignment_ref),
+            "generation": record.generation,
+            "remaining": remaining,
+            "reserved": False,
+        },
+        "observed_execution": {"provider_called": False, "model": None, "reasoning": None},
+        "automatic_action": False,
+    }
 
 
 class DueRecordPort(Protocol):
@@ -276,6 +829,8 @@ class DueRecordPort(Protocol):
     def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]: ...
 
     def save_due(self, schedule_id: str, record: Mapping[str, JSONValue], *, request_id: str, expected_version: int) -> Mapping[str, JSONValue]: ...
+
+    def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]: ...
 
 
 class SharedAttentionPort(Protocol):
@@ -317,6 +872,14 @@ class InMemoryDueRecordPort:
         value = self._records.get(schedule_id)
         return None if value is None else _json_copy(value, "record")
 
+    def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:
+        normalized = _trigger_scope(scope)
+        return tuple(
+            _json_copy(value, "record")
+            for value in self._records.values()
+            if _matches_trigger_scope(value, normalized)
+        )
+
     def save_due(self, schedule_id: str, record: Mapping[str, JSONValue], *, request_id: str, expected_version: int) -> Mapping[str, JSONValue]:
         value = dict(_json_copy(record, "record"))
         if schedule_id != value.get("schedule_id"):
@@ -331,6 +894,14 @@ class InMemoryDueRecordPort:
         current_version = 0 if current is None else int(current.get("version", 0))
         if current_version != expected_version:
             raise StateConflictError(f"expected durable version {expected_version}, observed {current_version}")
+        conflict = _advisor_claim_conflict(
+            self._records.values(), schedule_id=schedule_id, current=current, desired=value,
+        )
+        if conflict is not None:
+            raise StateConflictError(
+                "project advisor inspection already in flight on "
+                + str(conflict.get("schedule_id"))
+            )
         value["version"] = current_version + 1
         self._records[schedule_id] = value
         self._requests[request_id] = (schedule_id, dict(value))
@@ -398,7 +969,7 @@ def _receipt_json(receipt: Any, *, result_payload: Mapping[str, JSONValue], resu
 class _DueRecordOwnerEngine:
     """Trusted owner implementation used behind Herzchen's command port."""
 
-    def __init__(self, writer: Any, actor: Any) -> None:
+    def __init__(self, writer: Any, actor: Any, *, external_assignment_guard: Any = None) -> None:
         from herzchen.contracts import AuthenticatedActor
 
         if not hasattr(writer, "mutate") or not hasattr(writer, "get_identity"):
@@ -407,6 +978,12 @@ class _DueRecordOwnerEngine:
             raise TypeError("actor must be an FND AuthenticatedActor")
         self._writer = writer
         self._actor = actor
+        if external_assignment_guard is not None:
+            from otto.portfolio.attention_binding import ExternalAssignmentGuard
+            if type(external_assignment_guard) is not ExternalAssignmentGuard:
+                raise TypeError("external assignment guard must be owner issued")
+            external_assignment_guard.validate_issuer(writer.authority, actor)
+        self._external_assignment_guard = external_assignment_guard
 
     @staticmethod
     def _ref(authority: str, schedule_id: str, revision: Optional[str] = None) -> Any:
@@ -423,7 +1000,170 @@ class _DueRecordOwnerEngine:
         value["version"] = int(identity.version)
         return value
 
-    def save_due(
+    def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:
+        """Read current records; exact native scopes avoid historical payload hydration."""
+
+        normalized = _trigger_scope(scope)
+        if {"native_adapter", "native_session_id"}.intersection(normalized) and callable(getattr(self._writer, "find_identity_refs", None)):
+            paths = {"native_adapter": ("target", "native_adapter"),
+                     "native_session_id": ("host_evidence", "gateway_attempt", "delivery_authorization", "physical_session_id")}
+            refs = self._writer.find_identity_refs(kind="otto.due-record",
+                payload_matches={paths[key]: value for key, value in normalized.items() if key in paths})
+            # Current records, not prior matching events: replacement or
+            # changed pins must not recover a superseded native capability.
+            return tuple(value for ref in refs for value in (self.read_due(ref.id),)
+                         if value is not None and _matches_trigger_scope(value, normalized))
+        latest: dict[str, tuple[int, int, dict[str, JSONValue]]] = {}
+        for event in self._writer.list_events():
+            if event.event_type != "otto.due-record.changed":
+                continue
+            effects = event.effects
+            record = effects.get("record") if isinstance(effects, Mapping) else None
+            if not isinstance(record, Mapping):
+                continue
+            value = dict(_json_copy(record, "due record"))
+            schedule_id = value.get("schedule_id")
+            if not isinstance(schedule_id, str):
+                continue
+            version = int(value.get("version", effects.get("version", 0)))
+            prior = latest.get(schedule_id)
+            if prior is None or (version, int(event.sequence)) > (prior[0], prior[1]):
+                latest[schedule_id] = (version, int(event.sequence), value)
+        return tuple(
+            _json_copy(value, "due record")
+            for _, _, value in sorted(latest.values(), key=lambda item: item[2]["schedule_id"])
+            if _matches_trigger_scope(value, normalized)
+        )
+
+    def reconcile_assignment_resources(self, schedule_id: str, *, assignment_ref: Mapping[str, JSONValue],
+                                       expected_version: int, request_id: str) -> Mapping[str, JSONValue]:
+        """Reconcile one same-generation adoption before the first gateway claim."""
+        if self._external_assignment_guard is not None:
+            raise StateConflictError("resource reconciliation is unavailable for split attention custody")
+        from herzchen.contracts import ResourceRef
+        with self._writer.transaction():
+            prior = self._writer.get_receipt(request_id)
+            if prior is not None:
+                event = next(item for item in self._writer.list_events(stream="otto.due-record:" + schedule_id) if item.event_id in prior.event_ids)
+                saved = event.effects["record"]
+                if saved.get("assignment_ref") != dict(assignment_ref):
+                    raise InputChangedError("reconciliation request reused for another assignment")
+                return self._save_due(schedule_id, saved, request_id=request_id, expected_version=expected_version)
+            raw = self.read_due(schedule_id)
+            if raw is None:
+                raise StateConflictError("due record is missing")
+            record = DueRecord.from_dict(raw)
+            if record.version != expected_version:
+                raise StateConflictError("due record revision is stale")
+            if record.lifecycle_owner != self._actor.actor:
+                raise ValueError("only the authenticated lifecycle owner may reconcile resources")
+            if record.stop_state != "active" or not record.in_flight_request:
+                raise StateConflictError("an active admitted occurrence is required")
+            evidence = dict(record.host_evidence or {})
+            attention_receipt = record.delivery_evidence
+            attention_claim_only = (
+                isinstance(attention_receipt, Mapping)
+                and attention_receipt.get("outcome") in {"created", "replayed"}
+                and attention_receipt.get("request_id") == record.in_flight_request
+                and isinstance(attention_receipt.get("receipt"), Mapping)
+                and attention_receipt["receipt"].get("logical_request_key")
+                    == record.in_flight_request
+            )
+            if (evidence.get("gateway_attempt") is not None
+                    or (record.delivery_evidence is not None and not attention_claim_only)
+                    or record.last_result or record.completed_at or record.completion_evidence):
+                raise StateConflictError("attempt or delivery already exists")
+            ref = ResourceRef.from_dict(dict(assignment_ref))
+            current = self._writer.get_identity(ref)
+            if current is None or current.ref != ref or current.payload.get("generation") != record.generation:
+                raise StateConflictError("assignment revision or generation is stale")
+            payload = current.payload
+            if payload.get("resource_adoption_base_ref") != record.assignment_ref:
+                raise StateConflictError("adoption does not amend the exact admitted assignment")
+            if not payload.get("resource_adoptions") or not payload.get("resource_adoption_digest"):
+                raise StateConflictError("assignment has no instruction adoption")
+            previous = evidence.get("resource_adoption", {})
+            evidence["resource_adoption"] = {
+                "assignment_ref": dict(assignment_ref), "generation": record.generation,
+                "revision": payload["resource_adoption_revision"], "digest": payload["resource_adoption_digest"],
+                "allowance_assignment_ref": previous.get("allowance_assignment_ref", record.assignment_ref),
+            }
+            value = record.to_dict()
+            value.update(assignment_ref=dict(assignment_ref), host_evidence=evidence)
+            if (isinstance(record.target, Mapping)
+                    and record.target.get("assignment_ref") == record.assignment_ref):
+                # The logical target and admitted assignment are one binding
+                # for managers as well as fresh workers. Advance both only
+                # after validating the exact adoption base.
+                value["target"] = {**record.target, "assignment_ref": dict(assignment_ref)}
+            return self.save_due(schedule_id, value, request_id=request_id, expected_version=expected_version)
+
+    def save_due(self, schedule_id: str, record: Mapping[str, JSONValue], *, request_id: str, expected_version: int) -> Mapping[str, JSONValue]:
+        # Assignment validation and the DueRecord CAS share the owner transaction.
+        # A resource amendment racing this claim therefore cannot slip between them.
+        from herzchen.contracts import ResourceRef
+        guard = self._external_assignment_guard
+        if guard is not None:
+            # Fixed order: original owner BEGIN IMMEDIATE, then attention CAS.
+            # An exit failure after local commit propagates; the durable claim
+            # remains spent and cannot authorize a provider effect or retry.
+            with guard.hold(schedule_id, record, request_id=request_id):
+                with self._writer.transaction():
+                    if self._writer.get_receipt(request_id) is None:
+                        guard.validate_transition(self.read_due(schedule_id), record)
+                    return self._save_due(schedule_id, record, request_id=request_id, expected_version=expected_version)
+        if (record.get("assignment_ref") or {}).get("authority", self._writer.authority) != self._writer.authority:
+            raise StateConflictError("external assignment requires an original-owner guard")
+        with self._writer.transaction():
+            if self._writer.get_receipt(request_id) is not None:
+                return self._save_due(schedule_id, record, request_id=request_id, expected_version=expected_version)
+            evidence = record.get("host_evidence") or {}
+            adoption = evidence.get("resource_adoption")
+            ref = ResourceRef.from_dict(dict(record["assignment_ref"])) if record.get("assignment_ref") else None
+            current = None if ref is None else self._writer.get_identity(ref)
+            if evidence.get("gateway_attempt") is not None and current is not None and current.payload.get("resource_adoptions") and adoption is None:
+                raise StateConflictError("instruction adoption requires DueRecord reconciliation before claim")
+            if adoption is not None and self._stale_manager_stop_only(schedule_id, record, current, ref):
+                return self._save_due(schedule_id, record, request_id=request_id, expected_version=expected_version)
+            if adoption is not None:
+                if current is None or current.ref != ref or current.payload.get("generation") != record.get("generation"):
+                    raise StateConflictError("assignment changed before owner CAS")
+                if adoption.get("assignment_ref") != ref.to_dict() or adoption.get("generation") != record.get("generation") or adoption.get("digest") != current.payload.get("resource_adoption_digest") or adoption.get("revision") != current.payload.get("resource_adoption_revision"):
+                    raise StateConflictError("instruction adoption changed before owner CAS")
+            return self._save_due(schedule_id, record, request_id=request_id, expected_version=expected_version)
+
+    def _stale_manager_stop_only(self, schedule_id: str, desired: Mapping[str, JSONValue],
+                                 assignment: Any, old_ref: Any) -> bool:
+        """Stop old custody after one same-generation instruction adoption.
+
+        This grants no recovery or replay. Every old execution/evidence field
+        stays byte-equivalent in the owner value; only the lifecycle owner may
+        stop it. Current assignment and exact Due CAS share this transaction.
+        """
+        if assignment is None or old_ref is None or assignment.ref == old_ref:
+            return False
+        before = self.read_due(schedule_id)
+        if before is None or before.get("stop_state") != "active":
+            return False
+        wanted = dict(before, stop_state="stopped")
+        if _json_copy(desired, "record") != wanted:
+            return False
+        payload = assignment.payload
+        scope = payload.get("scope") or {}
+        target = before.get("target") or {}
+        return (before.get("role") == "manager" and payload.get("role") == "manager"
+                and payload.get("resource_adoption_base_ref") == old_ref.to_dict()
+                and payload.get("generation") == before.get("generation")
+                and payload.get("principal") == before.get("recipient")
+                and target.get("principal") == before.get("recipient")
+                and scope.get("authority") == self._writer.authority
+                and scope.get("kind") == "work.project" and scope.get("id") == before.get("project_ref")
+                and before.get("lifecycle_owner") == self._actor.actor
+                and before.get("owner") == self._actor.actor
+                and before.get("assignment_ref") == old_ref.to_dict()
+                and target.get("assignment_ref") == old_ref.to_dict())
+
+    def _save_due(
         self,
         schedule_id: str,
         record: Mapping[str, JSONValue],
@@ -447,6 +1187,24 @@ class _DueRecordOwnerEngine:
             observed = 0 if current is None else int(current.version)
             if observed != expected_version:
                 raise StateConflictError(f"expected durable version {expected_version}, observed {observed}")
+            current_value = None if current is None else current.payload
+            # Only a new project-advisor claim needs the cross-record fence.
+            # Ordinary manager/worker saves are identity-local and must not
+            # materialize every historical Due event before each mutation.
+            conflict = None
+            if (value.get("role") == "project_advisor" and value.get("in_flight_request")
+                    and not (isinstance(current_value, Mapping)
+                             and current_value.get("in_flight_request"))):
+                conflict = _advisor_claim_conflict(
+                    self.list_due(), schedule_id=schedule_id,
+                    current=current_value if isinstance(current_value, Mapping) else None,
+                    desired=value,
+                )
+            if conflict is not None:
+                raise StateConflictError(
+                    "project advisor inspection already in flight on "
+                    + str(conflict.get("schedule_id"))
+                )
         if prior is not None:
             # Store replay identity includes the original unpinned target and
             # request payload.  Reconstruct those exact values before asking
@@ -538,8 +1296,8 @@ class StoreDueRecordPort:
 
         if not isinstance(client, SerializedCommandClient):
             raise TypeError("client must be an issued Herzchen SerializedCommandClient")
-        if tuple(client.endpoints) != ("read_due", "save_due"):
-            raise TypeError("due-record client endpoints must be exactly read_due and save_due")
+        if tuple(client.endpoints) != ("list_due", "read_due", "reconcile_assignment_resources", "save_due"):
+            raise TypeError("due-record client endpoints must be exactly read_due, save_due, and list_due")
         self._client = client
 
     @property
@@ -549,11 +1307,18 @@ class StoreDueRecordPort:
         return self._client.transport
 
     def __dir__(self) -> list[str]:
-        return ["read_due", "save_due", "transport"]
+        return ["read_due", "save_due", "list_due", "reconcile_assignment_resources", "transport"]
 
     def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
         value = self._client.call("read_due", schedule_id)
         return None if value is None else dict(_json_copy(value, "due record"))
+
+    def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:
+        values = self._client.call("list_due") if scope is None else self._client.call("list_due", _json_copy(scope, "scope"))
+        return tuple(dict(_json_copy(value, "due record")) for value in values)
+
+    def reconcile_assignment_resources(self, schedule_id: str, *, assignment_ref: Mapping[str, JSONValue], expected_version: int, request_id: str) -> Mapping[str, JSONValue]:
+        return self._client.call("reconcile_assignment_resources", schedule_id, assignment_ref=dict(assignment_ref), expected_version=expected_version, request_id=request_id)
 
     def save_due(
         self,
@@ -570,10 +1335,10 @@ class StoreDueRecordPort:
         return dict(_json_copy(value, "due record"))
 
 
-def issue_store_due_record_port(writer: Any, actor: Any) -> StoreDueRecordPort:
+def issue_store_due_record_port(writer: Any, actor: Any, *, external_assignment_guard: Any = None) -> StoreDueRecordPort:
     """Issue the finite client while retaining Herzchen custody in the host."""
 
-    service = _due_owner_service_type()(writer, actor)
+    service = _due_owner_service_type()(writer, actor, external_assignment_guard=external_assignment_guard)
     return StoreDueRecordPort(service.command_port)
 
 
@@ -1067,6 +1832,264 @@ class DurableAttention:
             return None if value is None else DueRecord.from_dict(value)
         return self._awaited_records.get(schedule_id)
 
+    def list_configured(
+        self,
+        *,
+        scope: Optional[Mapping[str, JSONValue]] = None,
+    ) -> Sequence[Mapping[str, JSONValue]]:
+        """List configured triggers through the existing owner record port.
+
+        The result is intentionally a projection: it exposes the persisted
+        execution and ownership pins, while making no claim about model
+        support, allowance, role-registry resolution, or host launch.
+        """
+
+        normalized = _trigger_scope(scope)
+        if self.due_port is not None:
+            values = self.due_port.list_due(normalized)
+            records = (DueRecord.from_dict(value) for value in values)
+        else:
+            records = (
+                record for record in self._awaited_records.values()
+                if _matches_trigger_scope(record.to_dict(), normalized)
+            )
+        return tuple(trigger_configuration_view(record) for record in records)
+
+    def validate_configuration(
+        self,
+        schedule_id: str,
+        *,
+        capability_evidence: Mapping[str, JSONValue],
+        context_evidence: Sequence[Mapping[str, JSONValue]] = (),
+        allowance_evidence: Optional[Mapping[str, JSONValue]] = None,
+        expected_version: Optional[int] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+        lifecycle_owner: Optional[str] = None,
+    ) -> dict[str, JSONValue]:
+        """Validate one owner-record configuration without provider execution."""
+
+        _required_text(schedule_id, "schedule_id")
+        if expected_version is None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "expected_version_required", "message": "configuration validation requires an owner version"}, "automatic_action": False}
+        if lifecycle_owner is None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "owner_required", "message": "configuration validation requires the lifecycle owner"}, "automatic_action": False}
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
+        if scope_error is not None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}
+        if expected_version != record.version:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "stale_version", "message": "configuration validation version is stale"}, "automatic_action": False}
+        result = validate_execution_configuration(
+            record,
+            capability_evidence=capability_evidence,
+            context_evidence=context_evidence,
+            allowance_evidence=allowance_evidence,
+        )
+        result["schedule_id"] = schedule_id
+        if result.get("outcome") == "configuration_supported":
+            result["owner"] = {"lifecycle_owner": record.lifecycle_owner, "version": record.version, "expected_version": expected_version, "generation": record.generation}
+        return result
+
+    def resolve_recipient(
+        self,
+        schedule_id: str,
+        *,
+        recipient: Optional[str] = None,
+        role: Optional[str] = None,
+        project_ref: Optional[str] = None,
+        manager_ref: Optional[str] = None,
+        generation: Optional[int] = None,
+        lifecycle_owner: Optional[str] = None,
+        assignment_reader: Any = None,
+    ) -> dict[str, JSONValue]:
+        """Validate one explicit recipient/role binding against owner state.
+
+        Without ``assignment_reader`` this remains the original DueRecord-only
+        binding check.  With the qualified public assignment reader it also
+        validates the exact pinned current assignment; it never searches a
+        role registry or infers an agent from a role alone.
+        """
+
+        _required_text(schedule_id, "schedule_id")
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
+        scope_error = self._scope_error(
+            record,
+            project_ref=project_ref,
+            manager_ref=manager_ref,
+            generation=generation,
+            lifecycle_owner=lifecycle_owner,
+        )
+        if scope_error is not None:
+            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}
+        if recipient is None and role is None:
+            return {
+                "outcome": "rejected", "schedule_id": schedule_id,
+                "error": {"code": "recipient_or_role_required", "message": "an explicit recipient or role is required"},
+                "automatic_action": False,
+            }
+        if role is not None:
+            _required_text(role, "role")
+            if project_ref is None:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "role_scope_required", "message": "role resolution requires project scope"},
+                    "automatic_action": False,
+                }
+            if record.role != role:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "role_mismatch", "message": "role does not match the owner-bound trigger"},
+                    "automatic_action": False,
+                }
+        if recipient is not None:
+            _required_text(recipient, "recipient")
+            if record.recipient != recipient:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "recipient_mismatch", "message": "recipient does not match the owner-bound trigger"},
+                    "automatic_action": False,
+                }
+        assignment_binding: Optional[dict[str, JSONValue]] = None
+        if assignment_reader is not None:
+            if record.assignment_ref is None:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "ambiguous_assignment", "message": "assignment-aware resolution requires an exact assignment reference"},
+                    "automatic_action": False,
+                }
+            expected_assignment = _reference_identity(record.assignment_ref, "assignment_ref")
+            lookup_ref: Any = dict(record.assignment_ref)
+            try:
+                from herzchen.contracts import ResourceRef
+
+                lookup_ref = ResourceRef.from_dict(lookup_ref)
+            except (ImportError, TypeError, ValueError):
+                pass
+            try:
+                assignment = assignment_reader.get(lookup_ref)
+            except Exception:
+                assignment = None
+            if assignment is None:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "missing_assignment", "message": "the pinned canonical assignment was not found"},
+                    "automatic_action": False,
+                }
+            current_ref = _assignment_value(assignment, "ref") or _assignment_value(assignment, "assignment_ref")
+            try:
+                observed_assignment = _reference_identity(current_ref, "assignment")
+            except (TypeError, ValueError):
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "foreign_assignment", "message": "canonical assignment identity is invalid"},
+                    "automatic_action": False,
+                }
+            adoption_base = _assignment_value(assignment, "resource_adoption_base_ref")
+            if adoption_base is None:
+                payload = _assignment_value(assignment, "payload")
+                if isinstance(payload, Mapping):
+                    adoption_base = payload.get("resource_adoption_base_ref")
+            try:
+                observed_base = (_reference_identity(adoption_base, "resource_adoption_base_ref")
+                                 if adoption_base is not None else None)
+            except (TypeError, ValueError):
+                observed_base = None
+            if observed_assignment != expected_assignment and observed_base != expected_assignment:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "foreign_assignment", "message": "canonical assignment identity does not match the trigger pin"},
+                    "automatic_action": False,
+                }
+            assignment_scope = _assignment_value(assignment, "scope")
+            try:
+                observed_scope = _reference_identity(assignment_scope, "assignment.scope")
+            except (TypeError, ValueError):
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "foreign_assignment_scope", "message": "canonical assignment has no valid project scope"},
+                    "automatic_action": False,
+                }
+            if observed_scope[0] != expected_assignment[0] or observed_scope[2] != record.project_ref:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "foreign_assignment_scope", "message": "canonical assignment is outside the trigger project"},
+                    "automatic_action": False,
+                }
+            assigned_role = _assignment_value(assignment, "role")
+            assigned_role = getattr(assigned_role, "value", assigned_role)
+            if assigned_role != record.role:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "assignment_role_mismatch", "message": "canonical assignment role does not match the trigger"},
+                    "automatic_action": False,
+                }
+            status = _assignment_value(assignment, "status")
+            status = getattr(status, "value", status)
+            if status not in {"queued", "in-flight", "reassigned"}:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "assignment_inactive", "message": "canonical assignment is not active"},
+                    "automatic_action": False,
+                }
+            assigned_generation = _assignment_value(assignment, "generation")
+            if isinstance(assigned_generation, bool) or not isinstance(assigned_generation, int):
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "assignment_generation_missing", "message": "canonical assignment has no valid generation"},
+                    "automatic_action": False,
+                }
+            if assigned_generation != record.generation:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "stale_assignment_generation", "message": "canonical assignment generation is fenced"},
+                    "automatic_action": False,
+                }
+            principal = _assignment_value(assignment, "principal")
+            if isinstance(principal, Mapping):
+                principal = principal.get("id") or principal.get("native_id") or principal.get("name")
+            if not isinstance(principal, str) or principal != record.recipient:
+                return {
+                    "outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "assignment_principal_mismatch", "message": "canonical assignment principal does not match the trigger recipient"},
+                    "automatic_action": False,
+                }
+            scope_output = assignment_scope.to_dict() if hasattr(assignment_scope, "to_dict") and callable(assignment_scope.to_dict) else assignment_scope
+            current_ref_output = current_ref.to_dict() if hasattr(current_ref, "to_dict") and callable(current_ref.to_dict) else current_ref
+            assignment_binding = {
+                "assignment_ref": dict(record.assignment_ref),
+                "current_assignment_ref": _json_copy(current_ref_output, "assignment.ref"),
+                "adoption_base": observed_assignment != expected_assignment,
+                "scope": _json_copy(scope_output, "assignment.scope"),
+                "role": assigned_role,
+                "principal": principal,
+                "generation": assigned_generation,
+                "status": status,
+            }
+        binding = {
+            "recipient": record.recipient,
+            "role": record.role,
+            "project_ref": record.project_ref,
+            "manager_ref": record.manager_ref,
+            "assignment_ref": None if record.assignment_ref is None else dict(record.assignment_ref),
+            "generation": record.generation,
+            "lifecycle_owner": record.lifecycle_owner,
+            "target": None if record.target is None else dict(record.target),
+        }
+        if assignment_binding is not None:
+            binding["canonical_assignment"] = assignment_binding
+        return {
+            "outcome": "resolved",
+            "schedule_id": schedule_id,
+            "binding": binding,
+            "automatic_action": False,
+        }
+
     def _write(self, record: DueRecord, *, request_id: str, expected_version: int) -> DueRecord:
         if self.due_port is not None:
             value = self.due_port.save_due(record.schedule_id, record.to_dict(), request_id=request_id, expected_version=expected_version)
@@ -1129,6 +2152,7 @@ class DurableAttention:
             "last_completed_request": current.last_completed_request,
             "last_result": current.last_result,
             "due_reasons": list(current.due_reasons),
+            "accepted_checkins": [dict(item) for item in current.accepted_checkins],
             "delivered_at": None,
             "delivery_evidence": None,
             "completed_at": None,
@@ -1206,6 +2230,10 @@ class DurableAttention:
             return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
         if owner is None or owner != record.lifecycle_owner:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "foreign_authority", "message": "authenticated actor is not the lifecycle owner"}, "automatic_action": False}
+        if record.stop_state == "stopped" and desired_state == "active":
+            return {"outcome": "rejected", "schedule_id": schedule_id,
+                    "error": {"code": "schedule_stopped", "message": "a stopped occurrence cannot activate its host trigger"},
+                    "automatic_action": False}
         scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=owner)
         if scope_error is not None:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}
@@ -1246,7 +2274,12 @@ class DurableAttention:
             return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "invalid_host_effect", "message": str(exc)}, "automatic_action": False}
         pending = DueRecord.from_dict({
             **record.to_dict(), "host_state": "pending",
-            "host_evidence": {"outcome": "pending_host", "effect": effect.to_dict(), "owner_version": record.version},
+            "host_evidence": {
+                **({key: value for key, value in record.host_evidence.items()
+                    if key not in {"outcome", "effect", "owner_version", "observation", "readback_exact"}}
+                   if isinstance(record.host_evidence, Mapping) else {}),
+                "outcome": "pending_host", "effect": effect.to_dict(), "owner_version": record.version,
+            },
         })
         try:
             stored = self._write(pending, request_id="host-prepare:" + request_id, expected_version=record.version)
@@ -1304,7 +2337,23 @@ class DurableAttention:
             observation["readback_exact"] = exact
             observation["comparison"] = comparison
             next_state = effect.desired_state if exact else ("failed" if observation.get("outcome") in {"host_failure", "failed"} else "pending")
-        updated = DueRecord.from_dict({**record.to_dict(), "host_state": next_state, "host_evidence": {"effect": effect.to_dict(), "observation": observation, "readback_exact": exact}})
+        updated = DueRecord.from_dict({
+            **record.to_dict(), "host_state": next_state,
+            "host_evidence": {
+                **({key: value for key, value in record.host_evidence.items()
+                    if key not in {"outcome", "owner_version", "observation", "readback_exact"}}
+                   if isinstance(record.host_evidence, Mapping) else {}),
+                "outcome": "reconciled" if exact else next_state,
+                "effect": effect.to_dict(), "observation": observation, "readback_exact": exact,
+            },
+        })
+        if updated.to_dict() == record.to_dict():
+            # The same effect and readback are already durably acknowledged.
+            # Store replay binds the original CAS precondition; a fresh owner
+            # version must not be persisted under that old acknowledgement key.
+            return {"outcome": "reconciled" if exact else next_state, "schedule_id": schedule_id,
+                    "host_state": next_state, "readback_exact": exact, "record": record.to_dict(),
+                    "observation": observation, "replayed": True, "automatic_action": False}
         try:
             # A response-loss retry can settle the same logical effect with a
             # new observation.  Bind the persistence key to that observation
@@ -1436,6 +2485,169 @@ class DurableAttention:
             raise ValueError("due reasons must contain non-blank text")
         return tuple(dict.fromkeys(values))
 
+    def _advisor_inflight_peer(self, record: DueRecord) -> Optional[DueRecord]:
+        if self.due_port is None or record.role != "project_advisor":
+            return None
+        values = self.due_port.list_due({
+            "project_ref": record.project_ref,
+            "role": "project_advisor",
+            "recipient": record.recipient,
+            "lifecycle_owner": record.lifecycle_owner,
+            "stop_state": "active",
+        })
+        peers = []
+        for value in values:
+            candidate = DueRecord.from_dict(value)
+            if (candidate.schedule_id != record.schedule_id
+                    and candidate.in_flight_request is not None
+                    and candidate.stop_state == "active"
+                    and not _advisor_gateway_terminal(candidate.to_dict())
+                    and candidate.generation == record.generation
+                    and candidate.assignment_ref == record.assignment_ref):
+                peers.append(candidate)
+        return min(peers, key=lambda item: item.schedule_id) if peers else None
+
+    def _coalesce_advisor_inspection(
+        self,
+        record: DueRecord,
+        peer: DueRecord,
+        *,
+        slot: int,
+        reasons: tuple[str, ...],
+        observed_now: datetime,
+    ) -> dict[str, JSONValue]:
+        """Cover one occurrence through an existing advisor inspection claim.
+
+        The peer receives every reason before the source occurrence is marked
+        covered.  A crash between those writes leaves the source due and is
+        safely replayable; after both writes, the source cannot launch a
+        duplicate.  Unknown coverage deliberately requires readback instead
+        of treating the peer's eventual effect as already observed.
+        """
+
+        stored_peer = None
+        for _attempt in range(3):
+            merged = tuple(dict.fromkeys((*peer.due_reasons, *reasons)))
+            if merged == peer.due_reasons:
+                stored_peer = peer
+                break
+            try:
+                stored_peer = self._write(
+                    DueRecord.from_dict({**peer.to_dict(), "due_reasons": list(merged)}),
+                    request_id=("coalesce-advisor:" + str(peer.in_flight_request) + ":"
+                                + record.schedule_id + ":" + str(slot)),
+                    expected_version=peer.version,
+                )
+                break
+            except StateConflictError:
+                latest = self._advisor_inflight_peer(record)
+                if latest is None:
+                    break
+                peer = latest
+        if stored_peer is None:
+            return {"outcome": "reconcile", "schedule_id": record.schedule_id,
+                    "relaunch": False, "automatic_action": False}
+        peer = stored_peer
+        evidence = {
+            "kind": "otto.project-advisor.coalesced-inspection.v1",
+            "claim_schedule_id": peer.schedule_id,
+            "claim_request_id": peer.in_flight_request,
+            "covered_schedule_id": record.schedule_id,
+            "covered_slot": slot,
+            "reasons": list(reasons),
+        }
+        covered = DueRecord.from_dict({
+            **record.to_dict(), "last_covered_slot": slot,
+            "stop_state": "completed" if record.interval_seconds is None else record.stop_state,
+            "delivery_state": "unknown", "due_reasons": list(reasons),
+            "completed_at": _iso(observed_now), "completion_state": "unknown",
+            "completion_evidence": evidence,
+        })
+        try:
+            stored = self._write(
+                covered,
+                request_id=("cover-advisor:" + str(peer.in_flight_request) + ":"
+                            + record.schedule_id + ":" + str(slot)),
+                expected_version=record.version,
+            )
+        except StateConflictError:
+            current = self._read(record.schedule_id)
+            if current is None or current.last_covered_slot < slot:
+                return {"outcome": "reconcile", "schedule_id": record.schedule_id,
+                        "claim_schedule_id": peer.schedule_id,
+                        "claim_request_id": peer.in_flight_request,
+                        "relaunch": False, "automatic_action": False}
+            stored = current
+        result = self._readiness(stored, "coalesced", due=False, delivery_state="unknown")
+        result.update({
+            "outcome": "coalesced", "claim_schedule_id": peer.schedule_id,
+            "claim_request_id": peer.in_flight_request,
+            "covered_reasons": list(reasons), "relaunch": False,
+            "mutation": {"before": record.to_dict(), "action": evidence,
+                         "fresh_after": stored.to_dict()},
+        })
+        return result
+
+    def _settle_advisor_coverage(
+        self,
+        claim: DueRecord,
+        *,
+        request_id: str,
+        completed_at: str,
+        completion_evidence: Optional[Mapping[str, JSONValue]],
+    ) -> list[dict[str, JSONValue]]:
+        """Project a successful shared inspection onto its covered records."""
+
+        if self.due_port is None or claim.role != "project_advisor":
+            return []
+        values = self.due_port.list_due({
+            "project_ref": claim.project_ref,
+            "role": "project_advisor",
+            "recipient": claim.recipient,
+            "lifecycle_owner": claim.lifecycle_owner,
+        })
+        settled = []
+        for value in values:
+            record = DueRecord.from_dict(value)
+            evidence = record.completion_evidence
+            if (record.schedule_id == claim.schedule_id or not isinstance(evidence, Mapping)
+                    or evidence.get("kind") != "otto.project-advisor.coalesced-inspection.v1"
+                    or evidence.get("claim_schedule_id") != claim.schedule_id
+                    or evidence.get("claim_request_id") != request_id
+                    or record.completion_state == "succeeded"):
+                continue
+            result = {
+                "outcome": "coalesced-returned", "request_id": request_id,
+                "claim_schedule_id": claim.schedule_id,
+                "covered_schedule_id": record.schedule_id,
+                "relaunch": False, "automatic_action": False,
+            }
+            next_evidence = {
+                **dict(evidence), "claim_completion_state": "succeeded",
+                "claim_completion_evidence": (None if completion_evidence is None
+                                               else dict(completion_evidence)),
+            }
+            try:
+                stored = self._write(
+                    DueRecord.from_dict({
+                        **record.to_dict(), "delivery_state": "returned",
+                        "last_completed_request": request_id, "last_result": result,
+                        "completed_at": completed_at, "completion_state": "succeeded",
+                        "completion_evidence": next_evidence,
+                    }),
+                    request_id="settle-advisor-coverage:" + request_id + ":" + record.schedule_id,
+                    expected_version=record.version,
+                )
+            except StateConflictError:
+                current = self._read(record.schedule_id)
+                if current is None or current.completion_state != "succeeded":
+                    continue
+                stored = current
+            settled.append({"schedule_id": stored.schedule_id,
+                            "reasons": list((stored.completion_evidence or {}).get("reasons", ())),
+                            "completion_state": stored.completion_state})
+        return settled
+
     def check(
         self,
         schedule_id: str,
@@ -1475,6 +2687,11 @@ class DurableAttention:
         slot = self._slot(record, observed_now)
         if slot is None or slot <= record.last_covered_slot:
             return self._readiness(record, "waiting", due=False)
+        peer = self._advisor_inflight_peer(record)
+        if peer is not None:
+            return self._coalesce_advisor_inspection(
+                record, peer, slot=slot, reasons=requested_reasons, observed_now=observed_now,
+            )
         request_id = hashlib.sha256(f"{record.schedule_id}:{record.invocation_identity}:{slot}".encode("utf-8")).hexdigest()
         next_record = DueRecord.from_dict({**record.to_dict(), "last_covered_slot": slot, "in_flight_request": request_id, "delivery_state": "ready", "due_reasons": list(requested_reasons), "delivered_at": None, "delivery_evidence": None, "completed_at": None, "completion_evidence": None, "completion_state": "none"})
         try:
@@ -1483,6 +2700,12 @@ class DurableAttention:
             current = self._read(schedule_id)
             if current is not None and current.in_flight_request is not None:
                 return self._readiness(current, "in-flight", due=True, request_id=current.in_flight_request, delivery_state=current.delivery_state, replayed=True)
+            peer = self._advisor_inflight_peer(record)
+            if peer is not None:
+                return self._coalesce_advisor_inspection(
+                    current or record, peer, slot=slot,
+                    reasons=requested_reasons, observed_now=observed_now,
+                )
             raise
         request = {
             "request_id": request_id, "schedule_id": schedule_id, "recipient": stored.recipient,
@@ -1546,6 +2769,7 @@ class DurableAttention:
         manager_ref: Optional[str] = None,
         generation: Optional[int] = None,
         lifecycle_owner: Optional[str] = None,
+        expected_version: Optional[int] = None,
     ) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
@@ -1553,8 +2777,16 @@ class DurableAttention:
         scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
         if scope_error is not None:
             return {"outcome": "rejected", "request_id": request_id, "error": scope_error, "relaunch": False, "automatic_action": False}
+        if expected_version is not None and expected_version != record.version:
+            return {"outcome": "rejected", "error": {"code": "stale_version"}, "automatic_action": False}
         if record.last_completed_request == request_id and record.last_result is not None:
-            return {**dict(record.last_result), "outcome": "replayed", "replayed": True, "expected_delta": "none", "automatic_action": False}
+            covered = self._settle_advisor_coverage(
+                record, request_id=request_id, completed_at=record.completed_at or _iso(self.clock()),
+                completion_evidence=record.completion_evidence,
+            ) if record.completion_state == "succeeded" else []
+            return {**dict(record.last_result), "outcome": "replayed", "replayed": True,
+                    "expected_delta": "none", "covered_records": covered,
+                    "automatic_action": False}
         if record.in_flight_request != request_id:
             return {"outcome": "reconcile", "error": {"code": "request_not_in_flight", "message": "only the recorded invocation may complete"}, "relaunch": False, "automatic_action": False}
         completion_time = _iso(completed_at or self.clock())
@@ -1574,6 +2806,10 @@ class DurableAttention:
         state = DueRecord.from_dict({**record.to_dict(), "in_flight_request": None, "delivery_state": "returned", "last_completed_request": request_id, "last_result": result, "completed_at": completion_time, "completion_evidence": evidence, "completion_state": "succeeded", "stop_state": "completed" if record.interval_seconds is None else "active"})
         stored = self._write(state, request_id=f"complete:{request_id}", expected_version=record.version)
         result["record"] = stored.to_dict()
+        result["covered_records"] = self._settle_advisor_coverage(
+            stored, request_id=request_id, completed_at=completion_time,
+            completion_evidence=evidence,
+        )
         result["expected_delta"] = {"in_flight_request": None, "last_completed_request": request_id}
         result["mutation"] = {"before": record.to_dict(), "action": {"request_id": request_id, "receipt": result["receipt"], "outcome": outcome}, "fresh_after": stored.to_dict()}
         return result
@@ -1626,10 +2862,18 @@ class DurableAttention:
             return {"outcome": "waiting", "record": record.to_dict(), "relaunch": False, "automatic_action": False}
         return {"outcome": "resume-same-request", "request_id": record.in_flight_request, "record": record.to_dict(), "relaunch": False, "responsible_owner": record.owner or record.recipient, "return_condition": record.return_condition, "automatic_action": False}
 
-    def stop(self, schedule_id: str, *, request_id: str) -> dict[str, JSONValue]:
+    def stop(self, schedule_id: str, *, request_id: str, expected_version: Optional[int] = None,
+             project_ref: Optional[str] = None, manager_ref: Optional[str] = None,
+             generation: Optional[int] = None, lifecycle_owner: Optional[str] = None) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}}
+        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref,
+                                        generation=generation, lifecycle_owner=lifecycle_owner)
+        if scope_error is not None:
+            return {"outcome": "rejected", "error": scope_error, "automatic_action": False}
+        if expected_version is not None and expected_version != record.version:
+            return {"outcome": "rejected", "error": {"code": "stale_version"}, "automatic_action": False}
         if record.stop_state == "stopped":
             return {"outcome": "replayed", "record": record.to_dict(), "automatic_action": False}
         stored = self._write(DueRecord.from_dict({**record.to_dict(), "stop_state": "stopped"}), request_id=f"stop:{request_id}", expected_version=record.version)
@@ -1710,5 +2954,5 @@ __all__ = [
     "AmendmentInterruptedError", "AmendmentPort", "AttentionError", "AttentionScheduler", "CursorContinuity", "CursorContinuityError", "DueRecord", "DueRecordPort",
     "DurableAttention", "DurableAttentionService", "EventCursorReaderAdapter", "HostTriggerPort", "HostUnavailableError", "InMemoryDueRecordPort",
     "ImprovementPropagation", "InputChangedError", "RecordingAttentionPort", "RecordingHostTriggerPort", "SerializedAmendmentPort", "SerializedAttentionPort", "SharedAttentionPort", "StateConflictError",
-    "StoreDueRecordPort", "due_record_contribution", "issue_store_amendment_port", "issue_store_due_record_port",
+    "StoreDueRecordPort", "due_record_contribution", "issue_store_amendment_port", "issue_store_due_record_port", "trigger_configuration_view", "validate_execution_configuration",
 ]

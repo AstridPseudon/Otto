@@ -16,10 +16,14 @@ durable work.
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha256
 import json
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Mapping, Optional, Protocol, Sequence, TypedDict
 
 from .herzchen_binding import FiniteWorkOperations
+from .inbox import WorkViewCursorError, decode_work_view_cursor, encode_work_view_cursor
+from .issue_loop import IssueLoop
+from .resource_sync import ResourceSyncError, normalize_role_attachments
 
 
 ADMISSION_CHOICES = ("admit", "investigate", "merge", "park", "drop")
@@ -75,6 +79,33 @@ class WorkOperations(Protocol):
         ...
 
 
+class ProjectionValue(TypedDict):
+    """A derived value with explicit provenance and uncertainty."""
+
+    state: str
+    value: Any
+    source_refs: list[dict[str, Any]]
+    reason: Optional[str]
+
+
+class CurrentWork(TypedDict):
+    """Typed read-only current-work projection over owner records."""
+
+    outcome: str
+    schema: str
+    current_refs: dict[str, Any]
+    scope: dict[str, Any]
+    facts: dict[str, ProjectionValue]
+    dependencies: list[dict[str, Any]]
+    consumption: ProjectionValue
+    closure: ProjectionValue
+    unknown: list[Any]
+    source_refs: dict[str, Any]
+    read_side_effects: bool
+    dispatch: bool
+    launch: bool
+
+
 def _json_copy(value: Any, *, field: str = "value") -> Any:
     """Return JSON data without allowing opaque Python objects into records."""
 
@@ -103,6 +134,17 @@ def _ref(value: Any, field: str = "project_ref") -> dict[str, Any]:
     if not isinstance(result.get("id"), str) or not result["id"].strip():
         raise PortfolioError(f"{field}.id must be non-blank")
     return result
+
+
+def _identity_ref(value: Any) -> Optional[tuple[str, str, str]]:
+    ref = _ref(value) if isinstance(value, (str, Mapping)) or callable(getattr(value, "to_dict", None)) else None
+    if ref is None or not all(isinstance(ref.get(key), str) and ref[key].strip() for key in ("authority", "kind", "id")):
+        return None
+    return ref["authority"], ref["kind"], ref["id"]
+
+
+def _digest_json(value: Any) -> str:
+    return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _edit(value: Optional[Mapping[str, Any]]) -> dict[str, Any]:
@@ -190,12 +232,67 @@ class HerzchenWorkOperations(FiniteWorkOperations):
 class OttoPortfolio:
     """Manager-facing OTT-03 API over canonical Herzchen work records."""
 
-    def __init__(self, operations: Optional[WorkOperations] = None) -> None:
+    def __init__(self, operations: Optional[WorkOperations] = None, *, issue_loop: Optional[IssueLoop] = None) -> None:
         self.operations: WorkOperations = operations or unavailable_operations()
+        self.__issue_loop = issue_loop
+
+    def _issue_loop(self) -> Optional[IssueLoop]:
+        return self.__issue_loop
+
+    def submit_checkin(self, **request: Any) -> dict[str, Any]:
+        """Submit an occurrence-fenced manager check-in through AP-3 ports."""
+        loop = self._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "operation": "work.manager.checkin",
+                    "error": {"code": "checkin_ports_unavailable",
+                              "message": "owner-backed assignment and DueRecord ports are not bound"}}
+        return loop.submit_checkin(**request)
+
+    def submit_issue(self, **request: Any) -> dict[str, Any]:
+        loop = self._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "operation": "work.issue.submit",
+                    "error": {"code": "issue_ports_unavailable",
+                              "message": "owner-backed assignment and supervision ports are not bound"}}
+        return loop.submit_issue(**request)
+
+    def respond_to_issue(self, **request: Any) -> dict[str, Any]:
+        loop = self._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "operation": "work.issue.respond",
+                    "error": {"code": "issue_ports_unavailable",
+                              "message": "owner-backed assignment and supervision ports are not bound"}}
+        return loop.respond_to_issue(**request)
+
+    def record_issue_outcome(self, **request: Any) -> dict[str, Any]:
+        loop = self._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "operation": "work.issue.outcome",
+                    "error": {"code": "issue_ports_unavailable",
+                              "message": "owner-backed assignment and supervision ports are not bound"}}
+        return loop.record_issue_outcome(**request)
+
+    def read_issues(self, *, project_ref: Any) -> dict[str, Any]:
+        loop = self._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "operation": "work.issue.read",
+                    "issues": [], "read_side_effects": False}
+        return loop.read_issues(project_ref=project_ref)
+
+    def request_help(self, **request: Any) -> dict[str, Any]:
+        return self.submit_issue(**request, purpose="operational_help")
+
+    def request_advice(self, **request: Any) -> dict[str, Any]:
+        return self.submit_issue(**request, purpose="advice")
+
+    def resolve_help(self, **request: Any) -> dict[str, Any]:
+        return self.record_issue_outcome(**request, disposition="resolved")
 
     @staticmethod
     def help() -> dict[str, Any]:
         return {
+            "outcome": "available",
+            "schema": "otto.portfolio-help.v1",
             "surface": "otto.portfolio",
             "purpose": "capture and explicitly admit pending projects through canonical work operations",
             "bootstrap": {
@@ -207,7 +304,7 @@ class OttoPortfolio:
                 "typed_task_batch": "use the finite operations.sheet_port.apply(project_ref, {tasks: [...]}, logical_request_key=..., actor=operations.binding.authenticated_actor(actor), base_revision=project_ref['revision']); read its returned project with batch.project.ref.to_dict()",
                 "protected_pending_fields": "edit_pending rejects tasks, documents, assignments, and receipts; use their typed finite ports",
                 "admission_frame": "admit requires non-blank outcome, recipient, route, and authority text; records a decision without launching, dispatching, reserving budget, or creating a session",
-                "public_journey_example": "profiles/otto/ott06-public-journey.py contains the complete direct-task and existing-project checkout/validate/semantic-check-in/cleanup/fresh-reopen journey, plus replay and admission evidence, with every actor and request_id argument",
+                "public_journey_example": "profiles/otto/ott06-public-journey.py contains a complete create/edit/read/replay/task-batch/admit/close-open/reopen sequence with every actor and request_id argument",
             },
             "operations": {
                 "create_pending": "create a pending project; a qualified owner binding uses atomic default-orchestrator placement",
@@ -217,16 +314,61 @@ class OttoPortfolio:
                 "link_document": "link a typed canonical document association to a project",
                 "read_pending": "read one durable project reference",
                 "list_pending": "list pending work records",
+                "manager_inventory": "read-only project-scoped manager and native observation inventory",
                 "edit_pending": "apply a validated sparse edit, preserving unknown fields",
                 "reopen": "reopen(project_ref, actor=..., request_id=...); returns the same durable identity and exact-replays the same request without a new event",
                 "revisit": "record attention/readiness only",
                 "satisfied_prerequisite": "record attention/readiness only for a dependency change",
                 "admit": "manager decision: admit, investigate, merge, park, or drop",
-                "assign_roles": "bind one parent, one accountable manager, and bounded executor(s)",
+                "assign_roles": "bind one parent, optional orchestrator, one accountable manager, and bounded executor(s); role-keyed adopted resources are pinned through the canonical assignment port",
+                "pair_project_advisor": "read or create the one project-scoped advisor assignment for an exact current manager; no host session, schedule, allowance, or delivery is created",
                 "handoff": "fence a returned manager assignment reference and preserve identity, evidence, consumption, and parent obligation",
                 "complete_task": "manager-only guarded task close; verifies current project/task/assignment pins, disposition, evidence hashes and gates before one owner transaction",
                 "manager_inbox": "read one derived project/subproject scope with tasks, assignments, attempts, reports, decisions, attention and repeat-safe event cursor; read-only",
+                "submit_checkin": "append one current-manager report for a matching DueRecord occurrence, then recoverably acknowledge that occurrence",
+                "submit_issue/respond_to_issue/record_issue_outcome": "append typed issue history over assignment reports; resolution requires application evidence",
             },
+            "execution": {
+                "composition": "PortfolioOwnerBootstrap.execution_application(...) -> ExecutionApplication",
+                "manager": {
+                    "prepare": "assign/adopt the current owner-pinned manager occurrence before any provider effect",
+                    "start": "start one admitted occurrence and publish the durable result or unknown effect",
+                    "continue": "continue_manager reuses the settled native session and canonical progress report",
+                    "recover": "recover reconciles the exact occurrence before any retry; unknown effects remain fenced",
+                },
+                "advisor": {
+                    "schedule": "AdvisorExecution.prepare_scheduled prepares the existing owner-bound Due",
+                    "wake": "wake_once admits one current advisor occurrence after assignment/generation reconciliation",
+                    "allowance": "reconcile_allowance settles the neutral owner allowance without replaying uncertain effects",
+                },
+                "host": {
+                    "custody": "ExecutionHost retains admitted command/service custody across parent completion",
+                    "lifecycle": "ExecutionHost reconciles the persisted trigger before pause, stop, or restart",
+                },
+                "operator_boundary": "This CLI does not construct an owner, Store, provider, scheduler, or native session; use the owner-bound controller/command surface for execution and this CLI for scoped reads, briefs, pairing, acceptance, and help.",
+            },
+            "operator_contract": {
+                "working_entrypoint": "python -m otto.portfolio.cli help --format text",
+                "owner_status_entrypoint": "manager_ctl.py status (through the already running owner command service)",
+                "current_run_configuration": ".otto/runs/<run-id>/run.yaml, or its adopted native configuration record; this is the sole model/stage/budget authority",
+                "complete_criterion_source": ".otto/runs/<run-id>/tasklist.md; read the exact criterion rows before interpreting status",
+                "accessible_megado_skill": "policy-staging/megado/skill/SKILL.md and its linked execution/run-config/native-work references",
+                "status_semantics": {
+                    "execution": "show committed dispatch/occurrence/result observations; absence is unknown, not failure",
+                    "review_acceptance": "show review decisions and acceptance_exists separately from writes_performed",
+                    "lifecycle": "show owner-read project/task lifecycle and current owner bindings",
+                    "uncertainty": "retain historical uncertain effects and distinguish verifier limits, evidence mismatch, and unresolved live effects",
+                    "suggestions": "reports and next_action values are timestamped observations/advice, not scheduler commands or acceptance",
+                },
+                "supported_read_operations": [
+                    "python -m otto.portfolio.cli projects --actor ACTOR",
+                    "python -m otto.portfolio.cli overview --actor ACTOR --project-ref REF_JSON",
+                    "python -m otto.portfolio.cli task --actor ACTOR --project-ref PROJECT_REF_JSON --task-ref TASK_REF_JSON",
+                    "python -m otto.portfolio.cli assessment-coverage --parent-ref TASK_REF_JSON",
+                    "python -m otto.portfolio.cli completion-gate --task-ref TASK_REF_JSON",
+                ],
+            },
+            "resource_attachments": "assign_roles accepts role-keyed adopted resource descriptors; exact resource_ref revisions are persisted as canonical assignment pins and later brief evidence carries bundle/export/brief digests",
             "invariants": [
                 "pending creation does not create a manager, tasklist, allowance, session, or accepted result",
                 "revisit and prerequisite signals never activate or dispatch work",
@@ -389,6 +531,246 @@ class OttoPortfolio:
             payload["parent_ref"] = _ref(parent_ref, "parent_ref")
         return self._read("work.pending.list", payload, actor=actor)
 
+    def manager_inventory(self, *, actor: str, native_observer: Any = None) -> dict[str, Any]:
+        """Read the project-scoped manager inventory without writes or sends."""
+
+        reader = getattr(self.operations, "manager_inventory", None)
+        if callable(reader):
+            return reader(actor=actor, native_observer=native_observer)
+        return {
+            "outcome": "unavailable",
+            "read_only": True,
+            "writes": 0,
+            "native_calls": 0,
+            "projects": [],
+            "excluded_completed": [],
+            "error": {"code": "manager_inventory_unavailable", "message": "the finite owner binding does not expose manager inventory"},
+        }
+
+    def list_projects(self, *, actor: str, parent_ref: Any = None,
+                      cursor: Optional[str] = None, limit: Optional[int] = None) -> dict[str, Any]:
+        """Read the finite host-granted owner inventory without a raw-reader fallback."""
+        actor = _text(actor, "actor")
+        listing = getattr(self.operations, "list_projects", None)
+        if not callable(listing):
+            return {"outcome": "unavailable", "schema": "otto.portfolio-projects.v1",
+                    "projects": [], "read_only": True,
+                    "error": {"code": "owner_project_reader_unavailable",
+                              "message": "finite project read port is unavailable"}}
+        parent = None if parent_ref is None else _ref(parent_ref, "parent_ref")
+        try:
+            return dict(listing(actor=actor, parent_ref=parent, cursor=cursor, limit=limit))
+        except (TypeError, ValueError):
+            return {"outcome": "denied", "schema": "otto.portfolio-projects.v1",
+                    "projects": [], "read_only": True,
+                    "error": {"code": "project_scope_denied",
+                              "message": "project read scope is unavailable"}}
+
+    def list_work(
+        self,
+        *,
+        actor: str,
+        view: str = "all",
+        project_ref: Any = None,
+        parent_ref: Any = None,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        safety_scan: bool = True,
+    ) -> dict[str, Any]:
+        """Read a scoped portfolio/task view from existing owner records.
+
+        ``view`` filters are derived labels; the owner lifecycle, readiness,
+        applicability and execution observations remain separate fields.
+        """
+        actor = _text(actor, "actor")
+        views = {"all", "upcoming", "ready", "blocked", "in_progress", "completed"}
+        if view not in views:
+            raise PortfolioError(f"view must be one of {', '.join(sorted(views))}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 0 < limit <= 1000:
+            raise PortfolioError("limit must be between 1 and 1000")
+        if cursor is not None and (not isinstance(cursor, str) or not cursor.strip()):
+            raise PortfolioError("cursor must be non-blank text when supplied")
+        if not isinstance(safety_scan, bool):
+            raise PortfolioError("safety_scan must be boolean")
+
+        binding = getattr(self.operations, "binding", None)
+        authority = getattr(binding, "authority", None)
+        requested_project = _ref(project_ref, "project_ref") if project_ref is not None else None
+        requested_parent = _ref(parent_ref, "parent_ref") if parent_ref is not None else None
+        for label, ref in (("project_ref", requested_project), ("parent_ref", requested_parent)):
+            if ref is not None and (ref.get("authority") != authority or ref.get("kind") != "work.project"):
+                return {"outcome": "denied", "schema": "otto.portfolio-work.v1", "view": view, "items": [], "projects": [], "read_only": True, "error": {"code": "project_scope_denied", "message": f"{label} is outside the configured owner authority"}}
+
+        if requested_project is not None:
+            admission = self.operations.read("work.project.read", {"project_ref": requested_project}, actor=actor)
+            if admission.get("outcome") != "read":
+                return {"outcome": admission.get("outcome", "denied"), "schema": "otto.portfolio-work.v1",
+                        "view": view, "items": [], "projects": [], "read_only": True,
+                        "error": admission.get("error", {"code": "project_scope_denied"})}
+        inventory = self.list_projects(actor=actor, parent_ref=requested_parent)
+        if inventory.get("outcome") not in {"listed", "partial"}:
+            return {"outcome": inventory.get("outcome", "error"), "schema": "otto.portfolio-work.v1", "view": view, "items": [], "projects": [], "read_only": True, "error": inventory.get("error", {"code": "project_inventory_unavailable", "message": "owner project inventory could not be read"})}
+        projects = [item for item in inventory.get("projects", ()) if isinstance(item, Mapping)]
+        if requested_project is not None:
+            wanted = _identity_ref(requested_project)
+            projects = [item for item in projects if _identity_ref(item.get("project_ref")) == wanted]
+            if not projects:
+                return {"outcome": "denied", "schema": "otto.portfolio-work.v1", "view": view, "items": [], "projects": [], "read_only": True, "error": {"code": "project_not_visible", "message": "project is not present in the configured owner scope"}}
+        projects.sort(key=lambda item: json.dumps(item.get("project_ref"), sort_keys=True))
+
+        rows: list[dict[str, Any]] = []
+        project_rows: list[dict[str, Any]] = []
+        read_errors: list[dict[str, Any]] = []
+        owner_pages = 0
+        for project in projects:
+            current_ref = project.get("project_ref")
+            page_cursor = None
+            seen_cursors: set[str] = set()
+            final_inbox: Optional[dict[str, Any]] = None
+            event_ids: list[str] = []
+            complete = False
+            for _page_number in range(10000):
+                inbox = self.manager_inbox(current_ref, actor=actor, cursor=page_cursor, limit=limit, safety_scan=safety_scan)
+                owner_pages += 1
+                if inbox.get("outcome") != "read":
+                    read_errors.append({"project_ref": current_ref, "error": inbox.get("error", {"code": "project_read_failed", "message": "ProjectSheet read did not succeed"})})
+                    break
+                final_inbox = inbox
+                reconciliation = inbox.get("reconciliation") if isinstance(inbox.get("reconciliation"), Mapping) else {}
+                for event_id in reconciliation.get("event_ids", ()) if isinstance(reconciliation.get("event_ids", ()), (list, tuple)) else ():
+                    if isinstance(event_id, str) and event_id not in event_ids:
+                        event_ids.append(event_id)
+                if reconciliation.get("has_more") is not True:
+                    complete = reconciliation.get("has_more") is False
+                    break
+                next_cursor = reconciliation.get("cursor")
+                if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors or next_cursor == page_cursor:
+                    read_errors.append({"project_ref": current_ref, "error": {"code": "owner_cursor_did_not_advance", "message": "owner event pagination did not produce a new cursor"}})
+                    final_inbox = None
+                    break
+                seen_cursors.add(next_cursor)
+                page_cursor = next_cursor
+            if final_inbox is None:
+                project_rows.append({"project_ref": current_ref, "lifecycle": project.get("lifecycle"), "state": "unavailable", "task_count": None, "read_pages": None})
+                continue
+            inbox_scope = final_inbox.get("scope", {}) if isinstance(final_inbox.get("scope"), Mapping) else {}
+            actual_project = inbox_scope.get("ref")
+            if _identity_ref(actual_project) != _identity_ref(current_ref):
+                read_errors.append({"project_ref": current_ref, "error": {"code": "project_scope_mismatch", "message": "ProjectSheet returned a different project identity"}})
+                project_rows.append({"project_ref": current_ref, "lifecycle": project.get("lifecycle"), "state": "unavailable", "task_count": None, "read_pages": None})
+                continue
+            task_rows = [dict(item) for item in final_inbox.get("task_rows", ()) if isinstance(item, Mapping)]
+            project_rows.append({
+                "project_ref": actual_project,
+                "title": project.get("title"),
+                "lifecycle": project.get("lifecycle", "unknown"),
+                "parent_ref": project.get("parent_ref"),
+                "manager_assignments": _json_copy((final_inbox.get("manager") or {}).get("assignments", ()), field="manager_assignments") if isinstance(final_inbox.get("manager"), Mapping) else [],
+                "state": "read" if complete else "partial",
+                "task_count": len(task_rows),
+                "read_pages": len(seen_cursors) + 1,
+                "event_ids_read": event_ids,
+            })
+            for row in task_rows:
+                row["project_ref"] = actual_project
+                lifecycle = row.get("lifecycle", {}).get("value") if isinstance(row.get("lifecycle"), Mapping) else None
+                readiness = row.get("readiness", {}).get("value") if isinstance(row.get("readiness"), Mapping) else {}
+                readiness = readiness if isinstance(readiness, Mapping) else {}
+                observation = row.get("observation", {}) if isinstance(row.get("observation"), Mapping) else {}
+                applicability = row.get("applicability", {}) if isinstance(row.get("applicability"), Mapping) else {}
+                explicit_blockers = any(isinstance(readiness.get(key), (list, tuple)) and bool(readiness.get(key)) for key in ("blockers", "blocked_by", "blocking_reasons"))
+                readiness_status = str(readiness.get("status", row.get("readiness", {}).get("eligibility", ""))).strip().lower().replace("-", "_")
+                dependency_blocked = any(item.get("severity") == "blocking" for item in row.get("dependency_reasons", ()) if isinstance(item, Mapping))
+                blocked = readiness_status in {"blocked", "blocked_by_dependency", "recompute_needed"} or explicit_blockers or dependency_blocked
+                ready = readiness.get("ready") is True or readiness_status in {"ready", "eligible"}
+                completed = isinstance(lifecycle, str) and lifecycle.lower() == "completed"
+                withdrawn = isinstance(lifecycle, str) and lifecycle.lower() == "withdrawn"
+                active = observation.get("state") == "active"
+                not_applicable = applicability.get("state") == "not_applicable"
+                memberships = ["all"]
+                if not completed and not withdrawn and not active and not not_applicable:
+                    memberships.append("upcoming")
+                if ready and not blocked and not completed and not withdrawn and not active and not not_applicable:
+                    memberships.append("ready")
+                if blocked and not completed and not withdrawn and not active:
+                    memberships.append("blocked")
+                if active and not completed and not withdrawn:
+                    memberships.append("in_progress")
+                if completed:
+                    memberships.append("completed")
+                row["view_memberships"] = memberships
+                if completed:
+                    classification = "completed"
+                elif active:
+                    classification = "in_progress"
+                elif withdrawn:
+                    classification = "withdrawn"
+                elif not_applicable:
+                    classification = "not_applicable"
+                elif applicability.get("state") in {"deferred", "conditional"}:
+                    classification = applicability["state"]
+                elif blocked:
+                    classification = "blocked"
+                elif "ready" in memberships:
+                    classification = "ready"
+                elif "upcoming" in memberships:
+                    classification = "upcoming"
+                else:
+                    classification = "unknown"
+                row["derived_classification"] = classification
+                rows.append(row)
+
+        rows.sort(key=lambda item: (json.dumps(item.get("project_ref"), sort_keys=True), tuple(item.get("source_aliases", ())), str((item.get("ref") or {}).get("id", ""))))
+        selected = [row for row in rows if view in row.get("view_memberships", ())]
+        counts = {name: sum(name in row.get("view_memberships", ()) for row in rows) for name in sorted(views)}
+        classes = ("completed", "in_progress", "blocked", "ready", "deferred", "conditional", "not_applicable", "withdrawn", "upcoming", "unknown")
+        disjoint_counts = {name: sum(row.get("derived_classification") == name for row in rows) for name in classes}
+        # Imported canonical tasks and derived portions are disjoint;
+        # older authored rows retain their alias-based source count.
+        source_task_count = 0
+        structural_child_count = 0
+        for row in rows:
+            authored = row.get("authored")
+            metadata = authored.get("metadata") if isinstance(authored, Mapping) else None
+            canonical = metadata.get("canonical_source_task") if isinstance(metadata, Mapping) else None
+            if canonical is False:
+                structural_child_count += 1
+            elif canonical is True or (canonical is None and row.get("source_aliases")):
+                source_task_count += 1
+        denominators = {"source_tasks": source_task_count, "structural_children": structural_child_count, "source_aliases": sum(len(row.get("source_aliases", ())) for row in rows)}
+
+        scope_value = {"authority": authority, "actor": actor, "view": view, "project_ref": requested_project, "parent_ref": requested_parent}
+        scope_key = _digest_json(scope_value)
+        snapshot = _digest_json(selected)
+        offset = 0
+        if cursor is not None:
+            try:
+                offset = decode_work_view_cursor(cursor, scope=scope_key, snapshot=snapshot)
+            except WorkViewCursorError as exc:
+                return {"outcome": "error", "schema": "otto.portfolio-work.v1", "view": view, "items": [], "projects": project_rows, "read_only": True, "error": {"code": "invalid_or_stale_cursor", "message": str(exc)}}
+        page = selected[offset:offset + limit]
+        next_offset = offset + len(page)
+        has_more = next_offset < len(selected)
+        next_cursor = encode_work_view_cursor(scope=scope_key, offset=next_offset, snapshot=snapshot) if has_more else None
+        return {
+            "outcome": "partial" if read_errors or inventory.get("outcome") == "partial" or any(item.get("state") == "partial" for item in project_rows) else "listed",
+            "schema": "otto.portfolio-work.v1",
+            "view": view,
+            "scope": scope_value,
+            "projects": project_rows,
+            "items": page,
+            "count": len(selected),
+            "counts": counts,
+            "disjoint_counts": disjoint_counts,
+            "denominators": denominators,
+            "pagination": {"limit": limit, "offset": offset, "has_more": has_more, "cursor": next_cursor, "owner_event_pages_read": owner_pages, "projects_in_inventory": len(projects), "snapshot_digest": snapshot},
+            "read_only": True,
+            "writes": 0,
+            "dispatch": False,
+            "launch": False,
+            "unknown": {"inventory_issues": inventory.get("issues", []), "project_read_errors": read_errors, "actor_acl": inventory.get("actor_acl", "not_exposed_by_current_consumer_binding")},
+        }
+
     def manager_inbox(
         self,
         project_ref: Any,
@@ -409,6 +791,166 @@ class OttoPortfolio:
         if cursor is not None:
             payload["cursor"] = cursor
         return self._read("work.manager.inbox", payload, actor=actor)
+
+    def author_task_list(
+        self,
+        project_ref: Any,
+        tasks: Sequence[Mapping[str, Any]],
+        *,
+        actor: str,
+        request_id: str,
+        base_revision: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Apply a task batch through the existing typed ProjectSheet port."""
+        request_id, actor = self._request(request_id, actor)
+        project = _ref(project_ref)
+        if isinstance(tasks, (str, bytes)) or not isinstance(tasks, Sequence):
+            raise PortfolioError("tasks must be a sequence of task objects")
+        task_values = _json_copy(list(tasks), field="tasks")
+        if any(not isinstance(item, Mapping) for item in task_values):
+            raise PortfolioError("each task must be an object")
+        revision = base_revision if base_revision is not None else project.get("revision")
+        if not isinstance(revision, str) or not revision.strip():
+            raise PortfolioError("task-list authoring requires the current project revision")
+        sheet = getattr(self.operations, "sheet_port", None)
+        binding = getattr(self.operations, "binding", None)
+        apply = getattr(sheet, "apply", None)
+        authenticate = getattr(binding, "authenticated_actor", None)
+        if not callable(apply) or not callable(authenticate):
+            return {"outcome": "unavailable", "operation": "work.tasklist.apply",
+                    "error": {"code": "typed_project_sheet_unavailable",
+                              "message": "canonical typed ProjectSheet authoring is not bound"}}
+        try:
+            from herzchen.contracts import ResourceRef
+
+            batch = apply(
+                ResourceRef.from_dict(project), {"tasks": task_values},
+                logical_request_key=request_id, actor=authenticate(actor),
+                base_revision=revision,
+            )
+            ref = getattr(getattr(batch, "project", None), "ref", None)
+            receipt = getattr(batch, "receipt", None)
+            return {"outcome": "authored", "project_ref": _json_copy(ref.to_dict() if hasattr(ref, "to_dict") else ref),
+                    "replayed": bool(getattr(receipt, "replayed", False)),
+                    "task_count": len(task_values),
+                    "task_refs": {key: value.to_dict() for key, value in batch.mappings.items()},
+                    "dispatch": False, "launch": False}
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": "task_list_authoring_failed",
+                                                        "message": str(exc), "operation": "work.tasklist.apply"}}
+
+    def read_work(
+        self,
+        project_ref: Any,
+        *,
+        actor: str,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        safety_scan: bool = True,
+    ) -> CurrentWork:
+        """Read current owner-backed work and label unsupported facts unknown.
+
+        This is a projection over the same finite owner read used by
+        ``manager_inbox``. It introduces no registry, cursor store, or writes.
+        Authoring stays on this same facade through ``create_pending``,
+        ``create_document``/``link_document``, and the typed ``sheet_port``.
+        """
+        inbox = self.manager_inbox(
+            project_ref, actor=actor, cursor=cursor, limit=limit,
+            safety_scan=safety_scan,
+        )
+        if inbox.get("outcome") != "read":
+            return {
+                "outcome": inbox.get("outcome", "unknown"),
+                "schema": "otto.current-work.v1",
+                "current_refs": {"project": _ref(project_ref)},
+                "scope": {},
+                "facts": {},
+                "dependencies": [],
+                "consumption": {"state": "unknown", "value": None, "source_refs": [],
+                                "reason": "canonical current-work read did not succeed"},
+                "closure": {"state": "unknown", "value": None, "source_refs": [],
+                            "reason": "canonical current-work read did not succeed"},
+                "unknown": list(inbox.get("unknown", ())),
+                "source_refs": {},
+                "read_side_effects": False,
+                "dispatch": False,
+                "launch": False,
+            }
+
+        tasks = [item for item in inbox.get("tasks", ()) if isinstance(item, Mapping)]
+        assignments = [item for item in inbox.get("assignments", ()) if isinstance(item, Mapping)]
+        attempts = [item for item in inbox.get("attempts", ()) if isinstance(item, Mapping)]
+        attention = [item for item in inbox.get("attention", ()) if isinstance(item, Mapping)]
+        decisions = list(inbox.get("decisions", ()))
+        task_refs = [item.get("ref") for item in tasks if isinstance(item.get("ref"), Mapping)]
+        assignment_refs = [item.get("ref") or item.get("assignment_ref") for item in assignments
+                           if isinstance(item.get("ref") or item.get("assignment_ref"), Mapping)]
+
+        def refs_for(items: Sequence[Any]) -> list[dict[str, Any]]:
+            found = []
+            for item in items:
+                if isinstance(item, Mapping):
+                    ref = item.get("source_ref") or item.get("ref")
+                    if isinstance(ref, Mapping):
+                        found.append(dict(ref))
+            return found
+
+        def fact(value: Any, refs: Sequence[Any], reason: Optional[str] = None) -> ProjectionValue:
+            return {"state": "known", "value": value,
+                    "source_refs": [dict(ref) for ref in refs if isinstance(ref, Mapping)],
+                    "reason": reason}
+
+        def unknown(reason: str) -> ProjectionValue:
+            return {"state": "unknown", "value": None, "source_refs": [], "reason": reason}
+
+        dependencies = [
+            {"task_ref": task.get("ref"), **dict(dependency)}
+            for task in tasks
+            for dependency in task.get("dependencies", ())
+            if isinstance(dependency, Mapping)
+        ]
+        project_identity = _ref(project_ref)
+        current_refs = {
+            "project": project_identity,
+            "tasks": task_refs,
+            "assignments": assignment_refs,
+        }
+        # Existing records expose bookkeeping and observations, but this read
+        # surface has no typed allowance/consumption or accepted-closeout
+        # result. State those facts as unknown instead of inferring from prose.
+        projection = {
+            "outcome": "read",
+            "schema": "otto.current-work.v1",
+            "current_refs": current_refs,
+            "scope": dict(inbox.get("scope", {})),
+            "facts": {
+                "tasks": fact(tasks, refs_for(tasks)),
+                "assignments": fact(assignments, refs_for(assignments)),
+                "attempts": fact(attempts, refs_for(attempts)),
+                "attention": fact(attention, refs_for(attention)),
+                "decisions": fact(decisions, refs_for(decisions)),
+            },
+            "dependencies": dependencies,
+            "consumption": unknown("owner inbox has no typed allowance consumption projection"),
+            "closure": unknown("owner inbox has no accepted closeout projection"),
+            "unknown": list(inbox.get("unknown", ())),
+            "source_refs": dict(inbox.get("source_refs", {})),
+            "read_side_effects": False,
+            "dispatch": False,
+            "launch": False,
+        }
+        if self._issue_loop() is not None:
+            issue_view = self._issue_loop().read_issues(project_ref=project_identity)
+            issue_rows = issue_view.get("issues", [])
+            projection["issues"] = {
+                "open": [item for item in issue_rows if item.get("state") == "open"],
+                "resolved": [item for item in issue_rows if item.get("state") == "resolved"],
+                "source": "assignment_reports",
+            }
+        return projection
+
+    current_work = read_work
 
     read_manager_inbox = manager_inbox
     reconcile_inbox = manager_inbox
@@ -478,6 +1020,50 @@ class OttoPortfolio:
         request_id, actor = self._request(request_id, actor)
         return self._execute("work.pending.open", {"project_ref": _ref(project_ref)}, request_id=request_id, actor=actor)
 
+    def checkout_project(self, project_ref: Any, *, actor: str, request_id: str) -> dict[str, Any]:
+        """Return editable project.json and an opaque EDT session; no activation."""
+        request_id, actor = self._request(request_id, actor)
+        return self._execute("work.project.checkout", {"project_ref": _ref(project_ref)}, request_id=request_id, actor=actor)
+
+    def check_in_project(self, project_ref: Any, *, session_id: str, project_json: Mapping[str, Any],
+                         actor: str, request_id: str, document_changes: Optional[Sequence[Mapping[str, Any]]] = None) -> dict[str, Any]:
+        """Commit semantic project/task edits through the existing owner finish."""
+        request_id, actor = self._request(request_id, actor)
+        if document_changes is not None:
+            return self._execute("work.project.folder-check-in", {"project_ref": _ref(project_ref),
+                "session_id": _text(session_id, "session_id"), "project_json": dict(project_json),
+                "document_changes": list(document_changes)}, request_id=request_id, actor=actor)
+        return self._execute("work.project.check-in", {"project_ref": _ref(project_ref),
+            "session_id": _text(session_id, "session_id"),
+            "project_json": _json_copy(dict(project_json), field="project_json")}, request_id=request_id, actor=actor)
+
+    def release_project(self, project_ref: Any, *, session_id: str, actor: str, request_id: str) -> dict[str, Any]:
+        """Release checkout custody, retaining local files for explicit rebase."""
+        return self._execute("work.project.folder-release", {"project_ref": _ref(project_ref),
+            "session_id": _text(session_id, "session_id")}, request_id=request_id, actor=actor)
+
+    def export_project(self, project_ref: Any, *, document_refs: Sequence[Any] = (),
+                       association_refs: Sequence[Any] = (), actor: str, request_id: str) -> dict[str, Any]:
+        """Export selected canonical records for a distinct owner transfer."""
+        return self._execute("work.project.export", {"project_ref": _ref(project_ref),
+            "document_refs": [_ref(ref) for ref in document_refs],
+            "association_refs": [_ref(ref) for ref in association_refs]}, request_id=request_id, actor=actor)
+
+    def import_project(self, snapshot: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
+        """Import a trusted source-owner export; raw files use import_folder."""
+        return self._execute("work.project.import", {"snapshot": dict(snapshot)}, request_id=request_id, actor=actor)
+
+    def import_folder(self, *, project_json: Mapping[str, Any], files: Mapping[str, str],
+                      actor: str, request_id: str) -> dict[str, Any]:
+        """Import explicit text files as target-owned pending documents; resumable."""
+        return self._execute("work.project.folder-import", {"project_json": dict(project_json),
+            "files": dict(files)}, request_id=request_id, actor=actor)
+
+    def export_folder(self, project_ref: Any, *, actor: str, request_id: str) -> dict[str, Any]:
+        """Export a raw text package; canonical transfer remains a separate API."""
+        return self._execute("work.project.folder-export", {"project_ref": _ref(project_ref)},
+            request_id=request_id, actor=actor)
+
     def revisit(self, project_ref: Any, revisit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         if not isinstance(revisit, Mapping) or not revisit:
@@ -499,7 +1085,7 @@ class OttoPortfolio:
         )
 
     @staticmethod
-    def _roles(roles: Mapping[str, Any]) -> dict[str, Any]:
+    def _roles(roles: Mapping[str, Any], *, responsibility_ref: Any = None) -> dict[str, Any]:
         if not isinstance(roles, Mapping):
             raise PortfolioError("roles must be an object")
         parent = _ref(roles.get("parent"), "roles.parent")
@@ -516,6 +1102,34 @@ class OttoPortfolio:
         if len(executor_value) > 8:
             raise PortfolioError("roles.executor exceeds the bounded executor limit")
         result = {"parent": parent, "manager": manager, "executor": executor_value}
+        if "orchestrator" in roles:
+            result["orchestrator"] = _text(roles["orchestrator"], "roles.orchestrator")
+        if "project_advisor" in roles:
+            result["project_advisor"] = _text(roles["project_advisor"], "roles.project_advisor")
+        if "resources" in roles:
+            raw_resources = roles["resources"]
+            if responsibility_ref is not None and isinstance(raw_resources, Mapping):
+                scope = _ref(responsibility_ref, "responsibility_ref")
+                prepared_resources = {}
+                for role, items in raw_resources.items():
+                    candidates = [items] if isinstance(items, Mapping) else list(items) if isinstance(items, Sequence) and not isinstance(items, (str, bytes)) else [items]
+                    prepared_resources[role] = []
+                    for item in candidates:
+                        if isinstance(item, Mapping):
+                            item = dict(item)
+                            if "responsibility_ref" in item and item["responsibility_ref"] != scope:
+                                raise PortfolioError("resource responsibility_ref does not match the assignment scope")
+                            item.setdefault("responsibility_ref", scope)
+                        prepared_resources[role].append(item)
+                raw_resources = prepared_resources
+            try:
+                result["resources"] = normalize_role_attachments(raw_resources)
+            except ResourceSyncError as exc:
+                raise PortfolioError(str(exc)) from exc
+            if result["resources"].get("orchestrator") and not result.get("orchestrator"):
+                raise PortfolioError("orchestrator resources require an explicit orchestrator principal")
+            if result["resources"].get("project_advisor") and not result.get("project_advisor"):
+                raise PortfolioError("project_advisor resources require an explicit project_advisor principal")
         if "profile" in roles:
             result["profile"] = _text(roles["profile"], "roles.profile")
         return result
@@ -539,18 +1153,56 @@ class OttoPortfolio:
         frame_value = _json_copy(dict(frame), field="frame")
         for key in ("outcome", "recipient", "route", "authority"):
             _text(frame_value.get(key), f"frame.{key}")
-        payload: dict[str, Any] = {"project_ref": _ref(project_ref), "choice": choice, "frame": frame_value}
+        project_value = _ref(project_ref)
+        payload: dict[str, Any] = {"project_ref": project_value, "choice": choice, "frame": frame_value}
         if roles is not None:
-            payload["roles"] = self._roles(roles)
+            payload["roles"] = self._roles(roles, responsibility_ref=project_value)
         return self._execute("work.pending.admission", payload, request_id=request_id, actor=actor)
 
     def assign_roles(self, project_ref: Any, roles: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
         return self._execute(
             "work.responsibility.assign",
-            {"project_ref": _ref(project_ref), "roles": self._roles(roles)},
+            {"project_ref": _ref(project_ref), "roles": self._roles(roles, responsibility_ref=_ref(project_ref))},
             request_id=request_id,
             actor=actor,
+        )
+
+    def pair_project_advisor(
+        self,
+        project_ref: Any,
+        manager_assignment_ref: Any,
+        *,
+        actor: str,
+        request_id: str,
+        manager_generation: int,
+        advisor_principal: Optional[str] = None,
+        pins: Sequence[Any] = (),
+    ) -> dict[str, Any]:
+        """Read the current pair, creating only a missing advisor assignment.
+
+        Omitting ``advisor_principal`` makes this a read-only lookup.  Host
+        conversation binding and all later effects use their ordinary ports.
+        """
+
+        request_id, actor = self._request(request_id, actor)
+        if (isinstance(manager_generation, bool) or not isinstance(manager_generation, int)
+                or manager_generation < 1):
+            raise PortfolioError("manager_generation must be a positive integer")
+        if advisor_principal is not None:
+            advisor_principal = _text(advisor_principal, "advisor_principal")
+        if isinstance(pins, (str, bytes)) or not isinstance(pins, Sequence):
+            raise PortfolioError("pins must be an array")
+        payload: dict[str, Any] = {
+            "project_ref": _ref(project_ref),
+            "manager_assignment_ref": _ref(manager_assignment_ref, "manager_assignment_ref"),
+            "manager_generation": manager_generation,
+            "pins": [_ref(value, "pins") for value in pins],
+        }
+        if advisor_principal is not None:
+            payload["advisor_principal"] = advisor_principal
+        return self._execute(
+            "work.project-advisor.pair", payload, request_id=request_id, actor=actor,
         )
 
     def complete_task(

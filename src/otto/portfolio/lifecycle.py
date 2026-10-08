@@ -72,6 +72,7 @@ class PortfolioLifecycleIntegration:
         automation_update: Callable[[Mapping[str, Any]], Mapping[str, Any]],
         read_settings: Callable[[HostEffect, Mapping[str, Any]], Mapping[str, Any]],
         owner_operations: Any = None,
+        role_runtimes: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if not isinstance(attention, DurableAttention):
             raise TypeError("attention must be a DurableAttention")
@@ -85,6 +86,13 @@ class PortfolioLifecycleIntegration:
         self.orchestrator_actor = _text(orchestrator_actor, "orchestrator_actor")
         self._generation = _generation(generation)
         self.owner_operations = owner_operations
+        if role_runtimes is not None and (not isinstance(role_runtimes, Mapping) or any(
+            role not in {"manager", "orchestrator", "project_advisor"}
+            or not callable(getattr(runtime, "hourly_resource_check", None))
+            for role, runtime in role_runtimes.items()
+        )):
+            raise LifecycleIntegrationError("role_runtimes must map manager/orchestrator/project_advisor to canonical runtimes")
+        self.role_runtimes = dict(role_runtimes or {})
         self.orchestrator_binding = self._validate_binding(orchestrator_binding, self._generation)
         if not isinstance(projects, Mapping):
             raise LifecycleIntegrationError("projects must be an object")
@@ -118,7 +126,20 @@ class PortfolioLifecycleIntegration:
                 "lifecycle_owner": owner,
                 "generation": context_generation,
                 "manager_ref": _copy(context.get("manager_ref"), f"projects[{key}].manager_ref") if context.get("manager_ref") is not None else None,
+                "role_bindings": _copy(context.get("role_bindings", {}), f"projects[{key}].role_bindings"),
             }
+            if not isinstance(self._project_context[key]["role_bindings"], Mapping):
+                raise LifecycleIntegrationError(f"projects[{key}].role_bindings must be an object")
+            for bound_role, role_binding in self._project_context[key]["role_bindings"].items():
+                if bound_role not in {"manager", "orchestrator", "project_advisor"} or not isinstance(role_binding, Mapping):
+                    raise LifecycleIntegrationError(f"projects[{key}] has an invalid role binding")
+                for required in ("schedule_id", "assignment_ref", "mandate_ref"):
+                    if role_binding.get(required) is None:
+                        raise LifecycleIntegrationError(f"projects[{key}].role_bindings.{bound_role}.{required} is required")
+                if bound_role == "project_advisor":
+                    _generation(role_binding.get("generation"), f"projects[{key}].role_bindings.project_advisor.generation")
+                if self.owner_operations is None and any(role_binding.get(name) is None for name in ("project_ref", "task_ref")):
+                    raise LifecycleIntegrationError(f"projects[{key}].role_bindings.{bound_role} must include canonical project_ref/task_ref")
             if self.owner_operations is not None and self._project_context[key]["manager_ref"] is None:
                 raise LifecycleIntegrationError(f"projects[{key}] must include manager_ref for canonical lifecycle ownership")
         for schedule_id, role in (
@@ -313,29 +334,19 @@ class PortfolioLifecycleIntegration:
         record = self._record(schedule_id)
         if record is None:
             return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
-        prepared = self.attention.prepare_host(
-            schedule_id,
-            request_id=request_id,
-            expected_version=record.version,
-            actor=self._lifecycle_owner,
-            project_ref=record.project_ref,
-            manager_ref=record.manager_ref,
-            generation=self._generation,
-            desired_state=desired_state,
-        )
-        if prepared.get("outcome") in {"unknown", "rejected"}:
-            return {"schedule_id": schedule_id, "prepared": prepared, "outcome": prepared["outcome"]}
-        effect = HostEffect.from_dict(prepared["effect"])
-        receipt = self._executor.recover(effect) if prepared.get("outcome") == "replayed" else self._executor.execute(effect)
-        return {
-            "schedule_id": schedule_id,
-            "desired_state": desired_state,
-            "prepared": prepared,
-            "receipt": receipt,
-            "outcome": receipt.get("outcome"),
-            "readback_exact": bool(receipt.get("readback", {}).get("readback_exact")),
-            "acknowledgement": receipt.get("acknowledgement"),
-        }
+        from .execution_host import ExecutionHost
+        result = ExecutionHost.reconcile_trigger(
+            attention=self.attention, executor=self._executor, schedule_id=schedule_id,
+            request_id=request_id, desired_state=desired_state, actor=self._lifecycle_owner,
+            expected_version=record.version, project_ref=record.project_ref,
+            manager_ref=record.manager_ref, generation=self._generation)
+        receipt = result.get("host") or {}
+        return {"schedule_id": schedule_id, "desired_state": desired_state,
+                "prepared": result.get("prepared"), "receipt": receipt,
+                "outcome": result["outcome"],
+                "readback_exact": bool(receipt.get("readback", {}).get("readback_exact")),
+                "acknowledgement": receipt.get("acknowledgement"),
+                "observed_scheduled_callback": False}
 
     def _desired_states(self) -> dict[str, str]:
         active = any(state == "active" for state in self._projects.values())
@@ -424,13 +435,117 @@ class PortfolioLifecycleIntegration:
             "automatic_action": False,
         }
 
-    def reconcile(self, *, request_id: str, actor: str, generation: int) -> dict[str, Any]:
-        """Retry persisted host effects without changing project lifecycle."""
+    def reconcile(self, *, request_id: str, actor: str, generation: int,
+                  role_delivery: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """Retry host effects, check current role drift, or deliver one admitted role occurrence.
+
+        Role delivery is opt-in on this existing authenticated lifecycle/wake
+        entry. Schedule activation and ordinary reconciliation never launch an
+        agent. The bound DueRecord and role bindings provide all owner refs.
+        """
 
         operator = _text(actor, "actor")
         if operator not in {self.manager_actor, self.orchestrator_actor}:
             raise LifecycleIntegrationError("reconciliation requires manager or orchestrator authority")
-        return self._reconcile(request_id=request_id, action="reconcile", generation=generation)
+        self._check_generation(generation)
+        result = self._reconcile(request_id=request_id, action="reconcile", generation=generation)
+        supervision = []
+        for project_id, state in sorted(self._projects.items()):
+            if state == "terminal":
+                continue
+            context = self._project_context[project_id]
+            runtime = self.role_runtimes.get("orchestrator") or self.role_runtimes.get("manager")
+            portfolio = getattr(runtime, "portfolio", None)
+            loop = portfolio._issue_loop() if portfolio is not None else None
+            if loop is None:
+                continue
+            binding = (context["role_bindings"].get("manager")
+                       or context["role_bindings"].get("orchestrator", {}))
+            project_ref = binding.get("project_ref", context["project_ref"])
+            if not isinstance(project_ref, Mapping):
+                raise LifecycleIntegrationError("issue supervision requires the canonical project reference")
+            supervision.append({"project_id": project_id,
+                "observations": loop.reconcile_supervision(projects=[project_ref])})
+        result["issue_supervision"] = supervision
+        checks = []
+        if self.role_runtimes:
+            for project_id, state in sorted(self._projects.items()):
+                if state == "terminal":
+                    continue
+                context = self._project_context[project_id]
+                binding = context["role_bindings"].get("manager")
+                runtime = self.role_runtimes.get("manager")
+                if binding is None or runtime is None:
+                    continue
+                checks.append({"project_id": project_id, **runtime.hourly_resource_check(
+                    project_ref=binding.get("project_ref", context["project_ref"]),
+                    task_ref=binding.get("task_ref", context["task_ref"]),
+                    assignment_ref=binding["assignment_ref"], schedule_id=binding["schedule_id"],
+                    expected_generation=self._generation,
+                )})
+        result["resource_checks"] = checks
+        if role_delivery is not None:
+            result["role_delivery"] = self._deliver_role(actor=operator, delivery=role_delivery)
+        return result
+
+    def _deliver_role(self, *, actor: str, delivery: Mapping[str, Any]) -> Any:
+        if not isinstance(delivery, Mapping):
+            raise LifecycleIntegrationError("role_delivery must be an object")
+        role = _text(delivery.get("role"), "role_delivery.role")
+        allowed_actor = self.manager_actor if role in {"manager", "project_advisor"} else self.orchestrator_actor if role == "orchestrator" else None
+        if allowed_actor is None or actor != allowed_actor:
+            raise LifecycleIntegrationError("role delivery requires the matching manager/orchestrator authority")
+        runtime = self.role_runtimes.get(role)
+        if runtime is None:
+            raise LifecycleIntegrationError(f"no canonical runtime is configured for {role}")
+        project_id = _text(delivery.get("project_id"), "role_delivery.project_id")
+        if self._projects.get(project_id) not in {"active", "closing", "blocked"}:
+            raise LifecycleIntegrationError("role delivery requires a live project")
+        context = self._project_context[project_id]
+        binding = context["role_bindings"].get(role)
+        if binding is None:
+            raise LifecycleIntegrationError("project has no adopted assignment/mandate binding for this role")
+        operation = _text(delivery.get("operation"), "role_delivery.operation")
+        if operation not in {"invoke", "resume", "send"}:
+            raise LifecycleIntegrationError("role delivery operation is unsupported")
+        lifecycle = _text(delivery.get("lifecycle"), "role_delivery.lifecycle")
+        packet_digest = _text(delivery.get("packet_digest"), "role_delivery.packet_digest")
+        logical_request_key = _text(delivery.get("logical_request_key"), "role_delivery.logical_request_key")
+        as_of = _text(delivery.get("as_of"), "role_delivery.as_of")
+        request = delivery.get("request", {})
+        if not isinstance(request, Mapping):
+            raise LifecycleIntegrationError("role_delivery.request must be an object")
+        required_names = delivery.get("required_resource_names", ())
+        if not isinstance(required_names, (list, tuple)) or any(not isinstance(item, str) or not item.strip() for item in required_names):
+            raise LifecycleIntegrationError("required_resource_names must be a list of names")
+        current = self._owner_read(project_id) if self.owner_operations is not None else {}
+        project_ref = current.get("project_ref", binding.get("project_ref", context["project_ref"]))
+        task_ref = current.get("task_ref", binding.get("task_ref", context["task_ref"]))
+        callback = lifecycle == "callback"
+        if callback and operation != "resume":
+            raise LifecycleIntegrationError("an admitted callback must resume the bound owner session")
+        kwargs = {
+            "project_ref": project_ref, "task_ref": task_ref,
+            "assignment_ref": binding["assignment_ref"], "mandate_ref": binding["mandate_ref"],
+            "schedule_id": _text(binding.get("schedule_id"), "role binding schedule_id"),
+            "logical_request_key": logical_request_key,
+            "expected_generation": _generation(binding.get("generation", self._generation), "role binding generation"),
+            "operation": operation, "lifecycle": lifecycle, "packet_digest": packet_digest,
+            "request": dict(request), "as_of": as_of,
+            "required_resource_names": tuple(required_names),
+        }
+        if callback:
+            kwargs["lifecycle"] = "callback"
+        mode = delivery.get("authorization_mode", "direct")
+        if mode not in {"direct", "caller_native"}:
+            raise LifecycleIntegrationError("role delivery authorization_mode is unsupported")
+        receipt_name = "direct_startup_receipt" if mode == "direct" else "native_launch_receipt"
+        if receipt_name in delivery:
+            kwargs[receipt_name] = delivery[receipt_name]
+        # All configured lifecycle and callback deliveries enter the same held
+        # authorization boundary. Legacy expert wrappers remain available to
+        # explicit recovery callers, outside this routine path.
+        return runtime.invoke_role(role=role, mode=mode, **kwargs)
 
     def orchestrator_terminal_close(self, project_id: str, *, request_id: str, actor: str, generation: int, project_ref: str, task_ref: str, lifecycle_owner: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
         """Terminally close a manager-closing project under orchestrator authority."""

@@ -12,7 +12,128 @@ from inspect import Parameter, signature
 import json
 from typing import Any, Mapping, Optional, Protocol
 
-from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig, _json_value
+from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig, ProjectReadGrant, _json_value
+
+
+def _read_current_result_task(scope_reader: Any, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any]) -> Any:
+    """Reuse owner membership semantics while pinning both current revisions."""
+    from types import SimpleNamespace
+    from .owner_readers import project_reader, task_reader
+    operations = SimpleNamespace(reader=scope_reader)
+    identity = lambda ref: {key: ref[key] for key in ("authority", "kind", "id")}
+    try:
+        project = project_reader(operations, project_ref)(identity(project_ref))
+        task = task_reader(operations, project_ref, task_ref)(identity(task_ref))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise PermissionError("result capability project/task scope changed") from exc
+    if project["ref"] != dict(project_ref) or task["ref"] != dict(task_ref) or task["project_ref"] != dict(project_ref):
+        raise PermissionError("result capability project/task revision changed")
+    return task
+
+
+class _BoundResultAccess:
+    """Owner-issued result access for one admitted assignment generation/key."""
+
+    def __init__(self, *, assignments: Any, reader: Any, scope_reader: Any, actor: Any,
+                 project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+                 assignment_ref: Mapping[str, Any], generation: int, logical_request_key: str) -> None:
+        from herzchen.contracts import ResourceRef
+
+        self.__assignments, self.__reader, self.__actor = assignments, reader, actor
+        self.__scope_reader = scope_reader
+        self.__project = ResourceRef.from_dict(project_ref)
+        self.__task = ResourceRef.from_dict(task_ref)
+        self.__assignment = ResourceRef.from_dict(assignment_ref)
+        self.__generation, self.__key = generation, logical_request_key
+        if (self.__project.kind != "work.project" or self.__task.kind != "work.task"
+                or self.__assignment.kind != "wrk.assignment"
+                or any(ref.authority != actor.authority for ref in (self.__project, self.__task, self.__assignment))
+                or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1
+                or not isinstance(logical_request_key, str) or not logical_request_key.strip()):
+            raise ValueError("invalid result capability binding")
+        self.get(assignment_ref)
+
+    def get(self, target: Any) -> Any:
+        if _json_value(target) != self.__assignment.to_dict():
+            raise PermissionError("result capability assignment mismatch")
+        _read_current_result_task(self.__scope_reader, self.__project.to_dict(), self.__task.to_dict())
+        current = self.__assignments.get(self.__assignment)
+        scope = _json_value(current.scope)
+        task_scope = scope == self.__task.to_dict()
+        project_worker_scope = (
+            not task_scope and isinstance(scope, Mapping) and getattr(current, "role", None) in {"worker", "executor"}
+            and all(scope.get(key) == self.__project.to_dict()[key] for key in ("authority", "kind", "id"))
+        )
+        # A project executor is still issued only this exact task and request;
+        # publication below never accepts sibling-task or other-key evidence.
+        if (_json_value(current.ref) != self.__assignment.to_dict()
+                or current.generation != self.__generation
+                or not (task_scope or project_worker_scope)):
+            raise PermissionError("result capability assignment is stale or out of scope")
+        return current
+
+    def list_observations(self, target: Any, *, kind: str) -> Any:
+        self.get(target)
+        if kind != "result":
+            raise PermissionError("result capability observation kind mismatch")
+        return tuple(value for value in self.__assignments.list_observations(self.__assignment, kind=kind)
+                     if value.generation == self.__generation)
+
+    def append_result(self, target: Any, value: Any, *, expected_generation: int,
+                      logical_request_key: str, actor: Any) -> Any:
+        self.get(target)
+        expected = {"project_ref": self.__project.to_dict(), "task_ref": self.__task.to_dict(),
+                    "assignment_ref": self.__assignment.to_dict(), "generation": self.__generation,
+                    "logical_request_key": self.__key}
+        if (expected_generation != self.__generation or logical_request_key != self.__key or actor != self.__actor
+                or not isinstance(value, Mapping) or any(value.get(key) != val for key, val in expected.items())):
+            raise PermissionError("result publication differs from owner capability")
+        return self.__assignments.append_result(self.__assignment, value, expected_generation=expected_generation,
+            logical_request_key=logical_request_key, actor=self.__actor)
+
+    def get_receipt(self, logical_request_key: str) -> Any:
+        from herzchen.contracts import ResourceRef
+
+        if logical_request_key != self.__key:
+            raise PermissionError("result capability request mismatch")
+        self.get(self.__assignment)
+        receipt = self.__reader.get_receipt(self.__key)
+        if receipt is None:
+            return None
+        value = _json_value(receipt)
+        try:
+            result = ResourceRef.from_dict(value["result_ref"])
+            target = ResourceRef.from_dict(value["target"])
+            if (value.get("logical_request_key") != self.__key or value.get("operation") != "work.result.append"
+                    or value.get("status") != "committed" or result.kind != "wrk.result"
+                    or result.authority != self.__actor.authority or result.revision is None
+                    or (target.authority, target.kind, target.id) != (result.authority, result.kind, result.id)):
+                raise ValueError("invalid bound result receipt")
+            self.__record(result)
+        except (TypeError, ValueError, KeyError) as error:
+            raise PermissionError("result receipt differs from owner capability") from error
+        return receipt
+
+    def __record(self, ref: Any) -> Any:
+        record = self.__reader.get_record(ref)
+        payload = _json_value(getattr(record, "payload", None))
+        if (_json_value(getattr(record, "ref", None)) != ref.to_dict() or not isinstance(payload, Mapping)
+                or payload.get("record_type") != "work.observation" or payload.get("observation_kind") != "result"
+                or payload.get("assignment") != self.__assignment.to_dict() or payload.get("generation") != self.__generation):
+            raise PermissionError("result record differs from owner capability")
+        value = payload.get("value")
+        expected = {"project_ref": self.__project.to_dict(), "task_ref": self.__task.to_dict(),
+                    "assignment_ref": self.__assignment.to_dict(), "generation": self.__generation,
+                    "logical_request_key": self.__key}
+        if not isinstance(value, Mapping) or any(value.get(key) != val for key, val in expected.items()):
+            raise PermissionError("result value differs from owner capability")
+        return record
+
+    def get_record(self, ref: Any) -> Any:
+        receipt = self.get_receipt(self.__key)
+        if receipt is None or _json_value(ref) != _json_value(receipt)["result_ref"]:
+            raise PermissionError("result capability reference mismatch")
+        return self.__record(ref)
 
 
 class CreateAndOpenCommandPort(Protocol):
@@ -43,7 +164,10 @@ def _call_owner_materializer(materializer: Any, **values: Any) -> Any:
     return materializer(**{key: value for key, value in values.items() if key in accepted})
 
 
-class _CreateAndOpenOwnerEngine:
+from .project_folder import ProjectFolderOwner
+
+
+class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
     """Owner-only composition over the accepted ProjectSheet and EDT services."""
 
     def __init__(self, store: Any, *, sheet: Any, authoring: Any, materializer: Any = None) -> None:
@@ -52,6 +176,13 @@ class _CreateAndOpenOwnerEngine:
         self.sheet = sheet
         self.authoring = authoring
         self.materializer = materializer
+        from herzchen.content import ContentCommandHandler
+        from herzchen.content.packets import ContextPacketService
+        from herzchen.content import domain_contribution as content_contribution
+        self.content = ContentCommandHandler(store)
+        # Folder visibility only needs the already admitted DAT domain.
+        # Its sealed handler cannot mutate the unrelated attention domain.
+        self.folder_visibility = ContextPacketService(store.domain_handler((content_contribution(),)))
 
     def _planned_project_ref(self, project_request_key: str) -> Any:
         from herzchen.contracts import ResourceRef
@@ -150,6 +281,121 @@ class _CreateAndOpenOwnerEngine:
             "checkout_path": handle.checkout_path,
         }
 
+    def _project_draft(self, project: Any, request_id: str, actor: Any = None) -> dict[str, Any]:
+        """Generate semantic bytes and CAS pins from the same owner read."""
+        view = _json_value(self.sheet.export(project))
+        authored = view["project"]["authored"]
+        # Operational metadata and observations never enter project.json.
+        fields = ("title", "outcome", "scope", "approach", "acceptance", "protocol", "custom")
+        draft = {key: authored[key] for key in fields if key in authored}
+        tasks = []
+        bases = {}
+        for task in view["tasks"]:
+            ref = task["ref"]
+            bases[ref["id"]] = ref["revision"]
+            value = {key: val for key, val in task["authored"].items()
+                     if key in view["definitions"]["task_editable"] and key not in {"metadata", "fields", "lifecycle"}}
+            value["id"] = ref["id"]
+            tasks.append(value)
+        draft["tasks"] = tasks
+        files, documents = self._folder_tree(project, actor) if actor is not None else ({}, {})
+        return {"document_files": files, "document_bases": documents,
+                "ref": view["project"]["ref"], "base_task_revisions": bases,
+                "project_json": draft, "open_request_key": request_id}
+
+    @staticmethod
+    def _draft_bytes(draft: Mapping[str, Any]) -> bytes:
+        return json.dumps(dict(draft), ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")
+
+    def open_project_sheet(self, *, project_ref: Any, actor: Any, request_id: str) -> Mapping[str, Any]:
+        """Open a semantic project.json projection; generated pins stay in EDT."""
+        from herzchen.contracts import AuthenticatedActor, ResourceRef
+        from herzchen.kernel import VersionConflictError
+        if not isinstance(actor, AuthenticatedActor) or actor.authority != self.authority:
+            raise PermissionError("project authoring requires an owner-bound actor")
+        ref = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        if ref.authority != self.authority or ref.kind != "work.project" or ref.revision is None:
+            raise ValueError("project checkout requires an exact owner project revision")
+        scope = ResourceRef(self.authority, "authoring-scope", ref.id)
+        previous = self.reader.get_identity(scope)
+        prior = self.reader.get_receipt(request_id)
+        if prior is not None:
+            state = None if previous is None else previous.payload.get("project")
+            if (not isinstance(state, Mapping) or state.get("open_request_key") != request_id
+                    or state.get("ref") != ref.to_dict()):
+                from herzchen.contracts import ReplayConflictError
+                raise ReplayConflictError("checkout key differs from the retained project session")
+        else:
+            state = self._project_draft(ref, request_id, actor=actor)
+            if state["ref"] != ref.to_dict():
+                raise VersionConflictError("project checkout base is stale")
+
+        def materialize(checkout: Any, initial_bytes: bytes) -> Mapping[str, Any]:
+            result = {} if self.materializer is None else _call_owner_materializer(
+                self.materializer, checkout=checkout, initial_bytes=initial_bytes, project=ref)
+            result = dict(result) if isinstance(result, Mapping) else {"path": result}
+            result["project"] = state
+            return self._folder_materialize(result, state.get("document_files", {}))
+
+        opened = self.authoring.open(ref, actor, request_id=request_id, target_kind="project-sheet",
+            base_revision=ref.revision, initial_content=self._draft_bytes(state["project_json"]),
+            project=state, materialize=materialize, pending=True, purpose="otto", activity="editing")
+        return {"outcome": opened.status, "project_ref": ref.to_dict(),
+                "session_id": None if opened.handle is None else opened.handle.session_id,
+                "target_kind": "project-sheet", "base_revision": ref.revision,
+                "project_json": state["project_json"], "document_files": state.get("document_files", {}),
+                "error": opened.error,
+                "execution": False, "dispatch": False}
+
+    def finish_project_sheet(self, *, project_ref: Any, session_id: str, project_json: Mapping[str, Any],
+                             actor: Any, request_id: str) -> Mapping[str, Any]:
+        """Apply one WRK sheet and retire its EDT session in the common transaction."""
+        from herzchen.contracts import AuthoringCheckout, ResourceRef
+        from herzchen.authoring.sessions import SessionHandle
+        from herzchen.kernel import VersionConflictError
+        ref = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        if ref.authority != self.authority or ref.kind != "work.project" or ref.revision is None:
+            raise ValueError("project check-in requires its exact checkout project revision")
+        record = self.reader.get_identity(ResourceRef(self.authority, "authoring-scope", ref.id))
+        state = None if record is None else record.payload.get("project")
+        if not isinstance(state, Mapping) or state.get("ref") != ref.to_dict() or "base_task_revisions" not in state:
+            raise PermissionError("project check-in has no matching owner-issued checkout")
+        checkout = AuthoringCheckout.from_dict(record.payload["checkout"])
+        if checkout.actor != actor or checkout.session_id != session_id:
+            raise PermissionError("project check-in actor or session differs from checkout")
+        handle = SessionHandle(ResourceRef(self.authority, "authoring-scope", ref.id), checkout.target_scope, checkout.target_kind, actor,
+            session_id, checkout.token, checkout.fence, checkout.base_revision, record.payload.get("checkout_path"))
+        data = self._draft_bytes(self._json_mapping(project_json, "project_json"))
+
+        if self.reader.get_receipt(request_id) is None:
+            current = _json_value(self.sheet.export(ref))
+            bases = {task["ref"]["id"]: task["ref"]["revision"] for task in current["tasks"]}
+            if current["project"]["ref"] != state["ref"] or bases != state["base_task_revisions"]:
+                return {"outcome": "conflict", "error": {"code": "stale_base", "message": "project or task checkout bases are stale"},
+                        "session_id": session_id, "execution": False, "dispatch": False}
+
+        def apply(snapshot: Any, _checkout: Any, **_: Any) -> None:
+            self.authoring.authorize_mutation(handle, checkout.target_scope, token=handle.token, fence=handle.fence,
+                expected_base_revision=handle.base_revision)
+            current = _json_value(self.sheet.export(ref))
+            bases = {task["ref"]["id"]: task["ref"]["revision"] for task in current["tasks"]}
+            if bases != state["base_task_revisions"]:
+                raise VersionConflictError("project task bases are stale")
+            self.sheet.apply(ref, json.loads(snapshot.data.decode("utf-8")), actor=actor,
+                base_revision=ref.revision, logical_request_key=request_id + ":sheet")
+
+        finished = self.authoring.finish(handle, request_id=request_id, mode="manual", capture=data,
+            apply=apply, pending=False, expected_base_revision=handle.base_revision,
+            snapshot_digest=sha256(data).hexdigest())
+        sheet_receipt = self.reader.get_receipt(request_id + ":sheet")
+        snapshot_ref = (finished.final_snapshot.ref if finished.final_snapshot is not None
+                        else None if finished.checkout is None else finished.checkout.final_snapshot_ref)
+        return {"outcome": finished.status, "project_ref": _json_value(sheet_receipt.result_ref if sheet_receipt is not None else self.reader.get_identity(ref).ref),
+                "session_id": session_id, "receipt": _json_value(finished.receipt),
+                "sheet_receipt": _json_value(sheet_receipt), "error": finished.error,
+                "snapshot_ref": _json_value(snapshot_ref), "snapshot_sha256": sha256(data).hexdigest(),
+                "recovery_pending": finished.recovery_pending, "execution": False, "dispatch": False}
+
     def create_pending_and_open(
         self,
         *,
@@ -190,6 +436,12 @@ class _CreateAndOpenOwnerEngine:
 
         project_key = request_id + ":project"
         target = self._planned_project_ref(project_key)
+        previous_scope = self.reader.get_identity(ResourceRef(self.authority, "authoring-scope", target.id))
+        if self.reader.get_receipt(request_id) is not None and previous_scope is not None:
+            previous_state = previous_scope.payload.get("project")
+            if isinstance(previous_state, Mapping) and previous_state.get("open_request_key", request_id) != request_id:
+                from herzchen.contracts import ReplayConflictError
+                raise ReplayConflictError("create key belongs to a retired authoring session")
 
         def create_project(*_args: Any, **_kwargs: Any) -> ResourceRef:
             created = self.sheet.create_pending(
@@ -218,8 +470,15 @@ class _CreateAndOpenOwnerEngine:
         def materialize(checkout: Any, initial_bytes: bytes, *, project: Any) -> Mapping[str, Any]:
             if not isinstance(project, ResourceRef) or not self._same_identity(project, target):
                 raise RuntimeError("ProjectSheet returned a project identity outside the reserved authoring scope")
+            from herzchen.authoring.sessions import SessionHandle
+            state = self._project_draft(project, request_id)
+            initial_bytes = self._draft_bytes(state["project_json"])
+            handle = SessionHandle(ResourceRef(self.authority, "authoring-scope", target.id),
+                checkout.target_scope, checkout.target_kind, checkout.actor, checkout.session_id,
+                checkout.token, checkout.fence, checkout.base_revision)
+            self.authoring.autosave(handle, request_id=request_id + ":initial-sheet", snapshot=initial_bytes)
             if self.materializer is None:
-                return {"project": project}
+                return {"project": state}
             observed = _call_owner_materializer(
                 self.materializer,
                 checkout=checkout,
@@ -228,9 +487,9 @@ class _CreateAndOpenOwnerEngine:
             )
             if isinstance(observed, Mapping):
                 result = dict(observed)
-                result["project"] = project
+                result["project"] = state
                 return result
-            return {"path": observed, "project": project}
+            return {"path": observed, "project": state}
 
         logical_request = {
             "title": title,
@@ -283,6 +542,8 @@ class _CreateAndOpenOwnerEngine:
             "project_ref": project_ref or opened.project_ref,
             "session_id": None if handle is None else handle.session_id,
             "handle": self._handle_value(handle),
+            "project_json": None if scope_record is None or not isinstance(scope_record.payload.get("project"), Mapping)
+                else scope_record.payload["project"].get("project_json"),
             "checkout": opened.checkout,
             "target_kind": None if handle is None else handle.target_kind,
             "base_revision": None if handle is None else handle.base_revision,
@@ -321,7 +582,13 @@ class PortfolioOwnerBootstrap:
         "create_and_open_bridge",
         "orchestration_port",
         "orchestration_portfolio",
+        "project_read_grant",
     )
+
+    def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
+        """Issue one original-owner transaction guard, retaining Store custody."""
+        from .attention_binding import ExternalAssignmentGuard, _GUARD_TOKEN
+        return ExternalAssignmentGuard(self, scope, attention_authority, _token=_GUARD_TOKEN)
 
     def __init__(
         self,
@@ -335,6 +602,7 @@ class PortfolioOwnerBootstrap:
         allowed_creator_ids: tuple[str, ...] = (),
         privileged_actor_ids: tuple[str, ...] = (),
         expected_main_principal: Optional[str] = None,
+        project_read_grant: Optional[ProjectReadGrant] = None,
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
@@ -351,11 +619,24 @@ class PortfolioOwnerBootstrap:
         authenticated = binding.authenticated_actor(owner_actor)
         if authenticated.authority != store.authority:
             raise ValueError("binding authority does not belong to the supplied store")
+        if project_read_grant is not None and (
+            not isinstance(project_read_grant, ProjectReadGrant)
+            or project_read_grant.principal != authenticated
+        ):
+            raise ValueError("project read grant must bind the authenticated owner principal")
 
         self.store = store
         self.binding = binding
         self.owner_actor = authenticated
+        self.project_read_grant = project_read_grant
         self.graph = WorkGraph(store, actor=authenticated)
+        # Assignment instruction adoption is an optional late-registered
+        # port.  Opening WorkGraph first preserves compatibility with owner
+        # databases persisted under the old assignment descriptor digest.
+        from herzchen.domains import work as work_domain
+        register_resources = getattr(work_domain, "register_assignment_resources", None)
+        if register_resources is not None:
+            register_resources(store)
         self.sheet = ProjectSheet(store, actor=authenticated)
         self.content = ContentCommandHandler(store)
         self.assignments = ResponsibilityAssignments(store, actor=authenticated)
@@ -407,6 +688,298 @@ class PortfolioOwnerBootstrap:
             create_open_port=create_open_port,
             orchestration_port=self.orchestration_port,
             orchestration_portfolio=self.orchestration_portfolio,
+            project_read_grant=self.project_read_grant,
+            direction_context_reader=self._direction_context_reader(),
+        )
+
+    def _direction_context_reader(self) -> Any:
+        # Read capability only: neither registering domains nor exposing bind
+        # or adopt to workers. The explicit owner setup remains the issuer.
+        def read(*, assignment_ref: Any, generation: Any, project_ref: Any, task_ref: Any = None) -> Any:
+            from .direction import DirectionBindings, DOMAIN_ID, ADOPTION_DOMAIN_ID
+            from .direction_context import read_direction_context
+            registered = {item.domain_id for item in self.store.registered_domains()}
+            if DOMAIN_ID not in registered:
+                return []
+            from herzchen.contracts import ResourceRef
+            project = ResourceRef.from_dict(project_ref)
+            if self.project_read_grant is None or not self.project_read_grant.allows(project):
+                raise PermissionError("direction context is outside the current project read grant")
+            if ADOPTION_DOMAIN_ID not in registered:
+                raise ValueError("direction adoption reader unavailable; complete owner direction setup")
+            directions = DirectionBindings(self.store, owner_actor=self.owner_actor)
+            return read_direction_context(directions, actor=self.owner_actor,
+                assignment_ref=assignment_ref, generation=generation, project_ref=project_ref, task_ref=task_ref)
+        return read
+
+    def direction_bindings(self) -> Any:
+        """Issue the narrow owner direction capability, without role adoption.
+
+        This explicit composition registers binding and exact scope adoption. Ordinary
+        manager/worker facades receive no broader direction authority.
+        """
+        from .direction import DirectionBindings, register_direction_bindings
+        register_direction_bindings(self.store)
+        return DirectionBindings(self.store, owner_actor=self.owner_actor,
+                                 assignment_port=self.assignments.command_port)
+
+    def direction_surface(self, *, context_reader: Any = None,
+                          caller_context_reader: Any = None,
+                          inventory_reader: Any = None,
+                          occurrence_reader: Any = None,
+                          allowed_project: Any = None) -> Any:
+        """Issue the bounded D05 direction read/authoring projection.
+
+        The projection reuses the owner-issued D01-D04 capability.  Inventory
+        and trusted caller bindings remain host-supplied; this method does not
+        create a roster, context store, or native/session history.
+        """
+        from .direction_surface import DirectionSurface
+        return DirectionSurface(self.direction_bindings(), actor=self.owner_actor,
+                                context_reader=context_reader,
+                                caller_context_reader=caller_context_reader,
+                                inventory_reader=inventory_reader,
+                                occurrence_reader=occurrence_reader,
+                                allowed_project=allowed_project)
+
+    def portfolio(self, *, due_port: Any, issue_delivery: Any = None) -> Any:
+        """Issue the ordinary portfolio API with owner-backed check-in/issue ports."""
+        from .intake import OttoPortfolio
+        from .owner_issue_loop import compose_owner_issue_loop
+
+        operations = self.consumer_operations()
+        return OttoPortfolio(operations, issue_loop=compose_owner_issue_loop(
+            operations, due_port, delivery=issue_delivery,
+        ))
+
+    def manager_application(self, *, due_port: Any = None, issue_delivery: Any = None) -> Any:
+        """Compose the ordinary finite manager entry over this trusted owner."""
+        from .manager_application import ManagerApplication
+
+        return ManagerApplication.from_owner(self, due_port=due_port, issue_delivery=issue_delivery)
+
+    def manager_assessment(self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+                           manager_assignment_ref: Mapping[str, Any], manager_actor: str,
+                           manager_generation: int, assessment_policy: Any) -> Any:
+        """Issue finite assessment commands for the current assigned manager/task."""
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.assessment import AssessmentModule
+        from .assessment import OttoAssessment
+        from .manager_assessment_command import ManagerAssessmentCommands
+        from .local_assessment_policy import LocalAssessmentPolicy
+        from herzchen.kernel import LimitService
+        if not isinstance(assessment_policy, LocalAssessmentPolicy):
+            raise TypeError("trusted local assessment policy is required")
+        project, task, assignment = (ResourceRef.from_dict(value) for value in
+                                    (project_ref, task_ref, manager_assignment_ref))
+        actor = self.binding.authenticated_actor(manager_actor)
+        if (project.kind != "work.project" or task.kind != "work.task"
+                or assignment.kind != "wrk.assignment"
+                or any(ref.authority != self.owner_actor.authority or not ref.revision
+                       for ref in (project, task, assignment))
+                or type(manager_generation) is not int or manager_generation < 1):
+            raise ValueError("manager assessment requires exact owner scope and generation")
+
+        def authorize() -> None:
+            grant = self.project_read_grant
+            if grant is None or grant.principal != self.owner_actor or not grant.allows(project):
+                raise PermissionError("manager assessment project is outside the owner grant")
+            _read_current_result_task(self.graph.reader, project.to_dict(), task.to_dict())
+            assessment_policy.validate_binding(project, task, self.graph.reader)
+            current = self.assignments.command_port.get(assignment)
+            if (current.ref != assignment or current.generation != manager_generation
+                    or current.role != "manager" or current.principal != actor.actor
+                    or (current.scope.authority, current.scope.kind, current.scope.id)
+                    != (project.authority, project.kind, project.id)
+                    or current.status.value == "cancelled"):
+                raise PermissionError("manager assessment assignment is stale or out of scope")
+
+        def pool_guard() -> None:
+            pool = LimitService(self.store).get_pool(assessment_policy.pool_ref)
+            if (pool is None or pool.capacity_units != assessment_policy.capacity_units
+                    or pool.cumulative_allowance_units != assessment_policy.cumulative_allowance_units):
+                raise PermissionError("local assessment pool is missing or differs from the bound policy")
+
+        authorize()
+        return ManagerAssessmentCommands(
+            assessment=OttoAssessment(AssessmentModule(self.store, actor=actor), actor),
+            reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
+            generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
+
+    def create_manager_assessment_pool(self, *, project_ref: Mapping[str, Any],
+                                       task_ref: Mapping[str, Any],
+                                       manager_assignment_ref: Mapping[str, Any],
+                                       manager_actor: str, manager_generation: int,
+                                       logical_request_key: str, assessment_policy: Any) -> Mapping[str, Any]:
+        """Create only the pool authorized by trusted local controller policy."""
+        from herzchen.kernel import LimitService, VersionConflictError
+        if not isinstance(logical_request_key, str) or not logical_request_key.strip():
+            raise ValueError("logical request key is required")
+        self.manager_assessment(project_ref=project_ref, task_ref=task_ref,
+            manager_assignment_ref=manager_assignment_ref, manager_actor=manager_actor,
+            manager_generation=manager_generation, assessment_policy=assessment_policy)
+        actor = self.binding.authenticated_actor(manager_actor)
+        limits = LimitService(self.store)
+        try:
+            pool = limits.create_pool(
+                assessment_policy.pool_ref, capacity_units=assessment_policy.capacity_units,
+                cumulative_allowance_units=assessment_policy.cumulative_allowance_units,
+                logical_request_key=logical_request_key, actor=actor)
+            replayed = pool.receipt is not None and pool.receipt.replayed
+        except VersionConflictError:
+            # A controller-created pool can have a different setup key. Only
+            # recover the specific version-conflict shape by reading the exact
+            # policy-bound identity; all other failures remain unchanged.
+            pool = limits.get_pool(assessment_policy.pool_ref)
+            if pool is None:
+                raise
+            if (pool.capacity_units != assessment_policy.capacity_units
+                    or pool.cumulative_allowance_units != assessment_policy.cumulative_allowance_units):
+                raise PermissionError("local assessment pool exists but differs from the bound policy")
+            # The current identity is the exact trusted pool, so reuse is safe
+            # even though the setup logical key differs from this operation.
+            replayed = True
+        return {"outcome": "replayed" if replayed else "committed",
+                "schema": "otto.manager-assessment-pool.v1", "pool": pool.ref.to_dict(),
+                "capacity_units": pool.capacity_units, "cumulative_allowance_units": pool.cumulative_allowance_units,
+                "held_units": pool.held_units, "cumulative_used_units": pool.cumulative_used_units,
+                "remaining_allowance_units": pool.remaining_allowance_units,
+                "purpose": assessment_policy.purpose, "local_only": True, "provider_called": False}
+
+    def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
+                              manager_actor: str | None = None, assessment_policy: Any = None,
+                              issue_delivery: Any = None) -> Any:
+        """Issue maintained execution commands over the existing finite ports."""
+        from .execution import ExecutionApplication
+        runtime = self.role_runtime(due_port=due_port, adapter=adapter,
+                                    assessment_policy=assessment_policy, issue_delivery=issue_delivery)
+        kwargs = {} if clock is None else {"clock": clock}
+        return ExecutionApplication(portfolio=runtime.portfolio,
+            assignments=self.assignments.command_port, due_port=due_port,
+            binding=self.binding, actor=self.owner_actor.actor, runtime=runtime,
+            manager_actor=manager_actor, **kwargs)
+
+    def shared_attention_port(self, *, due_port: Any) -> Any:
+        """Issue durable scheduled notifications through the existing DAT owner."""
+        from herzchen.content.packets import ContextPacketService
+        from herzchen.contracts import ResourceRef, TransactionContext
+        from otto.attention import SerializedAttentionPort
+        import hashlib
+        import json
+        packets = ContextPacketService(self.store).command_port
+        actor, grant = self.owner_actor, self.project_read_grant
+
+        def create(request: Mapping[str, Any]) -> Mapping[str, Any]:
+            due = due_port.read_due(request.get("schedule_id"))
+            project = ResourceRef(actor.authority, "work.project", request.get("project_ref"))
+            if (grant is None or not grant.allows(project) or not isinstance(due, Mapping)
+                    or due.get("lifecycle_owner") != actor.actor
+                    or due.get("in_flight_request") != request.get("request_id")
+                    or any(due.get(field) != request.get(field) for field in
+                           ("recipient", "generation", "project_ref", "manager_ref", "target", "role"))):
+                raise PermissionError("attention request does not match the current granted owner occurrence")
+            digest = hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False,
+                                               separators=(",", ":")).encode()).hexdigest()
+            return packets.create_attention(request, TransactionContext(actor, request["request_id"], digest))
+        from .owner_readers import json_value
+        return SerializedAttentionPort(create, lambda recipient: json_value(packets.list_attention(recipient)))
+
+    def role_runtime(self, *, due_port: Any, adapter: Any, runtime_probe: Any = None,
+                     issue_delivery: Any = None, assessment_policy: Any = None) -> Any:
+        """Compose a role runtime from finite clients without exposing Store.
+
+        The caller supplies the already-issued finite DueRecord port and host
+        adapter.  The returned consumer runtime retains only the operation
+        reader, command facades, and due port needed for its bounded routes.
+        """
+        from ..agents.owner_runtime import CanonicalRoleRuntime
+        from ..agents.gateway import HerzchenAttemptCapture
+        portfolio = self.portfolio(due_port=due_port, issue_delivery=issue_delivery)
+        operations = portfolio.operations
+        assignments, result_reader = self.assignments.command_port, self.graph.reader
+        owner_actor, grant, scope_reader = self.owner_actor, self.project_read_grant, operations.reader
+
+        def result_capture(*, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+                           assignment_ref: Mapping[str, Any], generation: int, logical_request_key: str) -> Any:
+            from herzchen.contracts import ResourceRef
+
+            project, task = ResourceRef.from_dict(project_ref), ResourceRef.from_dict(task_ref)
+            if grant is None or grant.principal != owner_actor or not grant.allows(project):
+                raise PermissionError("result capability requires the admitted project/task scope")
+            _read_current_result_task(scope_reader, project_ref, task_ref)
+            access = _BoundResultAccess(assignments=assignments, reader=result_reader, scope_reader=scope_reader,
+                actor=owner_actor, project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
+                generation=generation, logical_request_key=logical_request_key)
+            capture = HerzchenAttemptCapture(access, access, actor=owner_actor)
+            error = capture.validate_generation(assignment_ref, generation)
+            if error:
+                raise PermissionError(error)
+            return capture
+
+        def acceptance_readiness(project_ref: Mapping[str, Any], manager: Mapping[str, Any],
+                                 tasks: Any) -> Mapping[str, Any]:
+            if assessment_policy is None:
+                raise PermissionError("operating setup requires the owner-bound assessment policy and existing allowance")
+            from herzchen.contracts import ResourceRef
+            scopes, completed_readbacks = [], []
+            for configured_task in tasks:
+                task = configured_task
+                ref = ResourceRef.from_dict(configured_task)
+                current = self.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+                if current is not None and current.ref.to_dict() != configured_task:
+                    # Immutable setup selects the completion input revision.
+                    # Only that exact committed transition can supply a current
+                    # read; assessment/result mutation capabilities stay strict.
+                    completion = current.payload.get("completion") or {}
+                    key = completion.get("logical_request_key")
+                    receipt = self.graph.reader.get_receipt(key) if isinstance(key, str) else None
+                    if (current.payload.get("lifecycle") != "completed"
+                            or completion.get("task_ref") != configured_task
+                            or receipt is None or receipt.status.value != "committed"
+                            or receipt.operation != "work.revise" or receipt.target != ref
+                            or receipt.result_ref != current.ref):
+                        raise PermissionError("setup acceptance task lacks exact committed completion predecessor")
+                    task = current.ref.to_dict()
+                    completed_readbacks.append({"configured_task_ref": configured_task,
+                        "current_task_ref": task, "completion_request_key": key})
+                commands = self.manager_assessment(project_ref=project_ref, task_ref=task,
+                    manager_assignment_ref=manager["assignment_ref"], manager_actor=manager["principal"],
+                    manager_generation=manager["generation"], assessment_policy=assessment_policy)
+                scopes.append(commands.execute({"operation": "resolve-required-scope", "arguments": {},
+                    "expected_task_ref": task, "expected_assignment_ref": manager["assignment_ref"],
+                    "expected_generation": manager["generation"]}))
+            expected = {task.to_dict()["id"] for task, _ in assessment_policy.task_criterion_pairs}
+            if {task["id"] for task in tasks} != expected:
+                raise PermissionError("operating setup must resolve every task in the owner assessment policy")
+            return {"required_scopes": scopes, "completed_task_readbacks": completed_readbacks, "allowance_created": False}
+
+        from herzchen.kernel import LimitService
+        limits = LimitService(self.store)
+
+        def allowance_readiness(value: Mapping[str, Any]) -> None:
+            from herzchen.contracts import ResourceRef
+            ref = ResourceRef.from_dict(value)
+            if ref.authority != owner_actor.authority or ref.kind != "limit" or ref.revision is not None:
+                raise PermissionError("advisor allowance must select an existing owner pool")
+            pool = limits.get_pool(ref)
+            if pool is None or pool.remaining_allowance_units < 1:
+                raise PermissionError("advisor allowance is missing or exhausted")
+
+        def completed_task_readiness(due: Any) -> Any:
+            from .owner_readers import completed_occurrence_task_reader
+            from herzchen.contracts import ResourceRef
+            if due.stop_state != "completed" or due.completion_state != "succeeded":
+                return None
+            assignment = assignments.get(ResourceRef.from_dict(due.assignment_ref))
+            return completed_occurrence_task_reader(result_reader, due, assignment)
+
+        return CanonicalRoleRuntime(
+            operations=operations, portfolio=portfolio, due_port=due_port,
+            adapter=adapter, actor=self.owner_actor.actor, runtime_probe=runtime_probe,
+            result_capture_factory=result_capture,
+            acceptance_readiness=acceptance_readiness,
+            allowance_readiness=allowance_readiness,
+            completed_task_readiness=completed_task_readiness,
         )
 
 

@@ -1,0 +1,16 @@
+--- a/controller/launch_manager_once.py
++++ b/controller/launch_manager_once.py
+@@ -949,6 +949,13 @@
+                 key=request.get("request_key"), decision_id=request.get("decision_id"),
+                 interval_seconds=request.get("interval_seconds"),
+             )
++        if command == "advisor-followup":
++            from otto.portfolio.advisor_followup_command import advisor_followup_from_command
++            return advisor_followup_from_command(
++                request=request, project_ref=self.state["project_ref"],
++                read_due=self.due_port.read_due,
++                dispatch=self.dispatch_scheduled_project_advisor_followup,
++            )
+         if command == "advisor-delivery-correct":
+             evidence = request.get("evidence")
+             if not isinstance(evidence, list) or not evidence:

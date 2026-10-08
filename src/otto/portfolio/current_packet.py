@@ -13,6 +13,8 @@ import hashlib
 import json
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
+from .resource_sync import ResourceSyncError, validate_resource_evidence
+
 
 class CurrentPacketError(ValueError):
     """A current-packet input violates the narrow ORC-03 contract."""
@@ -152,6 +154,8 @@ def select_current_action_packet(
     worker_observation: Mapping[str, Any],
     next_action: Mapping[str, Any],
     budgets: Mapping[str, Any],
+    resource_evidence: Mapping[str, Any] | None = None,
+    require_resource_evidence: bool = False,
 ) -> dict[str, Any]:
     """Select one trusted active mandate and render a non-dispatching packet."""
 
@@ -191,6 +195,23 @@ def select_current_action_packet(
     worker["dispatch"] = False
     worker["launch"] = False
     budget_value = _copy(dict(budgets))
+    if not isinstance(require_resource_evidence, bool):
+        raise CurrentPacketError("require_resource_evidence must be boolean")
+    if resource_evidence is None and require_resource_evidence:
+        raise CurrentPacketError("resource evidence is required before this orchestrator handoff")
+    evidence = None
+    if resource_evidence is not None:
+        try:
+            evidence = validate_resource_evidence(
+                resource_evidence,
+                role="orchestrator",
+                responsibility_ref=assignment,
+                generation=generation,
+            )
+        except ResourceSyncError as exc:
+            raise CurrentPacketError(str(exc)) from exc
+        if evidence.get("native_identity") is not None and evidence.get("native_identity") != planner_value.native_id:
+            raise CurrentPacketError("resource evidence native identity does not match the planner observation")
     body = {
         "schema": "otto.orchestrator.orc03.current_action_packet.v1",
         "source": _copy(dict(source)),
@@ -220,6 +241,8 @@ def select_current_action_packet(
             "report_only": True,
         },
     }
+    if evidence is not None:
+        body["resource_evidence"] = evidence
     body["packet_sha256"] = _digest(body)
     body["idempotency_key"] = "orc03-current-action-" + body["packet_sha256"]
     return body
@@ -233,7 +256,7 @@ def render_planner_handoff(packet: Mapping[str, Any]) -> dict[str, Any]:
     planner_handoff = packet.get("planner_handoff")
     if not isinstance(planner_handoff, Mapping) or planner_handoff.get("auto_dispatch") is not False:
         raise CurrentPacketError("planner handoff must be report-only")
-    return {
+    handoff = {
         "schema": "otto.orchestrator.orc03.astra_planning_handoff.v1",
         "input_packet_sha256": _text(packet.get("packet_sha256"), "packet_sha256"),
         "planner": _copy(dict(planner_handoff["planner"])),
@@ -253,6 +276,9 @@ def render_planner_handoff(packet: Mapping[str, Any]) -> dict[str, Any]:
         "execution_authority": False,
         "next_action": _copy(dict(packet["next_action"])),
     }
+    if packet.get("resource_evidence") is not None:
+        handoff["resource_evidence"] = _copy(dict(packet["resource_evidence"]))
+    return handoff
 
 
 __all__ = ["CurrentPacketError", "PlannerProvenance", "SteeringDirective", "render_planner_handoff", "select_current_action_packet"]

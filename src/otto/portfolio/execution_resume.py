@@ -15,6 +15,8 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
+from .resource_sync import ResourceSyncError, validate_resource_evidence
+
 
 class ExecutionResumeError(ValueError):
     """A selected packet cannot be continued under the supplied custody."""
@@ -128,6 +130,8 @@ def execute_selected_packet(
     p1_handoff_sha256: str,
     operation: str = "execute_or_resume",
     prior_attempts: Sequence[Mapping[str, Any]] = (),
+    resource_evidence: Mapping[str, Any] | None = None,
+    require_resource_evidence: bool = False,
 ) -> dict[str, Any]:
     """Admit exactly one bounded continuation without launching anything.
 
@@ -174,6 +178,26 @@ def execute_selected_packet(
     plan = _text(plan_sha256, "plan_sha256")
     p1_handoff = _text(p1_handoff_sha256, "p1_handoff_sha256")
     operation_name = _text(operation, "operation")
+    if not isinstance(require_resource_evidence, bool):
+        raise ExecutionResumeError("require_resource_evidence must be boolean")
+    if resource_evidence is None and require_resource_evidence:
+        raise ExecutionResumeError("resource evidence is required before this continuation")
+    evidence = None
+    if resource_evidence is not None:
+        try:
+            evidence = validate_resource_evidence(
+                resource_evidence,
+                role="worker",
+                responsibility_ref=assignment_ref,
+                generation=expected_generation,
+            )
+        except ResourceSyncError as exc:
+            raise ExecutionResumeError(str(exc)) from exc
+        if evidence.get("brief_sha256") != brief:
+            raise ExecutionResumeError("resource evidence brief does not match the submitted brief")
+        observed_native = worker.get("native_id")
+        if evidence.get("native_identity") is not None and evidence.get("native_identity") != observed_native:
+            raise ExecutionResumeError("resource evidence native identity does not match the worker observation")
     prereqs = [_ref(item, "prerequisite_ref") for item in _require_sequence(prerequisite_refs, "prerequisite_refs")]
     if not prereqs:
         raise ExecutionResumeError("at least one prerequisite reference is required")
@@ -198,7 +222,18 @@ def execute_selected_packet(
         "prerequisite_refs": prereqs,
         "worker": worker,
     }
-    operation_sha = _digest(stable)
+    if evidence is not None:
+        stable["resource_evidence"] = evidence
+    operation_basis = _copy(stable)
+    if evidence is not None:
+        immutable_evidence = dict(evidence)
+        # Delivery observations evolve as the host reports back.  They are
+        # reconciled on the same logical operation; instruction pins and the
+        # prepared brief remain the idempotent inputs.
+        immutable_evidence.pop("delivery_state", None)
+        immutable_evidence.pop("native_identity", None)
+        operation_basis["resource_evidence"] = immutable_evidence
+    operation_sha = _digest(operation_basis)
     idempotency_key = "orc04-selected-packet-" + operation_sha
     prior_keys = set()
     for item in prior_attempts:

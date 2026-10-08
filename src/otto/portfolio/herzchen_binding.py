@@ -8,10 +8,13 @@ storage nor a second command/event implementation.
 from __future__ import annotations
 
 import base64
+import binascii
 from dataclasses import dataclass
 from hashlib import sha256
 import json
 from typing import Any, Mapping, Optional
+
+from .resource_sync import ResourceSyncError, normalize_role_attachments, resolve_role_attachments, role_resource_pins
 
 
 # Keep the consumer facade's public instance shape stable while lifecycle
@@ -44,6 +47,89 @@ class HerzchenBindingConfig:
         from herzchen.contracts import AuthenticatedActor
 
         return AuthenticatedActor(self.authority, actor, self.credential_ref)
+
+
+@dataclass(frozen=True)
+class ProjectReadGrant:
+    """Finite project identities admitted by a trusted host for one actor."""
+
+    principal: Any
+    project_ids: tuple[str, ...]
+    policy_source: str
+    policy_revision: str
+
+    def __post_init__(self) -> None:
+        from herzchen.contracts import AuthenticatedActor
+
+        if not isinstance(self.principal, AuthenticatedActor):
+            raise TypeError("project grant principal must be authenticated")
+        if (not isinstance(self.project_ids, tuple) or not all(
+            isinstance(value, str) and value.strip() and "/" not in value
+            for value in self.project_ids
+        ) or len(set(self.project_ids)) != len(self.project_ids)):
+            raise ValueError("project grant must contain distinct finite project IDs")
+        if not all(isinstance(value, str) and value.strip() for value in (self.policy_source, self.policy_revision)):
+            raise ValueError("project grant requires an authoritative policy source and revision")
+
+    def allows(self, ref: Any) -> bool:
+        return (
+            getattr(ref, "authority", None) == self.principal.authority
+            and getattr(ref, "kind", None) == "work.project"
+            and getattr(ref, "id", None) in self.project_ids
+        )
+
+
+class _ScopedProjectReader:
+    """Expose granted projects and their owner-backed tasks to finite readers."""
+
+    __slots__ = ("__reader", "__grant", "authority")
+
+    def __init__(self, reader: Any, grant: Optional[ProjectReadGrant], authority: str) -> None:
+        self.__reader = reader
+        self.__grant = grant
+        self.authority = authority
+
+    def get_record(self, ref: Any) -> Any:
+        if self.__grant is None:
+            return None
+        if self.__grant.allows(ref):
+            return self.__reader.get_record(ref)
+        if getattr(ref, "kind", None) != "work.task" or getattr(ref, "authority", None) != self.authority:
+            return None
+        record = self.__reader.get_record(ref)
+        parent = getattr(record, "payload", {}).get("project_ref") if record is not None else None
+        if isinstance(parent, Mapping):
+            from herzchen.contracts import ResourceRef
+
+            try:
+                parent = ResourceRef.from_dict(parent)
+            except (TypeError, ValueError, KeyError):
+                return None
+        return record if self.__grant.allows(parent) else None
+
+    def get_identity(self, ref: Any) -> Any:
+        if self.__grant is None:
+            return None
+        if self.__grant.allows(ref):
+            return self.__reader.get_identity(ref)
+        if getattr(ref, "kind", None) != "work.task" or getattr(ref, "authority", None) != self.authority:
+            return None
+        identity = self.__reader.get_identity(ref)
+        parent = getattr(identity, "payload", {}).get("project_ref") if identity is not None else None
+        if isinstance(parent, Mapping):
+            from herzchen.contracts import ResourceRef
+
+            try:
+                parent = ResourceRef.from_dict(parent)
+            except (TypeError, ValueError, KeyError):
+                return None
+        return identity if self.__grant.allows(parent) else None
+
+    def list_events(self, *, stream: Optional[str] = None) -> tuple[Any, ...]:
+        if self.__grant is None:
+            return ()
+        return tuple(event for event in self.__reader.list_events(stream=stream)
+                     if self.__grant.allows(getattr(event, "subject", None)))
 
 
 def _json_value(value: Any) -> Any:
@@ -107,14 +193,27 @@ class FiniteWorkOperations:
         create_open_port: Any = None,
         orchestration_port: Any = None,
         orchestration_portfolio: Any = None,
+        project_read_grant: Optional[ProjectReadGrant] = None,
+        content_command_guard: Any = None,
+        direction_context_reader: Any = None,
     ) -> None:
         if port is None or reader is None:
             raise ValueError("port and reader are required for the canonical binding")
         self.port = port
-        self.reader = reader
+        if project_read_grant is not None and (
+            not isinstance(project_read_grant, ProjectReadGrant)
+            or project_read_grant.principal.authority != binding.authority
+            or project_read_grant.principal.credential_ref != binding.credential_ref
+        ):
+            raise ValueError("project read grant does not match the owner binding")
+        self._owner_reader = reader
+        self.reader = _ScopedProjectReader(reader, project_read_grant, binding.authority)
+        self.project_read_grant = project_read_grant
         self.binding = binding
         self.sheet_port = sheet_port
         self.content_port = content_port
+        self.content_command_guard = content_command_guard
+        self.direction_context_reader = direction_context_reader
         self.assignments_port = assignments_port
         if lifecycle_port is not None:
             _LIFECYCLE_PORTS[id(self)] = lifecycle_port
@@ -127,16 +226,120 @@ class FiniteWorkOperations:
     def _actor(self, actor: str) -> Any:
         return self.binding.authenticated_actor(actor)
 
+    def read_document_receipt(self, *, project_ref: Mapping[str, Any], document_ref: Mapping[str, Any],
+                              request_id: str, actor: str) -> Optional[Mapping[str, Any]]:
+        """Read one exact receipt for an owned document in the existing grant.
+
+        This finite projection exposes no arbitrary receipt or Store access.
+        It is used to recover a committed setup response without re-execution.
+        """
+        from herzchen.contracts import ResourceRef
+        project = ResourceRef.from_dict(project_ref)
+        document = ResourceRef.from_dict(document_ref)
+        grant = self._read_grant(actor)
+        if grant is None or not grant.allows(project) or document.kind != "dat.content.document":
+            raise PermissionError("document receipt is outside the project read grant")
+        stable = ResourceRef(document.authority, document.kind, document.id)
+        observed = _json_value(self.content_port.read(stable))
+        metadata = observed.get("document", {})
+        scope = metadata.get("authoring_scope", {})
+        if (metadata.get("maintainer") != actor or any(scope.get(k) != project_ref.get(k)
+                for k in ("authority", "kind", "id"))):
+            raise PermissionError("document receipt is outside current owner custody")
+        receipt = _receipt_dict(self._receipt(request_id))
+        if receipt is None or receipt.get("target") != stable.to_dict():
+            return None
+        return receipt
+
+    def _read_grant(self, actor: str) -> Optional[ProjectReadGrant]:
+        grant = self.project_read_grant
+        return grant if grant is not None and grant.principal == self._actor(actor) else None
+
+    @staticmethod
+    def _project_read_denied() -> dict[str, Any]:
+        return {"outcome": "denied", "read_only": True, "projects": [],
+                "error": {"code": "project_scope_denied", "message": "project read scope is unavailable"}}
+
+    def list_projects(self, *, actor: str, parent_ref: Any = None,
+                      cursor: Optional[str] = None, limit: Optional[int] = None) -> Mapping[str, Any]:
+        """List only the host-granted finite project identities, including completed."""
+        from herzchen.contracts import ResourceRef
+
+        grant = self._read_grant(actor)
+        if grant is None:
+            return self._project_read_denied()
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000):
+            return self._project_read_denied()
+        parent = None
+        if parent_ref is not None:
+            try:
+                parent = ResourceRef.from_dict(parent_ref) if isinstance(parent_ref, Mapping) else parent_ref
+            except (TypeError, ValueError, KeyError):
+                return self._project_read_denied()
+            if not grant.allows(parent):
+                return self._project_read_denied()
+        after = ""
+        if cursor is not None:
+            try:
+                value = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
+                if (value.get("actor") != grant.principal.actor
+                        or value.get("authority") != grant.principal.authority
+                        or value.get("policy_source") != grant.policy_source
+                        or value.get("policy_revision") != grant.policy_revision
+                        or value.get("parent") != _json_value(parent)):
+                    return self._project_read_denied()
+                after = value["after"]
+                if after not in grant.project_ids:
+                    return self._project_read_denied()
+            except (AttributeError, TypeError, ValueError, KeyError, UnicodeError, binascii.Error):
+                return self._project_read_denied()
+        selected: list[dict[str, Any]] = []
+        issues: list[dict[str, Any]] = []
+        for project_id in sorted(grant.project_ids):
+            if project_id <= after:
+                continue
+            record = self._owner_reader.get_record(ResourceRef(grant.principal.authority, "work.project", project_id))
+            if record is None:
+                issues.append({"code": "project_record_missing", "project_ref": {"authority": grant.principal.authority, "kind": "work.project", "id": project_id}})
+                continue
+            ref = getattr(record, "ref", None)
+            if not grant.allows(ref):
+                issues.append({"code": "project_record_identity_mismatch", "project_ref": {"authority": grant.principal.authority, "kind": "work.project", "id": project_id}})
+                continue
+            payload = getattr(record, "payload", None)
+            if not isinstance(payload, Mapping):
+                issues.append({"code": "project_record_payload_malformed", "project_ref": _json_value(ref)})
+                continue
+            actual_parent = payload.get("parent")
+            if parent is not None:
+                parent_value = _json_value(parent)
+                if not isinstance(actual_parent, Mapping) or any(actual_parent.get(key) != parent_value[key] for key in ("authority", "kind", "id")):
+                    continue
+            selected.append({"project_ref": _json_value(ref), "title": payload.get("title") or payload.get("name"),
+                             "lifecycle": payload.get("lifecycle", "unknown"), "parent_ref": _json_value(actual_parent),
+                             "readiness": _json_value(payload.get("readiness", {}))})
+        page = selected if limit is None else selected[:limit]
+        next_cursor = None
+        if limit is not None and len(selected) > limit:
+            next_cursor = base64.urlsafe_b64encode(json.dumps({"actor": grant.principal.actor,
+                "authority": grant.principal.authority, "policy_source": grant.policy_source,
+                "policy_revision": grant.policy_revision, "parent": _json_value(parent),
+                "after": page[-1]["project_ref"]["id"]}, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii")
+        return {"outcome": "listed" if not issues else "partial", "schema": "otto.portfolio-projects.v1",
+                "scope": {"authority": grant.principal.authority, "actor": grant.principal.actor, "parent_ref": _json_value(parent)},
+                "projects": page, "count": len(page), "next_cursor": next_cursor,
+                "read_only": True, "writes": 0, "issues": issues, "actor_acl": "host_grant"}
+
     def _events_for(self, receipt: Any) -> list[str]:
         receipt_dict = _receipt_dict(receipt) or {}
         wanted = set(receipt_dict.get("event_ids", []))
         if not wanted:
             return []
-        return [event.event_id for event in self.reader.list_events() if getattr(event, "event_id", None) in wanted]
+        return [event.event_id for event in self._owner_reader.list_events() if getattr(event, "event_id", None) in wanted]
 
     def _result(self, record: Any, *, request_id: str, replayed: bool) -> dict[str, Any]:
-        receipt = self.reader.get_receipt(request_id)
-        observed = self.reader.get_record(record.ref)
+        receipt = self._owner_reader.get_receipt(request_id)
+        observed = self._owner_reader.get_record(record.ref)
         return {
             "outcome": "replayed" if replayed else "created",
             "project_ref": _json_value(getattr(record, "ref", None)),
@@ -177,6 +380,8 @@ class FiniteWorkOperations:
             return self._dispatch_assignment(payload, request_id=request_id, actor=actor)
         if operation == "work.orchestrator.project.create":
             return self._create_orchestrated_project(payload, request_id=request_id, actor=actor)
+        if operation in {"work.orchestrator.projects.attach", "work.orchestrator.project.attach", "work.project.supervision.attach"}:
+            return self._attach_existing_projects(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and payload.get("open"):
             return self._create_and_open(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and _orchestration_for(self) is not None:
@@ -187,6 +392,10 @@ class FiniteWorkOperations:
             return self._create_from_template(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.open":
             return self._open_existing(payload, request_id=request_id, actor=actor)
+        if operation in {"work.project.folder-import", "work.project.folder-export", "work.project.folder-check-in", "work.project.folder-release"}:
+            return self._project_folder(operation, payload, request_id=request_id, actor=actor)
+        if operation in {"work.project.checkout", "work.project.check-in"}:
+            return self._project_authoring(operation, payload, request_id=request_id, actor=actor)
         if operation == "work.pending.edit":
             return self._revise(payload, request_id=request_id, actor=actor)
         if operation in {"work.pending.revisit", "work.pending.prerequisite-satisfied"}:
@@ -195,6 +404,8 @@ class FiniteWorkOperations:
             return self._admit(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.assign":
             return self._assign_roles(payload, request_id=request_id, actor=actor)
+        if operation == "work.project-advisor.pair":
+            return self._project_advisor_pair(payload, request_id=request_id, actor=actor)
         if operation in {"work.task.complete", "work.project-sheet.complete"}:
             return self._complete_task(payload, request_id=request_id, actor=actor)
         if operation == "work.responsibility.handoff":
@@ -209,7 +420,7 @@ class FiniteWorkOperations:
             return self._unsupported(operation, request_id=request_id, code="canonical_open_endpoint_unavailable", message="the finite accepted work port has no canonical open/session endpoint")
         edit = payload.get("edit", {})
         actor_value = self._actor(actor)
-        before = self.reader.get_receipt(request_id)
+        before = self._owner_reader.get_receipt(request_id)
         try:
             record = self.port.create_pending_project(
                 title=edit.get("title"),
@@ -266,7 +477,7 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "malformed_orchestration_result", "message": "owner orchestration returned a non-object", "operation": "work.orchestrator.project.create"}, "replayed": False, "event_ids": []}
         project_ref = result.get("project_ref")
         project_target = None if project_ref is None else self._record_ref(project_ref)
-        observed = None if project_target is None else self.reader.get_record(project_target)
+        observed = None if project_target is None else self._owner_reader.get_record(project_target)
         supervision = result.get("supervision") if isinstance(result.get("supervision"), Mapping) else {}
         assignment_ref = result.get("assignment_ref") or supervision.get("assignment_ref")
         assignment = None
@@ -293,6 +504,40 @@ class FiniteWorkOperations:
             "executable": False,
         }
 
+    def _attach_existing_projects(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Attach an explicit finite selection through the owner orchestration port."""
+
+        orchestration = _orchestration_for(self)
+        portfolio_ref = _orchestration_portfolio_for(self)
+        if orchestration is None or portfolio_ref is None:
+            return self._unsupported(
+                "work.orchestrator.projects.attach", request_id=request_id,
+                code="canonical_orchestration_port_unavailable",
+                message="qualified owner orchestration binding was not injected",
+            )
+        if not isinstance(payload, Mapping):
+            return {"outcome": "error", "error": {"code": "invalid_payload", "message": "payload must be an object", "operation": "work.orchestrator.projects.attach"}, "replayed": False, "event_ids": []}
+        projects = payload.get("projects")
+        try:
+            result = orchestration.attach_existing_projects(
+                actor=self._actor(actor),
+                request_id=request_id,
+                portfolio_ref=portfolio_ref,
+                target_assignment_ref=payload.get("target_assignment_ref"),
+                target_assignment_revision=payload.get("target_assignment_revision"),
+                target_assignment_generation=payload.get("target_assignment_generation"),
+                projects=projects,
+                expected_default_revision=payload.get("expected_default_revision"),
+                preview=payload.get("preview", False) is True,
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.orchestrator.projects.attach"}, "replayed": False, "event_ids": []}
+            raise
+        if not isinstance(result, Mapping):
+            return {"outcome": "error", "error": {"code": "malformed_orchestration_result", "message": "owner orchestration returned a non-object", "operation": "work.orchestrator.projects.attach"}, "replayed": False, "event_ids": []}
+        return _json_value(result)
+
     def _create_orchestrated_template(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Create atomically, then apply the existing template batch after commit."""
         if self.sheet_port is None:
@@ -318,12 +563,12 @@ class FiniteWorkOperations:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.create"}, "replayed": False, "event_ids": []}
             return self._template_error(exc)
-        record = self.reader.get_record(self._record_ref(project_ref))
+        record = self._owner_reader.get_record(self._record_ref(project_ref))
         mappings = getattr(materialized, "mappings", {})
         task_records = []
         if isinstance(mappings, Mapping):
             for local_id, task_ref in mappings.items():
-                task_record = self.reader.get_record(task_ref)
+                task_record = self._owner_reader.get_record(task_ref)
                 task_records.append({
                     "local_id": str(local_id),
                     "ref": _json_value(task_ref),
@@ -373,7 +618,7 @@ class FiniteWorkOperations:
         )
 
     def _receipt(self, request_id: str) -> Any:
-        return self.reader.get_receipt(request_id)
+        return self._owner_reader.get_receipt(request_id)
 
     def _receipt_result(self, request_id: str, *, outcome: str, **values: Any) -> dict[str, Any]:
         receipt = self._receipt(request_id)
@@ -418,8 +663,8 @@ class FiniteWorkOperations:
                 "event_ids": [],
             }
         before = self._receipt(request_id)
-        task = self.reader.get_record(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
-        dependency = self.reader.get_record(ResourceRef(dependency_ref.authority, dependency_ref.kind, dependency_ref.id))
+        task = self._owner_reader.get_record(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+        dependency = self._owner_reader.get_record(ResourceRef(dependency_ref.authority, dependency_ref.kind, dependency_ref.id))
         task_payload = getattr(task, "payload", {}) if task is not None else {}
         dependency_payload = getattr(dependency, "payload", {}) if dependency is not None else {}
         if task is None or not isinstance(task_payload, Mapping) or task_payload.get("kind") != "task":
@@ -437,7 +682,7 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "dependency_scope_mismatch", "message": "task and prerequisite must share a project"}, "replayed": False, "event_ids": []}
         if not any(self._same_identity(ref, dependency.ref) for ref in task_payload.get("dependencies", ())):
             return {"outcome": "error", "error": {"code": "dependency_not_linked", "message": "task does not currently link dependency_ref"}, "replayed": False, "event_ids": []}
-        project = self.reader.get_record(ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
+        project = self._owner_reader.get_record(ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
         if project is None:
             return {"outcome": "error", "error": {"code": "project_not_found", "message": "task project is not readable"}, "replayed": False, "event_ids": []}
         if before is not None:
@@ -471,7 +716,7 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc), "operation": "work.task.dependency-refresh"}, "replayed": False, "event_ids": []}
         receipt = getattr(batch, "receipt", None)
         replayed = bool(getattr(receipt, "replayed", False))
-        observed_task = self.reader.get_record(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+        observed_task = self._owner_reader.get_record(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
         return self._receipt_result(
             request_id,
             outcome="replayed" if replayed else "refreshed",
@@ -574,7 +819,7 @@ class FiniteWorkOperations:
             project_ref = ResourceRef.from_dict(payload["project_ref"])
         except (KeyError, TypeError, ValueError) as exc:
             return {"outcome": "error", "error": {"code": "invalid_project_ref", "message": str(exc)}, "event_ids": []}
-        record = self.reader.get_record(project_ref)
+        record = self._owner_reader.get_record(project_ref)
         if record is None:
             return {"outcome": "error", "error": {"code": "project_not_found", "message": "project is not admitted"}, "event_ids": []}
         source = _record_dict(record)
@@ -582,7 +827,7 @@ class FiniteWorkOperations:
         tasks = []
         for raw_ref in raw_payload.get("tasks", ()):
             try:
-                task = self.reader.get_record(self._record_ref(raw_ref))
+                task = self._owner_reader.get_record(self._record_ref(raw_ref))
             except Exception:
                 task = None
             if task is not None:
@@ -593,7 +838,7 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "invalid_document_refs", "message": "document_refs must be an array", "operation": "work.project.export"}, "event_ids": []}
         for raw_ref in requested_documents:
             try:
-                document = self.reader.get_record(self._record_ref(raw_ref))
+                document = self._owner_reader.get_record(self._record_ref(raw_ref))
             except Exception:
                 document = None
             if document is not None:
@@ -625,7 +870,7 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "invalid_association_refs", "message": "association_refs must be an array", "operation": "work.project.export"}, "event_ids": []}
         for raw_ref in requested_links:
             try:
-                association = self.reader.get_record(self._record_ref(raw_ref))
+                association = self._owner_reader.get_record(self._record_ref(raw_ref))
             except Exception:
                 association = None
             if association is not None:
@@ -654,7 +899,7 @@ class FiniteWorkOperations:
         snapshot["snapshot_digest"] = digest
         return {"outcome": "exported", "snapshot": snapshot, "snapshot_digest": digest, "request_id": request_id, "event_ids": []}
 
-    def _replay_import(self, *, before: Any, computed_digest: str, request_id: str) -> Mapping[str, Any]:
+    def _replay_import(self, *, before: Any, computed_digest: str, request_id: str) -> Optional[Mapping[str, Any]]:
         """Return the original import result without re-running its writes.
 
         Import has several child commands (adoption, document creation, and
@@ -682,7 +927,7 @@ class FiniteWorkOperations:
             getattr(target, "kind", "work.project"),
             getattr(target, "id"),
         )
-        record = self.reader.get_record(target_ref)
+        record = self._owner_reader.get_record(target_ref)
         if record is None:
             return {
                 "outcome": "error",
@@ -702,12 +947,9 @@ class FiniteWorkOperations:
             }
         saved = metadata.get("otto_transfer_result") if isinstance(metadata, Mapping) else None
         if not isinstance(saved, Mapping):
-            return {
-                "outcome": "error",
-                "error": {"code": "replay_state_unavailable", "message": "original import result manifest is missing", "operation": "work.project.import"},
-                "replayed": False,
-                "event_ids": [],
-            }
+            # Parent input is already frozen in the creation receipt/metadata;
+            # resume its same child receipts rather than creating a new project.
+            return None
         result = dict(saved)
         result["outcome"] = "replayed"
         result["replayed"] = True
@@ -723,6 +965,28 @@ class FiniteWorkOperations:
         return result
 
     def _import_project(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        try:
+            result = self._import_project_steps(payload, request_id=request_id, actor=actor)
+        except Exception as exc:
+            if self._receipt(request_id) is None or type(exc).__name__ == "ReplayConflictError":
+                raise
+            result = {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)}}
+        parent = self._receipt(request_id)
+        if (parent is None or result.get("outcome") != "error"
+                or result.get("error", {}).get("code") in {"replay_conflict", "invalid_transfer_snapshot", "transfer_digest_mismatch"}):
+            return result
+        snapshot = payload.get("snapshot", {})
+        keys = [request_id + ":adoption", request_id + ":result"]
+        keys += [request_id + ":document:" + str(index) for index in range(len(snapshot.get("documents", ())))]
+        keys += [request_id + ":document-link:" + str(index) for index in range(len(snapshot.get("document_links", ())))]
+        receipts = [self._receipt(key) for key in keys]
+        return {**result, "outcome": "partial", "atomic": False, "project_ref": _json_value(parent.result_ref),
+                "committed": [_receipt_dict(receipt) for receipt in receipts if receipt is not None],
+                "pending_request_keys": [key for key, receipt in zip(keys, receipts) if receipt is None],
+                "recovery": "Inspect retained receipts and resume the exact snapshot and request key.",
+                "execution": False, "dispatch": False}
+
+    def _import_project_steps(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Passively import a project snapshot through ProjectSheet adoption.
 
         Import creates one new pending project in the destination authority,
@@ -746,9 +1010,16 @@ class FiniteWorkOperations:
         computed_digest = sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         if supplied_digest != computed_digest:
             return {"outcome": "error", "error": {"code": "transfer_digest_mismatch", "message": "snapshot digest does not match its public records", "operation": "work.project.import"}, "event_ids": []}
+        from .project_folder import validate_transfer
+        try:
+            validate_transfer(snapshot)
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"outcome": "rejected", "error": {"code": "invalid_transfer_provenance", "message": str(exc)}, "event_ids": []}
         before = self._receipt(request_id)
         if before is not None:
-            return self._replay_import(before=before, computed_digest=computed_digest, request_id=request_id)
+            replay = self._replay_import(before=before, computed_digest=computed_digest, request_id=request_id)
+            if replay is not None:
+                return replay
         edit_payload = source.get("payload") if isinstance(source.get("payload"), Mapping) else source
         title = edit_payload.get("title") or edit_payload.get("name") or "Imported pending project"
         outcome = edit_payload.get("outcome", "")
@@ -769,7 +1040,7 @@ class FiniteWorkOperations:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
             raise
-        target_ref = created.ref
+        target_ref = self._receipt(request_id).result_ref
         raw_tasks = list(snapshot.get("tasks", ()))
         task_ids = {}
         for item in raw_tasks:
@@ -932,7 +1203,7 @@ class FiniteWorkOperations:
             })
         receipt = self._receipt(request_id)
         adoption_receipt = self._receipt(request_id + ":adoption")
-        observed = self.reader.get_record(target_ref)
+        observed = self._owner_reader.get_record(target_ref)
         tasks = list(observed.payload.get("tasks", ())) if observed is not None else []
         event_ids = self._events_for(receipt) + [item for item in self._events_for(adoption_receipt) if item not in self._events_for(receipt)]
         for item in restored_documents + restored_links:
@@ -976,7 +1247,7 @@ class FiniteWorkOperations:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.project.import"}, "replayed": False, "event_ids": []}
             raise
-        observed = self.reader.get_record(target_ref)
+        observed = self._owner_reader.get_record(target_ref)
         return {
             "outcome": "imported",
             "project_ref": _json_value(getattr(observed, "ref", target_ref)),
@@ -1087,7 +1358,7 @@ class FiniteWorkOperations:
             return result
 
         edit = payload.get("edit", {})
-        before = self.reader.get_receipt(request_id)
+        before = self._owner_reader.get_receipt(request_id)
         selected_resource = payload.get("template") if isinstance(payload.get("template"), Mapping) else None
         selected_parameters = payload.get("template_parameters", {})
         try:
@@ -1148,11 +1419,11 @@ class FiniteWorkOperations:
         event_ids = {
             event_id
             for key in receipt_keys
-            for event_id in ((_receipt_dict(self.reader.get_receipt(key)) or {}).get("event_ids", []))
+            for event_id in ((_receipt_dict(self._owner_reader.get_receipt(key)) or {}).get("event_ids", []))
         }
         record = None
         if project_ref is not None:
-            record = self.reader.get_record(self._record_ref(project_ref))
+            record = self._owner_reader.get_record(self._record_ref(project_ref))
         template = opened.get("template")
         task_refs = opened.get("task_refs", [])
         task_records = []
@@ -1165,7 +1436,7 @@ class FiniteWorkOperations:
                     if isinstance(raw_tasks, (list, tuple)):
                         seed_tasks = list(raw_tasks)
             for index, task_ref in enumerate(task_refs):
-                task_record = self.reader.get_record(self._record_ref(task_ref))
+                task_record = self._owner_reader.get_record(self._record_ref(task_ref))
                 raw = seed_tasks[index] if index < len(seed_tasks) and isinstance(seed_tasks[index], Mapping) else {}
                 task_records.append({
                     "local_id": str(raw.get("local_id", raw.get("id", raw.get("key", "task-" + str(index))))),
@@ -1176,8 +1447,8 @@ class FiniteWorkOperations:
             "outcome": "replayed" if before is not None else ("created" if status == "opened" else status),
             "project_ref": _json_value(project_ref),
             "record": None if record is None else _record_dict(record),
-            "receipt": _receipt_dict(self.reader.get_receipt(request_id)),
-            "project_receipt": _receipt_dict(self.reader.get_receipt(request_id + ":project")),
+            "receipt": _receipt_dict(self._owner_reader.get_receipt(request_id)),
+            "project_receipt": _receipt_dict(self._owner_reader.get_receipt(request_id + ":project")),
             "template_receipt": _receipt_dict(opened.get("template_receipt")),
             "template": _json_value(template),
             "template_ref": None if template is None else _json_value(getattr(template, "ref", None)),
@@ -1187,7 +1458,7 @@ class FiniteWorkOperations:
             "replayed": before is not None,
             "event_ids": [
                 event.event_id
-                for event in self.reader.list_events()
+                for event in self._owner_reader.list_events()
                 if getattr(event, "event_id", None) in event_ids
             ],
             "executable": False,
@@ -1281,7 +1552,7 @@ class FiniteWorkOperations:
             project_ref = getattr(batch_project, "ref", None)
         if project_ref is None and isinstance(batch, Mapping):
             project_ref = batch.get("project_ref")
-        fresh = None if project_ref is None else self.reader.get_record(project_ref)
+        fresh = None if project_ref is None else self._owner_reader.get_record(project_ref)
         returned_project_ref = getattr(fresh, "ref", project_ref)
         mappings = getattr(batch, "mappings", {})
         if not isinstance(mappings, Mapping) and isinstance(batch, Mapping):
@@ -1289,7 +1560,7 @@ class FiniteWorkOperations:
         task_records = []
         if isinstance(mappings, Mapping):
             for local_id, task_ref in mappings.items():
-                record = self.reader.get_record(task_ref)
+                record = self._owner_reader.get_record(task_ref)
                 task_records.append({
                     "local_id": str(local_id),
                     "ref": _json_value(task_ref),
@@ -1299,7 +1570,7 @@ class FiniteWorkOperations:
         if receipt is None and isinstance(batch, Mapping):
             receipt = batch.get("receipt")
         receipt = receipt or self._receipt(request_id)
-        project_receipt = self.reader.get_receipt(request_id + "-project")
+        project_receipt = self._owner_reader.get_receipt(request_id + "-project")
         event_ids = self._events_for(receipt) + [event_id for event_id in self._events_for(project_receipt) if event_id not in self._events_for(receipt)]
         return {
             "outcome": "replayed" if prior is not None else "created",
@@ -1338,6 +1609,10 @@ class FiniteWorkOperations:
         }
 
     def _open_existing(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self.create_open_port is not None:
+            opened = self._project_authoring("work.project.checkout", payload, request_id=request_id, actor=actor)
+            return {**opened, "opened": {**opened, "status": opened["outcome"]},
+                    "replayed": opened["outcome"] == "replayed"}
         if self.authoring_port is None:
             return self._unsupported("work.pending.open", request_id=request_id, code="canonical_authoring_port_unavailable", message="accepted AuthoringSessionService command port was not injected")
         actor_value = self._actor(actor)
@@ -1352,6 +1627,43 @@ class FiniteWorkOperations:
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "authoring.open"}, "replayed": False, "event_ids": []}
             raise
         return self._receipt_result(request_id, outcome="replayed" if before is not None else getattr(result, "status", "opened"), project_ref=_json_value(ref), opened=self._open_dict(result), replayed=before is not None)
+
+    def _project_folder(self, operation, payload, *, request_id, actor):
+        if self.create_open_port is None:
+            return self._unsupported(operation, request_id=request_id, code="project_authoring_unavailable")
+        arguments = {**dict(payload), "actor": self._actor(actor), "request_id": request_id}
+        methods = {"work.project.folder-import": "import_project_folder",
+                   "work.project.folder-export": "export_project_folder",
+                   "work.project.folder-check-in": "finish_project_folder",
+                   "work.project.folder-release": "release_project_folder"}
+        try:
+            return _json_value(getattr(self.create_open_port, methods[operation])(**arguments))
+        except Exception as exc:
+            code = type(exc).__name__
+            parent = self._receipt(request_id + ":project") if operation == "work.project.folder-import" else None
+            if parent is not None and code not in {"ReplayConflictError", "VersionConflictError"}:
+                return {"outcome": "partial", "atomic": False, "project_ref": _json_value(parent.result_ref),
+                    "committed": [_receipt_dict(parent)], "pending": list(payload.get("files", {})),
+                    "error": {"code": code, "message": str(exc)},
+                    "recovery": "Inspect retained receipts and resume the exact input and request key.",
+                    "execution": False, "dispatch": False}
+            return {"outcome": "conflict" if code in {"ReplayConflictError", "VersionConflictError"} else "rejected",
+                    "error": {"code": code, "message": str(exc)}, "execution": False, "dispatch": False}
+
+    def _project_authoring(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if self.create_open_port is None:
+            return self._unsupported(operation, request_id=request_id, code="project_authoring_unavailable")
+        arguments = {"project_ref": payload["project_ref"], "actor": self._actor(actor), "request_id": request_id}
+        try:
+            if operation == "work.project.checkout":
+                return _json_value(self.create_open_port.open_project_sheet(**arguments))
+            return _json_value(self.create_open_port.finish_project_sheet(**arguments,
+                session_id=payload["session_id"], project_json=payload["project_json"]))
+        except Exception as exc:
+            if type(exc).__name__ in {"ReplayConflictError", "VersionConflictError"}:
+                return {"outcome": "conflict", "error": {"code": "replay_conflict" if type(exc).__name__ == "ReplayConflictError" else "stale_base", "message": str(exc)},
+                        "execution": False, "dispatch": False}
+            raise
 
     def _attention(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         observation = {"kind": "revisit" if operation.endswith("revisit") else "prerequisite-satisfied", "payload": dict(payload), "dispatch": False}
@@ -1388,10 +1700,27 @@ class FiniteWorkOperations:
         actor_value = self._actor(actor)
         ref = self._record_ref(payload["project_ref"])
         roles = payload["roles"]
+        resources = roles.get("resources") or {}
+        if resources.get("orchestrator") and not roles.get("orchestrator"):
+            return {"outcome": "error", "error": {"code": "orphan_resource_attachment", "message": "orchestrator resources require an explicit orchestrator principal", "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": [], "executable": False}
+        if resources.get("project_advisor") and not roles.get("project_advisor"):
+            return {"outcome": "error", "error": {"code": "orphan_resource_attachment", "message": "project_advisor resources require an explicit project_advisor principal", "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": [], "executable": False}
+        for slot, items in resources.items():
+            for item in items:
+                if item.get("responsibility_ref") != _json_value(ref):
+                    return {"outcome": "error", "error": {"code": "invalid_resource_attachment", "message": "resource attachment scope does not match the assignment project", "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": [], "executable": False}
+        try:
+            role_resources = resolve_role_attachments(roles.get("resources"), self.content_port or self._owner_reader) if roles.get("resources") else {}
+        except ResourceSyncError as exc:
+            return {"outcome": "error", "error": {"code": "invalid_resource_attachment", "message": str(exc), "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": [], "executable": False}
         assignments: dict[str, Any] = {}
         parent_receipt = None
         executor_values = roles["executor"] if isinstance(roles["executor"], list) else [roles["executor"]]
         role_inputs = [("parent", [self._record_ref(roles["parent"])])]
+        if roles.get("orchestrator") is not None:
+            role_inputs.append(("orchestrator", [roles["orchestrator"]]))
+        if roles.get("project_advisor") is not None:
+            role_inputs.append(("project_advisor", [roles["project_advisor"]]))
         role_inputs.extend((("manager", [roles["manager"]]), ("executor", executor_values)))
         event_ids: list[str] = []
         for role, principals in role_inputs:
@@ -1399,13 +1728,28 @@ class FiniteWorkOperations:
                 key = self._key(request_id, role + (":" + str(index) if len(principals) > 1 else ""))
                 prior = self._receipt(key)
                 try:
-                    assignment = self.assignments_port.assign(ref, role=role, principal=principal, manager=roles["manager"], logical_request_key=key, actor=actor_value)
+                    pins = role_resource_pins(role_resources, role)
+                    kwargs = {"role": role, "principal": principal, "manager": roles["manager"], "logical_request_key": key, "actor": actor_value}
+                    if pins:
+                        kwargs["pins"] = pins
+                    assignment = self.assignments_port.assign(ref, **kwargs)
                 except Exception as exc:
                     if type(exc).__name__ == "ReplayConflictError":
                         return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.responsibility.assign"}, "replayed": False, "event_ids": []}
                     raise
                 receipt = self._receipt(key)
-                assignments[key] = {"ref": _json_value(getattr(assignment, "ref", None)), "role": role, "principal": _json_value(principal), "receipt": _receipt_dict(receipt), "replayed": prior is not None}
+                assignment_ref_value = _json_value(getattr(assignment, "ref", None))
+                resource_slot = {
+                    "orchestrator": "orchestrator",
+                    "manager": "manager",
+                    "project_advisor": "project_advisor",
+                    "executor": "worker",
+                }.get(role)
+                effective_resources = [
+                    dict(item, responsibility_ref=assignment_ref_value)
+                    for item in role_resources.get(resource_slot, [])
+                ] if resource_slot else []
+                assignments[key] = {"ref": assignment_ref_value, "assignment_ref": assignment_ref_value, "role": role, "principal": _json_value(principal), "generation": getattr(assignment, "generation", None), "resources": effective_resources, "pins": _json_value(getattr(assignment, "pins", ())), "receipt": _receipt_dict(receipt), "replayed": prior is not None}
                 event_ids.extend(self._events_for(receipt))
                 if role == "parent":
                     parent_receipt = receipt
@@ -1414,6 +1758,154 @@ class FiniteWorkOperations:
             None,
         )
         return {"outcome": "assigned", "project_ref": _json_value(ref), "roles": assignments, "manager_assignment_ref": manager_assignment_ref, "parent_receipt": _receipt_dict(parent_receipt), "event_ids": event_ids, "replayed": all(item["replayed"] for item in assignments.values()) if assignments else False, "executable": False}
+
+    @staticmethod
+    def _active_assignment(assignment: Any) -> bool:
+        status = getattr(assignment, "status", None)
+        status = getattr(status, "value", status)
+        return str(status).lower() in {
+            "active", "assigned", "queued", "running", "in-flight", "reassigned",
+        }
+
+    @staticmethod
+    def _same_ref_identity(left: Any, right: Any) -> bool:
+        left, right = _json_value(left), _json_value(right)
+        return (
+            isinstance(left, Mapping)
+            and isinstance(right, Mapping)
+            and all(left.get(key) == right.get(key) for key in ("authority", "kind", "id"))
+        )
+
+    def _project_assignment_values(self, project_ref: Any) -> tuple[Any, list[Any]]:
+        """Read current project assignments through the public Sheet projection."""
+
+        view = self.sheet_port.export(project_ref)
+        value = _json_value(view.to_dict() if hasattr(view, "to_dict") else view)
+        project = value.get("project") if isinstance(value, Mapping) else None
+        current_ref = project.get("ref") if isinstance(project, Mapping) else None
+        if not isinstance(current_ref, Mapping):
+            raise ValueError("project Sheet projection has no current project ref")
+        observed = project.get("observed") if isinstance(project, Mapping) else None
+        rows = observed.get("assignments") if isinstance(observed, Mapping) else None
+        if not isinstance(rows, list):
+            raise ValueError("project Sheet projection has no assignment list")
+        result = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            ref = row.get("ref") if isinstance(row, Mapping) else None
+            if not isinstance(ref, Mapping):
+                continue
+            identity = tuple(str(ref.get(key, "")) for key in ("authority", "kind", "id"))
+            if not all(identity) or identity in seen:
+                continue
+            seen.add(identity)
+            assignment = self.assignments_port.get(self._record_ref(ref))
+            if self._same_ref_identity(getattr(assignment, "scope", None), project_ref):
+                result.append(assignment)
+        return self._record_ref(current_ref), result
+
+    def _project_advisor_pair(
+        self, payload: Mapping[str, Any], *, request_id: str, actor: str,
+    ) -> Mapping[str, Any]:
+        """Read or create the one advisor assignment for a current manager.
+
+        The Project Sheet remains the roster read and ResponsibilityAssignments
+        remains the sole writer.  This operation creates no conversation,
+        schedule, allowance, delivery, or pilot-specific state.
+        """
+
+        operation = "work.project-advisor.pair"
+        if self.sheet_port is None or self.assignments_port is None:
+            return self._unsupported(
+                operation, request_id=request_id,
+                code="canonical_project_advisor_ports_unavailable",
+                message="accepted ProjectSheet and ResponsibilityAssignments ports are required",
+            )
+        try:
+            project_ref = self._record_ref(payload["project_ref"])
+            manager_ref = self._record_ref(payload["manager_assignment_ref"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"outcome": "error", "error": {"code": "invalid_pairing_ref", "message": str(exc), "operation": operation}, "event_ids": []}
+        expected_generation = payload.get("manager_generation")
+        if (isinstance(expected_generation, bool) or not isinstance(expected_generation, int)
+                or expected_generation < 1):
+            return {"outcome": "error", "error": {"code": "invalid_manager_generation", "message": "manager_generation must be a positive integer", "operation": operation}, "event_ids": []}
+        principal = payload.get("advisor_principal")
+        if principal is not None and (not isinstance(principal, str) or not principal.strip()):
+            return {"outcome": "error", "error": {"code": "invalid_advisor_principal", "message": "advisor_principal must be non-blank text", "operation": operation}, "event_ids": []}
+        pins = payload.get("pins", ())
+        if not isinstance(pins, (list, tuple)):
+            return {"outcome": "error", "error": {"code": "invalid_advisor_pins", "message": "pins must be an array", "operation": operation}, "event_ids": []}
+        if pins and principal is None:
+            return {"outcome": "error", "error": {"code": "invalid_advisor_pins", "message": "pins require advisor_principal", "operation": operation}, "event_ids": []}
+        try:
+            pin_refs = tuple(self._record_ref(value) for value in pins)
+            current_project_ref, assignments = self._project_assignment_values(project_ref)
+            if _json_value(current_project_ref) != _json_value(project_ref):
+                raise ValueError("project reference is stale")
+            active = [value for value in assignments if self._active_assignment(value)]
+            managers = [value for value in active if getattr(value, "role", None) == "manager"]
+            advisors = [value for value in active if getattr(value, "role", None) == "project_advisor"]
+            if len(managers) != 1:
+                raise ValueError("project must have exactly one active manager assignment")
+            manager = managers[0]
+            if (_json_value(getattr(manager, "ref", None)) != _json_value(manager_ref)
+                    or getattr(manager, "generation", None) != expected_generation):
+                raise ValueError("manager assignment or generation is stale")
+            manager_principal = getattr(manager, "principal", None)
+            pair_key = (
+                "otto-project-advisor-pair:" + current_project_ref.id + ":"
+                + manager.ref.id + ":g" + str(expected_generation)
+            )
+            prior_receipt = self._receipt(pair_key)
+            created = False
+            if len(advisors) > 1:
+                raise ValueError("project has more than one active project advisor assignment")
+            if not advisors:
+                if principal is None:
+                    return {
+                        "outcome": "missing", "schema": "otto.project-advisor-owner-pair.v1",
+                        "project_ref": _json_value(project_ref),
+                        "manager": self._assignment_dict(manager), "advisor": None,
+                        "read_only": True, "dispatch": False, "execution": False,
+                        "event_ids": [], "replayed": False,
+                    }
+                advisor = self.assignments_port.assign(
+                    current_project_ref, role="project_advisor", principal=principal.strip(),
+                    manager=manager_principal, pins=pin_refs,
+                    logical_request_key=pair_key,
+                    actor=self._actor(actor),
+                )
+                created = prior_receipt is None
+            else:
+                advisor = advisors[0]
+                if principal is not None and getattr(advisor, "principal", None) != principal.strip():
+                    raise ValueError("current project advisor principal differs from the request")
+                if principal is not None and tuple(getattr(advisor, "pins", ())) != pin_refs:
+                    raise ValueError("current project advisor pins differ from the request")
+            advisor_payload = _json_value(getattr(advisor, "payload", {}))
+            linked_manager = advisor_payload.get("manager") if isinstance(advisor_payload, Mapping) else None
+            if isinstance(linked_manager, Mapping):
+                linked_manager = linked_manager.get("id") or linked_manager.get("principal")
+            else:
+                linked_manager = getattr(linked_manager, "id", linked_manager)
+            if linked_manager not in {manager_principal, getattr(manager_ref, "id", None)}:
+                raise ValueError("project advisor is not linked to the current manager")
+            receipt = self._receipt(pair_key)
+            replayed = prior_receipt is not None or (receipt is not None and not created)
+            return {
+                "outcome": "created" if created else "read",
+                "schema": "otto.project-advisor-owner-pair.v1",
+                "project_ref": _json_value(current_project_ref),
+                "manager": self._assignment_dict(manager),
+                "advisor": self._assignment_dict(advisor),
+                "pairing_request_key": pair_key,
+                "receipt": _receipt_dict(receipt),
+                "event_ids": self._events_for(receipt),
+                "replayed": replayed, "dispatch": False, "execution": False,
+            }
+        except Exception as exc:
+            return {"outcome": "error", "error": {"code": "project_advisor_pairing_rejected", "message": str(exc), "operation": operation}, "event_ids": []}
 
     def _complete_task(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Forward direct and sheet completion through one owner guard."""
@@ -1486,6 +1978,7 @@ class FiniteWorkOperations:
             "stored_manager": payload.get("manager") if isinstance(payload, Mapping) else None,
             "generation": getattr(assignment, "generation", None),
             "status": _json_value(getattr(assignment, "status", None)),
+            "pins": _json_value(getattr(assignment, "pins", payload.get("pins", ()) if isinstance(payload, Mapping) else ())),
             "history": _json_value(getattr(assignment, "history", ())),
             "payload": payload,
         }
@@ -1643,7 +2136,7 @@ class FiniteWorkOperations:
         if self.content_port is None:
             return self._unsupported("work.pending.document.create", request_id=request_id, code="canonical_content_port_unavailable", message="accepted ContentCommandHandler command port was not injected")
         from herzchen.content import CONTENT_SCHEMA_REVISION, ContentDocument, ContentRevision
-        from herzchen.contracts import ResourceRef
+        from herzchen.contracts import ResourceRef, canonical_json
 
         actor_value = self._actor(actor)
         project_ref = self._record_ref(payload["project_ref"])
@@ -1667,15 +2160,35 @@ class FiniteWorkOperations:
         command_payload = {"document": document, "revision": revision}
         context = self._content_context("dat.content.document.create", document_ref, request_id, actor_value, command_payload, CONTENT_SCHEMA_REVISION)
         envelope = self.content_port.build_create_document(context, document, revision)
+        public_args = None
+        if self.content_command_guard is not None:
+            raw = payload.get("content", "").encode("utf-8")
+            public_args = {"project_ref":_json_value(project_ref), "actor":actor, "request_id":request_id,
+                           "document_id":doc_id, "role":document.role, "visibility":document.visibility,
+                           "access_mode":document.access_mode, "content_raw_sha256":sha256(raw).hexdigest(),
+                           "content_utf8_bytes":len(raw), "content_canonical_string_sha256":sha256(canonical_json(payload["content"]).encode()).hexdigest()}
         receipt_before = self._receipt(request_id)
+        guard = self.content_command_guard
+        if guard is not None:
+            guard.before_content(envelope, public_args)
+            if receipt_before is not None:
+                guard._halted = True
+                raise ValueError("suffix_receipt_already_present")
         try:
             receipt_result = self.content_port.execute(envelope)
-        except Exception as exc:
+        except BaseException as exc:
+            if guard is not None:
+                guard.after_content(envelope, self._receipt(request_id), failed=True)
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.document.create"}, "replayed": False, "event_ids": []}
             raise
-        receipt = self._receipt(request_id) or receipt_result
-        return {"outcome": "replayed" if receipt_before is not None else "created", "document_ref": _json_value(document_ref), "project_ref": _json_value(project_ref), "record": _record_dict(self.reader.get_record(document_ref)), "receipt": _receipt_dict(receipt), "replayed": receipt_before is not None, "event_ids": self._events_for(receipt)}
+        receipt = self._receipt(request_id) if guard is not None else (self._receipt(request_id) or receipt_result)
+        if guard is not None:
+            guard.after_content(envelope, receipt)
+        result = {"outcome": "replayed" if receipt_before is not None else "created", "document_ref": _json_value(document_ref), "project_ref": _json_value(project_ref), "record": _record_dict(self._owner_reader.get_record(document_ref)), "receipt": _receipt_dict(receipt), "replayed": receipt_before is not None, "event_ids": self._events_for(receipt)}
+        if guard is not None:
+            guard.content_formatted()
+        return result
 
     def _link_document(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         if self.content_port is None:
@@ -1691,18 +2204,36 @@ class FiniteWorkOperations:
         command_payload = {"association": association}
         context = self._content_context("dat.content.link", target, request_id, actor_value, command_payload, CONTENT_SCHEMA_REVISION)
         envelope = self.content_port.build_link(context, association)
+        public_args = None
+        if self.content_command_guard is not None:
+            public_args = {"project_ref":_json_value(project_ref), "document_ref":_json_value(document_ref),
+                           "actor":actor, "request_id":request_id, "namespace":association.namespace,
+                           "key":association.key, "access_mode":association.access_mode}
         receipt_before = self._receipt(request_id)
+        guard = self.content_command_guard
+        if guard is not None:
+            guard.before_content(envelope, public_args)
+            if receipt_before is not None:
+                guard._halted = True
+                raise ValueError("suffix_receipt_already_present")
         try:
             receipt_result = self.content_port.execute(envelope)
-        except Exception as exc:
+        except BaseException as exc:
+            if guard is not None:
+                guard.after_content(envelope, self._receipt(request_id), failed=True)
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.document.link"}, "replayed": False, "event_ids": []}
             raise
-        receipt = self._receipt(request_id) or receipt_result
-        return {"outcome": "replayed" if receipt_before is not None else "linked", "project_ref": _json_value(project_ref), "document_ref": _json_value(document_ref), "association_ref": _json_value(target), "record": _record_dict(self.reader.get_record(target)), "receipt": _receipt_dict(receipt), "replayed": receipt_before is not None, "event_ids": self._events_for(receipt)}
+        receipt = self._receipt(request_id) if guard is not None else (self._receipt(request_id) or receipt_result)
+        if guard is not None:
+            guard.after_content(envelope, receipt)
+        result = {"outcome": "replayed" if receipt_before is not None else "linked", "project_ref": _json_value(project_ref), "document_ref": _json_value(document_ref), "association_ref": _json_value(target), "record": _record_dict(self._owner_reader.get_record(target)), "receipt": _receipt_dict(receipt), "replayed": receipt_before is not None, "event_ids": self._events_for(receipt)}
+        if guard is not None:
+            guard.content_formatted()
+        return result
 
     def _unsupported(self, operation: str, *, request_id: Optional[str] = None, code: str = "canonical_operation_unavailable", message: str = "no accepted finite Herzchen endpoint is available for this Otto operation") -> dict[str, Any]:
-        receipt = self.reader.get_receipt(request_id) if request_id else None
+        receipt = self._owner_reader.get_receipt(request_id) if request_id else None
         return {
             "outcome": "unavailable",
             "operation": operation,
@@ -1712,24 +2243,9 @@ class FiniteWorkOperations:
             "event_ids": self._events_for(receipt),
         }
 
-    def _pending_projects(self, parent_ref: Any = None) -> list[Any]:
-        """Read pending projects through the sealed consumer reader.
-
-        The consumer reader exposes event history and record lookup, but no
-        generic query or SQL surface.  Reconstructing the finite project index
-        from public work subjects keeps listing read-only and preserves the
-        owner/consumer boundary.
-        """
-
+    def _pending_projects(self, parent_ref: Any = None, *, grant: ProjectReadGrant) -> list[Any]:
+        """Read current pending records only for the authenticated finite grant."""
         from herzchen.contracts import ResourceRef
-
-        latest: dict[tuple[str, str, str], ResourceRef] = {}
-        for event in self.reader.list_events():
-            subject = getattr(event, "subject", None)
-            if subject is None or getattr(subject, "kind", None) != "work.project":
-                continue
-            key = (subject.authority, subject.kind, subject.id)
-            latest[key] = ResourceRef(subject.authority, subject.kind, subject.id)
 
         parent_identity = None
         if parent_ref is not None:
@@ -1737,8 +2253,9 @@ class FiniteWorkOperations:
             parent_identity = (parent.authority, parent.kind, parent.id)
 
         records = []
-        for ref in latest.values():
-            record = self.reader.get_record(ref)
+        for project_id in sorted(grant.project_ids):
+            ref = ResourceRef(grant.principal.authority, "work.project", project_id)
+            record = self._owner_reader.get_record(ref)
             if record is None:
                 continue
             payload = getattr(record, "payload", {}) or {}
@@ -1769,15 +2286,21 @@ class FiniteWorkOperations:
             changes["title"] = edit["title"]
         if "outcome" in edit:
             changes["outcome"] = edit["outcome"]
-        before = self.reader.get_receipt(request_id)
+        before = self._owner_reader.get_receipt(request_id)
+        project_ref = ResourceRef.from_dict(payload["project_ref"])
+        if project_ref.revision is None:
+            return {"outcome": "conflict", "error": {"code": "stale_base", "message": "pending edit requires the current project revision"},
+                    "replayed": False, "event_ids": []}
         try:
-            record = self.port.revise(ResourceRef.from_dict(payload["project_ref"]), **changes)
+            record = self.port.revise(project_ref, base_revision=project_ref.revision, **changes)
         except Exception as exc:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.pending.edit"}, "replayed": False, "event_ids": []}
+            if type(exc).__name__ == "VersionConflictError":
+                return {"outcome": "conflict", "error": {"code": "stale_base", "message": str(exc)}, "replayed": False, "event_ids": []}
             raise
-        receipt = self.reader.get_receipt(request_id)
-        observed = self.reader.get_record(record.ref)
+        receipt = self._owner_reader.get_receipt(request_id)
+        observed = self._owner_reader.get_record(record.ref)
         return {
             "outcome": "replayed" if before is not None else "edited",
             "project_ref": _json_value(record.ref),
@@ -1788,13 +2311,162 @@ class FiniteWorkOperations:
             "executable": False,
         }
 
+    def _import_readback(self, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        """Read one staged import's definitions and receipt proofs within its grant.
+
+        The project holds the source manifest. Caller refs and request keys are
+        claims, never authority to enumerate criteria or arbitrary receipts.
+        """
+        from herzchen.contracts import ResourceRef
+
+        denied = {"outcome": "denied", "read_only": True, "writes": 0,
+                  "error": {"code": "import_readback_unavailable", "message": "import readback is unavailable"}}
+        grant = self._read_grant(actor)
+        if grant is None:
+            return denied
+        try:
+            def ref(value: Any, kind: str) -> Any:
+                value = value if isinstance(value, ResourceRef) else ResourceRef.from_dict(value)
+                if value.authority != grant.principal.authority or value.kind != kind:
+                    raise ValueError("foreign reference")
+                return value
+
+            def identity(value: Any) -> tuple[str, str, str]:
+                return value.authority, value.kind, value.id
+
+            def current(value: Any) -> Any:
+                record = self._owner_reader.get_record(ResourceRef(value.authority, value.kind, value.id))
+                if record is None or identity(record.ref) != identity(value):
+                    raise ValueError("missing record")
+                if value.revision is not None and record.ref.revision != value.revision:
+                    raise ValueError("stale record")
+                return record
+
+            project = ref(payload["project_ref"], "work.project")
+            if not grant.allows(project):
+                return denied
+            record = current(project)
+            metadata = record.payload.get("metadata", {})
+            request_id = payload["request_id"]
+            if not isinstance(request_id, str) or not request_id.strip():
+                return denied
+            if metadata.get("otto_request", {}).get("logical_request_key") != request_id + ":project":
+                return denied
+            source = metadata["worker_source_projection"]
+            if source["mapping_sha256"] != metadata["worker_source_mapping_sha256"]:
+                return denied
+            criteria, documents = source["criteria"], source["documents"]
+            if not isinstance(criteria, (tuple, list)) or not 1 <= len(criteria) <= 100:
+                return denied
+            if not isinstance(documents, (tuple, list)) or not 1 <= len(documents) <= 500:
+                return denied
+            criterion_claims, document_claims = payload["criterion_refs"], payload["document_refs"]
+            if (not isinstance(criterion_claims, Mapping) or not isinstance(document_claims, Mapping)
+                    or set(criterion_claims) != {row["source_alias"] for row in criteria}
+                    or set(document_claims) != {row["source_alias"] for row in documents}):
+                return denied
+            scope = ref(payload["scope_ref"], "assessment.scope")
+            if scope.revision is None or scope.id != "worker-" + sha256(request_id.encode()).hexdigest()[:28]:
+                return denied
+            scope_record = current(scope)
+            scope_payload = scope_record.payload
+            if (identity(ref(scope_payload["parent_obligation_ref"], "work.project")) != identity(project)
+                    or scope_payload.get("protocol") != "worker-source-freeze"
+                    or scope_payload.get("policy", {}).get("source_mapping_sha256") != source["mapping_sha256"]):
+                return denied
+            members = scope_payload["criterion_refs"]
+            if len(members) != len(criteria):
+                return denied
+            definitions = {}
+            for row, member in zip(criteria, members):
+                member = ref(member, "assessment.criterion")
+                claimed = ref(criterion_claims[row["source_alias"]], "assessment.criterion")
+                if member.revision is None or claimed != member:
+                    return denied
+                criterion = current(member)
+                definition = _json_value(criterion.payload.get("definition", {}))
+                if any(definition.get(field) != row[field] for field in (
+                        "source_alias", "expected_behavior", "proof", "applicability")):
+                    return denied
+                definitions[row["source_alias"]] = definition
+
+            receipts = [(request_id + ":project", "work.create", project),
+                        (request_id + ":work", "work.project-sheet.apply", project),
+                        (request_id + ":assessment", "assessment.scope.declare", scope)]
+            for row in documents:
+                alias = row["source_alias"]
+                claim = document_claims[alias]
+                document = ref(claim["document_ref"], "dat.content.document")
+                expected_id = "worker-" + sha256((request_id + ":" + alias).encode()).hexdigest()[:28]
+                if document.id != expected_id:
+                    return denied
+                document_record = current(document)
+                authored = _json_value(document_record.payload["document"])
+                if identity(ref(authored["authoring_scope"], "work.project")) != identity(project):
+                    return denied
+                association = ref(claim["association_ref"], "document-association")
+                link_record = current(association)
+                link = _json_value(link_record.payload["association"])
+                alias_key = sha256(alias.encode()).hexdigest()[:28]
+                if (link_record.payload.get("active") is not True
+                        or identity(ref(link["subject"], "work.project")) != identity(project)
+                        or link.get("namespace") != "worker.source" or link.get("key") != "alias-" + alias_key
+                        or identity(ref(link["document"]["ref"], "dat.content.document")) != identity(document)):
+                    return denied
+                receipts.extend(((request_id + ":doc:" + alias_key, "dat.content.document.create", document),
+                                 (request_id + ":link:" + alias_key, "dat.content.link", association)))
+            for key, operation, target in receipts:
+                receipt = self._owner_reader.get_receipt(key)
+                if (receipt is None or receipt.logical_request_key != key or receipt.operation != operation
+                        or _json_value(receipt.status) != "committed" or identity(receipt.target) != identity(target)):
+                    return denied
+            return {"outcome": "read", "read_only": True, "writes": 0,
+                    "criterion_definitions": definitions, "verified_receipt_count": len(receipts)}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            # Never return partial definitions, receipt existence or foreign metadata.
+            return denied
+
     def read(self, operation: str, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
+        from herzchen.contracts import ResourceRef
+
+        if operation == "work.import.readback":
+            return self._import_readback(payload, actor=actor)
+        if operation == "work.project.list":
+            return self.list_projects(actor=actor, parent_ref=payload.get("parent_ref"),
+                                      cursor=payload.get("cursor"), limit=payload.get("limit"))
+        project_reads = {"work.project.read", "work.pending.read", "work.pending.list",
+                         "work.project.lifecycle.read", "work.manager.inbox"}
+        grant = self._read_grant(actor) if operation in project_reads else None
+        if operation in project_reads and grant is None:
+            return self._project_read_denied()
+        if operation in {"work.project.read", "work.pending.read", "work.project.lifecycle.read", "work.manager.inbox"}:
+            try:
+                raw = payload["project_ref"]
+                project_ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
+            except (KeyError, TypeError, ValueError):
+                return self._project_read_denied()
+            if not grant.allows(project_ref):
+                return self._project_read_denied()
+        if operation == "work.project.read":
+            record = self._owner_reader.get_record(project_ref)
+            if record is None:
+                return self._project_read_denied()
+            return {"outcome": "read", "project_ref": _json_value(record.ref), "record": _record_dict(record),
+                    "read_only": True, "writes": 0}
         if operation == "work.project.lifecycle.read":
             return self._read_project_lifecycle(payload)
         if operation == "work.manager.inbox":
-            return self._manager_inbox(payload)
+            return self._manager_inbox(payload, actor=actor)
         if operation == "work.pending.list":
-            records = self._pending_projects(payload.get("parent_ref"))
+            parent = payload.get("parent_ref")
+            if parent is not None:
+                try:
+                    parent_ref = ResourceRef.from_dict(parent) if isinstance(parent, Mapping) else parent
+                except (TypeError, ValueError):
+                    return self._project_read_denied()
+                if not grant.allows(parent_ref):
+                    return self._project_read_denied()
+            records = [record for record in self._pending_projects(parent, grant=grant) if grant.allows(getattr(record, "ref", None))]
             return {
                 "outcome": "listed",
                 "records": [_record_dict(record) for record in records],
@@ -1811,9 +2483,9 @@ class FiniteWorkOperations:
                 "operation": operation,
                 "error": {"code": "canonical_operation_unavailable", "message": "this binding exposes only the finite pending list and read operations"},
             }
-        from herzchen.contracts import ResourceRef
-
-        record = self.reader.get_record(ResourceRef.from_dict(payload["project_ref"]))
+        record = self._owner_reader.get_record(project_ref)
+        if record is None:
+            return self._project_read_denied()
         return {
             "outcome": "read",
             "project_ref": _json_value(getattr(record, "ref", None)),
@@ -1864,7 +2536,31 @@ class FiniteWorkOperations:
             actor=actor,
         )
 
-    def _manager_inbox(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    def manager_inventory(self, *, actor: str, native_observer: Any = None) -> Mapping[str, Any]:
+        """Read a project-scoped manager inventory through existing ports."""
+
+        from .manager_inventory import ManagerInventoryReader
+
+        def pending_reader(selected_actor: str) -> Mapping[str, Any]:
+            return self.read("work.pending.list", {}, actor=selected_actor)
+
+        def project_reader(project_ref: Any) -> Any:
+            if self.sheet_port is None:
+                raise RuntimeError("accepted ProjectSheet reader is unavailable")
+            return self.sheet_port.export(self._record_ref(project_ref))
+
+        def assignment_reader(assignment_ref: Any) -> Any:
+            if self.assignments_port is None or not callable(getattr(self.assignments_port, "get", None)):
+                raise RuntimeError("accepted ResponsibilityAssignments reader is unavailable")
+            return self.assignments_port.get(self._record_ref(assignment_ref))
+
+        return ManagerInventoryReader(
+            pending_reader=pending_reader,
+            project_reader=project_reader,
+            assignment_reader=assignment_reader,
+        ).read(actor=actor, native_observer=native_observer)
+
+    def _manager_inbox(self, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
         """Build the bounded read-only manager projection from public ports."""
         if self.sheet_port is None:
             return self._unsupported(
@@ -1881,25 +2577,138 @@ class FiniteWorkOperations:
             view = self.sheet_port.export(project_ref)
             view_value = _json_value(view.to_dict() if hasattr(view, "to_dict") else view)
             task_records: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+            completion_verifications: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+
+            def typed_ref(value: Any) -> Any:
+                if isinstance(value, ResourceRef):
+                    return value
+                if isinstance(value, Mapping):
+                    try:
+                        return ResourceRef.from_dict(value)
+                    except (TypeError, ValueError, KeyError):
+                        return None
+                return None
+
+            def same_identity(left: Any, right: Any) -> bool:
+                return (
+                    getattr(left, "authority", None), getattr(left, "kind", None), getattr(left, "id", None)
+                ) == (
+                    getattr(right, "authority", None), getattr(right, "kind", None), getattr(right, "id", None)
+                )
+
             if isinstance(view_value, Mapping):
                 for task in view_value.get("tasks", ()):
                     if not isinstance(task, Mapping):
                         continue
-                    ref = task.get("ref")
-                    if isinstance(ref, Mapping) and all(ref.get(key) for key in ("authority", "kind", "id")):
-                        record = self.reader.get_record(ResourceRef.from_dict(ref))
-                        if record is not None:
-                            task_records[(ref["authority"], ref["kind"], ref["id"])] = {
-                                "ref": _json_value(record.ref),
-                                "lifecycle": _json_value(record.payload.get("lifecycle")),
-                                "revision": _json_value(record.ref.revision),
-                            }
-            events = [_json_value(item) for item in self.reader.list_events()]
+                    task_ref = typed_ref(task.get("ref"))
+                    if (task_ref is None or task_ref.authority != project_ref.authority
+                            or task_ref.kind != "work.task"):
+                        continue
+                    # Resolve the canonical current task only through the
+                    # actor-scoped project/task reader. This enforces D31's
+                    # selected-project/current-parent rule before any DAT read.
+                    record = self.reader.get_record(task_ref)
+                    if record is None or record.ref.kind != "work.task":
+                        continue
+                    owner_parent = typed_ref(record.payload.get("project_ref") or record.payload.get("parent"))
+                    if owner_parent is None or not same_identity(owner_parent, project_ref):
+                        continue
+                    key = (record.ref.authority, record.ref.kind, record.ref.id)
+                    task_records[key] = {
+                        "ref": _json_value(record.ref),
+                        "lifecycle": _json_value(record.payload.get("lifecycle")),
+                        "revision": _json_value(record.ref.revision),
+                    }
+
+                    completion = record.payload.get("completion")
+                    completion_task_ref = typed_ref(completion.get("task_ref")) if isinstance(completion, Mapping) else None
+                    completion_project_ref = typed_ref(completion.get("project_ref")) if isinstance(completion, Mapping) else None
+                    candidate_ref = typed_ref(completion.get("candidate_ref")) if isinstance(completion, Mapping) else None
+                    result_ref = typed_ref(completion.get("result_ref")) if isinstance(completion, Mapping) else None
+                    gate_values = completion.get("gate_refs") if isinstance(completion, Mapping) else None
+                    evidence_values = completion.get("evidence_refs") if isinstance(completion, Mapping) else None
+                    evidence_hashes = completion.get("evidence_hashes") if isinstance(completion, Mapping) else None
+                    gates = tuple(typed_ref(value) for value in gate_values) if isinstance(gate_values, (list, tuple)) else ()
+                    evidence = tuple(typed_ref(value) for value in evidence_values) if isinstance(evidence_values, (list, tuple)) else ()
+                    completion_revision = completion.get("task_revision") if isinstance(completion, Mapping) else None
+                    completion_generation = completion.get("generation") if isinstance(completion, Mapping) else None
+                    completion_assignment = typed_ref(completion.get("assignment_ref")) if isinstance(completion, Mapping) else None
+                    if (
+                        record.payload.get("lifecycle") == "completed"
+                        and isinstance(completion, Mapping)
+                        and completion_task_ref is not None
+                        and same_identity(completion_task_ref, record.ref)
+                        and completion_task_ref.revision == completion_revision
+                        and completion_project_ref is not None
+                        and same_identity(completion_project_ref, project_ref)
+                        and candidate_ref is not None
+                        and result_ref is not None
+                        and result_ref.kind == "wrk.result"
+                        and completion_assignment is not None
+                        and completion_assignment.kind == "wrk.assignment"
+                        and isinstance(completion_generation, int)
+                        and not isinstance(completion_generation, bool)
+                        and completion_generation > 0
+                        and gates and all(value is not None for value in gates)
+                        and evidence and all(value is not None for value in evidence)
+                        and bool(evidence_hashes)
+                        and callable(getattr(self.assignments_port, "completion_blockers", None))
+                    ):
+                        try:
+                            owner_state = self.assignments_port.completion_blockers(
+                                record.ref,
+                                candidate=candidate_ref,
+                                gate_refs=gates,
+                                actor=self._actor(actor),
+                                completion_evidence_refs=evidence,
+                                completion_evidence_hashes=evidence_hashes,
+                            )
+                        except Exception:
+                            owner_state = {}
+                        accepted_decisions = tuple(
+                            typed_ref(value) for value in owner_state.get("accepted_decision_refs", ())
+                        ) if isinstance(owner_state, Mapping) else ()
+                        exact_gates = all(
+                            accepted is not None and any(accepted == gate for gate in gates)
+                            for accepted in accepted_decisions
+                        )
+                        is_current = bool(
+                            isinstance(owner_state, Mapping)
+                            and owner_state.get("required") is True
+                            and not owner_state.get("blockers")
+                            and owner_state.get("evidence_verification") == "verified"
+                            and owner_state.get("candidate_ref") == _json_value(candidate_ref)
+                            and accepted_decisions
+                            and exact_gates
+                        )
+                        completion_verifications[key] = {
+                            "task_ref": _json_value(record.ref),
+                            "completion": _json_value(completion),
+                            "result_ref": _json_value(result_ref),
+                            "candidate_ref": _json_value(candidate_ref),
+                            "gate_refs": [_json_value(value) for value in gates],
+                            "accepted_decision_refs": [
+                                _json_value(value) for value in accepted_decisions if value is not None
+                            ],
+                            "evidence_refs": [_json_value(value) for value in evidence],
+                            "evidence_verification": owner_state.get("evidence_verification", "unknown") if isinstance(owner_state, Mapping) else "unknown",
+                            "verified": is_current,
+                        }
+                view_value["tasks"] = [
+                    task for task in view_value.get("tasks", ())
+                    if isinstance(task, Mapping)
+                    and (task_ref := typed_ref(task.get("ref"))) is not None
+                    and (task_ref.authority, task_ref.kind, task_ref.id) in task_records
+                ]
+            events = view_value.get("project", {}).get("observed", {}).get("events")
+            if not isinstance(events, (list, tuple)):
+                raise ValueError("ProjectSheet scoped event history is unavailable")
             return derive_manager_inbox(
                 view_value,
                 events=events,
                 cursor=payload.get("cursor"),
                 dependency_records=task_records,
+                completion_verifications=completion_verifications,
                 limit=payload.get("limit", 100),
                 safety_scan=payload.get("safety_scan", True),
             )
