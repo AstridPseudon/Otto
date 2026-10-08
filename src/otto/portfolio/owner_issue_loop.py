@@ -126,17 +126,15 @@ class OwnerIssueReaders:
         if not isinstance(raw, Mapping):
             return None
         due = DueRecord.from_dict(raw)
-        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
-        admission, authorization = attempt.get("delivery_admission") or {}, attempt.get("delivery_authorization") or {}
-        native = native_target_identity(due.target)
-        if (due.assignment_ref != _json_value(assignment.ref) or due.generation != assignment.generation
-                or due.recipient != assignment.principal or not native
-                or admission.get("physical_session_id") != native or authorization.get("physical_session_id") != native
-                or authorization.get("assignment_ref") != due.assignment_ref or authorization.get("generation") != due.generation
-                or authorization.get("project_ref") != due.target["project_ref"]
-                or authorization.get("task_ref") != due.target["task_ref"]
-                or authorization.get("role") != assignment.role or authorization.get("principal") != assignment.principal):
-            raise IssueLoopError("admitted help conversation is stale or unverified")
+        from .operating_setup import verify_role_conversation, OperatingSetupError
+        grant = getattr(self.operations, "project_read_grant", None)
+        actor = getattr(getattr(grant, "principal", None), "actor", None)
+        try:
+            native, _ = verify_role_conversation(due=due, assignment={"ref": _json_value(assignment.ref), "principal": assignment.principal,
+                    "generation": assignment.generation, "role": assignment.role, "payload": assignment.payload},
+                project_ref=_json_value(self.project(project).ref), due_port=self.due_port, actor=actor)
+        except OperatingSetupError as exc:
+            raise IssueLoopError("admitted help conversation is stale or unverified: " + str(exc)) from exc
         return native
 
     def facts(self, project: Mapping[str, Any], assignment: Any, actor: str) -> Mapping[str, Any]:

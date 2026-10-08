@@ -193,11 +193,21 @@ class OperatingSetupTests(unittest.TestCase):
         self.assertTrue(evaluate_setup(f.app.runtime, f.project.ref.to_dict(), setup)["ready"])
         self.assertEqual(f.app.prepare_operating_setup(project_ref=f.project.ref.to_dict(), setup=setup, request_key="adopted-context-setup")["outcome"], "prepared")
         self.assertTrue(f.app.read_operating_setup(project_ref=f.project.ref.to_dict())["ready"])
+        from otto.portfolio.owner_issue_loop import OwnerIssueReaders
+        from otto.portfolio.issue_loop import IssueLoopError
+        help_readers = OwnerIssueReaders(f.owner.consumer_operations(), f.port)
+        self.assertEqual(help_readers.conversation(f.project.ref.to_dict(), adopted), "actual-manager-session")
         # Valid-looking pins to foreign sessions, generations and roles do not
         # establish continuity, even when their declared content hash matches.
-        for field, value in (("generation", 2), ("role", "worker"), ("recipient", "foreign"), ("native_id", "foreign")):
+        for field, value in (("generation", 2), ("role", "worker"), ("recipient", "foreign"), ("native_id", "foreign"),
+                             ("authorization_status", "pending"), ("authorization_owner", "foreign")):
             fake = {**anchor, "schedule_id": "foreign-" + field}
             if field == "native_id": fake["target"] = {**anchor["target"], field: value}
+            elif field.startswith("authorization_"):
+                from copy import deepcopy
+                fake["host_evidence"] = deepcopy(anchor["host_evidence"])
+                key = "status" if field == "authorization_status" else "lifecycle_owner"
+                fake["host_evidence"]["gateway_attempt"]["delivery_authorization"][key] = value
             else: fake[field] = value
             bad = replace(f.app._read(prepared["schedule_id"]), target={**raw["target"], "native_binding": {
                 "schedule_id": fake["schedule_id"], "due_sha256": _digest(fake)}})
@@ -206,6 +216,11 @@ class OperatingSetupTests(unittest.TestCase):
             try:
                 decision = evaluate_setup(f.app.runtime, f.project.ref.to_dict(), setup, current_due=bad)
                 self.assertFalse(decision["ready"], field)
+                proxy = SimpleNamespace(read_due=lambda schedule: bad.to_dict() if schedule == prepared["schedule_id"]
+                    else fake if schedule == fake["schedule_id"] else original_port.read_due(schedule))
+                with self.assertRaises(IssueLoopError, msg=field):
+                    OwnerIssueReaders(f.owner.consumer_operations(), proxy).conversation(f.project.ref.to_dict(), adopted)
+
             finally:
                 f.app.runtime.due_port = original_port
         self.assertEqual(f.app.start(schedule_id=prepared["schedule_id"])["outcome"], "succeeded")

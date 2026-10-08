@@ -97,6 +97,9 @@ class AdvisorExecution:
         due = app._resources(due)
         if due.allowance_ref != self.allowance_ref.to_dict():
             raise OccurrencePreparationError("advisor occurrence allowance differs from its adopted pool")
+        validate_host = getattr(app.runtime.adapter, "validate_owner_host_composition", None)
+        if callable(validate_host):
+            validate_host(role=due.role, profile=due.profile)
         actor = app.binding.authenticated_actor(app.actor)
         reservation = self.allowance.reserve(self.allowance_ref,
             "advisor-turn-" + _digest([schedule_id, request_id])[:28], 1,

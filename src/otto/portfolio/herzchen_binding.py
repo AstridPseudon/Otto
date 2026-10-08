@@ -380,6 +380,8 @@ class FiniteWorkOperations:
             return self._dispatch_assignment(payload, request_id=request_id, actor=actor)
         if operation == "work.orchestrator.project.create":
             return self._create_orchestrated_project(payload, request_id=request_id, actor=actor)
+        if operation in {"work.orchestrator.projects.attach", "work.orchestrator.project.attach", "work.project.supervision.attach"}:
+            return self._attach_existing_projects(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and payload.get("open"):
             return self._create_and_open(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.create" and _orchestration_for(self) is not None:
@@ -501,6 +503,40 @@ class FiniteWorkOperations:
             "event_ids": event_ids,
             "executable": False,
         }
+
+    def _attach_existing_projects(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Attach an explicit finite selection through the owner orchestration port."""
+
+        orchestration = _orchestration_for(self)
+        portfolio_ref = _orchestration_portfolio_for(self)
+        if orchestration is None or portfolio_ref is None:
+            return self._unsupported(
+                "work.orchestrator.projects.attach", request_id=request_id,
+                code="canonical_orchestration_port_unavailable",
+                message="qualified owner orchestration binding was not injected",
+            )
+        if not isinstance(payload, Mapping):
+            return {"outcome": "error", "error": {"code": "invalid_payload", "message": "payload must be an object", "operation": "work.orchestrator.projects.attach"}, "replayed": False, "event_ids": []}
+        projects = payload.get("projects")
+        try:
+            result = orchestration.attach_existing_projects(
+                actor=self._actor(actor),
+                request_id=request_id,
+                portfolio_ref=portfolio_ref,
+                target_assignment_ref=payload.get("target_assignment_ref"),
+                target_assignment_revision=payload.get("target_assignment_revision"),
+                target_assignment_generation=payload.get("target_assignment_generation"),
+                projects=projects,
+                expected_default_revision=payload.get("expected_default_revision"),
+                preview=payload.get("preview", False) is True,
+            )
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": "work.orchestrator.projects.attach"}, "replayed": False, "event_ids": []}
+            raise
+        if not isinstance(result, Mapping):
+            return {"outcome": "error", "error": {"code": "malformed_orchestration_result", "message": "owner orchestration returned a non-object", "operation": "work.orchestrator.projects.attach"}, "replayed": False, "event_ids": []}
+        return _json_value(result)
 
     def _create_orchestrated_template(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         """Create atomically, then apply the existing template batch after commit."""

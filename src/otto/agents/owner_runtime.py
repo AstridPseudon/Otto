@@ -712,6 +712,8 @@ class CanonicalRoleRuntime:
                 completed_verifier=lambda session_id, brief_sha256, authorization: capture.verify_completed_delivery(
                     logical_request_key, session_id, brief_sha256, authorization,
                 ),
+                **({"role": role, "profile": requested_profile}
+                   if callable(getattr(self.adapter, "validate_owner_host_composition", None)) else {}),
             )
             capture.source_result_validator = getattr(adapter, "verify_source_result", None)
             owner_timeout = due.get("timeout_seconds")

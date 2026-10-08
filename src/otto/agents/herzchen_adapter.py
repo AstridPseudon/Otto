@@ -170,10 +170,12 @@ class HerzchenCodexAdapter:
 
     def bind_owner_authorization(self, authorizer: Callable[[str, str], Mapping[str, Any]],
                                  *, verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
-                                 completed_verifier: Optional[Callable[..., Mapping[str, Any]]] = None) -> "HerzchenCodexAdapter":
+                                 completed_verifier: Optional[Callable[..., Mapping[str, Any]]] = None,
+                                 role: Optional[str] = None, profile: Optional[str] = None) -> "HerzchenCodexAdapter":
         """Return a fresh adapter for one owner-admitted two-turn delivery."""
         if not callable(authorizer):
             raise HerzchenAdapterError("trusted owner authorizer is required")
+        socket, observer = self._role_native_capabilities(role=role, profile=profile)
         bound = type(self)(
             owner=self.owner, source=self.source, worktree=self.worktree, launcher=self.launcher,
             requested_model=self.requested_model, requested_reasoning=self.requested_reasoning,
@@ -181,13 +183,49 @@ class HerzchenCodexAdapter:
             turn_context_reader=self.turn_context_reader, host_context_path=self.host_context_path,
             native_trace_path=self.native_trace_path, require_host_context=self.require_host_context,
             owner_authorizer=authorizer, owner_delivery_verifier=verifier,
-            owner_completed_verifier=completed_verifier, native_process_observer=self.native_process_observer,
+            owner_completed_verifier=completed_verifier, native_process_observer=observer,
             trusted_thread_reader=self.trusted_thread_reader,
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
-            writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
+            writable_roots=self.writable_roots, native_caller_socket=socket,
         )
         bound._turn_started_callback = self._turn_started_callback
         return bound
+
+    def _role_native_capabilities(self, *, role: Optional[str], profile: Optional[str]) -> tuple[Any, Any]:
+        """Scope the paired managed caller transport to its supported roles.
+
+        An independent observer without a caller socket is retained; task evidence,
+        authorization and timeout/cancellation callbacks are not caller registration.
+        """
+        socket, observer = self.native_caller_socket, self.native_process_observer
+        if socket is not None:
+            if not callable(observer):
+                raise HerzchenAdapterError("native caller transport requires its process observer")
+            if role == "project_advisor" and profile == "read-only":
+                return None, None
+            if profile is not None and profile != "workspace-write":
+                raise HerzchenAdapterError("native caller transport requires workspace-write manager/worker")
+            if role is not None and role not in {"manager", "worker"}:
+                raise HerzchenAdapterError("native caller transport does not support this role")
+        return socket, observer
+
+    def validate_owner_host_composition(self, *, role: str, profile: str) -> None:
+        """Build the role-scoped host without initialization, claim or provider.
+
+        Advisor delivery calls this before reserving its allowance. The real
+        binding constructor validates the complete configured host hook set.
+        """
+        if profile not in {"read-only", "workspace-write"}:
+            raise HerzchenAdapterError("unsupported owner execution profile")
+        if not self.require_host_context or not (callable(self.turn_context_reader) or self.host_context_path):
+            raise HerzchenAdapterError("owner-authorized delivery requires host-owned task evidence")
+        def no_delivery(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+            raise HerzchenAdapterError("composition validation cannot deliver work")
+        scoped = self.bind_owner_authorization(no_delivery, verifier=no_delivery,
+            completed_verifier=no_delivery, role=role, profile=profile)
+        scoped._new_host("Undelivered composition validation", {},
+            model=self.requested_model, reasoning=self.requested_reasoning,
+            recipient_authorizer=no_delivery)
 
     def set_thread_started_callback(self, callback: Optional[Callable[[str], None]]) -> Optional[Callable[[str], None]]:
         prior = self._thread_started_callback
@@ -823,6 +861,10 @@ class HerzchenCodexAdapter:
         typed, digest, brief = self._typed_request(
             "resume" if existing_session else "invoke", request
         )
+        if self.native_caller_socket is not None:
+            self._role_native_capabilities(role=request.get("expected_role"), profile=typed.requested_profile)
+            if typed.requested_profile == "read-only":
+                raise HerzchenAdapterError("read-only advisor requires role-scoped owner binding")
         model = _text(request.get("requested_model", self.requested_model), "requested_model")
         reasoning = _text(request.get("requested_reasoning", self.requested_reasoning), "requested_reasoning")
         projection = self._request_projection(brief, digest, request)
