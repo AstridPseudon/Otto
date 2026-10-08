@@ -631,7 +631,7 @@ class ExecutionHost:
     def draining(self) -> bool:
         return self._closing
 
-    def wait_until_stopped(self, stop_requested: Callable[[], bool], *, poll_seconds: float = 0.2) -> None:
+    def wait_until_stopped(self, stop_requested: Callable[[], bool], *, poll_seconds: float = 0.2, idle_poll: Callable[[], Any] | None = None) -> None:
         """Existing service-loop seam for an explicit marker or command drain.
 
         The owner then closes this host and its Store in its normal finally
@@ -641,6 +641,8 @@ class ExecutionHost:
         if isinstance(poll_seconds, bool) or not isinstance(poll_seconds, (int, float)) or not math.isfinite(poll_seconds) or poll_seconds <= 0:
             raise ValueError("poll_seconds must be finite positive seconds")
         while not self.draining and not stop_requested():
+            if idle_poll is not None:
+                idle_poll()  # finite IPC publication only; canonical work stays on the owner lane
             self._commands_stop.wait(poll_seconds)
         self.begin_drain()
 

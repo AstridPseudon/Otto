@@ -331,6 +331,11 @@ class ManagerJourneyService:
         command = request.get("command")
         if command == "execution-control":
             return self._execution_control(request)
+        if command == "document-authoring":
+            editor = getattr(self.server, "document_editor", None)
+            if editor is None or not callable(self.authoring_authorizer):
+                raise PermissionError("authenticated document editor host is not installed")
+            return editor.dispatch(request, actor=self.authoring_authorizer(request))
         if command == "project-authoring":
             return self._project_authoring(request)
         if command == "status":
