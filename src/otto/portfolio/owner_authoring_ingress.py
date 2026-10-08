@@ -2,7 +2,8 @@
 
 A trusted owner input (for example protected host stdin) calls publish. A
 manager-accessible request file cannot issue a grant or choose its actor.
-This port authorizes finite authoring only, not setup, dispatch or replacement.
+This port authorizes finite authoring and host-bound external owner context only,
+not setup, dispatch, native process identity or replacement.
 """
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ class OwnerAuthoringIngress:
     schema = "otto.owner-authoring-grant.v1"
     fields = frozenset({"command", "operation", "request_key", "edit", "project_ref",
                         "project_json", "session_id", "files", "document_changes",
-                        "document_ref", "handle", "editor_buffer", "inactivity_seconds"})
+                        "document_ref", "handle", "editor_buffer", "inactivity_seconds",
+                        "content", "expected_revision", "expected_binding_ref"})
 
     def __init__(self, *, actor: AuthenticatedActor, directory: str | Path,
                  owner_actor: AuthenticatedActor, max_bytes: int = 1048576) -> None:
@@ -31,7 +33,7 @@ class OwnerAuthoringIngress:
         self._lock = threading.Lock()
 
     def _checked(self, request: Any) -> tuple[dict[str, Any], bytes]:
-        if (not isinstance(request, Mapping) or request.get("command") not in {"project-authoring", "document-authoring"}
+        if (not isinstance(request, Mapping) or request.get("command") not in {"project-authoring", "document-authoring", "owner-context"}
                 or set(request) - self.fields):
             raise PermissionError("owner authoring grant accepts only finite authoring fields")
         raw = json.dumps(dict(request), ensure_ascii=False, sort_keys=True,

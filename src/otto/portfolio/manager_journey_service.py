@@ -363,6 +363,8 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "owner-context":
+            return self._owner_context(request)
         if command == "execution-control":
             return self._execution_control(request)
         if command == "document-authoring":
@@ -592,6 +594,81 @@ class ManagerJourneyService:
                     result = {**result, "manager_result_notification": retained}
             return result
         return self.server.handle(request)
+
+    def _owner_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Finite external owner capability; never native process identity.
+
+        The host binds the root responsibility. Request JSON cannot choose a
+        principal, PID, session, assignment or foreign direction subject.
+        """
+        if not callable(self.authoring_authorizer):
+            raise PermissionError("external owner context ingress is not installed")
+        actor = self.authoring_authorizer(request)
+        owner = self.server.owner
+        if actor != owner.owner_actor:
+            raise PermissionError("owner context requires the authenticated service owner")
+        operation = request.get("operation")
+        fields = {"command", "operation", "request_key"}
+        if operation == "direction-draft":
+            fields |= {"content", "expected_revision"}
+        elif operation == "direction-adopt":
+            fields |= {"document_ref", "expected_binding_ref"}
+        elif operation not in {"whoami", "effective-context", "direction-read", "direction-history"}:
+            raise ValueError("unsupported external owner context operation")
+        if set(request) != fields:
+            raise ValueError("owner context fields differ; identity and subject are host-bound")
+        key = request.get("request_key")
+        if not isinstance(key, str) or not key.strip() or key != key.strip():
+            raise ValueError("owner context requires an exact read correlation or mutation request key")
+        root_ref = ResourceRef.from_dict(self.server.state["orchestrator_assignment_ref"])
+        root = owner.assignments.get(root_ref)
+        if (root.ref != root_ref or root.role != "orchestrator"
+                or root.principal != actor.actor or root.scope.kind != "wrk.portfolio"
+                or root.status.value == "cancelled"):
+            raise PermissionError("current host root portfolio responsibility is stale or foreign")
+        subject = ResourceRef.from_dict(root.payload["responsibility_ref"])
+        surface = owner.direction_surface()
+        common = {"schema": "otto.external-owner-context.v1",
+                  "identity_origin": "authenticated external owner input capability",
+                  "native_process_identity_claimed": False,
+                  "native_delivery_verified": False, "provider_called": False,
+                  "principal": root.principal, "role": root.role,
+                  "assignment_ref": root.ref.to_dict(), "generation": root.generation,
+                  "scope_ref": root.scope.to_dict(), "responsibility_ref": subject.to_dict()}
+        if operation == "whoami":
+            return {**common, "outcome": "read", "read_only": True,
+                    "canonical_conversation": root.payload.get("session"),
+                    "conversation_limit": "Canonical conversation metadata is not proof of the invoking desktop process."}
+        if operation == "direction-history":
+            return {**common, "history": surface.history(subject), "read_only": True, "outcome": "read"}
+        if operation == "direction-draft":
+            return {**common, "outcome": "drafted", "read_only": False,
+                    "draft": surface.draft(subject, request["content"], logical_request_key=key,
+                                           expected_revision=request["expected_revision"]),
+                    "assignment_resources_refreshed": False}
+        if operation == "direction-adopt":
+            # Scope adoption is explicit. Refreshing BASE would advance the
+            # root assignment and stale enrolled project joins. That separate
+            # existing Work boundary must preserve all current enrollments.
+            result = surface.update(subject, request["document_ref"], logical_request_key=key,
+                                    expected_binding_ref=request["expected_binding_ref"])
+            return {**common, "outcome": "scope-adopted", "read_only": False,
+                    "adoption": result, "assignment_resources_refreshed": False,
+                    "next_action": "At a closed owner boundary, adopt the revised direction in the root BASE through Work and refresh exact portfolio project joins. Scope adoption alone does not change assignment-effective instructions."}
+        direction = surface.read(subject, assignment_ref=root.ref, generation=root.generation)
+        scope_direction = surface.read(subject)
+        if operation == "direction-read":
+            return {**common, "outcome": "read", "read_only": True,
+                    "assignment_direction": direction, "scope_direction": scope_direction}
+        resources = []
+        for adoption in root.payload.get("resource_adoptions", ()):
+            pin = adoption["resource_ref"]
+            resources.append({"ref": pin, "content": owner.content.read(ResourceRef.from_dict(pin))["content"],
+                              "content_digest": adoption["content_digest"]})
+        return {**common, "outcome": "read", "read_only": True,
+                "shared_role_resources": resources, "assignment_direction": direction,
+                "scope_direction": scope_direction,
+                "context_limit": "Canonical adopted root resources and direction only; this is not a native invocation or all-project context transcript."}
 
     def _execution_control(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Use current service bindings and existing Due/host recovery ports."""
