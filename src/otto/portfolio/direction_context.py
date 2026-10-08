@@ -19,10 +19,28 @@ def read_direction_context(directions: Any, *, actor: Any, assignment_ref: Any,
     responsibility = None if pin is None else directions.read(pin, actor=actor)
     project = ResourceRef.from_dict(project_ref)
     def same_identity(left: Any, right: ResourceRef) -> bool:
+        if not isinstance(left, Mapping):
+            return False
         ref = ResourceRef.from_dict(left)
         return (ref.authority, ref.kind, ref.id) == (right.authority, right.kind, right.id)
-    if responsibility is not None and not same_identity(responsibility["project_ref"], project):
-        raise PermissionError("assignment direction is outside the granted project")
+    if responsibility is not None:
+        if responsibility.get("portfolio_ref") is not None:
+            # A read grant alone does not enroll a project. Use the canonical
+            # join written by Work's authenticated attach/transfer operation.
+            record = directions.reader.get_record(ResourceRef(project.authority, project.kind, project.id))
+            relation = None if record is None else record.payload.get("metadata", {}).get("otto_orchestrator")
+            current = responsibility["assignment_ref"]
+            if (responsibility.get("role") != "orchestrator" or not isinstance(relation, Mapping)
+                    or relation.get("schema") != "otto.orchestrator.supervision.v2"
+                    or not same_identity(relation.get("portfolio_ref"), ResourceRef.from_dict(responsibility["portfolio_ref"]))
+                    or not same_identity(relation.get("project_ref"), project)
+                    or relation.get("assignment_ref") != current
+                    or relation.get("assignment_revision") != current.get("revision")
+                    or relation.get("generation") != generation
+                    or responsibility.get("generation") != generation):
+                raise PermissionError("assignment direction is outside the enrolled portfolio project")
+        elif not same_identity(responsibility["project_ref"], project):
+            raise PermissionError("assignment direction is outside the granted project")
     scopes = [owner_direction_subject(project.authority), project]
     if task_ref is not None:
         scopes.append(ResourceRef.from_dict(task_ref))

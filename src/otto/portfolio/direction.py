@@ -140,9 +140,14 @@ class _DirectionBindingsEngine:
                     or responsibility.payload.get("role") != assignment.payload.get("role")):
                 raise DirectionBindingError("responsibility and current assignment disagree")
             scope = _identity(_ref(assignment.payload["scope"]))
-            if scope.authority != ref.authority or scope.kind not in {"work.project", "work.task"}:
+            if scope.authority != ref.authority or scope.kind not in {"work.project", "work.task", "wrk.portfolio"}:
                 raise DirectionBindingError("responsibility has no supported canonical scope")
-            work_scope = self._scope(scope)
+            if scope.kind == "wrk.portfolio":
+                if assignment.payload.get("role") != "orchestrator":
+                    raise DirectionBindingError("portfolio direction requires an orchestrator responsibility")
+                work_scope = {"portfolio_ref": scope.to_dict()}
+            else:
+                work_scope = self._scope(scope)
             return {**work_scope, "subject_ref": ref.to_dict(), "scope_ref": scope.to_dict(), "kind": "responsibility",
                     "assignment_ref": assignment.ref.to_dict(), "role": assignment.payload["role"],
                     "principal": assignment.payload.get("principal"), "generation": assignment.payload["generation"],
