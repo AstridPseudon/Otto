@@ -16,11 +16,13 @@ import socket
 import threading
 import math
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from .owner_readers import json_value
+from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correlation_id
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -36,6 +38,55 @@ def _atomic_json(path: Path, value: Any) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _timed_receipt(value: Any, timing: ReceiptTiming) -> Any:
+    """Add bounded phase metadata to an existing command receipt."""
+
+    timing.observe("terminal")
+    if isinstance(value, Mapping):
+        return attach_receipt_timing(value, timing.as_dict(), correlation_id=timing.correlation_id)
+    return attach_receipt_timing({"outcome": "unavailable", "result": value}, timing.as_dict(),
+                                 correlation_id=timing.correlation_id)
+
+
+def _host_boot_identity() -> str | None:
+    """Return a host boot pin when the platform exposes one.
+
+    The owner locator is deliberately local and small.  A process-start pin
+    is the primary custody fence; the boot pin closes the remaining ambiguity
+    when a platform can expose it without another service or registry.
+    """
+    try:
+        if sys.platform.startswith("linux"):
+            value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        elif sys.platform == "darwin":
+            value = subprocess.check_output(
+                ["/usr/sbin/sysctl", "-n", "kern.boottime"],
+                text=True, stderr=subprocess.DEVNULL, timeout=1,
+            ).strip()
+        else:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return value or None
+
+
+def _process_start_identity(pid: int) -> dict[str, Any]:
+    """Capture the kernel identity needed to distinguish a reused PID."""
+    from .native_caller_ingress import process_identity
+
+    identity = process_identity(pid)
+    return {"pid": identity.pid, "parent": identity.parent,
+            "birth": list(identity.birth), "uid": identity.uid}
+
+
+def _same_process_start_identity(value: Any, expected: Mapping[str, Any]) -> bool:
+    return (isinstance(value, Mapping)
+            and value.get("pid") == expected.get("pid")
+            and value.get("parent") == expected.get("parent")
+            and list(value.get("birth", ())) == list(expected.get("birth", ()))
+            and value.get("uid") == expected.get("uid"))
 
 
 _DISPATCH_CONTEXT = threading.local()
@@ -65,6 +116,15 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
 
 def _nested_capability(request: Mapping[str, Any]) -> str:
     """Classify nested file operations without releasing owner custody."""
+    if request.get("command") == "owner-context":
+        # External owner reads use the same serialized pump and exact
+        # independently issued input grant. Classification is not authority;
+        # the handler still verifies the grant/current host-bound root.
+        # Direction mutations must never fall through a blanket command allow.
+        return ("admitted" if request.get("operation") in {
+            "whoami", "effective-context", "direction-read", "direction-history"}
+            and set(request) == {"command", "operation", "request_key"}
+            else "held")
     # Setup inspection/preview are finite and inert; apply/update/prepare/activate stay held during
     # the admitted native wait and cannot acquire another execution effect.
     if (request.get("command") == "project-authoring"
@@ -137,20 +197,59 @@ class ExecutionHost:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.owner_path is not None:
             # Exclusive custody; a live competing owner is never replaced.
+            # PID alone is only a locator.  Re-read its process-start and boot
+            # identity so a stale/PID-reused file cannot claim this host.
             if self.owner_path.exists():
-                prior = json.loads(self.owner_path.read_text())
                 try:
-                    os.kill(int(prior["pid"]), 0)
-                except ProcessLookupError:
-                    self.owner_path.unlink()
-                    if self.socket_path is not None:
-                        self.socket_path.unlink(missing_ok=True)
-                else:
+                    prior = json.loads(self.owner_path.read_text())
+                except (OSError, ValueError, TypeError) as exc:
+                    raise RuntimeError("owner custody locator is unreadable; inspect it before replacement") from exc
+                if not isinstance(prior, Mapping) or not isinstance(prior.get("pid"), int):
+                    raise RuntimeError("owner custody locator is incomplete")
+                recorded_identity = prior.get("process_start_identity")
+                boot = _host_boot_identity()
+                boot_matches = (boot is None or prior.get("boot_identity") in {None, boot})
+                try:
+                    live_identity = _process_start_identity(int(prior["pid"]))
+                except (FileNotFoundError, ProcessLookupError):
+                    live_identity = None
+                except PermissionError:
+                    # The native reader also uses PermissionError for an
+                    # exiting process (for example a macOS process whose
+                    # kernel record disappeared between reads).  Confirm
+                    # liveness with the ordinary signal-0 probe before
+                    # deciding whether custody is still held.  A live but
+                    # unverifiable process remains fail-closed.
+                    try:
+                        os.kill(int(prior["pid"]), 0)
+                    except ProcessLookupError:
+                        live_identity = None
+                    except PermissionError as exc:
+                        raise RuntimeError("another execution host owns this command directory") from exc
+                    else:
+                        raise RuntimeError("another execution host owns this command directory")
+                if live_identity is not None and (
+                        _same_process_start_identity(recorded_identity, live_identity)
+                        and boot_matches):
                     raise RuntimeError("another execution host owns this command directory")
+                if live_identity is not None and recorded_identity is None:
+                    raise RuntimeError("owner custody locator has no process-start identity")
+                # The locator is stale (dead process, PID reuse, or a prior
+                # boot).  Removing this metadata is safe; it does not stop or
+                # mutate the unrelated live process.
+                self.owner_path.unlink()
+                if self.socket_path is not None:
+                    self.socket_path.unlink(missing_ok=True)
+            process_identity = _process_start_identity(os.getpid())
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
             fd = os.open(self.owner_path, flags, 0o600)
             with os.fdopen(fd, "w") as stream:
-                json.dump({"pid": os.getpid()}, stream)
+                json.dump({"schema": "otto.owner-host-custody.v2", "pid": os.getpid(),
+                           "process_start_identity": process_identity,
+                           "boot_identity": _host_boot_identity()}, stream,
+                          sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
             self._owns_owner_file = True
         # A partial atomic response from a crashed host is never a terminal
         # response. Only our own response-temp naming convention is removed.
@@ -326,10 +425,16 @@ class ExecutionHost:
                 if capability == "retained":
                     pending = self.directory / ("pending-" + token + ".json")
                     if not pending.exists():
+                        timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
+                        timing.observe("queued").absent("processing", reason="owner_lane_retained")
+                        timing.absent("native", reason="native_phase_not_started")
+                        timing.absent("terminal", reason="terminal_response_not_yet_observed")
                         _atomic_json(pending, {"outcome": "pending", "request_id": token,
                             "request_retained": True, "provider_called": False, "effects_started": False,
                             "retry": False, "response_path": str(response),
                             "reason": "another native manager turn owns the command lane",
+                            "correlation_id": timing.correlation_id,
+                            "receipt_timing": timing.as_dict(),
                             "next_action": "Observe this exact response path after the current turn settles; do not resend the request or rerun tests while waiting."})
                     continue
                 if not status:
@@ -346,6 +451,9 @@ class ExecutionHost:
                     self._active_files.add(token)
                     claimed = True
                 if not response.exists():
+                    timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
+                    timing.observe("queued").observe("processing")
+                    timing.absent("native", reason="command_transport_has_no_native_phase")
                     if capability == "held":
                         result = {"outcome": "held", "reason": "operation is not admitted during the current native transport wait",
                                   "command": command, "provider_called": False, "effects_started": False,
@@ -361,6 +469,15 @@ class ExecutionHost:
                                 "request_id": token, "request_retained": True,
                                 "request_state": "processing", "response_path": str(response),
                                 "retry": False,
+                                "correlation_id": timing.correlation_id,
+                                "receipt_timing": {**timing.as_dict(), "phases": {
+                                    **timing.as_dict()["phases"],
+                                    "terminal": {"state": "absent", "observed_at": None,
+                                                  "reason": "terminal_response_not_yet_observed",
+                                                  "clock": "unavailable"},
+                                }, "gaps": [*timing.as_dict()["gaps"], {
+                                    "kind": "absent", "phase": "terminal",
+                                    "reason": "terminal_response_not_yet_observed"}]},
                                 "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
                         from .identity_context import HostIngress
                         result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
@@ -368,11 +485,12 @@ class ExecutionHost:
                             and result.get("provider_called") is False and result.get("effects_started") is False):
                         pending = self.directory / ("pending-" + token + ".json")
                         if not pending.exists():
-                            _atomic_json(pending, {**result, "request_id": token, "request_retained": True,
+                            retained = _timed_receipt(result, timing)
+                            _atomic_json(pending, {**retained, "request_id": token, "request_retained": True,
                                 "response_path": str(response),
                                 "next_action": "The owner retains this observed worker result until the same manager settles; do not resend it."})
                         continue
-                    _atomic_json(response, result)
+                    _atomic_json(response, _timed_receipt(result, timing))
                 (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
                 path.unlink(missing_ok=True)
             except FileNotFoundError:
@@ -665,7 +783,8 @@ class ExecutionHost:
                   disposition: Callable[[], str], request_stop: Callable[[Any], None],
                   max_restarts: int = 2, restart_delay: float = 0.25,
                   max_restart_delay: float = 5.0,
-                  process_factory: Callable[..., Any] = subprocess.Popen) -> Mapping[str, Any]:
+                  process_factory: Callable[..., Any] = subprocess.Popen,
+                  resume: bool = False) -> Mapping[str, Any]:
         """Bounded recovery of this owner service process, never its provider.
 
         Trusted host composition supplies current source/runtime identity,
@@ -684,20 +803,81 @@ class ExecutionHost:
                 raise ValueError("restart delays must be finite positive seconds")
         if max_restart_delay < restart_delay:
             raise ValueError("max_restart_delay must bound restart_delay")
+        if type(resume) is not bool:
+            raise ValueError("resume must be boolean")
         identity = json_value(source_identity)
         if not isinstance(identity, dict) or not identity:
             raise ValueError("source/runtime identity is required")
         path = Path(receipt_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Reserve this supervision identity before any launch; even an unknown
-        # launch/wait cannot be retried using the same path and fresh counters.
-        with path.open("x") as stream:
-            json.dump({"schema": "otto.owner-host-supervision.v1", "argv": argv,
-                       "source_identity": identity, "max_restarts": max_restarts,
-                       "restart_delay": restart_delay, "max_restart_delay": max_restart_delay}, stream)
-            stream.flush(); os.fsync(stream.fileno())
+        policy = {"argv": argv, "source_identity": identity,
+                  "max_restarts": max_restarts, "restart_delay": restart_delay,
+                  "max_restart_delay": max_restart_delay}
+        policy_sha256 = hashlib.sha256(json.dumps(
+            policy, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()).hexdigest()
+        if path.exists():
+            if not resume:
+                # Preserve the original no-implicit-retry fence.  A caller
+                # must opt into the explicit retained supervision operation.
+                raise FileExistsError(str(path))
+            try:
+                retained_policy = json.loads(path.read_text())
+            except (OSError, ValueError, TypeError) as exc:
+                raise RuntimeError("supervision policy receipt is unreadable") from exc
+            if (not isinstance(retained_policy, Mapping)
+                    or retained_policy.get("schema") not in {
+                        "otto.owner-host-supervision.v1", "otto.owner-host-supervision.v2"}
+                    or (retained_policy.get("schema") == "otto.owner-host-supervision.v2"
+                        and retained_policy.get("policy_sha256") != policy_sha256)
+                    or any(retained_policy.get(key) != value for key, value in policy.items())):
+                raise ValueError("retained supervision policy differs; restart allowance is not transferable")
+        else:
+            # Reserve this supervision identity before any launch; even an
+            # unknown launch/wait cannot be retried with fresh counters.
+            with path.open("x") as stream:
+                json.dump({"schema": "otto.owner-host-supervision.v2", **policy,
+                           "policy_sha256": policy_sha256}, stream, sort_keys=True)
+                stream.flush(); os.fsync(stream.fileno())
         exits = []
-        delay = restart_delay
+        if resume:
+            for candidate in sorted(path.parent.glob(path.name + ".exit-*.json")):
+                try:
+                    receipt = json.loads(candidate.read_text())
+                except (OSError, ValueError, TypeError) as exc:
+                    raise RuntimeError("supervision exit receipt is unreadable") from exc
+                if (not isinstance(receipt, Mapping)
+                        or receipt.get("schema") not in {
+                            "otto.owner-host-exit.v1", "otto.owner-host-exit.v2"}
+                        or (receipt.get("schema") == "otto.owner-host-exit.v2"
+                            and receipt.get("policy_sha256") != policy_sha256)
+                        or (receipt.get("schema") == "otto.owner-host-exit.v1"
+                            and receipt.get("source_identity") != identity)):
+                    raise ValueError("retained supervision exit does not match its policy")
+                exits.append(dict(receipt))
+            exits.sort(key=lambda item: item.get("index", -1))
+            if any(item.get("index") != index for index, item in enumerate(exits)):
+                raise ValueError("retained supervision exits are not contiguous")
+            if exits and exits[-1].get("exit_status") is None:
+                return {"outcome": "unknown", "exit_receipts": exits,
+                        "supervision_path": str(path), "supervision_policy_sha256": policy_sha256,
+                        "provider_replayed": False, "resumed": True,
+                        "restart_allowance": {"max_restarts": max_restarts,
+                            "consumed": max(0, len(exits) - 1), "remaining": max(0, max_restarts - len(exits) + 1)},
+                        "retry": False}
+            if exits and exits[-1].get("exit_status") == 0:
+                return {"outcome": "closed", "exit_receipts": exits,
+                        "supervision_path": str(path), "supervision_policy_sha256": policy_sha256,
+                        "provider_replayed": False, "resumed": True,
+                        "restart_allowance": {"max_restarts": max_restarts,
+                            "consumed": max(0, len(exits) - 1), "remaining": max(0, max_restarts - len(exits) + 1)}}
+            if len(exits) > max_restarts:
+                return {"outcome": "restart_exhausted", "exit_receipts": exits,
+                        "supervision_path": str(path), "supervision_policy_sha256": policy_sha256,
+                        "provider_replayed": False, "resumed": True, "retry": False,
+                        "restart_allowance": {"max_restarts": max_restarts,
+                            "consumed": max_restarts, "remaining": 0}}
+        delay = min(restart_delay * (2 ** max(0, len(exits) - 1)), max_restart_delay)
 
         def save_exit(receipt: Mapping[str, Any]) -> None:
             target = path.with_name(path.name + f".exit-{receipt['index']}.json")
@@ -715,9 +895,14 @@ class ExecutionHost:
 
         def outcome(value: str, **fields: Any) -> Mapping[str, Any]:
             return {"outcome": value, "exit_receipts": exits, "supervision_path": str(path),
-                    "provider_replayed": False, **fields}
+                    "supervision_policy_sha256": policy_sha256, "provider_replayed": False,
+                    "resumed": resume,
+                    "restart_allowance": {"max_restarts": max_restarts,
+                        "consumed": min(max_restarts, max(0, len(exits) - 1)),
+                        "remaining": max(0, max_restarts - max(0, len(exits) - 1))}, **fields}
 
-        for index in range(max_restarts + 1):
+        start_index = len(exits)
+        for index in range(start_index, max_restarts + 1):
             current = state()
             if current != "active":
                 return outcome(current)
@@ -743,14 +928,16 @@ class ExecutionHost:
                     except subprocess.TimeoutExpired:
                         continue
             except Exception as exc:
-                receipt = {"schema": "otto.owner-host-exit.v1", "index": index,
+                receipt = {"schema": "otto.owner-host-exit.v2", "policy_sha256": policy_sha256,
+                    "index": index,
                     "started_at": started_at, "ended_at": datetime.now(timezone.utc).isoformat(),
                     "duration_seconds": time.monotonic() - started, "exit_status": None,
                     "source_identity": identity, "reconciliation": decision,
                     "error": {"code": type(exc).__name__, "message": str(exc)}}
                 save_exit(receipt)
                 return outcome("unknown", retry=False)
-            receipt = {"schema": "otto.owner-host-exit.v1", "index": index,
+            receipt = {"schema": "otto.owner-host-exit.v2", "policy_sha256": policy_sha256,
+                "index": index,
                 "pid": process.pid, "started_at": started_at,
                 "ended_at": datetime.now(timezone.utc).isoformat(),
                 "duration_seconds": time.monotonic() - started, "exit_status": code,

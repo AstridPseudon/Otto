@@ -232,9 +232,14 @@ class HerzchenWorkOperations(FiniteWorkOperations):
 class OttoPortfolio:
     """Manager-facing OTT-03 API over canonical Herzchen work records."""
 
-    def __init__(self, operations: Optional[WorkOperations] = None, *, issue_loop: Optional[IssueLoop] = None) -> None:
+    def __init__(self, operations: Optional[WorkOperations] = None, *, issue_loop: Optional[IssueLoop] = None,
+                 document_operations: Any = None, due_port: Any = None,
+                 occurrence_reader: Any = None) -> None:
         self.operations: WorkOperations = operations or unavailable_operations()
         self.__issue_loop = issue_loop
+        self.document_operations = document_operations
+        self.due_port = due_port
+        self.occurrence_reader = occurrence_reader
 
     def _issue_loop(self) -> Optional[IssueLoop]:
         return self.__issue_loop
@@ -278,6 +283,35 @@ class OttoPortfolio:
             return {"outcome": "unavailable", "operation": "work.issue.read",
                     "issues": [], "read_side_effects": False}
         return loop.read_issues(project_ref=project_ref)
+
+    def find_and_continue(self, *, actor: str, project_ref: Any = None,
+                          checkout_ref: Any = None, session_id: Optional[str] = None,
+                          cursor: Optional[str] = None, limit: int = 25,
+                          native_observer: Any = None) -> dict[str, Any]:
+        """Read one bounded recovery join through existing owner records.
+
+        This is intentionally a read projection.  It reports the existing
+        resume/replacement routes after custody resolution but never invokes
+        them, selects one of multiple matches, or inspects arbitrary paths.
+        """
+        from .recovery_discovery import BoundedRecoveryDiscovery
+
+        due_port = self.due_port
+        if due_port is None:
+            readers = getattr(self.__issue_loop, "readers", None)
+            due_port = getattr(readers, "due_port", None)
+        reader = BoundedRecoveryDiscovery(
+            operations=self.operations,
+            document_operations=self.document_operations,
+            due_port=due_port,
+            occurrence_reader=self.occurrence_reader,
+        )
+        return reader.read(actor=actor, project_ref=project_ref, checkout_ref=checkout_ref,
+                           session_id=session_id, cursor=cursor, limit=limit,
+                           native_observer=native_observer)
+
+    recovery_inventory = find_and_continue
+    read_recovery = find_and_continue
 
     def request_help(self, **request: Any) -> dict[str, Any]:
         return self.submit_issue(**request, purpose="operational_help")
@@ -325,6 +359,7 @@ class OttoPortfolio:
                 "handoff": "fence a returned manager assignment reference and preserve identity, evidence, consumption, and parent obligation",
                 "complete_task": "manager-only guarded task close; verifies current project/task/assignment pins, disposition, evidence hashes and gates before one owner transaction",
                 "manager_inbox": "read one derived project/subproject scope with tasks, assignments, attempts, reports, decisions, attention and repeat-safe event cursor; read-only",
+                "find_and_continue": "read one bounded project/retained-checkout/session join with explicit cardinality and held/ambiguous state; read-only",
                 "submit_checkin": "append one current-manager report for a matching DueRecord occurrence, then recoverably acknowledge that occurrence",
                 "submit_issue/respond_to_issue/record_issue_outcome": "append typed issue history over assignment reports; resolution requires application evidence",
             },
@@ -353,6 +388,9 @@ class OttoPortfolio:
                 "current_run_configuration": ".otto/runs/<run-id>/run.yaml, or its adopted native configuration record; this is the sole model/stage/budget authority",
                 "complete_criterion_source": ".otto/runs/<run-id>/tasklist.md; read the exact criterion rows before interpreting status",
                 "accessible_megado_skill": "policy-staging/megado/skill/SKILL.md and its linked execution/run-config/native-work references",
+                "maintained_otto_skill_index": "src/otto/portfolio/skills/SKILL.md",
+                "maintained_recovery_skill": "src/otto/portfolio/skills/recovery/SKILL.md",
+                "evidence_skill": "not installed by this candidate",
                 "status_semantics": {
                     "execution": "show committed dispatch/occurrence/result observations; absence is unknown, not failure",
                     "review_acceptance": "show review decisions and acceptance_exists separately from writes_performed",
@@ -364,6 +402,7 @@ class OttoPortfolio:
                     "python -m otto.portfolio.cli projects --actor ACTOR",
                     "python -m otto.portfolio.cli overview --actor ACTOR --project-ref REF_JSON",
                     "python -m otto.portfolio.cli task --actor ACTOR --project-ref PROJECT_REF_JSON --task-ref TASK_REF_JSON",
+                    "python -m otto.portfolio.cli find-and-continue --actor ACTOR --project-ref PROJECT_REF_JSON",
                     "python -m otto.portfolio.cli assessment-coverage --parent-ref TASK_REF_JSON",
                     "python -m otto.portfolio.cli completion-gate --task-ref TASK_REF_JSON",
                 ],

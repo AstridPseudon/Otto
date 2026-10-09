@@ -48,7 +48,9 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
         "continuation": {"next_action": focus.strip()},
         "links": [{"label": name, "path": str(run_path / name)}
                   for name in ("agent_goal.md", "tasklist.md", "run.yaml", "owner-setup-guidance-20261005.md")]
-                 + [{"label": "Megado skill", "path": str(workspace / "policy-staging/megado/skill/SKILL.md")}],
+                 + [{"label": "Megado skill", "path": str(workspace / "policy-staging/megado/skill/SKILL.md")},
+                    {"label": "Otto skill index", "path": str(workspace / "src/otto/portfolio/skills/SKILL.md")},
+                    {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")}],
         "revision": "ordinary-worker-v1"}
     if operation == "cold_manager_operation":
         instruction = (f"Execute the authorized cold manager operation for {task} using the delivered run instructions and maintained installed client. "
@@ -433,10 +435,7 @@ class ManagerJourneyService:
             result = app.recover(schedule_id=due.schedule_id, execute=True)
             state["manager_continuation"]["outcome"] = result["outcome"]
             self.server._save_state()
-            if result.get("outcome") in {"succeeded", "replayed"}:
-                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
-                self._refresh_refs()
-                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
+            result = self._finalize_manager_completion(result, app=app)
             return result
         if command == "operating-setup":
             self.commands._authorize()
@@ -480,9 +479,7 @@ class ManagerJourneyService:
             if result.get("outcome") in {"succeeded", "replayed"}:
                 state["manager_continuation"].update(outcome=result["outcome"],
                     requested_continuation={"settled_schedule_id": due.schedule_id})
-                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
-                self._refresh_refs()
-                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
+                result = self._finalize_manager_completion(result, app=app)
             return result
         if command == "review-input":
             if set(request) != {"command", "task"}:
@@ -505,9 +502,7 @@ class ManagerJourneyService:
                 state["manager_continuation"] = {"schedule_id": result["schedule_id"],
                     "native_session_id": app._read(result["schedule_id"]).target["native_id"],
                     "outcome": result["outcome"], "requested_continuation": {"settled_schedule_id": result["schedule_id"]}}
-                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
-                self._refresh_refs()
-                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
+                result = self._finalize_manager_completion(result, app=app)
             return result
         if command == "project-lifecycle-read":
             # The operator is authorized by its exact manager assignment. The
@@ -545,10 +540,7 @@ class ManagerJourneyService:
                 task_refs=state["task_refs"], native_session_id=metadata.get("native_session_id"),
                 read_reports=lambda: read_project_progress_reports(self.server.store.consumer(), state["project_ref"]),
                 preserve_execution_binding=True)
-            if result.get("outcome") in {"succeeded", "replayed"}:
-                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
-                self._refresh_refs()
-                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
+            result = self._finalize_manager_completion(result, app=app)
             return result
         if command in {"review-task", "finish-task", "finish-project"}:
             operation = getattr(self.commands, command.replace("-", "_"))
@@ -561,7 +553,7 @@ class ManagerJourneyService:
                 state = self.server.state
                 app = self._execution(principal=state["manager"], model=state["requested_model"],
                     reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
-                result = {**result, "task_settlement_notification": self._retain_task_settlement(app)}
+                result = self._with_task_settlement_notification(result, app)
             return result
         if command == "run-worker":
             return self._submit_worker(request)
@@ -576,14 +568,12 @@ class ManagerJourneyService:
             result = (app.start(schedule_id=worker["schedule_id"]) if command == "start-retained-worker" else
                       app.recover(schedule_id=worker["schedule_id"], execute=False))
             if result.get("outcome") in {"succeeded", "replayed"}:
-                result = {**result, "completion_intents": self.commands.settle_completion_intents()}
-                self._refresh_refs()
-                result = {**result, "review_input": self.commands.review_input(request["task"])}
+                result = self._settle_shared_completion(result, review_task=request["task"])
                 if result["completion_intents"]:
                     state = self.server.state
                     manager_app = self._execution(principal=state["manager"], model=state["requested_model"],
                         reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
-                    result = {**result, "task_settlement_notification": self._retain_task_settlement(manager_app)}
+                    result = self._with_task_settlement_notification(result, manager_app)
                 if command == "start-retained-worker":
                     if self.host._closing:
                         retained = {"outcome": "held", "provider_called": False,
@@ -676,16 +666,40 @@ class ManagerJourneyService:
         if set(request) - {"command", "operation", "schedule_id", "request_key", "expected_version"}:
             raise ValueError("execution control cannot change the bound owner or assignment")
         operation = request.get("operation", "read")
-        if operation not in {"read", "recover", "stop", "resume", "drain"}:
+        if operation not in {"read", "recover", "stop", "resume", "startup", "drain"}:
             raise ValueError("unsupported execution control operation")
         if operation == "drain":
             if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
                 raise ValueError("drain takes no occurrence fields")
             return self.host.begin_drain()
         state = self.server.state
+        known = []
+        for value in (state.get("schedule_id"), (state.get("manager_continuation") or {}).get("schedule_id")):
+            if isinstance(value, str) and value and value not in known:
+                known.append(value)
+        for worker in (state.get("workers") or {}).values():
+            value = worker.get("schedule_id") if isinstance(worker, Mapping) else None
+            if isinstance(value, str) and value and value not in known:
+                known.append(value)
+        if operation == "startup":
+            if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
+                raise ValueError("startup recovery takes no occurrence or mutation fields")
+            if not known:
+                return {"schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled",
+                        "admission": "ready", "occurrences": [], "provider_called": False,
+                        "dispatch": False, "launch": False,
+                        "next_action": "new execution may be admitted through the existing owner path"}
+            # The retained Due record is authoritative for the execution
+            # binding.  Older owner state projections may not repeat the
+            # model fields, while the current manager projection does.
+            seed = self.server.due_port.read_due(known[0])
+            app = self._execution(principal=state.get("manager", seed["recipient"]),
+                model=state.get("requested_model", seed["requested_model"]),
+                reasoning=state.get("requested_reasoning", seed["requested_reasoning"]),
+                evidence_id="execution-startup-recovery")
+            return app.recover_startup(schedule_ids=known, execute=False)
         schedule = request.get("schedule_id")
-        allowed = {state["schedule_id"], (state.get("manager_continuation") or {}).get("schedule_id")}
-        allowed.update(w.get("schedule_id") for w in (state.get("workers") or {}).values())
+        allowed = set(known)
         if not isinstance(schedule, str) or not schedule or schedule not in allowed:
             raise PermissionError("execution control requires a current retained occurrence")
         raw = self.server.due_port.read_due(schedule)
@@ -713,14 +727,42 @@ class ManagerJourneyService:
                     "occurrence": {key: raw.get(key) for key in ("schedule_id", "version",
                         "assignment_ref", "generation", "stop_state", "host_state",
                         "completion_state", "in_flight_request")}, "provider_called": False}
-        reconciled = app.recover(schedule_id=schedule, execute=False)
-        if operation == "resume" and reconciled.get("outcome") == "prepared":
-            if due.role == "manager":
-                readiness = app.read_operating_setup(project_ref=state["project_ref"])
-                if not readiness.get("ready"):
-                    return {"outcome": "blocked", "readiness": readiness, "provider_called": False}
-            return app.start(schedule_id=schedule)
-        return reconciled
+        # Read the retained projection before checking admission.  Only a
+        # genuinely prepared occurrence needs the operating-setup gate; a
+        # stopped, paused, active, or already-captured occurrence must remain
+        # diagnosable/reconcilable even when admission is currently held.
+        if operation == "resume" and due.role == "manager" \
+                and app.recovery_status(schedule_id=schedule)["state"] == "prepared":
+            readiness = app.read_operating_setup(project_ref=state["project_ref"])
+            if not readiness.get("ready"):
+                return {"outcome": "blocked", "readiness": readiness,
+                        "provider_called": False, "startup_recovery": {
+                            "schema": "otto.owner-startup-recovery.v1", "outcome": "held",
+                            "admission": "held", "occurrences": [], "provider_called": False,
+                            "dispatch": False, "launch": False}}
+        # Explicit resume and ordinary recover share the startup reconciliation
+        # path.  It settles captured/accepted work first and only then allows
+        # the existing start operation to admit a new native turn.
+        startup = app.recover_startup(schedule_ids=[schedule], execute=operation == "resume")
+        row = startup["occurrences"][0]
+        reconciled = row["result"]
+        # Preserve the existing operation contract for terminal/held outcomes.
+        # The startup projection can remain held for a stopped or paused
+        # occurrence, but that must not turn the established `stopped` or
+        # `paused` response into a new generic startup-blocked result.  A
+        # successful replay likewise represents the response being returned
+        # by this very control call, even when the projection still records
+        # a response/notification phase to reconcile on a later read.
+        if operation == "resume" and reconciled.get("outcome") in {
+                "succeeded", "replayed", "stopped", "paused"}:
+            return {**reconciled, "startup_recovery": startup}
+        if operation == "resume" and reconciled.get("outcome") == "blocked":
+            return {**reconciled, "startup_recovery": startup}
+        if operation == "resume" and startup.get("admission") != "ready":
+            return {"outcome": "held", "provider_called": False, "retry": False,
+                    "reason": "startup recovery is holding this occurrence before native admission",
+                    "startup_recovery": startup, "next_action": startup.get("next_action")}
+        return {**reconciled, "startup_recovery": startup} if operation == "recover" else reconciled
 
     def _project_authoring(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Finite sibling authoring on the existing owner lane; never dispatch."""
@@ -879,6 +921,37 @@ class ManagerJourneyService:
             and authorization.get("project_ref") == target.get("project_ref")
             and authorization.get("task_ref") == target.get("task_ref")
             and authorization.get("role") == "manager" and authorization.get("principal") == state["manager"])
+
+    def _settle_shared_completion(self, result: Mapping[str, Any], *, review_task: str | None = None,
+                                  refresh: bool = True) -> Mapping[str, Any]:
+        """Apply common settled-completion bookkeeping without changing entrance semantics.
+
+        Native manager continuations and retained worker results share the
+        accepted-finish settlement and current-ref refresh.  Only the worker
+        entrance asks for review input, and its manager notification remains
+        conditional on actual pending completion intents.
+        """
+        if result.get("outcome") not in {"succeeded", "replayed"}:
+            return result
+        settled = {**result, "completion_intents": self.commands.settle_completion_intents()}
+        if refresh:
+            self._refresh_refs()
+        if review_task is not None:
+            settled = {**settled, "review_input": self.commands.review_input(review_task)}
+        return settled
+
+    def _with_task_settlement_notification(self, result: Mapping[str, Any], app: Any) -> Mapping[str, Any]:
+        """Append the existing same-manager destination to a settled result."""
+        return {**result, "task_settlement_notification": self._retain_task_settlement(app)}
+
+    def _finalize_manager_completion(self, result: Mapping[str, Any], *, app: Any) -> Mapping[str, Any]:
+        """Finalize a manager continuation, retaining its existing wake semantics."""
+        settled = self._settle_shared_completion(result)
+        if settled.get("outcome") in {"succeeded", "replayed"}:
+            # Manager continuations preserve their existing same-manager
+            # continuation even when no accepted task finish is pending.
+            return self._with_task_settlement_notification(settled, app)
+        return settled
 
     def _retain_task_settlement(self, app: Any) -> Mapping[str, Any]:
         if self.host._closing:

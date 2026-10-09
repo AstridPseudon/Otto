@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from herzchen.contracts import ResourceRef
 from herzchen.content.instructions import validate_instruction_content
@@ -23,6 +23,7 @@ from .execution_operations import (
 from .owner_readers import json_value, owner_ref, project_reader, task_reader
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
+from .recovery_timing import stable_correlation_id, timing_from_receipt
 
 _UNSPECIFIED_SESSION = object()
 
@@ -945,6 +946,133 @@ class ExecutionApplication:
             request_id=due.invocation_identity + ":finalize", expected_version=due.version)
         return {**handle, "due_version": saved["version"], "outcome": "succeeded", "result": dict(result),
                 "next_action": "inspect result and accept or correct the task"}
+
+    def recovery_status(self, *, schedule_id: str) -> dict[str, Any]:
+        """Project one retained occurrence using existing Due/attempt records.
+
+        This is deliberately a read projection, not a second persisted state
+        machine.  The labels name the smallest recovery decision needed by the
+        startup gate while the Due record, gateway journal and assignment
+        remain authoritative.
+        """
+        due = self._read(schedule_id)
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        result = attempt.get("result") if isinstance(attempt, Mapping) else None
+        if due.stop_state == "stopped":
+            state, action = "held", "inspect the stopped occurrence; do not resume it"
+        elif due.host_state == "paused":
+            state, action = "held", "reconcile the paused host trigger before resuming"
+        elif not attempt:
+            state, action = "prepared", "explicitly resume this exact prepared occurrence"
+        elif not isinstance(result, Mapping):
+            state, action = "active_native", "reconcile the retained native process before a new admission"
+        elif result.get("outcome") in {"unknown", "uncertain", "response_lost"}:
+            raw = result.get("raw_result") if isinstance(result.get("raw_result"), Mapping) else {}
+            terminal_hint = ((raw.get("work_envelope") or {}).get("exit_status") is not None
+                             and (raw.get("verification_failures") or []))
+            state = "terminal_missing_capture" if terminal_hint else "held_unknown"
+            action = "reconcile exact retained native evidence; never replay the provider effect"
+        elif result.get("outcome") == "succeeded":
+            accepted = attempt.get("manager_acceptance")
+            if not isinstance(accepted, Mapping) or accepted.get("accepted") is not True:
+                state, action = "captured_missing_acceptance", "settle the retained owner result before task judgment"
+            elif due.stop_state != "completed" or due.completion_state != "succeeded":
+                state, action = "accepted_missing_finish", "finish the retained occurrence before new admission"
+            elif due.delivery_state != "returned":
+                state, action = "completed_missing_response", "reconcile the retained completion response"
+            else:
+                state, action = "completed", "inspect the retained result and continue the next actor"
+        else:
+            state, action = "held", "inspect the retained occurrence before continuation"
+        return {
+            "schema": "otto.owner-recovery-projection.v1", "schedule_id": due.schedule_id,
+            "assignment_ref": due.assignment_ref, "generation": due.generation,
+            "stop_state": due.stop_state, "host_state": due.host_state,
+            "completion_state": due.completion_state, "delivery_state": due.delivery_state,
+            "state": state, "next_action": action, "provider_called": False,
+            "dispatch": False, "launch": False,
+            "correlation_id": stable_correlation_id(attempt, fallback=due.in_flight_request or due.last_completed_request or due.schedule_id),
+            "phase_timing": timing_from_receipt(
+                {**(result if isinstance(result, Mapping) else {}),
+                 "correlation_id": stable_correlation_id(attempt, fallback=due.in_flight_request or due.last_completed_request or due.schedule_id)},
+                fallback_correlation_id=due.in_flight_request or due.last_completed_request or due.schedule_id,
+            ),
+        }
+
+    def recover_startup(self, *, schedule_ids: Sequence[str], execute: bool = False,
+                        reminder_attention: Any = None, host_executor: Any = None,
+                        evaluate_due: bool = False, now: datetime | None = None) -> dict[str, Any]:
+        """Reconcile known retained work before optional explicit admission.
+
+        ``schedule_ids`` must come from the current owner state; this method
+        never crawls disk or enumerates unrelated projects.  Startup uses
+        ``execute=False`` to diagnose and settle captured work only.  Explicit
+        resume may pass ``execute=True`` for the same exact occurrence after
+        the gate has returned a safe projection.  When the existing
+        ``DurableAttention`` and host bridge are supplied, retained automation
+        effects are reconciled by readback before any optional Due evaluation.
+        """
+        if isinstance(schedule_ids, (str, bytes)) or not isinstance(schedule_ids, Sequence):
+            raise OccurrencePreparationError("startup recovery requires a bounded sequence of known schedule IDs")
+        if type(execute) is not bool:
+            raise OccurrencePreparationError("startup recovery execute flag must be boolean")
+        ids = []
+        for value in schedule_ids:
+            if not isinstance(value, str) or not value.strip() or value in ids:
+                if value in ids:
+                    continue
+                raise OccurrencePreparationError("startup recovery schedule IDs must be unique nonblank text")
+            ids.append(value)
+        if len(ids) > 128:
+            raise OccurrencePreparationError("startup recovery is bounded to 128 known occurrences")
+        reminder = None
+        reminder_rows: dict[str, Mapping[str, Any]] = {}
+        if reminder_attention is not None:
+            reminder = reminder_attention.startup_reconcile(
+                ids, executor=host_executor, now=now, evaluate_due=evaluate_due)
+            reminder_rows = {row["schedule_id"]: row for row in reminder.get("rows", ())}
+        rows = []
+        for schedule_id in ids:
+            before = self.recovery_status(schedule_id=schedule_id)
+            reminder_row = reminder_rows.get(schedule_id)
+            reminder_blocked = bool(reminder_row and (
+                reminder_row.get("bridge", {}).get("outcome") == "held" or
+                (reminder_row.get("due") or {}).get("outcome") == "held"))
+            try:
+                reconciled = self.recover(schedule_id=schedule_id, execute=False)
+                if execute and reconciled.get("outcome") == "prepared" and not reminder_blocked:
+                    reconciled = self.start(schedule_id=schedule_id)
+                elif execute and reminder_blocked and reconciled.get("outcome") == "prepared":
+                    reconciled = {"outcome": "held", "schedule_id": schedule_id,
+                                  "provider_called": False, "retry": False,
+                                  "next_action": "reconcile the retained host effect before resume"}
+                after = self.recovery_status(schedule_id=schedule_id)
+                rows.append({"schedule_id": schedule_id, "before": before,
+                             "result": reconciled, "after": after,
+                             "reminder": reminder_row})
+            except Exception as exc:
+                held_after = {**before, "state": "held",
+                              "next_action": "inspect the retained occurrence error before any retry"}
+                rows.append({"schedule_id": schedule_id, "before": before,
+                             "result": {"outcome": "held", "provider_called": False,
+                                "retry": False, "error": {"code": type(exc).__name__,
+                                    "message": str(exc)}}, "after": held_after,
+                             "reminder": reminder_row})
+        blocked = [row for row in rows if row["after"]["state"] in
+                   {"active_native", "terminal_missing_capture", "held_unknown", "held",
+                    "captured_missing_acceptance", "accepted_missing_finish", "completed_missing_response"}
+                   or row["result"].get("outcome") == "held"
+                   or (row.get("reminder") or {}).get("bridge", {}).get("outcome") == "held"]
+        return {
+            "schema": "otto.owner-startup-recovery.v1", "outcome": "held" if blocked else "reconciled",
+            "admission": "held" if blocked else "ready", "execute": execute,
+            "occurrences": rows, "provider_called": False, "dispatch": False,
+            "launch": any(row["result"].get("outcome") in {"succeeded", "replayed"}
+                           and execute for row in rows),
+            "reminder_reconciliation": reminder,
+            "next_action": ("inspect the listed held/active occurrence and reconcile its exact retained evidence"
+                            if blocked else "new execution may be admitted through the existing owner path"),
+        }
 
     def _retained_completed_task_refresh(self, value: Mapping[str, Any], anchor: DueRecord) -> bool:
         receipt = (value.get("host_evidence") or {}).get("manager_completed_task_refresh")

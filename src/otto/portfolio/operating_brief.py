@@ -77,6 +77,7 @@ ROLE_CONTEXT_GUIDANCE = {
         "context": "Use the current project, assignment, generation, conversation and retained delivery receipt.",
         "continuation": "Continue only after the exact response is delivered and the current owner state is refreshed.",
         "recovery": "Missing destination, role replacement or unknown send requires owner-side reconciliation before retry.",
+        "recovery_workflow": "Consult src/otto/portfolio/skills/recovery/SKILL.md for bounded find, inspect, resume, authorized reassignment and reminder continuity.",
     },
     "manager": {
         "help": "Use request-advice for project judgment and request-help for an operational blockage; include problem, impact, evidence, requested decision and return condition.",
@@ -85,12 +86,14 @@ ROLE_CONTEXT_GUIDANCE = {
         "installed_evidence": "For criteria that explicitly require installed behavior, verify the current adopted source/runtime and preflight evidence before review or finish. If only host adoption, measurement, or setup is missing, request operational help with the evidence and return condition; an actual candidate defect remains an ordinary REWORK finding.",
         "continuation": "Resolve an applied response with resolve-help; the retained same-manager continuation is the next action.",
         "recovery": "Read the exact delivery before retrying; unknown sends, missing destinations and replaced roles remain held until reconciled.",
+        "recovery_workflow": "Consult src/otto/portfolio/skills/recovery/SKILL.md when a project, worker, session, command response or reminder is interrupted; use the maintained commands and retain the current assignment/generation.",
     },
     "worker": {
         "help": "Return implementation evidence through the assigned manager; do not create a new recipient or operational route.",
         "context": "Use only the delivered task, assignment, generation, workspace, resources and acceptance scope.",
         "continuation": "Return changed paths, verification and unresolved responsibility through the retained result path.",
         "recovery": "Do not replay an unknown effect or adopt a replacement role without a new owner-issued assignment.",
+        "recovery_workflow": "Use the recovery skill through the assigned manager for diagnosis or resume; do not create a private recovery script or replacement state.",
     },
     "project_advisor": {
         "help": "Answer advice requests for project judgment; operational blockage belongs to the manager's help route.",

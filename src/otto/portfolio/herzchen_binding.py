@@ -2434,6 +2434,16 @@ class FiniteWorkOperations:
         if operation == "work.project.list":
             return self.list_projects(actor=actor, parent_ref=payload.get("parent_ref"),
                                       cursor=payload.get("cursor"), limit=payload.get("limit"))
+        if operation in {
+            "work.recovery.find-and-continue",
+            "work.recovery.find_and_continue",
+        }:
+            return self.find_and_continue(
+                actor=actor, project_ref=payload.get("project_ref"),
+                checkout_ref=payload.get("checkout_ref"),
+                session_id=payload.get("session_id"), cursor=payload.get("cursor"),
+                limit=payload.get("limit", 25),
+            )
         project_reads = {"work.project.read", "work.pending.read", "work.pending.list",
                          "work.project.lifecycle.read", "work.manager.inbox"}
         grant = self._read_grant(actor) if operation in project_reads else None
@@ -2559,6 +2569,19 @@ class FiniteWorkOperations:
             project_reader=project_reader,
             assignment_reader=assignment_reader,
         ).read(actor=actor, native_observer=native_observer)
+
+    def find_and_continue(self, *, actor: str, project_ref: Any = None,
+                          checkout_ref: Any = None, session_id: Optional[str] = None,
+                          cursor: Optional[str] = None, limit: int = 25,
+                          native_observer: Any = None) -> Mapping[str, Any]:
+        """Read the bounded recovery join without performing continuation."""
+        from .recovery_discovery import BoundedRecoveryDiscovery
+
+        return BoundedRecoveryDiscovery(operations=self).read(
+            actor=actor, project_ref=project_ref, checkout_ref=checkout_ref,
+            session_id=session_id, cursor=cursor, limit=limit,
+            native_observer=native_observer,
+        )
 
     def _manager_inbox(self, payload: Mapping[str, Any], *, actor: str) -> Mapping[str, Any]:
         """Build the bounded read-only manager projection from public ports."""

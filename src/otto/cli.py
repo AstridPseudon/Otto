@@ -15,7 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "This is a gateway diagnostic surface, not a scheduler or native role launcher. "
             "Unsupported/unavailable effects are returned as JSON and use a non-zero exit status. "
-            "Portfolio intake and current-work help: python -m otto.portfolio.cli help."
+            "Portfolio intake and current-work help: python -m otto.portfolio.cli help. "
+            "Maintained recovery workflow: otto/portfolio/skills/recovery/SKILL.md."
         ),
     )
     sub = parser.add_subparsers(dest="command")

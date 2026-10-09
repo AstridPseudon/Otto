@@ -300,6 +300,10 @@ class ManagerApplication:
             idle_lifecycle=idle_lifecycle,
         )
         document_operations = _ScopedDocumentOperations(raw_document_operations, document_reader, grant, binding)
+        # Recovery discovery shares these already-composed finite readers;
+        # it does not create a second document/session or Due authority.
+        portfolio.document_operations = document_operations
+        portfolio.due_port = due_port
         assessment_owner = AssessmentModule(store, actor=actor)
         assessment = OttoAssessment(assessment_owner, actor)
 

@@ -750,7 +750,7 @@ class PortfolioOwnerBootstrap:
         operations = self.consumer_operations()
         return OttoPortfolio(operations, issue_loop=compose_owner_issue_loop(
             operations, due_port, delivery=issue_delivery,
-        ))
+        ), due_port=due_port)
 
     def manager_application(self, *, due_port: Any = None, issue_delivery: Any = None) -> Any:
         """Compose the ordinary finite manager entry over this trusted owner."""

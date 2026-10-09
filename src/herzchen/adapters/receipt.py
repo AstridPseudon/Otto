@@ -44,6 +44,8 @@ class AdapterReceiptEnvelope:
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     transport_operation: Optional[str] = None
+    correlation_id: Optional[str] = None
+    receipt_timing: Optional[Mapping[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

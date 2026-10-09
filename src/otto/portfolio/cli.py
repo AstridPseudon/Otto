@@ -68,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
     projects.add_argument("--cursor", help="owner-issued continuation cursor")
     _add_format(projects)
 
+    recovery = sub.add_parser(
+        "find-and-continue",
+        help="read a bounded project/checkout/session recovery join",
+    )
+    recovery.add_argument("--actor", required=True)
+    recovery.add_argument("--project-ref", help="existing canonical project ResourceRef JSON")
+    recovery.add_argument("--checkout-ref", help="existing retained authoring-scope ResourceRef JSON")
+    recovery.add_argument("--session-id", help="existing retained session locator")
+    recovery.add_argument("--limit", type=int, default=25)
+    recovery.add_argument("--cursor")
+    _add_format(recovery)
+
     overview = sub.add_parser("overview", help="read one project's overview and a task page")
     overview.add_argument("--actor", required=True)
     overview.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
@@ -901,6 +913,9 @@ def main(
                     "manager_current_work": "OttoPortfolio.read_work",
                     "project_inventory": "OttoPortfolio.list_projects",
                     "task_filters": "OttoPortfolio.list_work",
+                    "recovery_discovery": "OttoPortfolio.find_and_continue (read-only; project or retained checkout/session locator required)",
+                    "skills_index": "src/otto/portfolio/skills/SKILL.md (maintained Otto skill index)",
+                    "recovery_skill": "src/otto/portfolio/skills/recovery/SKILL.md (inspect/resume/reassign/verify, including reminders)",
                     "task_detail": "python -m otto.portfolio.cli task --project-ref REF_JSON --task-ref REF_JSON",
                     "document_reader": "ProjectDocumentReader.list_documents/read_document/list_revisions",
                     "document_navigation": "ProjectDocumentOperations.search_documents/resolve_relative_link/export_bundle",
@@ -965,6 +980,13 @@ def main(
             parent = _parse_ref(args.parent_ref, "parent_ref") if args.parent_ref else None
             result = portfolio.list_projects(actor=args.actor, parent_ref=parent,
                                              cursor=args.cursor, limit=args.limit)
+        elif args.command == "find-and-continue":
+            result = portfolio.find_and_continue(
+                actor=args.actor,
+                project_ref=_parse_ref(args.project_ref, "project_ref") if args.project_ref else None,
+                checkout_ref=_parse_ref(args.checkout_ref, "checkout_ref") if args.checkout_ref else None,
+                session_id=args.session_id, cursor=args.cursor, limit=args.limit,
+            )
         elif args.command in {"overview", "tasks"}:
             project_ref = _parse_ref(args.project_ref, "project_ref") if args.project_ref else None
             parent_ref = _parse_ref(args.parent_ref, "parent_ref") if args.command == "tasks" and args.parent_ref else None

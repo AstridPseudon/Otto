@@ -583,6 +583,115 @@ def trigger_configuration_view(record: DueRecord) -> dict[str, JSONValue]:
     }
 
 
+def _known_automation_id(record: DueRecord) -> Optional[str]:
+    """Read the existing host automation identity without inventing one."""
+
+    target = record.target if isinstance(record.target, Mapping) else {}
+    automation = target.get("automation") if isinstance(target, Mapping) else None
+    candidates = []
+    for value in (automation, target, record.host_evidence):
+        if isinstance(value, Mapping):
+            keys = ("automation_id", "automationId", "id") if value is automation else ("automation_id", "automationId")
+            for key in keys:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    candidates.append(candidate)
+    return candidates[0] if candidates else None
+
+
+def _host_wake_observation(record: DueRecord) -> dict[str, JSONValue]:
+    """Project only an explicitly observed wake; absence remains UNKNOWN."""
+
+    evidence = record.host_evidence if isinstance(record.host_evidence, Mapping) else {}
+    observation = evidence.get("observation")
+    if not isinstance(observation, Mapping):
+        observation = evidence.get("readback")
+    if not isinstance(observation, Mapping):
+        observation = {}
+    # Host adapters have used these equivalent names; all are observations,
+    # never values inferred from Due's wall-clock cursor.
+    wake_keys = ("last_observed_host_wake", "last_host_wake", "lastWakeAt",
+                 "last_wake_at", "wake_at", "woke_at", "observed_at")
+    wake_at = next((observation.get(key) for key in wake_keys
+                    if observation.get(key) is not None), None)
+    if wake_at is None:
+        automation = observation.get("automation")
+        if isinstance(automation, Mapping):
+            wake_at = next((automation.get(key) for key in wake_keys
+                            if automation.get(key) is not None), None)
+    return {
+        "state": "observed" if isinstance(wake_at, str) and wake_at.strip() else "unknown",
+        "at": wake_at if isinstance(wake_at, str) and wake_at.strip() else None,
+        "automation_id": _known_automation_id(record),
+        "source": "retained host readback" if wake_at is not None else None,
+    }
+
+
+def reminder_continuity_view(record: DueRecord, *, now: Optional[datetime] = None) -> dict[str, JSONValue]:
+    """Return the D04 projection without conflating host and Due truth.
+
+    Desired configuration, host observation, Due admission, next action and
+    delivery are separate projections.  This function is read-only and does
+    not turn an absent observation into a successful wake.
+    """
+
+    if not isinstance(record, DueRecord):
+        raise TypeError("record must be a DueRecord")
+    configuration = trigger_configuration_view(record)
+    admitted_request = record.in_flight_request or record.last_completed_request
+    if record.last_covered_slot >= 0 and admitted_request:
+        if record.interval_seconds is None:
+            occurrence_at = record.due_at or record.anchor
+        else:
+            occurrence_at = _iso(_parse_iso(record.anchor) + timedelta(
+                seconds=record.last_covered_slot * record.interval_seconds))
+        admitted = {
+            "state": "admitted",
+            "slot": record.last_covered_slot,
+            "at": occurrence_at,
+            "request_id": admitted_request,
+        }
+    else:
+        admitted = {"state": "unknown", "slot": None, "at": None, "request_id": None}
+
+    host_blocked = record.host_state in {"unknown", "pending", "failed", "paused"}
+    delivery_unknown = record.delivery_state in {"unknown", "crashed"}
+    if record.stop_state != "active":
+        next_action = {"state": "held", "reason": "occurrence_" + record.stop_state,
+                       "due_at": None}
+    elif host_blocked:
+        next_action = {"state": "held", "reason": "host_" + record.host_state,
+                       "due_at": None}
+    elif delivery_unknown:
+        next_action = {"state": "held", "reason": "delivery_" + record.delivery_state,
+                       "due_at": None}
+    else:
+        next_action = {
+            "state": "due" if record.in_flight_request else "waiting",
+            "reason": "admit_due" if record.in_flight_request else "next_due",
+            "due_at": configuration["cadence"]["next_due"],
+        }
+    return {
+        "schema": "otto.reminder-continuity.v1",
+        "schedule_id": record.schedule_id,
+        "automation_id": _known_automation_id(record),
+        "desired_configuration": configuration,
+        "last_observed_host_wake": _host_wake_observation(record),
+        "last_admitted_due_occurrence": admitted,
+        "next_due_or_held_action": next_action,
+        "delivery": {
+            "state": record.delivery_state if record.delivery_state != "none" else "unknown",
+            "request_id": record.in_flight_request,
+            "delivered_at": record.delivered_at,
+            "evidence": None if record.delivery_evidence is None else dict(record.delivery_evidence),
+        },
+        "pause": {"stop_state": record.stop_state, "host_state": record.host_state,
+                  "paused": record.stop_state != "active" or record.host_state == "paused"},
+        "clock": {"now": None if now is None else _iso(now),
+                  "wall_clock_gap": "unknown"},
+    }
+
+
 def _configuration_error(code: str, message: str, **details: JSONValue) -> dict[str, JSONValue]:
     error = {"code": code, "message": message}
     error.update(details)
@@ -1855,6 +1964,130 @@ class DurableAttention:
             )
         return tuple(trigger_configuration_view(record) for record in records)
 
+    def reminder_status(
+        self,
+        schedule_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> dict[str, JSONValue]:
+        """Read the bounded D04 continuity projection for one Due record."""
+
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id,
+                    "automatic_action": False}
+        return {"outcome": "read", "automatic_action": False,
+                **reminder_continuity_view(record, now=now or self.clock())}
+
+    # The shorter name is useful to maintained callers and remains a read.
+    read_reminder = reminder_status
+
+    def reconcile_retained_bridge(
+        self,
+        schedule_id: str,
+        *,
+        executor: Any = None,
+        host_response: Optional[Mapping[str, JSONValue]] = None,
+    ) -> dict[str, JSONValue]:
+        """Reconcile one retained host effect using readback only.
+
+        This deliberately requires the executor's recovery operation.  It
+        never calls an update method and therefore cannot recreate a schedule
+        or repeat an uncertain host mutation.
+        """
+
+        record = self._read(schedule_id)
+        if record is None:
+            return {"outcome": "unknown", "schedule_id": schedule_id,
+                    "automatic_action": False}
+        evidence = record.host_evidence if isinstance(record.host_evidence, Mapping) else {}
+        effect_value = evidence.get("effect")
+        if effect_value is None:
+            return {"outcome": "no-retained-effect", "schedule_id": schedule_id,
+                    "record": record.to_dict(), "status": reminder_continuity_view(record),
+                    "automatic_action": False, "host_mutation": False}
+        if not self.host_available:
+            return {"outcome": "held", "schedule_id": schedule_id,
+                    "reason": "host_unavailable", "record": record.to_dict(),
+                    "status": reminder_continuity_view(record),
+                    "automatic_action": False, "host_mutation": False}
+        recover = getattr(executor, "recover", None)
+        if not callable(recover):
+            return {"outcome": "held", "schedule_id": schedule_id,
+                    "reason": "host_reconciliation_unavailable",
+                    "record": record.to_dict(), "status": reminder_continuity_view(record),
+                    "automatic_action": False, "host_mutation": False}
+        try:
+            from .host_bridge import HostEffect
+            effect = HostEffect.from_dict(effect_value)
+            receipt = recover(effect, host_response=host_response) if host_response is not None else recover(effect)
+        except Exception as exc:
+            return {"outcome": "held", "schedule_id": schedule_id,
+                    "reason": "retained_effect_reconciliation_failed",
+                    "error": {"code": type(exc).__name__, "message": str(exc)},
+                    "record": record.to_dict(), "status": reminder_continuity_view(record),
+                    "automatic_action": False, "host_mutation": False}
+        fresh = self._read(schedule_id) or record
+        exact = bool((receipt or {}).get("outcome") == "reconciled"
+                     and ((receipt or {}).get("acknowledgement") or {}).get("readback_exact") is True)
+        return {"outcome": "reconciled" if exact else "held", "schedule_id": schedule_id,
+                "receipt": receipt, "record": fresh.to_dict(),
+                "status": reminder_continuity_view(fresh),
+                "reason": None if exact else "missing_or_mismatched_readback",
+                "automatic_action": False, "host_mutation": False}
+
+    def startup_reconcile(
+        self,
+        schedule_ids: Sequence[str],
+        *,
+        executor: Any = None,
+        now: Optional[datetime] = None,
+        evaluate_due: bool = False,
+        due_reason: str = "startup",
+    ) -> dict[str, JSONValue]:
+        """Reconcile retained bridge effects before optional Due evaluation.
+
+        ``schedule_ids`` is an owner-supplied bounded set.  With
+        ``evaluate_due`` enabled, only an exact bridge readback (or an
+        occurrence with no retained effect) can reach the existing coalescing
+        ``check`` operation; held/paused/unknown records are not re-admitted.
+        """
+
+        if isinstance(schedule_ids, (str, bytes)) or not isinstance(schedule_ids, Sequence):
+            raise ValueError("startup reconciliation requires a bounded sequence of schedule IDs")
+        ids = []
+        for schedule_id in schedule_ids:
+            _required_text(schedule_id, "schedule_id")
+            if schedule_id not in ids:
+                ids.append(schedule_id)
+        if len(ids) > 128:
+            raise ValueError("startup reconciliation is bounded to 128 schedules")
+        rows = []
+        for schedule_id in ids:
+            bridge = self.reconcile_retained_bridge(schedule_id, executor=executor)
+            fresh = self._read(schedule_id)
+            due = None
+            no_retained_effect = bridge.get("outcome") == "no-retained-effect"
+            allowed = (bridge.get("outcome") == "reconciled" or
+                       (no_retained_effect and fresh is not None and
+                        fresh.host_state == "active"))
+            if evaluate_due and allowed and fresh is not None and fresh.stop_state == "active" and fresh.host_state not in {"pending", "failed", "paused"}:
+                due = self.check(schedule_id, now=now, due_reason=due_reason)
+            elif evaluate_due:
+                due = {"outcome": "held", "schedule_id": schedule_id,
+                       "reason": bridge.get("reason") or "paused_or_unknown_host",
+                       "automatic_action": False}
+            rows.append({"schedule_id": schedule_id, "bridge": bridge, "due": due,
+                         "status": self.reminder_status(schedule_id, now=now)})
+        blocked = any(row["bridge"].get("outcome") == "held" or
+                      (row["due"] or {}).get("outcome") == "held" for row in rows)
+        return {"schema": "otto.reminder-startup-reconciliation.v1",
+                "outcome": "held" if blocked else "reconciled", "admission": "held" if blocked else "ready",
+                "evaluate_due": evaluate_due, "host_mutation": False, "rows": rows,
+                "automatic_action": False,
+                "next_action": "inspect retained host readback before retry" if blocked
+                    else "existing Due evaluation may continue"}
+
     def validate_configuration(
         self,
         schedule_id: str,
@@ -2854,10 +3087,17 @@ class DurableAttention:
                        "expected_delta": {"last_covered_slot": slot}, "automatic_action": False})
         return result
 
-    def resume(self, schedule_id: str) -> dict[str, JSONValue]:
+    def resume(self, schedule_id: str, *, executor: Any = None) -> dict[str, JSONValue]:
         record = self._read(schedule_id)
         if record is None:
             return {"outcome": "unknown", "error": {"code": "unknown_schedule", "message": schedule_id}, "relaunch": False}
+        if executor is not None:
+            bridge = self.reconcile_retained_bridge(schedule_id, executor=executor)
+            if bridge.get("outcome") == "held":
+                return {"outcome": "held", "schedule_id": schedule_id,
+                        "reason": bridge.get("reason"), "bridge": bridge,
+                        "automatic_action": False, "relaunch": False}
+            record = self._read(schedule_id) or record
         if record.in_flight_request is None:
             return {"outcome": "waiting", "record": record.to_dict(), "relaunch": False, "automatic_action": False}
         return {"outcome": "resume-same-request", "request_id": record.in_flight_request, "record": record.to_dict(), "relaunch": False, "responsible_owner": record.owner or record.recipient, "return_condition": record.return_condition, "automatic_action": False}

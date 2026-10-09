@@ -545,6 +545,12 @@ class OwnerDueRecordAttemptCapture:
             "request_fingerprint": request_fingerprint,
             "assignment_ref": _json_value(assignment_ref), "generation": generation,
         }
+        from otto.portfolio.recovery_timing import ReceiptTiming
+        phase_timing = ReceiptTiming(logical_request_key)
+        phase_timing.observe("queued").observe("processing")
+        phase_timing.absent("native", reason="native_observation_not_retained")
+        phase_timing.absent("terminal", reason="terminal_result_not_observed")
+        claim.update(correlation_id=logical_request_key, phase_timing=phase_timing.as_dict())
         try:
             saved = self._save(record, claim, "otto-gateway-claim:" + logical_request_key)
         except Exception as exc:
@@ -572,7 +578,15 @@ class OwnerDueRecordAttemptCapture:
             if current is not None and current.get("state") == "result" and current.get("result") == value:
                 return value
             raise ValueError("attempt result has no matching CAS-backed claim")
-        result = {**current, "state": "result", "result": value}
+        from otto.portfolio.recovery_timing import timing_from_receipt
+        timing = timing_from_receipt(
+            {**value, "phase_timing": current.get("phase_timing"),
+             "correlation_id": current.get("correlation_id", value.get("logical_request_key"))},
+            fallback_correlation_id=value.get("logical_request_key"),
+        )
+        result = {**current, "state": "result", "result": value,
+                  "correlation_id": current.get("correlation_id", value.get("logical_request_key")),
+                  "phase_timing": timing}
         digest = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self._save(record, result, "otto-gateway-result:" + str(value["logical_request_key"]) + ":" + digest)
         return value
@@ -792,6 +806,12 @@ class DueRecordAttemptCapture:
             "request_fingerprint": request_fingerprint,
             "owner_version": record.version,
         }
+        from otto.portfolio.recovery_timing import ReceiptTiming
+        phase_timing = ReceiptTiming(logical_request_key)
+        phase_timing.observe("queued").observe("processing")
+        phase_timing.absent("native", reason="native_observation_not_retained")
+        phase_timing.absent("terminal", reason="terminal_result_not_observed")
+        claim.update(correlation_id=logical_request_key, phase_timing=phase_timing.as_dict())
         try:
             self._save_attempt(record, claim, request_id="gateway-claim:" + logical_request_key)
         except Exception as exc:
@@ -812,7 +832,15 @@ class DueRecordAttemptCapture:
             raise ValueError("attempt result has no matching persisted claim")
         if current.get("logical_request_key") != value.get("logical_request_key") or current.get("request_fingerprint") != value.get("request_fingerprint"):
             raise ValueError("attempt result does not match the persisted claim")
-        result_attempt = {**current, "state": "result", "result": value}
+        from otto.portfolio.recovery_timing import timing_from_receipt
+        timing = timing_from_receipt(
+            {**value, "phase_timing": current.get("phase_timing"),
+             "correlation_id": current.get("correlation_id", value.get("logical_request_key"))},
+            fallback_correlation_id=value.get("logical_request_key"),
+        )
+        result_attempt = {**current, "state": "result", "result": value,
+                          "correlation_id": current.get("correlation_id", value.get("logical_request_key")),
+                          "phase_timing": timing}
         self._save_attempt(record, result_attempt, request_id="gateway-result:" + str(value["logical_request_key"]) + ":" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
         return value
 

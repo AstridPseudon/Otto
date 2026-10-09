@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .recovery_timing import stable_correlation_id, timing_from_receipt
+
 def requires_native_caller(command: str) -> bool:
     """New manager planning requires the existing identity-bearing ingress."""
     return command in {"whoami", "effective-context", "task-list-author"}
@@ -50,10 +52,14 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
         if pending_only:
             return None  # call() will consume the terminal response on its next read.
         value = json.loads(raw)
+        timing = value.get("receipt_timing") if isinstance(value, dict) else None
+        correlation_id = stable_correlation_id(value, fallback=request_id)
         return {"outcome": value.get("outcome", "unavailable"), "terminal": True,
                 "request_id": request_id, "response_path": str(response),
                 "response_sha256": hashlib.sha256(raw).hexdigest(),
                 "response_utf8_bytes": len(raw), "retry": False,
+                "correlation_id": correlation_id,
+                "receipt_timing": timing if isinstance(timing, dict) else timing_from_receipt(value, fallback_correlation_id=request_id),
                 "summary": command_result_summary(value),
                 "next_action": "Inspect the retained response artifact for full evidence; do not resend this terminal request."}
     except FileNotFoundError:
@@ -64,13 +70,18 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
         request = root / ("request-" + request_id + ".json")
         if not request.is_file():
             return None
+        timing = timing_from_receipt({"request_id": request_id}, fallback_correlation_id=request_id)
         return {"outcome": "pending", "terminal": False, "request_id": request_id,
                 "request_retained": True, "request_state": "queued_or_processing",
                 "response_path": str(response), "retry": False,
+                "correlation_id": request_id, "receipt_timing": timing,
                 "next_action": "This exact request has no terminal reply yet. Observe command-status with this handle; do not resend or infer owner death."}
     if (pending.get("outcome") != "pending" or pending.get("request_id") != request_id
             or pending.get("request_retained") is not True or pending.get("response_path") != str(response)):
         raise ValueError("pending transport receipt differs from the exact request")
+    if isinstance(pending, dict):
+        pending.setdefault("correlation_id", stable_correlation_id(pending, fallback=request_id))
+        pending.setdefault("receipt_timing", timing_from_receipt(pending, fallback_correlation_id=request_id))
     return pending
 
 
@@ -324,9 +335,9 @@ def add_manager_journey_parsers(commands: Any) -> None:
     planning.add_argument("--dispositions", required=True, type=json.loads)
     planning.add_argument("--tasks", required=True, type=json.loads,
                           help="typed ProjectSheet pending tasks; protected/accepted fields cannot be authored")
-    control = commands.add_parser("execution-control", help="drain host admission or inspect, stop and recover an exact owned occurrence",
-        description="Drain retains admitted children and transport handles; the host closes after they settle. Stop permanently fences one occurrence. Resume reconciles its retained effect first and never repeats a provider call. A paused trigger requires exact host reconciliation; process restart and installation remain host actions.")
-    control.add_argument("--operation", choices=("read", "recover", "stop", "resume", "drain"), default="read")
+    control = commands.add_parser("execution-control", help="startup recovery, drain host admission, or inspect/stop/resume an exact owned occurrence",
+        description="Startup reconciles the bounded set of retained owner occurrences before new admission. Drain retains admitted children and transport handles; the host closes after they settle. Stop permanently fences one occurrence. Resume uses the same startup reconciliation path and never repeats a provider call. A paused trigger requires exact host reconciliation; process restart and installation remain host actions.")
+    control.add_argument("--operation", choices=("read", "recover", "stop", "resume", "startup", "drain"), default="read")
     control.add_argument("--schedule-id", help="current manager or retained worker schedule; cannot select another project's occurrence")
     control.add_argument("--request-key", help="required for stop")
     control.add_argument("--expected-version", type=int, help="exact Due version required for stop")

@@ -25,6 +25,7 @@ from pathlib import Path
 
 from herzchen.contracts.model import HostOperation, HostOutcome, HostPort, HostReceipt, HostRequest, ContractError
 from .receipt import AdapterReceiptEnvelope
+from otto.portfolio.recovery_timing import timing_from_receipt
 
 RUNNER_ID = "codex-cli"
 MAX_SUBMISSION_SIZE = 1_000_000
@@ -1768,6 +1769,14 @@ class HerzchenHostAdapter:
         physical = receipt.identity.physical_session_id
         envelope_started = metadata.get("started_at", started)
         envelope_ended = metadata.get("ended_at", ended)
+        timing = timing_from_receipt({
+            "logical_request_key": receipt.logical_request_key,
+            "started_at": envelope_started,
+            "ended_at": envelope_ended,
+            "outcome": receipt.outcome.value,
+            "delivery_state": delivery_state,
+            "native_started_at": metadata.get("native_started_at"),
+        }, fallback_correlation_id=receipt.logical_request_key)
         return AdapterReceiptEnvelope(self.owner, request.identity.logical_agent_id, physical,
             self.source, self.worktree, self._packet_digest(request), self.requested_model,
             self.requested_reasoning, request.requested_profile or "default",
@@ -1782,7 +1791,9 @@ class HerzchenHostAdapter:
             command=tuple(metadata["command"]) if metadata.get("command") else None,
             host_evidence=metadata.get("host_evidence"),
             stdout=metadata.get("stdout"), stderr=metadata.get("stderr"),
-            transport_operation=request.operation.value)
+            transport_operation=request.operation.value,
+            correlation_id=receipt.logical_request_key,
+            receipt_timing=timing)
 
     def _reject_duplicate(self, request: HostRequest) -> None:
         """Ask the owning host binding about unresolved logical work.
