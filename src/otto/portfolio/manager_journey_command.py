@@ -554,8 +554,22 @@ class ManagerJourneyCommands:
             if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
                 return original.to_dict()
             target = current.ref
-        if retained is not None and manifest["task_ref"] == self.state["task_refs"][request["task"]] and current.ref != target:
-            raise PermissionError("retained completion project is no longer current")
+        prior_pin = None
+        refresh_stage = None
+        if retained is not None:
+            if manifest["task_ref"] == self.state["task_refs"][request["task"]]:
+                desired = current.ref
+            else:
+                task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][request["task"]]))
+                completion = {} if task is None else task.payload.get("completion", {})
+                desired = ResourceRef.from_dict(completion.get("project_ref", target.to_dict()))
+            if desired != target:
+                prior_pin = retained
+                target = desired
+                refresh_stage = "finish-project-pin-refresh:" + target.revision
+                retained = self._journal(key, refresh_stage)
+                if retained is not None and any(retained.get(k) != v for k, v in proof.items()):
+                    raise PermissionError("retained completion project proof changed")
         if target == original:
             return original.to_dict()
         if (target.authority, target.kind, target.id) != (original.authority, original.kind, original.id):
@@ -580,7 +594,8 @@ class ManagerJourneyCommands:
                     or any(before.get(k) != after.get(k) for k in ("authority", "kind", "id"))
                     or before == after or relation.get("assignment_ref") != after
                     or relation.get("project_ref") != cursor.to_dict()
-                    or not event.actor.authenticated):
+                    or not event.actor.authenticated
+                    or set(effects) - {"from_assignment", "to_assignment", "supervision", "root_resource_refresh"}):
                 raise PermissionError("completion project changed beyond same-root resource refresh")
             root_events = self.owner.graph.reader.list_events(stream="assignment:" + after["id"])
             adopted = [e for e in root_events if e.subject == ResourceRef.from_dict(after)
@@ -604,6 +619,21 @@ class ManagerJourneyCommands:
                 raise PermissionError("accepted completion task revision changed")
         proof.update(project_ref=target.to_dict(), event_ids=[x[1] for x in reversed(chain)],
                      root_adoption_event_ids=[x[2] for x in reversed(chain)])
+        if prior_pin is not None:
+            old_target = ResourceRef.from_dict(prior_pin["project_ref"])
+            prefix = list(reversed(chain))
+            positions = [index for index, item in enumerate(prefix) if item[0] == old_target]
+            if (len(positions) != 1
+                    or prior_pin.get("event_ids") != [x[1] for x in prefix[:positions[0] + 1]]
+                    or prior_pin.get("root_adoption_event_ids") != [x[2] for x in prefix[:positions[0] + 1]]):
+                raise PermissionError("retained completion project ancestry changed")
+            # Every admitted transition above is the maintained supervision-only
+            # transfer operation, which copies every non-supervision field.
+            # Preserve the old proof; append this exact extension immutably.
+            proof.update(prior_pin_sha256=_digest(prior_pin),
+                         non_supervision_payload_sha256=_digest({**current.payload,
+                             "metadata": {k: v for k, v in current.payload.get("metadata", {}).items()
+                                          if k != "otto_orchestrator"}}))
         if retained is not None:
             if retained != proof:
                 raise PermissionError("retained completion project ancestry changed")
@@ -611,7 +641,7 @@ class ManagerJourneyCommands:
             if current.ref != target or manifest["task_ref"] != self.state["task_refs"][request["task"]]:
                 raise PermissionError("completion task or current project changed")
             if retain:
-                self._journal(key, "finish-project-pin", proof)
+                self._journal(key, refresh_stage or "finish-project-pin", proof)
         return target.to_dict()
 
     def _completed_finish(self, request: Mapping[str, Any], prior: Any,
