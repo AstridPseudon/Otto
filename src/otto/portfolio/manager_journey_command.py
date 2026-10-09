@@ -479,6 +479,7 @@ class ManagerJourneyCommands:
         if (manifest["generation"] != self.state["manager_generation"]
                 or any(manifest["assignment_ref"].get(k) != self.state["assignment_ref"].get(k) for k in ("authority", "kind", "id"))):
             raise PermissionError("accepted review task or manager generation changed")
+        completion_project = self._completion_project(request, manifest, reviewed)
         if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
             # Completion itself advances the task revision. A later worker
             # settlement revisits this retained finish intent, so only the
@@ -486,10 +487,10 @@ class ManagerJourneyCommands:
             # The owner completion API still verifies the original replay
             # digest; no new completion or native settlement is attempted.
             self._completed_finish(request, prior, manifest, reviewed)
-            return self.portfolio.complete_task(manifest["project_ref"], manifest["task_ref"],
+            return self.portfolio.complete_task(completion_project, manifest["task_ref"],
                 self.state["assignment_ref"], actor=self.state["manager"], request_id="journey:" + key,
                 expected_generation=self.state["manager_generation"],
-                expected_project_revision=manifest["project_ref"]["revision"],
+                expected_project_revision=completion_project["revision"],
                 expected_task_revision=manifest["task_ref"]["revision"], disposition="accepted",
                 evidence_refs=reviewed["evidence_refs"], evidence_hashes=reviewed["evidence_hashes"],
                 gate_refs=reviewed["gate_refs"], candidate_ref=reviewed["candidate_ref"])
@@ -513,10 +514,10 @@ class ManagerJourneyCommands:
                         "settlement_schedule_ids": [due["schedule_id"] for due in active],
                         "retry_provider": False,
                         "next_action": "await or reconcile these exact active role occurrences without resending; owner settlement fulfills the accepted completion intent"}
-        result = self.portfolio.complete_task(manifest["project_ref"], manifest["task_ref"],
+        result = self.portfolio.complete_task(completion_project, manifest["task_ref"],
             self.state["assignment_ref"], actor=self.state["manager"], request_id="journey:" + key,
             expected_generation=self.state["manager_generation"],
-            expected_project_revision=manifest["project_ref"]["revision"],
+            expected_project_revision=completion_project["revision"],
             expected_task_revision=manifest["task_ref"]["revision"], disposition="accepted",
             evidence_refs=reviewed["evidence_refs"], evidence_hashes=reviewed["evidence_hashes"],
             gate_refs=reviewed["gate_refs"], candidate_ref=reviewed["candidate_ref"])
@@ -525,6 +526,93 @@ class ManagerJourneyCommands:
         return {"outcome": "pending", "completion_intent": key, "owner_result": result,
                 "retry_provider": False,
                 "next_action": "inspect completion prerequisites; settle retained native evidence if required; repeat this exact finish request"}
+
+    def _completion_project(self, request: Mapping[str, Any], manifest: Mapping[str, Any],
+                            reviewed: Mapping[str, Any], *, retain: bool = True) -> Mapping[str, Any]:
+        """Retain a completion pin across same-root resource-only join refreshes.
+
+        An accepted review stays immutable. Only WRK's authenticated supervision
+        refresh plus the matching same-generation root resource adoption may
+        bridge its project revision; task and manager fences remain unchanged.
+        """
+        original = ResourceRef.from_dict(manifest["project_ref"])
+        key = request["request_key"]
+        retained = self._journal(key, "finish-project-pin")
+        proof = {"accepted_project_ref": original.to_dict(), "task_ref": manifest["task_ref"],
+                 "assignment_ref": self.state["assignment_ref"], "generation": self.state["manager_generation"],
+                 "manifest_sha256": _digest(manifest), "review_sha256": _digest(reviewed)}
+        current = self.owner.graph.reader.get_identity(ResourceRef(original.authority, original.kind, original.id))
+        if current is None:
+            raise PermissionError("accepted completion project is missing")
+        if retained is not None:
+            if any(retained.get(k) != v for k, v in proof.items()):
+                raise PermissionError("retained completion project proof changed")
+            target = ResourceRef.from_dict(retained["project_ref"])
+        else:
+            # An exact committed task replay keeps its original completion pin,
+            # even when project terminal bookkeeping advanced the project later.
+            if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
+                return original.to_dict()
+            target = current.ref
+        if retained is not None and manifest["task_ref"] == self.state["task_refs"][request["task"]] and current.ref != target:
+            raise PermissionError("retained completion project is no longer current")
+        if target == original:
+            return original.to_dict()
+        if (target.authority, target.kind, target.id) != (original.authority, original.kind, original.id):
+            raise PermissionError("accepted completion project identity changed")
+        events = self.owner.graph.reader.list_events(stream="work:" + original.id)
+        transitions = {}
+        for event in events:
+            transitions.setdefault(event.subject, []).append(event)
+        cursor, chain = target, []
+        while cursor != original:
+            matches = transitions.get(cursor, ())
+            if len(matches) != 1 or len(chain) >= 32:
+                raise PermissionError("completion project revision chain is missing or ambiguous")
+            event = matches[0]
+            effects = event.effects
+            before = effects.get("from_assignment")
+            after = effects.get("to_assignment")
+            relation = effects.get("supervision", {})
+            if (event.event_type != "work.project.supervision-transferred"
+                    or event.operation != "work.project.supervision.transfer"
+                    or not isinstance(before, Mapping) or not isinstance(after, Mapping)
+                    or any(before.get(k) != after.get(k) for k in ("authority", "kind", "id"))
+                    or before == after or relation.get("assignment_ref") != after
+                    or relation.get("project_ref") != cursor.to_dict()
+                    or not event.actor.authenticated):
+                raise PermissionError("completion project changed beyond same-root resource refresh")
+            root_events = self.owner.graph.reader.list_events(stream="assignment:" + after["id"])
+            adopted = [e for e in root_events if e.subject == ResourceRef.from_dict(after)
+                       and e.event_type == "work.assignment.resources-adopted"]
+            body = adopted[0].effects.get("result_payload", {}) if len(adopted) == 1 else {}
+            if (len(adopted) != 1 or adopted[0].actor != event.actor
+                    or body.get("resource_adoption_base_ref") != before
+                    or body.get("role") != "orchestrator" or body.get("principal") != event.actor.actor
+                    or body.get("generation") != relation.get("generation")
+                    or body.get("scope") != relation.get("portfolio_ref")):
+                raise PermissionError("completion project refresh has no exact root adoption proof")
+            bases = [ref for ref in event.before_refs if
+                     (ref.authority, ref.kind, ref.id) == (original.authority, original.kind, original.id)]
+            if len(bases) != 1 or bases[0] == cursor or bases[0] in [x[0] for x in chain]:
+                raise PermissionError("completion project predecessor is invalid")
+            chain.append((cursor, event.event_id, adopted[0].event_id))
+            cursor = bases[0]
+        if manifest["task_ref"] == self.state["task_refs"][request["task"]]:
+            task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(manifest["task_ref"]))
+            if task is None or task.ref.to_dict() != manifest["task_ref"] or task.payload.get("lifecycle") == "completed":
+                raise PermissionError("accepted completion task revision changed")
+        proof.update(project_ref=target.to_dict(), event_ids=[x[1] for x in reversed(chain)],
+                     root_adoption_event_ids=[x[2] for x in reversed(chain)])
+        if retained is not None:
+            if retained != proof:
+                raise PermissionError("retained completion project ancestry changed")
+        else:
+            if current.ref != target or manifest["task_ref"] != self.state["task_refs"][request["task"]]:
+                raise PermissionError("completion task or current project changed")
+            if retain:
+                self._journal(key, "finish-project-pin", proof)
+        return target.to_dict()
 
     def _completed_finish(self, request: Mapping[str, Any], prior: Any,
                           manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> None:
@@ -535,10 +623,11 @@ class ManagerJourneyCommands:
         key = "journey:" + request["request_key"]
         receipt = self.owner.graph.reader.get_receipt(key)
         completion = {} if record is None else record.payload.get("completion", {})
+        completion_project = self._completion_project(request, manifest, reviewed)
         expected = {"logical_request_key": key, "manager": self.state["manager"],
                     "assignment_ref": self.state["assignment_ref"], "generation": self.state["manager_generation"],
                     "task_ref": manifest["task_ref"], "task_revision": original.revision,
-                    "project_ref": manifest["project_ref"], "project_revision": manifest["project_ref"]["revision"],
+                    "project_ref": completion_project, "project_revision": completion_project["revision"],
                     "disposition": "accepted", "candidate_ref": reviewed["candidate_ref"],
                     "evidence_refs": reviewed["evidence_refs"], "evidence_hashes": reviewed["evidence_hashes"],
                     "gate_refs": reviewed["gate_refs"]}
