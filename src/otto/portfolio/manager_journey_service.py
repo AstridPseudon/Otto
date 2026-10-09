@@ -688,13 +688,62 @@ class ManagerJourneyService:
                 "scope_direction": scope_direction,
                 "context_limit": "Canonical adopted root resources and direction only; this is not a native invocation or all-project context transcript."}
 
+    def _reminder_ids(self) -> tuple[str, ...]:
+        """Only owner composition supplies reminder IDs; request JSON cannot."""
+        values = getattr(self.server, "reminder_schedule_ids", self.server.state.get("reminder_schedule_ids", ()))
+        if (not isinstance(values, (list, tuple)) or len(values) > 128
+                or any(not isinstance(x, str) or not x.strip() for x in values)):
+            raise ValueError("owner reminder IDs must be a bounded explicit sequence")
+        ids = tuple(dict.fromkeys(values))
+        for sid in ids:
+            due = self.server.due_port.read_due(sid)
+            if due is not None and due.get("project_ref") != self.server.state["project_ref"]["id"]:
+                raise PermissionError("owner reminder occurrence is outside the current project")
+        return ids
+
+    def _startup_recovery(self, app: Any, known: Any, *, execute: bool) -> Mapping[str, Any]:
+        """Join native recovery with separately scoped host reminder readback.
+
+        Reminder holds are explicit and do not suppress unrelated native
+        diagnosis. No request can select host authority or reminder IDs.
+        """
+        ids = self._reminder_ids()
+        attention = getattr(self.server, "reminder_attention", None)
+        executor = getattr(self.server, "reminder_host_executor", None)
+        if not ids or attention is None:
+            result = app.recover_startup(schedule_ids=known, execute=execute) if app is not None else {
+                "schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled", "admission": "ready",
+                "occurrences": [], "execute": execute, "provider_called": False, "dispatch": False, "launch": False}
+            from otto.attention import DurableAttention
+            reader = DurableAttention(None, due_port=self.server.due_port)
+            reminder = {"schema": "otto.reminder-startup-reconciliation.v1",
+                "outcome": "held" if ids else "not-configured",
+                "admission": "held" if ids else "unavailable",
+                "reason": "owner_reminder_bridge_unavailable" if ids else "no_owner_reminder_ids",
+                "mapping_state": "configured" if ids else "unconfigured",
+                "wake_state": "unknown", "canonical_schedule_ids": list(ids),
+                "evaluate_due": False, "host_mutation": False,
+                "rows": [{"schedule_id": sid, "status": reader.reminder_status(sid),
+                          "bridge": {"outcome": "held", "reason": "owner_reminder_bridge_unavailable"}, "due": None} for sid in ids],
+                "next_action": "Owner supplies exact known reminder IDs and authenticated readback/attention ports; no timer or wake is inferred."}
+            return {**result, "reminder_reconciliation": reminder,
+                    "reminder_admission": reminder["admission"]}
+        if app is None:
+            reminder = attention.startup_reconcile(ids, executor=executor, evaluate_due=True)
+            return {"schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled", "admission": "ready",
+                "occurrences": [], "execute": execute, "provider_called": False, "dispatch": False, "launch": False,
+                "reminder_reconciliation": reminder, "reminder_admission": reminder["admission"]}
+        return app.recover_startup(schedule_ids=known, execute=execute,
+            reminder_attention=attention, host_executor=executor,
+            reminder_schedule_ids=ids, evaluate_due=True)
+
     def _execution_control(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Use current service bindings and existing Due/host recovery ports."""
         self.commands._authorize()
         if set(request) - {"command", "operation", "schedule_id", "request_key", "expected_version"}:
             raise ValueError("execution control cannot change the bound owner or assignment")
         operation = request.get("operation", "read")
-        if operation not in {"read", "recover", "stop", "resume", "startup", "drain"}:
+        if operation not in {"read", "reminder-read", "recover", "stop", "resume", "startup", "drain"}:
             raise ValueError("unsupported execution control operation")
         if operation == "drain":
             if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
@@ -709,14 +758,21 @@ class ManagerJourneyService:
             value = worker.get("schedule_id") if isinstance(worker, Mapping) else None
             if isinstance(value, str) and value and value not in known:
                 known.append(value)
+        if operation == "reminder-read":
+            if request.get("request_key") is not None or request.get("expected_version") is not None:
+                raise ValueError("reminder-read takes only an exact owner-known schedule")
+            sid = request.get("schedule_id")
+            if sid not in self._reminder_ids():
+                raise PermissionError("reminder read requires an owner-known schedule")
+            from otto.attention import DurableAttention
+            reader = getattr(self.server, "reminder_attention", None) or DurableAttention(None, due_port=self.server.due_port)
+            return {**reader.reminder_status(sid), "read_only": True, "provider_called": False,
+                    "host_readback_available": getattr(self.server, "reminder_host_executor", None) is not None}
         if operation == "startup":
             if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
                 raise ValueError("startup recovery takes no occurrence or mutation fields")
             if not known:
-                return {"schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled",
-                        "admission": "ready", "occurrences": [], "provider_called": False,
-                        "dispatch": False, "launch": False,
-                        "next_action": "new execution may be admitted through the existing owner path"}
+                return self._startup_recovery(None, [], execute=False)
             # The retained Due record is authoritative for the execution
             # binding.  Older owner state projections may not repeat the
             # model fields, while the current manager projection does.
@@ -725,7 +781,7 @@ class ManagerJourneyService:
                 model=state.get("requested_model", seed["requested_model"]),
                 reasoning=state.get("requested_reasoning", seed["requested_reasoning"]),
                 evidence_id="execution-startup-recovery")
-            return app.recover_startup(schedule_ids=known, execute=False)
+            return self._startup_recovery(app, known, execute=False)
         schedule = request.get("schedule_id")
         allowed = set(known)
         if not isinstance(schedule, str) or not schedule or schedule not in allowed:
@@ -771,7 +827,7 @@ class ManagerJourneyService:
         # Explicit resume and ordinary recover share the startup reconciliation
         # path.  It settles captured/accepted work first and only then allows
         # the existing start operation to admit a new native turn.
-        startup = app.recover_startup(schedule_ids=[schedule], execute=operation == "resume")
+        startup = self._startup_recovery(app, [schedule], execute=operation == "resume")
         row = startup["occurrences"][0]
         reconciled = row["result"]
         # Preserve the existing operation contract for terminal/held outcomes.

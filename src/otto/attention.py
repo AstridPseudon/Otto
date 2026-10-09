@@ -611,7 +611,7 @@ def _host_wake_observation(record: DueRecord) -> dict[str, JSONValue]:
     # Host adapters have used these equivalent names; all are observations,
     # never values inferred from Due's wall-clock cursor.
     wake_keys = ("last_observed_host_wake", "last_host_wake", "lastWakeAt",
-                 "last_wake_at", "wake_at", "woke_at", "observed_at")
+                 "last_wake_at", "wake_at", "woke_at")
     wake_at = next((observation.get(key) for key in wake_keys
                     if observation.get(key) is not None), None)
     if wake_at is None:
@@ -1110,11 +1110,11 @@ class _DueRecordOwnerEngine:
         return value
 
     def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:
-        """Read current records; exact native scopes avoid historical payload hydration."""
+        """Read current records; project/native scopes precede payload hydration."""
 
         normalized = _trigger_scope(scope)
-        if {"native_adapter", "native_session_id"}.intersection(normalized) and callable(getattr(self._writer, "find_identity_refs", None)):
-            paths = {"native_adapter": ("target", "native_adapter"),
+        if {"project_ref", "native_adapter", "native_session_id"}.intersection(normalized) and callable(getattr(self._writer, "find_identity_refs", None)):
+            paths = {"project_ref": ("project_ref",), "native_adapter": ("target", "native_adapter"),
                      "native_session_id": ("host_evidence", "gateway_attempt", "delivery_authorization", "physical_session_id")}
             refs = self._writer.find_identity_refs(kind="otto.due-record",
                 payload_matches={paths[key]: value for key, value in normalized.items() if key in paths})

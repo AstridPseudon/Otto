@@ -337,7 +337,7 @@ def add_manager_journey_parsers(commands: Any) -> None:
                           help="typed ProjectSheet pending tasks; protected/accepted fields cannot be authored")
     control = commands.add_parser("execution-control", help="startup recovery, drain host admission, or inspect/stop/resume an exact owned occurrence",
         description="Startup reconciles the bounded set of retained owner occurrences before new admission. Drain retains admitted children and transport handles; the host closes after they settle. Stop permanently fences one occurrence. Resume uses the same startup reconciliation path and never repeats a provider call. A paused trigger requires exact host reconciliation; process restart and installation remain host actions.")
-    control.add_argument("--operation", choices=("read", "recover", "stop", "resume", "startup", "drain"), default="read")
+    control.add_argument("--operation", choices=("read", "reminder-read", "recover", "stop", "resume", "startup", "drain"), default="read")
     control.add_argument("--schedule-id", help="current manager or retained worker schedule; cannot select another project's occurrence")
     control.add_argument("--request-key", help="required for stop")
     control.add_argument("--expected-version", type=int, help="exact Due version required for stop")

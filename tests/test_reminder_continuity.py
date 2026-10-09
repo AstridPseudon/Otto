@@ -65,6 +65,12 @@ class ReminderContinuityTests(unittest.TestCase):
         self.assertIn("desired_configuration", status)
         self.assertIn("delivery", status)
 
+    def test_explicit_host_wake_is_observed_but_configuration_time_is_not(self):
+        for key in ('observed_at', 'lastWakeAt'):
+            projection=reminder_continuity_view(replace(record(),host_evidence={'readback':{'state':'paused',key:NOW.isoformat()}}))
+            self.assertEqual(projection['last_observed_host_wake']['state'],'observed' if key=='lastWakeAt' else 'unknown')
+            self.assertEqual(projection['last_observed_host_wake']['at'],NOW.isoformat() if key=='lastWakeAt' else None)
+
     def test_initial_covered_slot_without_request_or_completion_stays_unknown(self):
         status = reminder_continuity_view(record(host_state="active", last_covered_slot=0))
         self.assertEqual(status["last_admitted_due_occurrence"], {
@@ -114,8 +120,8 @@ class ReminderContinuityTests(unittest.TestCase):
         self.assertEqual(recovered["outcome"], "reconciled", recovered)
         self.assertEqual(len(self.updates), 1)
         status = self.attention.reminder_status("reminder")
-        self.assertEqual(status["last_observed_host_wake"]["state"], "observed")
-        self.assertEqual(status["last_observed_host_wake"]["at"], NOW.isoformat())
+        self.assertEqual(status["last_observed_host_wake"]["state"], "unknown")
+        self.assertIsNone(status["last_observed_host_wake"]["at"])
 
     def test_missed_slots_coalesce_and_paused_schedule_is_held(self):
         self.due.save_due("reminder", {**self.due.read_due("reminder"),

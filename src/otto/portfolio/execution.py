@@ -1001,6 +1001,7 @@ class ExecutionApplication:
 
     def recover_startup(self, *, schedule_ids: Sequence[str], execute: bool = False,
                         reminder_attention: Any = None, host_executor: Any = None,
+                        reminder_schedule_ids: Sequence[str] | None = None,
                         evaluate_due: bool = False, now: datetime | None = None) -> dict[str, Any]:
         """Reconcile known retained work before optional explicit admission.
 
@@ -1028,8 +1029,9 @@ class ExecutionApplication:
         reminder = None
         reminder_rows: dict[str, Mapping[str, Any]] = {}
         if reminder_attention is not None:
+            reminder_ids = ids if reminder_schedule_ids is None else reminder_schedule_ids
             reminder = reminder_attention.startup_reconcile(
-                ids, executor=host_executor, now=now, evaluate_due=evaluate_due)
+                reminder_ids, executor=host_executor, now=now, evaluate_due=evaluate_due)
             reminder_rows = {row["schedule_id"]: row for row in reminder.get("rows", ())}
         rows = []
         for schedule_id in ids:
@@ -1070,6 +1072,7 @@ class ExecutionApplication:
             "launch": any(row["result"].get("outcome") in {"succeeded", "replayed"}
                            and execute for row in rows),
             "reminder_reconciliation": reminder,
+            "reminder_admission": None if reminder is None else reminder.get("admission"),
             "next_action": ("inspect the listed held/active occurrence and reconcile its exact retained evidence"
                             if blocked else "new execution may be admitted through the existing owner path"),
         }

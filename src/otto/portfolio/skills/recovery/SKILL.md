@@ -41,3 +41,42 @@ Timing in retained receipts is observational: UTC phase timestamps and
 same-process monotonic durations are used when available. Offline,
 clock-discontinuity, and absent phases remain explicit gaps; no elapsed time is
 invented across a restart or host boundary.
+
+## Reminder startup composition
+
+The trusted owner supplies `reminder_schedule_ids` as a bounded list of
+**canonical Due schedule IDs**, its `reminder_attention` owner port, and an
+authenticated `reminder_host_executor`. A native client cannot supply or
+replace these ports. Existing `host_schedule_bridge` links a canonical Due
+record to its external automation ID; an automation ID alone is not a Due
+record or admission proof. Missing mapping stays unconfigured/unknown.
+
+`execution-control --operation startup` and explicit `resume` use this
+composition to reconcile a retained host effect by exact readback before
+evaluating eligible missed Due slots. Lost responses do not repeat the host
+mutation; pause, mismatch, unavailable readback, and uncertain effects hold
+reminder admission. `reminder_admission` is separate from native recovery
+`admission`, so an unrelated native occurrence remains diagnosable.
+
+Read the pure bounded reminder projection with
+`execution-control --operation reminder-read --schedule-id <canonical-due-id>`.
+Only an owner-known ID in the current project is accepted. Without owner-known
+IDs startup explicitly reports `not-configured`; with IDs but missing ports it
+reports an unavailable bridge and held reminder admission. These results do not
+claim that an automation was recreated or that a host wake occurred.
+
+A configuration timestamp such as `observed_at` proves only configuration
+readback. Wake remains unknown unless an explicit wake observation exists.
+Current desktop automation cards/config files do not provide that observation;
+an authenticated host readback integration is required for autonomous reminder
+reconciliation. A manually observed heartbeat must retain its original host
+receipt and cannot be retroactively promoted into canonical Due admission.
+
+The owner integration step is explicit: read the existing canonical Due record
+and its retained host bridge; bind those exact Due IDs on the server; supply
+the existing `DurableAttention` owner port and `DeterministicHostExecutor` with
+authenticated host read/update callbacks and the owner's `acknowledge_host`
+callback. If a bridge must be authored, use existing `schedule`/`prepare_host`
+operations with lifecycle owner, current version, and authorized scope; do not
+create or update it as part of a recovery read. Leave external schedules
+unconfigured/unknown until that association is actually retained.
