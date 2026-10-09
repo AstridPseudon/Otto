@@ -146,12 +146,24 @@ Resolve defaults at admission as explicit authorized override → applicable
 project/role configuration → user default. Show the selected adapter/CLI,
 model, reasoning, profile, source/resource refs and provenance in the retained
 selection. Defaults affect future admissions only; there is no silent provider
-or model fallback. The current inspected worker was bound to assignment
+or model fallback. The original D05 inspection below is a historical example,
+not the current caller: it was bound to assignment
 `assignment-4b9823050f1a429d60c0ffbabee7`, generation `1`, principal
 `otto-adapter-d05-worker-1`, model `gpt-5.6-luna`, reasoning `high`, and native
 adapter `otto.adapter.installed-codex-cli.v1`. The observed `whoami` and
 `effective-context` reads were read-only, provider-free and had
 `effects_started=false`.
+
+Use `whoami` and `effective-context` for the actual caller's assignment,
+generation, session and occurrence. These identity reads do not provide model
+or resource-selection provenance; inspect the delivered role introduction and
+the exact retained result's `resource_selection` for those facts. An absent
+`effective_profile` remains unavailable even when the native sandbox policy
+separately verifies the requested permissions.
+
+For the installed Adapter run, this candidate command guide is at
+`/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-project-operating-setup-20261005/work/integration-owner/docs/manager-journey-commands.md`.
+The control run's `docs/` directory is not a materialized copy of this guide.
 
 For recovery, read the exact retained command or occurrence before acting:
 
