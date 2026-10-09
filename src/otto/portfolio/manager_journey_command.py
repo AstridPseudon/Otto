@@ -630,10 +630,18 @@ class ManagerJourneyCommands:
             # Every admitted transition above is the maintained supervision-only
             # transfer operation, which copies every non-supervision field.
             # Preserve the old proof; append this exact extension immutably.
+            payload_digest = _digest({**current.payload,
+                "metadata": {k: v for k, v in current.payload.get("metadata", {}).items()
+                             if k != "otto_orchestrator"}})
+            if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
+                # Exact committed completion replay pins its original semantics;
+                # later project bookkeeping cannot rewrite this historical proof.
+                # _completed_finish still verifies the canonical completion.
+                if retained is None or not isinstance(retained.get("non_supervision_payload_sha256"), str):
+                    raise PermissionError("committed completion refresh proof is missing")
+                payload_digest = retained["non_supervision_payload_sha256"]
             proof.update(prior_pin_sha256=_digest(prior_pin),
-                         non_supervision_payload_sha256=_digest({**current.payload,
-                             "metadata": {k: v for k, v in current.payload.get("metadata", {}).items()
-                                          if k != "otto_orchestrator"}}))
+                         non_supervision_payload_sha256=payload_digest)
         if retained is not None:
             if retained != proof:
                 raise PermissionError("retained completion project ancestry changed")

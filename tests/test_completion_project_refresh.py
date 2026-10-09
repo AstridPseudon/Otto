@@ -69,6 +69,8 @@ class CompletionProjectRefreshTests(unittest.TestCase):
   self.assertEqual(self.commands.finish_task(self.finish)['outcome'],'replayed');self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
   self.assertEqual(self.commands._journal('accepted','intent'),manifest);self.assertEqual(self.commands._journal('accepted','review'),review)
   self.assertEqual(LimitService(self.f.f.store).get_pool(pool.ref),pool)
+  current=self.owner.graph.get(self.project.ref);self.owner.graph.revise(current.ref,title='Later unrelated bookkeeping',logical_request_key='later-bookkeeping');self.state['project_ref']=self.owner.graph.get(current.ref).ref.to_dict();counts=self.f.f.store.consumer().snapshot_counts()
+  self.assertEqual(self.commands.finish_task(self.finish)['outcome'],'replayed');self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
  def test_pending_pin_unrelated_edit_or_changed_review_proof_rejects_without_effect(self):
   original=self.pending_pin();self.second_refresh();current=self.owner.graph.get(self.project.ref)
   self.owner.graph.revise(current.ref,title='Changed outcome scope',logical_request_key='unrelated-after-pin');self.state['project_ref']=self.owner.graph.get(current.ref).ref.to_dict()
