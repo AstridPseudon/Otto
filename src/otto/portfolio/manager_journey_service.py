@@ -1243,7 +1243,7 @@ class ManagerJourneyService:
             if len(worker_records(self)) + 3 > coordinator_policy["cumulative_allowance_units"]:
                 raise PermissionError("coordinator, finite child and return lack their configured remaining turns")
         from .resource_sync import resolve_assignment_attachments
-        from .role_context import supporting_context
+        from .role_context import supporting_context, selected_configuration
         manager = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(resource_assignment_ref or state["assignment_ref"]))
         attachments = resolve_assignment_attachments({"ref": manager.ref.to_dict(), "role": manager.role,
             "generation": manager.generation, "payload": manager.payload},
@@ -1266,9 +1266,11 @@ class ManagerJourneyService:
         sources = [source for source in sources if
             tuple(source["ref"][key] for key in ("authority", "kind", "id")) not in parent_inputs - shared_inputs]
         role_configuration = state.get("worker_role_configuration_ref")
-        if role_configuration is not None:
+        if role_configuration is not None and not any(source["ref"] == role_configuration for source in sources):
             sources += supporting_context({"resource_ref": bases[0]["resource_ref"],
                 "content": {"supporting_refs": [role_configuration]}}, self.server.owner.content.command_port)
+        # Reject incompatible selections before creating any worker assignment.
+        selected_configuration(sources)
         if selection is None:
             selection = {"identity": app.native_adapter_identity(), "adapter": "existing-owner-composition",
                          "model": model, "reasoning": reasoning,
