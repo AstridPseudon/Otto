@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from otto.agents import codex_host_reader as reader_module
 
@@ -81,6 +81,46 @@ class CodexHostReaderTests(unittest.TestCase):
             reader("issued-session")
         requests = [json.loads(line) for line in self.requests.read_text().splitlines()]
         self.assertEqual([request["method"] for request in requests], ["initialize"])
+
+
+    def test_exhausted_rpc_deadline_still_gets_bounded_term_and_kill_reap(self):
+        process = MagicMock(pid=1234)
+        process.wait.side_effect = [reader_module.subprocess.TimeoutExpired("reader", 1), 0]
+        with patch.object(reader_module.os, "killpg") as kill, patch.object(
+                reader_module.time, "monotonic", return_value=100000):
+            reader_module._reap_app_server(process)
+        self.assertEqual([call.kwargs["timeout"] for call in process.wait.call_args_list], [1.0, 1.0])
+        self.assertEqual([call.args[1] for call in kill.call_args_list],
+                         [reader_module.signal.SIGTERM, reader_module.signal.SIGKILL])
+
+    def test_term_exit_needs_no_kill(self):
+        process = MagicMock(pid=1234)
+        with patch.object(reader_module.os, "killpg") as kill:
+            reader_module._reap_app_server(process)
+        process.wait.assert_called_once_with(timeout=1.0)
+        kill.assert_called_once_with(1234, reader_module.signal.SIGTERM)
+
+    def test_cleanup_failure_preserves_original_rpc_timeout(self):
+        reader = self.fixture_reader()
+        reap = reader_module._reap_app_server
+        def failed_reap(process):
+            reap(process)
+            raise OSError("fixture secondary failure")
+        with patch.object(reader_module._StdioRPC, "response", side_effect=
+                reader_module.HostThreadReadError("app_server_timeout")), patch.object(
+                reader_module, "_reap_app_server", side_effect=failed_reap):
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, "^app_server_timeout$"):
+                reader("issued-session")
+
+    def test_valid_metadata_does_not_bypass_failed_cleanup(self):
+        reader = self.fixture_reader()
+        reap = reader_module._reap_app_server
+        def failed_reap(process):
+            reap(process)
+            raise OSError("fixture secondary failure")
+        with patch.object(reader_module, "_reap_app_server", side_effect=failed_reap):
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, "^app_server_cleanup_failed$"):
+                reader("issued-session")
 
 
 if __name__ == "__main__":

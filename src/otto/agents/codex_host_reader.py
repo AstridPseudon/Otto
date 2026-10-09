@@ -14,6 +14,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -148,6 +149,22 @@ class _StdioRPC:
             return item["result"]
 
 
+def _reap_app_server(process: Any) -> None:
+    """Bound teardown separately from the already exhausted RPC deadline."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=1.0)
+
+
 class CodexAppServerThreadReader:
     """Trusted composition callback. The sole call input is the issued session ID.
 
@@ -220,21 +237,14 @@ class CodexAppServerThreadReader:
             if process is not None:
                 # One process group per call; teardown never leaves a reusable
                 # app-server session or unbounded wait behind.
+                lookup_failed = sys.exc_info()[0] is not None
                 try:
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        process.wait(timeout=min(2.0, max(0.0, deadline - time.monotonic())))
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        process.wait(timeout=min(2.0, max(0.0, deadline - time.monotonic())))
+                    _reap_app_server(process)
                 except (OSError, subprocess.SubprocessError):
-                    raise HostThreadReadError("app_server_cleanup_failed") from None
+                    # Preserve an earlier strict RPC/identity failure. A valid
+                    # lookup still fails closed if its process cannot be reaped.
+                    if not lookup_failed:
+                        raise HostThreadReadError("app_server_cleanup_failed") from None
                 finally:
                     process.stdin.close()
                     process.stdout.close()
