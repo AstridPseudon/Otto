@@ -108,7 +108,7 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
     # Some nested commands can settle evidence AND admit a new effect. Keep
     # their original file handle while draining; read-only worker-status and
     # finite child bookkeeping continue through the same custodian.
-    return (request.get("command") == "owner-execution" and request.get("operation") == "launch"
+    return (request.get("command") == "owner-execution" and request.get("operation") in {"launch", "start-prepared"}
             or request.get("command") in {"start-manager", "run-worker",
                 "start-retained-worker", "start-retained-help", "manager-worker-result",
                 "manager-task-settlement", "manager-help-result", "request-help", "request-advice", "start-retained-child", "parent-child-result"}

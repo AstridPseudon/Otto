@@ -201,7 +201,7 @@ class HerzchenCodexAdapter:
         if socket is not None:
             if not callable(observer):
                 raise HerzchenAdapterError("native caller transport requires its process observer")
-            if role == "project_advisor" and profile == "read-only":
+            if role in {"project_advisor", "worker"} and profile == "read-only":
                 return None, None
             if profile is not None and profile != "workspace-write":
                 raise HerzchenAdapterError("native caller transport requires workspace-write manager/worker")
@@ -212,7 +212,7 @@ class HerzchenCodexAdapter:
     def validate_owner_host_composition(self, *, role: str, profile: str) -> None:
         """Build the role-scoped host without initialization, claim or provider.
 
-        Advisor delivery calls this before reserving its allowance. The real
+        Owner delivery calls this before admitting its occurrence. The real
         binding constructor validates the complete configured host hook set.
         """
         if profile not in {"read-only", "workspace-write"}:

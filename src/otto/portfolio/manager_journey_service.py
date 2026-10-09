@@ -616,7 +616,8 @@ class ManagerJourneyService:
                 selection=((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
             result = (app.start(schedule_id=worker["schedule_id"]) if command == "start-retained-worker" else
                       app.recover(schedule_id=worker["schedule_id"], execute=False))
-            if result.get("outcome") in {"succeeded", "replayed"}:
+            external_parent = ((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("external_parent")
+            if result.get("outcome") in {"succeeded", "replayed"} and external_parent is None:
                 result = self._settle_shared_completion(result, review_task=request["task"])
                 if result["completion_intents"]:
                     state = self.server.state
@@ -1201,7 +1202,7 @@ class ManagerJourneyService:
             evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20], selection=selection)
         instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
             principal=principal, model=model, reasoning=reasoning, focus=focus,
-            workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter, leaf=parent is not None)
+            workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter, leaf=parent is not None or read_only)
         if read_only:
             contract["read_scope"] = "linked_context"
             contract["allowed_operations"] = ["read_project_context", "inspect_recorded_effect", "return_result"]
@@ -1247,6 +1248,9 @@ class ManagerJourneyService:
         if external_parent is not None:
             launch_request["external_parent"] = json_value(external_parent)
             launch_request["fingerprint"] = digest([scope, dict(request), selection, external_parent])
+        validate_host = getattr(app.runtime.adapter, "validate_owner_host_composition", None)
+        if callable(validate_host):
+            validate_host(role="worker", profile="read-only" if read_only else "workspace-write")
         prepared = app.assign_worker(project_ref=state["project_ref"], task_ref=task_ref,
             principal=principal, request_key=key, instructions=instruction, instruction_contract=contract,
             brief=brief, model=model, reasoning=reasoning, profile="read-only" if read_only else "workspace-write", timeout_seconds=1200,

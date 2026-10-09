@@ -59,8 +59,12 @@ class ReadonlyAdvisorCompositionTests(unittest.TestCase):
         adapter.native_caller_socket=str(Path(self.f.temporary.name)/"manager.sock");adapter.native_process_observer=observer
         worker=adapter.bind_owner_authorization(authorize,role="worker",profile="workspace-write")
         self.assertEqual(worker.native_caller_socket,adapter.native_caller_socket);self.assertIs(worker.native_process_observer,observer)
+        adapter.validate_owner_host_composition(role="worker",profile="read-only")
+        leaf=adapter.bind_owner_authorization(authorize,role="worker",profile="read-only")
+        self.assertIsNone(leaf.native_caller_socket);self.assertIsNone(leaf.native_process_observer)
+        self.assertIs(leaf._owner_authorizer,authorize)
         with self.assertRaisesRegex(HerzchenAdapterError,"workspace-write"):
-            adapter.validate_owner_host_composition(role="worker",profile="read-only")
+            adapter.validate_owner_host_composition(role="manager",profile="read-only")
         adapter.native_caller_socket=None
         advisor=adapter.bind_owner_authorization(authorize,role="project_advisor",profile="read-only")
         self.assertIs(advisor.native_process_observer,observer)

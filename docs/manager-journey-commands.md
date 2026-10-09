@@ -316,7 +316,12 @@ live controller, reconstruct old requests, or replay an uncertain provider effec
 ### Authenticated external orchestrator commands
 
 The protected host client exposes `launch`, `lookup`, `follow`, `result`, `artifact`
-and `consume`. Read the current root `effective-context`, installed Otto skill and
+and `consume`. `start-prepared` starts only the same exact unattempted external
+occurrence after composition repair; it refuses existing gateway custody, stopped,
+paused or completed records, and never allocates a replacement child.
+Read-only leaf workers retain authorized delivery/capture but receive no managed
+native caller socket; native `whoami` calls are unavailable in this profile.
+Read the current root `effective-context`, installed Otto skill and
 host-issued finite execution policy first. A launch takes one stable request key
 and factual focus; the owner selects principal/model/profile/scope/resources.
 Retain the separate returned occurrence, start and outer transport handles.

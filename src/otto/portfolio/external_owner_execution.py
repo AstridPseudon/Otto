@@ -81,7 +81,7 @@ def dispatch(service, request):
     fields = {"command", "operation", "request_key"}
     if operation == "launch": fields |= {"focus"}
     elif operation == "lookup": fields |= {"original_request_key"}
-    elif operation in {"follow", "result", "consume"}: fields |= {"occurrence"}
+    elif operation in {"follow", "result", "consume", "start-prepared"}: fields |= {"occurrence"}
     elif operation == "artifact": fields |= {"occurrence", "artifact_ref", "offset", "max_bytes"}
     else: raise ValueError("unsupported external execution operation")
     if set(request) != fields or not isinstance(request["request_key"], str) or not request["request_key"].strip():
@@ -124,6 +124,24 @@ def dispatch(service, request):
     due = exact_due(service.server.due_port, request["occurrence"])
     if (due["target"].get("launch_request") or {}).get("external_parent") != binding:
         raise PermissionError("external occurrence/result destination is foreign")
+    if operation == "start-prepared":
+        # No new child, profile change, UNKNOWN replay or stopped/paused bypass.
+        # This operation is only the existing start for an unattempted occurrence.
+        if (due["stop_state"] != "active" or due["host_state"] == "paused"
+                or due.get("delivery_state") != "ready"
+                or (due.get("host_evidence") or {}).get("gateway_attempt") is not None
+                or due.get("delivery_evidence") is not None or due.get("completion_evidence") is not None):
+            raise PermissionError("only an exact unattempted prepared external occurrence can start")
+        live = getattr(service.host.caller_binding_reader, "live_occurrence", None)
+        if not callable(live) or any(live(row["schedule_id"]) for row in service.server.due_port.list_due({"project_ref": policy["project_ref"]["id"]})):
+            raise PermissionError("native capacity is occupied or uncertain")
+        app = service._execution(principal=due["recipient"], model=due["requested_model"],
+            reasoning=due["requested_reasoning"], evidence_id=due["schedule_id"],
+            selection=(due["target"].get("launch_request") or {}).get("selection"))
+        validate_host = getattr(app.runtime.adapter, "validate_owner_host_composition", None)
+        if callable(validate_host): validate_host(role="worker", profile=due["profile"])
+        return {**common, **app.start(schedule_id=due["schedule_id"]),
+                "recovery_operation": "start_same_unattempted_occurrence", "original_launch_preserved": True}
     if operation == "artifact":
         return {**common, **read_captured_artifact(due, artifact_ref=request["artifact_ref"], offset=request["offset"], max_bytes=request["max_bytes"])}
     answer = result_view(due)

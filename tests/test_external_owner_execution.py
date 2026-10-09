@@ -67,6 +67,27 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         consumed=self.call('consume',occurrence=occurrence);self.assertTrue(consumed['required_capture'],consumed)
         again=self.call('consume',occurrence=occurrence);self.assertEqual(consumed,again)
         self.assertEqual(consumed['external_parent']['result_destination']['assignment_ref'],self.root.ref.to_dict())
+    def test_selected_host_composition_fails_before_canonical_admission(self):
+        adapter=self.f.f.app.runtime.adapter
+        adapter.native_caller_socket=str(self.f.root/'manager.sock')
+        adapter.native_process_observer=None
+        counts=self.f.f.store.consumer().snapshot_counts();calls=len(self.f.f.provider.calls)
+        with self.assertRaisesRegex(RuntimeError,"process observer"):
+            self.launch()
+        self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
+        self.assertEqual(len(self.f.f.provider.calls),calls)
+    def test_same_prepared_start_keeps_occurrence_and_denies_attempted_replay(self):
+        adapter=self.f.f.app.runtime.adapter;adapter.native_caller_socket=str(self.f.root/'manager.sock')
+        def managed(*a,**k):raise AssertionError('read-only worker entered managed native caller registration')
+        adapter.native_process_observer=managed
+        answer=self.launch();occurrence=answer['occurrence'];before=len(self.f.f.port.list_due({'role':'worker'}))
+        result=self.call('start-prepared',occurrence=occurrence)
+        self.assertEqual(result['outcome'],'succeeded',result)
+        self.assertEqual(result['schedule_id'],occurrence['schedule_id'])
+        self.assertEqual(len(self.f.f.port.list_due({'role':'worker'})),before)
+        calls=len(self.f.f.provider.calls)
+        with self.assertRaises(PermissionError):self.call('start-prepared',occurrence=occurrence,request_key='second-start')
+        self.assertEqual(len(self.f.f.provider.calls),calls)
     def test_unauthorized_file_authoring_grant_claims_and_restarted_grants_fail(self):
         r=self.request('launch',focus='Inspect installed docs')
         with self.assertRaises(PermissionError):self.s(r)
@@ -93,6 +114,8 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         with self.assertRaises(PermissionError):self.launch(request_key='second-root-launch')
     def test_nested_classification_never_grants_new_execution_or_consumption(self):
         self.assertTrue(_starts_work(self.request('launch',focus='read')))
+        self.assertTrue(_starts_work(self.request('start-prepared',occurrence={})))
+        self.assertEqual(_nested_capability(self.request('start-prepared',occurrence={})), 'held')
         self.assertEqual(_nested_capability(self.request('launch',focus='read')),'held')
         self.assertEqual(_nested_capability(self.request('consume',occurrence={})),'held')
         self.assertEqual(_nested_capability(self.request('result',occurrence={})),'admitted')
