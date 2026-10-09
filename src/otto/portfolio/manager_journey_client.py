@@ -332,7 +332,8 @@ def add_manager_journey_parsers(commands: Any) -> None:
     lookup = commands.add_parser("lookup-occurrence", help="pure exact historical scope/key read after a lost launch reply")
     lookup.add_argument("--scope", required=True, type=json.loads)
     lookup.add_argument("--request-key", required=True)
-    lookup.add_argument("--request-input", type=json.loads)
+    lookup.add_argument("--request-input", required=True, type=json.loads,
+                        help="the original exact launch input; changed or omitted input cannot reuse a key")
     for name in ("follow-occurrence", "read-result", "read-artifact", "consume-result"):
         read = commands.add_parser(name, help="bounded retained snapshot; consume-result records authenticated parent receipt")
         read.add_argument("--occurrence", required=True, type=json.loads)

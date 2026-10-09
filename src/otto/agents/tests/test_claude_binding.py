@@ -209,7 +209,7 @@ class OwnerTests(unittest.TestCase):
         Path(self.root,'answer.txt').write_text('changed')
         self.assertEqual(base64.b64decode(read_captured_artifact(due,artifact_ref=ref)['content_base64']),b'Useful artifact\n')
         foreign=copy.deepcopy(ref);foreign['result_ref']['id']='foreign'
-        with self.assertRaises(PermissionError):read_captured_artifact(due,artifact_ref=foreign)
+        self.assertEqual(read_captured_artifact(due,artifact_ref=foreign)['reason'],'artifact_foreign_ref')
         with self.assertRaises(ValueError):read_captured_artifact(due,artifact_ref=ref,max_bytes=4097)
 
     def test_initializer_only_or_missing_artifact_never_publish(self):

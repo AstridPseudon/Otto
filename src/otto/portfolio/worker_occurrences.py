@@ -195,11 +195,13 @@ def dispatch_occurrence(service: Any, request: Mapping[str, Any], context: Any) 
             if not current_parent_slot(service, parent["assignment_ref"], parent["generation"],
                                        parent["occurrence_ref"]["schedule_id"]):
                 raise PermissionError("parent was replaced; consumption requires explicit reconciliation")
+            result_sha256 = digest((due["host_evidence"]["gateway_attempt"])["result"])
+            result_identity = result.get("delivery_identity") or result_sha256
             evidence = {"schema": "otto.parent-consumption.v1", "child": handle(due),
-                        "result_sha256": digest((due["host_evidence"]["gateway_attempt"])["result"]),
+                        "result_sha256": result_sha256, "delivery_identity": result_identity,
                         "caller_assignment_ref": context["assignment_ref"], "caller_generation": context["generation"],
                         "caller_occurrence": context["occurrence_ref"], "native_session": context["native_session"]}
-            key = "parent-consumed:" + digest([parent, evidence["result_sha256"]])
+            key = "parent-consumed:" + digest([parent, result_identity])
             app = child_app(service, due)
             report = app.assignments.append_report(ResourceRef.from_dict(context["assignment_ref"]), evidence,
                 expected_generation=context["generation"], logical_request_key=key, actor=service.server.binding.authenticated_actor(service.server.state["owner"]))
