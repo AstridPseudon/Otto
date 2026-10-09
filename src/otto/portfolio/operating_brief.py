@@ -44,7 +44,7 @@ _ADAPTER_ROLE_BASE_GUIDANCE = (
     "settle and stop fences the occurrence without proving native termination. A result is not task acceptance: "
     "separate useful admission, native terminality, required capture, settlement, parent delivery and assessment. "
     "Usage is observed, invalid or unavailable, never guessed as zero or money. Claude in this scope is mechanical "
-    "only; do not perform or claim paid initialization/inference/resume. External-root launch remains a host gap."
+    "only; do not perform or claim paid initialization/inference/resume. A read-only leaf has authorized delivered context and capture but no managed native caller socket; report unavailable identity reads rather than borrowing credentials. The separate protected external-root client uses launch/lookup/follow/result/artifact/consume; native manager_ctl uses run-worker/lookup-occurrence/follow-occurrence/read-result/read-artifact/consume-result. Read the host-issued root policy and tool entrypoint for actual root execution."
 )
 ROLE_OPERATING_CONTRACTS = {
     "orchestrator": (

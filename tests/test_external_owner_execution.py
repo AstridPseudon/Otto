@@ -65,6 +65,13 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         # Actual provider execution is synthetic in this test; capture goes through maintained owner parsing.
         result=self.f.f.app.start(schedule_id=due['schedule_id']);self.assertEqual(result['outcome'],'succeeded',result)
         consumed=self.call('consume',occurrence=occurrence);self.assertTrue(consumed['required_capture'],consumed)
+        self.assertEqual(consumed['parent_delivery']['state'],'consumed')
+        counts=self.f.f.store.consumer().snapshot_counts()
+        for op in ('result','follow'):
+            v=self.call(op,occurrence=occurrence);self.assertEqual(v['parent_delivery']['state'],'consumed')
+            self.assertEqual(v['consumption_report_ref'],consumed['consumption_report_ref'])
+            self.assertTrue(v['pure'])
+        self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
         again=self.call('consume',occurrence=occurrence);self.assertEqual(consumed,again)
         self.assertEqual(consumed['external_parent']['result_destination']['assignment_ref'],self.root.ref.to_dict())
     def test_selected_host_composition_fails_before_canonical_admission(self):

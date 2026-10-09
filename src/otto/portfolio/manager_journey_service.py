@@ -1215,6 +1215,33 @@ class ManagerJourneyService:
             contract["acceptance_criteria"] = ["Return factual installed command and instruction evidence without verdicts or effects"]
             instruction = focus
             brief["mandate"] = "Inspect the delivered and linked installed instructions; return factual evidence only. Do not write files, dispatch, review, accept or spawn providers."
+        coordinator_policy = None
+        if contract.get("delegation") is not None:
+            coordinator_policy = state.get("coordinator_launch_policy")
+            required = {"task", "principal", "route", "model", "reasoning", "native_adapter", "capacity_units", "max_depth", "cumulative_allowance_units", "allocation_report_ref", "root_assignment_ref", "root_generation", "project_ref", "task_ref", "role_configuration_ref"}
+            if (not isinstance(coordinator_policy, Mapping) or set(coordinator_policy) != required
+                    or coordinator_policy["task"] != task or coordinator_policy["principal"] != principal
+                    or coordinator_policy["root_assignment_ref"] != state["orchestrator_assignment_ref"]
+                    or coordinator_policy["project_ref"] != state["project_ref"] or coordinator_policy["task_ref"] != task_ref
+                    or coordinator_policy["role_configuration_ref"] != state.get("worker_role_configuration_ref")
+                    or coordinator_policy["root_generation"] != 1
+                    or coordinator_policy["route"] != route or coordinator_policy["model"] != model
+                    or coordinator_policy["reasoning"] != reasoning or coordinator_policy["native_adapter"] != app.native_adapter_identity()
+                    or coordinator_policy["capacity_units"] != 1 or coordinator_policy["max_depth"] != 1
+                    or type(coordinator_policy["cumulative_allowance_units"]) is not int):
+                raise PermissionError("coordinating operation needs its exact owner-issued finite policy")
+            allocation = self.server.owner.graph.reader.get_identity(ResourceRef.from_dict(coordinator_policy["allocation_report_ref"]))
+            expected = {k:v for k,v in coordinator_policy.items() if k != "allocation_report_ref"}
+            if (allocation.payload["value"].get("schema") != "otto.owner-coordinator-launch-policy.v1"
+                    or allocation.payload["value"].get("policy") != expected
+                    or allocation.payload["assignment"] != state["orchestrator_assignment_ref"]
+                    or allocation.payload["generation"] != coordinator_policy["root_generation"]
+                    or not any(e.operation == "work.report.append" and e.actor == self.server.owner.owner_actor
+                        for e in self.server.owner.graph.reader.list_events(subjects=(allocation.ref,)))):
+                raise PermissionError("coordinating policy has no authentic current root allocation")
+            from .worker_occurrences import worker_records
+            if len(worker_records(self)) + 3 > coordinator_policy["cumulative_allowance_units"]:
+                raise PermissionError("coordinator, finite child and return lack their configured remaining turns")
         from .resource_sync import resolve_assignment_attachments
         from .role_context import supporting_context
         manager = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(resource_assignment_ref or state["assignment_ref"]))
@@ -1238,6 +1265,10 @@ class ManagerJourneyService:
             for scope in directions if scope["kind"] != "responsibility" for item in scope["inputs"]}
         sources = [source for source in sources if
             tuple(source["ref"][key] for key in ("authority", "kind", "id")) not in parent_inputs - shared_inputs]
+        role_configuration = state.get("worker_role_configuration_ref")
+        if role_configuration is not None:
+            sources += supporting_context({"resource_ref": bases[0]["resource_ref"],
+                "content": {"supporting_refs": [role_configuration]}}, self.server.owner.content.command_port)
         if selection is None:
             selection = {"identity": app.native_adapter_identity(), "adapter": "existing-owner-composition",
                          "model": model, "reasoning": reasoning,
@@ -1276,6 +1307,10 @@ class ManagerJourneyService:
         state.setdefault("workers", {})[task] = {**prepared, "principal": principal,
                                                  "model": model, "reasoning": reasoning,
                                                  "request_key": key, "submission": dict(request)}
+        if coordinator_policy is not None:
+            self.delegation_policy = {"coordinators": [{"assignment_ref": prepared["assignment_ref"], "generation": prepared["generation"], "native_adapter": app.native_adapter_identity()}],
+                "max_depth": 1, "capacity_units": 1, "cumulative_allowance_units": coordinator_policy["cumulative_allowance_units"]}
+            state["delegation_policy"] = self.delegation_policy
         self.server._save_state()
         retained = self.host.submit({"command": "start-retained-worker", "task": task,
             "principal": principal, "schedule_id": prepared["schedule_id"]})

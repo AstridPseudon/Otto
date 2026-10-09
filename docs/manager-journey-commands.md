@@ -321,6 +321,14 @@ occurrence after composition repair; it refuses existing gateway custody, stoppe
 paused or completed records, and never allocates a replacement child.
 Read-only leaf workers retain authorized delivery/capture but receive no managed
 native caller socket; native `whoami` calls are unavailable in this profile.
+Use the runnable host-selected `tool_entrypoint` from the delivered role introduction;
+a selected role configuration pins the interpreter and installed client rather
+than requiring a shell `python` alias or an implicit `PYTHONPATH`.
+Native `manager_ctl.py` names are `run-worker`, `lookup-occurrence`,
+`follow-occurrence`, `read-result`, `read-artifact`, and `consume-result`; the
+protected external-root companion uses `launch`, `lookup`, `follow`, `result`,
+`artifact`, and `consume`. Each names the same canonical operation family under
+its distinct authenticated caller route.
 Read the current root `effective-context`, installed Otto skill and
 host-issued finite execution policy first. A launch takes one stable request key
 and factual focus; the owner selects principal/model/profile/scope/resources.

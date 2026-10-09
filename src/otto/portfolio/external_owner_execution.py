@@ -146,13 +146,28 @@ def dispatch(service, request):
         return {**common, **read_captured_artifact(due, artifact_ref=request["artifact_ref"], offset=request["offset"], max_bytes=request["max_bytes"])}
     answer = result_view(due)
     if operation == "follow": answer["wait"] = {"state": "snapshot-only", "detachable": True}
-    if operation == "consume":
-        if not answer["required_capture"]:
-            return {**common, **answer, "outcome": "held", "reason": "required captured result unavailable"}
+    evidence = None
+    if answer["required_capture"]:
         evidence = {"schema": "otto.external-parent-consumption.v1", "external_parent": binding,
                     "child": handle(due), "delivery_identity": answer["delivery_identity"],
                     "result_sha256": digest(due["host_evidence"]["gateway_attempt"]["result"])}
+        reports = owner.assignments.command_port.list_observations(root.ref, kind="report")
+        consumed = [report for report in reports if report.assignment.to_dict() == root.ref.to_dict()
+            and report.generation == root.generation and report.value == evidence
+            and any(event.operation == "work.report.append" and event.actor == actor
+                for event in owner.graph.reader.list_events(subjects=(report.ref,)))]
+        if len(consumed) > 1: raise PermissionError("conflicting external consumption receipts")
+        if consumed:
+            ref = consumed[0].ref.to_dict()
+            answer.update(consumption_report_ref=ref,
+                parent_delivery={"state": "consumed", "report_ref": ref,
+                    "delivery_identity": answer["delivery_identity"], "next_actor": binding["result_destination"]})
+    if operation == "consume":
+        if not answer["required_capture"]:
+            return {**common, **answer, "outcome": "held", "reason": "required captured result unavailable"}
         report = owner.assignments.command_port.append_report(root.ref, evidence, expected_generation=root.generation,
             logical_request_key="external-parent-consumed:" + digest([binding, evidence["delivery_identity"]]), actor=actor)
-        answer.update(pure=False, effect="record_authenticated_external_parent_consumption", consumption_report_ref=report.ref.to_dict())
+        answer.update(pure=False, effect="record_authenticated_external_parent_consumption", consumption_report_ref=report.ref.to_dict(),
+            parent_delivery={"state": "consumed", "report_ref": report.ref.to_dict(),
+                "delivery_identity": answer["delivery_identity"], "next_actor": binding["result_destination"]})
     return {**common, **answer}
