@@ -15,9 +15,12 @@ class InitializedWorkerContinuityTests(unittest.TestCase):
   wr.update(outcome='unknown',process_id=None,unsupported_reason='recipient_context_unavailable')
   we.update(fnd_receipt=wr,status='unknown',process_id=None,exit_status=None,stdout=None,stderr=None,command=None,host_evidence=None,delivery_state='not_started',unsupported_error='recipient_context_unavailable',reconciliation='trusted recipient authorization is not exact')
   raw['initialization_envelope'].update(observed_model=due.requested_model,observed_reasoning=due.requested_reasoning)
+  raw['initialization_envelope']['stderr']='2026-10-09T17:44:50.863011Z ERROR codex_core::session::session: failed to load skill /fixture/skill/SKILL.md: missing YAML frontmatter delimited by ---\n'
   r['observed_turn_id']=None;r['task_bound_evidence']=None;raw['native_candidate']=None
   self.f.port.save_due(self.schedule,replace(due,host_evidence=host).to_dict(),request_id='fixture-unstarted-resume',expected_version=due.version)
-  records=[json.loads(x)for x in self.base.trace.read_text().splitlines()];self.base.trace.write_text(jsonl(records[:4]));self.before=self.f.port.read_due(self.schedule)
+  records=[json.loads(x)for x in self.base.trace.read_text().splitlines()];records=records[:4]
+  records[2:2]=[{'type':'turn_context','payload':{'turn_id':'ready-turn','model':due.requested_model,'collaboration_mode':{'settings':{'reasoning_effort':due.requested_reasoning}},'sandbox_policy':{'type':due.profile}}},{'type':'event_msg','payload':{'type':'item_completed','turn_id':'ready-turn','thread_id':'capacity-session','item':{'type':'UserMessage','content':[{'type':'text','text':'Initialize this session only. Do not read files, use tools, execute commands, or perform task work. Return READY.','text_elements':[]}]}}}]
+  self.base.trace.write_text(jsonl(records));self.before=self.f.port.read_due(self.schedule)
  def release(self,**changes):
   scope=inspect_initialized_worker(self.f.app,schedule_id=self.schedule)
   request=dict(schedule_id=self.schedule,request_key='release-exact-initializer',fresh_request_key='same-session-delivery',expected_due_sha256=scope['due_sha256'],expected_unknown_result_sha256=scope['unknown_result_sha256']);request.update(changes)
@@ -41,4 +44,17 @@ class InitializedWorkerContinuityTests(unittest.TestCase):
   with self.base.trace.open('a')as trace:trace.write(jsonl([{'type':'event_msg','payload':{'type':'task_started','turn_id':'task-turn'}}]))
   with self.assertRaises(OccurrencePreparationError):self.release()
   self.assertEqual(self.f.port.read_due(self.schedule),self.before);self.assertEqual(self.f.provider.calls,[])
+ def test_fatal_and_ambiguous_initializer_diagnostics_reject(self):
+  for diagnostic in ('FATAL task delivery failed\n',self.before['host_evidence']['gateway_attempt']['result']['raw_result']['initialization_envelope']['stderr']+'unclassified error\n'):
+   due=self.f.app._read(self.schedule);host=deepcopy(due.host_evidence);host['gateway_attempt']['result']['raw_result']['initialization_envelope']['stderr']=diagnostic
+   self.f.port.save_due(self.schedule,replace(due,host_evidence=host).to_dict(),request_id='diagnostic-'+str(due.version),expected_version=due.version)
+   with self.assertRaises(OccurrencePreparationError):self.release()
+ def test_foreign_native_model_or_inert_request_reject(self):
+  records=[json.loads(x)for x in self.base.trace.read_text().splitlines()]
+  for field in ('model','request'):
+   changed=deepcopy(records)
+   if field=='model':changed[2]['payload']['model']='foreign-model'
+   else:changed[3]['payload']['item']['content'][0]['text']='Perform task work'
+   self.base.trace.write_text(jsonl(changed))
+   with self.assertRaises(OccurrencePreparationError):self.release()
 if __name__=='__main__':unittest.main()

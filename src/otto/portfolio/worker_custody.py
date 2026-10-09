@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 import json
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -32,14 +33,25 @@ def _events(envelope):
         raise OccurrencePreparationError("retained native JSONL is malformed") from exc
 
 
-def _terminal(envelope, receipt, *, session, principal, operation, status, code):
+def _initializer_diagnostics(stderr):
+    if stderr == '':
+        return 'empty'
+    if isinstance(stderr,str) and len(stderr.encode()) <= 4096 and re.fullmatch(
+            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z ERROR codex_core::session::session: failed to load skill /[^\n]+/SKILL\.md: missing YAML frontmatter delimited by ---\n',stderr):
+        return 'codex.skill_loader_missing_frontmatter'
+    return None
+
+
+def _terminal(envelope, receipt, *, session, principal, operation, status, code, initializer_diagnostics=False):
     _require(envelope.get("fnd_receipt") == receipt and receipt.get("identity") == {
         "logical_agent_id": principal, "physical_session_id": session}, "native receipt identity differs")
     _require(all(envelope.get(k) == v for k, v in {
         "physical_session_id": session, "logical_agent_id": principal, "owner": principal,
         "transport_operation": operation, "status": status, "exit_status": code,
-        "runner": "codex-cli", "stderr": "", "result_ref": None,
+        "runner": "codex-cli", "result_ref": None,
         "timeout": None, "cancel": None}.items()), "native terminal envelope differs")
+    _require(envelope.get('stderr')=='' or initializer_diagnostics and _initializer_diagnostics(envelope.get('stderr')) is not None,
+        'native diagnostics are fatal, ambiguous or outside exact classified skill-loader scope')
     _require(receipt.get("operation") == operation and receipt.get("outcome") == status
         and receipt.get("process_id") == envelope.get("process_id")
         and isinstance(receipt.get("process_id"), str) and receipt["process_id"].isdigit()
@@ -54,7 +66,7 @@ def _terminal(envelope, receipt, *, session, principal, operation, status, code)
     return start, end
 
 
-def _native_terminal_trace(execution, session, initial_turn, work_turn):
+def _native_terminal_trace(execution, session, initial_turn, work_turn, *, model=None, reasoning=None, profile=None):
     reader = getattr(execution.runtime.adapter, "trusted_thread_reader", None)
     _require(callable(reader), "trusted exact native metadata reader is required")
     thread = (reader(session) or {}).get("thread") or {}
@@ -66,12 +78,14 @@ def _native_terminal_trace(execution, session, initial_turn, work_turn):
         records = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except ValueError as exc:
         raise OccurrencePreparationError("trusted native trace is malformed") from exc
-    active, starts, terminal, metadata = set(), [], [], []
+    active, starts, terminal, metadata, contexts, inert_messages = set(), [], [], [], [], []
     for record in records:
         payload = record.get("payload") or {}
         kind, turn = record.get("type"), payload.get("turn_id")
         if kind == "session_meta":
             metadata.append(payload.get("id") or payload.get("session_id"))
+        if kind == 'turn_context':
+            contexts.append(payload)
         _require(kind in {"session_meta", "event_msg", "response_item", "world_state",
                           "turn_context", "token_usage_record"}, "unrecognized native trace record")
         if kind == "response_item":
@@ -92,6 +106,8 @@ def _native_terminal_trace(execution, session, initial_turn, work_turn):
                 _require(turn in active and payload.get("thread_id") == session,
                          "native item belongs to a foreign turn")
                 item = payload.get("item") or {}
+                if item.get('type')=='UserMessage':
+                    inert_messages.append(item.get('content'))
                 _require(item.get("type") == "UserMessage" or turn == initial_turn
                     and item.get("type") == "AgentMessage" and item.get("content") == [
                         {"type": "Text", "text": "READY"}], "native task turn contains work or tool effects")
@@ -102,6 +118,13 @@ def _native_terminal_trace(execution, session, initial_turn, work_turn):
         and terminal[0].get("error") is None and (work_turn is None or terminal[1].get("last_agent_message") is None
         and terminal[1].get("error") == {"message": CAPACITY, "codex_error_info": "server_overloaded"}),
         "native trace does not prove latest terminal capacity-before-work without overlap")
+    if work_turn is None:
+        _require(len(contexts)==1 and contexts[0].get('turn_id')==initial_turn
+            and contexts[0].get('model')==model
+            and (contexts[0].get('collaboration_mode')or{}).get('settings',{}).get('reasoning_effort')==reasoning
+            and (contexts[0].get('sandbox_policy')or{}).get('type')==profile
+            and inert_messages==[[{'type':'text','text':'Initialize this session only. Do not read files, use tools, execute commands, or perform task work. Return READY.','text_elements':[]}]],
+            'initializer native model/profile or exact inert owner request differs')
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -153,7 +176,7 @@ def inspect_capacity_failed_worker(execution, *, schedule_id: str, _initializer_
     init, work = raw.get("initialization_envelope") or {}, raw.get("work_envelope") or {}
     init_receipt, work_receipt = raw.get("initialization_receipt") or {}, raw.get("work_receipt") or {}
     _, init_end = _terminal(init, init_receipt, session=session, principal=due.recipient,
-                           operation="invoke", status="succeeded", code=0)
+                           operation="invoke", status="succeeded", code=0, initializer_diagnostics=_initializer_only)
     if _initializer_only:
         _require(all(work.get(k) is None and work_receipt.get(k) is None for k in ('process_id','result_ref'))
             and work.get('command') is None and work.get('host_evidence') is None
@@ -213,8 +236,11 @@ def inspect_capacity_failed_worker(execution, *, schedule_id: str, _initializer_
                 and other.get("in_flight_request") and other_attempt.get("state") != "result"),
             "another owner provider occurrence is in flight or admitted without terminal evidence")
     trace_sha = _native_terminal_trace(execution, session, init["host_evidence"]["turn_id"],
-                                       None if _initializer_only else result["observed_turn_id"])
+                                       None if _initializer_only else result["observed_turn_id"],
+                                       model=due.requested_model,reasoning=due.requested_reasoning,profile=due.profile)
     return {"outcome": "qualified", "schedule_id": schedule_id, "due_version": due.version,
+        "initializer_diagnostics_sha256": hashlib.sha256(init.get('stderr','').encode()).hexdigest(),
+        "initializer_diagnostics_classification": _initializer_diagnostics(init.get('stderr')),
         "native_trace_sha256": trace_sha,
         "due_sha256": _digest(due.to_dict()), "unknown_result_sha256": _digest(result),
         "assignment_ref": due.assignment_ref, "generation": due.generation,
@@ -307,7 +333,8 @@ def retained_capacity_release(execution, due, *, _initializer_only=False):
             'retained initializer-only qualification changed')
     raw = before_host["gateway_attempt"]["result"]["raw_result"]
     _require(_native_terminal_trace(execution, scope["native_session_id"],
-        raw["initialization_envelope"]["host_evidence"]["turn_id"], None if _initializer_only else scope["native_turn_id"])
+        raw["initialization_envelope"]["host_evidence"]["turn_id"], None if _initializer_only else scope["native_turn_id"],
+        model=before.requested_model,reasoning=before.requested_reasoning,profile=before.profile)
         == scope["native_trace_sha256"], "native session changed after custody disposition")
     return body
 
