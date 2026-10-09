@@ -302,6 +302,80 @@ class _AssessmentModuleEngine:
 
     create_scope = declare_scope
 
+    def amend_required_scope(self, scope: Any, *, parent_obligation: Any,
+                             criteria: Sequence[Any], owner_authorization: Any,
+                             logical_request_key: str,
+                             actor: Optional[AuthenticatedActor] = None) -> AssessmentScope:
+        """Append a changed owner requirement to the same pending-task gate.
+
+        The canonical orchestrator's exact signed report is the capability.
+        Old scope/input/result/decision records and all allowance debits remain.
+        This uses the existing scope declaration mutation/event, not a new gate.
+        """
+        expected = _ref(scope, "expected scope")
+        parent = self._current_ref(_ref(parent_obligation), "current task")
+        selected = self._actor(actor)
+        key = self._key(logical_request_key, "scope amendment")
+        auth_ref = self._current_ref(_ref(owner_authorization), "owner authorization")
+        auth = self.__writer.get_identity(auth_ref)
+        if auth_ref.kind != "wrk.report" or auth is None:
+            raise AssessmentAuthorityError("scope amendment requires an exact owner report")
+        value = auth.payload.get("value", {})
+        task = self.__writer.get_identity(parent)
+        if parent.kind != "work.task" or task.payload.get("lifecycle") == "completed":
+            raise AssessmentAuthorityError("only an uncompleted canonical task may change requirements")
+        project = self.__writer.get_identity(_ref(task.payload["project_ref"]))
+        root_pin = project.payload.get("metadata", {}).get("otto_orchestrator", {}).get("assignment_ref")
+        root = self.__writer.get_identity(_ref(auth.payload.get("assignment")))
+        receipt = self.__writer.get_receipt(value.get("logical_request_key", ""))
+        events = self.reader.list_events(subjects=(auth_ref,))
+        if (root is None or root_pin != root.ref.to_dict()
+                or auth.payload.get("assignment") != root.ref.to_dict()
+                or root.payload.get("role") != "orchestrator"
+                or root.payload.get("principal") != selected.actor
+                or auth.payload.get("generation") != root.payload.get("generation")
+                or receipt is None or receipt.status.value != "committed"
+                or receipt.result_ref != auth_ref
+                or not any(e.event_id in receipt.event_ids and e.actor == selected for e in events)):
+            raise AssessmentAuthorityError("scope amendment lacks the current authenticated orchestrator")
+        refs = tuple(self._current_ref(_ref(x), "criterion") for x in criteria)
+        if not refs or len(set(refs)) != len(refs) or any(x.kind != CRITERION_KIND for x in refs):
+            raise AssessmentError("exact distinct criterion references required")
+        authorized = {"schema": "otto.owner-scope-amendment.v1",
+                      "scope_ref": expected.to_dict(), "task_ref": parent.to_dict(),
+                      "criterion_refs": [x.to_dict() for x in refs], "request_key": key}
+        if any(value.get(k) != v for k, v in authorized.items()) or not value.get("reason"):
+            raise AssessmentAuthorityError("owner report does not authorize these exact amended pins")
+        current = self.get_scope(_stable_ref(expected))
+        amendment = {"previous_scope_ref": expected.to_dict(), "owner_authorization_ref": auth_ref.to_dict(),
+                     "request_key": key}
+        if current.ref != expected:
+            if (self.__writer.get_receipt(key) is not None and current.parent_obligation_ref == parent
+                    and current.criterion_refs == refs and current.payload.get("owner_amendment") == amendment):
+                return current
+            raise StaleAssessmentError("scope amendment expected revision is stale")
+        if (not expected.revision or not _same_identity(current.parent_obligation_ref, parent)
+                or current.parent_obligation_ref == parent or current.policy.get("required_for_completion") is not True):
+            raise AssessmentError("scope amendment requires the same required task at a new canonical revision")
+        decisions = self.reader.find_identity_refs(kind=DECISION_KIND,
+            payload_matches={("parent_obligation_ref", "id"): parent.id})
+        for ref in decisions:
+            decision = self.get_decision(ref)
+            if decision.result_ref is not None and _same_identity(self.get_result(decision.result_ref).scope_ref, expected):
+                raise AssessmentAuthorityError("an accepted or disposed scope cannot be amended")
+        payload = dict(current.payload, parent_obligation_ref=parent, criterion_refs=refs,
+                       owner_amendment=amendment)
+        result_ref = ResourceRef(expected.authority, expected.kind, expected.id, "rev-" + str(current.version + 1))
+        with self.__writer.transaction() as tx:
+            self.__writer.mutate(self._envelope("assessment.scope.declare", _stable_ref(expected), payload,
+                key, selected, expected_version=current.version, expected_revision=expected.revision),
+                event_type="assessment.scope.declared", result_ref=result_ref,
+                before_refs=(expected, current.parent_obligation_ref, auth_ref),
+                effects={"criterion_refs": refs, "protocol": current.protocol, "logical_parent": True,
+                         "owner_amendment": amendment, "accepts": False}, stream=ASSESSMENT_STREAM, transaction=tx)
+        return self.get_scope(result_ref)
+
+
     def freeze_input(
         self,
         scope: Any,

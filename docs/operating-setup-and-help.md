@@ -80,3 +80,5 @@ receipt inspection and return the observed result to the bound manager.
 The canonical closeout path remains `finish-project`; a successful transport,
 advice response or setup activation is not project acceptance, publication,
 deployment or terminal settlement.
+
+Owner changes to a pending task's acceptance must update the canonical task and its one required assessment scope together. `AssessmentModule.amend_required_scope` appends a revision of that same scope using the current orchestrator's exact signed `otto.owner-scope-amendment.v1` report, new task/criterion pins and stable request key. It preserves all original judgments and charges, rejects completed/accepted/disposed or foreign scopes, and grants no review allowance or PASS. Refresh the current mandate/setup/locator before another native invocation; historical occurrences remain unchanged.
