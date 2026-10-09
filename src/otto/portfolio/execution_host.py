@@ -720,6 +720,18 @@ class ExecutionHost:
             return {**receipt, "replayed": True}
         raw = response.read_bytes()
         held = json.loads(raw)
+        # Current owner replies wrap the same effect result with read-only
+        # correlation/timing metadata. Keep all original bytes in history;
+        # unwrap only the exact current transport identity before qualification.
+        transport_fields = {"correlation_id", "outer_command", "receipt_timing"}
+        if isinstance(held, Mapping) and transport_fields.intersection(held):
+            timing = held.get("receipt_timing")
+            if (not transport_fields.issubset(held) or held.get("correlation_id") != token
+                    or held.get("outer_command") != {"request_id": token, "retained": True, "transport": "file-ipc"}
+                    or not isinstance(timing, Mapping) or timing.get("schema") != "otto.recovery-timing.v1"
+                    or timing.get("correlation_id") != token):
+                raise ValueError("notification transport metadata differs from the exact retained handle")
+            held = {key: value for key, value in held.items() if key not in transport_fields}
         pre_effect = (held == {"outcome": "held", "provider_called": False, "effects_started": False,
                     "retry": False, "reason": "reconcile the retained manager effect before worker-result continuation"}
             or held == {"outcome": "error", "error": "OccurrencePreparationError",

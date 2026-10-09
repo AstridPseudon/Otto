@@ -1211,7 +1211,7 @@ class ManagerJourneyService:
             contract["authority"]["permitted_effects"] = ["read_delivered_context", "read_linked_sources", "return_result"]
             contract["authority"]["forbidden_effects"] += ["file_write", "dispatch", "review", "acceptance"]
             contract["bounded_operation"] = focus
-            contract["objective"] = "Inspect installed Adapter/D05 instructions and report exact commands and concrete discovery mismatches"
+            contract["objective"] = focus
             contract["acceptance_criteria"] = ["Return factual installed command and instruction evidence without verdicts or effects"]
             instruction = focus
             brief["mandate"] = "Inspect the delivered and linked installed instructions; return factual evidence only. Do not write files, dispatch, review, accept or spawn providers."

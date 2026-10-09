@@ -54,6 +54,9 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         m=mandate_reader(self.f.f.app.portfolio.operations,due['target']['project_ref'],due['target']['mandate_ref'])({k:due['target']['mandate_ref'][k]for k in ('authority','kind','id')})
         c=m['payload']['instruction_contract'];normalize_instruction_contract(c)
         self.assertNotIn('delegation',c);self.assertEqual(c['read_scope'],'linked_context');self.assertIn('file_write',c['authority']['forbidden_effects'])
+        self.assertEqual(c['objective'], due['target']['launch_request']['input']['focus'])
+        self.assertEqual(c['objective'], c['bounded_operation'])
+        self.assertNotIn('Adapter/D05', c['objective'])
         for op in ('result','follow'):
             v=self.call(op,occurrence=occurrence);self.assertTrue(v['pure']);self.assertFalse(v['required_capture'])
         counts=self.f.f.store.consumer().snapshot_counts()
