@@ -1009,6 +1009,102 @@ class CanonicalRoleRuntime:
         return {"outcome": "reconciled", "provider_called": False,
                 "admission_reconciliation": proof, "result_reconciliation": reconciled["reconciliation"]}
 
+    def refresh_completed_worker_artifacts(self, *, project_ref: Mapping[str, Any],
+            task_ref: Mapping[str, Any], assignment_ref: Mapping[str, Any],
+            mandate_ref: Mapping[str, Any], schedule_id: str,
+            logical_request_key: str, expected_generation: int) -> Mapping[str, Any]:
+        """Refresh only a verified published worker's derived capture projection.
+
+        Completed workers remain ineligible for provider admission. This owner
+        operation accepts no replacement result, artifact path or native turn.
+        It uses the exact existing publication and a separately verified result.
+        """
+        from dataclasses import replace
+        from otto.attention import DueRecord
+        project = _ref(project_ref, "project_ref")
+        task = _ref(task_ref, "task_ref")
+        assignment = _ref(assignment_ref, "assignment_ref")
+        mandate = _ref(mandate_ref, "mandate_ref")
+        readers = {"project": self._project_reader(project), "task": self._task_reader(project, task),
+            "assignment": self._assignment_reader(assignment), "mandate": self._mandate_reader(project, mandate)}
+        refs = {"project": project, "task": task, "assignment": assignment, "mandate": mandate}
+        snapshots = {name: _json(readers[name]({k: ref[k] for k in ("authority", "kind", "id")})) for name, ref in refs.items()}
+        current = snapshots["assignment"]
+        principal = current.get("principal")
+        if (not isinstance(principal, str) or current.get("role") not in {"worker", "executor"}
+                or current.get("generation") != expected_generation):
+            raise OwnerRoleRuntimeError("artifact refresh requires the current canonical worker")
+        raw = self.due_port.read_due(schedule_id)
+        if raw is None:
+            raise OwnerRoleRuntimeError("artifact refresh occurrence is unavailable")
+        due = DueRecord.from_dict(raw)
+        target = due.target
+        expected = {"project_ref": project, "task_ref": task, "assignment_ref": assignment,
+            "mandate_ref": mandate, "role": "worker", "principal": principal}
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        value = attempt.get("result") or {}
+        summary = (due.host_evidence or {}).get("captured_result_summary") or {}
+        if (any(_json(target.get(k)) != v for k, v in expected.items())
+                or due.assignment_ref != assignment or due.generation != expected_generation
+                or due.recipient != principal or due.role != "worker" or due.project_ref != project["id"]
+                or due.lifecycle_owner != self.actor or due.manager_ref != self.actor
+                or due.stop_state != "completed" or due.completion_state != "succeeded"
+                or due.in_flight_request is not None or attempt.get("state") != "result"
+                or attempt.get("logical_request_key") != logical_request_key
+                or value.get("logical_request_key") != logical_request_key
+                or value.get("outcome") != "succeeded" or value.get("context_digest_verified") is not True
+                or value.get("assignment_ref") != assignment or value.get("generation") != expected_generation
+                or not isinstance(value.get("physical_session_id"), str) or not value["physical_session_id"]
+                or (target.get("native_id") is not None and value["physical_session_id"] != target["native_id"])
+                or value.get("observed_model") != due.requested_model
+                or value.get("observed_reasoning") != due.requested_reasoning
+                or (summary.get("verification") or {}).get("context_digest_verified") is not True):
+            raise OwnerRoleRuntimeError("artifact refresh requires exact settled verified worker capture")
+        if not callable(self.result_capture_factory) or not callable(getattr(self.native_result_verifier, "capture_summary", None)):
+            raise OwnerRoleRuntimeError("owner artifact capture capability is unavailable")
+        result_owner = self.result_capture_factory(project_ref=project, task_ref=task,
+            assignment_ref=assignment, generation=expected_generation, logical_request_key=logical_request_key)
+        if not isinstance(result_owner, HerzchenAttemptCapture) or result_owner.read(logical_request_key) != value:
+            raise OwnerRoleRuntimeError("artifact refresh lacks the exact canonical published result")
+        receipt = _json(result_owner.reader.get_receipt(logical_request_key))
+        if receipt.get("result_ref") != summary.get("result_ref"):
+            raise OwnerRoleRuntimeError("artifact refresh publication reference changed")
+        evidence = value.get("task_bound_evidence") or {}
+        brief = (value.get("resource_evidence") or {}).get("brief") or {}
+        contract = brief.get("instruction_contract") or {}
+        authorization = attempt.get("delivery_authorization") or {}
+        expected_auth = {"status": "authorized", "logical_request_key": logical_request_key,
+            "physical_session_id": value.get("physical_session_id"), "project_ref": project,
+            "task_ref": task, "assignment_ref": assignment, "generation": expected_generation,
+            "role": "worker", "principal": principal, "lifecycle_owner": self.actor}
+        if (any(authorization.get(k) != v for k,v in expected_auth.items())
+                or evidence.get("owner_delivery_authorization") != authorization
+                or evidence.get("assignment_ref") != assignment or evidence.get("generation") != expected_generation):
+            raise OwnerRoleRuntimeError("artifact refresh owner/native authorization changed")
+        context = {"session_id": value["physical_session_id"], "turn_id": value.get("observed_turn_id"),
+            "provenance": "host_owned_turn_context", "context_digest": evidence.get("context_digest"),
+            "model": value["observed_model"], "reasoning": value["observed_reasoning"],
+            "worker_content": value.get("worker_content"), "task_bound_evidence": evidence}
+        if value.get("observed_profile") is not None:
+            context["effective_profile"] = value["observed_profile"]
+        self.native_result_verifier.observe_context(context, expected_session_id=value["physical_session_id"],
+            expected_turn_id=value.get("observed_turn_id"), expected_profile=due.profile,
+            expected_read_targets=contract.get("read_targets"), expected_read_scope=contract.get("read_scope"))
+        projection = self.native_result_verifier.capture_summary(evidence, result_ref=summary["result_ref"])
+        # Recheck all current canonical scope and exact Due bytes before CAS.
+        if (self.due_port.read_due(schedule_id) != raw
+                or any(_json(readers[name]({k:ref[k] for k in ("authority", "kind", "id")})) != snapshots[name] for name,ref in refs.items())):
+            raise OwnerRoleRuntimeError("artifact refresh current custody changed")
+        changed = (due.host_evidence or {}).get("captured_artifacts") != projection["artifacts"]
+        if changed:
+            updated = replace(due, host_evidence={**(due.host_evidence or {}), "captured_artifacts": projection["artifacts"]})
+            self.due_port.save_due(schedule_id, updated.to_dict(),
+                request_id="otto-artifact-projection-refresh:" + logical_request_key,
+                expected_version=due.version)
+        return {"outcome": "refreshed" if changed else "replayed", "result_ref": summary["result_ref"],
+            "artifact_count": len(projection["artifacts"]), "provider_called": False,
+            "new_result_identity": False, "native_result_unchanged": True}
+
     def reconcile_worker_result(
         self, *, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
         assignment_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],

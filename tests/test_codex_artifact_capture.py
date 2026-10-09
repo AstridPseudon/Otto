@@ -60,3 +60,39 @@ class CodexArtifactCaptureTests(unittest.TestCase):
   e=evidence();e['operation_result']['output']['artifacts']=[{'path':'/unowned/secret','content_base64':'ZmFrZQ=='}];redigest(e)
   a=CodexNativeResultVerifier().capture_summary(e,result_ref=REF)['artifacts'];self.assertEqual(len(a),1);self.assertNotIn('path',a[0]);self.assertNotEqual(base64.b64decode(a[0]['content_base64']),b'fake')
   e['operation_result']['output']['commands'][0]['exit_code']=False;redigest(e);self.assertEqual(CodexNativeResultVerifier().capture_summary(e,result_ref=REF)['artifacts'],[])
+
+ def test_completed_projection_refresh_preserves_native_result_and_admission_fence(self):
+  from otto.portfolio.tests import test_worker_occurrences as fixtures
+  fx=fixtures.WorkerOccurrenceTests();fx.setUp();self.addCleanup(fx.doCleanups)
+  response=fx.launch();fx.yield_parent();self.assertEqual(fx.owner('start-retained-child',response['schedule_id'])['outcome'],'succeeded')
+  app=fx.f.app;due=app._read(response['schedule_id']);legacy=due.to_dict();legacy['host_evidence'].pop('captured_artifacts',None)
+  fx.f.port.save_due(due.schedule_id,legacy,request_id='old-installed-projection-fixture',expected_version=due.version)
+  due=app._read(due.schedule_id);before=due.to_dict();kw=app._kwargs(due);key=due.host_evidence['gateway_attempt']['result']['logical_request_key'];calls=len(fx.f.provider.calls)
+  args={k:kw[k]for k in ('project_ref','task_ref','assignment_ref','mandate_ref')};args.update(schedule_id=due.schedule_id,logical_request_key=key,expected_generation=due.generation)
+  out=app.runtime.refresh_completed_worker_artifacts(**args);self.assertEqual(out['outcome'],'refreshed');after=app._read(due.schedule_id).to_dict()
+  self.assertEqual(after['host_evidence']['gateway_attempt'],before['host_evidence']['gateway_attempt']);self.assertEqual(after['host_evidence']['captured_result_summary'],before['host_evidence']['captured_result_summary']);self.assertEqual(after['stop_state'],'completed');self.assertIsNone(after['in_flight_request']);self.assertEqual(len(fx.f.provider.calls),calls)
+  self.assertEqual(app.runtime.refresh_completed_worker_artifacts(**args)['outcome'],'replayed')
+  from otto.portfolio.owner_readers import OwnerRoleRuntimeError
+  with self.assertRaises(OwnerRoleRuntimeError):app.runtime._binding(role='worker',**args)
+  for bad in ({**args,'logical_request_key':'foreign'},{**args,'expected_generation':2},{**args,'assignment_ref':{**args['assignment_ref'],'id':'foreign'}}):
+   with self.assertRaises(Exception):app.runtime.refresh_completed_worker_artifacts(**bad)
+  self.assertEqual(app._read(due.schedule_id).to_dict(),after)
+
+ def test_unknown_stopped_and_missing_canonical_capture_refused_without_effects(self):
+  from otto.portfolio.tests import test_worker_occurrences as fixtures
+  from otto.portfolio.owner_readers import OwnerRoleRuntimeError
+  for fault in ('unknown','stopped','missing_capture','foreign_owner'):
+   with self.subTest(fault=fault):
+    fx=fixtures.WorkerOccurrenceTests();fx.setUp()
+    try:
+     response=fx.launch();fx.yield_parent();fx.owner('start-retained-child',response['schedule_id']);app=fx.f.app;due=app._read(response['schedule_id']);kw=app._kwargs(due);key=due.host_evidence['gateway_attempt']['result']['logical_request_key']
+     raw=due.to_dict()
+     if fault=='unknown':raw['host_evidence']['gateway_attempt']['result']['outcome']='unknown'
+     elif fault=='stopped':raw['stop_state']='stopped'
+     elif fault=='missing_capture':raw['host_evidence'].pop('captured_result_summary')
+     elif fault=='foreign_owner':raw['manager_ref']='foreign'
+     fx.f.port.save_due(due.schedule_id,raw,request_id='negative-'+fault,expected_version=due.version);before=fx.f.port.read_due(due.schedule_id);counts=fx.f.store.consumer().snapshot_counts();calls=len(fx.f.provider.calls)
+     args={k:kw[k]for k in ('project_ref','task_ref','assignment_ref','mandate_ref')};args.update(schedule_id=due.schedule_id,logical_request_key=key,expected_generation=due.generation)
+     with self.assertRaises(OwnerRoleRuntimeError):app.runtime.refresh_completed_worker_artifacts(**args)
+     self.assertEqual(fx.f.port.read_due(due.schedule_id),before);self.assertEqual(fx.f.store.consumer().snapshot_counts(),counts);self.assertEqual(len(fx.f.provider.calls),calls)
+    finally:fx.doCleanups()
