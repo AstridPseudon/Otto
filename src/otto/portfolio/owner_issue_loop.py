@@ -132,7 +132,8 @@ class OwnerIssueReaders:
         try:
             native, _ = verify_role_conversation(due=due, assignment={"ref": _json_value(assignment.ref), "principal": assignment.principal,
                     "generation": assignment.generation, "role": assignment.role, "payload": assignment.payload},
-                project_ref=_json_value(self.project(project).ref), due_port=self.due_port, actor=actor)
+                project_ref=_json_value(self.project(project).ref), due_port=self.due_port, actor=actor,
+                assignment_history_reader=getattr(self.operations, "_owner_reader", None))
         except OperatingSetupError as exc:
             raise IssueLoopError("admitted help conversation is stale or unverified: " + str(exc)) from exc
         return native

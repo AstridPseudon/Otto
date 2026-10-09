@@ -177,6 +177,30 @@ class OperatingSetupTests(unittest.TestCase):
             "resource_name": updated["name"], "content_digest": validate_instruction_content(updated), "required": True}],
             expected_revision=manager.revision, expected_generation=manager.generation,
             logical_request_key="adopt-native-guide", actor=f.actor)
+        # Several ordinary closed resource corrections retain one actual native
+        # anchor; continuity requires every authenticated consecutive adoption.
+        for index in range(2):
+            adopted = f.app.assignments.adopt_resources(adopted.ref, resources=adopted.payload['resource_adoptions'],
+                expected_revision=adopted.revision, expected_generation=adopted.generation,
+                logical_request_key='adopt-native-guide-again-' + str(index), actor=f.actor)
+        from otto.portfolio.operating_setup import authenticated_adoption_ancestor
+        projection={'ref':adopted.ref.to_dict(),'generation':adopted.generation,'principal':adopted.principal,'role':adopted.role,'payload':adopted.payload}
+        reader=f.app.portfolio.operations._owner_reader
+        events=reader.list_events(stream='assignment:'+adopted.id)
+        self.assertTrue(authenticated_adoption_ancestor(projection,manager.ref.to_dict(),reader))
+        adoption_events=[e for e in events if e.event_type=='work.assignment.resources-adopted']
+        middle=adoption_events[-2]
+        from copy import deepcopy
+        for field in ('missing','generation','foreign','actor','jump'):
+            changed=deepcopy(middle.effects);body=changed['result_payload']
+            if field=='generation':body['generation']=2
+            if field=='foreign':body['scope']={**body['scope'],'id':'foreign-project'}
+            if field=='jump':body['resource_adoption_base_ref']=manager.ref.to_dict()
+            revised=replace(middle,effects=changed)
+            if field=='actor':revised=replace(revised,actor=f.binding.authenticated_actor('foreign'))
+            selected=[revised if e==middle else e for e in events if not(field=='missing' and e==middle)]
+            with self.subTest(chain=field):
+                self.assertFalse(authenticated_adoption_ancestor(projection,manager.ref.to_dict(),SimpleNamespace(list_events=lambda **kw:selected)))
         before = f.owner.content.read(ResourceRef.from_dict(mandate))["content"]
         made = f.app.portfolio.create_document(f.project.ref.to_dict(), actor="manager", request_id="updated-native-mandate",
             document_id="updated-native-mandate", role="mandate", content={**before, "assignment_ref": adopted.ref.to_dict()})
@@ -188,6 +212,7 @@ class OperatingSetupTests(unittest.TestCase):
         self.assertEqual(prepared["outcome"], "committed", prepared)
         raw = f.port.read_due(prepared["schedule_id"])
         self.assertEqual(raw["target"]["native_binding"], {"schedule_id": initial.schedule_id, "due_sha256": _digest(anchor)})
+        f.app._verify_native_binding(adopted,'actual-manager-session',prepared['schedule_id'])
         setup = {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": prepared["schedule_id"]},
             "advisor_policy": {"mode": "disabled", "reason": "No advisor selected"}, "acceptance_tasks": []}
         self.assertTrue(evaluate_setup(f.app.runtime, f.project.ref.to_dict(), setup)["ready"])

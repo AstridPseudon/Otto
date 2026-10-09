@@ -102,8 +102,52 @@ def validate_execution_contract(prepared: Mapping[str, Any], profile: str, *, ex
         raise OperatingSetupError(role + " cannot use a workspace-write execution contract")
 
 
+def authenticated_adoption_ancestor(assignment: Mapping[str, Any], prior_ref: Mapping[str, Any], reader: Any) -> bool:
+    """Verify consecutive unchanged-generation resource adoptions in owner history."""
+    current = ResourceRef.from_dict(assignment["ref"])
+    prior = ResourceRef.from_dict(prior_ref)
+    if current == prior:
+        return True
+    if reader is None or (current.authority, current.kind, current.id) != (prior.authority, prior.kind, prior.id):
+        return False
+    events = {}
+    for event in reader.list_events(stream="assignment:" + current.id):
+        if event.event_type == "work.assignment.resources-adopted":
+            if event.subject in events:
+                return False
+            events[event.subject] = event
+    payload = assignment.get("payload", {})
+    cursor = current
+    visited = set()
+    while cursor != prior:
+        event = events.get(cursor)
+        if event is None or cursor in visited:
+            return False
+        visited.add(cursor)
+        body = event.effects.get("result_payload", {})
+        base = body.get("resource_adoption_base_ref")
+        if (event.operation != "work.assignment.adopt-resources"
+                or event.actor.authority != current.authority
+                or event.actor.actor != (payload.get("manager") or assignment["principal"])
+                or body.get("generation") != assignment["generation"]
+                or body.get("principal") != assignment["principal"] or body.get("role") != assignment["role"]
+                or any(body.get(k) != payload.get(k) for k in ("scope", "manager", "session", "parent", "launcher", "reporter", "agent"))
+                or not isinstance(base, Mapping)):
+            return False
+        next_ref = ResourceRef.from_dict(base)
+        try:
+            consecutive = int(cursor.revision.removeprefix("rev-")) == int(next_ref.revision.removeprefix("rev-")) + 1
+        except (AttributeError, ValueError):
+            return False
+        if (not consecutive or (next_ref.authority, next_ref.kind, next_ref.id) != (current.authority, current.kind, current.id)
+                or (cursor == current and payload.get("resource_adoption_base_ref") != base)):
+            return False
+        cursor = next_ref
+    return True
+
+
 def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project_ref: Mapping[str, Any],
-                             due_port: Any, actor: str | None, binding_due: Any = None) -> tuple[str, dict[str, Any]]:
+                             due_port: Any, actor: str | None, binding_due: Any = None, assignment_history_reader: Any = None) -> tuple[str, dict[str, Any]]:
     """Read the same exact current/adopted admission proof used by readiness.
 
     The optional retained pin is one hop, digest checked and owner authenticated;
@@ -153,7 +197,7 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
         prior_ref = conversation_due.assignment_ref
         current_ref = due.assignment_ref
         if (any(prior_ref.get(k) != current_ref.get(k) for k in ("authority", "kind", "id"))
-                or (prior_ref != current_ref and assignment.get("payload", {}).get("resource_adoption_base_ref") != prior_ref)
+                or (prior_ref != current_ref and not authenticated_adoption_ancestor(assignment, prior_ref, assignment_history_reader))
                 or conversation_due.generation != due.generation or conversation_due.recipient != due.recipient
                 or conversation_due.role != role or conversation_due.lifecycle_owner != actor
                 or conversation_due.manager_ref != actor
@@ -230,7 +274,8 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             if due.recipient != principal_id or due.target.get("principal") != principal:
                 raise OperatingSetupError("selected role recipient differs from canonical principal")
             native, conversation_source = verify_role_conversation(due=due, assignment=assignment,
-                project_ref=project_ref, due_port=runtime.due_port, actor=runtime.actor, binding_due=binding_due)
+                project_ref=project_ref, due_port=runtime.due_port, actor=runtime.actor, binding_due=binding_due,
+                assignment_history_reader=getattr(runtime.operations, "_owner_reader", None))
             canonical = prepared["canonical_evidence"]
             introduction = role_introduction(canonical)
             roles[role] = {"schedule_id": schedule, "principal": assignment["principal"],

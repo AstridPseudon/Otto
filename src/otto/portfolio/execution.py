@@ -464,6 +464,7 @@ class ExecutionApplication:
             value = self._read(schedule_id).to_dict()
             pin = value["target"].get("native_binding")
             if (value.get("host_evidence") or {}).get("gateway_attempt") is None and pin is not None:
+                from .operating_setup import authenticated_adoption_ancestor
                 if (not isinstance(pin, Mapping) or set(pin) != {"schedule_id", "due_sha256"}
                         or pin["schedule_id"] == schedule_id):
                     raise OccurrencePreparationError("prepared native binding requires one exact settled anchor")
@@ -476,7 +477,10 @@ class ExecutionApplication:
                         or proof.get("stop_state") != "completed" or proof.get("completion_state") != "succeeded"
                         or proof.get("in_flight_request") is not None
                         or any(prior_ref.get(k) != proof_ref.get(k) for k in ("authority", "kind", "id"))
-                        or (proof_ref != prior_ref and assignment.payload.get("resource_adoption_base_ref") != proof_ref)
+                        or (proof_ref != prior_ref and not authenticated_adoption_ancestor(
+                            {"ref": assignment.ref.to_dict(), "principal": assignment.principal, "role": assignment.role,
+                             "generation": assignment.generation, "payload": assignment.payload}, proof_ref,
+                            getattr(self.portfolio.operations, "_owner_reader", None)))
                         or any(value.get(k) != proof.get(k) for k in ("generation", "role", "recipient", "manager_ref", "lifecycle_owner"))
                         or _identity(value["target"]["project_ref"]) != _identity(proof["target"]["project_ref"])
                         or value["target"].get("native_id") != session or proof["target"].get("native_id") != session):
