@@ -55,14 +55,13 @@ admission.
 
 ## Launch, inspect, stop and recover agents
 
-Use the exact installed prefix emitted by the current role introduction. The
-current candidate inspection used this host-installed command; it is a pinned
-inspection fact, not a repository wrapper or a claim that a package has been
-adopted:
+Use the exact installed prefix emitted by the current role introduction. The installed host pins the interpreter and absolute client path. Copy that exact
+prefix into `PYTHON` and `CONTROL` below; placeholders are not runnable paths.
+Do not substitute another run's client or an implicit Python module invocation.
 
 ```sh
-PYTHON="/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9"
-CONTROL="/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-agent-adapter-conformance-20261009/controller/manager_ctl.py"
+PYTHON="ABSOLUTE_INTERPRETER_FROM_CURRENT_INTRODUCTION"
+CONTROL="ABSOLUTE_CLIENT_FROM_CURRENT_INTRODUCTION"
 
 "$PYTHON" "$CONTROL" --help
 "$PYTHON" "$CONTROL" run-worker --help
@@ -152,13 +151,10 @@ Resolve defaults at admission as explicit authorized override → applicable
 project/role configuration → user default. Show the selected adapter/CLI,
 model, reasoning, profile, source/resource refs and provenance in the retained
 selection. Defaults affect future admissions only; there is no silent provider
-or model fallback. The original D05 inspection below is a historical example,
-not the current caller: it was bound to assignment
-`assignment-4b9823050f1a429d60c0ffbabee7`, generation `1`, principal
-`otto-adapter-d05-worker-1`, model `gpt-5.6-luna`, reasoning `high`, and native
-adapter `otto.adapter.installed-codex-cli.v1`. The observed `whoami` and
-`effective-context` reads were read-only, provider-free and had
-`effects_started=false`.
+or model fallback. Identity examples do not establish the current caller. Read your own delivered
+assignment, generation, principal, selected model, reasoning and adapter. An
+intentional read-only leaf follows its factual task and returns evidence;
+manager delegation and acceptance examples do not grant it those operations.
 
 Use `whoami` and `effective-context` for the actual caller's assignment,
 generation, session and occurrence. These identity reads do not provide model
@@ -167,9 +163,9 @@ the exact retained result's `resource_selection` for those facts. An absent
 `effective_profile` remains unavailable even when the native sandbox policy
 separately verifies the requested permissions.
 
-For the installed Adapter run, this candidate command guide is at
-`/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-project-operating-setup-20261005/work/integration-owner/docs/manager-journey-commands.md`.
-The control run's `docs/` directory is not a materialized copy of this guide.
+Read the point-of-use guide path and canonical resource pin from the current
+role introduction. A controller may materialize it as `selected-role-guide.md`;
+verify the emitted path instead of assuming a copied `docs/` directory.
 
 For recovery, read the exact retained command or occurrence before acting:
 
@@ -246,7 +242,7 @@ handle rather than redispatching it, polling indefinitely, or repeating tests.
 Discover the canonical result of an existing worker before choosing review refs:
 
 ```sh
-"$CLIENT" review-input --task J01
+"$CLIENT" review-input --task TASK
 ```
 
 This read returns the exact `wrk.result` candidate, source/evidence references,
@@ -358,7 +354,7 @@ the original external parent and captured result. Follow and result are pure;
 launch and consumption require a separately protected execution grant.
 Neither public file IPC nor direction/authoring grants authorize these effects.
 
-For this installed host, use the host-issued `adapter_external_execution_ctl.py`
-companion next to the owner-context client. Its `--send` transports the exact
+For this installed host, use the host-issued external execution companion named in the current role introduction
+ next to the owner-context client. Its `--send` transports the exact
 protected envelope once; retain its response path and inspect that same path
 after a timeout. Do not recreate an occurrence or borrow manager/native credentials.
