@@ -440,6 +440,30 @@ def native_caller_permission_overrides(worktree: str, writable_roots: tuple[str,
     return values
 
 
+def workspace_delivery_contract(contract: Mapping[str, Any], profile: str, role: str, roots: tuple[str, ...]) -> bool:
+    """Exact leaf/manager or capacity-one coordinating owner contract shape."""
+    authority = contract.get("authority", {})
+    effect = authority.get("effect_profile")
+    operations = {"read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"}
+    effects = {"read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"}
+    if effect == "workspace-write-manager":
+        operations.add("canonical_manager_commands")
+        effects.add("canonical_manager_commands")
+    if "delegation" in contract:
+        if (role != "worker" or effect != "workspace-write-worker"
+                or contract["delegation"] != {"max_depth": 1, "result_consumption": "yield"}
+                or authority.get("source") != "canonical_owner"):
+            return False
+        operations.add("canonical_child_commands")
+        effects.add("canonical_child_commands")
+    return (profile == "workspace-write" and effect in {"workspace-write-manager", "workspace-write-worker"}
+        and authority.get('owner_write') is False and authority.get('dispatch') is False
+        and authority.get('gateway_claim_required') is True
+        and set(contract.get("allowed_operations", ())) == operations
+        and tuple(authority.get("workspace_roots", ())) == roots
+        and set(authority.get("permitted_effects", ())) == effects)
+
+
 class CodexCliBinding(HostPort):
     """Opt-in receiving binding for the observed local Codex executable.
 
@@ -681,19 +705,8 @@ class CodexCliBinding(HostPort):
                 )
                 linked_read_contract = _linked_context_read_contract(contract, request.requested_profile)
                 selected_roots = tuple(dict.fromkeys((os.path.realpath(self.worktree), *self.writable_roots)))
-                write_operations = {"read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"}
-                write_effects = {"read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"}
-                effect_profile = authority.get("effect_profile")
-                if effect_profile == "workspace-write-manager":
-                    write_operations.add("canonical_manager_commands")
-                    write_effects.add("canonical_manager_commands")
-                workspace_contract = (
-                    request.requested_profile == "workspace-write"
-                    and effect_profile in {"workspace-write-manager", "workspace-write-worker"}
-                    and set(contract.get("allowed_operations", ())) == write_operations
-                    and tuple(authority.get("workspace_roots", ())) == selected_roots
-                    and set(authority.get("permitted_effects", ())) == write_effects
-                )
+                workspace_contract = workspace_delivery_contract(contract, request.requested_profile,
+                    authorization.get("role") if isinstance(authorization, Mapping) else None, selected_roots)
                 if (not isinstance(authorization, Mapping) or authorization.get("status") != "authorized"
                         or authorization.get("physical_session_id") != request.identity.physical_session_id
                         or authorization.get("task_ref") != request.target.to_dict()

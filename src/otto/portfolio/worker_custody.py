@@ -13,6 +13,7 @@ from .execution import _digest
 from .execution_operations import OccurrencePreparationError
 
 SCHEMA = "otto.worker-capacity-custody-disposition.v1"
+INITIALIZER_SCHEMA = "otto.worker-initializer-custody-disposition.v1"
 CAPACITY = "Selected model is at capacity. Please try a different model."
 
 
@@ -96,17 +97,17 @@ def _native_terminal_trace(execution, session, initial_turn, work_turn):
                         {"type": "Text", "text": "READY"}], "native task turn contains work or tool effects")
             else:
                 _require(event in {"token_count", "thread_settings_applied"}, "unrecognized native effect evidence")
-    _require(metadata == [session] and not active and starts == [initial_turn, work_turn]
-        and len(terminal) == 2 and terminal[0].get("last_agent_message") == "READY"
-        and terminal[0].get("error") is None and terminal[1].get("last_agent_message") is None
-        and terminal[1].get("error") == {"message": CAPACITY, "codex_error_info": "server_overloaded"},
+    _require(metadata == [session] and not active and starts == ([initial_turn] if work_turn is None else [initial_turn, work_turn])
+        and len(terminal) == (1 if work_turn is None else 2) and terminal[0].get("last_agent_message") == "READY"
+        and terminal[0].get("error") is None and (work_turn is None or terminal[1].get("last_agent_message") is None
+        and terminal[1].get("error") == {"message": CAPACITY, "codex_error_info": "server_overloaded"}),
         "native trace does not prove latest terminal capacity-before-work without overlap")
     return hashlib.sha256(raw).hexdigest()
 
 
-def inspect_capacity_failed_worker(execution, *, schedule_id: str) -> dict[str, Any]:
+def inspect_capacity_failed_worker(execution, *, schedule_id: str, _initializer_only=False, _due=None) -> dict[str, Any]:
     """Qualify trusted retained owner/native bytes; never infer success or retry."""
-    due = execution._read(schedule_id)
+    due = _due or execution._read(schedule_id)
     _require(execution.actor == due.lifecycle_owner == due.owner == due.manager_ref,
              "only the occurrence lifecycle owner may release custody")
     assignment = execution._current(due.assignment_ref, due.generation)
@@ -153,43 +154,66 @@ def inspect_capacity_failed_worker(execution, *, schedule_id: str) -> dict[str, 
     init_receipt, work_receipt = raw.get("initialization_receipt") or {}, raw.get("work_receipt") or {}
     _, init_end = _terminal(init, init_receipt, session=session, principal=due.recipient,
                            operation="invoke", status="succeeded", code=0)
-    work_start, _ = _terminal(work, work_receipt, session=session, principal=due.recipient,
-                             operation="resume", status="failed", code=1)
-    _require(init_end <= work_start and init["process_id"] != work["process_id"],
-             "native initialization/work process order differs")
-    initial, failed = _events(init), _events(work)
-    _require(len(initial) == 4 and initial[:2] == [
-        {"type": "thread.started", "thread_id": session}, {"type": "turn.started"}]
-        and initial[2].get("type") == "item.completed"
-        and initial[2].get("item") == {"id": "item_0", "type": "agent_message", "text": "READY"}
-        and initial[3].get("type") == "turn.completed"
-        and set(initial[3]) <= {"type", "usage"}, "initialization is not terminal READY-only native evidence")
-    _require(failed == [{"type": "thread.started", "thread_id": session}, {"type": "turn.started"},
-        {"type": "error", "message": CAPACITY}, {"type": "turn.failed", "error": {"message": CAPACITY}}],
-        "exact capacity-before-work native terminal sequence is required")
-    for envelope, created in ((init, True), (work, False)):
-        host = envelope.get("host_evidence") or {}
-        candidate = host.get("native_candidate") or {}
-        _require(host.get("session_id") == session and host.get("process_started") is True
-            and host.get("session_created") is created and host.get("invocation_turn_verified") is True
-            and host.get("provenance") == "host_native_jsonl"
-            and isinstance(host.get("turn_id"), str) and host["turn_id"]
-            and candidate.get("task_bound") is False
-            and candidate.get("status") == "unsupported" and candidate.get("retry_allowed") is False,
-            "trusted native terminal evidence is incomplete")
-    _require(work["host_evidence"]["turn_id"] == result.get("observed_turn_id")
-        and raw.get("native_candidate") == work["host_evidence"]["native_candidate"]
-        and raw["native_candidate"].get("native_records") == []
-        and work_receipt.get("unsupported_reason") == "codex_execution_failed",
-        "failed task turn candidate differs")
+    if _initializer_only:
+        _require(all(work.get(k) is None and work_receipt.get(k) is None for k in ('process_id','result_ref'))
+            and work.get('command') is None and work.get('host_evidence') is None
+            and work.get('delivery_state') == 'not_started' and work.get('unsupported_error') == 'recipient_context_unavailable'
+            and work.get('reconciliation') == 'trusted recipient authorization is not exact'
+            and work_receipt.get('unsupported_reason') == 'recipient_context_unavailable'
+            and work_receipt.get('outcome') == 'unknown' and work_receipt.get('operation') == 'resume'
+            and work.get('fnd_receipt') == work_receipt
+            and work_receipt.get('identity') == {'logical_agent_id':due.recipient,'physical_session_id':session}
+            and result.get('observed_turn_id') is None and result.get('task_bound_evidence') is None,
+            'resume evidence does not prove exact rejection before process creation')
+        initial = _events(init)
+        _require(len(initial)==4 and initial[:2]==[{'type':'thread.started','thread_id':session},{'type':'turn.started'}]
+            and initial[2]=={'type':'item.completed','item':{'id':'item_0','type':'agent_message','text':'READY'}}
+            and initial[3].get('type')=='turn.completed' and set(initial[3]) <= {'type','usage'},
+            'initialization is not terminal READY-only evidence')
+        host=init.get('host_evidence')or{}
+        _require(host.get('session_id')==session and host.get('session_created')is True
+            and host.get('process_started')is True and host.get('invocation_turn_verified')is True
+            and host.get('provenance')=='host_native_jsonl' and isinstance(host.get('turn_id'),str)
+            and init.get('observed_model')==due.requested_model and init.get('observed_reasoning')==due.requested_reasoning,
+            'initializer native identity/model evidence differs')
+    else:
+        work_start, _ = _terminal(work, work_receipt, session=session, principal=due.recipient,
+                                 operation="resume", status="failed", code=1)
+        _require(init_end <= work_start and init["process_id"] != work["process_id"],
+                 "native initialization/work process order differs")
+        initial, failed = _events(init), _events(work)
+        _require(len(initial) == 4 and initial[:2] == [
+            {"type": "thread.started", "thread_id": session}, {"type": "turn.started"}]
+            and initial[2].get("type") == "item.completed"
+            and initial[2].get("item") == {"id": "item_0", "type": "agent_message", "text": "READY"}
+            and initial[3].get("type") == "turn.completed"
+            and set(initial[3]) <= {"type", "usage"}, "initialization is not terminal READY-only native evidence")
+        _require(failed == [{"type": "thread.started", "thread_id": session}, {"type": "turn.started"},
+            {"type": "error", "message": CAPACITY}, {"type": "turn.failed", "error": {"message": CAPACITY}}],
+            "exact capacity-before-work native terminal sequence is required")
+        for envelope, created in ((init, True), (work, False)):
+            host = envelope.get("host_evidence") or {}
+            candidate = host.get("native_candidate") or {}
+            _require(host.get("session_id") == session and host.get("process_started") is True
+                and host.get("session_created") is created and host.get("invocation_turn_verified") is True
+                and host.get("provenance") == "host_native_jsonl"
+                and isinstance(host.get("turn_id"), str) and host["turn_id"]
+                and candidate.get("task_bound") is False
+                and candidate.get("status") == "unsupported" and candidate.get("retry_allowed") is False,
+                "trusted native terminal evidence is incomplete")
+        _require(work["host_evidence"]["turn_id"] == result.get("observed_turn_id")
+            and raw.get("native_candidate") == work["host_evidence"]["native_candidate"]
+            and raw["native_candidate"].get("native_records") == []
+            and work_receipt.get("unsupported_reason") == "codex_execution_failed",
+            "failed task turn candidate differs")
     for other in execution.due_port.list_due():
         other_attempt = (other.get("host_evidence") or {}).get("gateway_attempt") or {}
         _require(other.get("schedule_id") == schedule_id or other.get("project_ref") != due.project_ref
-            or not (other_attempt.get("state") == "claimed" or other.get("stop_state") == "active"
+            or not (other_attempt.get("state") == "claimed" or (not _initializer_only or other_attempt) and other.get("stop_state") == "active"
                 and other.get("in_flight_request") and other_attempt.get("state") != "result"),
             "another owner provider occurrence is in flight or admitted without terminal evidence")
     trace_sha = _native_terminal_trace(execution, session, init["host_evidence"]["turn_id"],
-                                       result["observed_turn_id"])
+                                       None if _initializer_only else result["observed_turn_id"])
     return {"outcome": "qualified", "schedule_id": schedule_id, "due_version": due.version,
         "native_trace_sha256": trace_sha,
         "due_sha256": _digest(due.to_dict()), "unknown_result_sha256": _digest(result),
@@ -197,14 +221,14 @@ def inspect_capacity_failed_worker(execution, *, schedule_id: str) -> dict[str, 
         "project_ref": due.target["project_ref"], "task_ref": due.target["task_ref"],
         "principal": due.recipient, "model": due.requested_model, "reasoning": due.requested_reasoning,
         "native_session_id": session, "native_turn_id": result["observed_turn_id"],
-        "initialization_process_id": init["process_id"], "work_process_id": work["process_id"],
+        "initialization_process_id": init["process_id"], "work_process_id": work.get("process_id"),
         "native_terminal_proved": True, "task_work_started": False,
         "historical_unknown_preserved": True, "provider_retry_allowed": False}
 
 
 def release_capacity_failed_worker(execution, *, schedule_id: str, request_key: str,
                                    fresh_request_key: str, expected_due_sha256: str,
-                                   expected_unknown_result_sha256: str) -> dict[str, Any]:
+                                   expected_unknown_result_sha256: str, _initializer_only=False) -> dict[str, Any]:
     """Stop exact old custody and reserve one distinct normal-route occurrence."""
     for key in (request_key, fresh_request_key):
         _require(isinstance(key, str) and key == key.strip() and 0 < len(key) <= 160,
@@ -212,30 +236,35 @@ def release_capacity_failed_worker(execution, *, schedule_id: str, request_key: 
     due = execution._read(schedule_id)
     marker = (due.host_evidence or {}).get("worker_custody_release")
     if marker:
-        receipt = retained_capacity_release(execution, due)
+        receipt = retained_capacity_release(execution, due, _initializer_only=_initializer_only)
         _require(receipt["request_key"] == request_key
             and receipt["fresh_request_key"] == fresh_request_key
             and receipt["scope"]["due_sha256"] == expected_due_sha256
             and receipt["scope"]["unknown_result_sha256"] == expected_unknown_result_sha256,
             "release request changed after custody settlement")
         return {"outcome": "replayed", **marker, "provider_called": False}
-    scope = inspect_capacity_failed_worker(execution, schedule_id=schedule_id)
+    scope = inspect_capacity_failed_worker(execution, schedule_id=schedule_id, _initializer_only=_initializer_only)
     _require(scope["due_sha256"] == expected_due_sha256
         and scope["unknown_result_sha256"] == expected_unknown_result_sha256,
         "retained worker release pins are stale")
     _require(fresh_request_key != request_key
         and fresh_request_key + ":launch" != due.in_flight_request,
         "fresh admission must use a distinct request key")
-    body = {"schema": SCHEMA, "request_key": request_key, "fresh_request_key": fresh_request_key,
+    schema = INITIALIZER_SCHEMA if _initializer_only else SCHEMA
+    body = {"schema": schema, "request_key": request_key, "fresh_request_key": fresh_request_key,
         "scope": scope, "route": "normal", "fresh_occurrence_limit": 1,
         "historical_unknown_preserved": True, "provider_retry_allowed": False,
         "before": {k: due.to_dict()[k] for k in ("stop_state", "completion_state", "in_flight_request")}}
+    if _initializer_only:
+        body['recovery_mode']='same-assignment-initialized-session'
+        body['initializer_replay_allowed']=False
+        body['initializer_provider_occurred']=True
     report = execution.assignments.append_report(ResourceRef.from_dict(due.assignment_ref), body,
         expected_generation=due.generation, logical_request_key=request_key,
         actor=execution.binding.authenticated_actor(execution.actor))
     _require(_digest(execution._read(schedule_id).to_dict()) == expected_due_sha256,
              "owner occurrence changed before custody stop")
-    marker = {"schema": SCHEMA, "disposition_ref": report.ref.to_dict(),
+    marker = {"schema": schema, "disposition_ref": report.ref.to_dict(),
         "fresh_request_key": fresh_request_key, "historical_unknown_preserved": True,
         "provider_retry_allowed": False}
     stopped = replace(due, stop_state="stopped", completion_state="unknown", in_flight_request=None,
@@ -246,10 +275,11 @@ def release_capacity_failed_worker(execution, *, schedule_id: str, request_key: 
             **marker, "provider_called": False, "task_completion_recorded": False}
 
 
-def retained_capacity_release(execution, due):
+def retained_capacity_release(execution, due, *, _initializer_only=False):
     """Read the canonical disposition and verify that only custody changed."""
     marker = (due.host_evidence or {}).get("worker_custody_release") or {}
-    _require(marker.get("schema") == SCHEMA and due.stop_state == "stopped"
+    schema=INITIALIZER_SCHEMA if _initializer_only else SCHEMA
+    _require(marker.get("schema") == schema and due.stop_state == "stopped"
         and due.completion_state == "unknown" and due.in_flight_request is None
         and execution.actor == due.lifecycle_owner, "worker has no owner-reconciled custody release")
     execution._current(due.assignment_ref, due.generation)
@@ -258,7 +288,7 @@ def retained_capacity_release(execution, due):
     _require(report is not None, "canonical worker custody disposition is missing")
     body = report.value
     scope = body.get("scope") or {}
-    _require(body.get("schema") == SCHEMA and body.get("route") == "normal"
+    _require(body.get("schema") == schema and body.get("route") == "normal"
         and body.get("fresh_occurrence_limit") == 1
         and body.get("fresh_request_key") == marker.get("fresh_request_key"),
         "canonical custody disposition differs")
@@ -267,9 +297,17 @@ def retained_capacity_release(execution, due):
     _require(_digest(before.to_dict()) == scope.get("due_sha256")
         and _digest(before_host["gateway_attempt"]["result"]) == scope.get("unknown_result_sha256"),
         "retired occurrence or historical UNKNOWN changed")
+    if _initializer_only:
+        reader=execution.portfolio.operations._owner_reader
+        _require(body.get('recovery_mode')=='same-assignment-initialized-session'
+            and body.get('initializer_replay_allowed')is False and body.get('initializer_provider_occurred')is True
+            and any(e.operation=='work.report.append' and e.actor==execution.binding.authenticated_actor(execution.actor)
+                for e in reader.list_events(subjects=(report.ref,))), 'initializer recovery lacks authenticated owner disposition')
+        _require(inspect_capacity_failed_worker(execution,schedule_id=due.schedule_id,_initializer_only=True,_due=before)==scope,
+            'retained initializer-only qualification changed')
     raw = before_host["gateway_attempt"]["result"]["raw_result"]
     _require(_native_terminal_trace(execution, scope["native_session_id"],
-        raw["initialization_envelope"]["host_evidence"]["turn_id"], scope["native_turn_id"])
+        raw["initialization_envelope"]["host_evidence"]["turn_id"], None if _initializer_only else scope["native_turn_id"])
         == scope["native_trace_sha256"], "native session changed after custody disposition")
     return body
 
@@ -284,3 +322,21 @@ def permits_fresh_worker(execution, due, *, request, model, reasoning):
         and request.get("route") == body["route"]
         and request.get("principal") == scope["principal"]
         and model == scope["model"] and reasoning == scope["reasoning"])
+
+
+def initialized_worker_continuity(execution, assignment, due, session, request_key):
+    """Owner-only, one reserved delivery in the exact READY-initialized session."""
+    body=retained_capacity_release(execution,due,_initializer_only=True)
+    scope=body['scope']
+    _require(request_key==body['fresh_request_key'] and assignment.ref.to_dict()==scope['assignment_ref']
+        and assignment.generation==scope['generation'] and assignment.principal==scope['principal']
+        and session==scope['native_session_id'],'initialized continuation differs from reserved exact identity/key')
+    return body
+
+
+def inspect_initialized_worker(execution, *, schedule_id):
+    return inspect_capacity_failed_worker(execution,schedule_id=schedule_id,_initializer_only=True)
+
+
+def release_initialized_worker(execution, **request):
+    return release_capacity_failed_worker(execution,**request,_initializer_only=True)

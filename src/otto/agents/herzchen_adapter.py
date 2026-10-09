@@ -861,6 +861,13 @@ class HerzchenCodexAdapter:
         typed, digest, brief = self._typed_request(
             "resume" if existing_session else "invoke", request
         )
+        if typed.requested_profile == "workspace-write":
+            from herzchen.adapters.host import workspace_delivery_contract
+            import os
+            roots = tuple(dict.fromkeys((os.path.realpath(self.worktree), *self.writable_roots)))
+            if not workspace_delivery_contract(brief['instruction_contract'], typed.requested_profile,
+                    request.get('expected_role'), roots):
+                raise HerzchenAdapterError('owner workspace contract is unsupported before initialization')
         if self.native_caller_socket is not None:
             self._role_native_capabilities(role=request.get("expected_role"), profile=typed.requested_profile)
             if typed.requested_profile == "read-only":

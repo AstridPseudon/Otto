@@ -105,7 +105,7 @@ class WorkerCustodyTests(unittest.TestCase):
         self.assertEqual(after['completion_state'], 'unknown')
         self.assertIsNone(after['in_flight_request'])
         self.assertEqual(after['host_evidence']['gateway_attempt'], self.before['host_evidence']['gateway_attempt'])
-        self.assertEqual(f.app.recover(schedule_id=self.schedule)['outcome'], 'unknown')
+        self.assertEqual(f.app.recover(schedule_id=self.schedule)['outcome'], 'stopped')
         self.assertEqual(f.provider.calls, [])
         observations = f.app.assignments.list_observations(ResourceRef.from_dict(after['assignment_ref']), kind='report')
         self.assertEqual(len(observations), 1)
@@ -134,16 +134,18 @@ class WorkerCustodyTests(unittest.TestCase):
         old = {'schedule_id': self.schedule, 'principal': 'worker', 'model': 'gpt-test',
             'reasoning': 'high', 'request_key': 'first-worker', 'assignment_ref': self.before['assignment_ref'],
             'generation': 1, 'submission': {'command': 'run-worker', 'request_key': 'first-worker'}}
+        manager, _guide, _mandate = f.role_handles('manager','manager',None)
         state = {'workers': {'J01': old}, 'task_refs': {'J01': f.task.ref.to_dict()},
-                 'project_ref': f.project.ref.to_dict()}
+                 'project_ref': f.project.ref.to_dict(),'assignment_ref':manager.ref.to_dict()}
         admissions = []
         def submit(request):
             admissions.append(request)
             return {'outcome': 'admitted', 'retained_handle': 'fresh-handle'}
-        server = SimpleNamespace(state=state, due_port=f.port, _execution=lambda **kw: f.app,
+        server = SimpleNamespace(state=state, due_port=f.port, owner=f.owner, portfolio=f.app.portfolio, _execution=lambda **kw: f.app,
                                  _save_state=lambda: None)
         service = object.__new__(ManagerJourneyService)
         service.server = server; service.host = SimpleNamespace(_closing=False, submit=submit)
+        service._execution=server._execution;service.adapter_selection=None
         service.run_path = service.workspace = root
         service.commands = SimpleNamespace(_authorize=lambda: f.actor, _key=lambda request: request['request_key'])
         request = {'command': 'run-worker', 'task': 'J01', 'route': 'normal', 'principal': 'worker',

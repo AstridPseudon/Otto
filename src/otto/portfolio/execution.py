@@ -420,7 +420,7 @@ class ExecutionApplication:
                 return {"outcome": "preview", "schedule_id": schedule, "due": due.to_dict(), "retained": True}
             return self.recover(schedule_id=schedule, execute=False)
         if native_session_id is not None:
-            self._verify_native_binding(assignment, native_session_id, binding_schedule_id)
+            self._verify_native_binding(assignment, native_session_id, binding_schedule_id, request_key=request_key)
         elif role == "manager":
             raise OccurrencePreparationError("manager requires its existing native session")
         at = self._now()
@@ -454,7 +454,7 @@ class ExecutionApplication:
             operation="resume" if native_session_id else "invoke",
             lifecycle="resume" if native_session_id else "launch", request_key=request_key)
 
-    def _verify_native_binding(self, assignment: Any, session: str, schedule_id: str | None) -> None:
+    def _verify_native_binding(self, assignment: Any, session: str, schedule_id: str | None, *, request_key: str | None = None) -> None:
         _text(session, "native_session_id")
         stored = assignment.session
         if stored == session or (isinstance(stored, Mapping) and session in {
@@ -462,6 +462,10 @@ class ExecutionApplication:
             return
         if schedule_id is not None:
             value = self._read(schedule_id).to_dict()
+            from .worker_custody import INITIALIZER_SCHEMA, initialized_worker_continuity
+            if (value.get('host_evidence') or {}).get('worker_custody_release', {}).get('schema') == INITIALIZER_SCHEMA:
+                initialized_worker_continuity(self, assignment, self._read(schedule_id), session, request_key)
+                return
             pin = value["target"].get("native_binding")
             if (value.get("host_evidence") or {}).get("gateway_attempt") is None and pin is not None:
                 from .operating_setup import authenticated_adoption_ancestor
@@ -472,6 +476,17 @@ class ExecutionApplication:
                 # One hop terminates in actual settled admission, never another
                 # unattempted callback. A native ID or a chain alone is no proof.
                 prior_ref, proof_ref = value.get("assignment_ref") or {}, proof.get("assignment_ref") or {}
+                if (proof.get('host_evidence') or {}).get('worker_custody_release', {}).get('schema') == INITIALIZER_SCHEMA:
+                    if (pin['due_sha256'] != _digest(proof) or prior_ref != proof_ref
+                            or any(value.get(k) != proof.get(k) for k in ('generation','role','recipient','manager_ref','lifecycle_owner'))
+                            or value['target']['project_ref'] != proof['target']['project_ref']
+                            or value['target']['task_ref'] != proof['target']['task_ref']
+                            or value['target'].get('native_id') != session
+                            or any(value.get(k) != proof.get(k) for k in ('requested_model','requested_reasoning','profile'))):
+                        raise OccurrencePreparationError('initialized recovery binding differs from its exact owner anchor')
+                    initialized_worker_continuity(self, assignment, self._read(pin['schedule_id']), session,
+                        request_key or value.get('in_flight_request'))
+                    return
                 if (pin["due_sha256"] != _digest(proof)
                         or not (proof.get("host_evidence") or {}).get("gateway_attempt")
                         or proof.get("stop_state") != "completed" or proof.get("completion_state") != "succeeded"
