@@ -752,6 +752,92 @@ class PortfolioOwnerBootstrap:
             operations, due_port, delivery=issue_delivery,
         ), due_port=due_port)
 
+    def synchronize_portfolio_direction(
+        self, *, assignment_ref: Any, generation: int, direction_ref: Any,
+        expected_binding_ref: Any, resources: Any, expected_default_ref: Any,
+        projects: Any, logical_request_key: str, expected_guard_ref: Any = None,
+    ) -> Mapping[str, Any]:
+        """Adopt one root direction/BASE and all current joins atomically.
+
+        Only the trusted owner exposes this finite boundary. DAT scope adoption
+        and WRK's existing resource/default/supervision receipts share the owner
+        transaction. A lost response recovers those exact immutable receipts;
+        a failed fence rolls back the whole application.
+        """
+        from herzchen.contracts import ResourceRef
+        from herzchen.content.instructions import validate_instruction_content
+        from .owner_readers import json_value
+        if self.orchestration_port is None:
+            raise PermissionError("bound portfolio orchestration port required")
+        ref = ResourceRef.from_dict(assignment_ref) if isinstance(assignment_ref, Mapping) else assignment_ref
+        pin = ResourceRef.from_dict(direction_ref) if isinstance(direction_ref, Mapping) else direction_ref
+        root = self.assignments.get(ref)
+        if (root.principal != self.owner_actor.actor or root.role != "orchestrator"
+                or root.scope.kind != "wrk.portfolio" or root.scope != (ResourceRef.from_dict(self.orchestration_portfolio) if isinstance(self.orchestration_portfolio, Mapping) else self.orchestration_portfolio)
+                or root.ref.id != ref.id or root.generation != generation):
+            raise PermissionError("exact owned portfolio root required")
+        subject = ResourceRef.from_dict(root.payload["responsibility_ref"])
+        directions = self.direction_bindings()
+        receipt = self.store.consumer().get_receipt(logical_request_key + ":resources")
+        if receipt is None:
+            if root.ref != ref:
+                raise PermissionError("root revision changed")
+            old = list(root.payload.get("resource_adoptions", ()))
+            if not isinstance(resources, (list, tuple)) or len(resources) != len(old):
+                raise ValueError("complete existing root resource set required")
+            names = {item["resource_name"]: item for item in old}
+            if set(names) != {item.get("resource_name") for item in resources}:
+                raise ValueError("resource names cannot change")
+            changed = []
+            for item in resources:
+                prior = names[item["resource_name"]]
+                if item == prior:
+                    continue
+                before = self.content.read(ResourceRef.from_dict(prior["resource_ref"]))["content"]
+                after = self.content.read(ResourceRef.from_dict(item["resource_ref"]))["content"]
+                old_ref = ResourceRef.from_dict(prior["resource_ref"])
+                new_ref = ResourceRef.from_dict(item["resource_ref"])
+                if (old_ref.id != new_ref.id or old_ref.authority != new_ref.authority
+                        or old_ref.kind != new_ref.kind or not prior["required"] or not item["required"]
+                        or before.get("schema") != "herzchen.instructions.v1"
+                        or item["content_digest"] != validate_instruction_content(after)):
+                    raise ValueError("only the existing required BASE revision may change")
+                expected = dict(before)
+                support = []
+                count = 0
+                for value in before.get("supporting_refs", ()):
+                    candidate = ResourceRef.from_dict(value)
+                    if (candidate.authority, candidate.kind, candidate.id) == (pin.authority, pin.kind, pin.id):
+                        support.append(pin.to_dict());count += 1
+                    else:support.append(value)
+                expected["supporting_refs"] = support
+                if count != 1 or after != expected:
+                    raise ValueError("BASE must preserve shared guidance and all unrelated supporting pins")
+                changed.append(item)
+            if len(changed) != 1:
+                raise ValueError("exactly one existing BASE direction pin must change")
+        with self.store.transaction():
+            scope = directions.update(subject, pin, actor=self.owner_actor,
+                expected_binding_ref=expected_binding_ref, logical_request_key=logical_request_key + ":scope")
+            work = self.orchestration_port.adopt_resources_with_supervision(
+                actor=self.owner_actor, request_id=logical_request_key + ":resources",
+                assignment_ref=ref, expected_generation=generation, resources=resources,
+                expected_default_ref=expected_default_ref, projects=projects,
+                expected_guard_ref=expected_guard_ref)
+            actual = self.assignments.get(work["assignment_ref"])
+            if actual.ref.to_dict() != work["assignment_ref"]:
+                raise PermissionError("retained synchronization is superseded; inspect current root")
+            effective = directions.resolve(subject, actor=self.owner_actor,
+                assignment_ref=actual.ref, expected_generation=generation)
+            if effective["effective_ref"] != pin.to_dict() or effective["assignment_adopted_ref"] != pin.to_dict():
+                raise PermissionError("full assignment-effective direction verification failed")
+        return {"outcome": "synchronized", "replayed": work["replayed"],
+                "scope_adopted": True, "assignment_resources_refreshed": True,
+                "provider_called": False, "native_delivery_claimed": False,
+                "assignment_ref": work["assignment_ref"], "generation": generation,
+                "direction_ref": pin.to_dict(), "effective_context": json_value(effective),
+                "stages": {"scope": json_value(scope), "resources_and_joins": json_value(work)}}
+
     def manager_application(self, *, due_port: Any = None, issue_delivery: Any = None) -> Any:
         """Compose the ordinary finite manager entry over this trusted owner."""
         from .manager_application import ManagerApplication

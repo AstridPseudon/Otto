@@ -568,6 +568,121 @@ class _OrchestrationEngine:
             receipt = self._writer.mutate(envelope, identity_payload=updated, event_type=TRANSFER_EVENT, result_ref=ResourceRef(self.authority, "work.project", project.id, "rev-" + str(record.version + 1)), before_refs=(record.ref, current.ref), after_refs=(target.ref,), effects={"from_assignment": current.ref.to_dict(), "to_assignment": target.ref.to_dict()}, stream="work:" + project.id, transaction=tx)
             return {"outcome": "transferred", "project_ref": ResourceRef(self.authority, "work.project", project.id, "rev-" + str(record.version + 1)).to_dict(), "project": updated, "supervision": relation, "receipt": receipt.to_dict(), "replayed": False, "event_ids": list(receipt.event_ids)}
 
+    def adopt_resources_with_supervision(
+        self, *, actor: Any, request_id: str, assignment_ref: Any,
+        expected_generation: int, resources: Sequence[Mapping[str, Any]],
+        expected_default_ref: Any, projects: Sequence[Mapping[str, Any]],
+        expected_guard_ref: Any = None,
+    ) -> Mapping[str, Any]:
+        """Atomically refresh one unchanged root and all its exact existing joins.
+
+        This composes the existing assignment-adoption, default and supervision
+        transfer operations. It cannot attach, reassign or omit projects, and
+        uses the original owner transaction/receipts rather than a new ledger.
+        """
+        selected = self._actor(actor, privileged=True)
+        key = _opaque(request_id, "request_id")
+        target = _ref(assignment_ref, authority=self.authority, kind="wrk.assignment", field="assignment_ref")
+        if target.revision is None or not isinstance(expected_generation, int) or isinstance(expected_generation, bool):
+            raise WorkValidationError("exact assignment revision/generation required")
+        if self.main_assignment_ref is None or not _same_identity(target, self.main_assignment_ref):
+            raise WorkValidationError("only the bound main root may refresh resources")
+        default = _ref(expected_default_ref, authority=self.authority, kind=DEFAULT_KIND, field="expected_default_ref")
+        if default.revision is None or not _same_identity(default, self._default_ref()):
+            raise WorkValidationError("exact current default pointer required")
+        if not isinstance(projects, (list, tuple)) or not projects:
+            raise WorkValidationError("complete nonempty supervised project selection required")
+        normalized = []
+        seen = set()
+        for item in projects:
+            if not isinstance(item, Mapping) or set(item) != {"project_ref", "project_version", "supervision"}:
+                raise WorkValidationError("project refresh requires exact ref/version/relation")
+            ref = _ref(item["project_ref"], authority=self.authority, kind="work.project", field="project_ref")
+            if ref.revision is None or ref.id in seen:
+                raise WorkValidationError("duplicate or unpinned project")
+            seen.add(ref.id)
+            normalized.append({"project_ref": ref.to_dict(), "project_version": item["project_version"],
+                               "supervision": _safe(item["supervision"])})
+        payload = {"portfolio_ref": self.portfolio_ref.to_dict(), "assignment_ref": target.to_dict(),
+                   "expected_generation": expected_generation, "resources": _safe(resources),
+                   "expected_default_ref": default.to_dict(), "projects": normalized,
+                   "expected_guard_ref": _safe(expected_guard_ref)}
+        first = ResourceRef.from_dict(normalized[0]["project_ref"])
+        envelope = self._envelope("work.project.supervision.transfer", first, payload, key, selected,
+                                  expected_revision=first.revision, expected_version=normalized[0]["project_version"])
+        with self._writer.transaction() as tx:
+            prior = self._lookup_replay(envelope)
+            if prior is not None:
+                event = next(item for item in self._writer.list_events(stream="work:" + first.id)
+                             if item.event_id in prior.event_ids)
+                result = event.effects["root_resource_refresh"]
+                return {**result, "outcome": "replayed", "replayed": True, "receipt": prior.to_dict()}
+            root = self._assignment(target, expected_revision=target.revision,
+                                    expected_generation=expected_generation, field="assignment_ref")
+            if root.principal != selected.actor:
+                raise WorkValidationError("resource adoption requires the unchanged root owner")
+            pointer = self._writer.get_identity(default)
+            if (pointer is None or pointer.ref != default
+                    or pointer.payload.get("assignment_revision") != root.revision
+                    or pointer.payload.get("generation") != root.generation
+                    or not _same_identity(ResourceRef.from_dict(pointer.payload["assignment_ref"]), root.ref)):
+                raise WorkValidationError("default root relation is stale")
+            joined = self.reader.find_identity_refs(kind="work.project", payload_matches={
+                ("metadata", SUPERVISION_KEY, "assignment_ref", "id"): root.id})
+            if {ref.id for ref in joined} != seen:
+                raise WorkValidationError("selection must include every existing root join")
+            records = []
+            for item in normalized:
+                record = self.batches.graph.get(ResourceRef.from_dict(item["project_ref"]))
+                relation = record.payload.get("metadata", {}).get(SUPERVISION_KEY)
+                if (record.ref.to_dict() != item["project_ref"] or record.version != item["project_version"]
+                        or relation != item["supervision"] or not isinstance(relation, Mapping)
+                        or relation.get("assignment_ref") != root.ref.to_dict()
+                        or relation.get("assignment_revision") != root.revision
+                        or relation.get("generation") != root.generation
+                        or not _same_identity(ResourceRef.from_dict(relation["portfolio_ref"]), self.portfolio_ref)
+                        or not _same_identity(ResourceRef.from_dict(relation["project_ref"]), record.ref)):
+                    raise WorkValidationError("supervised project fence is stale or foreign")
+                records.append(record)
+            refreshed = self.assignments.adopt_resources(
+                target, resources=resources, expected_revision=root.revision,
+                expected_generation=root.generation, expected_guard_ref=expected_guard_ref,
+                logical_request_key=key + ":assignment", actor=selected)
+            changed_default = self.set_default(actor=selected, request_id=key + ":default",
+                portfolio_ref=self.portfolio_ref, target_assignment_ref=refreshed.ref,
+                target_assignment_revision=refreshed.revision, target_assignment_generation=refreshed.generation,
+                expected_default_revision=default.revision)
+            default_after = ResourceRef.from_dict(changed_default["default_ref"])
+            attachments = []
+            for record in records:
+                after = ResourceRef(self.authority, "work.project", record.id, "rev-" + str(record.version + 1))
+                relation = self._relation(default_ref=default_after, assignment=refreshed,
+                    project_ref=after, request_key=record.payload["metadata"][SUPERVISION_KEY]["request_id"],
+                    default_revision=default_after.revision)
+                attachments.append({"project_ref": after.to_dict(), "supervision": relation})
+            result = {"outcome": "resources-adopted", "replayed": False,
+                      "assignment_ref": refreshed.ref.to_dict(), "generation": refreshed.generation,
+                      "default_ref": default_after.to_dict(), "attachments": attachments,
+                      "assignment_receipt": self._writer.get_receipt(key + ":assignment").to_dict(),
+                      "default_receipt": changed_default["receipt"], "provider_called": False, "executable": False}
+            receipts = []
+            for index, (record, attachment) in enumerate(zip(records, attachments)):
+                updated = dict(record.payload)
+                updated["metadata"] = dict(record.payload["metadata"], **{SUPERVISION_KEY: attachment["supervision"]})
+                child = envelope if index == 0 else self._envelope(
+                    "work.project.supervision.transfer", record.ref,
+                    {"project_ref": record.ref.to_dict(), "supervision": attachment["supervision"]},
+                    key + ":project:" + record.id, selected,
+                    expected_revision=record.revision, expected_version=record.version)
+                receipt = self._writer.mutate(child, identity_payload=updated, event_type=TRANSFER_EVENT,
+                    result_ref=ResourceRef.from_dict(attachment["project_ref"]), before_refs=(record.ref, root.ref),
+                    after_refs=(refreshed.ref,), effects={"from_assignment": root.ref.to_dict(),
+                        "to_assignment": refreshed.ref.to_dict(), "supervision": attachment["supervision"],
+                        **({"root_resource_refresh": result} if index == 0 else {})},
+                    stream="work:" + record.id, transaction=tx)
+                receipts.append(receipt.to_dict())
+            return {**result, "receipt": receipts[0], "project_receipts": receipts}
+
     def attach_existing_projects(
         self,
         *,
