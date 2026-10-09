@@ -60,6 +60,23 @@ class RootDirectionSynchronizationTests(unittest.TestCase):
    with self.assertRaisesRegex(RuntimeError,'simulated'):self.call()
   self.assert_unchanged(counts)
   self.assertEqual(self.call()['outcome'],'synchronized')
+ def test_protected_external_owner_route_returns_full_context_and_replays(self):
+  import json
+  from pathlib import Path
+  from types import SimpleNamespace
+  from otto.portfolio.owner_authoring_ingress import OwnerAuthoringIngress
+  from otto.portfolio.manager_journey_service import ManagerJourneyService
+  ingress=OwnerAuthoringIngress(actor=self.owner.owner_actor,owner_actor=self.owner.owner_actor,directory=self.f.path.parent/'root-ipc')
+  state={'orchestrator_assignment_ref':self.root.ref.to_dict()}
+  server=SimpleNamespace(owner=self.owner,state=state,_execution=None,portfolio=None,due_port=None,_save_state=lambda:None)
+  service=ManagerJourneyService(server=server,host=None,run_path=self.f.path.parent,workspace=self.f.path.parent,authoring_authorizer=ingress.authorize)
+  handle={k:self.request[k]for k in ('assignment_ref','generation','resources','expected_default_ref','projects')}
+  request={'command':'owner-context','operation':'direction-synchronize','request_key':'protected-mission','document_ref':self.pin,'expected_binding_ref':self.request['expected_binding_ref'],'handle':handle}
+  with self.assertRaises(PermissionError):service(request)
+  grant=ingress.publish({'schema':ingress.schema,'request':request});actual=service(json.loads(Path(grant['request_path']).read_text()))
+  self.assertTrue(actual['assignment_resources_refreshed']);self.assertEqual(state['orchestrator_assignment_ref'],actual['assignment_ref']);self.assertFalse(actual['native_process_identity_claimed']);self.assertTrue(actual['runtime_requalification_required'])
+  counts=self.f.store.consumer().snapshot_counts();replayed=service(request);self.assertTrue(replayed['replayed']);self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
+  read={'command':'owner-context','operation':'effective-context','request_key':'after-sync'};ingress.publish({'schema':ingress.schema,'request':read});view=service(read);self.assertEqual(view['assignment_direction']['effective_ref'],self.pin)
  def test_cannot_change_shared_role_guidance_or_foreign_root(self):
   changed=deepcopy(self.resources);changed[0]['resource_name']='not-the-base'
   counts=self.f.store.consumer().snapshot_counts()

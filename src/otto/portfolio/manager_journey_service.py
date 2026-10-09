@@ -603,6 +603,8 @@ class ManagerJourneyService:
             fields |= {"content", "expected_revision"}
         elif operation == "direction-adopt":
             fields |= {"document_ref", "expected_binding_ref"}
+        elif operation == "direction-synchronize":
+            fields |= {"document_ref", "expected_binding_ref", "handle"}
         elif operation not in {"whoami", "effective-context", "direction-read", "direction-history"}:
             raise ValueError("unsupported external owner context operation")
         if set(request) != fields:
@@ -636,6 +638,29 @@ class ManagerJourneyService:
                     "draft": surface.draft(subject, request["content"], logical_request_key=key,
                                            expected_revision=request["expected_revision"]),
                     "assignment_resources_refreshed": False}
+        if operation == "direction-synchronize":
+            handle = request["handle"]
+            if (not isinstance(handle, Mapping) or set(handle) != {
+                    "assignment_ref", "generation", "resources", "expected_default_ref", "projects"}
+                    or any(handle["assignment_ref"].get(k) != root.ref.to_dict().get(k)
+                           for k in ("authority", "kind", "id"))
+                    or handle["generation"] != root.generation):
+                raise PermissionError("synchronization handle is not the bound root")
+            from .owner_bootstrap import PortfolioOwnerBootstrap
+            scoped = PortfolioOwnerBootstrap(owner.store, binding=owner.binding,
+                owner_actor=actor.actor, portfolio_ref=root.scope,
+                main_assignment_ref=root.ref, expected_main_principal=actor.actor)
+            result = scoped.synchronize_portfolio_direction(
+                **handle, direction_ref=request["document_ref"],
+                expected_binding_ref=request["expected_binding_ref"], logical_request_key=key)
+            self.server.state["orchestrator_assignment_ref"] = result["assignment_ref"]
+            if "project_ref" in self.server.state:
+                self._refresh_refs()
+            else:self.server._save_state()
+            return {**common, **result, "read_only": False,
+                    "assignment_ref": result["assignment_ref"],
+                    "runtime_requalification_required": True,
+                    "next_action": "Retain these canonical receipts. Qualify current setup/manager locators at the normal closed adoption boundary before future provider work; historical Due stays immutable."}
         if operation == "direction-adopt":
             # Scope adoption is explicit. Refreshing BASE would advance the
             # root assignment and stale enrolled project joins. That separate
