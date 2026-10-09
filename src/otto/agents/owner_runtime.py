@@ -433,7 +433,9 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             summary["usage"] = projection["usage"]
             captured_artifacts = projection["artifacts"]
         record = self._record()
-        if (record.host_evidence or {}).get("captured_result_summary") != summary:
+        if ((record.host_evidence or {}).get("captured_result_summary") != summary
+                or (captured_artifacts is not None
+                    and (record.host_evidence or {}).get("captured_artifacts") != captured_artifacts)):
             from dataclasses import replace
             self.due_port.save_due(record.schedule_id, replace(record, host_evidence={
                 **(record.host_evidence or {}), "captured_result_summary": summary,

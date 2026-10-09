@@ -33,7 +33,7 @@ _ADAPTER_ROLE_BASE_GUIDANCE = (
     "then retains distinct outer command, start/transport and durable occurrence handles. Use pure "
     "`lookup-occurrence --scope SCOPE --request-key KEY --request-input ORIGINAL_INPUT`, "
     "`follow-occurrence --occurrence OCCURRENCE --timeout-seconds 2`, `read-result --occurrence OCCURRENCE`, "
-    "and bounded `read-artifact --occurrence OCCURRENCE --artifact-ref REF --offset 0 --max-bytes 65536`; "
+    "and bounded `read-artifact --occurrence OCCURRENCE --artifact-ref REF --offset 0 --max-bytes 4096`; "
     "`consume-result --occurrence OCCURRENCE` is the authenticated parent receipt. After a lost reply, "
     "use exact `command-status --request-id HANDLE`, never a new key. Read original pins and reject changed "
     "input, foreign parent, ambiguity or missing scope. If the active parent turn blocks delivery, return/yield "

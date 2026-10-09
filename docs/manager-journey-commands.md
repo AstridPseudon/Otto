@@ -99,9 +99,15 @@ The ordinary bounded journey is:
 "$PYTHON" "$CONTROL" read-result --occurrence OCCURRENCE_JSON
 "$PYTHON" "$CONTROL" read-artifact \
   --occurrence OCCURRENCE_JSON \
-  --artifact-ref ARTIFACT_REF_JSON --offset 0 --max-bytes 65536
+  --artifact-ref ARTIFACT_REF_JSON --offset 0 --max-bytes 4096
 "$PYTHON" "$CONTROL" consume-result --occurrence OCCURRENCE_JSON
 ```
+
+Codex artifacts are bounded stdout bytes from verified native command records,
+not claims of written files. Select an exact returned `artifacts[].ref` from
+`read-result`; each read returns at most 4096 bytes. The result reference and
+hash bind those bytes to that occurrence. No caller-supplied path is read.
+An empty artifact inventory is unavailable evidence, never a successful read.
 
 The durable occurrence handle contains the schedule, assignment, generation,
 project, task and parent binding. It is distinct from the outer command
