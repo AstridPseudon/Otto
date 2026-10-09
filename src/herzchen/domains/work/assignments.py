@@ -192,6 +192,7 @@ class _ResponsibilityAssignmentsEngine:
         agent: Any = None,
         session: Any = None,
         manager: Any = None,
+        parent: Optional[Mapping[str, Any]] = None,
     ) -> tuple[ResponsibilityAssignment, Any]:
         """Create one assignment in a caller-owned transaction.
 
@@ -228,6 +229,14 @@ class _ResponsibilityAssignmentsEngine:
             "history": [{"generation": 1, "principal": _json_safe(principal), "agent": _json_safe(agent), "session": _json_safe(session), "reason": "initial"}],
             "responsibility_ref": _json_safe(responsibility_ref),
         }
+        if parent is not None:
+            if (not isinstance(parent, Mapping) or set(parent) != {"assignment_ref", "generation", "occurrence_ref", "result_destination"}
+                    or type(parent["generation"]) is not int or parent["generation"] < 1
+                    or self._as_ref(parent["assignment_ref"]).authority != self.__writer.authority
+                    or self._as_ref(parent["assignment_ref"]).kind != ASSIGNMENT_KIND
+                    or not self._as_ref(parent["assignment_ref"]).revision):
+                raise WorkValidationError("immutable parent assignment binding is invalid")
+            payload["parent"] = _json_safe(parent)
         envelope = self._envelope("work.assignment.create", ref, payload, request_key, actor, expected_version=0)
         prior = self.__writer.get_receipt(request_key)
         receipt = self.__writer.mutate(
@@ -259,6 +268,7 @@ class _ResponsibilityAssignmentsEngine:
         agent: Any = None,
         session: Any = None,
         manager: Any = None,
+        parent: Optional[Mapping[str, Any]] = None,
         pins: Sequence[Any] = (),
         logical_request_key: Optional[str] = None,
         actor: Optional[AuthenticatedActor] = None,
@@ -278,6 +288,7 @@ class _ResponsibilityAssignmentsEngine:
                 agent=agent,
                 session=session,
                 manager=manager,
+                parent=parent,
             )
         return assignment
 

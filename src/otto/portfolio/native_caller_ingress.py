@@ -9,6 +9,7 @@ launch; retained canonical session evidence alone cannot authenticate a peer.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 from dataclasses import dataclass
 import json
 import os
@@ -77,6 +78,9 @@ def socket_peer_pid(connection: socket.socket) -> int:
         audit = ctypes.CDLL("/usr/lib/libbsm.dylib")
         audit.audit_token_to_pid.argtypes = [AuditToken]
         return audit.audit_token_to_pid(token)
+    if sys.platform.startswith("linux"):
+        import struct
+        return struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
     raise PermissionError("kernel socket peer identity is unsupported on this host")
 
 
@@ -117,6 +121,12 @@ class NativeProcessCallerIngress:
                 if current is not None and current[0] is process:
                     self._live.pop(process.pid)
         return release
+
+    def live_occurrence(self, schedule_id: str) -> bool:
+        """Owner custody read; settlement alone does not release native capacity."""
+        with self._lock:
+            return any(binding.schedule_id == schedule_id and process.poll() is None
+                       for process, identity, binding in self._live.values())
 
     def __call__(self, ingress: Any) -> Any:
         if getattr(ingress, "transport", None) != "unix-socket":
@@ -165,6 +175,13 @@ def managed_caller_binding(server: Any, authorization: dict[str, Any]) -> Any:
         from .execution_operations import manager_worker_result_schedule_id
         schedules.add(manager_worker_result_schedule_id(authorization["logical_request_key"]))
     schedules.update(value.get("schedule_id") for value in state.get("workers", {}).values())
+    # Child/parent continuations are deterministic owner Due identities. The
+    # original authorization supplies the exact key; no history enumeration.
+    from .occurrence_reads import worker_schedule
+    schedules.add(worker_schedule(authorization["project_ref"],
+        authorization["logical_request_key"].removesuffix(":launch")))
+    if authorization["logical_request_key"].startswith("parent-result:"):
+        schedules.add("parent-consume-" + hashlib.sha256(authorization["logical_request_key"].encode()).hexdigest()[:28])
     matches = []
     for schedule in sorted(value for value in schedules if isinstance(value, str)):
         due = server.due_port.read_due(schedule)

@@ -1,0 +1,163 @@
+{
+  "assignment_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "id": "assignment-d2d509875a0687b7420ca6cf3766",
+    "kind": "wrk.assignment",
+    "revision": "rev-2"
+  },
+  "authentic_delivered_artifact_ref": null,
+  "authentic_native_session": null,
+  "authentic_retained_result_ref": null,
+  "brief_sha256": "3ca0133c6016e4ac6ad6b942a57748f0e1833a6703b6fe6e84f54b30847d7201",
+  "capabilities": {
+    "attach": "unsupported",
+    "cancel": "degraded: transport unwind reaps owned process group; canonical stop alone is not native termination proof",
+    "coordinator": "unsupported",
+    "manager": "unsupported",
+    "native_children": "unsupported; no Agent/Bash/MCP/custom tools, OS subprocess fence and native child frame rejection",
+    "native_streaming": "unsupported",
+    "resume": "unsupported public control; exact inert-session work continuation only",
+    "shell": "unsupported in this finite Read/Write profile",
+    "snapshot_follow": "supported through existing retained owner reads; no token stream",
+    "steering": "unsupported; sealed stdin",
+    "structured_stream": "unverified installed; selected synthetic shapes pass",
+    "useful_leaf": "unverified installed; synthetic local useful artifact/capture passes"
+  },
+  "changed_paths_sha256": {
+    "src/otto/agents/__init__.py": "9e7fb332d26dba42475bacf5cbbf6e0e283ec3efc7e1f13de43516210d777d08",
+    "src/otto/agents/claude_adapter.py": "58b82a7602da49fd40df0a3919e1c03375bbb5c83bafc9d5ffc4ad295cb20ec7",
+    "src/otto/agents/claude_cli.py": "ab23ee61b5c7f80b967b34341b4bcd75f10d91b0060f44e5500bf6470d9c3552",
+    "src/otto/agents/owner_runtime.py": "f90e4957ff3686cb10e627b6b71eb13b0c7a5ee9c23c6762d9252eaaccfd71f9",
+    "src/otto/agents/tests/fixtures/d03-synthetic-owner-proof.json": "a04cc63ee8dcc7b9cdafc167f468fa33b5b6f0845ffc156b2e3322e0ca80f447",
+    "src/otto/agents/tests/test_claude_binding.py": "871aa9b670c67c59cabcd3aea323de0bbe418dc75aed1bbe4b373422b15c236f",
+    "src/otto/portfolio/execution_host.py": "cee01f5d4ee610570ac7aa0c397ab356863bb20a2d0f45ec7f9168ab2e914b87",
+    "src/otto/portfolio/manager_journey_client.py": "5fa11bc61778f6fad73edfa377f70a3a303ebd554acba58dc9ecedea18d68c53",
+    "src/otto/portfolio/manager_journey_service.py": "c9e4dd87e11fa6128356cd9f4f1c69d9488321b448b108d51759d034cb289629",
+    "src/otto/portfolio/occurrence_reads.py": "f40c07f2efa597b53f9903cbc53ea59cb837b988beee9d003cf13e5a2104da29",
+    "src/otto/portfolio/worker_occurrences.py": "f87f55f701de20ac23884f1ae16528e1b10cedd6371f8e852eab56f823da7920"
+  },
+  "changes": "Pinned structured-stream candidate transport, inert initialization/exact owner authorization, finite Read/Write leaf OS fence, schema verifier, existing canonical result capture and bounded owner-known captured artifact reads.",
+  "forbidden_effects_performed": [],
+  "generation": 1,
+  "manifest_note": "Current candidate bytes include preserved pre-existing D01/D02 work. This report is also changed; its digest is returned separately to avoid a recursive hash.",
+  "native_launcher": {
+    "locator": "/Users/hannahomalley/.local/bin/claude",
+    "realpath": "/Users/hannahomalley/.local/share/claude/versions/2.1.293",
+    "sha256": "4e21122a227857da1178aca3299700c1fd7f2b77c93f12e73c2c76db796a105e",
+    "version": "2.1.293 (Claude Code)"
+  },
+  "next_actor": "otto-adapter-manager-1; operational environment and adoption through otto-operating-setup-owner",
+  "owner_delivery_sha256": "416003f4afb5d826ef0cca37378ac6ad956e671c5a96c57d0800c5a244242b44",
+  "owner_state_mutated": false,
+  "parser": {
+    "authentic_stream_schema": "unverified; no installed provider stream was obtained",
+    "schema": "otto.claude-code-2.1.293.stream-json.v1",
+    "sha256": "ab23ee61b5c7f80b967b34341b4bcd75f10d91b0060f44e5500bf6470d9c3552"
+  },
+  "primary_documentation": [
+    "https://code.claude.com/docs/en/cli-reference",
+    "https://code.claude.com/docs/en/settings"
+  ],
+  "profile": {
+    "effort": "explicit host --effort; native effort is unreported",
+    "initializer": "no tools, one turn, workspace writes and subprocess creation fenced before owner authorization",
+    "model": "host must select an exact compatible adopted Claude model; no alias/fallback",
+    "permissions": "workspace-write",
+    "role": "worker-leaf",
+    "settings_hooks_plugins_mcp": "safe-mode, empty setting sources, strict empty MCP, disabled slash commands, exact native init enumeration; authentic enforcement is unverified",
+    "state": "separate host-provisioned private native state root; authentication is not copied",
+    "tools": [
+      "Read",
+      "Write"
+    ]
+  },
+  "publication_adoption_push_release_deployment": false,
+  "resources": {
+    "adopted_selected_pack_source_commit": "417f1a88ef21a82ce4e326a33ac22f00b7f619d6",
+    "delivered_runtime_source_commit": "c9a57e2fe1428aa727f04785ecf2f24d53dd0aed",
+    "resource_resolution": "Existing owner brief/resource refs, adoption digests and selected model/profile provenance are retained per invocation; candidate code grants no adoption.",
+    "role_configuration_sha256": "1b8622b55961e922df15ff5c21222d583fcb88ce869f85abfd3d23e8ed469134",
+    "selected_pack_ref": "adapter-bootstrap-20261009-v1-selected-pack@rev-1",
+    "selected_pack_sha256": "a192503f8015c42a719d9a2c6a2fd5850598f411bc43970234b1f914d28de528"
+  },
+  "schema": "otto.d03.candidate-delivery.v1",
+  "scope": {
+    "actual_preflight": "blocked before provider creation: sandbox-exec: sandbox_apply: Operation not permitted",
+    "identity": "otto.claude-macos-file-write-scope.v1",
+    "sandbox_runner": "/usr/bin/sandbox-exec",
+    "sandbox_runner_sha256": "cbd6ab1e5a359afe9ed93b33dc65b5cd7544d364ed284542878505671ae7f83e"
+  },
+  "status": "blocked_installed_qualification",
+  "synthetic_retained_snapshot": {
+    "artifact_ref": {
+      "index": 0,
+      "result_ref": {
+        "authority": "execution-owner",
+        "id": "result-73c325a2f250fcec163f773562d4",
+        "kind": "wrk.result",
+        "revision": "rev-1"
+      },
+      "sha256": "37b47aa7474480c770ae342e1c390759138d084898f8a997fe594349dafa8dc4"
+    },
+    "classification": "Pinned snapshot from a disposed synthetic fixture Store, not an operational Otto/Claude result or DAT adoption.",
+    "path": "src/otto/agents/tests/fixtures/d03-synthetic-owner-proof.json",
+    "result_ref": {
+      "authority": "execution-owner",
+      "id": "result-73c325a2f250fcec163f773562d4",
+      "kind": "wrk.result",
+      "revision": "rev-1"
+    },
+    "sha256": "a04cc63ee8dcc7b9cdafc167f468fa33b5b6f0845ffc156b2e3322e0ca80f447"
+  },
+  "task": "D03/A03",
+  "task_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "id": "task-2962d4815cfec31a3d4cecef2747",
+    "kind": "work.task",
+    "revision": "rev-1"
+  },
+  "unresolved_responsibilities": [
+    "Host reconcile the exact inert installed attempt before any eligible live retry; no replay was performed here.",
+    "Host provide an authorized environment with supported OS scope and Claude API/authentication; preserve owner capacity and current allowances.",
+    "Worker/host obtain authentic installed init/input/tool/result/error schema evidence and qualify the exact native model/profile/settings/hooks/plugins/MCP behavior; adapt only demonstrated schema differences.",
+    "Use accepted A02 coordinating adapter and real configured capacity to prove Claude child result/artifact consumption, without overlapping parent turns or task-slot replacement.",
+    "Manager independently judge A03; owner performs any exact code/client/resource adoption. Installed Claude qualification and A03 acceptance remain incomplete."
+  ],
+  "verification": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests python3 -m unittest discover -s src/otto/agents/tests -p test_claude_binding.py -q",
+      "passed": 17,
+      "provider_evidence": "SYNTHETIC; real local Python subprocess/pipe and disposable existing owner Store/gateway/capture",
+      "tests": 17
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests python3 -m unittest otto.portfolio.tests.test_worker_occurrences test_manager_journey_client_help test_setup_read_native_wait test_manager_journey_command -q",
+      "passed": 22,
+      "scope": "D02 parent-safe native IPC/capacity-one consumption and maintained client regressions; provider evidence remains synthetic",
+      "tests": 22
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests python3 -m unittest test_execution_application test_adapter_conformance test_workspace_write_native_attribution test_execution_operations -q",
+      "error": "test_compatible_socket_host_retains_service_and_refuses_a_competing_owner: PermissionError at AF_UNIX bind; focused rerun with TMPDIR=/private/tmp had the same error",
+      "errors": 1,
+      "passed": 59,
+      "tests": 60
+    },
+    {
+      "command": "git diff --check and compile() of exact changed Python files",
+      "status": "passed; no external bytecode cache writes"
+    },
+    {
+      "command": "Installed Claude --version/--help and pinned binary SHA-256",
+      "status": "metadata observed only; no useful installed work"
+    },
+    {
+      "command": "Inert installed stream control initialize, no user/task message",
+      "status": "receiving sandbox blocked api.anthropic.com; no native session/result/stream obtained; no retry"
+    },
+    {
+      "command": "Actual selected MacWriteScope.preflight()",
+      "status": "OS scope denied before provider creation; no fallback"
+    }
+  ]
+}

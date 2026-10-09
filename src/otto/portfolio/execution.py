@@ -196,7 +196,9 @@ class ExecutionApplication:
                       instruction_contract: Mapping[str, Any], brief: Mapping[str, Any],
                       model: str, reasoning: str, profile: str = "workspace-write",
                       timeout_seconds: int = 1200,
-                      supporting_refs: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                      supporting_refs: list[Mapping[str, Any]] | None = None,
+                      parent: Mapping[str, Any] | None = None,
+                      launch_request: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Assign and prepare a worker using the existing public owner commands."""
         project = owner_ref(project_ref, "project_ref")
         task = owner_ref(task_ref, "task_ref")
@@ -231,9 +233,23 @@ class ExecutionApplication:
         configuration = selected_configuration(sources)
         selection = {field: {"source": "explicit_override", "selected_configuration_ref":
             None if configuration is None else configuration["ref"]} for field in ("model", "reasoning")}
+        if parent is not None:
+            parent = json_value(parent)
+            prior = self._read(parent["occurrence_ref"]["schedule_id"])
+            current = self._current(parent["assignment_ref"], parent["generation"])
+            if (prior.assignment_ref != parent["assignment_ref"] or prior.generation != parent["generation"]
+                    or prior.role != "worker" or current.principal == principal
+                    or _identity(prior.target["project_ref"]) != _identity(project)
+                    or _identity(prior.target["task_ref"]) != _identity(task)
+                    or parent["result_destination"] != {"assignment_ref": prior.assignment_ref,
+                        "generation": prior.generation, "schedule_id": prior.schedule_id,
+                        "native_session_id": ((prior.host_evidence or {}).get("gateway_attempt") or {}).get("delivery_authorization", {}).get("physical_session_id")}):
+                raise OccurrencePreparationError("child parent/scope/destination is foreign or stale")
         schedule = "worker-" + _digest([project, request_key])[:28]
         semantic = _digest([project, task, principal, instructions, instruction_contract,
-                            brief, model, reasoning, profile, timeout_seconds] + ([pins] if pins else []))
+                            brief, model, reasoning, profile, timeout_seconds] + ([pins] if pins else [])
+                            + ([parent] if parent is not None else [])
+                            + ([launch_request] if launch_request is not None else []))
         existing = self.due_port.read_due(schedule)
         if existing is not None:
             if (existing.get("invocation_identity") != request_key + ":" + semantic
@@ -257,7 +273,8 @@ class ExecutionApplication:
             actor = self.binding.authenticated_actor(self.manager_actor)
             base = self.assignments.assign(ResourceRef.from_dict(task), role="executor",
                 principal=principal, manager=self.manager_actor, pins=[ResourceRef.from_dict(guide_ref)],
-                logical_request_key=request_key + ":assign", actor=actor)
+                logical_request_key=request_key + ":assign", actor=actor,
+                **({"parent": parent} if parent is not None else {}))
             handles.update(assignment_ref=base.ref.to_dict(), generation=base.generation)
             stage = "adoption"
             resources = [{"resource_ref": guide_ref, "resource_name": name,
@@ -291,6 +308,10 @@ class ExecutionApplication:
                       "role": "worker", "principal": principal, "requested_model": model,
                       "requested_reasoning": reasoning, "requested_profile": profile,
                       "execution_selection": selection}
+            if parent is not None:
+                target["parent"] = parent
+            if launch_request is not None:
+                target["launch_request"] = json_value(launch_request)
             due = DueRecord(schedule_id=schedule, recipient=principal, instruction=instructions,
                 profile=profile, anchor=at, due_at=at, last_covered_slot=0,
                 invocation_identity=request_key + ":" + semantic,
@@ -1089,6 +1110,43 @@ class ExecutionApplication:
                 and receipt.get("generation") == value["generation"]
                 and receipt.get("native_id") == value["target"].get("native_id")
                 and receipt.get("reported_task_ref") == value["target"].get("reported_task_ref"))
+
+    def continue_worker_from_child(self, *, parent_schedule_id: str, child_schedule_id: str) -> dict[str, Any]:
+        """Exact released parent's retained result turn; no acceptance privilege."""
+        from .occurrence_reads import handle, result_view
+        prior, child = self._read(parent_schedule_id), self._read(child_schedule_id)
+        parent = child.target.get("parent") or {}
+        current = self._current(prior.assignment_ref, prior.generation)
+        view = result_view(child.to_dict())
+        if (prior.role != "worker" or child.role != "worker" or not view["required_capture"]
+                or child.stop_state != "completed" or child.completion_state != "succeeded"
+                or parent.get("assignment_ref") != prior.assignment_ref or parent.get("generation") != prior.generation
+                or parent.get("occurrence_ref") != {"schedule_id": parent_schedule_id}
+                or self.assignments.get(ResourceRef.from_dict(child.assignment_ref)).payload.get("parent") != parent):
+            raise OccurrencePreparationError("child result lacks exact immutable parent capture")
+        key = "parent-result:" + _digest([parent, child.schedule_id,
+            ((child.host_evidence or {}).get("gateway_attempt") or {}).get("result")])
+        schedule = "parent-consume-" + hashlib.sha256(key.encode()).hexdigest()[:28]
+        existing = self.due_port.read_due(schedule)
+        if existing is not None:
+            return self.recover(schedule_id=schedule, execute=False)
+        guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
+        due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
+            assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds,
+            native_adapter=prior.target["native_adapter"])
+        due = replace(due, context_refs=prior.context_refs, purpose="Exact parent child-result consumption",
+            instruction="Consume the bounded retained child result through consume-result with the exact handle below. "
+                "Integrate its evidence and return your result to the manager. Do not accept work or replay the child.",
+            message="Exact retained child handle: " + json.dumps(handle(child.to_dict()), sort_keys=True),
+            target={**due.target, "parent_anchor": prior.target.get("parent_anchor", prior.schedule_id),
+                    "child_result_handle": handle(child.to_dict())},
+            host_evidence={"child_result_continuation": {"parent": parent, "child": handle(child.to_dict())}})
+        self._verify_native_binding(current, due.target["native_id"], prior.schedule_id)
+        prepared = prepare_current_assignment_occurrence(due_port=self.due_port, assignments=self.assignments,
+            binding=self.binding, due=due, assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,
+            operation="resume", lifecycle="resume", request_key=key)
+        return self.start(schedule_id=schedule) if prepared["outcome"] == "committed" else prepared
 
     def continue_manager_from_worker(self, *, manager_schedule_id: str,
                                     worker_schedule_id: str, execute: bool = False) -> dict[str, Any]:

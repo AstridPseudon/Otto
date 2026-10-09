@@ -934,11 +934,11 @@ class PortfolioOwnerBootstrap:
 
     def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
                               manager_actor: str | None = None, assessment_policy: Any = None,
-                              issue_delivery: Any = None) -> Any:
+                              issue_delivery: Any = None, native_result_verifier: Any = None) -> Any:
         """Issue maintained execution commands over the existing finite ports."""
         from .execution import ExecutionApplication
         runtime = self.role_runtime(due_port=due_port, adapter=adapter,
-                                    assessment_policy=assessment_policy, issue_delivery=issue_delivery)
+                                    assessment_policy=assessment_policy, issue_delivery=issue_delivery, native_result_verifier=native_result_verifier)
         kwargs = {} if clock is None else {"clock": clock}
         return ExecutionApplication(portfolio=runtime.portfolio,
             assignments=self.assignments.command_port, due_port=due_port,
@@ -971,7 +971,7 @@ class PortfolioOwnerBootstrap:
         return SerializedAttentionPort(create, lambda recipient: json_value(packets.list_attention(recipient)))
 
     def role_runtime(self, *, due_port: Any, adapter: Any, runtime_probe: Any = None,
-                     issue_delivery: Any = None, assessment_policy: Any = None) -> Any:
+                     issue_delivery: Any = None, assessment_policy: Any = None, native_result_verifier: Any = None) -> Any:
         """Compose a role runtime from finite clients without exposing Store.
 
         The caller supplies the already-issued finite DueRecord port and host
@@ -1065,7 +1065,7 @@ class PortfolioOwnerBootstrap:
             result_capture_factory=result_capture,
             acceptance_readiness=acceptance_readiness,
             allowance_readiness=allowance_readiness,
-            completed_task_readiness=completed_task_readiness,
+            completed_task_readiness=completed_task_readiness, native_result_verifier=native_result_verifier,
         )
 
 

@@ -966,6 +966,21 @@ class AmendmentPort(Protocol):
     def apply_amendment(self, request: Mapping[str, JSONValue]) -> Mapping[str, JSONValue]: ...
 
 
+def _validate_retained_launch_binding(current: Any, desired: Mapping[str, JSONValue]) -> None:
+    """Parentage and admitted selection belong to the original occurrence.
+
+    Reconciliation can update operational facts, never retrofit a parent or
+    replace the original launch input/default pins, including on legacy Due.
+    Historical request replay is checked separately against its saved bytes.
+    """
+    if current is None:
+        return
+    before, after = current.get("target") or {}, desired.get("target") or {}
+    for field in ("parent", "launch_request"):
+        if before.get(field) != after.get(field):
+            raise InputChangedError("retained occurrence " + field + " is immutable")
+
+
 class InMemoryDueRecordPort:
     """Fixture/awaited port with the same finite contract as a trusted host.
 
@@ -1003,6 +1018,7 @@ class InMemoryDueRecordPort:
         current_version = 0 if current is None else int(current.get("version", 0))
         if current_version != expected_version:
             raise StateConflictError(f"expected durable version {expected_version}, observed {current_version}")
+        _validate_retained_launch_binding(current, value)
         conflict = _advisor_claim_conflict(
             self._records.values(), schedule_id=schedule_id, current=current, desired=value,
         )
@@ -1297,6 +1313,7 @@ class _DueRecordOwnerEngine:
             if observed != expected_version:
                 raise StateConflictError(f"expected durable version {expected_version}, observed {observed}")
             current_value = None if current is None else current.payload
+            _validate_retained_launch_binding(current_value, value)
             # Only a new project-advisor claim needs the cross-record fence.
             # Ordinary manager/worker saves are identity-local and must not
             # materialize every historical Due event before each mutation.

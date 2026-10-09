@@ -1,0 +1,150 @@
+{
+  "bounded_artifact_read": {
+    "artifact_ref": {
+      "index": 0,
+      "result_ref": {
+        "authority": "execution-owner",
+        "id": "result-73c325a2f250fcec163f773562d4",
+        "kind": "wrk.result",
+        "revision": "rev-1"
+      },
+      "sha256": "37b47aa7474480c770ae342e1c390759138d084898f8a997fe594349dafa8dc4"
+    },
+    "bytes": 16,
+    "content_base64": "VXNlZnVsIGFydGlmYWN0Cg==",
+    "eof": true,
+    "offset": 0,
+    "outcome": "available",
+    "provider_called": false,
+    "pure": true,
+    "reconciled": false,
+    "total_bytes": 16
+  },
+  "canonical_store_disposed_after_snapshot": true,
+  "capture_sha256": "e1ec71f1b2d75dc43d903ab1590933dd71bf9585480cce01a7663c1ebfc70729",
+  "disposable_owner_snapshot": true,
+  "evidence_kind": "SYNTHETIC provider stream; authentic local Python process and existing owner custody/capture only",
+  "not_installed_claude_qualification": true,
+  "provider_processes": 2,
+  "replay": "replayed",
+  "result_view": {
+    "artifacts": [
+      {
+        "availability": "retained",
+        "bytes": 16,
+        "name": "answer.txt",
+        "ref": {
+          "index": 0,
+          "result_ref": {
+            "authority": "execution-owner",
+            "id": "result-73c325a2f250fcec163f773562d4",
+            "kind": "wrk.result",
+            "revision": "rev-1"
+          },
+          "sha256": "37b47aa7474480c770ae342e1c390759138d084898f8a997fe594349dafa8dc4"
+        },
+        "sha256": "37b47aa7474480c770ae342e1c390759138d084898f8a997fe594349dafa8dc4",
+        "source": "verified native Write and owner capture",
+        "tool_use_id": "write-1"
+      }
+    ],
+    "blockers": [],
+    "conclusion": "Delivered useful artifact.",
+    "conclusion_sha256": "f290048cb2439d695563fc6ccadba4caa41682755cb2e382d8e8d6bf392a5f76",
+    "freshness": {
+      "basis": "current retained owner snapshot",
+      "due_version": 10,
+      "history": "snapshot-only",
+      "last_verified_at": "2026-10-04T12:00:00Z"
+    },
+    "native_identity": {
+      "adapter": "otto.adapter.claude-code-2.1.293.leaf.v1",
+      "session": "native-session"
+    },
+    "native_terminal": true,
+    "occurrence": {
+      "assignment_ref": {
+        "authority": "execution-owner",
+        "id": "assignment-a37faae589adbec61822700aeec5",
+        "kind": "wrk.assignment",
+        "revision": "rev-2"
+      },
+      "generation": 1,
+      "parent": null,
+      "project_ref": {
+        "authority": "execution-owner",
+        "id": "project-6cbe23bf27e2d442109cb6521daa",
+        "kind": "work.project",
+        "revision": "rev-1"
+      },
+      "schedule_id": "worker-6dd8dbc3f5df11c3e48cd5b5234b",
+      "task_ref": {
+        "authority": "execution-owner",
+        "id": "task-fda517815e6a55524ab321db2264",
+        "kind": "work.task",
+        "revision": "rev-1"
+      }
+    },
+    "occurrence_settlement": {
+      "completion_state": "succeeded",
+      "stop_state": "completed"
+    },
+    "outcome": "succeeded",
+    "parent_delivery": {
+      "next_actor": null,
+      "state": "unconsumed"
+    },
+    "provider_called": false,
+    "pure": true,
+    "reconciled": false,
+    "required_capture": true,
+    "result_ref": {
+      "authority": "execution-owner",
+      "id": "result-73c325a2f250fcec163f773562d4",
+      "kind": "wrk.result",
+      "revision": "rev-1"
+    },
+    "retry": false,
+    "schema": "otto.occurrence-result.v1",
+    "selection": {
+      "model": {
+        "selected_configuration_ref": null,
+        "source": "explicit_override"
+      },
+      "reasoning": {
+        "selected_configuration_ref": null,
+        "source": "explicit_override"
+      }
+    },
+    "stop": {
+      "owned_process_termination": "unverified",
+      "requested": false
+    },
+    "task_acceptance": "unjudged; manager assessment required",
+    "usage": {
+      "limits": "native reported fields only; no price, sum, descendant or billing claim",
+      "metrics": {
+        "input_tokens": 11,
+        "output_tokens": 4
+      },
+      "model": "gpt-test",
+      "scope": "native result invocation",
+      "source": {
+        "event_type": "result",
+        "item_id": "result-work",
+        "item_type": "ClaudeResult",
+        "raw_line_sha256": "013692b78e40b7b0d0593549a79dab9ed95749d21cdcb4881a379af22e3e013e",
+        "session_id": "native-session",
+        "turn_id": "input-work"
+      },
+      "state": "observed"
+    },
+    "useful_admission": true,
+    "verification": {
+      "context_digest_verified": true,
+      "observed_turn_id": "input-work"
+    }
+  },
+  "schema": "otto.d03.synthetic-owner-proof.v1",
+  "useful_provider_turns": 1
+}

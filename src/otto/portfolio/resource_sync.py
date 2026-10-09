@@ -141,6 +141,13 @@ def normalize_instruction_contract(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ResourceSyncError("workspace-write manager authority requires distinct real absolute workspace_roots")
         required_allowed = {"read_project_context", "edit_candidate_workspace", "run_focused_tests", "return_progress"}
         required_permitted = {"read_delivered_context", "read_linked_sources", "file_write_in_workspace", "return_result"}
+        delegation = result.get("delegation")
+        if delegation is not None:
+            if (effect_profile != "workspace-write-worker" or not isinstance(delegation, Mapping)
+                    or dict(delegation) != {"max_depth": 1, "result_consumption": "yield"}):
+                raise ResourceSyncError("only finite worker yield/consume delegation is qualified")
+            required_allowed.add("canonical_child_commands")
+            required_permitted.add("canonical_child_commands")
         if effect_profile == "workspace-write-manager":
             required_allowed.add("canonical_manager_commands")
             required_permitted.add("canonical_manager_commands")

@@ -12,7 +12,8 @@ from .recovery_timing import stable_correlation_id, timing_from_receipt
 
 def requires_native_caller(command: str) -> bool:
     """New manager planning requires the existing identity-bearing ingress."""
-    return command in {"whoami", "effective-context", "task-list-author"}
+    return command in {"whoami", "effective-context", "task-list-author", "run-worker",
+                       "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result"}
 
 
 FINISH_PROJECT_EXAMPLE = (
@@ -328,6 +329,20 @@ def add_help_parsers(commands: Any) -> list[Any]:
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
     add_help_parsers(commands)
+    lookup = commands.add_parser("lookup-occurrence", help="pure exact historical scope/key read after a lost launch reply")
+    lookup.add_argument("--scope", required=True, type=json.loads)
+    lookup.add_argument("--request-key", required=True)
+    lookup.add_argument("--request-input", type=json.loads)
+    for name in ("follow-occurrence", "read-result", "read-artifact", "consume-result"):
+        read = commands.add_parser(name, help="bounded retained snapshot; consume-result records authenticated parent receipt")
+        read.add_argument("--occurrence", required=True, type=json.loads)
+        if name == "read-artifact":
+            read.add_argument("--artifact-ref", required=True, type=json.loads)
+            read.add_argument("--offset", type=int, default=0)
+            read.add_argument("--max-bytes", type=int, default=4096)
+        if name == "follow-occurrence":
+            read.add_argument("--timeout-seconds", type=float, default=0,
+                help="snapshot-only returns immediately; timeout never cancels or reconciles")
     planning = commands.add_parser("task-list-author", help="record manager finding dispositions and author pending correction tasks; never dispatch or grant review budget")
     planning.add_argument("--request-key", required=True)
     planning.add_argument("--base-revision", required=True)

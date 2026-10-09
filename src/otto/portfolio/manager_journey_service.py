@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextvars import ContextVar
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,12 +16,14 @@ from .owner_readers import json_value
 from .manager_handoff import compose_manager_handoff
 
 
+_CALLER = ContextVar("otto_trusted_command_caller", default=None)
+
 def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: Mapping[str, Any],
                              principal: str, model: str, reasoning: str, focus: str,
-                             workspace: Path, run_path: Path, adapter: Any) -> tuple[str, dict, dict]:
+                             workspace: Path, run_path: Path, adapter: Any, leaf: bool = False) -> tuple[str, dict, dict]:
     """Owner policy selects capability; caller focus cannot grant authority."""
-    operation = config.get("worker_operation_profiles", {}).get(task, "implementation")
-    if operation not in {"implementation", "cold_manager_operation"}:
+    operation = "implementation" if leaf else config.get("worker_operation_profiles", {}).get(task, "implementation")
+    if operation not in {"implementation", "coordinating_implementation", "cold_manager_operation"}:
         raise ValueError("worker task operation profile is unsupported; owner must correct run policy before submission")
     if Path(adapter.worktree).resolve() != workspace:
         raise ValueError("worker adapter worktree differs from the delegated workspace")
@@ -52,6 +55,21 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
                     {"label": "Otto skill index", "path": str(workspace / "src/otto/portfolio/skills/SKILL.md")},
                     {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")}],
         "revision": "ordinary-worker-v1"}
+    if getattr(adapter, "adapter_identity", None) == "otto.adapter.claude-code-2.1.293.leaf.v1":
+        if operation != "implementation":
+            raise ValueError("selected Claude binding is a finite leaf; coordinating/manager operations are unqualified")
+        contract["read_targets"] = [str(workspace)]
+    if operation == "coordinating_implementation":
+        contract["delegation"] = {"max_depth": 1, "result_consumption": "yield"}
+        contract["allowed_operations"].append("canonical_child_commands")
+        contract["authority"]["permitted_effects"].append("canonical_child_commands")
+        brief.update(mandate="Coordinate bounded implementation through the authenticated owner child commands; retain integration responsibility and return evidence to the manager.")
+        instruction += ("\nUse run-worker with a stable key only through authenticated native caller ingress. "
+            "Retain the exact occurrence/start/command handles and use lookup-occurrence after a lost response. "
+            "With capacity one, return/yield this turn after child preparation. The owner waits for your native release "
+            "and resumes this exact parent for consume-result. Read child evidence and integrate; manager judgment "
+            "remains required. The child is a finite leaf and cannot delegate. Never borrow manager credentials.")
+        contract["bounded_operation"] = instruction
     if operation == "cold_manager_operation":
         instruction = (f"Execute the authorized cold manager operation for {task} using the delivered run instructions and maintained installed client. "
             "Exercise the assigned journey directly, including substantive review and guarded acceptance of its delegated artifacts. "
@@ -79,7 +97,8 @@ class ManagerJourneyService:
     def __init__(self, *, server: Any, host: Any, run_path: str | Path,
                  workspace: str | Path, policy: Any = None,
                  orchestrator_principal: str | None = None, observe_schedules: Any = None,
-                 help_reply_authorizer: Any = None, authoring_authorizer: Any = None) -> None:
+                 help_reply_authorizer: Any = None, authoring_authorizer: Any = None,
+                 adapter_selection: Any = None, delegation_policy: Mapping[str, Any] | None = None) -> None:
         self.server, self.host = server, host
         self._host_execution = server._execution
         self.run_path, self.workspace = Path(run_path).resolve(), Path(workspace).resolve()
@@ -89,6 +108,8 @@ class ManagerJourneyService:
         self.orchestrator_principal, self.observe_schedules = orchestrator_principal, observe_schedules
         self.help_reply_authorizer = help_reply_authorizer
         self.authoring_authorizer = authoring_authorizer
+        self.adapter_selection = adapter_selection
+        self.delegation_policy = None if delegation_policy is None else json_value(delegation_policy)
 
     def _execution(self, **options: Any) -> Any:
         """Bind every execution path to the installed owner's assessment policy.
@@ -98,18 +119,24 @@ class ManagerJourneyService:
         assessment criteria or allowance.
         """
         from .local_assessment_policy import LocalAssessmentPolicy
-        app = self._host_execution(**options)
+        selection = options.pop("selection", None)
+        app = (self.adapter_selection.compose(selection, **{k: v for k, v in options.items() if k not in {"model", "reasoning"}})
+               if selection is not None and self.adapter_selection is not None else self._host_execution(**options))
+        if selection is not None and app.native_adapter_identity() != selection["identity"]:
+            raise PermissionError("installed composition differs from retained adapter pins")
         policy = self.commands.policy or self.server.state.get("assessment_policy")
         if isinstance(policy, Mapping):
             policy = LocalAssessmentPolicy.from_run_config(policy, state=self.server.state)
         trusted = self.server.owner.role_runtime(due_port=self.server.due_port,
-            adapter=app.runtime.adapter, assessment_policy=policy)
+            adapter=app.runtime.adapter, assessment_policy=policy,
+            native_result_verifier=app.runtime.native_result_verifier)
         app.runtime.acceptance_readiness = trusted.acceptance_readiness
         return app
 
     def _settle_execution(self, due: Mapping[str, Any]) -> Mapping[str, Any]:
         app = self._execution(principal=due["recipient"], model=due["requested_model"],
-            reasoning=due["requested_reasoning"], evidence_id=due["schedule_id"])
+            reasoning=due["requested_reasoning"], evidence_id=due["schedule_id"],
+            selection=(due["target"].get("launch_request") or {}).get("selection"))
         return app.recover(schedule_id=due["schedule_id"], execute=False)
 
     def _status(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -357,14 +384,29 @@ class ManagerJourneyService:
         Operational reply grants keep their existing separate ingress.
         """
         state = self.server.state
+        if context.get("role") == "worker":
+            from .worker_occurrences import authorize_worker
+            authorize_worker(self, context, request)
+            return
         self.commands._authorize()
         if (context.get("role") != "manager" or context.get("principal") != state["manager"]
                 or context.get("assignment_ref") != state["assignment_ref"]
                 or context.get("generation") != state["manager_generation"]):
             raise PermissionError("caller is not the current manager of this command service")
 
+    def dispatch_bound(self, context: Mapping[str, Any], request: Mapping[str, Any]) -> Mapping[str, Any]:
+        token = _CALLER.set(context)
+        try:
+            return self(request)
+        finally:
+            _CALLER.reset(token)
+
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command in {"lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
+                       "start-retained-child", "parent-child-result"}:
+            from .worker_occurrences import dispatch_occurrence
+            return dispatch_occurrence(self, request, _CALLER.get())
         if command == "owner-context":
             return self._owner_context(request)
         if command == "execution-control":
@@ -564,7 +606,8 @@ class ManagerJourneyService:
                     or worker.get("schedule_id") != request.get("schedule_id")):
                 raise PermissionError("worker handle is stale or belongs to another recipient")
             app = self._execution(principal=worker["principal"], model=worker["model"],
-                reasoning=worker["reasoning"], evidence_id=worker["schedule_id"])
+                reasoning=worker["reasoning"], evidence_id=worker["schedule_id"],
+                selection=((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
             result = (app.start(schedule_id=worker["schedule_id"]) if command == "start-retained-worker" else
                       app.recover(schedule_id=worker["schedule_id"], execute=False))
             if result.get("outcome") in {"succeeded", "replayed"}:
@@ -792,7 +835,8 @@ class ManagerJourneyService:
         if (project.get("id") if isinstance(project, Mapping) else project) != project_id:
             raise PermissionError("occurrence belongs to another project")
         app = self._execution(principal=raw["recipient"], model=raw["requested_model"],
-            reasoning=raw["requested_reasoning"], evidence_id="execution-control-" + schedule)
+            reasoning=raw["requested_reasoning"], evidence_id="execution-control-" + schedule,
+            selection=(raw["target"].get("launch_request") or {}).get("selection"))
         due = app._read(schedule)  # Existing authenticated owner fence.
         if operation == "stop":
             from otto.attention import DurableAttention
@@ -1082,18 +1126,42 @@ class ManagerJourneyService:
         if not isinstance(principal, str) or not principal.strip() or principal != principal.strip():
             raise ValueError("worker principal must be exact nonblank text")
         config = json.loads((self.run_path / "run.yaml").read_text())
+        from .worker_occurrences import parent_for_caller, check_allowance
+        from .occurrence_reads import lookup, handle, digest
+        caller = _CALLER.get()
+        parent = parent_for_caller(self, caller) if caller and caller.get("role") == "worker" else None
+        scope = {"project_ref": state["project_ref"], "task_ref": state["task_refs"][task], "parent": parent}
+        historical = lookup(self.server.due_port, scope=scope, request_key=key, request_input=dict(request))
+        if historical["outcome"] == "conflict":
+            raise ValueError("project-wide worker key collides with changed intent or parent")
+        if historical["outcome"] == "found":
+            retained_due = self.server.due_port.read_due(historical["occurrence"]["schedule_id"])
+            outcome = "replayed" if (retained_due["stop_state"] == "completed"
+                and retained_due["completion_state"] == "succeeded") else "retained"
+            return {**historical, "outcome": outcome, "retry_provider": False,
+                    "next_action": "read the same occurrence; use explicit Recovery for incomplete stages"}
+        if parent is not None:
+            check_allowance(self)
         configured = config["roles"]["worker_" + route]
-        model, reasoning = configured["model"], configured["reasoning"]
+        selection = None
+        if getattr(self, "adapter_selection", None) is not None:
+            selection = self.adapter_selection.resolve(role=configured, defaults=config.get("defaults"), profile="workspace-write")
+            model, reasoning = selection["model"], selection["reasoning"]
+        else:
+            if "adapter" in configured or "adapter" in config.get("defaults", {}):
+                raise ValueError("named adapter selection requires the finite host composition; no fallback")
+            model, reasoning = configured["model"], configured["reasoning"]
         if (not isinstance(model, str) or not model or any(char.isspace() for char in model)
                 or reasoning not in {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}):
             raise ValueError("worker route model/reasoning configuration is invalid")
         focus = request.get("focus")
         if not isinstance(focus, str) or not focus.strip() or len(focus) > 4000:
             raise ValueError("worker focus must describe 1..4000 characters of current intent")
-        previous = (state.get("workers") or {}).get(task)
+        previous = None if parent is not None else (state.get("workers") or {}).get(task)
         if isinstance(previous, Mapping):
             previous_app = self._execution(principal=previous["principal"], model=previous["model"],
-                reasoning=previous["reasoning"], evidence_id=previous["schedule_id"])
+                reasoning=previous["reasoning"], evidence_id=previous["schedule_id"],
+                selection=((self.server.due_port.read_due(previous["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
             if previous.get("request_key") == key:
                 if previous.get("submission") != dict(request):
                     raise ValueError("worker request key was reused with changed current intent")
@@ -1116,10 +1184,10 @@ class ManagerJourneyService:
                             "reason": "existing task worker is unstarted, active or uncertain; reconcile that occurrence before a new send"}
         task_ref = state["task_refs"][task]
         app = self._execution(principal=principal, model=model, reasoning=reasoning,
-            evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20])
+            evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20], selection=selection)
         instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
             principal=principal, model=model, reasoning=reasoning, focus=focus,
-            workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter)
+            workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter, leaf=parent is not None)
         from .resource_sync import resolve_assignment_attachments
         from .role_context import supporting_context
         manager = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(state["assignment_ref"]))
@@ -1143,15 +1211,31 @@ class ManagerJourneyService:
             for scope in directions if scope["kind"] != "responsibility" for item in scope["inputs"]}
         sources = [source for source in sources if
             tuple(source["ref"][key] for key in ("authority", "kind", "id")) not in parent_inputs - shared_inputs]
+        if selection is None:
+            selection = {"identity": app.native_adapter_identity(), "adapter": "existing-owner-composition",
+                         "model": model, "reasoning": reasoning,
+                         "provenance": {"model": "project_role", "reasoning": "project_role", "adapter": "host_composition"},
+                         "pins": {"supporting_resources": [{"ref": source["ref"], "sha256": source["content_sha256"]} for source in sources]}}
+        launch_request = {"scope": scope, "input": dict(request), "selection": selection,
+                          "fingerprint": digest([scope, dict(request), selection])}
         prepared = app.assign_worker(project_ref=state["project_ref"], task_ref=task_ref,
             principal=principal, request_key=key, instructions=instruction, instruction_contract=contract,
             brief=brief, model=model, reasoning=reasoning, timeout_seconds=1200,
-            supporting_refs=[source["ref"] for source in sources])
+            supporting_refs=[source["ref"] for source in sources], parent=parent, launch_request=launch_request)
         if prepared.get("outcome") not in {"committed", "prepared"}:
             previous = (state.get("workers") or {}).get(task) or {}
             return {**prepared, **{name: previous[name] for name in ("retained_handle", "response_path")
                                   if name in previous and previous.get("schedule_id") == prepared.get("schedule_id")},
                     "retry_provider": False}
+        if parent is not None:
+            retained = self.host.submit({"command": "start-retained-child", "schedule_id": prepared["schedule_id"]})
+            due = app._read(prepared["schedule_id"])
+            self.server.due_port.save_due(due.schedule_id, {**due.to_dict(), "host_evidence": {
+                **(due.host_evidence or {}), "launch_handles": {"outer_command": (self.host.command_handle() if callable(getattr(self.host, "command_handle", None)) else None), "start": retained.get("retained_handle"), "callback": None}}},
+                request_id=key + ":launch-handles", expected_version=due.version)
+            return {**prepared, **retained, "outcome": "prepared", "occurrence": handle(app._read(due.schedule_id).to_dict()),
+                    "selection": selection, "start": retained.get("retained_handle"), "callback": None,
+                    "next_action": "yield this exact parent turn; the retained child starts only after verified settlement and native release"}
         if isinstance(previous, Mapping) and previous.get("schedule_id") != prepared["schedule_id"]:
             history = state.setdefault("worker_history", {}).setdefault(task, [])
             if not any(item.get("schedule_id") == previous["schedule_id"] for item in history):
@@ -1163,15 +1247,22 @@ class ManagerJourneyService:
         retained = self.host.submit({"command": "start-retained-worker", "task": task,
             "principal": principal, "schedule_id": prepared["schedule_id"]})
         state["workers"][task].update(retained)
+        due = app._read(prepared["schedule_id"])
+        self.server.due_port.save_due(due.schedule_id, {**due.to_dict(), "host_evidence": {
+            **(due.host_evidence or {}), "launch_handles": {"outer_command": (self.host.command_handle() if callable(getattr(self.host, "command_handle", None)) else None), "start": retained.get("retained_handle"), "callback": None}}},
+            request_id=key + ":launch-handles", expected_version=due.version)
         self.server._save_state()
         return {**prepared, **retained, "assignment_ref": prepared["assignment_ref"],
-                "generation": prepared["generation"], "principal": principal, "task": task}
+                "generation": prepared["generation"], "principal": principal, "task": task,
+                "occurrence": handle(app._read(prepared["schedule_id"]).to_dict()),
+                "start": retained.get("retained_handle"), "callback": None, "selection": selection}
 
 
 def install_manager_journey_service(server: Any, *, run_path: str | Path, workspace: str | Path,
                                     policy: Any = None, orchestrator_principal: str | None = None,
                                     observe_schedules: Any = None,
-                                    help_reply_authorizer: Any = None, authoring_authorizer: Any = None) -> ManagerJourneyService:
+                                    help_reply_authorizer: Any = None, authoring_authorizer: Any = None,
+                                    adapter_selection: Any = None, delegation_policy: Mapping[str, Any] | None = None) -> ManagerJourneyService:
     """Owner adoption hook, called once after the existing server.start().
 
     The owner installs a tested source snapshot, adds this handler composition,
@@ -1195,7 +1286,8 @@ def install_manager_journey_service(server: Any, *, run_path: str | Path, worksp
     service = ManagerJourneyService(server=server, host=host, run_path=run_path,
         workspace=workspace, policy=policy, orchestrator_principal=orchestrator_principal,
         observe_schedules=observe_schedules, help_reply_authorizer=help_reply_authorizer,
-        authoring_authorizer=authoring_authorizer)
+        authoring_authorizer=authoring_authorizer, adapter_selection=adapter_selection,
+        delegation_policy=delegation_policy)
     server._execution = service._execution
     host.handler = service
     return service

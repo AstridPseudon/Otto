@@ -8,6 +8,7 @@ admitted children while their command/status surface remains available.
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 import hashlib
 import os
 import queue
@@ -90,8 +91,9 @@ def _same_process_start_identity(value: Any, expected: Mapping[str, Any]) -> boo
 
 
 _DISPATCH_CONTEXT = threading.local()
+_COMMAND_TRANSPORT = ContextVar("otto_command_transport", default=None)
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
-                                 "effective-context", "whoami",
+                                 "effective-context", "whoami", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                                  "manager-assessment", "manager-assessment-pool",
                                  "run-worker", "worker-status", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
@@ -108,7 +110,7 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
     # finite child bookkeeping continue through the same custodian.
     return (request.get("command") in {"start-manager", "run-worker",
                 "start-retained-worker", "start-retained-help", "manager-worker-result",
-                "manager-task-settlement", "manager-help-result", "request-help", "request-advice"}
+                "manager-task-settlement", "manager-help-result", "request-help", "request-advice", "start-retained-child", "parent-child-result"}
             or request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
             or request.get("command") == "operating-setup" and request.get("operation") == "activate"
             or request.get("command") == "execution-control" and request.get("operation") == "resume")
@@ -137,6 +139,8 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
             and (request.get("operation") == "preview" or request.get("setup") is None
                  and request.get("request_key") is None and request.get("expected_setup_ref") is None)):
         return "admitted"
+    if request.get("command") in {"start-retained-child", "parent-child-result"}:
+        return "retained"
     if request.get("command") == "execution-control" and request.get("operation") == "resume":
         return "retained"
     if request.get("command") in _REENTRANT_COMMANDS:
@@ -305,7 +309,31 @@ class ExecutionHost:
             raise result["error"]
         return result["value"]
 
+    def command_handle(self) -> Any:
+        return _COMMAND_TRANSPORT.get()
+
     def _call_bound(self, request: Mapping[str, Any], ingress: Any) -> Any:
+        request = dict(request)
+        request_id = request.pop("transport_request_id", None)
+        transport = getattr(ingress, "transport", None)
+        if request_id is not None and (transport != "unix-socket" or not isinstance(request_id, str)
+                or len(request_id) != 32 or any(c not in "0123456789abcdef" for c in request_id)):
+            raise ValueError("native command transport handle must be 32 hexadecimal characters")
+        if transport == "file-ipc":
+            name = getattr(ingress.handle, "name", "")
+            request_id = name[len("request-"):-len(".json")] if name.startswith("request-") and name.endswith(".json") else None
+        outer = None if request_id is None else {"transport": transport, "request_id": request_id,
+                    "retained": transport == "file-ipc"}
+        token = _COMMAND_TRANSPORT.set(outer)
+        try:
+            result = self._call_bound_command(request, ingress)
+            if outer is not None and isinstance(result, Mapping):
+                return {**result, "outer_command": outer}
+            return result
+        finally:
+            _COMMAND_TRANSPORT.reset(token)
+
+    def _call_bound_command(self, request: Mapping[str, Any], ingress: Any) -> Any:
         from .identity_context import HostCallerBinding, check_caller_claims
         identity_read = request.get("command") in {"whoami", "effective-context"}
         claims = {"caller_principal", "caller_assignment_ref", "caller_generation", "caller_native_session_id",
@@ -339,16 +367,27 @@ class ExecutionHost:
             return {"outcome": "error", "error": type(exc).__name__, "message": str(exc),
                     "provider_called": False, "effects_started": False,
                     "next_action": "refresh the trusted caller binding and current owner authorization"}
-        result = self.handler(clean)
+        bound = getattr(self.handler, "dispatch_bound", None)
+        result = bound(context, clean) if callable(bound) else self.handler(clean)
         return dict(result, caller_context=context,
                     target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean})
 
     def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
         try:
+            if self._closing and _starts_work(request):
+                return {"outcome": "held", "reason": "owner host is draining",
+                        "provider_called": False, "effects_started": False, "retry": False}
             # The manager-only planning write uses the same custodian pump,
             # with socket peer authorization before its finite public effect.
-            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author"}:
-                return self._status_read(request, lambda: self._call_bound(request, ingress))
+            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker"}:
+                def finite():
+                    previous = getattr(_DISPATCH_CONTEXT, "value", None)
+                    _DISPATCH_CONTEXT.value = (self, threading.get_ident(), False)
+                    try:
+                        return self._call_bound(request, ingress)
+                    finally:
+                        _DISPATCH_CONTEXT.value = previous
+                return self._status_read(request, finite)
             with self._command_lock:
                 if self._closing and _starts_work(request):
                     return {"outcome": "held", "reason": "owner host is draining",
@@ -359,7 +398,7 @@ class ExecutionHost:
                 _DISPATCH_CONTEXT.value = (self, threading.get_ident(),
                     (request.get("command") == "manager-continue" and request.get("operation") == "dispatch")
                     or (request.get("command") == "execution-control" and request.get("operation") == "resume")
-                    or request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result"})
+                    or request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result", "start-retained-child", "parent-child-result"})
                 try:
                     return self._call_bound(request, ingress)
                 finally:
@@ -481,7 +520,7 @@ class ExecutionHost:
                                 "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
                         from .identity_context import HostIngress
                         result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
-                    if (command in {"manager-worker-result", "manager-help-result"} and result.get("outcome") == "pending"
+                    if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result"} and result.get("outcome") == "pending"
                             and result.get("provider_called") is False and result.get("effects_started") is False):
                         pending = self.directory / ("pending-" + token + ".json")
                         if not pending.exists():
@@ -612,7 +651,7 @@ class ExecutionHost:
             raise RuntimeError("worker submission requires its serialized command owner")
         if self._closing:
             raise RuntimeError("execution host is draining; no new worker may be admitted")
-        if request.get("command") not in {"start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result"}:
+        if request.get("command") not in {"start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result", "start-retained-child", "parent-child-result"}:
             raise ValueError("only prepared work or an observed result/completion continuation may be retained")
         encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
         token = hashlib.sha256(encoded.encode()).hexdigest()

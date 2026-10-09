@@ -28,8 +28,39 @@ from .orchestrator_route import (
 from .herzchen_adapter import HerzchenAdapterError, HerzchenCodexAdapter, JsonlHostTurnContextReader
 
 from .owner_runtime import CanonicalRoleRuntime, OwnerRoleRuntimeError
+from .adapter_conformance import (
+    SCHEMA as ADAPTER_CONTRACT_SCHEMA,
+    AdapterContractError,
+    AdapterConformanceFailure,
+    AdapterSurface,
+    BASELINE_SCHEMA,
+    CLI_CONTRACT,
+    ConformanceCase,
+    ConformanceReport,
+    bounded_result_view,
+    capability_inventory,
+    cli_contract,
+    delivery_identity,
+    d01_baseline_artifact,
+    exact_lookup,
+    normalize_pins,
+    parent_binding,
+    request_fingerprint,
+    run_conformance,
+    scope_identity,
+    subtract_compatible_overlap,
+    validate_caller_claims,
+    validate_d01_baseline_artifact,
+    validate_native_proof,
+    validate_parent_binding,
+)
+
+from .claude_cli import ClaudeBindingError, ClaudeCliTransport, ClaudeStream, LauncherPin, MacWriteScope
+from .claude_adapter import ClaudeWorkerAdapter, ClaudeNativeResultVerifier
 
 __all__ = [
+    "ClaudeBindingError", "ClaudeCliTransport", "ClaudeStream", "LauncherPin", "MacWriteScope",
+    "ClaudeWorkerAdapter", "ClaudeNativeResultVerifier",
     "HerzchenAttemptCapture", "OwnerDueRecordAttemptCapture",
     "invoke_canonical_assignment", "prepare_canonical_assignment_role_brief",
     "prepare_canonical_callback", "CanonicalRoleRuntime", "OwnerRoleRuntimeError",
@@ -56,4 +87,28 @@ __all__ = [
     "HerzchenAdapterError",
     "HerzchenCodexAdapter",
     "JsonlHostTurnContextReader",
+    "ADAPTER_CONTRACT_SCHEMA",
+    "AdapterContractError",
+    "AdapterConformanceFailure",
+    "AdapterSurface",
+    "BASELINE_SCHEMA",
+    "CLI_CONTRACT",
+    "ConformanceCase",
+    "ConformanceReport",
+    "bounded_result_view",
+    "capability_inventory",
+    "cli_contract",
+    "delivery_identity",
+    "d01_baseline_artifact",
+    "exact_lookup",
+    "normalize_pins",
+    "parent_binding",
+    "request_fingerprint",
+    "run_conformance",
+    "scope_identity",
+    "subtract_compatible_overlap",
+    "validate_caller_claims",
+    "validate_d01_baseline_artifact",
+    "validate_native_proof",
+    "validate_parent_binding",
 ]

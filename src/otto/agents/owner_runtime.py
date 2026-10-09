@@ -36,6 +36,8 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         self.source_result_validator = None
         self.completed_scope_validator = None
         self.manager_command_contract = None
+        from .native_result_verifier import CodexNativeResultVerifier
+        self.native_result_verifier = CodexNativeResultVerifier()
 
     def record(self, envelope: Mapping[str, Any]) -> Mapping[str, Any]:
         brief = envelope.get("resource_evidence", {}).get("brief", {})
@@ -184,7 +186,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
                                        resource["brief_sha256"], authorization)
         raw = value.get("raw_result") or {}
         context = (raw.get("work_envelope") or {}).get("host_evidence", {}).get("otto_host_turn_context")
-        parsed = HerzchenCodexAdapter._observed_context(context,
+        parsed = self.native_result_verifier.observe_context(context,
             expected_session_id=value.get("physical_session_id"), expected_turn_id=value.get("observed_turn_id"),
             expected_profile=value.get("requested_profile"), expected_read_targets=contract.get("read_targets"),
             expected_read_scope=contract.get("read_scope"))
@@ -367,7 +369,8 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
                 or any(authorization.get(k) != v for k, v in expected.items())
                 or evidence.get("owner_delivery_authorization") != authorization
                 or evidence.get("task_ref") != self.task_ref or evidence.get("assignment_ref") != self.assignment_ref
-                or evidence.get("generation") != self.generation or evidence.get("operation") != "resume"
+                or evidence.get("generation") != self.generation
+                or evidence.get("operation") != getattr(self.native_result_verifier, "native_work_operation", "resume")
                 or evidence.get("delivered_brief_digest") != brief_digest
                 or not isinstance(contract, Mapping) or evidence.get("delivered_contract_digest") != digest(contract)):
             raise OwnerRoleRuntimeError("analytical publication owner/brief binding changed")
@@ -377,8 +380,8 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         ref = answer.get("host_record") if isinstance(answer, Mapping) else None
         text = answer.get("text") if isinstance(answer, Mapping) else None
         if (not isinstance(text, str) or not text.strip()
-                or answer.get("format") != "codex-cli-0.158.0-native-final-text-v1" or answer.get("phase") != "final_answer"
-                or not isinstance(ref, Mapping) or ref.get("item_type") != "AgentMessage" or ref.get("event_type") != "item_completed"
+                or not self.native_result_verifier.supports_final_answer(answer)
+                or not isinstance(ref, Mapping)
                 or not isinstance(ref.get("item_id"), str) or not ref["item_id"].strip()
                 or ref.get("session_id") != value.get("physical_session_id") or ref.get("turn_id") != evidence.get("turn_id")):
             raise OwnerRoleRuntimeError("analytical publication lacks the exact native final text reference")
@@ -400,7 +403,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
                    "worker_content": [text], "task_bound_evidence": evidence}
         if isinstance(receipt, Mapping) and receipt.get("observed_profile") is not None:
             context["effective_profile"] = receipt["observed_profile"]
-        HerzchenCodexAdapter._observed_context(context, expected_session_id=value["physical_session_id"],
+        self.native_result_verifier.observe_context(context, expected_session_id=value["physical_session_id"],
             expected_turn_id=evidence["turn_id"], expected_profile=value.get("requested_profile"),
             expected_read_targets=contract.get("read_targets"), expected_read_scope=contract.get("read_scope"))
         if contract.get("source_inspection") is not None:
@@ -412,6 +415,30 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             raise OwnerRoleRuntimeError("unknown assignment result requires reconciliation")
         result_owner.record(value)
         saved = _json(result_owner.reader.get_receipt(key))
+        # Capture the small conclusion once in the existing receipt. Pure
+        # reads need no transcript parse/hash or assignment-history scan.
+        summary = {"result_ref": saved["result_ref"], "result_digest": evidence["result_digest"],
+                   "assignment_ref": self.assignment_ref, "generation": self.generation,
+                   "logical_request_key": key, "conclusion": text[:4096],
+                   "conclusion_sha256": answer["text_sha256"], "utf8_bytes": answer["utf8_bytes"],
+                   "verification": {"context_digest_verified": True,
+                                    "observed_turn_id": value.get("observed_turn_id")},
+                   "usage": {"state": "unavailable", "reason": "no qualified native usage summary retained"}}
+        # A finite host-selected verifier can retain its already-verified
+        # capture-time projection. Provider JSON never chooses this seam.
+        summary_capture = getattr(self.native_result_verifier, "capture_summary", None)
+        captured_artifacts = None
+        if callable(summary_capture):
+            projection = summary_capture(evidence, result_ref=saved["result_ref"])
+            summary["usage"] = projection["usage"]
+            captured_artifacts = projection["artifacts"]
+        record = self._record()
+        if (record.host_evidence or {}).get("captured_result_summary") != summary:
+            from dataclasses import replace
+            self.due_port.save_due(record.schedule_id, replace(record, host_evidence={
+                **(record.host_evidence or {}), "captured_result_summary": summary,
+                **({"captured_artifacts": captured_artifacts} if captured_artifacts is not None else {})}).to_dict(),
+                request_id="otto-result-summary:" + key, expected_version=record.version)
         return {"result_ref": saved["result_ref"], "result_digest": evidence["result_digest"]}
 
 
@@ -429,7 +456,7 @@ class CanonicalRoleRuntime:
                  runtime_probe: Optional[Callable[[], Optional[Mapping[str, Any]]]] = None,
                  result_capture_factory: Optional[Callable[..., HerzchenAttemptCapture]] = None,
                  acceptance_readiness: Any = None, allowance_readiness: Any = None,
-                 completed_task_readiness: Any = None) -> None:
+                 completed_task_readiness: Any = None, native_result_verifier: Any = None) -> None:
         required = ("reader", "assignments_port", "content_port", "binding")
         if operations is None or any(getattr(operations, name, None) is None for name in required):
             raise TypeError("operations must be the finite owner-backed Herzchen operations")
@@ -453,6 +480,8 @@ class CanonicalRoleRuntime:
         self.acceptance_readiness = acceptance_readiness
         self.allowance_readiness = allowance_readiness
         self.completed_task_readiness = completed_task_readiness
+        from .native_result_verifier import CodexNativeResultVerifier, require_native_verifier
+        self.native_result_verifier = require_native_verifier(native_result_verifier or CodexNativeResultVerifier())
 
     def prepare_execution_readiness(self, *, due: Any) -> Mapping[str, Any]:
         """Resolve exact BASE and execution scope without admitting an effect."""
@@ -584,6 +613,7 @@ class CanonicalRoleRuntime:
             expected_target=target,
             scope_validator=validate_current_owner_scope,
         )
+        capture.native_result_verifier = self.native_result_verifier
         content = snapshots["mandate"].get("payload", {})
         contract = content.get("instruction_contract", {}) if isinstance(content, Mapping) else {}
         if (role == "manager" and contract.get("authority", {}).get("effect_profile") == "workspace-write-manager"
@@ -938,7 +968,7 @@ class CanonicalRoleRuntime:
             delivered_brief=brief, delivered_authorization=authorization)
         if context != retained["work_envelope"]["host_evidence"]["otto_host_turn_context"]:
             raise OwnerRoleRuntimeError("actual native trace differs from original retained host context")
-        observed = HerzchenCodexAdapter._observed_context(context, expected_session_id=session,
+        observed = self.native_result_verifier.observe_context(context, expected_session_id=session,
             expected_turn_id=turn, expected_profile=prior["requested_profile"],
             expected_read_targets=contract.get("read_targets"), expected_read_scope=contract.get("read_scope"))
         evidence = observed["task_bound_evidence"]
