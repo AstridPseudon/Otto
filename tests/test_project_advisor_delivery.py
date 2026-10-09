@@ -1097,7 +1097,7 @@ class OwnerAdmissionTests(unittest.TestCase):
             binding.native_trace_path = str(trace)
             binding.trusted_thread_reader = None
             binding.occurrence_deadline = None
-            path, boundary, header = binding._resume_trace_boundary("manager-session")
+            path, boundary, header, snapshot = binding._resume_trace_boundary("manager-session")
             with trace.open("ab") as stream:
                 for event in (
                     {"type": "event_msg", "payload": {
@@ -1114,7 +1114,7 @@ class OwnerAdmissionTests(unittest.TestCase):
                 ):
                     stream.write((json.dumps(event) + "\n").encode())
                 stream.write(b'{"type":"partial')
-            tail = binding._resume_trace_tail(path, boundary, header)
+            tail = binding._resume_trace_tail(path, boundary, header, snapshot)
         self.assertLess(len(tail), 2048)
         self.assertNotIn(b"partial", tail)
         self.assertEqual(json.loads(tail.splitlines()[0])["payload"]["session_id"], "manager-session")

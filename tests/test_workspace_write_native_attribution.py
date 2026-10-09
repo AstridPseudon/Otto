@@ -196,11 +196,11 @@ def _linked_context(*, include_read=False, include_failed_read=False, include_se
             binding.native_trace_path = str(path)
             binding.trusted_thread_reader = None
             binding.occurrence_deadline = None
-            trace_path, boundary, header = binding._resume_trace_boundary(SESSION)
+            trace_path, boundary, header, snapshot = binding._resume_trace_boundary(SESSION)
             with path.open("ab") as stream:
                 stream.write(("\n".join(lines[1:]) + "\n").encode())
             lines = binding._resume_trace_tail(
-                trace_path, boundary, header,
+                trace_path, boundary, header, snapshot,
             ).decode().splitlines()
     value = _native_host_context(
         lines,

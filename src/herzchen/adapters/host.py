@@ -18,6 +18,7 @@ import math
 import shlex
 import zlib
 import signal
+import stat
 import threading
 import time
 from urllib.parse import unquote, urlparse
@@ -569,12 +570,16 @@ class CodexCliBinding(HostPort):
             raise ValueError("native trace session is missing, ambiguous or different")
         return path, data
 
-    def _resume_trace_boundary(self, session_id: str) -> tuple[str, int, bytes]:
+    def _resume_trace_boundary(self, session_id: str) -> tuple[str, int, bytes, tuple[int, int, bytes]]:
         """Snapshot an existing conversation without rereading its full history."""
         path = self._trace_path(session_id)
         trace = Path(path)
-        size = trace.stat().st_size
-        with trace.open("rb") as stream:
+        descriptor = os.open(trace, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("native trace is not a regular file")
+            size = metadata.st_size
             first = stream.readline(MAX_SUBMISSION_SIZE + 1)
             if len(first) > MAX_SUBMISSION_SIZE or not first.endswith(b"\n"):
                 raise ValueError("native trace session header is unavailable")
@@ -590,16 +595,29 @@ class CodexCliBinding(HostPort):
                 stream.seek(size - 1)
                 if stream.read(1) != b"\n":
                     raise ValueError("native trace boundary is incomplete")
-        return path, size, first
+            stream.seek(max(0, size - 4096))
+            boundary_tail = stream.read(size - max(0, size - 4096))
+        return path, size, first, (metadata.st_dev, metadata.st_ino, boundary_tail)
 
     @staticmethod
-    def _resume_trace_tail(path: str, boundary: int, session_header: bytes) -> bytes:
+    def _resume_trace_tail(path: str, boundary: int, session_header: bytes,
+                           snapshot: tuple[int, int, bytes] | None = None) -> bytes:
         """Read the authentic session header and current occurrence records."""
-        with Path(path).open("rb") as stream:
-            stream.seek(0, 2)
-            current_size = stream.tell()
-            if current_size < boundary:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or snapshot is not None
+                    and (metadata.st_dev, metadata.st_ino) != snapshot[:2]):
+                raise ValueError("native trace file identity changed")
+            if stream.read(len(session_header)) != session_header:
+                raise ValueError("native trace session header changed")
+            if metadata.st_size < boundary:
                 raise ValueError("native trace boundary changed")
+            if snapshot is not None:
+                boundary_tail = snapshot[2]
+                stream.seek(boundary - len(boundary_tail))
+                if stream.read(len(boundary_tail)) != boundary_tail:
+                    raise ValueError("native trace historical boundary changed")
             stream.seek(boundary)
             data = stream.read(32 * 1024 * 1024 + 1)
         if len(data) > 32 * 1024 * 1024:
@@ -669,6 +687,7 @@ class CodexCliBinding(HostPort):
         started = _now()
         resume_boundary = None
         resume_header = None
+        resume_snapshot = None
         trace_path = None
         delivered_authorization = None
         prompt = self.prompt
@@ -745,7 +764,7 @@ class CodexCliBinding(HostPort):
                          "exit_status": None, "stdout": "", "stderr": reason,
                          "delivery_state": "not_started", "reconciliation": reason})
             if request.operation == HostOperation.RESUME and (self.native_trace_path or self.trusted_thread_reader):
-                trace_path, resume_boundary, resume_header = self._resume_trace_boundary(
+                trace_path, resume_boundary, resume_header, resume_snapshot = self._resume_trace_boundary(
                     request.identity.physical_session_id
                 )
         except Exception as exc:  # Trusted read/admission ports may fail; never launch.
@@ -783,7 +802,7 @@ class CodexCliBinding(HostPort):
                     )
                     admitted = None
                     while admitted is None and self.monotonic_clock() < deadline:
-                        data = self._resume_trace_tail(trace_path, resume_boundary, resume_header)
+                        data = self._resume_trace_tail(trace_path, resume_boundary, resume_header, resume_snapshot)
                         admitted = _select_admitted_turn(
                             data.decode("utf-8").splitlines(),
                             session_id=request.identity.physical_session_id,
@@ -887,10 +906,14 @@ class CodexCliBinding(HostPort):
                 # bounded operation after useful work has finished.
                 trace_deadline = self.monotonic_clock() + 30 if not self.extended_timeout else None
                 if resume_boundary is not None:
-                    current_path = self._trace_path(observed_session, deadline=trace_deadline)
-                    if current_path != trace_path:
-                        raise ValueError("native trace path changed")
-                    trace = self._resume_trace_tail(current_path, resume_boundary, resume_header)
+                    # Reuse only this invocation's already authenticated exact-session
+                    # locator. Recheck its file/header/boundary before reading the
+                    # bounded append tail; no second metadata RPC after useful work.
+                    if trace_deadline is not None and self.monotonic_clock() >= trace_deadline:
+                        raise ValueError("trace deadline exhausted")
+                    trace = self._resume_trace_tail(trace_path, resume_boundary, resume_header, resume_snapshot)
+                    if trace_deadline is not None and self.monotonic_clock() >= trace_deadline:
+                        raise ValueError("trace deadline exhausted")
                 else:
                     current_path, trace = self._trace(observed_session, deadline=trace_deadline)
                 native_lines = trace.decode("utf-8").splitlines()
