@@ -34,7 +34,7 @@
     "max_calls": 3
   },
   "review_stages": [],
-  "assurance_selection": "Record downside, reversibility, observed proof and residual risk before admitting work; no implicit final stage.",
+  "assurance_selection": "Planning only: no active stages. Before new substantial delivery, explicitly adopt one final independent gpt-6-astra high review with max_calls 1, exact criteria and frozen candidate. Select intermediate reviews proportionately; existing instance policy and user overrides prevail.",
   "scheduled_checks": [],
   "project_advisor_policy": {
     "resource": "protocols/project-advisor.json",

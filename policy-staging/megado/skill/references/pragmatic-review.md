@@ -1,5 +1,7 @@
 # Proportionate verification and review
 
+For new substantial delivery, the explicit final Astra High default in [the project lifecycle](project-lifecycle.md) applies even when individual tasks are directly testable. The zero-review option below applies to ordinary bounded work and planning, or an explicit user override. Select intermediate reviews proportionately; do not add a Luna/Sol/Astra sequence. Existing adopted policies and budgets remain unchanged.
+
 The manager selects the cheapest sufficient evidence for the outcome. Consider downside, blast radius, reversibility, what can be tested or tried directly and the residual question. Record a short rationale at a material boundary, not a risk score or form per edit.
 
 | Need | Primary method | Independent model-review allowance when selected |

@@ -1,6 +1,6 @@
 ---
 name: megado
-description: "Plan and deliver substantial work with explicit coordinator/oracle roles, evidence-first execution, and pragmatic risk-weighted review. Use when the user requests Megado or a coordinated plan/execution run; supports planning-only work."
+description: "Plan and deliver substantial work with explicit coordinator/oracle roles, evidence-first execution, and pragmatic risk-weighted review. Use when the user requests Megado or a coordinated plan/execution run; supports Otto project setup, execution, review and completion, or planning-only work."
 ---
 
 # Megado
@@ -10,6 +10,21 @@ description: "Plan and deliver substantial work with explicit coordinator/oracle
 **The coordinator runs the agreed process; the designated oracle owns consequential judgment. Use economical workers to establish facts; request a bounded independent critique only when an unresolved complexity question can change the plan; use the declared normal or XHARD reviewer. Deliver the smallest complete outcome that preserves required behavior. Test continuously, review proportionately, and add process only for a concrete risk.**
 
 User instructions, including planning-only scope and review overrides, control the run. Do not turn a discussion of a desirable future capability into an implementation obligation. Do not require the user to override default role assignments to retain their chosen judgment owner.
+
+## Start here: a project from idea to completion
+
+Use [the project lifecycle](references/project-lifecycle.md) when creating,
+queueing, activating, managing or closing a project. It maps each phase to its
+saved outcome, responsible role and supported operation. Megado supplies the
+working method; Otto owns project identity, authoring, dispatch and accounting.
+Begin with the user's requested phase and reuse existing project state.
+
+For a new substantial delivery, include a final independent **Astra High** review
+of the integrated outcome and its evidence. Declare that stage and its finite
+allowance when preparing execution; the default is one review, with any needed
+repeat requiring an available explicitly adopted allowance. Planning-only work
+does not activate this stage. Existing projects retain their adopted policy and
+consumed budgets unless explicitly amended. User review overrides prevail.
 
 ## Choose the mode
 
@@ -65,7 +80,7 @@ The coordinator may advance on required passing tests and an uncontested stage P
 
 XHARD means irreducible sustained subtle reasoning with plausible non-local mistakes that ordinary checks may miss and that the normal model cannot reliably handle from a precise brief. Decompose and diagnose brief/tool/environment failures first. Size, duration, importance or one failure is insufficient. The coordinator requests oracle judgment if escalation classification itself is unclear.
 
-**Declare the run once using [the run template](templates/run.yaml).** In file mode copy it to `$OTTO_DIR/run.yaml`; in native mode adopt the corresponding versioned configuration. Apply its default role slots and model bindings and select meaningful stage triggers, honoring the user's instructions, and link it from agent_goal.md. It is the single model/stage/budget declaration; do not duplicate divergent settings in prose. Read [configuration semantics](references/run-config.md) before creating or changing it. Preserve the keys `coordinator`, `worker_normal`, `worker_xhard`, `reviewer_normal`, `reviewer_xhard`, `oracle` and `final_reviewer`; each key names a responsibility slot whose model/reasoning binding can be replaced independently. The defaults for this edition are Luna medium for coordinator, Luna high for normal implementation, Luna Extra High for normal independent review, Sol high for XHARD implementation/review, and Astra high for consequential oracle or a selected holistic final reviewer. No final model review is implicit; select only the needed assessment scopes under the proportionality guide. Use these defaults when no override exists. Oracle budget defaults to three calls. Existing explicit run choices win; do not silently replace them with new defaults. No automatic switch of the current host model or running agents occurs by editing YAML.
+**Declare the run once using [the run template](templates/run.yaml).** In file mode copy it to `$OTTO_DIR/run.yaml`; in native mode adopt the corresponding versioned configuration. Apply its default role slots and model bindings and select meaningful stage triggers, honoring the user's instructions, and link it from agent_goal.md. It is the single model/stage/budget declaration; do not duplicate divergent settings in prose. Read [configuration semantics](references/run-config.md) before creating or changing it. Preserve the keys `coordinator`, `worker_normal`, `worker_xhard`, `reviewer_normal`, `reviewer_xhard`, `oracle` and `final_reviewer`; each key names a responsibility slot whose model/reasoning binding can be replaced independently. The defaults for this edition are Luna medium for coordinator, Luna high for normal implementation, Luna Extra High for normal independent review, Sol high for XHARD implementation/review, and Astra high for consequential oracle or a selected holistic final reviewer. For new substantial delivery, explicitly select the final Astra High stage described above; select intermediate assessment scopes proportionately. Use these defaults when no override exists. Oracle budget defaults to three calls. Existing explicit run choices win; do not silently replace them with new defaults. No automatic switch of the current host model or running agents occurs by editing YAML.
 
 The oracle is invoked for a concrete initial direction decision when not already settled, consequential new evidence, contested findings, uncertain escalation or exceptions. Routine dispatch, passing tests and uncontested completion within the mandate do not require reassurance calls. An oracle call is a decision request, not a disguised extra review.
 
@@ -235,7 +250,7 @@ For delivery, use [execution mechanics](references/execution.md), dispatch unblo
 
 Use [proportionate verification and review](references/pragmatic-review.md). The manager first asks what direct test, retained fixture, actual operation or installed use can establish the outcome, then which material uncertainty still needs an independent judgment. A gate is an acceptance boundary, not necessarily a model call.
 
-For a new run, select a policy from actual downside, blast radius, reversibility, testability and residual uncertainty. Low-risk testable work may have no model-review stages. A bounded local residual judgment can use one independent Luna Extra High review; a justified nonlocal XHARD question uses Sol High and can justify at most two selected calls. Astra High is for a consequential oracle or a selected whole-system/strategic scope, normally one call with at most one targeted repeat. These are starting guidelines, not a fixed stage tree or multiplied per-task budgets. User-required reviews, actual limits and already-adopted stages remain binding. No implicit final review is appended to `run.yaml`.
+For a new run, select a policy from actual downside, blast radius, reversibility, testability and residual uncertainty. Low-risk testable work may have no model-review stages. A bounded local residual judgment can use one independent Luna Extra High review; a justified nonlocal XHARD question uses Sol High and can justify at most two selected calls. Astra High is for a consequential oracle or a selected whole-system/strategic scope, normally one call with at most one targeted repeat. These are starting guidelines, not a fixed stage tree or multiplied per-task budgets. User-required reviews, actual limits and already-adopted stages remain binding. For new substantial delivery, record the final Astra High stage in the execution configuration before activation; the planning template does not itself activate it.
 
 Normal independent review uses `reviewer_normal` (Luna Extra High); XHARD review uses `reviewer_xhard` (Sol High) in this profile; route metadata is independent of actual model identity. The final reviewer slot is used for a selected holistic judgment, not every code check. Oracle, review and any scheduled-advice calls remain separately accounted. Factual workers do not issue hidden approval verdicts.
 
