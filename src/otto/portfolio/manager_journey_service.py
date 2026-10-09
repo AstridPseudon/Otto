@@ -654,6 +654,9 @@ class ManagerJourneyService:
                 **handle, direction_ref=request["document_ref"],
                 expected_binding_ref=request["expected_binding_ref"], logical_request_key=key)
             self.server.state["orchestrator_assignment_ref"] = result["assignment_ref"]
+            if self.server.state.get("root_help_binding") is not None:
+                self.server.state["root_help_binding"] = {**self.server.state["root_help_binding"],
+                    "assignment_ref": result["assignment_ref"], "generation": result["generation"]}
             if "project_ref" in self.server.state:
                 self._refresh_refs()
             else:self.server._save_state()
