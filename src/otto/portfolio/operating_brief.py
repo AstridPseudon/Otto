@@ -22,6 +22,30 @@ SNAPSHOT_SCHEMA_REVISION = "otto.operating-snapshot.v1"
 _ROLES = frozenset({"orchestrator", "manager", "worker", "project_advisor"})
 _USER_FIELDS = ("mandate", "user_constraints")
 _AGENT_FIELDS = ("priorities", "operational_constraints", "continuation", "links")
+_ADAPTER_ROLE_BASE_GUIDANCE = (
+    " For the maintained agent-adapter route, use the exact tool_entrypoint emitted by the current role "
+    "introduction. The currently inspected installed prefix is "
+    "`/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9 "
+    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-agent-adapter-conformance-20261009/"
+    "controller/manager_ctl.py`; this is host evidence, not a borrowed identity or package-adoption claim. "
+    "A manager/coordinating worker launches only through the authenticated owner route with "
+    "`run-worker --task TASK --route normal|xhard --principal CHILD --request-key KEY --focus FOCUS`, "
+    "then retains distinct outer command, start/transport and durable occurrence handles. Use pure "
+    "`lookup-occurrence --scope SCOPE --request-key KEY --request-input ORIGINAL_INPUT`, "
+    "`follow-occurrence --occurrence OCCURRENCE --timeout-seconds 2`, `read-result --occurrence OCCURRENCE`, "
+    "and bounded `read-artifact --occurrence OCCURRENCE --artifact-ref REF --offset 0 --max-bytes 65536`; "
+    "`consume-result --occurrence OCCURRENCE` is the authenticated parent receipt. After a lost reply, "
+    "use exact `command-status --request-id HANDLE`, never a new key. Read original pins and reject changed "
+    "input, foreign parent, ambiguity or missing scope. If the active parent turn blocks delivery, return/yield "
+    "the retained handle and next action; never overlap parent turns, wait indefinitely, create hidden capacity, "
+    "borrow manager credentials or redelegate an unchanged leaf brief. Resolve defaults as authorized override "
+    "then project/role configuration then user default, and retain model/reasoning/adapter/resource provenance. "
+    "`execution-control --operation read|recover|stop` applies only to the exact owned occurrence; recover may "
+    "settle and stop fences the occurrence without proving native termination. A result is not task acceptance: "
+    "separate useful admission, native terminality, required capture, settlement, parent delivery and assessment. "
+    "Usage is observed, invalid or unavailable, never guessed as zero or money. Claude in this scope is mechanical "
+    "only; do not perform or claim paid initialization/inference/resume. External-root launch remains a host gap."
+)
 ROLE_OPERATING_CONTRACTS = {
     "orchestrator": (
         "Own human-facing portfolio coordination: delegate concrete projects to their assigned managers, "
@@ -31,6 +55,7 @@ ROLE_OPERATING_CONTRACTS = {
         "and route mandate changes through the owner. Operational help is for a blocked route; advice is "
         "for project judgment and never becomes an owner prohibition. Inspect the exact current destination "
         "and retained receipt before continuing, replacing a role or reconciling an unknown effect."
+        + _ADAPTER_ROLE_BASE_GUIDANCE
     ),
     "manager": (
         "Coordinate and independently advance assigned ready tasks through the supported worker operations, "
@@ -48,6 +73,7 @@ ROLE_OPERATING_CONTRACTS = {
         "condition, or reject with a reason. Use task-list-author for pending canonical tasks and alias readback, "
         "then existing normal/XHARD run-worker only after current scope/readiness is satisfied. Task authoring "
         "grants no acceptance, execution or additional allowance; retain completed findings and prior debits."
+        + _ADAPTER_ROLE_BASE_GUIDANCE
     ),
     "worker": (
         "Execute only the prescribed task within its current project, assignment, generation, resources, and "
@@ -55,6 +81,7 @@ ROLE_OPERATING_CONTRACTS = {
         "native identity, and unresolved responsibility through the manager's canonical result path. Do not "
         "accept your own work, expand scope or budget, create unassigned work, or message the orchestrator "
         "routinely. Propose necessary changes to the manager and wait when no authorized task action remains."
+        + _ADAPTER_ROLE_BASE_GUIDANCE
     ),
     "project_advisor": (
         "Advise one assigned manager on that manager's project using current goals, acceptance criteria, "

@@ -98,7 +98,8 @@ class ManagerJourneyService:
                  workspace: str | Path, policy: Any = None,
                  orchestrator_principal: str | None = None, observe_schedules: Any = None,
                  help_reply_authorizer: Any = None, authoring_authorizer: Any = None,
-                 adapter_selection: Any = None, delegation_policy: Mapping[str, Any] | None = None) -> None:
+                 adapter_selection: Any = None, delegation_policy: Mapping[str, Any] | None = None,
+                 external_execution_authorizer: Any = None, external_execution_policy: Mapping[str, Any] | None = None) -> None:
         self.server, self.host = server, host
         self._host_execution = server._execution
         self.run_path, self.workspace = Path(run_path).resolve(), Path(workspace).resolve()
@@ -110,6 +111,8 @@ class ManagerJourneyService:
         self.authoring_authorizer = authoring_authorizer
         self.adapter_selection = adapter_selection
         self.delegation_policy = None if delegation_policy is None else json_value(delegation_policy)
+        self.external_execution_authorizer = external_execution_authorizer
+        self.external_execution_policy = None if external_execution_policy is None else json_value(external_execution_policy)
 
     def _execution(self, **options: Any) -> Any:
         """Bind every execution path to the installed owner's assessment policy.
@@ -407,6 +410,9 @@ class ManagerJourneyService:
                        "start-retained-child", "parent-child-result"}:
             from .worker_occurrences import dispatch_occurrence
             return dispatch_occurrence(self, request, _CALLER.get())
+        if command == "owner-execution":
+            from .external_owner_execution import dispatch
+            return dispatch(self, request)
         if command == "owner-context":
             return self._owner_context(request)
         if command == "execution-control":
@@ -726,8 +732,13 @@ class ManagerJourneyService:
             pin = adoption["resource_ref"]
             resources.append({"ref": pin, "content": owner.content.read(ResourceRef.from_dict(pin))["content"],
                               "content_digest": adoption["content_digest"]})
+        execution = {"state": "configured" if self.external_execution_policy else "unavailable",
+            "policy": self.external_execution_policy,
+            "tool_entrypoint": self.server.state.get("external_execution_tool_entrypoint"),
+            "operations": ["launch", "lookup", "follow", "result", "artifact", "consume"],
+            "authority": "distinct protected owner execution grant; authoring and native credentials do not grant it"}
         return {**common, "outcome": "read", "read_only": True,
-                "shared_role_resources": resources, "assignment_direction": direction,
+                "external_execution": execution, "shared_role_resources": resources, "assignment_direction": direction,
                 "scope_direction": scope_direction,
                 "context_limit": "Canonical adopted root resources and direction only; this is not a native invocation or all-project context transcript."}
 
@@ -1112,7 +1123,8 @@ class ManagerJourneyService:
                 ResourceRef(ref.authority, ref.kind, ref.id)).ref.to_dict()
         self.server._save_state()
 
-    def _submit_worker(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _submit_worker(self, request: Mapping[str, Any], *, external_parent: Mapping[str, Any] | None = None,
+                       resource_assignment_ref: Mapping[str, Any] | None = None, read_only: bool = False) -> Mapping[str, Any]:
         self.commands._authorize()
         if self.host._closing:
             return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
@@ -1136,6 +1148,8 @@ class ManagerJourneyService:
             raise ValueError("project-wide worker key collides with changed intent or parent")
         if historical["outcome"] == "found":
             retained_due = self.server.due_port.read_due(historical["occurrence"]["schedule_id"])
+            if (retained_due["target"].get("launch_request") or {}).get("external_parent") != external_parent:
+                raise PermissionError("worker key belongs to another external responsibility")
             outcome = "replayed" if (retained_due["stop_state"] == "completed"
                 and retained_due["completion_state"] == "succeeded") else "retained"
             return {**historical, "outcome": outcome, "retry_provider": False,
@@ -1188,12 +1202,24 @@ class ManagerJourneyService:
         instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
             principal=principal, model=model, reasoning=reasoning, focus=focus,
             workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter, leaf=parent is not None)
+        if read_only:
+            contract["read_scope"] = "linked_context"
+            contract["allowed_operations"] = ["read_project_context", "inspect_recorded_effect", "return_result"]
+            contract["authority"].pop("effect_profile", None)
+            contract["authority"].pop("workspace_roots", None)
+            contract["authority"]["permitted_effects"] = ["read_delivered_context", "read_linked_sources", "return_result"]
+            contract["authority"]["forbidden_effects"] += ["file_write", "dispatch", "review", "acceptance"]
+            contract["bounded_operation"] = focus
+            contract["objective"] = "Inspect installed Adapter/D05 instructions and report exact commands and concrete discovery mismatches"
+            contract["acceptance_criteria"] = ["Return factual installed command and instruction evidence without verdicts or effects"]
+            instruction = focus
+            brief["mandate"] = "Inspect the delivered and linked installed instructions; return factual evidence only. Do not write files, dispatch, review, accept or spawn providers."
         from .resource_sync import resolve_assignment_attachments
         from .role_context import supporting_context
-        manager = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(state["assignment_ref"]))
+        manager = self.server.owner.assignments.command_port.get(ResourceRef.from_dict(resource_assignment_ref or state["assignment_ref"]))
         attachments = resolve_assignment_attachments({"ref": manager.ref.to_dict(), "role": manager.role,
             "generation": manager.generation, "payload": manager.payload},
-            self.server.owner.content.command_port, role="manager")
+            self.server.owner.content.command_port, role=manager.role)
         bases = [item for item in attachments if item["required"]]
         if len(bases) != 1:
             raise ValueError("worker delegation requires exactly one current adopted manager BASE")
@@ -1218,9 +1244,12 @@ class ManagerJourneyService:
                          "pins": {"supporting_resources": [{"ref": source["ref"], "sha256": source["content_sha256"]} for source in sources]}}
         launch_request = {"scope": scope, "input": dict(request), "selection": selection,
                           "fingerprint": digest([scope, dict(request), selection])}
+        if external_parent is not None:
+            launch_request["external_parent"] = json_value(external_parent)
+            launch_request["fingerprint"] = digest([scope, dict(request), selection, external_parent])
         prepared = app.assign_worker(project_ref=state["project_ref"], task_ref=task_ref,
             principal=principal, request_key=key, instructions=instruction, instruction_contract=contract,
-            brief=brief, model=model, reasoning=reasoning, timeout_seconds=1200,
+            brief=brief, model=model, reasoning=reasoning, profile="read-only" if read_only else "workspace-write", timeout_seconds=1200,
             supporting_refs=[source["ref"] for source in sources], parent=parent, launch_request=launch_request)
         if prepared.get("outcome") not in {"committed", "prepared"}:
             previous = (state.get("workers") or {}).get(task) or {}
@@ -1262,7 +1291,8 @@ def install_manager_journey_service(server: Any, *, run_path: str | Path, worksp
                                     policy: Any = None, orchestrator_principal: str | None = None,
                                     observe_schedules: Any = None,
                                     help_reply_authorizer: Any = None, authoring_authorizer: Any = None,
-                                    adapter_selection: Any = None, delegation_policy: Mapping[str, Any] | None = None) -> ManagerJourneyService:
+                                    adapter_selection: Any = None, delegation_policy: Mapping[str, Any] | None = None,
+                                    external_execution_authorizer: Any = None, external_execution_policy: Mapping[str, Any] | None = None) -> ManagerJourneyService:
     """Owner adoption hook, called once after the existing server.start().
 
     The owner installs a tested source snapshot, adds this handler composition,
@@ -1287,7 +1317,8 @@ def install_manager_journey_service(server: Any, *, run_path: str | Path, worksp
         workspace=workspace, policy=policy, orchestrator_principal=orchestrator_principal,
         observe_schedules=observe_schedules, help_reply_authorizer=help_reply_authorizer,
         authoring_authorizer=authoring_authorizer, adapter_selection=adapter_selection,
-        delegation_policy=delegation_policy)
+        delegation_policy=delegation_policy, external_execution_authorizer=external_execution_authorizer,
+        external_execution_policy=external_execution_policy)
     server._execution = service._execution
     host.handler = service
     return service

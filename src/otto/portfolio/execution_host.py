@@ -108,7 +108,8 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
     # Some nested commands can settle evidence AND admit a new effect. Keep
     # their original file handle while draining; read-only worker-status and
     # finite child bookkeeping continue through the same custodian.
-    return (request.get("command") in {"start-manager", "run-worker",
+    return (request.get("command") == "owner-execution" and request.get("operation") == "launch"
+            or request.get("command") in {"start-manager", "run-worker",
                 "start-retained-worker", "start-retained-help", "manager-worker-result",
                 "manager-task-settlement", "manager-help-result", "request-help", "request-advice", "start-retained-child", "parent-child-result"}
             or request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
@@ -118,6 +119,10 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
 
 def _nested_capability(request: Mapping[str, Any]) -> str:
     """Classify nested file operations without releasing owner custody."""
+    if request.get("command") == "owner-execution":
+        return ("admitted" if request.get("operation") in {"lookup", "follow", "result", "artifact"}
+                and not set(request) - {"command", "operation", "request_key", "original_request_key", "occurrence", "artifact_ref", "offset", "max_bytes"}
+                else "held")
     if request.get("command") == "owner-context":
         # External owner reads use the same serialized pump and exact
         # independently issued input grant. Classification is not authority;
