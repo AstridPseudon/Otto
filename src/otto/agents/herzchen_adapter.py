@@ -118,6 +118,7 @@ class HerzchenCodexAdapter:
     """
 
     owner_bound = True
+    owner_transport_only = True
 
     def __init__(
         self,
@@ -177,6 +178,8 @@ class HerzchenCodexAdapter:
         if not callable(authorizer):
             raise HerzchenAdapterError("trusted owner authorizer is required")
         socket, observer = self._role_native_capabilities(role=role, profile=profile)
+        from otto.portfolio.execution_host import ExecutionHost
+        observer = ExecutionHost.owner_callback(observer)
         bound = type(self)(
             owner=self.owner, source=self.source, worktree=self.worktree, launcher=self.launcher,
             requested_model=self.requested_model, requested_reasoning=self.requested_reasoning,

@@ -8,7 +8,7 @@ admitted children while their command/status surface remains available.
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 import hashlib
 import os
 import queue
@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping
 
 from .owner_readers import json_value
 from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correlation_id
+from .owner_completion import OwnerCompletion, after_owner
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -174,7 +175,8 @@ class ExecutionHost:
                  owner_path: str | Path | None = None,
                  socket_path: str | Path | None = None,
                  caller_binding_reader: Any = None, caller_context_resolver: Any = None,
-                 caller_authorizer: Any = None, owner_file_compatibility: bool = False) -> None:
+                 caller_authorizer: Any = None, owner_file_compatibility: bool = False,
+                 bounded_transports: bool = False) -> None:
         self.directory = Path(directory)
         self.handler = handler
         if (caller_binding_reader is None) != (caller_context_resolver is None):
@@ -205,6 +207,189 @@ class ExecutionHost:
         self._owns_owner_file = False
         self._threads: list[threading.Thread] = []
         self.failures: dict[str, dict[str, str]] = {}
+        if type(bounded_transports) is not bool:
+            raise TypeError("bounded_transports must be an explicit owner choice")
+        self.bounded_transports = bounded_transports
+        self._owner_thread: int | None = None
+        # These are continuations of retained requests, not durable new work.
+        self._executions: dict[str, dict[str, Any]] = {}
+        self._capacity_holds: dict[str, dict[str, Any]] = {}
+        self._last_project: str | None = None
+        self._project_order: list[str] = []
+
+    @staticmethod
+    def current_bounded() -> Any:
+        context = getattr(_DISPATCH_CONTEXT, "value", None)
+        if context is not None and context[0].bounded_transports:
+            if context[1] != threading.get_ident():
+                raise RuntimeError("canonical execution must enter through its owner")
+            return context[0]
+        return None
+
+    def _owned(self, operation: Callable[[], Any]) -> Any:
+        previous = getattr(_DISPATCH_CONTEXT, "value", None)
+        _DISPATCH_CONTEXT.value = (self, threading.get_ident(), True)
+        try:
+            return operation()
+        finally:
+            _DISPATCH_CONTEXT.value = previous
+
+    def _owner_request(self, operation: Callable[[], Any]) -> Any:
+        completed, result = threading.Event(), {}
+        with self._lock:
+            if self._commands_stop.is_set() or not self._threads:
+                raise RuntimeError("owner command lane is closed")
+            self._owner_calls.put((operation, completed, result))
+        completed.wait()
+        if "error" in result:
+            raise result["error"]
+        return result["value"]
+
+    @staticmethod
+    def _execution_scope(app: Any, due: Any) -> dict[str, Any]:
+        from otto.attention import native_target_identity
+        adapter = app.runtime.adapter
+        return {"schedule_id": due.schedule_id, "project": due.project_ref,
+            "role": due.role, "session": ((due.host_evidence or {}).get("gateway_attempt") or {}).get("physical_session_id") or native_target_identity(due.target),
+            "assignment": (due.assignment_ref["authority"], due.assignment_ref["id"], due.generation),
+            "workspace": str(Path(adapter.worktree).resolve()),
+            "writer": due.role == "worker" and due.profile == "workspace-write"}
+
+    def restore_execution(self, app: Any, due: Any) -> None:
+        """Reconcile one known handle, never enumerate historical attempts."""
+        attempt = (due.host_evidence or {}).get("gateway_attempt")
+        # UNKNOWN/stop/cancel alone do not prove native exit. The existing
+        # exact owner custody disposition can release a terminal failed turn.
+        released = due.stop_state == "completed" and due.completion_state == "succeeded"
+        if not released and (due.host_evidence or {}).get("worker_custody_release"):
+            from .worker_custody import retained_capacity_release, INITIALIZER_SCHEMA
+            marker = due.host_evidence["worker_custody_release"]
+            try:
+                retained_capacity_release(app, due,
+                    _initializer_only=marker.get("schema") == INITIALIZER_SCHEMA)
+                released = True
+            except (ValueError, KeyError, TypeError, OSError):
+                pass  # Missing/stale terminal proof keeps the conservative hold.
+        if attempt and not released:
+            self._capacity_holds[due.schedule_id] = self._execution_scope(app, due)
+        else:
+            self._capacity_holds.pop(due.schedule_id, None)
+
+    def admit_execution(self, app: Any, due: Any, operation: Callable[[], Any]) -> OwnerCompletion:
+        if not self.bounded_transports or self.current_bounded() is not self:
+            raise RuntimeError("bounded execution requires its serialized owner")
+        if not getattr(app.runtime.adapter, "owner_transport_only", False):
+            raise TypeError("adapter has no isolated owner-callback transport contract")
+        current = self._executions.get(due.schedule_id)
+        if current is not None:
+            return current["completion"]
+        if self._closing:
+            raise RuntimeError("owner host is draining")
+        value = OwnerCompletion()
+        if due.project_ref not in self._project_order:
+            self._project_order.append(due.project_ref)
+        self._executions[due.schedule_id] = {"scope": self._execution_scope(app, due),
+            "app": app, "operation": operation, "context": copy_context(),
+            "completion": value, "running": False}
+        return value
+
+    def _eligible(self, scope: Mapping[str, Any]) -> bool:
+        active_by_id = {**self._capacity_holds,
+            **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
+        active = list(active_by_id.values())
+        # Qualified initial limits are deliberately conjunctive: 2/2/3. One
+        # total slot stays available to coordination when only workers run.
+        if len(active) >= 3 or sum(row["role"] == scope["role"] for row in active) >= 2:
+            return False
+        for row in active:
+            if (row["assignment"] == scope["assignment"]
+                    or scope["session"] and row["session"] == scope["session"]):
+                return False
+            if row["writer"] and scope["writer"]:
+                first, second = Path(row["workspace"]), Path(scope["workspace"])
+                if first.is_relative_to(second) or second.is_relative_to(first):
+                    return False
+        return True
+
+    def bind_native_session(self, schedule_id: str, session: str) -> None:
+        """Fence even a provider returning a reused identity before delivery."""
+        job = self._executions.get(schedule_id)
+        if job is None or not job["running"]:
+            raise RuntimeError("native identity has no admitted owner occurrence")
+        others = {**self._capacity_holds,
+            **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
+        if any(key != schedule_id and scope["session"] == session for key, scope in others.items()):
+            raise PermissionError("native session already belongs to another live or uncertain occurrence")
+        job["scope"]["session"] = session
+
+    def _start_ready_executions(self) -> None:
+        if self._closing:
+            return
+        while True:
+            ready = [value for value in self._executions.values()
+                     if not value["running"] and self._eligible(value["scope"])]
+            if not ready:
+                return
+            # Insertion order is the retained request order. Rotate project
+            # when another is eligible; worker result turns beat new workers.
+            start = (self._project_order.index(self._last_project) + 1
+                     if self._last_project in self._project_order else 0)
+            order = self._project_order[start:] + self._project_order[:start]
+            ready.sort(key=lambda value: (order.index(value["scope"]["project"]),
+                                          value["scope"]["role"] == "worker"))
+            job = ready[0]
+            try:
+                if self._execution_scope(job["app"], job["app"]._read(job["scope"]["schedule_id"])) != job["scope"]:
+                    raise PermissionError("queued execution binding changed before admission")
+            except Exception as error:
+                self._executions.pop(job["scope"]["schedule_id"])
+                job["completion"].resolve(error=error)
+                continue
+            job["running"] = True
+            self._last_project = job["scope"]["project"]
+            schedule = job["scope"]["schedule_id"]
+
+            def finish(value: Any = None, error: BaseException | None = None, *, job=job, schedule=schedule) -> None:
+                try:
+                    # Capture/settlement has already run through this owner.
+                    self.restore_execution(job["app"], job["app"]._read(schedule))
+                except Exception as observed:
+                    self._capacity_holds[schedule] = job["scope"]
+                    error = error or observed
+                self._executions.pop(schedule, None)
+                job["completion"].resolve(value, error)
+
+            try:
+                result = job["context"].run(job["operation"])
+                after_owner(result, finish, lambda error, finish=finish: finish(error=error))
+            except BaseException as error:
+                finish(error=error)
+
+    @staticmethod
+    def adapter_transport(operation: Callable[[], Any]) -> Any:
+        """Run only the isolated adapter; enqueue capture on the same owner."""
+        host = ExecutionHost.current_bounded()
+        if host is None:
+            return operation()
+        result = OwnerCompletion()
+        with host._lock:
+            host._external_waiting += 1
+
+        def run() -> None:
+            value, error = None, None
+            try:
+                value = operation()
+            except BaseException as caught:
+                error = caught
+            def capture() -> None:
+                try:
+                    result.resolve(value, error)
+                finally:
+                    with host._lock:
+                        host._external_waiting -= 1
+            host._owner_calls.put((capture, threading.Event(), {}))
+        host.retain(name="otto-native-transport", operation=run)
+        return result
 
     def start(self) -> None:
         if self._threads:
@@ -302,6 +487,8 @@ class ExecutionHost:
         """
         completed, result = threading.Event(), {}
         operation = operation or (lambda: self.handler(request))
+        if self.bounded_transports:
+            return operation() if threading.get_ident() == self._owner_thread else self._owner_request(operation)
         while True:
             with self._lock:
                 if self._external_waiting:
@@ -338,9 +525,8 @@ class ExecutionHost:
         token = _COMMAND_TRANSPORT.set(outer)
         try:
             result = self._call_bound_command(request, ingress)
-            if outer is not None and isinstance(result, Mapping):
-                return {**result, "outer_command": outer}
-            return result
+            return after_owner(result, lambda result:
+                {**result, "outer_command": outer} if outer is not None and isinstance(result, Mapping) else result)
         finally:
             _COMMAND_TRANSPORT.reset(token)
 
@@ -380,11 +566,13 @@ class ExecutionHost:
                     "next_action": "refresh the trusted caller binding and current owner authorization"}
         bound = getattr(self.handler, "dispatch_bound", None)
         result = bound(context, clean) if callable(bound) else self.handler(clean)
-        return dict(result, caller_context=context,
-                    target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean})
+        return after_owner(result, lambda result: dict(result, caller_context=context,
+                    target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean}))
 
     def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
         try:
+            if self.bounded_transports and threading.get_ident() != self._owner_thread:
+                return self._owner_request(lambda: self._dispatch(request, ingress=ingress))
             if self._closing and _starts_work(request):
                 return {"outcome": "held", "reason": "owner host is draining",
                         "provider_called": False, "effects_started": False, "retry": False}
@@ -437,12 +625,31 @@ class ExecutionHost:
                         raw += part
                     from .identity_context import HostIngress
                     result = self._dispatch(json.loads(raw), ingress=HostIngress("unix-socket", connection))
+                    if isinstance(result, OwnerCompletion):
+                        # Socket callers wait outside the owner. Native finite
+                        # commands normally return directly; retained file
+                        # starts use the independent completion path below.
+                        ready = threading.Event()
+                        observed = {}
+                        self._owner_request(lambda: result.then(
+                            lambda value: (observed.update(value=value), ready.set()),
+                            lambda error: (observed.update(error=str(error)), ready.set())))
+                        ready.wait()
+                        result = observed.get("value", {"outcome": "error", "message": observed.get("error")})
                     connection.sendall(json.dumps(json_value(result), sort_keys=True).encode())
                 except (OSError, ValueError) as exc:
                     self.failures["socket"] = {"code": type(exc).__name__, "message": str(exc)}
 
     def _serve_files(self, status: bool, *, allowed: frozenset[str] | None = None) -> None:
-        for path in sorted(self.directory.glob("request-*.json")):
+        paths = list(self.directory.glob("request-*.json"))
+        # Hash order is unrelated to admission age and can starve a project.
+        def age(path):
+            try:
+                return path.stat().st_mtime_ns, path.name
+            except FileNotFoundError:
+                return float("inf"), path.name
+        paths.sort(key=age)
+        for path in paths:
             token = path.name[len("request-"):-len(".json")]
             if not token or any(char not in "0123456789abcdef" for char in token):
                 if not status:
@@ -461,6 +668,7 @@ class ExecutionHost:
             response = self.directory / ("response-" + token + ".json")
             acquired = False
             claimed = False
+            deferred = False
             try:
                 request = json.loads(path.read_text())
                 command = request.get("command")
@@ -531,6 +739,31 @@ class ExecutionHost:
                                 "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
                         from .identity_context import HostIngress
                         result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
+                    if isinstance(result, OwnerCompletion):
+                        deferred = True
+                        _atomic_json(self.directory / ("pending-" + token + ".json"), {
+                            "outcome": "pending", "request_id": token, "request_retained": True,
+                            "response_path": str(response), "retry": False,
+                            "reason": "retained execution is queued or awaiting its original transport",
+                            "next_action": "Observe this exact retained handle; do not resend."})
+
+                        def complete(value: Any = None, error: BaseException | None = None,
+                                     *, token=token, response=response, path=path, timing=timing) -> None:
+                            try:
+                                if error is not None:
+                                    value = {"outcome": "error", "error": type(error).__name__,
+                                        "message": str(error), "retry": False,
+                                        "next_action": "reconcile the original occurrence before replay"}
+                                _atomic_json(response, _timed_receipt(value, timing))
+                                (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
+                                path.unlink(missing_ok=True)
+                            except Exception as exc:
+                                self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
+                            finally:
+                                with self._lock:
+                                    self._active_files.discard(token)
+                        result.then(complete, lambda error, complete=complete: complete(error=error))
+                        continue
                     if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result"} and result.get("outcome") == "pending"
                             and result.get("provider_called") is False and result.get("effects_started") is False):
                         pending = self.directory / ("pending-" + token + ".json")
@@ -548,18 +781,32 @@ class ExecutionHost:
             except Exception as exc:
                 self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
             finally:
-                if claimed:
+                if claimed and not deferred:
                     with self._lock:
                         self._active_files.discard(token)
                 if acquired:
                     self._command_lock.release()
 
     def _serve(self, status: bool) -> None:
+        if self.bounded_transports and not status:
+            self._owner_thread = threading.get_ident()
         stop = self._stop if status else self._commands_stop
         while not stop.is_set():
-            self._serve_files(status)
+            if self.bounded_transports and not status:
+                with self._command_lock:
+                    self._owned(self._pump_owner_calls)
+                    self._serve_files(False)
+                    self._owned(self._pump_owner_calls)
+                    self._owned(self._start_ready_executions)
+            else:
+                self._serve_files(status)
             stop.wait(0.05)
         if not status:
+            if self.bounded_transports:
+                # Admission to this queue is closed before its final drain.
+                # Already admitted status/capture callbacks must all resolve.
+                while not self._owner_calls.empty():
+                    self._owned(self._pump_owner_calls)
             # One bounded final snapshot drains queued finite owner commands.
             # Provider-bearing requests remain durable for owner review/restart.
             self._serve_files(False, allowed=_REENTRANT_COMMANDS)
@@ -568,7 +815,7 @@ class ExecutionHost:
     def owner_callback(callback: Callable[..., Any] | None) -> Callable[..., Any] | None:
         """Marshal an admitted transport callback to its serialized owner."""
         context = getattr(_DISPATCH_CONTEXT, "value", None)
-        if callback is None or context is None or not context[2]:
+        if callback is None or context is None or not (context[2] or context[0].bounded_transports):
             return callback
         host, owner_thread, _ = context
 
@@ -587,13 +834,13 @@ class ExecutionHost:
         return owned
 
     def _pump_owner_calls(self) -> None:
-        while True:
+        for _ in range(32):
             try:
                 operation, completed, result = self._owner_calls.get_nowait()
             except queue.Empty:
                 return
             try:
-                result["value"] = operation()
+                result["value"] = self._owned(operation) if self.bounded_transports else operation()
             except BaseException as exc:
                 result["error"] = exc
             finally:
@@ -660,7 +907,8 @@ class ExecutionHost:
         context = getattr(_DISPATCH_CONTEXT, "value", None)
         if context is None or context[0] is not self or context[1] != threading.get_ident():
             raise RuntimeError("worker submission requires its serialized command owner")
-        if self._closing:
+        if self._closing and not (self.bounded_transports and request.get("command") in {
+                "manager-worker-result", "manager-task-settlement", "manager-help-result", "parent-child-result"}):
             raise RuntimeError("execution host is draining; no new worker may be admitted")
         if request.get("command") not in {"start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result", "start-retained-child", "parent-child-result"}:
             raise ValueError("only prepared work or an observed result/completion continuation may be retained")
@@ -791,7 +1039,8 @@ class ExecutionHost:
                 break
             for thread in children:
                 thread.join()
-        self._commands_stop.set()
+        with self._lock:
+            self._commands_stop.set()
         # A synchronous command may already own a worker; joining the command
         # thread retains it without a healthy-work duration cap.
         if self._threads:

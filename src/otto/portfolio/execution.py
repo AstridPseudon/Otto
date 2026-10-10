@@ -24,6 +24,7 @@ from .owner_readers import json_value, owner_ref, project_reader, task_reader
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
 from .recovery_timing import stable_correlation_id, timing_from_receipt
+from .owner_completion import after_owner, collect_owner
 
 _UNSPECIFIED_SESSION = object()
 
@@ -893,6 +894,22 @@ class ExecutionApplication:
 
     def start(self, *, schedule_id: str, settle: bool = True) -> dict[str, Any]:
         """Invoke a prepared occurrence or recover its existing effect/result."""
+        from .execution_host import ExecutionHost
+        host = ExecutionHost.current_bounded()
+        if host is not None:
+            due = self._read(schedule_id)
+            if ((due.host_evidence or {}).get("gateway_attempt") is not None
+                    or due.stop_state != "active" or due.host_state == "paused"):
+                result = self.recover(schedule_id=schedule_id, execute=False)
+                host.restore_execution(self, self._read(schedule_id))
+                return result
+            return host.admit_execution(self, due,
+                lambda: self._start(schedule_id=schedule_id, settle=settle))
+        return self._start(schedule_id=schedule_id, settle=settle)
+
+    def _start(self, *, schedule_id: str, settle: bool) -> Any:
+        # Re-read at admission: queued work does not pin stale authorization,
+        # debit allowance, or claim a provider until a slot is actually ready.
         due = self._read(schedule_id)
         attempt = (due.host_evidence or {}).get("gateway_attempt")
         if attempt is not None or due.stop_state != "active" or due.host_state == "paused":
@@ -910,10 +927,12 @@ class ExecutionApplication:
                     "error": {"code": type(exc).__name__, "message": str(exc)},
                     "next_action": "recover this occurrence; reconcile retained evidence before replay" if attempt
                         else "retry start on this exact prepared occurrence"}
-        if not settle:
-            return json_value(result)
-        settled = self.recover(schedule_id=schedule_id, execute=False)
-        return {**settled, "runtime_result": json_value(result)}
+        def complete(result):
+            if not settle:
+                return json_value(result)
+            settled = self.recover(schedule_id=schedule_id, execute=False)
+            return {**settled, "runtime_result": json_value(result)}
+        return after_owner(result, complete)
 
     def inspect_capacity_failed_worker(self, *, schedule_id: str) -> dict[str, Any]:
         """Root owner readback of an exact native terminal capacity failure."""
@@ -926,6 +945,17 @@ class ExecutionApplication:
         return release_capacity_failed_worker(self, **request)
 
     def recover(self, *, schedule_id: str, execute: bool = False) -> dict[str, Any]:
+        from .execution_host import ExecutionHost
+        result = self._recover(schedule_id=schedule_id, execute=execute)
+        host = ExecutionHost.current_bounded()
+        if host is None:
+            return result
+        def complete(result):
+            host.restore_execution(self, self._read(schedule_id))
+            return result
+        return after_owner(result, complete)
+
+    def _recover(self, *, schedule_id: str, execute: bool = False) -> Any:
         """Reconstruct from owner records after parent exit or application restart."""
         due = self._read(schedule_id)
         attempt = (due.host_evidence or {}).get("gateway_attempt")
@@ -1096,10 +1126,9 @@ class ExecutionApplication:
                     reconciled = {"outcome": "held", "schedule_id": schedule_id,
                                   "provider_called": False, "retry": False,
                                   "next_action": "reconcile the retained host effect before resume"}
-                after = self.recovery_status(schedule_id=schedule_id)
-                rows.append({"schedule_id": schedule_id, "before": before,
-                             "result": reconciled, "after": after,
-                             "reminder": reminder_row})
+                rows.append(after_owner(reconciled, lambda result, schedule_id=schedule_id, before=before, reminder_row=reminder_row:
+                    {"schedule_id": schedule_id, "before": before, "result": result,
+                     "after": self.recovery_status(schedule_id=schedule_id), "reminder": reminder_row}))
             except Exception as exc:
                 held_after = {**before, "state": "held",
                               "next_action": "inspect the retained occurrence error before any retry"}
@@ -1108,22 +1137,25 @@ class ExecutionApplication:
                                 "retry": False, "error": {"code": type(exc).__name__,
                                     "message": str(exc)}}, "after": held_after,
                              "reminder": reminder_row})
-        blocked = [row for row in rows if row["after"]["state"] in
-                   {"active_native", "terminal_missing_capture", "held_unknown", "held",
-                    "captured_missing_acceptance", "accepted_missing_finish", "completed_missing_response"}
-                   or row["result"].get("outcome") == "held"
-                   or (row.get("reminder") or {}).get("bridge", {}).get("outcome") == "held"]
-        return {
-            "schema": "otto.owner-startup-recovery.v1", "outcome": "held" if blocked else "reconciled",
-            "admission": "held" if blocked else "ready", "execute": execute,
-            "occurrences": rows, "provider_called": False, "dispatch": False,
-            "launch": any(row["result"].get("outcome") in {"succeeded", "replayed"}
-                           and execute for row in rows),
-            "reminder_reconciliation": reminder,
-            "reminder_admission": None if reminder is None else reminder.get("admission"),
-            "next_action": ("inspect the listed held/active occurrence and reconcile its exact retained evidence"
-                            if blocked else "new execution may be admitted through the existing owner path"),
-        }
+        def complete(rows):
+            blocked = [row for row in rows if row["after"]["state"] in
+                       {"active_native", "terminal_missing_capture", "held_unknown", "held",
+                        "captured_missing_acceptance", "accepted_missing_finish", "completed_missing_response"}
+                       or row["result"].get("outcome") == "held"
+                       or (row.get("reminder") or {}).get("bridge", {}).get("outcome") == "held"]
+            return {
+                "schema": "otto.owner-startup-recovery.v1", "outcome": "held" if blocked else "reconciled",
+                "admission": "held" if blocked else "ready", "execute": execute,
+                "occurrences": rows, "provider_called": False, "dispatch": False,
+                "launch": any(row["result"].get("outcome") in {"succeeded", "replayed"}
+                               and execute for row in rows),
+                "reminder_reconciliation": reminder,
+                "reminder_admission": None if reminder is None else reminder.get("admission"),
+                "next_action": ("inspect the listed held/active occurrence and reconcile its exact retained evidence"
+                                if blocked else "new execution may be admitted through the existing owner path"),
+            }
+
+        return after_owner(collect_owner(rows), complete)
 
     def _retained_completed_task_refresh(self, value: Mapping[str, Any], anchor: DueRecord) -> bool:
         receipt = (value.get("host_evidence") or {}).get("manager_completed_task_refresh")

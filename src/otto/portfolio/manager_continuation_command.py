@@ -125,10 +125,11 @@ def manager_continuation_from_command(
     result = execution.continue_manager(schedule_id=anchor_schedule_id, report_key=key,
         task_ref=task, execute=operation == "dispatch", reports=reports,
         **({"preserve_execution_binding": True} if preserve_execution_binding else {}))
-    return {**base, "outcome": result.get("outcome"), "continuation": result,
+    from .owner_completion import after_owner
+    return after_owner(result, lambda result: {**base, "outcome": result.get("outcome"), "continuation": result,
             "request": selected, "current_unknown_effect": unknown,
             "no_overlap_disposition_ref": None if disposition is None else disposition["ref"],
-            **({"provider_called": False} if operation != "dispatch" else {})}
+            **({"provider_called": False} if operation != "dispatch" else {})})
 
 
 def _no_overlap_scope(execution, anchor, current, selected, native_session_id, task):

@@ -158,6 +158,8 @@ class NativeProcessCallerIngress:
 
 def managed_caller_binding(server: Any, authorization: dict[str, Any]) -> Any:
     """Join the captured launch authorization to exact current managed slots."""
+    if callable(getattr(server, "managed_server", None)):
+        server = server.managed_server(authorization)
     from herzchen.contracts import ResourceRef
     from .identity_context import HostCallerBinding
     state = server.state

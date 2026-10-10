@@ -202,6 +202,7 @@ def captured_artifact_bytes(artifact: Mapping[str, Any]) -> bytes:
 
 
 class ClaudeWorkerAdapter:
+    owner_transport_only = True
     owner_bound = True
     require_host_context = True
     adapter_identity = IDENTITY

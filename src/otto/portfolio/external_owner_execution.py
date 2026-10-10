@@ -140,8 +140,9 @@ def dispatch(service, request):
             selection=(due["target"].get("launch_request") or {}).get("selection"))
         validate_host = getattr(app.runtime.adapter, "validate_owner_host_composition", None)
         if callable(validate_host): validate_host(role="worker", profile=due["profile"])
-        return {**common, **app.start(schedule_id=due["schedule_id"]),
-                "recovery_operation": "start_same_unattempted_occurrence", "original_launch_preserved": True}
+        from .owner_completion import after_owner
+        return after_owner(app.start(schedule_id=due["schedule_id"]), lambda result: {**common, **result,
+                "recovery_operation": "start_same_unattempted_occurrence", "original_launch_preserved": True})
     if operation == "artifact":
         return {**common, **read_captured_artifact(due, artifact_ref=request["artifact_ref"], offset=request["offset"], max_bytes=request["max_bytes"])}
     answer = result_view(due)

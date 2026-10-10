@@ -317,16 +317,19 @@ def dispatch_occurrence(service: Any, request: Mapping[str, Any], context: Any) 
                     and (active.get("host_evidence") or {}).get("gateway_attempt")):
                 return pending("configured native worker capacity is occupied or uncertain")
         result = app.start(schedule_id=due["schedule_id"])
-        if result.get("outcome") in {"succeeded", "replayed"}:
-            retained = service.host.submit({"command": "parent-child-result", "schedule_id": due["schedule_id"]})
-            fresh = app._read(due["schedule_id"])
-            handles = {**(fresh.host_evidence or {}).get("launch_handles", {}), "callback": retained["retained_handle"]}
-            if (fresh.host_evidence or {}).get("launch_handles") != handles:
-                service.server.due_port.save_due(fresh.schedule_id, replace(fresh,
-                    host_evidence={**(fresh.host_evidence or {}), "launch_handles": handles}).to_dict(),
-                    request_id="child-callback:" + fresh.schedule_id, expected_version=fresh.version)
-            return {**result, "parent_return": retained}
-        return result
+        def complete(result):
+            if result.get("outcome") in {"succeeded", "replayed"}:
+                retained = service.host.submit({"command": "parent-child-result", "schedule_id": due["schedule_id"]})
+                fresh = app._read(due["schedule_id"])
+                handles = {**(fresh.host_evidence or {}).get("launch_handles", {}), "callback": retained["retained_handle"]}
+                if (fresh.host_evidence or {}).get("launch_handles") != handles:
+                    service.server.due_port.save_due(fresh.schedule_id, replace(fresh,
+                        host_evidence={**(fresh.host_evidence or {}), "launch_handles": handles}).to_dict(),
+                        request_id="child-callback:" + fresh.schedule_id, expected_version=fresh.version)
+                return {**result, "parent_return": retained}
+            return result
+        from .owner_completion import after_owner
+        return after_owner(result, complete)
     if command == "parent-child-result":
         if custody_live(service, due["schedule_id"]):
             return pending("child native process has not released capacity")

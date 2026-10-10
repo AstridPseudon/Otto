@@ -774,16 +774,20 @@ class CanonicalRoleRuntime:
 
             capture.current_brief_reader = current_brief_digest
             current_brief_digest()  # Reject invalid launch/resume contracts before any provider claim/delivery.
+            from otto.portfolio.execution_host import ExecutionHost
+            def authorize(session_id, brief_sha256):
+                host = ExecutionHost.current_bounded()
+                if host is not None:
+                    host.bind_native_session(schedule_id, session_id)
+                return capture.authorize_delivery(logical_request_key, session_id, brief_sha256)
             adapter = self.adapter.bind_owner_authorization(
-                lambda session_id, brief_sha256: capture.authorize_delivery(
-                    logical_request_key, session_id, brief_sha256,
-                ),
-                verifier=lambda session_id, brief_sha256, authorization: capture.verify_delivery(
+                ExecutionHost.owner_callback(authorize),
+                verifier=ExecutionHost.owner_callback(lambda session_id, brief_sha256, authorization: capture.verify_delivery(
                     logical_request_key, session_id, brief_sha256, authorization,
-                ),
-                completed_verifier=lambda session_id, brief_sha256, authorization: capture.verify_completed_delivery(
+                )),
+                completed_verifier=ExecutionHost.owner_callback(lambda session_id, brief_sha256, authorization: capture.verify_completed_delivery(
                     logical_request_key, session_id, brief_sha256, authorization,
-                ),
+                )),
                 **({"role": role, "profile": requested_profile}
                    if callable(getattr(self.adapter, "validate_owner_host_composition", None)) else {}),
             )
@@ -819,15 +823,18 @@ class CanonicalRoleRuntime:
             requested_reasoning=requested_reasoning, requested_profile=requested_profile,
             operating_context_reader=lambda: delivery_context(self, project_ref, current_due=due_readiness),
         )
-        if authorized_direct and role == "worker" and isinstance(result, Mapping) and result.get("outcome") == "succeeded":
-            envelope = result.get("attempt")
-            evidence = envelope.get("task_bound_evidence") if isinstance(envelope, Mapping) else None
-            operation_result = evidence.get("operation_result") if isinstance(evidence, Mapping) else None
-            output = operation_result.get("output") if isinstance(operation_result, Mapping) else None
-            if isinstance(output, Mapping) and "final_answer" in output:
-                published = capture.publish_analytical_result(envelope, result_owner)
-                result = {**result, "published_analytical_result": published}
-        return result
+        def complete(result):
+            if authorized_direct and role == "worker" and isinstance(result, Mapping) and result.get("outcome") == "succeeded":
+                envelope = result.get("attempt")
+                evidence = envelope.get("task_bound_evidence") if isinstance(envelope, Mapping) else None
+                operation_result = evidence.get("operation_result") if isinstance(evidence, Mapping) else None
+                output = operation_result.get("output") if isinstance(operation_result, Mapping) else None
+                if isinstance(output, Mapping) and "final_answer" in output:
+                    published = capture.publish_analytical_result(envelope, result_owner)
+                    result = {**result, "published_analytical_result": published}
+            return result
+        from otto.portfolio.owner_completion import after_owner
+        return after_owner(result, complete)
 
     def invoke_manager(self, **kwargs: Any) -> Any:
         """Legacy owner route; not the post-bind authorization contract."""

@@ -1709,7 +1709,8 @@ class OttoGateway:
                 if callable(prior_callback):
                     prior_callback(physical_session_id)
 
-            setter(on_thread_started)
+            from otto.portfolio.execution_host import ExecutionHost
+            setter(ExecutionHost.owner_callback(on_thread_started))
             restore_thread_callback = prior_callback
             callback_installed = True
         turn_setter = getattr(self.adapter, "set_turn_started_callback", None)
@@ -1731,7 +1732,8 @@ class OttoGateway:
                 if callable(prior_turn_callback):
                     prior_turn_callback(observed_turn_id, observed_at)
 
-            turn_setter(on_turn_started)
+            from otto.portfolio.execution_host import ExecutionHost
+            turn_setter(ExecutionHost.owner_callback(on_turn_started))
             restore_turn_callback = prior_turn_callback
             turn_callback_installed = True
         usage_setter = getattr(self.adapter, "set_usage_callback", None)
@@ -1746,25 +1748,41 @@ class OttoGateway:
             from otto.portfolio.execution_host import ExecutionHost
             usage_setter(ExecutionHost.owner_callback(on_usage))
             restore_usage_callback, usage_callback_installed = prior_usage, True
-        try:
-            result = method(request)
-            result, attestation_error = self._enforce_host_attestation(responsibility, result, request)
-        except Exception as exc:
-            if owner_bound and responsibility.operation != "inspect":
-                return self._attach_attempt(responsibility, request,
-                                            error("adapter_error", str(exc), operation=responsibility.operation),
-                                            error_message=str(exc))
-            return error("adapter_error", str(exc), operation=responsibility.operation)
-        finally:
+        def restore():
             if callback_installed and callable(setter):
                 setter(restore_thread_callback)
             if turn_callback_installed and callable(turn_setter):
                 turn_setter(restore_turn_callback)
             if usage_callback_installed and callable(usage_setter):
                 usage_setter(restore_usage_callback)
-        return self._attach_attempt(
-            responsibility, request, result, error_message=attestation_error
-        ) if owner_bound and responsibility.operation != "inspect" else result
+
+        def failed(exc):
+            restore()
+            if owner_bound and responsibility.operation != "inspect":
+                return self._attach_attempt(responsibility, request,
+                                            error("adapter_error", str(exc), operation=responsibility.operation),
+                                            error_message=str(exc))
+            return error("adapter_error", str(exc), operation=responsibility.operation)
+
+        def complete(result):
+            try:
+                result, attestation_error = self._enforce_host_attestation(responsibility, result, request)
+            except Exception as exc:
+                return failed(exc)
+            finally:
+                restore()
+            return self._attach_attempt(
+                responsibility, request, result, error_message=attestation_error
+            ) if owner_bound and responsibility.operation != "inspect" else result
+
+        from otto.portfolio.execution_host import ExecutionHost
+        from otto.portfolio.owner_completion import after_owner
+        try:
+            result = (ExecutionHost.adapter_transport(lambda: method(request))
+                      if responsibility.operation in {"invoke", "resume", "send"} else method(request))
+        except Exception as exc:
+            return failed(exc)
+        return after_owner(result, complete, failed)
 
     def invoke(self, responsibility: Responsibility, request: Any) -> Any:
         return self.operation(responsibility, request)

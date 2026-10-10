@@ -1,5 +1,9 @@
 # Ordinary manager command liveness
 
+The synchronous behavior below remains the default. An explicitly composed
+multi-project host uses [bounded project execution](bounded-project-host.md)
+so completed turns capture on the owner while other transports remain live.
+
 The owner command lane remains serialized while an admitted manager waits on its
 native child. The owner pumps supported finite commands, including the maintained
 local `commit`, on that same thread. Git checkpoint effects and Store callbacks
