@@ -137,8 +137,33 @@ def manager_consumption_parent(service: Any, context: Mapping[str, Any], due: Ma
                 or callback.get("in_flight_request") is not None
                 or not result_view(callback)["required_capture"]):
             raise PermissionError("manager consumption requires an exact verified callback anchor")
+    # A supported BASE refresh advances the manager assignment revision while
+    # preserving its generation and native session. Only the exact immutable
+    # callback pin above may cross that authenticated adoption history. The
+    # live caller remains bound to the exact current assignment.
+    callback_assignment = callback.get("assignment_ref")
+    adopted_callback = False
+    if callback_assignment != context["assignment_ref"]:
+        from .operating_setup import authenticated_adoption_ancestor
+        current_manager = service.server.owner.assignments.command_port.get(
+            ResourceRef.from_dict(context["assignment_ref"]))
+        reader = getattr(service.server.portfolio.operations, "_owner_reader", None)
+        adopted_callback = (callback is not caller
+            and isinstance(callback_assignment, Mapping)
+            and caller.get("assignment_ref") == context["assignment_ref"]
+            and current_manager.ref.to_dict() == context["assignment_ref"]
+            and current_manager.principal == state["manager"]
+            and current_manager.role == "manager"
+            and current_manager.generation == context["generation"]
+            and authenticated_adoption_ancestor(
+                {"ref": current_manager.ref.to_dict(), "principal": current_manager.principal,
+                 "role": current_manager.role, "generation": current_manager.generation,
+                 "payload": current_manager.payload}, callback_assignment, reader))
+        if not adopted_callback:
+            raise PermissionError("manager callback has no authenticated current adoption continuity")
     for current in (caller, callback):
-        if (current["role"] != "manager" or current["assignment_ref"] != context["assignment_ref"]
+        if (current["role"] != "manager" or (current["assignment_ref"] != context["assignment_ref"]
+                and not (current is callback and adopted_callback))
                 or current["generation"] != context["generation"]
                 or current["recipient"] != state["manager"]
                 or identity(current["target"]["project_ref"]) != identity(due["target"]["project_ref"])
