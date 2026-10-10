@@ -37,6 +37,11 @@ payload remain unavailable or explicitly covered as unknown; unavailable is
 never zero. Static rates are estimates with retained provenance, not billing;
 an actual billed status requires an attributable billing receipt. Allowance and
 reservation units remain separate from currency and token metrics.
+Codex raw input includes cached tokens; estimate uncached input as input minus
+the explicitly known cached partition and price cached input once. Missing or
+impossible cache partitions remain unpriced. Claude's uncached input and cache
+read/creation partitions are already separate. Reasoning is never added again
+to output cost. Provider counts and old retained facts are preserved.
 
 Usage folds admitted retained facts through the shared accounting contract.
 Its period uses the first qualified retained anchor; Timeline uses append time.

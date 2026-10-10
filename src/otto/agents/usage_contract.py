@@ -416,8 +416,8 @@ def normalize_usage_event(
             "scope": metric_scope,
             "reason": reason,
             "component_semantics": {
-                "input_tokens": "uncached input partition when provider distinguishes it",
-                "cached_input_tokens": "cached input partition; not added to uncached input",
+                "input_tokens": ("total input includes cached partition; pricing subtracts cached first" if adapter_id.startswith('codex-') else "uncached input partition separate from cache read/creation"),
+                "cached_input_tokens": ("subpartition of total input; priced once in place of uncached rate" if adapter_id.startswith('codex-') else "separate cached input partition"),
                 "cache_creation_input_tokens": "cache creation input partition; provider-specific and optional",
                 "output_tokens": "provider-reported output total",
                 "reasoning_output_tokens": "output subpartition for provenance; not additive by default",

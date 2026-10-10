@@ -333,7 +333,7 @@ class LateUsageTests(unittest.TestCase):
 
     def test_public_usage_and_detail_fold_late_facts_at_original_anchor(self):
         from otto.portfolio.observability_views import ObservabilityViews
-        self.original('codex-host',anchor='2026-10-05T10:00:00Z',verified_model='gpt-5.6-luna',context_verified=True)
+        self.original('codex-host',anchor='2026-10-05T10:00:00Z',metrics={'input_tokens':10,'cached_input_tokens':0,'output_tokens':2},verified_model='gpt-5.6-luna',context_verified=True)
         projection=self.store.project_history_projection();projection.maintain(limit=1000)
         grant=ProjectHistoryGrant(self.actor,(self.project.id,),'public','v1');reader=ProjectHistoryReader(self.store,grant=grant);views=ObservabilityViews(reader)
         args={'projects':[self.project.ref],'from_at':'2026-10-05T00:00:00Z','to_at':'2026-10-06T00:00:00Z','limit':50}
@@ -352,7 +352,7 @@ class LateUsageTests(unittest.TestCase):
 
     def test_public_partial_correction_page_never_invents_new_span_total(self):
         from otto.portfolio.observability_views import ObservabilityViews
-        self.original('codex-host',anchor='2026-10-05T10:00:00Z',verified_model='gpt-5.6-luna',context_verified=True)
+        self.original('codex-host',anchor='2026-10-05T10:00:00Z',metrics={'input_tokens':10,'cached_input_tokens':0,'output_tokens':2},verified_model='gpt-5.6-luna',context_verified=True)
         first=self.append('codex-host')
         correction_source=self.bodies.retain(json.dumps(native('codex-host',{'input_tokens':20,'output_tokens':2})[-1]),project_ref=self.project.ref,task_ref=self.task.ref.to_dict(),attempt_ref=self.old.ref.to_dict())
         second=self.append('codex-host',key='corrected',source=correction_source,supersedes=first['ref']);self.store.project_history_projection().maintain(limit=1000)

@@ -25,6 +25,31 @@ def fact(adapter='codex-direct', *, pos=1, turn='turn', project='project', gener
 
 
 class AccountingTests(unittest.TestCase):
+    def test_native_cache_partition_pricing_codex_and_claude_are_distinct(self):
+        for adapter in ('codex-direct','codex-host','claude-code'):
+            with self.subTest(adapter=adapter):
+                metrics={'input_tokens':100,'output_tokens':30,'reasoning_output_tokens':10}
+                if adapter.startswith('codex'):metrics['cached_input_tokens']=20
+                else:metrics.update(cache_read_input_tokens=20,cache_creation_input_tokens=5)
+                value=fact(adapter,metrics=metrics);value['execution_time']='2026-10-04T22:00:00Z';value['observation']['observed']['model']='gpt-5.6-luna' if adapter.startswith('codex') else 'claude-sonnet-4-5'
+                result=self.query([value]);price=result['spans'][0]['price_estimate']
+                self.assertEqual(price['status'],'estimated');self.assertEqual(price['components']['input_tokens'],'0.00024000' if adapter.startswith('codex') else '0.00030000')
+                self.assertEqual(price['components']['cached_input_tokens'],'0.00000600');self.assertEqual(price['components']['output_tokens'],'0.00045000');self.assertNotIn('reasoning_output_tokens',price['components'])
+                self.assertEqual(price['amount'],'0.00069600' if adapter.startswith('codex') else '0.00077475')
+                self.assertEqual(result['metrics']['input_tokens'],100) # preserve raw provider metrics
+
+    def test_missing_invalid_and_zero_codex_cache_partition_are_not_inferred(self):
+        for cached,expected in ((None,'unavailable'),(101,'unavailable'),(False,'unavailable'),(0,'estimated'),(100,'estimated')):
+            with self.subTest(cached=cached):
+                value=fact('codex-host',metrics={'input_tokens':100,'output_tokens':0});value['observation']['observed']['model']='gpt-5.6-luna'
+                if cached is not None:value['observation']['usage']['metrics']['cached_input_tokens']=cached
+                if cached is False:
+                    with self.assertRaises(ValueError):self.query([value])
+                    continue
+                price=self.query([value])['spans'][0]['price_estimate'];self.assertEqual(price['status'],expected)
+                if expected=='unavailable':self.assertIsNone(price['amount'])
+                else:self.assertEqual(price['components']['input_tokens'],'0.00030000' if cached==0 else '0.00000000')
+
     def query(self, facts, projects=('project',), as_of=100, **kwargs):
         return account_usage(facts, as_of=as_of, authorized_projects=[ref('work.project', p) for p in projects], **kwargs)
 

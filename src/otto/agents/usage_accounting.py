@@ -176,7 +176,17 @@ def estimate_span_cost(row: Mapping[str, Any], *, rate_schedule: Mapping[str, An
     if consumption_time is None:
         result["reason"] = "missing-qualified-consumption-time"
         return result
-    metrics = row["metrics"]
+    metrics = dict(row["metrics"])
+    namespace = row.get('identity',{}).get('namespace')
+    codex_namespace = ADAPTER_DESCRIPTORS['codex-host']['namespace']
+    partition = 'provider-exclusive-input-partitions'
+    if namespace == codex_namespace and 'input_tokens' in metrics:
+        total,cached = metrics['input_tokens'],metrics.get('cached_input_tokens')
+        if type(total) is not int or type(cached) is not int or not 0 <= cached <= total:
+            result['reason']='missing-or-invalid-codex-cache-partition'
+            return result
+        metrics['input_tokens']=total-cached
+        partition='codex-total-input-minus-cached; cached priced once'
     components: dict[str, str] = {}
     amount = Decimal("0")
     for field in CHARGEABLE_FIELDS:
@@ -214,6 +224,7 @@ def estimate_span_cost(row: Mapping[str, Any], *, rate_schedule: Mapping[str, An
         "tier": tier,
         "consumption_time": consumption_time,
         "components": components,
+        'input_partition_basis':partition,
         "rate_schedule": {
             "schedule_id": schedule["schedule_id"],
             "source": deepcopy(schedule["source"]),
