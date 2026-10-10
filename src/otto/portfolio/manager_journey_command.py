@@ -753,6 +753,41 @@ class ManagerJourneyCommands:
         project_ref = ResourceRef.from_dict(self.state["project_ref"])
         project = self.owner.graph.reader.get_identity(ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
         tasks = self.owner.graph.list(project=project.ref, kind="task")
+        withdrawn = [task for task in tasks if task.lifecycle.value == "withdrawn"]
+        withdrawn_refs = []
+        if withdrawn:
+            # Withdrawal is retained planning history, never task acceptance.
+            # Only explicit current unused extras outside the original policy
+            # may be omitted from completion inputs. Required obligations,
+            # stale/foreign pins and any assignment use stay a closeout hold.
+            policy = self.policy or self.state.get("assessment_policy")
+            if isinstance(policy, Mapping):
+                policy = LocalAssessmentPolicy.from_run_config(policy, state=self.state)
+            if not isinstance(policy, LocalAssessmentPolicy) or (
+                    policy.scope_project_ref.authority, policy.scope_project_ref.id) != (
+                    project.ref.authority, project.ref.id):
+                raise PermissionError("withdrawn planning history requires the bound original assessment policy")
+            required = {task.id for task, _ in policy.task_criterion_pairs}
+            pins = list(self.state["task_refs"].values())
+            actual = {task.id for task in tasks}
+            if not required.issubset(actual):
+                raise PermissionError("project closeout is missing an original required task")
+            for task in withdrawn:
+                current = self.owner.graph.reader.get_identity(
+                    ResourceRef(task.ref.authority, task.ref.kind, task.id))
+                parent = task.payload.get("project_ref") or {}
+                used = self.owner.store.consumer().find_identity_refs(kind="wrk.assignment", payload_matches={
+                    ("scope", "authority"): task.ref.authority,
+                    ("scope", "kind"): task.ref.kind, ("scope", "id"): task.id})
+                if (task.id in required or current is None or current.ref != task.ref
+                        or task.ref.to_dict() not in pins or task.payload.get("completion")
+                        or used or (parent.get("authority"), parent.get("kind"), parent.get("id")) != (
+                            project.ref.authority, project.ref.kind, project.ref.id)):
+                    return {"outcome": "held", "project_completion_recorded": False,
+                            "reason": "withdrawn task is required, used, stale or not explicitly bound unused planning history",
+                            "task_ref": task.ref.to_dict(), "provider_called": False}
+                withdrawn_refs.append(task.ref.to_dict())
+            tasks = tuple(task for task in tasks if task.lifecycle.value != "withdrawn")
         if not tasks or any(task.lifecycle.value != "completed" or not isinstance(task.payload.get("completion"), Mapping)
                             for task in tasks):
             return {"outcome": "held", "project_completion_recorded": False,
@@ -780,6 +815,8 @@ class ManagerJourneyCommands:
                 raise ValueError(name + " requires a qualified disposition and substantive rationale")
         intent = {"request": dict(request), "orchestrator_principal": orchestrator_principal,
                   "task_refs": [task.ref.to_dict() for task in tasks]}
+        if withdrawn_refs:
+            intent["withdrawn_unused_planning_refs"] = withdrawn_refs
         self._journal(key, "project-intent", intent)
         lifecycle = self.owner.lifecycle.command_port
         effects = []
@@ -811,6 +848,8 @@ class ManagerJourneyCommands:
             current = self.owner.graph.reader.get_identity(ResourceRef(project.ref.authority, project.ref.kind, project.ref.id))
             evidence = {"project_ref": current.ref.to_dict(), **dict(dispositions)}
             evidence["acceptance"] = {**dict(dispositions["acceptance"]), "task_refs": intent["task_refs"]}
+            if withdrawn_refs:
+                evidence["acceptance"]["withdrawn_unused_planning_refs"] = withdrawn_refs
             if correction_evidence:
                 evidence["acceptance"]["completed_task_corrections"] = correction_evidence
             transition("pm-orchestrator-close", **common,

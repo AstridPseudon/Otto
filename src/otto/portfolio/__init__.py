@@ -87,6 +87,8 @@ from .orchestrator_placement import (
 )
 from .observability_contract import (
     CANDIDATE_ROOT,
+    CLIENT_PIN,
+    CONTEXT_PINS,
     CONTRACT_REVISION,
     CONTRACT_SCHEMA,
     EVENTS_READ_LIMITS,
@@ -107,6 +109,7 @@ from .observability_contract import (
     contract_record,
 )
 from .observability_views import ObservabilityViewError, ObservabilityViews, VIEW_PRESETS
+from .events_candidate_proof import CandidateProofError, PROOF_SCHEMA, run_candidate_journey
 
 __all__ = [
     "ADMISSION_CHOICES",
@@ -193,6 +196,8 @@ __all__ = [
     "place_new_project",
     "preview_peer_request",
     "CANDIDATE_ROOT",
+    "CLIENT_PIN",
+    "CONTEXT_PINS",
     "CONTRACT_REVISION",
     "CONTRACT_SCHEMA",
     "EVENTS_READ_LIMITS",
@@ -214,4 +219,7 @@ __all__ = [
     "ObservabilityViewError",
     "ObservabilityViews",
     "VIEW_PRESETS",
+    "CandidateProofError",
+    "PROOF_SCHEMA",
+    "run_candidate_journey",
 ]

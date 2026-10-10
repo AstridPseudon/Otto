@@ -241,6 +241,69 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         self.assertFalse(terminal["settlement_pending"])
         self.assertEqual(call()["outcome"], "completed")
 
+    def close_request(self, key="withdrawn-project-close"):
+        return {"command": "finish-project", "request_key": key, "dispositions": {
+            name: {"status": "qualified", "rationale": "Verified local fixture obligations; no external effects"}
+            for name in ("acceptance", "publication", "remote", "runtime")}}
+
+    def close(self, key="withdrawn-project-close"):
+        return self.commands.finish_project(self.close_request(key), orchestrator_principal="orchestrator",
+            observe_schedules=lambda project: {"mode": "no-owned-schedule", "pm_owned_schedule_ids": [],
+                "coverage": {"project_id": project}, "shared_records": []})
+
+    def complete_required(self):
+        for alias in ("PA01", "PA06"):
+            self.commands.review_task(self.request(alias=alias, key="required-" + alias))
+
+    def planning_task(self, withdraw=True):
+        graph=self.application.owner.graph
+        task=graph.create_task(self.application.project.ref, title="Unused duplicate planning record",
+            logical_request_key="extra-plan")
+        self.fixture.state["task_refs"]["EXTRA"] = task.ref.to_dict()
+        if withdraw:
+            task=graph.withdraw(task.ref, logical_request_key="withdraw-extra")
+            self.fixture.state["task_refs"]["EXTRA"] = task.ref.to_dict()
+        return task
+
+    def test_project_close_preserves_unused_withdrawn_history_without_accepting_it(self):
+        planning=self.planning_task();self.complete_required()
+        self.assertEqual(self.close()["outcome"], "completed")
+        intent=self.commands._journal("withdrawn-project-close", "project-intent")
+        self.assertEqual(intent["withdrawn_unused_planning_refs"], [planning.ref.to_dict()])
+        self.assertNotIn(planning.id, [ref['id'] for ref in intent['task_refs']])
+        retained=self.application.owner.graph.get(planning.ref)
+        self.assertEqual(retained.lifecycle.value, "withdrawn");self.assertNotIn("completion",retained.payload)
+        self.assertEqual(self.application.provider.calls, [])
+
+    def test_pending_extra_and_unjudged_original_tasks_still_hold_project(self):
+        planning=self.planning_task(withdraw=False);self.complete_required()
+        self.assertEqual(self.close()["outcome"], "held")
+        planning=self.application.owner.graph.withdraw(planning.ref,logical_request_key="withdraw-after-hold")
+        self.fixture.state["task_refs"]["EXTRA"]=planning.ref.to_dict()
+        self.assertEqual(self.close()["outcome"], "completed")
+
+    def test_required_withdrawn_task_cannot_be_omitted(self):
+        task=self.application.owner.graph.withdraw(ResourceRef.from_dict(self.fixture.state['task_refs']['PA01']),
+            logical_request_key='withdraw-required')
+        self.fixture.state['task_refs']['PA01']=task.ref.to_dict()
+        self.assertEqual(self.close()["outcome"], "held")
+        self.assertFalse(self.close()['project_completion_recorded'])
+
+    def test_used_stale_and_foreign_withdrawn_planning_pins_hold_without_effects(self):
+        planning=self.planning_task();self.complete_required()
+        valid=planning.ref.to_dict()
+        for pin in ({**valid,'revision':'rev-1'},{**valid,'authority':'foreign'}):
+            self.fixture.state['task_refs']['EXTRA']=pin
+            before=self.application.owner.graph.reader.snapshot_counts()
+            self.assertEqual(self.close()['outcome'],'held')
+            self.assertEqual(self.application.owner.graph.reader.snapshot_counts(),before)
+        self.fixture.state['task_refs']['EXTRA']=valid
+        self.application.owner.assignments.assign(planning.ref,role='worker',principal='unused-is-now-used',
+            logical_request_key='used-plan')
+        before=self.application.owner.graph.reader.snapshot_counts()
+        self.assertEqual(self.close()['outcome'],'held')
+        self.assertEqual(self.application.owner.graph.reader.snapshot_counts(),before)
+
     def test_client_definitions_request_judgment_without_owner_pins_or_pool_fields(self):
         parser = argparse.ArgumentParser()
         add_manager_journey_parsers(parser.add_subparsers(dest="command", required=True))

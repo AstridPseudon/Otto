@@ -153,6 +153,15 @@ def _reader_actor(grant: Any, actor: Any) -> Any:
     return actor
 
 
+def _project_identity(value: Any) -> tuple[str, str]:
+    if isinstance(value, Mapping) and all(isinstance(value.get(key), str) and value.get(key).strip()
+                                          for key in ("authority", "kind", "id")):
+        if value["kind"] != "work.project":
+            raise ObservabilityViewError("project scope must contain work.project refs")
+        return value["authority"], value["id"]
+    raise ObservabilityViewError("project scope must contain canonical project refs")
+
+
 class ObservabilityViews:
     """The seven D04 presets over one injected authenticated reader."""
 
@@ -232,10 +241,21 @@ class ObservabilityViews:
             } for row in source_rows]
         return value
 
-    def detail(self, facet_id: str, *, snapshot: Mapping[str, Any], grant: Any = None,
-               actor: Any = None, max_bytes: int = 64 * 1024) -> dict[str, Any]:
+    def detail(self, facet_id: str, *, snapshot: Mapping[str, Any], projects: Optional[Sequence[Any]] = None,
+               grant: Any = None, actor: Any = None, max_bytes: int = 64 * 1024) -> dict[str, Any]:
         if not isinstance(facet_id, str) or not facet_id.strip():
             raise ObservabilityViewError("facet_id is required")
+        if projects is not None:
+            scope = snapshot.get("scope") if isinstance(snapshot, Mapping) else None
+            scoped_projects = scope.get("projects") if isinstance(scope, Mapping) else None
+            if not isinstance(scoped_projects, (tuple, list)):
+                raise ObservabilityViewError("detail snapshot has no project scope")
+            requested = tuple(_project_identity(item) for item in projects)
+            normalized_snapshot = tuple(_project_identity({"authority": item[0], "kind": "work.project", "id": item[1]})
+                                       if isinstance(item, (tuple, list)) and len(item) == 2 else _project_identity(item)
+                                       for item in scoped_projects)
+            if set(requested) != set(normalized_snapshot):
+                raise ObservabilityViewError("detail project scope must match the original snapshot")
         result = self.reader.detail(facet_id, snapshot=snapshot, grant=grant,
                                     actor=_reader_actor(grant, actor), max_bytes=max_bytes)
         if not isinstance(result, Mapping):

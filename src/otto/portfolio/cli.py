@@ -1098,7 +1098,7 @@ def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[st
         if not isinstance(snapshot, Mapping):
             raise ValueError("snapshot must be a JSON object")
         return views.detail(
-            args.facet_id, snapshot=snapshot, grant=grant, actor=args.actor,
+            args.facet_id, snapshot=snapshot, projects=projects, grant=grant, actor=args.actor,
             max_bytes=args.max_detail_bytes,
         )
     active_during = None

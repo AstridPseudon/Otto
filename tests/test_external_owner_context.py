@@ -22,6 +22,45 @@ class ExternalOwnerContextTests(unittest.TestCase):
         request={'command':'owner-context','operation':operation,'request_key':'root-'+operation,**kwargs}
         receipt=self.ingress.publish({'schema':self.ingress.schema,'request':request})
         return self.service(json.loads(Path(receipt['request_path']).read_text()))
+    def prepare_events(self):
+        self.state['project_ref']=self.project.ref.to_dict()
+        self.f.store.configure_history_projection(batch_size=8).rebuild(batch_size=8)
+    def test_authenticated_events_uses_public_json_text_detail_and_does_not_write(self):
+        self.prepare_events();before=self.f.store.consumer().snapshot_counts()
+        page=self.call('events-read',handle={'view':'overview','limit':1})
+        self.assertEqual(page['assignment_ref'],self.root.ref.to_dict())
+        self.assertEqual(page['project_ref'],self.project.ref.to_dict())
+        self.assertEqual(json.loads(page['rendered']),page['events'])
+        self.assertFalse(page['provider_called']);self.assertEqual(page['writes'],0)
+        text=self.call('events-read',request_key='events-text',handle={'view':'overview','limit':1,'format':'text'})
+        self.assertEqual(text['events'],page['events']);self.assertIn('Canonical response:',text['rendered'])
+        row=page['events']['rows'][0]
+        detail=self.call('events-read',request_key='events-detail',handle={'view':'detail',
+            'facet_id':row['facet_id'],'snapshot':page['events']['snapshot'],'max_detail_bytes':256})
+        self.assertEqual(detail['events']['facet_id'],row['facet_id'])
+        self.assertEqual(self.f.store.consumer().snapshot_counts(),before)
+        self.assertEqual(_nested_capability({'command':'owner-context','operation':'events-read','request_key':'x','handle':{'view':'overview'}}),'admitted')
+    def test_events_scope_identity_bounds_and_original_snapshot_are_guarded(self):
+        self.prepare_events();before=self.f.store.consumer().snapshot_counts()
+        for field,value in [('actor','foreign'),('project_ref',self.f.project.ref.to_dict()),('pool','claimed'),('domain','claimed')]:
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                self.call('events-read',request_key='forged-'+field,handle={'view':'overview',field:value})
+        for value in (0,51,True,'1'):
+            with self.subTest(limit=value),self.assertRaises(ValueError):
+                self.call('events-read',request_key='limit-'+str(value),handle={'view':'overview','limit':value})
+        for handle in ({'view':'detail'}, {'view':'overview','format':'html'}, {'view':'unknown'},
+                       {'view':'overview','from_at':'--actor=foreign'}):
+            with self.subTest(handle=handle),self.assertRaises(ValueError):
+                self.call('events-read',request_key='invalid-'+str(handle),handle=handle)
+        page=self.call('events-read',request_key='snapshot-page',handle={'view':'overview'})['events']
+        snapshot=json.loads(json.dumps(page['snapshot']));snapshot['scope']['projects']=[[self.f.project.ref.authority,self.f.project.id]]
+        with self.assertRaises(ValueError):
+            self.call('events-read',request_key='foreign-snapshot',handle={'view':'overview','snapshot':snapshot})
+        self.state['project_ref']=self.f.project.ref.to_dict()
+        with self.assertRaises(PermissionError):
+            self.call('events-read',request_key='unenrolled',handle={'view':'overview'})
+        self.assertEqual(self.f.store.consumer().snapshot_counts(),before)
+        self.assertEqual(_nested_capability({'command':'owner-context','operation':'events-read','request_key':'x','handle':{},'actor':'owner'}),'held')
     def test_exact_external_owner_identity_and_adopted_context(self):
         request={'command':'owner-context','operation':'whoami','request_key':'root-read'}
         with self.assertRaises(PermissionError):self.service(request)
@@ -46,6 +85,7 @@ class ExternalOwnerContextTests(unittest.TestCase):
         self.state['orchestrator_assignment_ref']=self.f.assignment.ref.to_dict()
         with self.assertRaises(PermissionError):self.service(request)
     def test_native_wait_admits_only_exact_owner_reads_without_releasing_custody(self):
+        self.prepare_events()
         before=self.f.store.consumer().snapshot_counts()
         begun,finished=threading.Event(),threading.Event()
         observed,errors={},[]
@@ -63,6 +103,8 @@ class ExternalOwnerContextTests(unittest.TestCase):
                 self.assertTrue(begun.wait(2))
                 requests=[{'command':'owner-context','operation':op,'request_key':'during-'+op}
                           for op in ('whoami','effective-context','direction-read','direction-history')]
+                requests += [{'command':'owner-context','operation':'events-read','request_key':'during-events',
+                              'handle':{'view':'overview','limit':1}}]
                 requests += [{'command':'owner-context','operation':'direction-draft','request_key':'held-draft',
                               'content':{'text':'must remain held'},'expected_revision':'rev-1'},
                              {'command':'owner-context','operation':'direction-adopt','request_key':'held-adopt',
@@ -88,7 +130,7 @@ class ExternalOwnerContextTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         if errors:raise errors[0]
         self.assertEqual(outer['outcome'],'succeeded')
-        for op in ('whoami','effective-context','direction-read','direction-history'):
+        for op in ('whoami','effective-context','direction-read','direction-history','events-read'):
             self.assertEqual(observed[op]['outcome'],'read',observed[op]);self.assertTrue(observed[op]['read_only'])
         for op in ('direction-draft','direction-adopt'):
             self.assertEqual(observed[op]['outcome'],'held');self.assertFalse(observed[op]['effects_started'])

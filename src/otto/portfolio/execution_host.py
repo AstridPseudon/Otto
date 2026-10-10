@@ -131,6 +131,9 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
         # independently issued input grant. Classification is not authority;
         # the handler still verifies the grant/current host-bound root.
         # Direction mutations must never fall through a blanket command allow.
+        if request.get("operation") == "events-read":
+            return ("admitted" if set(request) == {"command", "operation", "request_key", "handle"}
+                    and isinstance(request.get("handle"), Mapping) else "held")
         return ("admitted" if request.get("operation") in {
             "whoami", "effective-context", "direction-read", "direction-history"}
             and set(request) == {"command", "operation", "request_key"}

@@ -417,7 +417,10 @@ class ProjectHistoryReader:
         return self.store.connection
 
     def _current_grant(self, supplied: Any) -> Any:
-        return supplied if supplied is not None else (self.grant_reader() if self.grant_reader else self.grant)
+        # A grant reader is the reauthorization boundary.  A caller-supplied
+        # page token/grant is useful as a transport value, but it must not
+        # bypass the current owner policy when a live reader is available.
+        return self.grant_reader() if self.grant_reader else (supplied if supplied is not None else self.grant)
 
     def _scope(self, projects: Optional[Sequence[Any]], grant: Any) -> tuple[AuthenticatedActor, tuple[tuple[str, str], ...], str]:
         principal, allowed, revision = _grant_parts(grant, self.store.authority)
@@ -635,11 +638,39 @@ class ProjectHistoryReader:
         metadata = dict(self.connection.execute("SELECT key,value FROM store_metadata"))
         expected = {"authority": self.store.authority, "owner_incarnation": self.store.authority, "grant_revision": revision, "generation": int(metadata.get("history_generation", "1")), "boundary": int(metadata.get("history_checkpoint", "0")), "scope": snapshot.get("scope")}
         self._validate_snapshot(snapshot, expected)
-        row = self.connection.execute("SELECT project_authority,project_id,summary_json,detail_json FROM project_history WHERE generation=? AND facet_id=?", (snapshot["generation"], facet_id)).fetchone()
+        row = self.connection.execute(
+            "SELECT project_authority,project_id,recorded_at,facet_type,role,outcome,source_append_position,summary_json,detail_json "
+            "FROM project_history WHERE generation=? AND facet_id=?",
+            (snapshot["generation"], facet_id),
+        ).fetchone()
         if row is None or (row[0], row[1]) not in snapshot_projects:
             raise AuthorizationError("selected history detail is unavailable")
-        locator = json.loads(row[3])
-        raw = row[3].encode("utf-8")
+        scope = snapshot.get("scope")
+        if not isinstance(scope, Mapping):
+            raise SnapshotRefreshRequired("snapshot scope is malformed")
+        from_at, to_at = scope.get("from"), scope.get("to")
+        if (from_at is None) != (to_at is None) or (from_at is not None and not (from_at <= row[2] < to_at)):
+            raise AuthorizationError("selected history detail is outside the snapshot range")
+        filters = scope.get("filters", {})
+        if not isinstance(filters, Mapping) or set(filters) - {"role", "outcome", "facet_type"}:
+            raise SnapshotRefreshRequired("snapshot filters are malformed")
+        if any(filters.get(name) is not None and filters.get(name) != row[index]
+               for name, index in (("facet_type", 3), ("role", 4), ("outcome", 5))):
+            raise AuthorizationError("selected history detail is outside the snapshot filters")
+        active = scope.get("active_during")
+        if active is not None:
+            if not isinstance(active, (tuple, list)) or len(active) != 2:
+                raise SnapshotRefreshRequired("snapshot active_during range is malformed")
+            active_projects = self._historical_active(
+                ((row[0], row[1]),), active[0], active[1],
+                generation=int(snapshot["generation"]), boundary=int(snapshot["boundary"]),
+            )
+            if (row[0], row[1]) not in active_projects:
+                raise AuthorizationError("selected history detail is outside the active snapshot scope")
+        if row[6] > int(snapshot["boundary"]):
+            raise AuthorizationError("selected history detail is outside the snapshot boundary")
+        locator = json.loads(row[8])
+        raw = row[8].encode("utf-8")
         evidence = None
         refs = locator.get("evidence_refs", ()) if isinstance(locator, Mapping) else ()
         if self.evidence_reader and refs:
@@ -650,7 +681,7 @@ class ProjectHistoryReader:
                     evidence = self.evidence_reader.read_evidence(ref, actor=principal, offset=0, max_bytes=max_bytes)
                 except TypeError:
                     evidence = self.evidence_reader.read_evidence(ref, offset=0, max_bytes=max_bytes)
-        return {"schema": SCHEMA, "facet_id": facet_id, "project_ref": {"authority": row[0], "kind": "work.project", "id": row[1]}, "summary": json.loads(row[2]), "detail_locator": locator, "evidence": evidence, "bytes": raw[:max_bytes], "truncated": len(raw) > max_bytes, "io_work": {"detail_bytes_read": min(len(raw), max_bytes), "evidence_bytes_read": 0 if evidence is None else len(evidence.get("bytes", b""))}}
+        return {"schema": SCHEMA, "facet_id": facet_id, "project_ref": {"authority": row[0], "kind": "work.project", "id": row[1]}, "summary": json.loads(row[7]), "detail_locator": locator, "evidence": evidence, "bytes": raw[:max_bytes], "truncated": len(raw) > max_bytes, "io_work": {"detail_bytes_read": min(len(raw), max_bytes), "evidence_bytes_read": 0 if evidence is None else len(evidence.get("bytes", b""))}}
 
 
 ProjectHistoryMaintainer = ProjectHistoryProjection

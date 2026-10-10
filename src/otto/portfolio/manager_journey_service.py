@@ -655,6 +655,8 @@ class ManagerJourneyService:
             fields |= {"document_ref", "expected_binding_ref"}
         elif operation == "direction-synchronize":
             fields |= {"document_ref", "expected_binding_ref", "handle"}
+        elif operation == "events-read":
+            fields |= {"handle"}
         elif operation not in {"whoami", "effective-context", "direction-read", "direction-history"}:
             raise ValueError("unsupported external owner context operation")
         if set(request) != fields:
@@ -677,6 +679,9 @@ class ManagerJourneyService:
                   "principal": root.principal, "role": root.role,
                   "assignment_ref": root.ref.to_dict(), "generation": root.generation,
                   "scope_ref": root.scope.to_dict(), "responsibility_ref": subject.to_dict()}
+        if operation == "events-read":
+            return {**common, "outcome": "read", "read_only": True,
+                    **self._owner_events_read(request["handle"], actor, root)}
         if operation == "whoami":
             return {**common, "outcome": "read", "read_only": True,
                     "canonical_conversation": root.payload.get("session"),
@@ -742,6 +747,71 @@ class ManagerJourneyService:
                 "external_execution": execution, "shared_role_resources": resources, "assignment_direction": direction,
                 "scope_direction": scope_direction,
                 "context_limit": "Canonical adopted root resources and direction only; this is not a native invocation or all-project context transcript."}
+
+    def _owner_events_read(self, handle: Any, actor: Any, root: Any) -> Mapping[str, Any]:
+        """Bind the existing public Events CLI/facade to this authenticated host.
+
+        This operation never opens a Store or advances its projection. Scope
+        and identity come from the current enrolled root, not request JSON.
+        """
+        from herzchen.kernel.project_history import ProjectHistoryGrant
+        from .direction_context import read_direction_context
+        from .observability_views import ObservabilityViews, VIEW_PRESETS
+        from .cli import build_parser, _events_command, _render_text
+        if not isinstance(handle, Mapping):
+            raise ValueError("Events read handle must be an object")
+        view = handle.get("view")
+        common_fields = {"view", "format", "snapshot"}
+        allowed = (common_fields | {"facet_id", "max_detail_bytes"} if view == "detail" else
+                   common_fields | {"from_at", "to_at", "timezone_name", "active_during", "limit", "cursor", "filters"})
+        if not isinstance(view, str) or view not in {*VIEW_PRESETS, "detail"} or set(handle) - allowed:
+            raise ValueError("unsupported Events read fields; actor and project are host-bound")
+        fmt = handle.get("format", "json")
+        if not isinstance(fmt, str) or fmt not in {"json", "text"}:
+            raise ValueError("Events read format must be json or text")
+        limit = handle.get("limit", 1)
+        max_bytes = handle.get("max_detail_bytes", 16384)
+        if type(limit) is not int or not 1 <= limit <= 50 or type(max_bytes) is not int or not 1 <= max_bytes <= 65536:
+            raise ValueError("Events read page/detail bounds are invalid")
+        if view == "detail" and (not isinstance(handle.get("facet_id"), str)
+                or not handle["facet_id"].strip() or not isinstance(handle.get("snapshot"), Mapping)):
+            raise ValueError("Events detail requires exact facet_id and original snapshot")
+        project = ResourceRef.from_dict(self.server.state["project_ref"])
+
+        def current_grant() -> Any:
+            current_ref = ResourceRef.from_dict(self.server.state["orchestrator_assignment_ref"])
+            current = self.server.owner.assignments.get(current_ref)
+            if (current_ref != root.ref or current.ref != root.ref or current.generation != root.generation
+                    or current.principal != actor.actor or current.status.value == "cancelled"):
+                raise PermissionError("Events root read responsibility changed")
+            read_direction_context(self.server.owner.direction_bindings(), actor=actor,
+                assignment_ref=current.ref, generation=current.generation, project_ref=project.to_dict())
+            return ProjectHistoryGrant(actor, (project.id,), "authenticated-owner-events-host",
+                hashlib.sha256(json.dumps({"root": current.ref.to_dict(), "generation": current.generation,
+                    "project": {"authority": project.authority, "kind": project.kind, "id": project.id}},
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+
+        grant = current_grant()
+        views = ObservabilityViews(self.server.owner.store.project_history_reader(grant_reader=current_grant))
+        argv = ["events", view, "--actor", actor.actor, "--project-ref", json.dumps(project.to_dict()), "--format", fmt]
+        if view == "detail":
+            argv += ["--facet-id=" + handle["facet_id"], "--max-detail-bytes", str(max_bytes)]
+        else:
+            argv += ["--limit", str(limit)]
+        for field, option in (("from_at", "--from"), ("to_at", "--to"), ("timezone_name", "--timezone"),
+                              ("cursor", "--cursor"), ("snapshot", "--snapshot"),
+                              ("filters", "--filters"), ("active_during", "--active-during")):
+            if field in handle:
+                value = handle[field]
+                if field in {"snapshot", "filters", "active_during"}:
+                    value = json.dumps(value)
+                elif not isinstance(value, str) or not value.strip():
+                    raise ValueError("Events " + field + " requires an exact nonempty string")
+                argv += [option + "=" + value]
+        result = _events_command(build_parser().parse_args(argv), views, grant)
+        return {"project_ref": project.to_dict(), "events": result, "format": fmt,
+                "rendered": _render_text(result) if fmt == "text" else json.dumps(result, sort_keys=True, indent=2),
+                "writes": 0, "dispatch": False, "launch": False}
 
     def _reminder_ids(self) -> tuple[str, ...]:
         """Only owner composition supplies reminder IDs; request JSON cannot."""

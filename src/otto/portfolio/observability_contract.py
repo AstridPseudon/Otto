@@ -26,8 +26,9 @@ from herzchen.contracts import ResourceRef
 
 
 CONTRACT_SCHEMA = "otto.events.contract.v1"
-CONTRACT_REVISION = "events-d01.v1"
+CONTRACT_REVISION = "events-d05.v1"
 SOURCE_COMMIT = "f7bbb885e0dd093b83c83e9cf684f91d5d4e95e3"
+CANDIDATE_COMMIT = "9a4953d91c1af1c3f0a72ae03f6c0dfe4cb5625b"
 CANDIDATE_ROOT = (
     "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/"
     "otto-events-observability-20261010/work/integration-owner"
@@ -38,13 +39,33 @@ SELECTED_PACK_ROOT = (
 )
 
 RUNTIME_PIN = {
-    "interpreter": "/usr/bin/python3",
-    "version": "3.9.6",
+    "interpreter": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9",
+    "version": "3.9 (host-issued interpreter path; patch unverified)",
     "model": "gpt-5.6-luna",
     "reasoning": "high",
     "profile": "workspace-write",
     "adapter": "otto.events.installed-codex-cli.v1",
-    "command": "PYTHONPATH=src /usr/bin/python3 -m unittest discover -s src/otto/portfolio/tests -p 'test_observability_contract.py' -v",
+    "command": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9 /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/controller/manager_ctl.py",
+    "qualification_command": "PYTHONPATH=src /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9 -m unittest src/otto/portfolio/tests/test_d05_events_candidate_proof.py -v",
+}
+
+CLIENT_PIN = {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/controller/manager_ctl.py",
+    "sha256": "ad6ad25e1065a7d31772d285a35eb505df4026120ece4884597a276bfab797a2",
+    "entrypoint": "manager_ctl.py",
+    "route": "authenticated_owner_command_client",
+}
+
+CONTEXT_PINS = {
+    "assignment_ref": {"authority": "otto-project-operating-setup-20261005-owner-v1", "id": "assignment-3ddfcf4f9e695f4ae4a2a618343c", "kind": "wrk.assignment", "revision": "rev-2"},
+    "project_ref": {"authority": "otto-project-operating-setup-20261005-owner-v1", "id": "project-a39879605c476f89a2d8ad1637f5", "kind": "work.project", "revision": "rev-14"},
+    "task_ref": {"authority": "otto-project-operating-setup-20261005-owner-v1", "id": "task-994cfd2f3565e3789b6d0c3e50a3", "kind": "work.task", "revision": "rev-1"},
+    "mandate_ref": {"authority": "otto-project-operating-setup-20261005-owner-v1", "id": "worker-cd2587a1bd225185b6f2dd1e-mandate", "kind": "dat.content.document", "revision": "rev-1"},
+    "principal": "otto-events-d05-worker-1",
+    "role": "worker",
+    "generation": 1,
+    "brief_sha256": "65f2ee524905efc6bde7b2a54767354775c8d5919c27be50aa021c59c9f21186",
+    "owner_delivery_sha256": "4d94d650bda61dd15becaddab606e2548fc577279e08c553c6c7032a4fa59018",
 }
 
 # These are immutable resource identities delivered with the assignment.  The
@@ -69,14 +90,18 @@ RESOURCE_PINS = {
         "content_sha256": "12a1e87d3164b8c47041370cef6726fc230528c48b3b1592937bc7de99a0e04f",
     },
     "worker_brief": {
-        "resource_ref": "worker-aeb01ebb22ac7ff2eb9c3704",
-        "bundle_sha256": "1fbe3e27837760b0b546193bc921f51fbe602079e2a361da9b9f4604e3c1da98",
-        "export_manifest_sha256": "44c322072939e8e23832f2dfa26361172be380590c22e11990e673652ebfae0e",
+        "resource_ref": "worker-cd2587a1bd225185b6f2dd1e",
+        "resource_name": "worker-cd2587a1bd225185b6f2dd1e",
+        "bundle_sha256": "e44608163d5bf6cca8e820df0fe69a03325ecc35f15df784dfe64ec0a1ad65dc",
+        "export_manifest_sha256": "efe5a02fc98fa9501d401145a1f8f09de57111f8a46f9cb8eb23cd07dc065142",
+        "assignment_ref": "assignment-3ddfcf4f9e695f4ae4a2a618343c",
+        "generation": 1,
     },
     "predecessor_terminal": {
         "resource_ref": "events-bootstrap-20261010-v1-predecessor-terminal",
         "content_sha256": "853d6cfa817db00429541b15e4c9f9648bdefdc7bb5bef0b0b62e19ac1fb37e8",
     },
+    "owner_client": CLIENT_PIN,
 }
 
 
@@ -146,17 +171,17 @@ class SourcePin:
 # so the contract remains portable while the candidate root pin above records
 # the physical source custody.
 SOURCE_SEAMS: Tuple[SourcePin, ...] = (
-    SourcePin("src/herzchen/kernel/schema.py", "bb4932f4a023a4a0c3ea8893ae1185f6347b870e9136c236c0b2c8247b8a32bc", "FND", "composition and fingerprint admission"),
-    SourcePin("src/herzchen/kernel/store.py", "63ac97e0c9d70526c8a095094e4a8a4bc3cc69068e069b0e60bb6be049ddd7a7", "FND", "transaction, event ordering, receipts and bounded identity reads"),
-    SourcePin("src/herzchen/kernel/recovery.py", "97830dfcb02b324677df53dc54c4b0cba1769e86d814678ce583ba067e20e205", "Recovery", "closed-owner snapshot, custody and reconciliation primitives"),
+    SourcePin("src/herzchen/kernel/schema.py", "fb59cb3aa01d71560ef43e2088a4f076e5f13813243a90f164ca31ca9ff133f5", "FND", "composition and fingerprint admission"),
+    SourcePin("src/herzchen/kernel/store.py", "2c25d9cefa5fd86e8bf39d5bf5cac80037cc773bad1241012c763e9921ea7944", "FND", "transaction, event ordering, receipts and bounded identity reads"),
+    SourcePin("src/herzchen/kernel/recovery.py", "7464a16ac9a77aa7efe9da00e17ada5cfb9b2f974068d845a39d395a103a9c21", "Recovery", "closed-owner snapshot, custody and reconciliation primitives"),
     SourcePin("src/otto/attention.py", "a06932c793471b2d68c913702cb10e951c6d7f55a28b0418aebd39f385d5f395", "Due", "retained attempts, attention and current Due records"),
     SourcePin("src/otto/portfolio/execution.py", "7abe74ab287f1d2af1f91b2cf2b4f0fbe0977abc1269c02e3f1a1f7617cc3798", "WRK/Due", "compact result/status projection and execution custody"),
-    SourcePin("src/herzchen/domains/work/module.py", "6359925d2219bc7ef1f88af974aa2607736663d9c7247b9c4b974cc740bbe203", "WRK", "work identity and mutation seams"),
+    SourcePin("src/herzchen/domains/work/module.py", "c53c12b5ed587cc629f77c2ad70c1c9099c9aeb7c99986d55810f0606f9cc341", "WRK", "work identity and mutation seams"),
     SourcePin("src/herzchen/domains/work/lifecycle.py", "00c48d42cda4879f4045cf728d5551b631370cfe700faf89b71d6dcce8adad88", "WRK", "lifecycle transitions"),
-    SourcePin("src/herzchen/domains/work/batches.py", "7aa65853add6324a65adac76665d698a75d49fe96dac06fa766b7b8970b0dfaa", "WRK", "project-sheet batch and child mapping"),
-    SourcePin("src/herzchen/domains/work/assignments.py", "4cbb30c7fcf0b3c7018bc90bf129d7fadf768cee8698c79271f8bc5d9195692e", "WRK", "assignment responsibility and generation"),
+    SourcePin("src/herzchen/domains/work/batches.py", "d412d39a80c17ccc4ea1c9018bb375239cde39e9e66b8e1e9d6b98157ec6dc81", "WRK", "project-sheet batch and child mapping"),
+    SourcePin("src/herzchen/domains/work/assignments.py", "bd91b7cc88d339b5f859e2f328b192d99d6f1ebce82a5536100603cdb5ba313f", "WRK", "assignment responsibility and generation"),
     SourcePin("src/herzchen/evidence/model.py", "ab8bb2940f4c2ead59e8009881b7b452ac8cc1471a428f846230c2636fb37c27", "Evidence", "managed manifest, resource pins and availability"),
-    SourcePin("src/herzchen/evidence/commands.py", "b4054a25245811d720b2d8a0e20f980ae8b8dbc54c583d17accf4d7a58b1f7a7", "Evidence", "publication, range and authorized detail resolution"),
+    SourcePin("src/herzchen/evidence/commands.py", "104a2b01e462df97a0695a5bbd6b8b825d83abb21d9a9d526e5af24364635fcb", "Evidence", "publication, range and authorized detail resolution"),
 )
 
 
@@ -320,8 +345,10 @@ def contract_record() -> dict[str, Any]:
         "schema": CONTRACT_SCHEMA,
         "revision": CONTRACT_REVISION,
         "source": {"root": CANDIDATE_ROOT, "commit": SOURCE_COMMIT, "seams": [item.to_dict() for item in SOURCE_SEAMS]},
+        "candidate": {"checkpoint": CANDIDATE_COMMIT, "status": "candidate_not_adopted"},
         "runtime": dict(RUNTIME_PIN),
         "resources": json.loads(json.dumps(RESOURCE_PINS, sort_keys=True)),
+        "context": json.loads(json.dumps(CONTEXT_PINS, sort_keys=True)),
         "historical_fields": list(HISTORICAL_FIELDS),
         "history_facets": list(HISTORY_FACETS),
         "legacy_gap_rules": list(LEGACY_GAP_RULES),
@@ -352,7 +379,7 @@ def contract_digest() -> str:
 
 
 __all__ = [
-    "CANDIDATE_ROOT", "CONTRACT_REVISION", "CONTRACT_SCHEMA", "EVENTS_READ_LIMITS",
+    "CANDIDATE_COMMIT", "CANDIDATE_ROOT", "CLIENT_PIN", "CONTEXT_PINS", "CONTRACT_REVISION", "CONTRACT_SCHEMA", "EVENTS_READ_LIMITS",
     "FIXTURE_INVENTORY", "HISTORY_FACETS", "HISTORICAL_FIELDS", "LEGACY_GAP_RULES",
     "ObservationRef", "ObservabilityContractError", "RESOURCE_PINS", "RUNTIME_PIN",
     "SOURCE_COMMIT", "SOURCE_SEAMS", "SourcePin", "FixtureSpec", "ReadLimits",
