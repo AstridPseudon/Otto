@@ -345,7 +345,23 @@ class FiniteWorkOperations:
                 raise ValueError("document receipt target differs from the owner document scope")
             events = self._owner_reader.list_events(subjects=(target,))
         else:
-            events = self._owner_reader.list_events()
+            # Other mutation receipts also name their event subject (result ref,
+            # or target for older receipts), as Store.event_lineage relies on.
+            # Filter by it before decoding a large shared Store's whole history;
+            # fall back to the full read only if the subject misses an event.
+            from herzchen.contracts import ResourceRef
+            subject = receipt_dict.get("result_ref") or receipt_dict.get("target")
+            events = None
+            if isinstance(subject, dict) and subject.get("authority") == self.binding.authority:
+                identity = ResourceRef(subject["authority"], subject["kind"], subject["id"], subject.get("revision"))
+                try:
+                    events = self._owner_reader.list_events(subjects=(identity,))
+                except TypeError:
+                    events = None
+                if events is not None and not wanted <= {getattr(event, "event_id", None) for event in events}:
+                    events = None
+            if events is None:
+                events = self._owner_reader.list_events()
         return [event.event_id for event in events if getattr(event, "event_id", None) in wanted]
 
     def _result(self, record: Any, *, request_id: str, replayed: bool) -> dict[str, Any]:
