@@ -93,11 +93,19 @@ def _provider_money(raw: Any) -> dict[str, Any] | None:
         "billing": "billed",
     }
     status = aliases.get(status, status)
+    if status in {"missing", "unavailable"}:
+        result = {"schema": MONEY_SCHEMA, "status": status, "amount": None,
+                  "currency": None, "reason": raw.get("reason") or "provider money unavailable"}
+        for key in ("source", "capability", "metric_scope", "population_scope"):
+            if raw.get(key) is not None:result[key] = deepcopy(raw[key])
+        return result
     if status is None and amount is not None and isinstance(currency, str) and currency.strip():
         status = "zero" if amount == 0 else "usage_report_estimate"
     if status not in {"zero", "usage_report_estimate", "billed"}:
         return {"schema": MONEY_SCHEMA, "status": "unavailable", "reason": "provider money status is unavailable"}
-    if not isinstance(currency, str) or not currency.strip() or amount is None:
+    if (not isinstance(currency, str) or len(currency) != 3
+            or not currency.isascii() or not currency.isupper() or not currency.isalpha()
+            or amount is None):
         return {"schema": MONEY_SCHEMA, "status": "unavailable", "reason": "provider money lacks amount or currency"}
     if status == "billed" and not any(raw.get(key) is not None for key in ("receipt_ref", "billing_ref")):
         source_kind = source.get("kind") if isinstance(source, Mapping) else None
@@ -113,7 +121,7 @@ def _provider_money(raw: Any) -> dict[str, Any] | None:
         "provider": raw.get("provider"),
         "source": source,
     }
-    for key in ("receipt_ref", "billing_ref", "usage_report_ref", "recorded_at"):
+    for key in ("receipt_ref", "billing_ref", "usage_report_ref", "recorded_at", "metric_scope", "population_scope", "capability"):
         if raw.get(key) is not None:
             result[key] = deepcopy(raw[key])
     return result
@@ -238,7 +246,10 @@ def estimate_span_cost(row: Mapping[str, Any], *, rate_schedule: Mapping[str, An
 
 
 def _money_fingerprint(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    # Transport/source aliases do not create competing monetary amounts.
+    fields = ("status", "amount", "currency", "provider", "metric_scope",
+              "population_scope", "receipt_ref", "billing_ref")
+    return json.dumps({k: value.get(k) for k in fields}, sort_keys=True, separators=(",", ":"))
 
 
 def _monetary_coverage(rows: Sequence[Mapping[str, Any]], *, complete: bool, missing: int = 0) -> dict[str, Any]:
@@ -410,23 +421,38 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
         shared = len(projects) > 1
         provider_money_values = []
         for item in values:
-            raw_money = (item.get("provider_reported_money")
-                         or item.get("provider_money")
-                         or item.get("reported_money")
-                         or item.get("observation", {}).get("provider_reported_money")
-                         or item.get("observation", {}).get("provider_money"))
+            raw_money = next((carrier[key] for carrier, key in (
+                (item, "provider_reported_money"), (item, "provider_money"),
+                (item, "reported_money"), (item.get("observation", {}), "provider_reported_money"),
+                (item.get("observation", {}), "provider_money"))
+                if key in carrier and carrier[key] is not None), None)
             if raw_money is not None:
                 provider_money_values.append(_provider_money(raw_money))
         usable_money = [item for item in provider_money_values
                         if isinstance(item, Mapping)
                         and item.get("status") in {"zero", "usage_report_estimate", "billed"}]
-        if len({_money_fingerprint(item) for item in usable_money}) > 1:
+        money_conflict = len({_money_fingerprint(item) for item in usable_money}) > 1
+        if money_conflict:
             reason = reason or "provider-money-conflict"
         provider_money = usable_money[0] if usable_money else (
             provider_money_values[0] if provider_money_values else {
                 "schema": MONEY_SCHEMA, "status": "missing", "amount": None,
                 "currency": None, "reason": "provider did not report monetary usage",
             })
+        money_reason = reason
+        if money_conflict:
+            # Never choose one conflicting amount; retain all bounded facts.
+            provider_money = {"schema": MONEY_SCHEMA, "status": "unavailable",
+                "amount": None, "currency": None, "reason": "provider-money-conflict",
+                "observations": provider_money_values}
+        elif provider_money.get("metric_scope", "turn") not in {"turn", "invocation", "span"}:
+            money_reason = money_reason or "provider-money-cumulative-not-additive"
+        elif provider_money.get("population_scope", "self") != "self":
+            money_reason = money_reason or "provider-money-population-unproven"
+        if money_reason and not money_conflict:
+            provider_money = {"schema": MONEY_SCHEMA, "status": "unavailable",
+                "amount": None, "currency": None, "reason": money_reason,
+                "observation": provider_money}
         consumption_time = next((_consumption_time(item) for item in values if _consumption_time(item)), None)
         if consumption_time is None:
             consumption_time = next((_consumption_time(item.get("observation", {}))
@@ -502,6 +528,9 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
         "unpriced_spans": len(rows) - len(priced),
         "provider_reported_spans": provider_summary["span_count"],
         "provider_money_missing": provider_summary["missing_spans"],
+        "provider_money_unavailable": sum(m.get("status") == "unavailable" for m in reported),
+        "provider_money_exclusion_reasons": sorted({m["reason"] for m in reported
+            if m.get("status") == "unavailable" and m.get("reason")}),
         "unknown_is_zero": False,
         "reported_and_estimated_are_separate": True,
     }

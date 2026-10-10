@@ -27,6 +27,44 @@ def native(adapter, usage=None, turn='turn', phase='work'):
             **({} if usage is None else {'usage': usage})}]
 
 
+class NativeMoneyTests(unittest.TestCase):
+    def test_native_money_zero_missing_invalid_scope_and_untrusted_billing(self):
+        from otto.agents.usage_contract import normalize_usage_event, ADAPTER_DESCRIPTORS
+        for adapter in ('codex-direct','codex-host','claude-code'):
+            for value,expected in ((0,'zero'),(1.25,'usage_report_estimate'),(None,'unavailable'),(True,'unavailable'),(-1,'unavailable'),('bad','unavailable')):
+                with self.subTest(adapter=adapter,value=value):
+                    stream=UsageStream(adapter);events=native(adapter,{'input_tokens':10,'output_tokens':2})
+                    events[-1]['total_cost_usd']=value
+                    events[-1]['provider_reported_money']={'amount':'999','currency':'USD','status':'billed','receipt_ref':ref('billing.receipt','fake')}
+                    for event in events:stream.feed(json.dumps(event))
+                    o=stream.observations[0];money=o['provider_reported_money']
+                    self.assertEqual(money['status'],expected if adapter=='claude-code' else 'missing')
+                    if adapter=='claude-code':
+                        self.assertEqual(money['metric_scope'],'cumulative');self.assertEqual(money['population_scope'],'includes-descendants')
+                        self.assertEqual(money['source']['provenance']['raw_line_sha256'],o['provenance']['raw_line_sha256'])
+                    self.assertNotEqual(money['status'],'billed')
+                    event={**events[-1],'schema':ADAPTER_DESCRIPTORS[adapter]['native_schema']}
+                    late=normalize_usage_event(event,adapter_id=adapter,session_id='session',turn_id='turn',provenance=o['provenance'])
+                    self.assertEqual(late['provider_reported_money'],money)
+            stream=UsageStream(adapter)
+            for event in native(adapter,{'input_tokens':1}):stream.feed(json.dumps(event))
+            self.assertEqual(stream.observations[0]['provider_reported_money']['status'],'missing')
+
+    def test_native_json_decimal_amount_is_not_rounded_through_float(self):
+        stream=UsageStream('claude-code')
+        for event in native('claude-code',{'input_tokens':1})[:-1]:stream.feed(json.dumps(event))
+        stream.feed('{"type":"result","session_id":"session","total_cost_usd":0.12345678901234567890123456789,"usage":{"input_tokens":1}}')
+        self.assertEqual(stream.observations[0]['provider_reported_money']['amount'],'0.12345678901234567890123456789')
+
+    def test_same_span_money_change_is_retained_as_distinct_observation(self):
+        stream=UsageStream('claude-code')
+        for cost in (0,1):
+            for event in native('claude-code',{'input_tokens':1}):
+                if event['type']=='result':event['total_cost_usd']=cost
+                stream.feed(json.dumps(event))
+        self.assertEqual(len(stream.observations),2)
+        self.assertEqual(stream.observations[0]['identity'],stream.observations[1]['identity'])
+
 class OwnerPort(InMemoryDueRecordPort):
     def save_due(self, *args, **kwargs):
         saved = super().save_due(*args, **kwargs)

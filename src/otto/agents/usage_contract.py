@@ -119,6 +119,12 @@ def _descriptor(
         "source_paths": list(source_paths),
         "qualification_reason": reason,
         "usage_capability": "supported" if mechanical == "supported" else mechanical,
+        "monetary_capability": ({"field": "total_cost_usd", "currency": "USD",
+            "status": "client-usage-estimate", "metric_scope": "cumulative",
+            "population_scope": "includes-descendants", "billed": "unsupported",
+            "source": "https://code.claude.com/docs/en/agent-sdk/cost-tracking"}
+            if adapter_id == "claude-code" else {"field": None, "reported": "unsupported",
+                "billed": "unsupported", "reason": "selected turn.completed schema has no money"}),
     }
 
 
@@ -337,6 +343,43 @@ def _state_for_usage(event: Mapping[str, Any], descriptor: Mapping[str, Any]) ->
     return ("zero" if all(value == 0 for value in metrics.values()) else "observed"), metrics, None
 
 
+
+def _native_money(event: Mapping[str, Any], descriptor: Mapping[str, Any],
+                  provenance: Mapping[str, Any], *, qualified: bool) -> dict[str, Any]:
+    """Only the selected native schema can supply monetary observations.
+
+    Claude result total_cost_usd is a client estimate of cumulative session
+    spend including subagents, not a disjoint turn charge or billing receipt.
+    The selected Codex completion schema exposes no monetary field. Arbitrary
+    structured provider_reported_money fields are not a supported native API.
+    """
+    capability = descriptor["monetary_capability"]
+    missing = {"schema": "otto.usage-money.v1", "status": "missing",
+               "amount": None, "currency": None,
+               "reason": "selected native schema did not report monetary usage",
+               "capability": deepcopy(capability)}
+    if descriptor["adapter_id"] != "claude-code" or "total_cost_usd" not in event:
+        return missing
+    raw = event["total_cost_usd"]
+    source = {"kind": "native-client-estimate", "field": "total_cost_usd",
+              "native_schema": descriptor["native_schema"],
+              "provenance": deepcopy(dict(provenance))}
+    base = {**missing, "source": source, "provider": descriptor["provider"],
+            "metric_scope": "cumulative", "population_scope": "includes-descendants"}
+    if not qualified:
+        return {**base, "status": "unavailable", "reason": "native money schema/type is not qualified"}
+    if type(raw) not in (int, float, str):
+        return {**base, "status": "unavailable", "reason": "native amount must be a finite nonnegative decimal"}
+    try:
+        amount = Decimal(str(raw))
+    except InvalidOperation:
+        amount = Decimal("NaN")
+    if not amount.is_finite() or amount < 0:
+        return {**base, "status": "unavailable", "reason": "native amount must be a finite nonnegative decimal"}
+    return {**base, "status": "zero" if amount == 0 else "usage_report_estimate",
+            "amount": format(amount, "f"), "currency": "USD", "reason": None}
+
+
 def normalize_usage_event(
     event: Mapping[str, Any],
     *,
@@ -432,6 +475,8 @@ def normalize_usage_event(
             "raw_payload": "retained by Evidence; this observation is a bounded summary",
         },
     }
+    result["provider_reported_money"] = _native_money(event, descriptor, provenance,
+        qualified=schema_present and not schema_mismatch and not type_mismatch)
     return result
 
 

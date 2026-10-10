@@ -85,7 +85,7 @@ class UsageStream:
                         raise ValueError("duplicate native key")
                     result[key] = value
                 return result
-            event = json.loads(body, object_pairs_hook=unique,
+            event = json.loads(body, object_pairs_hook=unique, parse_float=str,
                 parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
         except (ValueError, UnicodeError, TypeError):
             self.invalid_lines += 1
@@ -140,7 +140,7 @@ class UsageStream:
         # Otto's schema label: supply the pinned transport descriptor here.
         qualified = {key: event[key] for key in (
             "type", "schema", "usage", "model", "tier", "partial", "truncated",
-            "usage_complete", "conflict", "usage_state") if key in event}
+            "usage_complete", "conflict", "usage_state", "total_cost_usd") if key in event}
         qualified.setdefault("schema", ADAPTER_DESCRIPTORS[self.adapter_id]["native_schema"])
         try:
             observation = normalize_usage_event(qualified, adapter_id=self.adapter_id,
@@ -161,7 +161,7 @@ class UsageStream:
         # Missing explicit completion ID must not reuse the previous completion.
         self.turn_id = None
         identity = digest({"identity": observation["identity"], "usage": observation["usage"],
-            "observed": observation["observed"], "phase": self.phase})
+            "observed": observation["observed"], "money": observation.get("provider_reported_money"), "phase": self.phase})
         observation["observation_id"] = identity
         if identity in self._seen:
             return observation

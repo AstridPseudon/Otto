@@ -41,9 +41,10 @@ class LateUsageTests(unittest.TestCase):
         from herzchen.command_ports import close_consumer_facade
         self.addCleanup(lambda: close_consumer_facade(self.port.transport))
 
-    def original(self, adapter, *, phase='work', metrics=None, anchor=None, source_only=False, verified_model=None, context_verified=False, result_turn='turn'):
+    def original(self, adapter, *, phase='work', metrics=None, anchor=None, source_only=False, verified_model=None, context_verified=False, result_turn='turn', money_marker=None):
         metrics = {'input_tokens': 10, 'output_tokens': 2} if metrics is None else metrics
         events = native(adapter, metrics)
+        if money_marker is not None:events[-1]['total_cost_usd']=money_marker
         line = json.dumps(events[-1])
         capture = UsageStream(adapter, phase=phase)
         for event in events: capture.feed(json.dumps(event))
@@ -330,6 +331,29 @@ class LateUsageTests(unittest.TestCase):
                 retained=self.append('codex-host',phase=phase)
                 self.assertEqual(retained['observation']['observed']['model'],expected)
                 self.assertEqual(self.port.read_due('schedule'),self.original_value)
+
+    def test_native_cumulative_money_early_late_and_public_fold_agree(self):
+        from otto.portfolio.observability_views import ObservabilityViews
+        for cost in (0,1.25):
+            with self.subTest(cost=cost):
+                if hasattr(self,'source_ref'):self.doCleanups();self.setUp()
+                early=self.original('claude-code',anchor='2026-10-05T10:00:00Z',money_marker=cost)
+                retained=self.append('claude-code');late=retained['observation']['provider_reported_money']
+                self.assertEqual(late,early['provider_reported_money']);self.assertEqual(late['status'],'zero' if cost==0 else 'usage_report_estimate')
+                projection=self.store.project_history_projection();projection.maintain(limit=1000)
+                grant=ProjectHistoryGrant(self.actor,(self.project.id,),'public','v1');views=ObservabilityViews(ProjectHistoryReader(self.store,grant=grant))
+                page=views.read('usage',projects=[self.project.ref],limit=50)
+                self.assertIsNone(page['usage']['accounting']['provider_reported']['amount'])
+                money=page['usage']['accounting']['spans'][0]['provider_reported_money']
+                self.assertEqual(money['reason'],'provider-money-cumulative-not-additive')
+                self.assertEqual(money['observation']['amount'],str(cost))
+                self.assertEqual(self.port.read_due('schedule'),self.original_value)
+                event=json.loads(self.source_line);event['total_cost_usd']=cost+1
+                source=self.bodies.retain(json.dumps(event),project_ref=self.project.ref,task_ref=self.task.ref.to_dict(),attempt_ref=self.manager.ref.to_dict())
+                self.append('claude-code',key='money-conflict',source=source);projection.maintain(limit=1000)
+                conflict=views.read('usage',projects=[self.project.ref],limit=50)['usage']['accounting']
+                self.assertIsNone(conflict['provider_reported']['amount']);self.assertEqual(conflict['provider_reported']['span_count'],0)
+                self.assertIn('provider-money-conflict',conflict['coverage']['monetary']['provider_money_exclusion_reasons'])
 
     def test_public_usage_and_detail_fold_late_facts_at_original_anchor(self):
         from otto.portfolio.observability_views import ObservabilityViews

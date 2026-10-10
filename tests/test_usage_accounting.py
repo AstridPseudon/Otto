@@ -25,6 +25,41 @@ def fact(adapter='codex-direct', *, pos=1, turn='turn', project='project', gener
 
 
 class AccountingTests(unittest.TestCase):
+    def test_money_alias_conflict_population_and_qualified_separate_span(self):
+        for adapter in ('codex-direct', 'codex-host', 'claude-code'):
+            with self.subTest(adapter=adapter):
+                a=fact(adapter);a['provider_reported_money']={'amount':'1','currency':'USD','status':'usage_report_estimate'}
+                alias=deepcopy(a);alias['ref']=ref('wrk.report','alias');alias['append_position']=2
+                alias['provider_reported_money']['source']={'kind':'native-client-estimate','carrier':'different'}
+                q=self.query([a,alias]);self.assertEqual(q['provider_reported']['amount'],'1');self.assertEqual(q['provider_reported']['span_count'],1)
+                alias['provider_reported_money']['amount']='2'
+                q=self.query([a,alias]);self.assertIsNone(q['provider_reported']['amount']);self.assertEqual(q['provider_reported']['span_count'],0)
+                self.assertEqual(q['spans'][0]['provider_reported_money']['reason'],'provider-money-conflict')
+                self.assertEqual(len(q['spans'][0]['provider_reported_money']['observations']),2)
+                child=fact(adapter,pos=3,turn='separate');child['provider_reported_money']={'amount':'3','currency':'USD','status':'usage_report_estimate'}
+                self.assertEqual(self.query([a,alias,child])['provider_reported']['amount'],'3')
+                for population in ('cumulative','includes-descendants'):
+                    excluded=deepcopy(a)
+                    if population=='cumulative':
+                        excluded['observation']['identity']['metric_scope']='cumulative'
+                        excluded['observation']['identity']['span_id']='usage-span-'+digest({k:v for k,v in excluded['observation']['identity'].items()if k!='span_id'})
+                        excluded['observation']['usage']['scope']='cumulative'
+                    else:excluded['observation']['population_scope']=population
+                    q=self.query([excluded,child]);self.assertEqual(q['provider_reported']['amount'],'3');self.assertEqual(q['provider_reported']['span_count'],1)
+                    self.assertTrue(q['coverage']['monetary']['provider_money_exclusion_reasons'])
+
+    def test_receipt_billed_zero_missing_and_malformed_money_remain_distinct(self):
+        for raw,status,amount in (({'amount':'0','currency':'USD','status':'zero'},'zero','0'),
+            (None,'missing',None),({'amount':'bad','currency':'USD'},'unavailable',None),
+            ({'amount':'1','currency':None},'unavailable',None),
+            ({'amount':'1','currency':'not-currency'},'unavailable',None),({},'unavailable',None),
+            ({'amount':'1','currency':'USD','status':'billed'},'unavailable',None),
+            ({'amount':'1','currency':'USD','status':'billed','receipt_ref':ref('billing.receipt','receipt')},'billed','1')):
+            with self.subTest(raw=raw):
+                f=fact();f['provider_reported_money']=raw;q=self.query([f]);m=q['spans'][0]['provider_reported_money']
+                self.assertEqual(m['status'],status);self.assertEqual(m.get('amount'),amount)
+                self.assertEqual(q['provider_reported']['amount'],amount)
+
     def test_native_cache_partition_pricing_codex_and_claude_are_distinct(self):
         for adapter in ('codex-direct','codex-host','claude-code'):
             with self.subTest(adapter=adapter):

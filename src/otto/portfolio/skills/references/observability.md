@@ -86,3 +86,5 @@ rows. A partial source position stays outside published snapshot coverage.
 Arbitrary byte splits, including Unicode, are supported; final count/digest
 verification streams the declared maximum 8 MiB manifest without retaining its
 body, reports that verification I/O, and advances the checkpoint only on success.
+
+Native monetary coverage: selected Codex completion schemas expose no money. Claude `total_cost_usd` is a client estimate in USD, cumulative across resumed session/call and including subagents; retain zero versus missing plus native source, exclude it from additive turn totals. Never treat it as billed money or derive deltas. Arbitrary native `provider_reported_money` is not a selected billing schema. Conflicting, cumulative and unproven populations remain visible but contribute no chosen monetary total. Receipt-backed billed facts, where independently admitted, remain separate from estimates. Native early capture and retained-source reparse use the same normalization.
