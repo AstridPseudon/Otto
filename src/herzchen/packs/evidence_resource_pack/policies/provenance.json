@@ -1,0 +1,12 @@
+{
+  "policy_revision": "evidence-provenance.v1",
+  "host_contract": "herzchen.evidence.host.v1",
+  "document_role": "evidence.managed",
+  "managed_operations": ["dat.evidence.capture", "dat.evidence.version", "dat.evidence.checkin"],
+  "required_origin_bindings": ["project_ref"],
+  "optional_origin_bindings": ["task_ref", "attempt_ref"],
+  "attribution": ["original_creator", "submitter", "maintainer"],
+  "authenticated_facts": ["byte_digest", "byte_length", "format", "capture", "origin"],
+  "policy_cannot_grant_actor_authority": true,
+  "policy_cannot_overwrite_authenticated_facts": true
+}

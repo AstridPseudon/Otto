@@ -1,0 +1,7 @@
+{
+  "record_type": "dat.evidence.manifest",
+  "representation_version": "managed-bytes.v1",
+  "origin": {"project_ref": "required", "task_ref": "optional", "attempt_ref": "optional"},
+  "attribution": {"original_creator": "required", "submitter": "authenticated", "maintainer": "required"},
+  "annotations": "versioned-separately"
+}

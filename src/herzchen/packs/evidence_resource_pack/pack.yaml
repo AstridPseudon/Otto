@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "id": "evidence",
+  "name": "Evidence managed capture",
+  "version": "1.0.0",
+  "documentation": {"kind": "skill", "path": "skill/SKILL.md"},
+  "resources": [
+    {"path": "schemas/evidence.json", "kind": "evidence_schema"},
+    {"path": "policies/provenance.json", "kind": "evidence_policy"},
+    {"path": "presets/submit.json", "kind": "evidence_preset"},
+    {"path": "presets/version.json", "kind": "evidence_preset"},
+    {"path": "skill/SKILL.md", "kind": "skill"},
+    {"path": "templates/evidence.json", "kind": "evidence_template"}
+  ]
+}

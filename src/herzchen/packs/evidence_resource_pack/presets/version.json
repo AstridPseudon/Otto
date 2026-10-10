@@ -1,0 +1,8 @@
+{
+  "preset": "version",
+  "operation": "dat.evidence.version",
+  "host_contract": "herzchen.evidence.host.v1",
+  "document_role": "evidence.managed",
+  "selection": "trusted-finite-owner-version",
+  "representation": "managed-bytes.v1"
+}

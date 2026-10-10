@@ -1,0 +1,246 @@
+import hashlib
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+
+from herzchen.content.model import ContentDocument, ContentRevision, revision_identity
+from herzchen.contracts import AuthenticatedActor, ResourceRef
+from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
+from herzchen.evidence.model import (
+    ChangedInputError,
+    EvidencePackError,
+    PublicationInterrupted,
+    load_evidence_pack,
+)
+from herzchen.packs.authoring import PackProvenanceError, read_managed_pack
+from herzchen.kernel import Store
+
+
+def _public_pack_hooks():
+    pack_root = Path(__file__).parents[1] / "src" / "herzchen" / "packs" / "evidence_resource_pack"
+    resource_kinds = {
+        "schemas/evidence.json": "evidence_schema",
+        "policies/provenance.json": "evidence_policy",
+        "presets/submit.json": "evidence_preset",
+        "presets/version.json": "evidence_preset",
+        "skill/SKILL.md": "skill",
+        "templates/evidence.json": "evidence_template",
+    }
+    revision = "a" * 40
+    manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
+    definition = SimpleNamespace(
+        version="1.0.0",
+        to_dict=lambda: {"id": "evidence", "version": "1.0.0", "schema_version": 2},
+    )
+    handles = tuple(
+        SimpleNamespace(
+            path=path,
+            kind=kind,
+            resolved=pack_root / path,
+            sha256=hashlib.sha256((pack_root / path).read_bytes()).hexdigest(),
+        )
+        for path, kind in resource_kinds.items()
+    )
+    discovered = SimpleNamespace(
+        id="evidence",
+        source_kind="managed",
+        source_revision=revision,
+        source_tree_sha256="b" * 64,
+        source_manifest_sha256=manifest_digest,
+        source_inventory_identity="c" * 64,
+        pack_dir=pack_root,
+        entry=SimpleNamespace(
+            manifest=SimpleNamespace(sha256=manifest_digest),
+            definition=definition,
+            resource_handles=handles,
+        ),
+    )
+
+    def discover(*, project_root):
+        return (discovered,)
+
+    def load(path, *, expected_pack_id=None):
+        return SimpleNamespace(id="evidence", schema_version=2)
+
+    return pack_root, discover, load
+
+
+def _public_managed_pack():
+    pack_root, discover, load = _public_pack_hooks()
+
+    return read_managed_pack(
+        "evidence",
+        project_root=pack_root.parents[3],
+        discoverer=discover,
+        loader=load,
+    )
+
+
+class EvidenceLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        root = Path(self.directory.name)
+        self.store = Store.create(root / "owner.sqlite", authority="owner")
+        register_evidence(self.store)
+        self.actor = AuthenticatedActor("owner", "submitter", "credential")
+        self.project = ResourceRef("owner", "work.project", "project")
+        self.task = ResourceRef("owner", "work.task", "task")
+        self.attempt = ResourceRef("owner", "work.attempt", "attempt")
+        self.store.put_identity(self.project, {"record_type": "work.project", "title": "fixture"}, version=0)
+        self.store.put_identity(
+            self.task,
+            {"record_type": "work.task", "project_ref": self.project, "title": "task"},
+            version=0,
+        )
+        self.store.put_identity(
+            self.attempt,
+            {"record_type": "work.attempt", "project_ref": self.project, "task_ref": self.task},
+            version=0,
+        )
+        pack_root, discover, loader = _public_pack_hooks()
+        self.managed_pack = read_managed_pack(
+            "evidence", project_root=pack_root.parents[3], discoverer=discover, loader=loader
+        )
+        self.pack = load_evidence_pack(
+            project_root=pack_root.parents[3], discoverer=discover, loader=loader
+        )
+        self.handler = EvidenceCommandHandler(
+            self.store,
+            root / "managed",
+            pack=self.pack,
+            adopted_pins=[item.to_dict() for item in self.pack.resources],
+        )
+
+    def tearDown(self):
+        self.store.close()
+        self.directory.cleanup()
+
+    def _submit(self, source, key, **kwargs):
+        return self.handler.submit(
+            source,
+            actor=self.actor,
+            logical_request_key=key,
+            project_ref=self.project,
+            task_ref=self.task,
+            attempt_ref=self.attempt,
+            original_creator="creator",
+            **kwargs,
+        )
+
+    def test_text_binary_capture_bindings_resolution_and_replay_boundaries(self):
+        text = ("line-0123456789\n" * 140_000).encode("utf-8")
+        binary = bytes(range(256)) * 8_192
+        text_result = self._submit(text, "text-capture")
+        binary_result = self._submit(binary, "binary-capture", format="application/octet-stream")
+
+        for result, source, expected_format in (
+            (text_result, text, "text/plain; charset=utf-8"),
+            (binary_result, binary, "application/octet-stream"),
+        ):
+            manifest = result["manifest"]
+            self.assertEqual(manifest["byte_digest"], hashlib.sha256(source).hexdigest())
+            self.assertEqual(manifest["byte_length"], len(source))
+            self.assertEqual(manifest["format"], expected_format)
+            self.assertEqual(manifest["origin"]["project_ref"], self.project.to_dict())
+            self.assertEqual(manifest["origin"]["task_ref"], self.task.to_dict())
+            self.assertEqual(manifest["origin"]["attempt_ref"], self.attempt.to_dict())
+            self.assertEqual(manifest["attribution"]["original_creator"], "creator")
+            self.assertEqual(manifest["attribution"]["submitter"], self.actor.to_dict())
+            self.assertEqual(manifest["resource_selection"]["pack_id"], "evidence")
+            bounded = self.handler.resolve(result["document_ref"], actor=self.actor, offset=17, max_bytes=31)
+            self.assertEqual(bounded["bytes"], source[17:48])
+            self.assertEqual(bounded["verification"], "range-not-revalidated")
+            verified = self.handler.resolve(result["document_ref"], actor=self.actor, verify_full=True, max_bytes=0)
+            self.assertEqual(verified["verification"], "full-verified")
+
+        replay = self._submit(text, "text-capture")
+        self.assertTrue(replay["replayed"])
+        with self.assertRaises(ChangedInputError):
+            self._submit(text + b"changed", "text-capture")
+
+    def test_payload_manifest_and_receipt_interruption_recover_same_capture(self):
+        source = b"payload-boundary" * 100_000
+        for key, boundary in (("payload-boundary", "payload"), ("manifest-boundary", "manifest")):
+            with self.assertRaises(PublicationInterrupted):
+                self._submit(source, key, interrupt_at=boundary)
+            staging = list((Path(self.directory.name) / "managed" / ".staging").glob("*.json"))
+            self.assertTrue(staging, "interruption must leave inspectable staged metadata")
+            recovered = self._submit(source, key)
+            self.assertFalse(recovered["replayed"])
+            self.assertEqual(recovered["manifest"]["byte_length"], len(source))
+
+        with self.assertRaises(PublicationInterrupted):
+            self._submit(source, "receipt-boundary", interrupt_at="receipt")
+        recovered = self._submit(source, "receipt-boundary")
+        self.assertTrue(recovered["replayed"])
+        self.assertFalse(list((Path(self.directory.name) / "managed" / ".staging").glob("*.json")))
+
+    def test_version_checkin_legacy_inline_and_pack_pin_admission(self):
+        first = self._submit(b"v1", "version-base")
+        second = self.handler.version(
+            first["document_ref"], b"v2", actor=self.actor, logical_request_key="version-2",
+            project_ref=self.project, original_creator="creator",
+        )
+        third = self.handler.checkin(
+            first["document_ref"], b"v3", base_revision=second["revision_ref"].revision,
+            actor=self.actor, logical_request_key="checkin-3", project_ref=self.project,
+            original_creator="creator",
+        )
+        self.assertEqual(third["revision_ref"].revision, "rev-3")
+        self.assertEqual(self.handler.status(first["document_ref"], actor=self.actor)["reference"].revision, "rev-3")
+
+        legacy_ref = ResourceRef("owner", "dat.content.document", "legacy")
+        legacy_head_ref = ResourceRef("owner", "dat.content.document", "legacy", "rev-1")
+        legacy_doc = ContentDocument(legacy_ref, "evidence", "public", "read", "legacy-owner", writable=False)
+        legacy_revision = ContentRevision(legacy_ref, "rev-1", {"legacy": "inline"}, self.actor, initial=True)
+        self.store.put_identity(
+            legacy_head_ref,
+            {"record_type": "dat.content.document", "document": legacy_doc, "current_revision": legacy_revision.ref},
+            version=1,
+        )
+        self.store.put_identity(
+            revision_identity(legacy_ref, "rev-1"),
+            {"record_type": "dat.content.revision", "document": legacy_ref, "revision": "rev-1", "content": legacy_revision.content, "author": self.actor},
+            version=0,
+        )
+        inline = self.handler.status(legacy_ref, actor=self.actor)
+        self.assertEqual(inline["representation"], "inline")
+        self.assertEqual(inline["content"], {"legacy": "inline"})
+
+        pack = self.pack
+        self.assertEqual(len(pack.select().resources), 6)
+        self.assertEqual(pack.source.source_inventory_identity, "c" * 64)
+        self.assertEqual(pack.select().to_dict()["source"]["source_revision"], "a" * 40)
+        pins = [item.to_dict() for item in pack.resources]
+        pins[0]["digest"] = "0" * 64
+        with self.assertRaises(EvidencePackError):
+            pack.select(pins)
+
+    def test_public_managed_discovery_rejects_unmanaged_and_incomplete_selection(self):
+        managed = _public_managed_pack()
+        pack = load_evidence_pack(managed_pack=managed)
+
+        def discover_unmanaged(*, project_root):
+            source = managed.source.to_dict()
+            source["id"] = source.pop("pack_id")
+            item = SimpleNamespace(**source, entry=SimpleNamespace())
+            item.source_kind = "workspace"
+            item.pack_dir = Path(managed.source.pack_root)
+            return (item,)
+
+        with self.assertRaises(PackProvenanceError):
+            read_managed_pack(
+                "evidence",
+                project_root=Path(managed.source.pack_root).parents[3],
+                discoverer=discover_unmanaged,
+                loader=lambda *args, **kwargs: None,
+            )
+
+        incomplete = [item.to_dict() for item in pack.resources[:-1]]
+        with self.assertRaises(EvidencePackError):
+            pack.select(incomplete)
+
+
+if __name__ == "__main__":
+    unittest.main()

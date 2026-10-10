@@ -1,0 +1,15 @@
+{
+  "schema_revision": "dat.evidence.v1",
+  "record_type": "dat.evidence.manifest",
+  "representation_version": "managed-bytes.v1",
+  "required": [
+    "record_type", "representation_version", "byte_digest", "byte_length",
+    "format", "storage", "availability", "origin", "attribution",
+    "capture", "resource_selection"
+  ],
+  "immutable_fields": [
+    "byte_digest", "byte_length", "format", "storage.location",
+    "origin", "attribution.original_creator", "capture"
+  ],
+  "legacy_inline_readable": true
+}

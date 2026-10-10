@@ -326,7 +326,7 @@ def read_managed_pack(
     except Exception as exc:
         raise PackAuthoringError(f"public pack loader rejected {pack_id!r}: {exc}") from exc
     definition = item.entry.definition
-    if loaded.id != pack_id or loaded.schema_version != "2":
+    if loaded.id != pack_id or str(loaded.schema_version) != "2":
         raise PackAuthoringError("public loader returned a non-v2 or mismatched pack")
     resources: list[ManagedResource] = []
     seen: set[str] = set()
