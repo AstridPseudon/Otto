@@ -255,6 +255,46 @@ class LateUsageTests(unittest.TestCase):
         self.assertEqual(combined['metrics']['input_tokens'],10)
         self.assertEqual(combined['groups']['project'],[])
 
+    def test_imported_task_without_birth_event_uses_exact_admission_project(self):
+        # Imported package identities predate a separate per-task event; the
+        # ordinary assignment writer still captures exact validated membership.
+        legacy = ResourceRef(self.project.ref.authority, 'work.task', 'imported-task', 'rev-1')
+        self.store.put_identity(legacy, {**deepcopy(self.task.payload), 'project_ref': self.project.ref.to_dict(), 'parent': self.project.ref.to_dict()}, version=1)
+        self.task = WorkGraph(self.store, actor=self.actor).get(legacy)
+        self.assertEqual(self.store.list_events(subjects=(legacy,)), ())
+        self.old = self.p.assign(legacy, role='worker', principal='historical-worker',
+            agent='historical-agent', session='session', logical_request_key='imported-task-assignment')
+        self.original('codex-direct')
+        # A later current head cannot alter historical admission membership.
+        other = WorkGraph(self.store, actor=self.actor).create_project(title='Later', logical_request_key='later-project')
+        changed = {**self.task.payload, 'project_ref': other.ref.to_dict(), 'parent': other.ref.to_dict()}
+        self.store.revise_identity(legacy, changed, expected_version=1, expected_revision='rev-1', revision='rev-2')
+        result = self.append()
+        self.assertEqual(result['association']['project_ref']['id'], self.project.id)
+        self.assertEqual(result['association']['task_ref'], legacy.to_dict())
+        self.assertEqual(self.append()['ref'], result['ref'])
+
+    def test_task_admission_resolution_rejects_missing_foreign_changed_and_ambiguous(self):
+        from herzchen.domains.work.usage import _admitted_task_project
+        target = self.old.ref
+        facet = {'schema':'fnd.history-summary.v1','coverage':'captured-pre-post',
+            'after':{'exists':True,'ref':target.to_dict(),'fields':{'generation':1,'scope':self.task.ref.to_dict()}},
+            'project_resolution':[{'side':'after','scope_ref':self.task.ref.to_dict(),
+                                   'coverage':'validated-exact-state-at-capture'}],
+            'resolved_projects':[self.project.ref.to_dict()]}
+        self.assertEqual(_admitted_task_project(facet,target,self.task.ref.to_dict(),1),self.project.ref.to_dict())
+        changes=[]
+        for field, value in (('resolved_projects',[]),('resolved_projects',[self.project.ref.to_dict()]*2),
+                             ('project_resolution',[]),('coverage','legacy-source-only')):
+            value_facet=deepcopy(facet);value_facet[field]=value;changes.append(value_facet)
+        for field,value in (('generation',2),('scope',{**self.task.ref.to_dict(),'id':'foreign-task'})):
+            value_facet=deepcopy(facet);value_facet['after']['fields'][field]=value;changes.append(value_facet)
+        value_facet=deepcopy(facet);value_facet['after']['ref']['revision']='rev-999';changes.append(value_facet)
+        value_facet=deepcopy(facet);value_facet['resolved_projects'][0]['authority']='foreign';changes.append(value_facet)
+        for value_facet in changes:
+            with self.subTest(facet=value_facet), self.assertRaises(WorkValidationError):
+                _admitted_task_project(value_facet,target,self.task.ref.to_dict(),1)
+
     def test_source_backed_history_facets_keep_old_snapshot_immutable(self):
         self.original('codex-direct'); self.replace()
         projection = self.store.project_history_projection(); projection.maintain(limit=1000)

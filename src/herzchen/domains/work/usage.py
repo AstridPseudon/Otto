@@ -117,6 +117,38 @@ def _source(writer, ref):
     return result
 
 
+def _admitted_task_project(facet, target, scope, generation):
+    """Use the original writer-validated assignment facet, never a task head.
+
+    Imported tasks need not have a separate creation event. Their exact task
+    revision was nevertheless validated when this assignment was admitted.
+    Missing or ambiguous historical resolution remains unavailable.
+    """
+    if not isinstance(facet, Mapping) or not isinstance(facet.get("after"), Mapping):
+        raise WorkValidationError("historical task admission facet unavailable")
+    after = facet["after"]
+    fields = after.get("fields", {})
+    if not isinstance(fields, Mapping):
+        raise WorkValidationError("historical task admission fields unavailable")
+    if (facet.get("schema") != "fnd.history-summary.v1"
+            or facet.get("coverage") != "captured-pre-post"
+            or after.get("exists") is not True or after.get("ref") != target.to_dict()
+            or fields.get("generation") != generation or fields.get("scope") != scope):
+        raise WorkValidationError("historical task admission facet differs")
+    resolutions = facet.get("project_resolution", ())
+    if not any(isinstance(r, Mapping) and r.get("side") == "after"
+               and r.get("scope_ref") == scope
+               and r.get("coverage") == "validated-exact-state-at-capture" for r in resolutions):
+        raise WorkValidationError("historical task project is unavailable")
+    projects = facet.get("resolved_projects", ())
+    if not isinstance(projects, list) or len(projects) != 1:
+        raise WorkValidationError("historical task project is missing or ambiguous")
+    project = _pin(projects[0], "work.project")
+    if project.authority != target.authority or _pin(scope, "work.task").authority != target.authority:
+        raise WorkValidationError("historical task project is foreign")
+    return project.to_dict()
+
+
 def append_late_usage(engine, writer, bodies, target, source_ref, source, *, adapter_id,
                       phase, session_id, turn_id, authorizing_assignment_ref,
                       authorizing_generation, logical_request_key, actor,
@@ -158,7 +190,8 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
             raise WorkValidationError("original source does not bind the historical assignment")
         # Attribution is taken from the exact original assignment revision facet,
         # even after its principal, generation, session or scope is replaced.
-        historical = tx.execute("SELECT json_extract(effects_json,'$.history_summary.primary.after.fields') "
+        historical = tx.execute("SELECT json_extract(effects_json,'$.history_summary.primary.after.fields'),"
+            "json_extract(effects_json,'$.history_summary.primary') "
             "FROM events WHERE store_authority=? AND subject_authority=? AND subject_kind=? AND subject_id=? "
             "AND subject_revision=? ORDER BY append_position DESC LIMIT 1",
             (writer.authority, *_key(target), target.revision)).fetchone()
@@ -174,12 +207,11 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
                 raise WorkValidationError("result project differs from historical scope")
             project = scope
         elif scope.get("kind") == "work.task":
-            task_event = tx.execute("SELECT json_extract(effects_json,'$.history_summary.primary.after.fields.project_ref') "
-                "FROM events WHERE subject_authority=? AND subject_kind=? AND subject_id=? AND subject_revision=? "
-                "ORDER BY append_position DESC LIMIT 1", (*_key(_pin(scope)), scope.get("revision"))).fetchone()
-            if task_event is None or not task_event[0]:
-                raise WorkValidationError("historical task project is unavailable")
-            project = json.loads(task_event[0])
+            if historical[1] is None or len(historical[1].encode()) > MAX_SOURCE_BYTES:
+                raise WorkValidationError("historical task admission facet unavailable or oversized")
+            project = _admitted_task_project(json.loads(historical[1]), target, scope, original["generation"])
+            if original.get("project_ref") is not None and _key(_pin(original["project_ref"])) != _key(_pin(project)):
+                raise WorkValidationError("result project differs from historical task admission")
             if original.get("task_ref") != scope:
                 raise WorkValidationError("original task differs from admitted historical task")
         else:
