@@ -32,6 +32,20 @@ same draft bundle and send the exact requested authoring action to the authorize
 owner. Identify the missing binding; do not open the live database or copy a
 previous controller script as a new writer. Continue independent planning.
 
+## 0. Adopt work already in flight
+
+Use this before step 1 when boards, branches, open agent sessions or served trees
+already carry the work.
+
+1. Inventory existing trackers: boards, branches, open agent sessions, served trees.
+2. Record their exact source identities: commits, served tree, paused branches.
+3. After any interrupted or rejected tool call, verify the actual effect (for
+   example `git log`) instead of assuming it was undone.
+4. Freeze the old tracker as history; do not keep editing it.
+5. Carry every open item into the one tasklist with a `carried-from` note.
+6. Diff old to new: every old open item is carried, done (with evidence) or
+   dropped with a reason.
+
 ## 1. Explore and save a draft
 
 Start with a title, the user's brief and the relevant repository or repositories.

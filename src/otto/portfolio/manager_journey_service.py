@@ -18,6 +18,11 @@ from .manager_handoff import compose_manager_handoff
 
 _CALLER = ContextVar("otto_trusted_command_caller", default=None)
 
+def _run_config_name(run_path: Path) -> str:
+    from .run_config import run_config_path
+    return run_config_path(run_path).name
+
+
 def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: Mapping[str, Any],
                              principal: str, model: str, reasoning: str, focus: str,
                              workspace: Path, run_path: Path, adapter: Any, leaf: bool = False) -> tuple[str, dict, dict]:
@@ -50,7 +55,7 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
         "priorities": [{"id": task.lower(), "text": focus.strip(), "status": "pending"}],
         "continuation": {"next_action": focus.strip()},
         "links": [{"label": name, "path": str(run_path / name)}
-                  for name in ("agent_goal.md", "tasklist.md", "run.yaml", "owner-setup-guidance-20261005.md")]
+                  for name in ("agent_goal.md", "tasklist.md", _run_config_name(run_path), "owner-setup-guidance-20261005.md")]
                  + [{"label": "Megado skill", "path": str(workspace / "policy-staging/megado/skill/SKILL.md")},
                     {"label": "Otto skill index", "path": str(workspace / "src/otto/portfolio/skills/SKILL.md")},
                     {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")}],
@@ -1223,7 +1228,8 @@ class ManagerJourneyService:
             raise ValueError("worker requires a current task and configured route")
         if not isinstance(principal, str) or not principal.strip() or principal != principal.strip():
             raise ValueError("worker principal must be exact nonblank text")
-        config = json.loads((self.run_path / "run.yaml").read_text())
+        from .run_config import read_run_config
+        config = read_run_config(self.run_path)
         from .worker_occurrences import parent_for_caller, check_allowance
         from .occurrence_reads import lookup, handle, digest
         caller = _CALLER.get()

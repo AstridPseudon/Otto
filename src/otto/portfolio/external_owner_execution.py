@@ -111,7 +111,8 @@ def dispatch(service, request):
             for row in service.server.due_port.list_due({"project_ref": policy["project_ref"]["id"]}):
                 if row.get("role") in {"manager", "worker"} and (live(row["schedule_id"]) or row.get("in_flight_request") and row.get("host_evidence", {}).get("gateway_attempt")):
                     raise PermissionError("native capacity is occupied or uncertain")
-            config = json.loads((service.run_path / "run.yaml").read_text())["roles"]["worker_" + policy["route"]]
+            from .run_config import read_run_config
+            config = read_run_config(service.run_path)["roles"]["worker_" + policy["route"]]
             if config != {"model": policy["model"], "reasoning": policy["reasoning"]}:
                 raise PermissionError("configured worker route differs from explicit host policy")
             app = service._execution(principal=policy["principal"], model=policy["model"], reasoning=policy["reasoning"], evidence_id="external-root-policy")
