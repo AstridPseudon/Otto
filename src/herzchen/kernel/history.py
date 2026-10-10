@@ -19,7 +19,8 @@ MAX_INLINE_FACETS = 128
 STATE_FIELDS = ("parent", "project_ref", "project", "scope", "lifecycle", "status",
                 "responsibility_ref", "generation", "principal", "role", "agent",
                 "session", "manager", "reporter", "launcher", "assignment",
-                "dependencies", "pins", "documents", "document", "current_revision", "subject", "active")
+                "dependencies", "pins", "documents", "document", "current_revision", "subject", "active",
+                "delivery_state", "application_state", "native_result", "task_acceptance")
 
 
 def safe(value: Any) -> Any:
@@ -36,8 +37,34 @@ def state(ref: Optional[ResourceRef], payload: Optional[Mapping[str, Any]]) -> M
     if payload is None:
         return {"exists": False, "ref": None, "fields": {}, "unknown": []}
     fields = {k: safe(payload[k]) for k in STATE_FIELDS if k in payload}
+    # A Work result is an immutable owner observation, not task acceptance.
+    # Keep only its bounded typed attempt facts, never native output/context.
+    value = payload.get("value")
+    assignment = safe(payload.get("assignment"))
+    if (ref is not None and ref.kind == "wrk.result" and payload.get("record_type") == "work.observation"
+            and payload.get("observation_kind") == "result" and isinstance(value, Mapping)
+            and safe(value.get("assignment_ref")) == assignment
+            and type(value.get("generation")) is int and value["generation"] == payload.get("generation")
+            and all(isinstance(value.get(k), str) and 0 < len(value[k]) <= 256
+                    for k in ("logical_request_key", "operation", "delivery_state", "outcome"))):
+        fields["delivery_state"] = value["delivery_state"]
+        fields["native_result"] = {"result_ref": safe(ref), "outcome": value["outcome"],
+            "source": "retained owner attempt observation"}
+        for key in ("physical_session_id", "observed_model", "observed_reasoning"):
+            item = value.get(key)
+            if isinstance(item, str) and 0 < len(item) <= 256:
+                fields["native_result"][key] = item
+        if (type(value.get("application_state")) is bool or isinstance(value.get("application_state"), str)
+                and len(value["application_state"]) <= 256):
+            fields["application_state"] = value["application_state"]
+    completion = payload.get("completion")
+    if (ref is not None and ref.kind == "work.task" and payload.get("lifecycle") == "completed"
+            and isinstance(completion, Mapping) and completion.get("candidate_ref")
+            and isinstance(completion.get("disposition"), str)):
+        fields["task_acceptance"] = {"disposition": completion["disposition"],
+            "candidate_ref": safe(completion["candidate_ref"]), "source": "committed manager completion"}
     return {"exists": True, "ref": safe(ref), "fields": fields,
-            "unknown": [k for k in STATE_FIELDS if k not in payload]}
+            "unknown": [k for k in STATE_FIELDS if k not in fields]}
 
 
 def transition(before_ref, before_payload, after_ref, after_payload, *, facet_type="creation_or_revision"):

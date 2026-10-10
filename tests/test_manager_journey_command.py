@@ -53,6 +53,20 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.commands.review_task({**request, "inspection": {"different": True}})
 
+    def test_project_view_retains_committed_acceptance_independently_of_native_result(self):
+        from herzchen.kernel import ProjectHistoryGrant
+        from otto.portfolio.observability_views import ObservabilityViews
+        store=self.application.store;store.configure_history_projection(batch_size=1000).maintain(limit=1000)
+        request=self.request(key='view-completion');result=self.commands.review_task(request)
+        grant=ProjectHistoryGrant(self.application.actor,(self.application.project.id,),'fixture','completion-view')
+        views=ObservabilityViews(store.project_history_reader(grant=grant))
+        page=views.read('tasks-reviews',projects=[self.application.project.ref.to_dict()],
+            filters={'facet_type':'lifecycle_transition'},limit=50)
+        row=next(row for row in page['rows']if row['subject_ref']==result['completion']['task_ref'])
+        self.assertEqual(row['semantic']['task_acceptance']['value']['candidate_ref'],request['candidate_ref'])
+        self.assertEqual(row['semantic']['native_result']['state'],'unknown')
+        self.assertEqual(self.application.provider.calls,[])
+
     def test_review_reuses_precreated_bound_pool_from_a_different_setup_key(self):
         policy = self.fixture.state["assessment_policy"]
         LimitService(self.application.store).create_pool(

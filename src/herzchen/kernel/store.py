@@ -1809,6 +1809,8 @@ class Store:
                 facet_type = "lifecycle_transition"
             elif event_type in {"work.assignment.reassigned", "work.assignment.resources-adopted"}:
                 facet_type = "replacement_or_adoption"
+            elif event_type == "work.result.appended" and result_ref.kind == "wrk.result":
+                facet_type = "retained_attempt_or_result"
             primary = self._history_transition(tx, None if row is None else ResourceRef(target.authority, target.kind, target.id, current_revision),
                                                None if row is None else current_payload, result_ref, persisted_payload, facet_type)
             effects["history_summary"] = {"schema": HISTORY_SCHEMA, "primary": primary, "facets": []}
@@ -1906,8 +1908,32 @@ class Store:
             if not payload:
                 continue
             scope = payload.get("scope")
+            # Observation membership comes from its exact canonical assignment
+            # at capture. Result JSON cannot select a project; later readers
+            # never resolve a historical observation through current heads.
+            assignment = payload.get("assignment")
+            if isinstance(assignment, ResourceRef):
+                assignment = assignment.to_dict()
+            if scope is None and isinstance(assignment, Mapping) and assignment.get("kind") == "wrk.assignment":
+                identity = tx.execute("SELECT current_revision,payload_json FROM identities WHERE authority=? AND kind=? AND id=?",
+                    (assignment["authority"], assignment["kind"], assignment["id"])).fetchone()
+                if identity and assignment.get("revision") == identity[0]:
+                    assigned = json.loads(identity[1])
+                    scope = assigned.get("scope")
+                    for field in ("principal", "role"):
+                        if field in assigned:
+                            summary[side]["fields"][field] = assigned[field]
+                            summary[side]["unknown"] = [k for k in summary[side]["unknown"] if k != field]
+                    resolutions.append({"side": side, "assignment_ref": dict(assignment),
+                        "coverage": "validated-exact-assignment-at-capture"})
+                else:
+                    resolutions.append({"side": side, "assignment_ref": dict(assignment),
+                        "coverage": "unknown-exact-assignment-source-gap"})
             if isinstance(scope, ResourceRef):
                 scope = scope.to_dict()
+            if isinstance(scope, Mapping) and scope.get("kind") == "work.project":
+                projects[(scope["authority"], scope["id"])] = scope
+                continue
             if not (isinstance(scope, Mapping) and scope.get("kind") == "work.task"):
                 continue
             identity = tx.execute("SELECT current_revision,payload_json FROM identities WHERE authority=? AND kind=? AND id=?",
@@ -1931,6 +1957,15 @@ class Store:
                     if isinstance(project, Mapping) and project.get("kind") == "work.project":
                         projects[(project["authority"], project["id"])] = project
         summary["resolved_projects"] = [projects[k] for k in sorted(projects)]
+        for side, payload in (("before", before_payload), ("after", after_payload)):
+            fields = summary[side]["fields"]
+            if payload and "native_result" in fields:
+                claimed = payload.get("value", {}).get("project_ref")
+                if isinstance(claimed, ResourceRef):
+                    claimed = claimed.to_dict()
+                if not isinstance(claimed, Mapping) or (claimed.get("authority"), claimed.get("id")) not in projects:
+                    fields.pop("native_result")
+                    summary[side]["unknown"] = sorted(set(summary[side]["unknown"]) | {"native_result"})
         summary["project_resolution"] = resolutions
         if len(_json({"schema": HISTORY_SCHEMA, "primary": summary, "facets": []}).encode()) > MAX_SUMMARY_BYTES:
             raise StoreError("individual typed history exceeds the inline bound")
