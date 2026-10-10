@@ -12,9 +12,17 @@ from typing import Any
 from .recovery_timing import stable_correlation_id, timing_from_receipt
 
 def requires_native_caller(command: str) -> bool:
-    """New manager planning requires the existing identity-bearing ingress."""
+    """Finite native commands route by current authenticated occurrence.
+
+    Owner grants and retained delivery remain their distinct owner entrances.
+    File IPC cannot select a manager view in a shared-owner host.
+    """
     return command in {"whoami", "effective-context", "task-list-author", "run-worker",
-                       "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result"}
+                       "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
+                       "report", "status", "review-input", "review-task", "finish-task", "finish-project",
+                       "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
+                       "worker-status", "manager-assessment", "manager-assessment-pool", "completion-gate",
+                       "complete-task", "manager-continue", "execution-control"}
 
 
 FINISH_PROJECT_EXAMPLE = (
