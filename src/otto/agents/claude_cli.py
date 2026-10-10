@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import subprocess
@@ -67,15 +68,37 @@ def _preflight_interpreter() -> Mapping[str, str]:
     return {'realpath': str(executable), 'sha256': file_digest(executable)}
 
 
+_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+ \(Claude Code\)$")
+
+
+def qualified_versions(values: Any = None) -> tuple[str, ...]:
+    """The exact launcher versions a host has qualified for PARSER_SCHEMA.
+
+    The parser schema stays pinned (VERSION by default). A host that has
+    re-run the parser/transport fixtures against a newer CLI may add its
+    exact ``--version`` string through its adapter configuration; nothing is
+    accepted by prefix, range or PATH discovery, and there is no fallback.
+    """
+    values = (VERSION,) if values is None else tuple(values)
+    if (not values or len(values) > 8 or VERSION not in values
+            or any(not isinstance(v, str) or not _VERSION_PATTERN.match(v) for v in values)
+            or len(set(values)) != len(values)):
+        raise ClaudeBindingError("qualified Claude versions must be exact '<x.y.z> (Claude Code)' strings including "
+                                 + VERSION)
+    return values
+
+
 @dataclass(frozen=True)
 class LauncherPin:
     locator: str
     realpath: str
     sha256: str
     version: str
+    qualified: tuple = (VERSION,)
 
     @classmethod
-    def inspect(cls, launcher: str) -> "LauncherPin":
+    def inspect(cls, launcher: str, *, qualified: Any = None) -> "LauncherPin":
+        accepted = qualified_versions(qualified)
         path = Path(launcher)
         if not path.is_absolute():
             raise ClaudeBindingError("absolute trusted launcher required; no PATH fallback")
@@ -83,13 +106,15 @@ class LauncherPin:
         before = file_digest(real)
         result = subprocess.run([str(real), "--version"], capture_output=True,
                                 text=True, timeout=10, check=False)
-        if result.returncode or result.stdout.strip() != VERSION or file_digest(real) != before:
-            raise ClaudeBindingError("launcher version unsupported or changed during inspection")
-        return cls(str(path), str(real), before, result.stdout.strip())
+        if result.returncode or result.stdout.strip() not in accepted or file_digest(real) != before:
+            raise ClaudeBindingError("launcher version unsupported or changed during inspection: observed "
+                                     + repr(result.stdout.strip()[:64]) + "; qualified " + ", ".join(accepted))
+        return cls(str(path), str(real), before, result.stdout.strip(), accepted)
 
     def verify(self) -> None:
         if (str(Path(self.locator).resolve(strict=True)) != self.realpath
-                or file_digest(Path(self.realpath)) != self.sha256 or self.version != VERSION):
+                or file_digest(Path(self.realpath)) != self.sha256
+                or self.version not in qualified_versions(self.qualified)):
             raise ClaudeBindingError("pinned Claude launcher drift/removal; host reconciliation required")
 
 

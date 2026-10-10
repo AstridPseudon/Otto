@@ -50,9 +50,17 @@ def main(argv: Optional[list[str]] = None, *, gateway: Optional[OttoGateway] = N
     elif args.command == "status":
         result = gateway.status()
     elif args.command == "dry-run":
+        # Host-aware default: OTTO_MODEL_PROFILE / OTTO_HOST_KIND select the
+        # profile; with neither set this is the unchanged Codex default.
+        from .agents.host_profiles import resolve_profile_name, slot_binding
+        name = resolve_profile_name()
+        binding = slot_binding("worker_normal", name)
         result = {"mode": "dry-run", "effects": "none", "route": "normal",
-                  "requested_model": "gpt-5.6-luna", "requested_reasoning": "high",
+                  "requested_model": binding["model"], "requested_reasoning": binding["reasoning"],
                   "operations": ["invoke", "resume", "send", "inspect", "cancel", "wait"]}
+        if name != "codex":
+            result["model_profile"] = name
+            result["adapter"] = binding["adapter"]
     elif args.command == "inspect":
         result = gateway.inspect(Responsibility(args.owner, args.logical_agent_id, "inspect", args.packet_digest,
                                                 physical_session_id=args.physical_session_id))

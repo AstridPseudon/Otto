@@ -205,6 +205,7 @@ class ClaudeWorkerAdapter:
     owner_bound = True
     require_host_context = True
     adapter_identity = IDENTITY
+    leaf_only = True  # declared capability; manager/coordinator routes refuse it
 
     def __init__(self, *, owner: str, source: str, worktree: str, launcher_pin: LauncherPin,
                  state_root: str, requested_model: str, requested_reasoning: str = 'high',

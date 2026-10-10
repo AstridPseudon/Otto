@@ -55,9 +55,13 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
                     {"label": "Otto skill index", "path": str(workspace / "src/otto/portfolio/skills/SKILL.md")},
                     {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")}],
         "revision": "ordinary-worker-v1"}
-    if getattr(adapter, "adapter_identity", None) == "otto.adapter.claude-code-2.1.293.leaf.v1":
+    # Any adapter may declare itself a finite leaf (Claude Code does); the
+    # identity check keeps the original Claude pin for retained policies.
+    if (getattr(adapter, "leaf_only", False) is True
+            or getattr(adapter, "adapter_identity", None) == "otto.adapter.claude-code-2.1.293.leaf.v1"):
         if operation != "implementation":
-            raise ValueError("selected Claude binding is a finite leaf; coordinating/manager operations are unqualified")
+            raise ValueError("selected adapter is a finite leaf (" + str(getattr(adapter, "adapter_identity", "unnamed"))
+                             + "); coordinating/manager operations are unqualified")
         contract["read_targets"] = [str(workspace)]
     if operation == "coordinating_implementation":
         contract["delegation"] = {"max_depth": 1, "result_consumption": "yield"}
