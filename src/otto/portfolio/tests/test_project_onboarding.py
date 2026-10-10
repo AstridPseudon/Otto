@@ -96,6 +96,44 @@ class ProjectOnboardingTests(unittest.TestCase):
         self.assertEqual(result["effects"]["tasks"], [])
         self.assertEqual(result["effects"]["provider_calls"], 0)
 
+    def test_create_reply_and_exact_replay_never_inventory_unrelated_events(self):
+        operations = self.portfolio.operations
+        reader = operations._owner_reader
+        calls = []
+
+        class ScopedReader:
+            def __getattr__(self, name):
+                return getattr(reader, name)
+
+            def list_events(self, **query):
+                # An unrelated native result may be arbitrarily large. The
+                # create reply must never ask to decode the global inventory.
+                self_subjects = query.get("subjects")
+                if not self_subjects:
+                    raise AssertionError("global event hydration in authoring reply")
+                calls.append(self_subjects)
+                return reader.list_events(**query)
+
+        operations._owner_reader = ScopedReader()
+        request = dict(actor="owner", request_id="bounded-create", title="Title", brief="Brief")
+        created = self.portfolio.create_draft(**request)
+        self.assertEqual(created["outcome"], "created", created)
+        replayed = self.portfolio.create_draft(**request)
+        self.assertEqual(replayed["project_ref"]["id"], created["project_ref"]["id"])
+        self.assertEqual(replayed["receipt"]["event_ids"], created["receipt"]["event_ids"])
+        self.assertTrue(calls)
+        self.assertTrue(all(len(subjects) == 1 for subjects in calls))
+
+    def test_receipt_scope_rejects_foreign_authority_before_reading_events(self):
+        operations = self.portfolio.operations
+        receipt = {"event_ids": ["foreign-event"], "operation": "work.create",
+                   "target": {"authority": "foreign", "kind": "work.project", "id": "foreign"}}
+        with self.assertRaisesRegex(ValueError, "owner authority"):
+            operations._events_for(receipt)
+
+    def test_empty_receipt_lineage_needs_no_event_inventory(self):
+        self.assertEqual(self.portfolio.operations._events_for({"event_ids": []}), [])
+
     def test_help_and_cli_parser_expose_cold_onboarding_route(self):
         parser = build_parser()
         args = parser.parse_args(["onboarding", "create", "--actor", "owner", "--request-id", "r",

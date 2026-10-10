@@ -335,17 +335,17 @@ class FiniteWorkOperations:
         wanted = set(receipt_dict.get("event_ids", []))
         if not wanted:
             return []
-        # DAT document receipts address one document identity. Apply the existing
-        # owner predicate before hydration; unrelated native event payloads can
-        # be very large. Keep the same persisted order and receipt-ID filter.
-        if receipt_dict.get("operation") in {"dat.content.document.create", "dat.content.revision.append"}:
-            from herzchen.contracts import ResourceRef
-            target = ResourceRef.from_dict(receipt_dict["target"])
-            if target.authority != self.binding.authority or target.kind != "dat.content.document":
-                raise ValueError("document receipt target differs from the owner document scope")
-            events = self._owner_reader.list_events(subjects=(target,))
-        else:
-            events = self._owner_reader.list_events()
+        # Every mutation receipt names its event subject with the result ref
+        # (or target for older receipts). Filter before hydration, as in the
+        # kernel receipt-lineage contract; unrelated native payloads are large.
+        from herzchen.contracts import ResourceRef
+        target = ResourceRef.from_dict(receipt_dict.get("result_ref") or receipt_dict["target"])
+        if target.authority != self.binding.authority:
+            raise ValueError("receipt subject differs from the owner authority")
+        if (receipt_dict.get("operation") in {"dat.content.document.create", "dat.content.revision.append"}
+                and target.kind != "dat.content.document"):
+            raise ValueError("document receipt target differs from the owner document scope")
+        events = self._owner_reader.list_events(subjects=(target,))
         return [event.event_id for event in events if getattr(event, "event_id", None) in wanted]
 
     def _result(self, record: Any, *, request_id: str, replayed: bool) -> dict[str, Any]:
