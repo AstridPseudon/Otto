@@ -130,6 +130,18 @@ class EventsMigration:
             self.journal = _read_journal(self.journal_path)
         self.candidate = Path(self.journal["candidate"])
         self.backup = Path(self.journal["backup"])
+        self.owner = None
+        self.legacy = None
+        retirement = self._retirement_path(self.journal_path)
+        if retirement.exists() or retirement.is_symlink():
+            retained = _read_journal(retirement)
+            if retained != self._retirement_evidence(custody, self.journal):
+                raise MigrationError("backup retirement proof differs from original installed migration")
+            # Completed retirement reconciles original installed proof only.
+            # Never reopen a retired backup, recopy history or touch later writes.
+            self.source_inventory = self.journal["source_inventory"]
+            self.columns = None
+            return
         _regular_file_stat(self.backup)
         if _file_digest(self.backup) != self.journal["backup_digest"]:
             raise MigrationError("retained backup digest mismatch")
@@ -403,6 +415,72 @@ class EventsMigration:
                 raise MigrationError("original resume input differs; no replacement or rebinding")
         return cls(custody,journal_path,clone_qualification=clone_qualification,phase_hook=phase_hook)
 
+    @staticmethod
+    def _retirement_path(journal_path):
+        path = Path(journal_path)
+        return path.with_name(path.name + ".backup-retirement.json")
+
+    @staticmethod
+    def _retirement_evidence(custody, journal):
+        custody.require_active()
+        if (journal.get("schema") != MIGRATION_SCHEMA or journal.get("phase") != "switched"
+                or journal.get("source") != str(custody.path)
+                or journal.get("authority") != custody.authority
+                or custody.schema_revision != SCHEMA_REVISION):
+            raise MigrationError("backup retirement requires exact completed installed migration")
+        metadata = _metadata(custody.connection)
+        try:
+            receipt = json.loads(metadata["migration_switch_receipt"])
+            progress = json.loads(metadata["migration_progress"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise MigrationError("installed migration proof is unavailable") from error
+        expected = {"schema": MIGRATION_SCHEMA, "migration_id": journal["migration_id"],
+                    "source": journal["source"], "backup": journal["backup"],
+                    "backup_digest": journal["backup_digest"],
+                    "successor_revision": SCHEMA_REVISION, "successor_fingerprint": SCHEMA_FINGERPRINT,
+                    "source_inventory": journal["source_inventory"]}
+        if (metadata.get("migration_id") != journal["migration_id"]
+                or progress != {"phase": "installed"}
+                or any(receipt.get(key) != value for key, value in expected.items())
+                or type(receipt.get("projection_count")) is not int or receipt["projection_count"] < 0
+                or not isinstance(receipt.get("projection_digest"), str)
+                or len(receipt["projection_digest"]) != 64):
+            raise MigrationError("installed switch proof does not match original journal")
+        return {"schema": "fnd.events-backup-retirement.v1", "authority": custody.authority,
+                "migration_id": journal["migration_id"], "source": journal["source"],
+                "backup": journal["backup"], "backup_digest": journal["backup_digest"],
+                "original_journal_digest": hashlib.sha256(canonical_json(journal).encode()).hexdigest(),
+                "switch_receipt_digest": hashlib.sha256(canonical_json(receipt).encode()).hexdigest(),
+                "source_inventory": journal["source_inventory"],
+                "release_permitted": True, "backup_deleted": False,
+                "recovery": "original installed receipt only; no snapshot rollback"}
+
+    @classmethod
+    def retire_backup(cls, custody, journal_path, *, expected_backup, expected_backup_digest):
+        """Release one completed migration backup without deleting any file.
+
+        Record a separate durable retirement proof; retain the original journal,
+        switch receipt and all subsequent owner records byte for byte. Interrupted
+        migrations cannot retire their recovery input.
+        """
+        if not isinstance(custody, ClosedOwnerCustody):
+            raise TypeError("backup retirement requires actual closed-owner custody")
+        custody.require_active()
+        journal_path = Path(journal_path).absolute()
+        journal = _read_journal(journal_path)
+        if (journal["backup"] != str(Path(expected_backup).absolute())
+                or journal["backup_digest"] != expected_backup_digest):
+            raise MigrationError("backup retirement exact path/digest differs")
+        evidence = cls._retirement_evidence(custody, journal)
+        path = cls._retirement_path(journal_path)
+        if path.exists() or path.is_symlink():
+            if _read_journal(path) != evidence:
+                raise MigrationError("retained backup retirement differs")
+        else:
+            _ensure_unused(path)
+            _write_journal(path, evidence)
+        return {**evidence, "retirement_receipt": str(path)}
+
     def installed_receipt(self):
         """Read the actual original switch receipt after lost-reply reconciliation."""
         self.custody.require_active()
@@ -417,7 +495,9 @@ class EventsMigration:
         if self.owner is not None:
             self.owner.close()
             self.owner = None
-        self.legacy.close()
+        if self.legacy is not None:
+            self.legacy.close()
+            self.legacy = None
 
     def __enter__(self):
         return self

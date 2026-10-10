@@ -22,3 +22,8 @@ delivery. Use recovery for unknown effects.
 Follow the selected pack's final review and closure policy. Advisory checks do
 not replace acceptance. Advance only after genuine completion and handoff; keep
 observers active through their configured final queue target.
+
+Follow the original retained handle in the same turn to a bounded deadline; a
+snapshot follow does not wait. Preserve exact transport timeout/UNKNOWN receipts
+and distinguish them from later canonical success. Keep status and audit packets
+compact: current custodian, action, immutable receipt refs and links to history.

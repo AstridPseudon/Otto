@@ -332,6 +332,18 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         return {"outcome": "accepted", "accepted": True, "replayed": False,
                 "readback_version": saved.get("version"), "attempt": readback}
 
+    def _publication_scope_error(self, record, assignment_ref, generation, key):
+        if not getattr(self, "settled_publication", False):
+            return self._scope_error(record, assignment_ref, generation, key)
+        if (not self._same(record.target, self.expected_target)
+                or record.project_ref != self.project_ref.get("id")
+                or record.generation != generation or generation != self.generation
+                or not self._same(assignment_ref, self.assignment_ref)
+                or record.lifecycle_owner != self.lifecycle_owner or record.manager_ref != self.lifecycle_owner
+                or not CanonicalRoleRuntime._settled_publication_matches(record, key, self.lifecycle_owner)):
+            return "settled publication no longer matches exact owner result"
+        return None
+
     def publish_analytical_result(self, envelope: Mapping[str, Any], result_owner: HerzchenAttemptCapture) -> Mapping[str, Any]:
         """Append an already CAS-recorded success; never replace an unknown.
 
@@ -345,7 +357,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
         key = value.get("logical_request_key")
         record = self._record()
         attempt = None if record is None else self._attempt(record)
-        if (record is None or self._scope_error(record, value.get("assignment_ref"), value.get("generation"), key)
+        if (record is None or self._publication_scope_error(record, value.get("assignment_ref"), value.get("generation"), key)
                 or attempt is None or attempt.get("state") != "result" or attempt.get("result") != value
                 or value.get("outcome") != "succeeded" or value.get("delivery_state") not in {"done", "completed"}):
             raise OwnerRoleRuntimeError("analytical publication requires the exact current CAS-recorded success")
@@ -544,9 +556,29 @@ class CanonicalRoleRuntime:
     def _mandate_reader(self, project_pin: Mapping[str, Any], mandate_pin: Mapping[str, Any]) -> Callable[[Mapping[str, Any]], Any]:
         return mandate_reader(self.operations, project_pin, mandate_pin)
 
+    @staticmethod
+    def _settled_publication_matches(due, key, owner):
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        result = attempt.get("result") or {}
+        accepted = attempt.get("manager_acceptance") or {}
+        return (due.stop_state == "completed" and due.completion_state == "succeeded"
+                and due.in_flight_request is None and attempt.get("state") == "result"
+                and attempt.get("logical_request_key") == key and result.get("logical_request_key") == key
+                and result.get("outcome") == "succeeded" and result.get("context_digest_verified") is True
+                and result.get("delivery_state") in {"done", "completed"}
+                and result.get("assignment_ref") == due.assignment_ref and result.get("generation") == due.generation
+                and result.get("observed_model") == due.requested_model
+                and result.get("observed_reasoning") == due.requested_reasoning
+                and accepted.get("accepted") is True and accepted.get("owner") == owner
+                and accepted.get("logical_request_key") == key
+                and accepted.get("result_digest") == hashlib.sha256(json.dumps(
+                    _json(result), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode()).hexdigest())
+
     def _binding(self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
                  assignment_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],
-                 schedule_id: str, logical_request_key: str, expected_generation: int) -> tuple[Mapping[str, Any], Mapping[str, Any], OwnerDueRecordAttemptCapture]:
+                 schedule_id: str, logical_request_key: str, expected_generation: int,
+                 allow_settled_publication: bool = False) -> tuple[Mapping[str, Any], Mapping[str, Any], OwnerDueRecordAttemptCapture]:
         from otto.attention import DueRecord
 
         project = _ref(project_ref, "project_ref")
@@ -576,7 +608,8 @@ class CanonicalRoleRuntime:
             raise OwnerRoleRuntimeError("owner due occurrence project/generation is stale")
         if due.lifecycle_owner != self.actor or due.manager_ref != self.actor:
             raise OwnerRoleRuntimeError("owner due occurrence is not held by the configured lifecycle owner")
-        if due.in_flight_request != logical_request_key:
+        settled = allow_settled_publication and self._settled_publication_matches(due, logical_request_key, self.actor)
+        if due.in_flight_request != logical_request_key and not settled:
             raise OwnerRoleRuntimeError("owner due occurrence is not currently admitted for this request")
         project_reader = self._project_reader(project)
         task_reader = self._task_reader(project, task)
@@ -615,6 +648,7 @@ class CanonicalRoleRuntime:
             expected_target=target,
             scope_validator=validate_current_owner_scope,
         )
+        capture.settled_publication = settled
         capture.native_result_verifier = self.native_result_verifier
         content = snapshots["mandate"].get("payload", {})
         contract = content.get("instruction_contract", {}) if isinstance(content, Mapping) else {}
@@ -814,7 +848,7 @@ class CanonicalRoleRuntime:
             role=role, project_ref=project_ref, task_ref=task_ref,
             assignment_ref=assignment_ref, mandate_ref=mandate_ref,
             schedule_id=schedule_id, logical_request_key=logical_request_key,
-            expected_generation=expected_generation,
+            expected_generation=expected_generation, allow_settled_publication=publish_result,
         )
         from .orchestrator_route import _canonical_operation_evidence, prepare_canonical_assignment_role_brief
         due = self.due_port.read_due(schedule_id) or {}
@@ -844,7 +878,7 @@ class CanonicalRoleRuntime:
             )["brief_sha256"]
 
         capture.current_brief_reader = current_brief_digest
-        if role == "manager" and callable(capture.completed_scope_validator):
+        if role == "manager" and callable(capture.completed_scope_validator) and not capture.settled_publication:
             capture.validate_completed_manager_result(result)
         elif (not isinstance(resource, Mapping)
                 or resource.get("brief_sha256") != current_brief_digest()):

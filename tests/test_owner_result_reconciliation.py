@@ -151,3 +151,27 @@ class ExplicitManagerPublicationTests(unittest.TestCase):
         for result in [capture.result('unknown'),capture.result('succeeded')]:
             with self.assertRaises(OwnerRoleRuntimeError):capture.publish_analytical_result(result,owner)
         owner.record.assert_not_called()
+
+class SettledPublicationFenceTests(unittest.TestCase):
+    def fixture(self):
+        import hashlib,json
+        r=FixtureCapture.result('succeeded')
+        r.update(observed_model='gpt-test',observed_reasoning='high',context_digest_verified=True)
+        accepted={'accepted':True,'owner':'owner-principal','logical_request_key':'request-1','result_digest':hashlib.sha256(json.dumps(r,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()}
+        return SimpleNamespace(stop_state='completed',completion_state='succeeded',in_flight_request=None,assignment_ref=ASSIGNMENT,generation=1,requested_model='gpt-test',requested_reasoning='high',host_evidence={'gateway_attempt':{'state':'result','logical_request_key':'request-1','result':r,'manager_acceptance':accepted}})
+    def test_completed_exact_accepted_result_is_publication_only(self):
+        from otto.agents.owner_runtime import CanonicalRoleRuntime
+        due=self.fixture(); self.assertTrue(CanonicalRoleRuntime._settled_publication_matches(due,'request-1','owner-principal'))
+        capture=FixtureCapture();capture.project_ref={'id':'project-1'};capture.expected_target={};capture._same=lambda a,b:a==b;capture._scope_error=lambda *_:'not actively admitted';capture.settled_publication=True
+        due.target={};due.project_ref='project-1';due.lifecycle_owner=due.manager_ref='owner-principal'
+        self.assertIsNone(capture._publication_scope_error(due,ASSIGNMENT,1,'request-1'))
+        self.assertEqual(capture._scope_error(due,ASSIGNMENT,1,'request-1'),'not actively admitted')
+        due.generation=2;self.assertIsNotNone(capture._publication_scope_error(due,ASSIGNMENT,1,'request-1'))
+    def test_unknown_foreign_changed_and_unsettled_results_reject(self):
+        from otto.agents.owner_runtime import CanonicalRoleRuntime
+        for field,value in [('stop_state','active'),('completion_state','unknown'),('in_flight_request','other'),('generation',2),('assignment_ref',dict(ASSIGNMENT,revision='rev-3')),('requested_model','foreign')]:
+            with self.subTest(field=field):
+                due=self.fixture();setattr(due,field,value);self.assertFalse(CanonicalRoleRuntime._settled_publication_matches(due,'request-1','owner-principal'))
+        for section,field,value in [('result','outcome','unknown'),('result','context_digest_verified',False),('result','physical_session_id','changed'),('manager_acceptance','owner','foreign'),('manager_acceptance','accepted',False),('manager_acceptance','result_digest','foreign')]:
+            with self.subTest(section=section,field=field):
+                due=self.fixture();due.host_evidence['gateway_attempt'][section][field]=value;self.assertFalse(CanonicalRoleRuntime._settled_publication_matches(due,'request-1','owner-principal'))

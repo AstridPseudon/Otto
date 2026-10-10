@@ -44,3 +44,8 @@ Complete the pack's final review and corrections. Check `finish-project --help`,
 then verify `project_completion_recorded=true`, `settlement_pending=false`,
 lifecycle `completed` and reconciliation `reconciled` via `project-lifecycle-read`.
 Report artifacts and limitations. Review PASS does not authorize publication.
+
+Follow the original retained handle in the same turn to a bounded deadline; a
+snapshot follow does not wait. Preserve exact transport timeout/UNKNOWN receipts
+and distinguish them from later canonical success. Keep status and audit packets
+compact: current custodian, action, immutable receipt refs and links to history.
