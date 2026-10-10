@@ -71,6 +71,48 @@ class ProjectFolderProof(ProjectAuthoringProof):
         self.restart()
         self.assertEqual(self.portfolio.export_folder(ref, actor='owner', request_id='export')['files'], exported['files'])
 
+    def test_opaque_document_revision_edit_restart_replay_and_stale_fence(self):
+        from herzchen.content import ContentDocument, ContentRevision
+        imported = self.import_files()
+        ref = imported['project_ref']
+        document = ResourceRef.from_dict(self.doc(ref, 'README.md')['document_ref'])
+        raw = self.owner.content.read(document)
+        typed = ContentDocument.from_dict(raw['document'])
+        opaque = ContentRevision(document, 'rev-editor-opaque', 'EDT bytes',
+            self.owner.owner_actor, parent_revision='rev-1')
+        folder = ProjectFolderOwner()
+        context = folder._folder_context('dat.content.revision.append', document,
+            self.owner.owner_actor, 'opaque-editor-append',
+            {'document': typed, 'revision': opaque}, 'rev-1')
+        self.owner.content.execute(self.owner.content.build_append_revision(context, typed, opaque))
+        opened = self.open(ref)
+        changes = [{'operation':'edit','path':'docs/research/topic.md','content':'first'},
+                   {'operation':'edit','path':'README.md','content':'after EDT'}]
+        original = ProjectFolderOwner._folder_context
+        def interrupt(owner, operation, target, actor, key, payload, base=None, new=False):
+            if key == 'opaque-checkin:document:1:append':
+                raise RuntimeError('fixture interruption after first child')
+            return original(owner, operation, target, actor, key, payload, base, new)
+        with patch.object(ProjectFolderOwner, '_folder_context', new=interrupt):
+            partial = self.checkin(opened, changes, 'opaque-checkin')
+        self.assertEqual(partial['outcome'], 'partial', partial)
+        first = partial['committed'][0]['receipts']
+        self.restart()
+        done = self.checkin(opened, changes, 'opaque-checkin')
+        self.assertEqual(done['outcome'], 'finished', done)
+        self.assertEqual(done['committed'][0]['receipts'], first)
+        self.assertEqual(done['committed'][1]['revision_ref']['revision'].startswith('rev-'), True)
+        self.assertEqual(self.portfolio.export_folder(ref, actor='owner', request_id='opaque-export')['files']['README.md'], 'after EDT')
+        replay = self.checkin(opened, changes, 'opaque-checkin')
+        self.assertEqual(replay['outcome'], 'replayed', replay)
+        self.assertEqual(replay['committed'], done['committed'])
+        conflict = self.checkin(opened, [{'operation':'edit','path':'README.md','content':'changed'}], 'opaque-checkin')
+        self.assertEqual(conflict['outcome'], 'conflict', conflict)
+        stale = self.checkin(opened, changes, 'stale-opaque-checkin')
+        self.assertEqual(stale['outcome'], 'rejected', stale)
+        self.assertEqual(stale['error']['code'], 'InvalidSessionError')
+        self.assertEqual(self.portfolio.export_folder(ref, actor='owner', request_id='opaque-export-after-conflicts')['files']['README.md'], 'after EDT')
+
     def test_edit_add_move_unlink_identity_history_and_replay(self):
         imported = self.import_files()
         ref = imported['project_ref']

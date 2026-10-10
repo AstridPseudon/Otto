@@ -339,7 +339,15 @@ class ProjectFolderOwner:
                         # request identity even after this write committed.
                         record = self.content.read(document)
                         typed = ContentDocument.from_dict(record['document'])
-                        next_revision = 'rev-' + str(int(revision.revision.split('-')[1]) + 1)
+                        # Numeric folder revisions retain their old replay
+                        # bytes. EDT also publishes opaque revision pins; derive
+                        # their successor from the frozen parent and child key,
+                        # never from the mutable current head.
+                        suffix = revision.revision.removeprefix('rev-')
+                        next_revision = ('rev-' + str(int(suffix) + 1)
+                            if revision.revision.startswith('rev-') and suffix.isdecimal()
+                            else 'rev-' + sha256((self.authority + ':' + child +
+                                ':append:' + revision.revision).encode()).hexdigest()[:28])
                         appended = ContentRevision(document, next_revision, change['content'], actor,
                                                    parent_revision=revision.revision)
                         payload = {'document': typed, 'revision': appended}
