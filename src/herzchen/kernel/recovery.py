@@ -1374,3 +1374,187 @@ def backup_closed_owner(custody, target, *, progress=None):
     with target.open("rb") as handle:
         os.fsync(handle.fileno())
     return _file_digest(target)
+
+
+def storage_diagnostics_closed_owner(custody, *, group_limit=32, progress=None):
+    """Bounded aggregate storage accounting; no payload values or JSON hydration.
+
+    Trusted maintenance only. Custody settles SQLite sidecars before inspection;
+    these queries never modify records or reclaim pages. dbstat allocation is
+    logical SQLite page ownership, not unique physical CoW block allocation.
+    """
+    if not isinstance(custody, ClosedOwnerCustody):
+        raise TypeError("diagnostics require Recovery closed-owner custody")
+    custody.require_active()
+    if type(group_limit) is not int or not 1 <= group_limit <= 64:
+        raise ValueError("diagnostic group limit must be 1..64")
+    conn = custody.connection
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    pages = conn.execute("PRAGMA page_count").fetchone()[0]
+    free_pages = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    if progress:
+        progress({"phase":"pages", "source_bytes":_regular_file_stat(custody.path).st_size,
+                  "page_size":page_size,"page_count":pages,"freelist_pages":free_pages,
+                  "freelist_bytes":free_pages*page_size})
+    tables = tuple(row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"))
+    def quoted(name):
+        return '"' + name.replace('"', '""') + '"'
+    sizes = []
+    for table in tables:
+        columns = tuple(row[1] for row in conn.execute("PRAGMA table_info(" + quoted(table) + ")"))
+        large = tuple(name for name in columns if name.endswith("_json"))
+        expressions = ["count(*)"]
+        for name in large:
+            expr = "length(CAST(" + quoted(name) + " AS BLOB))"
+            expressions += ["coalesce(sum(" + expr + "),0)", "coalesce(max(" + expr + "),0)",
+                            "coalesce(sum(" + expr + ">=1048576),0)"]
+        row = conn.execute("SELECT " + ",".join(expressions) + " FROM " + quoted(table)).fetchone()
+        sizes.append({"table": table, "rows": row[0], "json_columns": [
+            {"column": name, "bytes": row[1+3*i], "max_bytes": row[2+3*i],
+             "rows_at_least_1MiB": row[3+3*i]} for i, name in enumerate(large)]})
+        if progress:
+            progress({"phase":"table", **sizes[-1]})
+    groups = {}
+    for table, label, payload in (("identities", "kind", "payload_json"), ("events", "event_type", "effects_json")):
+        count = conn.execute("SELECT count(DISTINCT " + label + ") FROM " + table).fetchone()[0]
+        rows = conn.execute("SELECT " + label + ",count(*),sum(length(CAST(" + payload +
+            " AS BLOB))),max(length(CAST(" + payload + " AS BLOB))) FROM " + table +
+            " GROUP BY " + label + " ORDER BY 3 DESC," + label + " LIMIT ?", (group_limit,))
+        groups[table] = {"total_groups": count, "truncated": count > group_limit, "groups": [
+            {"kind": row[0], "rows": row[1], "payload_bytes": row[2], "max_payload_bytes": row[3]} for row in rows]}
+    try:
+        objects = [{"name": r[0], "pages": r[1], "allocated_bytes": r[2],
+                    "payload_bytes": r[3], "unused_bytes": r[4]} for r in conn.execute(
+            "SELECT name,count(*),sum(pgsize),sum(payload),sum(unused) FROM dbstat GROUP BY name ORDER BY 3 DESC LIMIT 65")]
+        allocation = {"state": "available", "objects": objects[:64], "truncated":len(objects)>64}
+    except sqlite3.OperationalError as error:
+        allocation = {"state": "unavailable", "reason": str(error)}
+    if progress:
+        progress({"phase":"allocation", **allocation})
+    state = _regular_file_stat(custody.path)
+    return {"schema": "fnd.closed-owner-storage-diagnostics.v1", "schema_revision": custody.schema_revision,
+            "source": str(custody.path), "source_bytes": state.st_size,
+            "file_allocated_bytes": state.st_blocks * 512, "page_size": page_size,
+            "page_count": pages, "freelist_pages": free_pages, "freelist_bytes": free_pages * page_size,
+            "tables": sizes, "payload_groups": groups, "page_allocation": allocation,
+            "payload_content_returned": False, "records_modified": False,
+            "physical_unique_CoW_bytes": "unavailable", "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0]}
+
+
+def _clonefile(source, target):
+    """Darwin's explicit independent CoW clone; never hardlink or copy fallback."""
+    import ctypes
+    import sys
+    if sys.platform != 'darwin':
+        raise SnapshotError('independent clonefile is unavailable on this platform')
+    libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    try:
+        call = libc.clonefile
+    except AttributeError as error:
+        raise SnapshotError('independent clonefile is unavailable') from error
+    call.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
+    call.restype = ctypes.c_int
+    if call(os.fsencode(source), os.fsencode(target), 0x0001) != 0:
+        number = ctypes.get_errno()
+        raise SnapshotError('independent clonefile refused: ' + os.strerror(number))
+
+
+_CLONE_QUALIFICATION_TOKEN = object()
+
+
+class FilesystemCloneQualification:
+    """Ephemeral proof of successful independent clone semantics on one directory."""
+    def __init__(self, parent, identity, evidence, *, _token=None):
+        if _token is not _CLONE_QUALIFICATION_TOKEN:
+            raise SnapshotError('clone qualification must use maintained filesystem probe')
+        self.parent, self.identity, self.evidence = parent, identity, evidence
+
+    def require_directory(self, parent):
+        if Path(parent).absolute() != self.parent:
+            raise SnapshotError('clone qualification belongs to another directory')
+        _assert_directory_identity(self.parent, self.identity)
+
+
+def qualify_clone_filesystem(parent):
+    """Small disposable filesystem probe; no Store access or deployment effect.
+
+    clonefile success attests CoW support. st_blocks reports file allocation,
+    not unique shared blocks; free-space deltas are observations, not guarantees.
+    """
+    import tempfile
+    parent = Path(parent).absolute()
+    identity = _directory_identity(parent)
+    free_before = shutil.disk_usage(parent).free
+    with tempfile.TemporaryDirectory(prefix='.fnd-clone-probe-', dir=parent) as folder:
+        source, target = Path(folder)/'source', Path(folder)/'clone'
+        with source.open('wb') as handle:
+            handle.write(os.urandom(65536))
+            handle.flush(); os.fsync(handle.fileno())
+        _clonefile(source, target)
+        a, b = _regular_file_stat(source), _regular_file_stat(target)
+        if a.st_dev != b.st_dev or a.st_ino == b.st_ino or b.st_nlink != 1:
+            raise SnapshotError('clone is not an independent file on the same filesystem')
+        before = _file_digest(source)
+        if _file_digest(target) != before:
+            raise SnapshotError('clone probe bytes differ')
+        with target.open('r+b') as handle:
+            handle.write(b'independent clone probe'); handle.flush(); os.fsync(handle.fileno())
+        if _file_digest(source) != before or _file_digest(target) == before:
+            raise SnapshotError('clone probe write aliases source')
+        _fsync_directory(Path(folder))
+        free_during = shutil.disk_usage(parent).free
+        evidence = {'method':'darwin-clonefile', 'independent_inode':True,
+                    'independent_write_verified':True, 'probe_bytes':65536,
+                    'source_allocated_bytes':a.st_blocks*512, 'clone_allocated_bytes':b.st_blocks*512,
+                    'free_bytes_before':free_before, 'free_bytes_during':free_during,
+                    'unique_shared_allocation':'not measurable through st_blocks', 'full_copy_fallback':False}
+    _fsync_directory(parent)
+    _assert_directory_identity(parent, identity)
+    return FilesystemCloneQualification(parent, identity, evidence, _token=_CLONE_QUALIFICATION_TOKEN)
+
+
+def _fsync_directory(path):
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def clone_closed_owner(custody, target, *, qualification):
+    """Durable independent backup clone after Recovery's settled SQLite boundary."""
+    if not isinstance(custody, ClosedOwnerCustody):
+        raise TypeError('clone requires actual Recovery closed-owner custody')
+    custody.require_active()
+    if not isinstance(qualification, FilesystemCloneQualification):
+        raise SnapshotError('clone requires maintained filesystem qualification')
+    target = Path(target).absolute()
+    qualification.require_directory(custody.path.parent)
+    if target.parent != custody.path.parent:
+        raise SnapshotError('clone backup must share the qualified source directory')
+    _ensure_unused(target, SnapshotError)
+    if str(custody.connection.execute('PRAGMA journal_mode').fetchone()[0]).lower() != 'delete':
+        raise SnapshotError('clone requires settled DELETE journaling')
+    for suffix in ('-wal', '-journal'):
+        sidecar = Path(str(custody.path)+suffix)
+        if sidecar.exists() and _regular_file_stat(sidecar).st_size:
+            raise SnapshotError('clone source has an unsettled SQLite sidecar')
+    before = _stable_file_state(custody.path)
+    if not _same_file_state(before, custody.source_file_state):
+        raise SnapshotError('clone source changed under closed custody')
+    _clonefile(custody.path, target)
+    a, b = _regular_file_stat(custody.path), _regular_file_stat(target)
+    if a.st_dev != b.st_dev or a.st_ino == b.st_ino or b.st_nlink != 1 or a.st_size != b.st_size:
+        raise SnapshotError('clone backup is not an exact independent file')
+    if _file_digest(target) != before['digest']:
+        raise SnapshotError('clone backup bytes differ from settled source')
+    with target.open('rb') as handle:
+        os.fsync(handle.fileno())
+    _fsync_directory(target.parent)
+    if not _same_file_state(_stable_file_state(custody.path), before):
+        raise SnapshotError('clone source changed during backup')
+    return {'method':'darwin-clonefile', 'source_bytes':a.st_size,
+            'backup_allocated_bytes':b.st_blocks*512, 'independent_inode':True,
+            'source_digest':before['digest'], 'backup_digest_verified':True,
+            'full_copy_fallback':False, 'qualification':qualification.evidence}

@@ -49,15 +49,31 @@ large history without the admitted publisher is rejected atomically.
 The offline maintenance API is exported from `herzchen.kernel`:
 
 ```python
+# Filesystem-only plan; an explicitly qualified CoW backup has no copy fallback.
+qualification = qualify_clone_filesystem(source_path.parent)
+plan = EventsMigration.plan(source_path=source_path,
+    candidate_path=candidate_path, backup_path=backup_path, journal_path=journal_path,
+    migration_id=stable_migration_id, backup_method="clonefile",
+    clone_qualification=qualification)
+# Present source bytes, remaining copies, growth reserve, free bytes and headroom.
+# Acquire genuine closed custody only when preparation fits and service is stopped.
 with closed_owner_custody(source_path, authority=authority,
                           expected_domains=adopted_domains) as custody:
-    with EventsMigration.begin(custody, candidate_path=candidate_path,
-                               backup_path=backup_path,
-                               journal_path=journal_path,
-                               migration_id=stable_migration_id) as migration:
-        while migration.step(limit=100)["phase"] != "verified":
-            pass
-        receipt = migration.switch()
+    if journal_path.exists():
+        operation = EventsMigration.resume(custody, journal_path,
+                                           clone_qualification=qualification)
+    else:
+        # Fresh plan after integrity/checkpoint settlement, never waive its guard.
+        fresh = EventsMigration.plan(source_path=source_path,
+            candidate_path=candidate_path, backup_path=backup_path, journal_path=journal_path,
+            migration_id=stable_migration_id, backup_method="clonefile",
+            clone_qualification=qualification)
+        operation = EventsMigration.apply(custody, fresh, clone_qualification=qualification)
+    with operation as migration:
+        if migration.journal["phase"] != "switched":
+            while migration.step(limit=100)["phase"] != "verified":
+                pass
+            receipt = migration.switch()
 ```
 
 Only a host authorized for owner maintenance may run that operation on an actual
@@ -112,3 +128,32 @@ residue, supported admission, interrupted backup/copy/order/backfill/switch,
 source/projection tampering, receipts/decisions/real debits, and Recovery restore.
 Run it with `PYTHONPATH=src:tests /usr/bin/python3 -m unittest discover -s
 src/herzchen/kernel/tests -p 'test_events_history.py' -v`.
+
+
+Owner preparation can select `sqlite-backup` instead when a full consistent
+backup fits, or explicitly qualified Darwin `clonefile`. The latter uses an
+independent inode with copy-on-write semantics, durable file/directory sync,
+settled DELETE journaling, unchanged source identity/digest and exact backup
+byte/equality verification. A hardlink, unsupported clone or foreign qualification
+fails closed; there is no implicit full-copy fallback. The journal retains the
+selected method and backup proof. Both methods retain the backup at the same
+path through the existing single atomic source replacement; neither renames the
+source away before switch. Interrupted partial clones are retained and the same
+journal resumes. The probe uses disposable files only; ordinary planning never
+opens Store. `st_blocks` cannot measure unique shared CoW storage.
+
+The plan's explicit growth/metadata reserves are planning allowances, not a
+promise about filesystem allocation. Apply, every bounded step and switch check
+fresh available space against remaining candidate allocation and headroom;
+exhaustion leaves the original installation and durable continuation retained.
+Resume reconciles an already switched successor without replaying a switch.
+`begin` remains the compatible lower-level entry point; host deployment uses the
+plan/apply/resume path with a finite capacity policy.
+
+`storage_diagnostics_closed_owner(custody, group_limit=32, progress=callback)`
+returns page/free-page counts, per-table counts and JSON-column byte totals,
+bounded largest kind/event-type aggregates and dbstat table/index allocation.
+It never returns payload values, hydrates JSON, prunes, vacuums or edits records.
+Its callback emits each completed phase for long scans. Missing dbstat support
+is explicit; logical allocated pages are distinct from unique physical CoW
+allocation. Invoke once under genuine settled custody, not routine live polling.

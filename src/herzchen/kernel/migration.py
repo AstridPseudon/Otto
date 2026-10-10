@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 from typing import Any, Mapping
 
 from herzchen.contracts import canonical_json
@@ -21,7 +22,8 @@ from .schema import (LEGACY_COMPOSITION, LEGACY_SCHEMA_REVISION, COMPOSITION,
 from .store import Store, StoreError
 from .recovery import (ClosedOwnerCustody, backup_closed_owner, _regular_file_stat,
                        _file_digest, _ensure_unused, _directory_identity,
-                       _assert_directory_identity, _stable_file_state, _same_file_state)
+                       _assert_directory_identity, _stable_file_state, _same_file_state,
+                       clone_closed_owner, FilesystemCloneQualification)
 from .history import PROJECTION_INSERT, projection_rows
 
 MIGRATION_SCHEMA = "fnd.events-migration.v1"
@@ -109,7 +111,7 @@ class EventsMigration:
     A lost reply is reconciled from the installed database's migration ID;
     a changed request/path or modified source is an actionable conflict.
     """
-    def __init__(self, custody: ClosedOwnerCustody, journal_path, *, phase_hook=None):
+    def __init__(self, custody: ClosedOwnerCustody, journal_path, *, phase_hook=None, clone_qualification=None):
         if not isinstance(custody, ClosedOwnerCustody):
             raise TypeError("migration requires actual Recovery closed-owner custody")
         custody.require_active()
@@ -121,7 +123,8 @@ class EventsMigration:
             self.journal["authority"] != custody.authority):
             raise MigrationError("journal does not match closed-owner custody")
         if self.journal["phase"] == "preparing":
-            self._finish_preparation(custody, self.journal_path, self.journal, phase_hook=phase_hook)
+            self._finish_preparation(custody, self.journal_path, self.journal, phase_hook=phase_hook,
+                                     clone_qualification=clone_qualification)
             self.journal = _read_journal(self.journal_path)
         self.candidate = Path(self.journal["candidate"])
         self.backup = Path(self.journal["backup"])
@@ -188,11 +191,13 @@ class EventsMigration:
             conn.close()
 
     @staticmethod
-    def _finish_preparation(custody, journal_path, journal, *, phase_hook=None):
+    def _finish_preparation(custody, journal_path, journal, *, phase_hook=None, clone_qualification=None):
         custody.require_active()
         columns = {t: _columns(custody.connection, t) for t in LEGACY_COMPOSITION}
         if custody.schema_revision != LEGACY_SCHEMA_REVISION or _inventory(custody.connection, legacy_columns=columns) != journal["source_inventory"]:
             raise MigrationError("source changed during interrupted preparation")
+        if journal.get("capacity_policy"):
+            EventsMigration._check_space(journal)
         backup = Path(journal["backup"])
         partial = backup.with_name(backup.name + ".partial")
         if not backup.exists():
@@ -207,7 +212,12 @@ class EventsMigration:
             def progress(*_):
                 if phase_hook:
                     phase_hook("backup-copy")
-            backup_closed_owner(custody, partial, progress=progress)
+            if journal.get("backup_method", "sqlite-backup") == "clonefile":
+                journal["backup_method_evidence"] = clone_closed_owner(custody, partial, qualification=clone_qualification)
+                if phase_hook:
+                    phase_hook("backup-clone")
+            else:
+                backup_closed_owner(custody, partial, progress=progress)
             os.replace(partial, backup)
             _fsync_dir(backup.parent)
         _regular_file_stat(backup)
@@ -219,6 +229,7 @@ class EventsMigration:
         finally:
             check.close()
         journal["backup_digest"] = _file_digest(backup)
+        _write_journal(journal_path, journal)
         candidate = Path(journal["candidate"])
         if candidate.exists():
             _regular_file_stat(candidate)
@@ -254,10 +265,13 @@ class EventsMigration:
         _write_journal(journal_path, journal)
 
     @classmethod
-    def begin(cls, custody, *, candidate_path, backup_path, journal_path, migration_id, phase_hook=None):
+    def begin(cls, custody, *, candidate_path, backup_path, journal_path, migration_id, phase_hook=None,
+              backup_method="sqlite-backup", clone_qualification=None, capacity_policy=None):
         if not isinstance(custody, ClosedOwnerCustody):
             raise TypeError("migration requires Recovery closed-owner custody")
         custody.require_active()
+        if backup_method not in {"sqlite-backup", "clonefile"}:
+            raise MigrationError("unsupported backup method; no implicit fallback")
         candidate, backup, journal = [Path(p).absolute() for p in (candidate_path, backup_path, journal_path)]
         if len({str(custody.path), str(candidate), str(backup), str(journal)}) != 4:
             raise MigrationError("source, backup, candidate and journal paths must be distinct")
@@ -267,9 +281,10 @@ class EventsMigration:
             retained = _read_journal(journal)
             if any(retained.get(key) != value for key,value in {
                 "source":str(custody.path), "candidate":str(candidate), "backup":str(backup),
-                "migration_id":migration_id,"authority":custody.authority}.items()):
+                "migration_id":migration_id,"authority":custody.authority,
+                "backup_method":backup_method}.items()):
                 raise MigrationError("same journal cannot be reused with changed migration input")
-            return cls(custody,journal,phase_hook=phase_hook)
+            return cls(custody,journal,phase_hook=phase_hook,clone_qualification=clone_qualification)
         if custody.schema_revision != LEGACY_SCHEMA_REVISION:
             raise MigrationError("begin requires the exact admitted legacy composition")
         reserved = {"source_next_append","history_generation","history_checkpoint","legacy_append_boundary",
@@ -283,8 +298,101 @@ class EventsMigration:
         _write_journal(journal, {"schema":MIGRATION_SCHEMA, "phase":"preparing", "migration_id":migration_id,
             "source":str(custody.path), "candidate":str(candidate), "backup":str(backup),
             "source_inventory":inventory, "authority":custody.authority,
+            "backup_method":backup_method, "capacity_policy":capacity_policy,
             "legacy_order":"stream-lexical-then-sequence;cross-stream-chronology-unknown"})
-        return cls(custody,journal,phase_hook=phase_hook)
+        return cls(custody,journal,phase_hook=phase_hook,clone_qualification=clone_qualification)
+
+    @staticmethod
+    def plan(*, source_path, candidate_path, backup_path, journal_path, migration_id,
+             backup_method="sqlite-backup", headroom_bytes=2147483648,
+             candidate_growth_reserve_bytes=268435456, clone_qualification=None):
+        """Filesystem-only preparation; no Store, clone, backup or provider work.
+
+        A clone plan requires a maintained independent-clone qualification for
+        the actual source directory. File allocation is not unique CoW usage.
+        Growth is an explicit reserve; free space is rechecked on apply, each
+        bounded step and switch. Exhaustion leaves resumable retained effects.
+        """
+        source, candidate, backup, journal = [Path(p).absolute() for p in
+            (source_path, candidate_path, backup_path, journal_path)]
+        if len({source,candidate,backup,journal}) != 4 or not migration_id:
+            raise MigrationError("distinct migration paths and stable identity required")
+        state = _regular_file_stat(source)
+        for path in (candidate,backup,journal):
+            _directory_identity(path.parent)
+            if path.is_symlink():
+                raise MigrationError("migration path is a symlink")
+            if path.exists():
+                info = _regular_file_stat(path)
+                if info.st_dev == state.st_dev and info.st_ino == state.st_ino:
+                    raise MigrationError("migration path aliases source inode")
+        if candidate.parent != source.parent or backup.parent != source.parent:
+            raise MigrationError("migration copy plan must use the qualified source directory")
+        if backup_method not in {"sqlite-backup", "clonefile"}:
+            raise MigrationError("unsupported backup method")
+        if any(type(v) is not int or v < 0 for v in (headroom_bytes,candidate_growth_reserve_bytes)):
+            raise MigrationError("capacity reserves must be nonnegative integers")
+        if backup_method == "clonefile" and not backup.exists():
+            if not isinstance(clone_qualification, FilesystemCloneQualification):
+                raise MigrationError("clone plan requires maintained filesystem qualification")
+            clone_qualification.require_directory(source.parent)
+        candidate_allocated = _regular_file_stat(candidate).st_blocks*512 if candidate.exists() else 0
+        candidate_remaining = max(0, state.st_size+candidate_growth_reserve_bytes-candidate_allocated)
+        backup_remaining = (16777216 if backup_method == "clonefile" else state.st_size) if not backup.exists() else 0
+        free = shutil.disk_usage(source.parent).free
+        required = candidate_remaining + backup_remaining + headroom_bytes
+        return {"schema":"fnd.events-migration-plan.v1", "source":str(source),
+                "candidate":str(candidate), "backup":str(backup), "journal":str(journal),
+                "migration_id":migration_id, "backup_method":backup_method,
+                "source_bytes":state.st_size, "source_device":state.st_dev, "source_inode":state.st_ino,
+                "source_mtime_ns":state.st_mtime_ns, "available_bytes":free,
+                "candidate_growth_reserve_bytes":candidate_growth_reserve_bytes,
+                "headroom_bytes":headroom_bytes, "remaining_candidate_bytes":candidate_remaining,
+                "remaining_backup_bytes":backup_remaining, "required_available_bytes":required,
+                "fit":free>=required, "Store_opened":False,
+                "allocation_uncertainty":"CoW metadata/growth and other writers; guards recheck available space"}
+
+    @staticmethod
+    def _check_space(journal):
+        policy = journal.get("capacity_policy")
+        if not policy or journal.get("phase") == "switched":
+            return
+        source, candidate, backup = [Path(journal[name]) for name in ("source","candidate","backup")]
+        size = _regular_file_stat(source).st_size
+        allocated = _regular_file_stat(candidate).st_blocks*512 if candidate.exists() else 0
+        remaining = max(0,size+policy["candidate_growth_reserve_bytes"]-allocated)
+        remaining += (16777216 if journal.get("backup_method") == "clonefile" else size) if not backup.exists() else 0
+        if shutil.disk_usage(source.parent).free < remaining + policy["headroom_bytes"]:
+            raise MigrationError("migration capacity held; retain original journal and resume after sufficient space")
+
+    @classmethod
+    def apply(cls, custody, plan, *, clone_qualification=None, phase_hook=None):
+        """Fresh apply of one prepared migration; existing journal uses resume."""
+        if not isinstance(custody, ClosedOwnerCustody):
+            raise TypeError("apply requires actual closed-owner custody")
+        custody.require_active()
+        if Path(plan["journal"]).exists():
+            raise MigrationError("original journal exists; use resume, not another apply")
+        state = _regular_file_stat(custody.path)
+        if (plan.get("schema") != "fnd.events-migration-plan.v1" or plan["source"] != str(custody.path)
+            or (state.st_dev,state.st_ino,state.st_size,state.st_mtime_ns) !=
+               (plan["source_device"],plan["source_inode"],plan["source_bytes"],plan["source_mtime_ns"])):
+            raise MigrationError("migration plan source changed; prepare a fresh same-identity plan")
+        fresh = cls.plan(source_path=custody.path,candidate_path=plan["candidate"],backup_path=plan["backup"],
+            journal_path=plan["journal"],migration_id=plan["migration_id"],backup_method=plan["backup_method"],
+            headroom_bytes=plan["headroom_bytes"],candidate_growth_reserve_bytes=plan["candidate_growth_reserve_bytes"],
+            clone_qualification=clone_qualification)
+        if not fresh["fit"]:
+            raise MigrationError("migration capacity held before apply")
+        return cls.begin(custody,candidate_path=fresh["candidate"],backup_path=fresh["backup"],
+            journal_path=fresh["journal"],migration_id=fresh["migration_id"],backup_method=fresh["backup_method"],
+            clone_qualification=clone_qualification,phase_hook=phase_hook,
+            capacity_policy={k:fresh[k] for k in ("headroom_bytes","candidate_growth_reserve_bytes")})
+
+    @classmethod
+    def resume(cls, custody, journal_path, *, clone_qualification=None, phase_hook=None):
+        """Resume only the original durable journal; never allocate a replacement."""
+        return cls(custody,journal_path,clone_qualification=clone_qualification,phase_hook=phase_hook)
 
     def close(self):
         if self.owner is not None:
@@ -306,6 +414,7 @@ class EventsMigration:
     def step(self, *, limit=100, phase_hook=None):
         """One atomic copy/order/backfill batch. Reads never call this."""
         self._require()
+        self._check_space(self.journal)
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("migration batch limit must be 1..1000")
         metadata = _metadata(self.owner.connection)
@@ -427,6 +536,7 @@ class EventsMigration:
 
     def switch(self, *, phase_hook=None):
         self._require()
+        self._check_space(self.journal)
         if json.loads(_metadata(self.owner.connection)["migration_progress"])["phase"] != "verified":
             raise MigrationError("successor is not verified for switch")
         proof = self.verify()
@@ -437,6 +547,7 @@ class EventsMigration:
             "successor_revision":SCHEMA_REVISION,"successor_fingerprint":SCHEMA_FINGERPRINT,**proof}
         with self.owner.transaction() as tx:
             tx.execute("INSERT OR REPLACE INTO store_metadata VALUES ('migration_switch_receipt',?)",(canonical_json(receipt),))
+        self._check_space(self.journal)
         self.journal["phase"] = "switch-intent"
         _write_journal(self.journal_path,self.journal)
         if phase_hook:
@@ -448,6 +559,7 @@ class EventsMigration:
         if candidate_state.st_dev != self.custody.source_file_state["device"]:
             raise MigrationError("atomic switch requires source and candidate on the same filesystem")
         _assert_directory_identity(self.custody.path.parent,source_parent)
+        self._check_space(self.journal)
         # Keep both durable locks until the atomic replacement has completed.
         self.custody.connection.close()
         try:

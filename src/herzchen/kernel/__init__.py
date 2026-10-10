@@ -58,6 +58,10 @@ from .recovery import (
     verify_restore_candidate,
     closed_owner_custody,
     backup_closed_owner,
+    clone_closed_owner,
+    qualify_clone_filesystem,
+    FilesystemCloneQualification,
+    storage_diagnostics_closed_owner,
     ClosedOwnerCustody,
 )
 from .store import (
@@ -110,6 +114,10 @@ __all__ = [
     "ReadOnlyStore",
     "closed_owner_custody",
     "backup_closed_owner",
+    "clone_closed_owner",
+    "qualify_clone_filesystem",
+    "FilesystemCloneQualification",
+    "storage_diagnostics_closed_owner",
     "ClosedOwnerCustody",
     "EventsMigration",
     "MigrationError",
