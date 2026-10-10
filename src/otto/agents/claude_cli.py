@@ -184,9 +184,13 @@ class ClaudeStream:
 
     def __init__(self, *, prompt: str, cwd: str, model: str, tools: tuple[str, ...],
                  session: str | None = None, on_init: Callable[..., Any] | None = None,
-                 on_input: Callable[..., Any] | None = None):
+                 on_input: Callable[..., Any] | None = None,
+                 on_usage: Callable[..., Any] | None = None, phase: str = "work"):
         self.prompt, self.cwd, self.model, self.tools = prompt, cwd, model, tools
         self.session, self.on_init, self.on_input = session, on_init, on_input
+        from .usage_capture import UsageStream
+        self.usage_stream = UsageStream("claude-code", phase=phase, session_id=session,
+            requested_model=model, on_usage=on_usage)
         self.init = self.input = self.result = None
         self.refs: dict[str, Any] = {}
         self.tool_uses: dict[str, Any] = {}
@@ -290,6 +294,7 @@ class ClaudeStream:
         ref = {"session_id": self.session, "turn_id": (self.input or {}).get('uuid'),
                "event_type": kind, "item_type": 'ClaudeResult' if kind == 'result' else kind,
                "item_id": event.get('uuid'), "raw_line_sha256": hashlib.sha256(raw).hexdigest()}
+        self.usage_stream.feed(raw)
         self.events.append(ref)
         if kind == 'user':
             for block in event['message']['content']:
@@ -360,7 +365,7 @@ class ClaudeCliTransport:
         return env
 
     def run(self, prompt: str, *, session: str | None = None,
-            initializer: bool = False, on_init: Any = None, on_input: Any = None) -> Mapping[str, Any]:
+            initializer: bool = False, on_init: Any = None, on_input: Any = None, on_usage: Any = None) -> Mapping[str, Any]:
         proof = self.preflight()  # Before process creation, including initialization.
         tools = () if initializer else ('Read', 'Write')
         command = [self.pin.realpath, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
@@ -379,7 +384,8 @@ class ClaudeCliTransport:
             raise ClaudeBindingError("admitted input exceeds profile bound")
         env = self.environment()
         parser = ClaudeStream(prompt=prompt, cwd=self.scope.workspace, model=self.model,
-                              tools=tools, session=session, on_init=on_init, on_input=on_input)
+                              tools=tools, session=session, on_init=on_init, on_input=on_input,
+                              on_usage=on_usage, phase="initializer" if initializer else "work")
         process = self.process_factory(self.scope.wrap(command, initializer=initializer), cwd=self.scope.workspace,
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         selector = selectors.DefaultSelector()
@@ -415,7 +421,7 @@ class ClaudeCliTransport:
                 raise ClaudeBindingError("incomplete JSONL framing")
             code = process.wait(timeout=max(.01, deadline - time.monotonic()))
             result = dict(parser.finish(code))
-            return {**result, 'usage': parser.usage(), 'scope': proof, 'command': command,
+            return {**result, 'usage': parser.usage(), 'usage_capture': parser.usage_stream.snapshot(), 'scope': proof, 'command': command,
                     'exit_status': code, 'stderr': stderr.decode('utf-8', errors='replace')[:4096],
                     'launcher': vars(self.pin), 'parser_schema': PARSER_SCHEMA}
         finally:

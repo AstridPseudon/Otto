@@ -259,6 +259,9 @@ class ClaudeWorkerAdapter:
     def set_thread_started_callback(self, callback):
         prior = self._thread_started_callback; self._thread_started_callback = callback; return prior
 
+    def set_usage_callback(self, callback):
+        prior = getattr(self, "_usage_callback", None); self._usage_callback = callback; return prior
+
     def set_turn_started_callback(self, callback):
         prior = self._turn_started_callback; self._turn_started_callback = callback; return prior
 
@@ -289,10 +292,12 @@ class ClaudeWorkerAdapter:
         on_turn = ExecutionHost.owner_callback(self._turn_started_callback)
         authorize = ExecutionHost.owner_callback(self._authorizer)
         verify = ExecutionHost.owner_callback(self._verifier)
+        usage_callback = ExecutionHost.owner_callback(getattr(self, "_usage_callback", None))
+        usage_options = {} if usage_callback is None else {"on_usage": usage_callback}
         try:
             init = ExecutionHost.external_call(lambda: self.transport.run(
                 'Initialize this session only. Do not use tools or do task work. Return READY.',
-                initializer=True, on_init=on_thread))
+                initializer=True, on_init=on_thread, **usage_options))
             session = init['session_id']
             if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
                 raise ClaudeBindingError('inert native initializer was not exact READY')
@@ -314,10 +319,12 @@ class ClaudeWorkerAdapter:
                 if admitted: raise ClaudeBindingError('duplicate useful native admission')
                 on_turn(turn, datetime.now(timezone.utc).isoformat())
                 admitted = True
-            work = ExecutionHost.external_call(lambda: self.transport.run(prompt, session=session, on_input=input_started))
+            work = ExecutionHost.external_call(lambda: self.transport.run(prompt, session=session, on_input=input_started, **usage_options))
             if work['outcome'] == 'failed':
                 return {'outcome': 'failed', 'physical_session_id': session, 'observed_turn_id': work['turn_id'],
                         'delivery_state': 'failed', 'native_failure': work['result'], 'usage': work['usage'],
+                        'usage_capture': {'schema': 'otto.usage-capture.phases.v1',
+                            'initializer': init.get('usage_capture'), 'work': work.get('usage_capture')},
                         'worker_content': [], 'raw_result': {'native_failure': work['result'],
                             'usage': work['usage'], 'native_pins': self.pins(), 'events': work['events']},
                         'error': {'code': 'claude_native_failure', 'message': 'native Claude error result retained'}}
@@ -337,6 +344,8 @@ class ClaudeWorkerAdapter:
                 'observed_profile': 'workspace-write', 'observed_context_provenance': 'host_owned_turn_context',
                 'observed_context_digest': checked['context_digest'], 'context_digest_verified': True,
                 'task_bound_evidence': checked['task_bound_evidence'], 'worker_content': checked['worker_content'],
+                'usage_capture': {'schema': 'otto.usage-capture.phases.v1',
+                    'initializer': init.get('usage_capture'), 'work': work.get('usage_capture')},
                 'delivery_state': 'done', 'work_receipt': {'observed_profile': 'workspace-write'},
                 'work_envelope': {'host_evidence': {'otto_host_turn_context': context}},
                 'raw_result': {'worker_content': checked['worker_content'],

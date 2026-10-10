@@ -71,6 +71,14 @@ def state(ref: Optional[ResourceRef], payload: Optional[Mapping[str, Any]]) -> M
         if (type(value.get("application_state")) is bool or isinstance(value.get("application_state"), str)
                 and len(value["application_state"]) <= 256):
             fields["application_state"] = value["application_state"]
+    # Late Usage is immutable typed evidence, separate from execution/result
+    # state. Its append boundary and original recorded anchor survive snapshots.
+    if (ref is not None and ref.kind == "wrk.report" and isinstance(value, Mapping)
+            and value.get("schema") == "otto.usage-retained-fact.v1"
+            and payload.get("record_type") == "work.observation"
+            and value.get("association", {}).get("assignment_ref") == assignment
+            and value.get("association", {}).get("generation") == payload.get("generation")):
+        fields["usage_fact"] = safe(value)
     completion = payload.get("completion")
     if (ref is not None and ref.kind == "work.task" and payload.get("lifecycle") == "completed"
             and isinstance(completion, Mapping) and completion.get("candidate_ref")

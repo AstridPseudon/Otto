@@ -1094,7 +1094,7 @@ def _receipt_json(receipt: Any, *, result_payload: Mapping[str, JSONValue], resu
 class _DueRecordOwnerEngine:
     """Trusted owner implementation used behind Herzchen's command port."""
 
-    def __init__(self, writer: Any, actor: Any, *, external_assignment_guard: Any = None) -> None:
+    def __init__(self, writer: Any, actor: Any, *, external_assignment_guard: Any = None, native_bodies: Any = None) -> None:
         from herzchen.contracts import AuthenticatedActor
 
         if not hasattr(writer, "mutate") or not hasattr(writer, "get_identity"):
@@ -1103,6 +1103,7 @@ class _DueRecordOwnerEngine:
             raise TypeError("actor must be an FND AuthenticatedActor")
         self._writer = writer
         self._actor = actor
+        self._native_bodies = native_bodies
         if external_assignment_guard is not None:
             from otto.portfolio.attention_binding import ExternalAssignmentGuard
             if type(external_assignment_guard) is not ExternalAssignmentGuard:
@@ -1123,6 +1124,14 @@ class _DueRecordOwnerEngine:
             return None
         value = _json_copy(identity.payload, "due record")
         value["version"] = int(identity.version)
+        return self._native_bodies.unpack_due(value) if self._native_bodies is not None else value
+
+    def _read_due_summary(self, schedule_id):
+        identity = self._writer.get_identity(self._ref(self._writer.authority, schedule_id))
+        if identity is None:
+            return None
+        value = _json_copy(identity.payload, "due record")
+        value["version"] = int(identity.version)
         return value
 
     def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:
@@ -1136,7 +1145,7 @@ class _DueRecordOwnerEngine:
                 payload_matches={paths[key]: value for key, value in normalized.items() if key in paths})
             # Current records, not prior matching events: replacement or
             # changed pins must not recover a superseded native capability.
-            return tuple(value for ref in refs for value in (self.read_due(ref.id),)
+            return tuple(value for ref in refs for value in (self._read_due_summary(ref.id),)
                          if value is not None and _matches_trigger_scope(value, normalized))
         latest: dict[str, tuple[int, int, dict[str, JSONValue]]] = {}
         for event in self._writer.list_events():
@@ -1355,6 +1364,19 @@ class _DueRecordOwnerEngine:
             replay_expected_version = expected_version
             replay_expected_revision = None if current is None else current.ref.revision
         value["version"] = next_version
+        if self._native_bodies is not None:
+            # Old inline receipts keep their exact canonical replay digest.
+            # Compare the original admitted semantics before factoring; a
+            # compatible reader must never rewrite or repin that old effect.
+            from herzchen.contracts import canonical_request_digest
+            inline_replay = prior is not None and canonical_request_digest(
+                logical_request_key=request_id, operation="otto.due-record.save",
+                schema_revision="otto.due-record.v1", target=target, actor=self._actor,
+                payload=value, expected_revision=replay_expected_revision,
+                expected_version=replay_expected_version,
+            ) == prior.request_digest
+            if not inline_replay:
+                value = self._native_bodies.pack_due(value)
         digest = _digest({"request_id": request_id, "expected_version": expected_version, "record": value})
         context = TransactionContext(
             self._actor, request_id, digest,
@@ -1386,6 +1408,8 @@ class _DueRecordOwnerEngine:
         # read_due, while this response retains the original result ref,
         # version, payload, and event/receipt linkage.
         result = dict(_json_copy(value, "due record"))
+        if self._native_bodies is not None:
+            result = self._native_bodies.unpack_due(result)
         result["mutation_receipt"] = _receipt_json(
             prior if prior is not None else receipt,
             result_payload=value,
@@ -1461,10 +1485,10 @@ class StoreDueRecordPort:
         return dict(_json_copy(value, "due record"))
 
 
-def issue_store_due_record_port(writer: Any, actor: Any, *, external_assignment_guard: Any = None) -> StoreDueRecordPort:
+def issue_store_due_record_port(writer: Any, actor: Any, *, external_assignment_guard: Any = None, native_bodies: Any = None) -> StoreDueRecordPort:
     """Issue the finite client while retaining Herzchen custody in the host."""
 
-    service = _due_owner_service_type()(writer, actor, external_assignment_guard=external_assignment_guard)
+    service = _due_owner_service_type()(writer, actor, external_assignment_guard=external_assignment_guard, native_bodies=native_bodies)
     return StoreDueRecordPort(service.command_port)
 
 

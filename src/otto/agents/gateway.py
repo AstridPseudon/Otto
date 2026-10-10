@@ -232,7 +232,7 @@ class HerzchenAttemptCapture:
     duplicates. A recorded unknown result remains a retry fence.
     """
 
-    def __init__(self, assignments: Any, reader: Any, *, actor: Any) -> None:
+    def __init__(self, assignments: Any, reader: Any, *, actor: Any, native_bodies: Any = None) -> None:
         required = ("get", "list_observations", "append_result")
         if assignments is None or any(not callable(getattr(assignments, name, None)) for name in required):
             raise TypeError("assignments must expose the accepted get/list_observations/append_result APIs")
@@ -243,6 +243,7 @@ class HerzchenAttemptCapture:
         self.assignments = assignments
         self.reader = reader
         self.actor = actor
+        self.native_bodies = native_bodies
 
     @staticmethod
     def _same_ref(left: Any, right: Any) -> bool:
@@ -258,8 +259,7 @@ class HerzchenAttemptCapture:
             return False
         return all(left_value.get(key) == right_value.get(key) for key in ("authority", "kind", "id"))
 
-    @staticmethod
-    def _record_value(record: Any) -> Optional[Mapping[str, Any]]:
+    def _record_value(self, record: Any) -> Optional[Mapping[str, Any]]:
         payload = _json_value(getattr(record, "payload", None))
         ref = _json_value(getattr(record, "ref", None))
         if not isinstance(ref, Mapping) or ref.get("kind") != "wrk.result":
@@ -267,7 +267,9 @@ class HerzchenAttemptCapture:
         if not isinstance(payload, Mapping) or payload.get("record_type") != "work.observation" or payload.get("observation_kind") != "result":
             return None
         body = payload.get("value") if isinstance(payload, Mapping) else None
-        return body if isinstance(body, Mapping) else None
+        if not isinstance(body, Mapping):
+            return None
+        return self.native_bodies.unpack_due(body) if self.native_bodies is not None else body
 
     def _current(self, assignment_ref: Any) -> Any:
         return self.assignments.get(assignment_ref)
@@ -352,6 +354,8 @@ class HerzchenAttemptCapture:
         values = []
         for item in records:
             value = _json_value(getattr(item, "value", None))
+            if isinstance(value, Mapping) and self.native_bodies is not None:
+                value = self.native_bodies.unpack_due(value)
             if not isinstance(value, Mapping):
                 continue
             if value.get("generation") != generation or not self._same_ref(value.get("assignment_ref"), assignment_ref):
@@ -383,7 +387,7 @@ class HerzchenAttemptCapture:
         if failure:
             raise ValueError(failure)
         self.assignments.append_result(
-            assignment_ref, value, expected_generation=generation,
+            assignment_ref, self.native_bodies.pack_due(value) if self.native_bodies is not None else value, expected_generation=generation,
             logical_request_key=key, actor=self.actor,
         )
         recorded = self._read_key(key)
@@ -627,6 +631,87 @@ class OwnerDueRecordAttemptCapture:
                 or captured.get("logical_request_key") != logical_request_key):
             raise ValueError("thread identity owner readback failed")
         return captured
+
+    def record_usage_observation(self, logical_request_key: str, observation: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Optional telemetry merge under the exact claim; never replay work.
+
+        A known CAS rejection may reread/merge. An uncertain save is propagated
+        to the telemetry boundary, without retry or replacement effect.
+        """
+        from .usage_capture import MAX_OBSERVATIONS, digest
+        from .usage_contract import OBSERVATION_SCHEMA
+        item = dict(_json_value(observation))
+        native_source = item.pop("native_source", None)
+        if item.get("schema") != OBSERVATION_SCHEMA or len(json.dumps(item).encode()) > 16384:
+            raise ValueError("bounded qualified observation required")
+        item_id = item.get("observation_id")
+        if not isinstance(item_id, str) or len(item_id) != 64:
+            raise ValueError("observation identity required")
+        for _ in range(3):
+            if self.scope_validator is not None and self.scope_validator():
+                raise ValueError("usage no longer has current owner custody")
+            record = self._record()
+            if record is None or self._scope_error(record, self.assignment_ref, self.generation, logical_request_key):
+                raise ValueError("usage no longer matches admitted owner occurrence")
+            current = self._attempt(record)
+            if (current is None or current.get("state") not in {"claimed", "result"}
+                    or current.get("logical_request_key") != logical_request_key):
+                raise ValueError("usage has no exact owner claim")
+            identity = item.get("identity") or {}
+            session = identity.get("session_id")
+            if session is not None and current.get("physical_session_id") not in {None, session}:
+                raise ValueError("usage session differs from admitted session")
+            admission = current.get("delivery_admission") or {}
+            if (item.get("phase") != "initializer" and admission.get("observed_turn_id") is not None
+                    and identity.get("turn_id") != admission["observed_turn_id"]):
+                raise ValueError("usage turn differs from admitted work turn")
+            observations = list(current.get("usage_observations") or ())
+            association = {"logical_request_key": logical_request_key,
+                "schedule_id": self.schedule_id, "project_ref": self.project_ref,
+                "task_ref": None if item.get("phase") == "initializer" else self.task_ref,
+                "assignment_ref": self.assignment_ref, "generation": self.generation,
+                "principal": self.principal, "parent": (record.target or {}).get("parent")}
+            item["association"] = association
+            retainer = getattr(self, "native_bodies", None)
+            if native_source is not None and retainer is not None:
+                item["provenance"]["retained_source"] = retainer.retain(native_source,
+                    project_ref=self.project_ref, task_ref=association["task_ref"],
+                    attempt_ref=self.assignment_ref)
+            prior = next((value for value in observations if value.get("observation_id") == item_id), None)
+            if prior is not None:
+                if any(prior.get(field) != item.get(field) for field in (
+                        "identity", "usage", "observed", "phase", "association")):
+                    raise ValueError("usage id reused with changed observation")
+                alias = {"adapter_id": item["adapter_id"], "provenance": item["provenance"],
+                         "requested": item["requested"], "capability": item["capability"]}
+                original_alias = {field: prior[field] for field in alias}
+                aliases = list(prior.get("provenance_aliases") or ())
+                if alias == original_alias or alias in aliases:
+                    return prior
+                if len(aliases) >= 16:
+                    raise ValueError("usage provenance alias bound reached")
+                item = {**prior, "provenance_aliases": [*aliases, alias]}
+                observations[observations.index(prior)] = item
+            else:
+                if len(observations) >= MAX_OBSERVATIONS:
+                    raise ValueError("usage observation bound reached")
+                if item.get("usage", {}).get("state") in {"observed", "zero"}:
+                    anchor = next((value.get("first_qualified_recorded_at") for value in observations
+                        if value.get("identity") == item.get("identity") and value.get("first_qualified_recorded_at")), None)
+                    item["first_qualified_recorded_at"] = anchor or datetime.now(timezone.utc).isoformat()
+                observations.append(item)
+            updated = {**current, "usage_observations": observations}
+            try:
+                saved = self._save(record, updated, "otto-gateway-usage:" + logical_request_key + ":" + digest(item) + ":" + str(record.version))
+            except Exception as exc:
+                if type(exc).__name__ in {"StateConflictError", "VersionConflictError"}:
+                    continue
+                raise
+            receipt = saved.get("mutation_receipt") if isinstance(saved, Mapping) else None
+            if not isinstance(receipt, Mapping) or receipt.get("status") != "committed":
+                raise ValueError("usage commit unproved; no retry")
+            return item
+        raise ValueError("usage CAS remained stale")
 
     def record_delivery_admission(
         self, logical_request_key: str, physical_session_id: str,
@@ -1197,7 +1282,7 @@ class OttoGateway:
         if isinstance(result, Mapping):
             for field_name in ("task_bound_evidence", "transport_result", "raw_result",
                                "observed_turn_id", "observed_context_digest", "context_digest_verified",
-                               "observed_profile", "worker_content", "error"):
+                               "observed_profile", "worker_content", "error", "usage_capture"):
                 if field_name in result:
                     envelope_value[field_name] = _json_value(result[field_name])
         if self.attempt_capture is not None:
@@ -1607,6 +1692,8 @@ class OttoGateway:
         restore_turn_callback = None
         callback_installed = False
         turn_callback_installed = False
+        usage_callback_installed = False
+        restore_usage_callback = None
         setter = getattr(self.adapter, "set_thread_started_callback", None)
         recorder = getattr(self.attempt_capture, "record_thread_started", None) if self.attempt_capture is not None else None
         if owner_bound and responsibility.operation != "inspect" and key and callable(setter) and callable(recorder):
@@ -1647,6 +1734,18 @@ class OttoGateway:
             turn_setter(on_turn_started)
             restore_turn_callback = prior_turn_callback
             turn_callback_installed = True
+        usage_setter = getattr(self.adapter, "set_usage_callback", None)
+        usage_recorder = getattr(self.attempt_capture, "record_usage_observation", None)
+        if owner_bound and key and callable(usage_setter) and callable(usage_recorder):
+            from .usage_capture import optional_emit
+            prior_usage = usage_setter(None)
+            def on_usage(observation):
+                captured = usage_recorder(key, observation)
+                optional_emit(prior_usage, captured)
+                return captured
+            from otto.portfolio.execution_host import ExecutionHost
+            usage_setter(ExecutionHost.owner_callback(on_usage))
+            restore_usage_callback, usage_callback_installed = prior_usage, True
         try:
             result = method(request)
             result, attestation_error = self._enforce_host_attestation(responsibility, result, request)
@@ -1661,6 +1760,8 @@ class OttoGateway:
                 setter(restore_thread_callback)
             if turn_callback_installed and callable(turn_setter):
                 turn_setter(restore_turn_callback)
+            if usage_callback_installed and callable(usage_setter):
+                usage_setter(restore_usage_callback)
         return self._attach_attempt(
             responsibility, request, result, error_message=attestation_error
         ) if owner_bound and responsibility.operation != "inspect" else result

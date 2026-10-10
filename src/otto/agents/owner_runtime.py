@@ -444,6 +444,9 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             projection = summary_capture(evidence, result_ref=saved["result_ref"])
             summary["usage"] = projection["usage"]
             captured_artifacts = projection["artifacts"]
+        from .usage_capture import compact_usage_capture
+        if value.get("usage_capture") is not None:
+            summary["usage_capture"] = compact_usage_capture(value["usage_capture"])
         record = self._record()
         if ((record.host_evidence or {}).get("captured_result_summary") != summary
                 or (captured_artifacts is not None
@@ -470,7 +473,8 @@ class CanonicalRoleRuntime:
                  runtime_probe: Optional[Callable[[], Optional[Mapping[str, Any]]]] = None,
                  result_capture_factory: Optional[Callable[..., HerzchenAttemptCapture]] = None,
                  acceptance_readiness: Any = None, allowance_readiness: Any = None,
-                 completed_task_readiness: Any = None, native_result_verifier: Any = None) -> None:
+                 completed_task_readiness: Any = None, native_result_verifier: Any = None,
+                 native_bodies: Any = None) -> None:
         required = ("reader", "assignments_port", "content_port", "binding")
         if operations is None or any(getattr(operations, name, None) is None for name in required):
             raise TypeError("operations must be the finite owner-backed Herzchen operations")
@@ -496,6 +500,7 @@ class CanonicalRoleRuntime:
         self.completed_task_readiness = completed_task_readiness
         from .native_result_verifier import CodexNativeResultVerifier, require_native_verifier
         self.native_result_verifier = require_native_verifier(native_result_verifier or CodexNativeResultVerifier())
+        self.native_bodies = native_bodies
 
     def prepare_execution_readiness(self, *, due: Any) -> Mapping[str, Any]:
         """Resolve exact BASE and execution scope without admitting an effect."""
@@ -650,6 +655,7 @@ class CanonicalRoleRuntime:
         )
         capture.settled_publication = settled
         capture.native_result_verifier = self.native_result_verifier
+        capture.native_bodies = self.native_bodies
         content = snapshots["mandate"].get("payload", {})
         contract = content.get("instruction_contract", {}) if isinstance(content, Mapping) else {}
         if (role == "manager" and contract.get("authority", {}).get("effect_profile") == "workspace-write-manager"

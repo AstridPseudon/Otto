@@ -716,6 +716,41 @@ class PortfolioOwnerBootstrap:
                 assignment_ref=assignment_ref, generation=generation, project_ref=project_ref, task_ref=task_ref)
         return read
 
+    def late_usage_operation(self, *, project_ref: Any, authorizing_assignment_ref: Any,
+                             authorizing_generation: int, native_bodies: Any) -> Any:
+        """Explicit trusted-owner issuance; never included in worker result access.
+
+        The grant is reread at each append. Issuance grants only this project's
+        late observation operation, under the current manager generation.
+        """
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.assignments import ResponsibilityAssignments
+        project = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        if not isinstance(project, ResourceRef) or project.kind != "work.project":
+            raise ValueError("one admitted project required")
+        actor = self.owner_actor
+        assignments = ResponsibilityAssignments(self.store, actor=actor, native_bodies=native_bodies).command_port
+        owner = self
+
+        class BoundLateUsage:
+            def append(self, target: Any, source_ref: Any, source: Any, *, adapter_id: str,
+                       phase: str, session_id: str, turn_id: str, logical_request_key: str,
+                       supersedes_ref: Any = None) -> Any:
+                grant = owner.project_read_grant
+                if grant is None or grant.principal != actor or not grant.allows(project):
+                    raise PermissionError("late usage requires the current project grant")
+                current = assignments.get(authorizing_assignment_ref)
+                scope = _json_value(current.scope)
+                if any(scope.get(k) != project.to_dict()[k] for k in ("authority", "kind", "id")):
+                    raise PermissionError("late usage authorizer is outside the issued project")
+                return assignments.append_late_usage(target, source_ref, source, adapter_id=adapter_id,
+                    phase=phase, session_id=session_id, turn_id=turn_id,
+                    authorizing_assignment_ref=authorizing_assignment_ref,
+                    authorizing_generation=authorizing_generation, logical_request_key=logical_request_key,
+                    actor=actor, supersedes_ref=supersedes_ref)
+
+        return BoundLateUsage()
+
     def direction_bindings(self) -> Any:
         """Issue the narrow owner direction capability, without role adoption.
 
@@ -938,11 +973,11 @@ class PortfolioOwnerBootstrap:
 
     def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
                               manager_actor: str | None = None, assessment_policy: Any = None,
-                              issue_delivery: Any = None, native_result_verifier: Any = None) -> Any:
+                              issue_delivery: Any = None, native_result_verifier: Any = None, native_bodies: Any = None) -> Any:
         """Issue maintained execution commands over the existing finite ports."""
         from .execution import ExecutionApplication
         runtime = self.role_runtime(due_port=due_port, adapter=adapter,
-                                    assessment_policy=assessment_policy, issue_delivery=issue_delivery, native_result_verifier=native_result_verifier)
+                                    assessment_policy=assessment_policy, issue_delivery=issue_delivery, native_result_verifier=native_result_verifier, native_bodies=native_bodies)
         kwargs = {} if clock is None else {"clock": clock}
         return ExecutionApplication(portfolio=runtime.portfolio,
             assignments=self.assignments.command_port, due_port=due_port,
@@ -975,7 +1010,7 @@ class PortfolioOwnerBootstrap:
         return SerializedAttentionPort(create, lambda recipient: json_value(packets.list_attention(recipient)))
 
     def role_runtime(self, *, due_port: Any, adapter: Any, runtime_probe: Any = None,
-                     issue_delivery: Any = None, assessment_policy: Any = None, native_result_verifier: Any = None) -> Any:
+                     issue_delivery: Any = None, assessment_policy: Any = None, native_result_verifier: Any = None, native_bodies: Any = None) -> Any:
         """Compose a role runtime from finite clients without exposing Store.
 
         The caller supplies the already-issued finite DueRecord port and host
@@ -1002,7 +1037,7 @@ class PortfolioOwnerBootstrap:
                 actor=owner_actor, project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
                 generation=generation, logical_request_key=logical_request_key,
                 allow_project_manager=allow_project_manager)
-            capture = HerzchenAttemptCapture(access, access, actor=owner_actor)
+            capture = HerzchenAttemptCapture(access, access, actor=owner_actor, native_bodies=native_bodies)
             error = capture.validate_generation(assignment_ref, generation)
             if error:
                 raise PermissionError(error)
@@ -1071,7 +1106,7 @@ class PortfolioOwnerBootstrap:
             result_capture_factory=result_capture,
             acceptance_readiness=acceptance_readiness,
             allowance_readiness=allowance_readiness,
-            completed_task_readiness=completed_task_readiness, native_result_verifier=native_result_verifier,
+            completed_task_readiness=completed_task_readiness, native_result_verifier=native_result_verifier, native_bodies=native_bodies,
         )
 
 

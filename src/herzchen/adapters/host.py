@@ -27,6 +27,7 @@ from pathlib import Path
 from herzchen.contracts.model import HostOperation, HostOutcome, HostPort, HostReceipt, HostRequest, ContractError
 from .receipt import AdapterReceiptEnvelope
 from otto.portfolio.recovery_timing import timing_from_receipt
+from otto.agents.usage_capture import UsageStream
 
 RUNNER_ID = "codex-cli"
 MAX_SUBMISSION_SIZE = 1_000_000
@@ -52,6 +53,8 @@ def _communicate_after_native_start(
     start_timeout_seconds: float,
     monotonic_clock: Callable[[], float] = time.monotonic,
     native_start_callback: Optional[Callable[[Optional[str], str], None]] = None,
+    usage_stream: Optional[UsageStream] = None,
+    finite_timeout: bool = False,
 ) -> tuple[str, str, int | None, bool]:
     """Bound transport/start, then retain an identified native turn to terminal.
 
@@ -76,12 +79,14 @@ def _communicate_after_native_start(
         for line in iter(stream.readline, ""):
             with stream_lock:
                 stdout_parts.append(line)
+            if usage_stream is not None:
+                usage_stream.feed(line)
             try:
                 event = json.loads(line)
             except (json.JSONDecodeError, TypeError):
                 continue
             if isinstance(event, Mapping) and event.get("type") == "thread.started":
-                if event.get("thread_id") == expected_session_id:
+                if expected_session_id is None or event.get("thread_id") == expected_session_id:
                     thread_matched.set()
             elif isinstance(event, Mapping) and event.get("type") == "turn.started" and thread_matched.is_set():
                 turn_id = event.get("turn_id")
@@ -124,7 +129,7 @@ def _communicate_after_native_start(
     deadline = monotonic_clock() + start_timeout_seconds
     timed_out = False
     try:
-        while process.poll() is None and not native_started.is_set():
+        while process.poll() is None and (finite_timeout or not native_started.is_set()):
             remaining = deadline - monotonic_clock()
             if remaining <= 0:
                 timed_out = True
@@ -490,6 +495,8 @@ class CodexCliBinding(HostPort):
                  native_caller_socket: Optional[str] = None,
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
+                 usage_callback: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+                 usage_phase: str = "work",
                  source_verifier: Any = None, monotonic_clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__({HostOperation.INVOKE, HostOperation.RESUME})
         self.worktree, self.launcher, self.model, self.reasoning = worktree, launcher, model, reasoning
@@ -505,6 +512,7 @@ class CodexCliBinding(HostPort):
         self.receipt_path = native_receipt_path or receipt_path
         self.prompt = prompt
         self.evidence_path = evidence_path
+        self._usage_callback, self._usage_phase = usage_callback, usage_phase
         self.native_trace_path = native_trace_path
         self.trusted_thread_reader = trusted_thread_reader
         self._recipient_authorizer = recipient_authorizer
@@ -816,7 +824,28 @@ class CodexCliBinding(HostPort):
                         raise ValueError("exact native message admission is unavailable")
                     turn_id, admitted_at = admitted
                 self._native_start_callback(turn_id, admitted_at)
+                usage_stream.turn_id = turn_id
         caller_cleanup = None
+        def resolve_usage_turn(session_id):
+            # Fresh initializer usage may omit a CLI turn ID. Reuse the exact
+            # host trace selector and prompt binding, with its bounded read.
+            if not (self.native_trace_path or self.trusted_thread_reader):
+                return None
+            deadline = self.monotonic_clock() + 5
+            if self.occurrence_deadline is not None:
+                deadline = min(deadline, self.occurrence_deadline)
+            if resume_boundary is not None:
+                trace = self._resume_trace_tail(trace_path, resume_boundary, resume_header, resume_snapshot)
+            else:
+                _, trace = self._trace(session_id, deadline=deadline)
+            selected = _select_invocation_turn(trace.decode("utf-8").splitlines(),
+                session_id=session_id, prompt=prompt, boundary=0, started_at=started)
+            return selected[0] if selected is not None else None
+        usage_stream = UsageStream("codex-host", phase=self._usage_phase,
+            session_id=request.identity.physical_session_id, requested_model=self.model,
+            source_ref={"kind": "native-stream", "phase": self._usage_phase,
+                "locator": self.evidence_path}, on_usage=self._usage_callback,
+            turn_resolver=resolve_usage_turn)
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, cwd=self.worktree,
@@ -840,13 +869,22 @@ class CodexCliBinding(HostPort):
                     expected_session_id=request.identity.physical_session_id,
                     start_timeout_seconds=effective_timeout,
                     monotonic_clock=self.monotonic_clock,
-                    native_start_callback=native_start_callback,
+                    native_start_callback=native_start_callback, usage_stream=usage_stream,
                 )
             else:
                 # Fresh initialization and the explicitly adopted bounded
                 # inspection route retain their finite wall-clock contract.
-                stdout, stderr = process.communicate(prompt, timeout=effective_timeout)
-                exit_status = process.returncode
+                if callable(getattr(getattr(process, "stdout", None), "readline", None)):
+                    stdout, stderr, exit_status, _ = _communicate_after_native_start(
+                        process, prompt, expected_session_id=request.identity.physical_session_id,
+                        start_timeout_seconds=effective_timeout, monotonic_clock=self.monotonic_clock,
+                        usage_stream=usage_stream, finite_timeout=True)
+                else:
+                    # Compatible injected old ports with communicate-only streams.
+                    stdout, stderr = process.communicate(prompt, timeout=effective_timeout)
+                    exit_status = process.returncode
+                    for line in stdout.splitlines(keepends=True):
+                        usage_stream.feed(line)
         except subprocess.TimeoutExpired:
             _terminate_owned_process(process)
             if self.occurrence_deadline is None:
@@ -989,7 +1027,8 @@ class CodexCliBinding(HostPort):
             evidence_text += json.dumps(native_context, ensure_ascii=False, sort_keys=True) + "\n"
         if self.evidence_path:
             Path(self.evidence_path).write_text(evidence_text, encoding="utf-8")
-        return receipt, {"command": command, "stdout": stdout, "stderr": stderr,
+        return receipt, {"usage_capture": usage_stream.snapshot(),
+                         "command": command, "stdout": stdout, "stderr": stderr,
                          "exit_status": exit_status, "observed_model": observed_model,
                          "observed_reasoning": observed_reasoning, "observed_profile": observed_profile,
                          "host_evidence": {
@@ -1829,7 +1868,7 @@ class HerzchenHostAdapter:
             stdout=metadata.get("stdout"), stderr=metadata.get("stderr"),
             transport_operation=request.operation.value,
             correlation_id=receipt.logical_request_key,
-            receipt_timing=timing)
+            receipt_timing=timing, usage_capture=metadata.get("usage_capture"))
 
     def _reject_duplicate(self, request: HostRequest) -> None:
         """Ask the owning host binding about unresolved logical work.

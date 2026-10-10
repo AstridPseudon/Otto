@@ -165,6 +165,7 @@ class HerzchenCodexAdapter:
         self.native_process_observer = native_process_observer
         self.source_verifier_factory, self.monotonic_clock = source_verifier_factory, monotonic_clock
         self._source_verifier = None
+        self._usage_callback = None
         self._thread_started_callback: Optional[Callable[[str], None]] = None
         self._turn_started_callback: Optional[Callable[[str, str], None]] = None
 
@@ -189,6 +190,7 @@ class HerzchenCodexAdapter:
             writable_roots=self.writable_roots, native_caller_socket=socket,
         )
         bound._turn_started_callback = self._turn_started_callback
+        bound._usage_callback = self._usage_callback
         return bound
 
     def _role_native_capabilities(self, *, role: Optional[str], profile: Optional[str]) -> tuple[Any, Any]:
@@ -232,6 +234,12 @@ class HerzchenCodexAdapter:
         if callback is not None and not callable(callback):
             raise HerzchenAdapterError("thread-started callback must be callable")
         self._thread_started_callback = callback
+        return prior
+
+    def set_usage_callback(self, callback):
+        if callback is not None and not callable(callback):
+            raise HerzchenAdapterError("usage callback must be callable")
+        prior, self._usage_callback = self._usage_callback, callback
         return prior
 
     def set_turn_started_callback(
@@ -466,6 +474,10 @@ class HerzchenCodexAdapter:
         native_start_callback = ExecutionHost.owner_callback(
             None if self._owner_authorizer is not None and recipient_authorizer is None
             else self._turn_started_callback)
+        usage_callback = ExecutionHost.owner_callback(self._usage_callback)
+        usage_phase = "initializer" if self._owner_authorizer is not None and recipient_authorizer is None else "work"
+        evidence_path = (self.host_context_path + "." + usage_phase
+            if self.host_context_path and self._owner_authorizer is not None else self.host_context_path)
         cursor_queue = None
         if model_projection is not None and brief["context"]["canonical_snapshot"]["generation"] >= 11:
             recipient = model_projection["owner_context"].get("recipient_permission_contract", {})
@@ -489,11 +501,12 @@ class HerzchenCodexAdapter:
                 model=model,
                 reasoning=reasoning,
                 prompt=prompt,
-                evidence_path=self.host_context_path,
+                evidence_path=evidence_path,
                 native_trace_path=self.native_trace_path,
                 trusted_thread_reader=self.trusted_thread_reader,
                 recipient_authorizer=recipient_authorizer,
                 native_start_callback=native_start_callback,
+                usage_callback=usage_callback, usage_phase=usage_phase,
                 native_process_observer=ExecutionHost.owner_callback(self.native_process_observer),
                 writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
@@ -505,7 +518,7 @@ class HerzchenCodexAdapter:
             }
             binding = self.binding_factory(
                 worktree=self.worktree, launcher=self.launcher, model=model, reasoning=reasoning,
-                prompt=prompt, host_context_path=self.host_context_path,
+                prompt=prompt, host_context_path=evidence_path,
                 **({"model_projection": model_projection} if model_projection is not None else {}),
                 **({"cursor_queue": cursor_queue} if cursor_queue is not None else {}),
                 **({"native_start_callback": native_start_callback}
@@ -513,6 +526,8 @@ class HerzchenCodexAdapter:
                 **({"native_process_observer": ExecutionHost.owner_callback(self.native_process_observer)}
                    if self.native_process_observer is not None else {}),
                 **({"native_caller_socket": self.native_caller_socket} if self.native_caller_socket is not None else {}),
+                **({"usage_callback": usage_callback, "usage_phase": usage_phase}
+                   if self._usage_callback is not None else {}),
                 **receiving, **bounded,
             )
         if self.host_adapter_factory is None:
@@ -748,7 +763,8 @@ class HerzchenCodexAdapter:
         typed, digest, brief = self._typed_request(operation, request)
         context_reader = self.turn_context_reader
         if not callable(context_reader) and self.host_context_path:
-            context_reader = JsonlHostTurnContextReader(self.host_context_path)
+            context_reader = JsonlHostTurnContextReader(
+                self.host_context_path + ".work" if self._owner_authorizer is not None else self.host_context_path)
         if self.require_host_context and not callable(context_reader):
             raise HerzchenAdapterError("host-owned turn context reader is required before launch")
         if observed_override is None:
@@ -827,6 +843,7 @@ class HerzchenCodexAdapter:
             "outcome": str(outcome),
             "receipt": receipt_value,
             "envelope": envelope_value,
+            "usage_capture": envelope_value.get("usage_capture") if isinstance(envelope_value, Mapping) else None,
             "native_candidate": native_host.get("native_candidate"),
             "verification_failures": native_host.get("verification_failures", []),
             "resource_brief_sha256": digest,
@@ -1083,6 +1100,9 @@ class HerzchenCodexAdapter:
             except Exception as exc:
                 result.update({"outcome": "unknown", "delivery_state": "unknown",
                                "error": {"code": "source_verification_failed", "message": str(exc)}})
+        result["usage_capture"] = {"schema": "otto.usage-capture.phases.v1",
+            "initializer": (base.get("initialization_envelope") or {}).get("usage_capture"),
+            "work": result.get("usage_capture")}
         result["raw_result"] = {
             "initialization_receipt": base["initialization_receipt"],
             "initialization_envelope": base["initialization_envelope"],

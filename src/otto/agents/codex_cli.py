@@ -19,6 +19,8 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 
+from .usage_capture import UsageStream
+
 RUNNER_ID = "codex-cli"
 
 
@@ -73,9 +75,13 @@ def normalize_codex_jsonl(
     lines: Iterable[str],
     *,
     on_thread_started: Optional[Callable[[str], None]] = None,
+    on_usage: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+    adapter_id: str = "codex-direct",
+    turn_resolver: Optional[Callable[[str], Optional[str]]] = None,
 ) -> dict[str, Any]:
     """Normalize native JSONL while separating host evidence and worker text."""
 
+    usage_stream = UsageStream(adapter_id, on_usage=on_usage, turn_resolver=turn_resolver)
     host_events: list[dict[str, Any]] = []
     worker_content: list[str] = []
     thread_id: Optional[str] = None
@@ -86,6 +92,7 @@ def normalize_codex_jsonl(
     turn_completed = False
     invalid_lines = 0
     for raw in lines:
+        completion_observation = usage_stream.feed(raw)
         try:
             item = json.loads(raw)
         except (TypeError, ValueError):
@@ -94,8 +101,6 @@ def normalize_codex_jsonl(
         if not isinstance(item, Mapping):
             invalid_lines += 1
             continue
-        if turn_id is None and isinstance(item.get("turn_id"), str) and item["turn_id"].strip():
-            turn_id = item["turn_id"].strip()
         event_type = item.get("type")
         if event_type == "thread.started":
             candidate = item.get("thread_id") or item.get("session_id")
@@ -111,8 +116,9 @@ def normalize_codex_jsonl(
             continue
         if event_type == "turn.completed":
             turn_completed = True
-            if isinstance(item.get("usage"), Mapping):
-                usage = _json_copy(item["usage"], "turn_completed.usage")
+            latest = completion_observation or {}
+            turn_id = item.get("turn_id") or (latest.get("identity") or {}).get("turn_id")
+            usage = _json_copy(item["usage"], "turn_completed.usage") if isinstance(item.get("usage"), Mapping) else None
             if isinstance(item.get("model"), str):
                 observed_model = observed_model or item["model"]
             if isinstance(item.get("reasoning_effort"), str):
@@ -134,6 +140,7 @@ def normalize_codex_jsonl(
             "events": host_events,
             "invalid_lines": invalid_lines,
         },
+        "usage_capture": usage_stream.snapshot(),
         "worker_content": worker_content,
     }
 
@@ -157,6 +164,8 @@ class CodexCliAdapter:
         timeout_seconds: int = 120,
         process_factory: Optional[Callable[..., Any]] = None,
         on_thread_started: Optional[Callable[[str], None]] = None,
+        on_usage: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+        turn_resolver: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self.executable = _text(executable, "executable")
         self.worktree = _text(worktree, "worktree")
@@ -188,6 +197,8 @@ class CodexCliAdapter:
         self.config = normalized
         self._process_factory = process_factory or subprocess.Popen
         self._on_thread_started = on_thread_started
+        self._on_usage = on_usage
+        self._turn_resolver = turn_resolver
 
     def set_thread_started_callback(self, callback: Optional[Callable[[str], None]]) -> Optional[Callable[[str], None]]:
         """Install one synchronous early-identity callback and return prior state."""
@@ -196,6 +207,12 @@ class CodexCliAdapter:
             raise CodexCliAdapterError("thread.started callback must be callable")
         prior = self._on_thread_started
         self._on_thread_started = callback
+        return prior
+
+    def set_usage_callback(self, callback):
+        if callback is not None and not callable(callback):
+            raise CodexCliAdapterError("usage callback must be callable")
+        prior, self._on_usage = self._on_usage, callback
         return prior
 
     def build_argv(self, operation: Any = "invoke", physical_session_id: Optional[str] = None) -> list[str]:
@@ -275,10 +292,13 @@ class CodexCliAdapter:
         exit_status: Optional[int] = None
         error_text: Optional[str] = None
 
+        usage_stream = UsageStream("codex-direct", session_id=request.identity.physical_session_id,
+            requested_model=self.model, on_usage=self._on_usage, turn_resolver=self._turn_resolver)
         started_identity: Optional[str] = None
 
         def refresh_parsed(lines: list[str]) -> None:
             nonlocal parsed, started_identity
+            usage_stream.feed(lines[-1])
             observed: list[str] = []
             parsed = normalize_codex_jsonl(lines, on_thread_started=observed.append)
             current = parsed["host_evidence"].get("thread_id")
@@ -410,6 +430,7 @@ class CodexCliAdapter:
             unsupported_reason=error_text or (None if outcome == HostOutcome.SUCCEEDED else "codex result is unresolved"),
         )
         metadata = {
+            "usage_capture": usage_stream.snapshot(),
             "argv": argv,
             "stdin_sha256": hashlib.sha256(self.prompt.encode("utf-8")).hexdigest(),
             "host_evidence": {**host, "requested_model": self.model, "requested_reasoning": self.reasoning, "process_created": process_created, "launch_unknown": process_created and outcome == HostOutcome.UNKNOWN, "launch_state": launch_state, "retry_allowed": False},

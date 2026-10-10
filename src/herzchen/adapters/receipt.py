@@ -47,8 +47,13 @@ class AdapterReceiptEnvelope:
     correlation_id: Optional[str] = None
     receipt_timing: Optional[Mapping[str, Any]] = None
 
+    usage_capture: Optional[Mapping[str, Any]] = None
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        if self.usage_capture is None:
+            value.pop("usage_capture")
+        return value
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))

@@ -976,6 +976,8 @@ class ExecutionApplication:
         compact = {name: result.get(name) for name in (
             "outcome", "delivery_state", "physical_session_id", "observed_turn_id",
             "observed_model", "observed_reasoning", "observed_profile")}
+        from otto.agents.usage_capture import compact_usage_capture
+        compact["usage"] = compact_usage_capture(result.get("usage_capture"))
         completed = replace(due, stop_state="completed", completion_state="succeeded",
             in_flight_request=None, delivery_state="returned", last_completed_request=due.in_flight_request,
             last_result=compact, delivered_at=(attempt.get("delivery_admission") or {}).get("observed_at"), completed_at=at,

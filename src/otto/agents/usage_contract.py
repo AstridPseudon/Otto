@@ -133,7 +133,7 @@ ADAPTER_DESCRIPTORS = {
         reason="direct Codex JSONL and owner admission/assignment/occurrence path are existing supported seams",
     ),
     "codex-host": _descriptor(
-        "codex-host", provider="openai", environment="managed-herzchen-codex-host",
+        "codex-host", provider="openai", environment="managed-codex-cli",
         native_schema="codex-cli-jsonl.turn-completed.v1", event_type="turn.completed",
         fields={name: name for name in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")},
         mechanical="supported", live="supported",

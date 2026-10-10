@@ -168,7 +168,7 @@ def _json_safe(value: Any) -> Any:
 class _ResponsibilityAssignmentsEngine:
     """The shared generic responsibility/assignment command surface."""
 
-    def __init__(self, store: Any, *, actor: Optional[AuthenticatedActor] = None) -> None:
+    def __init__(self, store: Any, *, actor: Optional[AuthenticatedActor] = None, native_bodies: Any = None) -> None:
         if not hasattr(store, "transaction") or not hasattr(store, "mutate"):
             raise TypeError("store must be the supplied FND writer")
         from .module import work_handler
@@ -176,6 +176,7 @@ class _ResponsibilityAssignmentsEngine:
         self.reader = self.__writer.consumer()
         self.default_actor = actor
         self._evidence_store = store
+        self._usage_native_bodies = native_bodies
 
     def _create_in_transaction(
         self,
@@ -499,6 +500,28 @@ class _ResponsibilityAssignmentsEngine:
         return self._append_observation(target, value, kind="report", expected_generation=expected_generation, logical_request_key=logical_request_key, actor=actor)
 
     report = append_report
+
+    def append_late_usage(self, target: Any, source_ref: Any, source: Mapping[str, Any], *,
+                          adapter_id: str, phase: str, session_id: str, turn_id: str,
+                          authorizing_assignment_ref: Any, authorizing_generation: int,
+                          logical_request_key: str, actor: AuthenticatedActor,
+                          supersedes_ref: Any = None) -> Mapping[str, Any]:
+        """Owner-only late typed evidence; never launch, complete or revise a result."""
+        from .usage import append_late_usage
+        return append_late_usage(self, self.__writer, self._usage_native_bodies, target,
+            source_ref, source, adapter_id=adapter_id, phase=phase, session_id=session_id,
+            turn_id=turn_id, authorizing_assignment_ref=authorizing_assignment_ref,
+            authorizing_generation=authorizing_generation, logical_request_key=logical_request_key,
+            actor=actor, supersedes_ref=supersedes_ref)
+
+    def _usage_record(self, identity: Any) -> Mapping[str, Any]:
+        row = self.__writer.connection.execute(
+            "SELECT event_id,recorded_at,append_position FROM events WHERE store_authority=? "
+            "AND subject_authority=? AND subject_kind=? AND subject_id=? AND subject_revision=?",
+            (self.__writer.authority, identity.ref.authority, identity.ref.kind, identity.ref.id,
+             identity.ref.revision)).fetchone()
+        return {**identity.payload["value"], "ref": identity.ref.to_dict(),
+            "event_id": row[0], "recorded_at": row[1], "append_position": row[2]}
 
     def complete(
         self,
