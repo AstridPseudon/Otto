@@ -110,6 +110,58 @@ def check_read(service: Any, context: Any, due: Mapping[str, Any]) -> None:
         raise PermissionError("result belongs to another exact parent/destination")
 
 
+def manager_consumption_parent(service: Any, context: Mapping[str, Any], due: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Consume only the exact child delivered by an authenticated manager callback.
+
+    Ordinary manager launches predate worker-parent delegation and retain a
+    null parent. Join their existing canonical result callback rather than
+    rewriting that immutable launch or granting project-wide consumption.
+    A recovery role may use the exact digest-pinned callback as its native
+    binding anchor; no history scan or caller-provided anchor is accepted.
+    """
+    state = service.server.state
+    if (context.get("role") != "manager" or context.get("assignment_ref") != state["assignment_ref"]
+            or context.get("generation") != state["manager_generation"]
+            or due["role"] != "worker" or due["target"].get("parent") is not None
+            or (due["target"].get("launch_request") or {}).get("external_parent") is not None):
+        raise PermissionError("manager consumption requires its own ordinary worker delivery")
+    caller = service.server.due_port.read_due(context["occurrence_ref"]["schedule_id"])
+    if not isinstance(caller, Mapping):
+        raise PermissionError("authenticated manager occurrence is missing")
+    callback = caller
+    if not (callback.get("host_evidence") or {}).get("worker_result_continuation"):
+        binding = caller["target"].get("native_binding") or {}
+        callback = service.server.due_port.read_due(binding.get("schedule_id")) if binding.get("schedule_id") else None
+        if (not isinstance(callback, Mapping) or digest(callback) != binding.get("due_sha256")
+                or callback["stop_state"] != "completed" or callback["completion_state"] != "succeeded"
+                or callback.get("in_flight_request") is not None
+                or not result_view(callback)["required_capture"]):
+            raise PermissionError("manager consumption requires an exact verified callback anchor")
+    for current in (caller, callback):
+        if (current["role"] != "manager" or current["assignment_ref"] != context["assignment_ref"]
+                or current["generation"] != context["generation"]
+                or current["recipient"] != state["manager"]
+                or identity(current["target"]["project_ref"]) != identity(due["target"]["project_ref"])
+                or current["target"].get("native_id") != context["native_session"]["id"]):
+            raise PermissionError("manager result delivery identity or native continuity differs")
+    result = due["host_evidence"]["gateway_attempt"]["result"]
+    expected = {"schema": "otto.worker-result-continuation.v1", "worker_schedule_id": due["schedule_id"],
+        "worker_assignment_ref": due["assignment_ref"], "worker_generation": due["generation"],
+        "worker_task_ref": due["target"]["task_ref"], "worker_result_sha256": digest(result),
+        "observed_turn_id": result.get("observed_turn_id"), "physical_session_id": result.get("physical_session_id"),
+        "acceptance": "unjudged worker result; task/project gates remain required"}
+    if (callback["target"].get("reported_task_ref") != due["target"]["task_ref"]
+            or (callback.get("host_evidence") or {}).get("worker_result_continuation") != expected):
+        raise PermissionError("manager callback does not deliver this exact captured child")
+    assignment = service.server.owner.assignments.command_port.get(ResourceRef.from_dict(due["assignment_ref"]))
+    if (assignment.ref.to_dict() != due["assignment_ref"] or assignment.generation != due["generation"]
+            or assignment.principal != due["recipient"] or assignment.payload.get("manager") != state["manager"]):
+        raise PermissionError("worker assignment no longer belongs to this exact manager")
+    return {"kind": "manager-result-delivery", "assignment_ref": callback["assignment_ref"],
+            "generation": callback["generation"], "native_session_id": callback["target"]["native_id"],
+            "callback_schedule_id": callback["schedule_id"], "child_schedule_id": due["schedule_id"]}
+
+
 def worker_records(service: Any) -> list[Mapping[str, Any]]:
     return list(service.server.due_port.list_due({"project_ref": service.server.state["project_ref"]["id"], "role": "worker"}))
 
@@ -187,14 +239,17 @@ def dispatch_occurrence(service: Any, request: Mapping[str, Any], context: Any) 
         if command == "follow-occurrence":
             result["wait"] = {"state": "snapshot-only", "timeout_seconds": timeout, "detachable": True}
         if command == "consume-result":
-            if context is None or context["role"] != "worker":
-                raise PermissionError("parent consumption requires an authenticated worker process")
+            if context is None or context["role"] not in {"worker", "manager"}:
+                raise PermissionError("parent consumption requires an authenticated parent process")
             if not result["required_capture"]:
                 return {**result, "outcome": "held", "reason": "required child result is not captured"}
-            parent = due["target"]["parent"]
-            if not current_parent_slot(service, parent["assignment_ref"], parent["generation"],
-                                       parent["occurrence_ref"]["schedule_id"]):
-                raise PermissionError("parent was replaced; consumption requires explicit reconciliation")
+            if context["role"] == "manager":
+                parent = manager_consumption_parent(service, context, due)
+            else:
+                parent = due["target"]["parent"]
+                if not current_parent_slot(service, parent["assignment_ref"], parent["generation"],
+                                           parent["occurrence_ref"]["schedule_id"]):
+                    raise PermissionError("parent was replaced; consumption requires explicit reconciliation")
             result_sha256 = digest((due["host_evidence"]["gateway_attempt"])["result"])
             result_identity = result.get("delivery_identity") or result_sha256
             evidence = {"schema": "otto.parent-consumption.v1", "child": handle(due),
