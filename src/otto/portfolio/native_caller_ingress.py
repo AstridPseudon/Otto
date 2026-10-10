@@ -132,12 +132,18 @@ class NativeProcessCallerIngress:
         if getattr(ingress, "transport", None) != "unix-socket":
             raise PermissionError("durable file IPC does not authenticate a native caller")
         peer = self.process_reader(self.peer_reader(ingress.handle))
+        with self._lock:
+            registered = set(self._live)
         chain, current = [], peer
         for _ in range(64):
             if any(item.pid == current.pid for item in chain):
                 raise PermissionError("kernel caller ancestry has a cycle")
             chain.append(current)
-            if current.parent <= 1:
+            # Stop at the first registered native process (its parent is this
+            # owner, checked at registration) or at the owner itself. Ancestors
+            # above the owner are never consulted: under a terminal they include
+            # root-owned processes (login) whose identity cannot be read.
+            if current.pid in registered or current.pid == os.getpid() or current.parent <= 1:
                 break
             current = self.process_reader(current.parent)
         else:
