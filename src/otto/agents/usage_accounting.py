@@ -249,7 +249,15 @@ def _money_fingerprint(value: Mapping[str, Any]) -> str:
     # Transport/source aliases do not create competing monetary amounts.
     fields = ("status", "amount", "currency", "provider", "metric_scope",
               "population_scope", "receipt_ref", "billing_ref")
-    return json.dumps({k: value.get(k) for k in fields}, sort_keys=True, separators=(",", ":"))
+    comparable = {k: value.get(k) for k in fields}
+    amount = _money_decimal(value.get("amount"), "amount")
+    if amount is not None:
+        # Decimal equality is independent of JSON spelling. Do not normalize
+        # through the ambient Decimal precision (which can round long values).
+        text = format(amount, "f")
+        comparable["amount"] = "0" if amount == 0 else (
+            text.rstrip("0").rstrip(".") if "." in text else text)
+    return json.dumps(comparable, sort_keys=True, separators=(",", ":"))
 
 
 def _monetary_coverage(rows: Sequence[Mapping[str, Any]], *, complete: bool, missing: int = 0) -> dict[str, Any]:

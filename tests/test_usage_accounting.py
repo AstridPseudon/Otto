@@ -48,6 +48,43 @@ class AccountingTests(unittest.TestCase):
                     q=self.query([excluded,child]);self.assertEqual(q['provider_reported']['amount'],'3');self.assertEqual(q['provider_reported']['span_count'],1)
                     self.assertTrue(q['coverage']['monetary']['provider_money_exclusion_reasons'])
 
+    def test_money_semantic_decimal_aliases_and_actual_native_population(self):
+        for adapter in ('codex-direct','codex-host','claude-code'):
+            for left,right in (('1','1.0'),('0','0.0'),('1.25','1.2500'),('100','1E+2'),
+                ('0.123456789012345678901234567891','0.1234567890123456789012345678910')):
+                a=fact(adapter);a['provider_reported_money']={'amount':left,'currency':'USD','status':'usage_report_estimate'}
+                b=deepcopy(a);b['ref']=ref('wrk.report','alias');b['append_position']=2;b['provider_reported_money']['amount']=right
+                q=self.query([a,b]);self.assertEqual(q['spans'][0]['state'],'measured');self.assertEqual(q['provider_reported']['span_count'],1)
+                self.assertIsNotNone(q['metrics'])
+                self.assertEqual(self.public_fold([a,b])['provider_reported']['span_count'],1)
+        for left,right in (('0.123456789012345678901234567891','0.123456789012345678901234567892'),('1','2')):
+            a=fact();a['provider_reported_money']={'amount':left,'currency':'USD','status':'usage_report_estimate'}
+            b=deepcopy(a);b['ref']=ref('wrk.report','alias');b['append_position']=2;b['provider_reported_money']['amount']=right
+            q=self.query([a,b]);self.assertEqual(q['spans'][0]['state'],'provider-money-conflict');self.assertIsNone(q['provider_reported']['amount'])
+        a=fact();a['provider_reported_money']={'amount':'1','currency':'USD','status':'billed','receipt_ref':ref('billing.receipt','a')}
+        b=deepcopy(a);b['ref']=ref('wrk.report','alias');b['append_position']=2;b['provider_reported_money']['receipt_ref']=ref('billing.receipt','b')
+        self.assertEqual(self.query([a,b])['spans'][0]['state'],'provider-money-conflict')
+        for left,right in ((0,0.0),(1,1.0),(1.25,1.2500)):
+            stream=UsageStream('claude-code')
+            for cost in(left,right):
+                for event in native('claude-code',{'input_tokens':10,'output_tokens':2}):
+                    if event['type']=='result':event['total_cost_usd']=cost
+                    stream.feed(json.dumps(event))
+            facts=[]
+            for index,o in enumerate(stream.observations):
+                f=fact('claude-code',pos=index+1);f['observation']=o;facts.append(f)
+            q=self.query(facts);self.assertEqual(q['metrics']['input_tokens'],10)
+            self.assertEqual(q['provider_reported']['span_count'],0);self.assertIsNone(q['provider_reported']['amount'])
+            self.assertEqual(q['spans'][0]['provider_reported_money']['reason'],'provider-money-cumulative-not-additive')
+            public=self.public_fold(facts);self.assertEqual(public['metrics']['input_tokens'],10)
+            self.assertIsNone(public['provider_reported']['amount']);self.assertEqual(public['spans'][0]['state'],'measured')
+
+    def public_fold(self,facts):
+        from otto.portfolio.observability_views import _fold_retained_usage
+        rows=[{'subject_ref':f['ref'],'source_append_position':f['append_position'],'recorded_at':f['recorded_at'],'summary':{'after':{'fields':{'usage_fact':f}}}}for f in facts]
+        result={'snapshot':{'boundary':100},'projects':[ref('work.project','project')]}
+        return _fold_retained_usage(rows,result,complete=True)[0]
+
     def test_receipt_billed_zero_missing_and_malformed_money_remain_distinct(self):
         for raw,status,amount in (({'amount':'0','currency':'USD','status':'zero'},'zero','0'),
             (None,'missing',None),({'amount':'bad','currency':'USD'},'unavailable',None),
