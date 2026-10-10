@@ -21,6 +21,32 @@ def metadata_identity(reference: ResourceRef) -> ResourceRef:
     return ResourceRef(source.authority, source.kind, source.id + "-metadata", source.revision)
 
 
+def reclaim_intent_ref(reference: ResourceRef) -> ResourceRef:
+    """Exact pending lifecycle fence in the existing identity namespace."""
+    import hashlib
+    from herzchen.contracts import canonical_json
+    token = hashlib.sha256(canonical_json(reference.to_dict()).encode()).hexdigest()[:40]
+    return ResourceRef(reference.authority, "dat.evidence.lifecycle", "reclaim-" + token)
+
+
+def require_reference_available(reader: Any, reference: ResourceRef) -> None:
+    """Called under the owner transaction before admitting a new DAT link."""
+    exact = reference
+    if exact.revision is None:
+        head = reader.get_identity_bounded(ResourceRef(exact.authority, exact.kind, exact.id))
+        if head["record"] is None:
+            raise PermissionError("document unavailable")
+        value = head["record"].payload.get("current_revision")
+        if not isinstance(value, Mapping):
+            raise PermissionError("document unavailable")
+        exact = ResourceRef.from_dict(value)
+    fence = reader.get_identity_bounded(reclaim_intent_ref(exact))
+    if fence["state"] != "missing":
+        # A pending intent remains forever as retained provenance after purge;
+        # neither current-mode nor pinned links may resurrect that payload.
+        raise PermissionError("document unavailable")
+
+
 def revision_metadata(revision: Any) -> Mapping[str, Any]:
     from herzchen.contracts import canonical_json
     content = revision.content
@@ -130,6 +156,17 @@ def document_metadata(reader: Any, reference: Any, *, actor: Any, roles=(), scop
             result.update(content=content, verification="legacy-inline")
             work["payload_bytes_parsed"] = revision["bytes_parsed"]
             work["legacy_inline_read"] = True
+    if result["representation"] == "managed":
+        fence = reader.get_identity_bounded(reclaim_intent_ref(exact))
+        work["metadata_bytes_parsed"] += fence["bytes_parsed"]
+        if fence["state"] != "missing":
+            tombstone_ref = ResourceRef(exact.authority, "dat.evidence.tombstone", "tombstone-" + reclaim_intent_ref(exact).id.removeprefix("reclaim-"))
+            tombstone = reader.get_identity_bounded(tombstone_ref)
+            work["metadata_bytes_parsed"] += tombstone["bytes_parsed"]
+            if tombstone["record"] is not None:
+                result.update(availability="purged", verification="not-available-after-reclaim")
+            else:
+                result.update(availability="pending-reclaim", verification="not-available-during-reclaim")
     work["processing_seconds"] = time.perf_counter() - started
     return result
 

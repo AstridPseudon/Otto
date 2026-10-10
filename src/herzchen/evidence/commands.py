@@ -236,6 +236,8 @@ class _EvidenceCommandHandlerEngine:
         project_root: Optional[str | os.PathLike[str]] = None,
         authorize: Optional[Callable[[Mapping[str, Any], AuthenticatedActor, ResourceRef], bool]] = None,
         workflow_enabled: bool = True,
+        authorize_lifecycle: Optional[Callable[[Mapping[str, Any], AuthenticatedActor, ResourceRef, str], bool]] = None,
+        resolve_dependencies: Optional[Callable[[ResourceRef, ResourceRef], Mapping[str, Any]]] = None,
     ) -> None:
         content_writer = writer
         if writer is not None and hasattr(writer, "domain_handler"):
@@ -252,6 +254,10 @@ class _EvidenceCommandHandlerEngine:
         self.payload_root = Path(payload_root).expanduser().resolve()
         self.payload_root.mkdir(parents=True, exist_ok=True)
         self._authorize = authorize
+        # These are trusted composition callbacks, never command inputs or
+        # read-sharing rights. Missing dependency completeness fails closed.
+        self._authorize_lifecycle = authorize_lifecycle
+        self._resolve_dependencies = resolve_dependencies
         self.workflow_enabled = bool(workflow_enabled)
         self.pack = pack or load_evidence_pack(project_root=project_root)
         if selection is not None and adopted_pins is not None:
@@ -279,7 +285,10 @@ class _EvidenceCommandHandlerEngine:
         if self.__writer is None:
             return None
         writer = self.__writer
-        record = writer.get_identity(self._tombstone_ref(reference))
+        read = self.reader.get_identity_bounded(self._tombstone_ref(reference))
+        if read["state"] not in {"missing", "available"}:
+            raise EvidenceError("Evidence tombstone metadata is unavailable")
+        record = read["record"]
         if record is None or not isinstance(record.payload, Mapping):
             return None
         if record.payload.get("record_type") != EVIDENCE_TOMBSTONE_KIND:
@@ -290,9 +299,17 @@ class _EvidenceCommandHandlerEngine:
         return record.payload
 
     def _rooted(self, relative: str) -> Path:
-        path = (self.payload_root / relative).resolve()
-        if self.payload_root not in path.parents or path == self.payload_root:
+        if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+            raise EvidenceError("managed payload location is not relative")
+        path = self.payload_root / relative
+        resolved = path.resolve()
+        if self.payload_root not in resolved.parents:
             raise EvidenceError("managed payload location escaped its owner root")
+        for part in (path, *path.parents):
+            if part == self.payload_root:
+                break
+            if part.is_symlink():
+                raise EvidenceError("managed payload location contains a symlink")
         return path
 
     def _staging_paths(self, capture_id: str) -> tuple[Path, Path]:
@@ -733,6 +750,8 @@ class _EvidenceCommandHandlerEngine:
         if writer.get_identity(target) is not None:
             raise EvidenceError("lifecycle target identity is occupied without its request receipt")
         payload = dict(record)
+        if len(canonical_json(payload).encode()) > 65536:
+            raise EvidenceError("lifecycle metadata exceeds 65536 bytes; use a smaller bounded page")
         payload["record_type"] = payload.get("record_type", "dat.evidence.lifecycle")
         envelope = self._envelope(operation, target, actor, logical_request_key, payload,
                                    expected_revision=None, expected_version=0)
@@ -779,45 +798,46 @@ class _EvidenceCommandHandlerEngine:
         ref = _ref(value, "reference")
         return ref.authority, ref.kind, ref.id
 
-    def _active_associations(self) -> Mapping[tuple[str, str, str, Optional[str]], set[tuple[str, str, str]]]:
-        """Read existing association metadata without opening payload bodies."""
-        result: dict[tuple[str, str, str, Optional[str]], set[tuple[str, str, str]]] = {}
-        cursor = ""
-        while True:
-            page = self.reader.read_identity_page(kind="document-association", after=cursor, limit=100)
-            for record in page["records"]:
-                if record.payload.get("active") is False:
-                    continue
-                association = self._typed_association(record.payload.get("association", record.payload))
-                if association is None:
-                    continue
-                binding = association.document
-                key = (binding.ref.authority, binding.ref.kind, binding.ref.id, binding.ref.revision)
-                subject = association.subject
-                result.setdefault(key, set()).add((subject.authority, subject.kind, subject.id))
-            cursor = page["next_cursor"] or ""
-            if not page["next_cursor"]:
-                break
-        return result
+    def _authorize_reclaim(self, status: Mapping[str, Any], actor: AuthenticatedActor,
+                           project: ResourceRef, operation: str) -> None:
+        document = status.get("document", {})
+        if self._authorize_lifecycle is not None:
+            allowed = self._authorize_lifecycle(document, actor, project, operation) is True
+        else:
+            allowed = (actor.authority == self._require_writer().authority == project.authority
+                       and document.get("maintainer") == actor.actor)
+        if not allowed:
+            raise EvidenceAccessDeniedError("lifecycle action unavailable")
 
-    def _document_history(self, document_ref: ResourceRef) -> tuple[ResourceRef, ...]:
-        refs: dict[Optional[str], ResourceRef] = {}
-        head = self._document(document_ref)
-        if head is None:
-            return ()
-        current = head.payload.get("current_revision")
-        if isinstance(current, Mapping):
-            current = ResourceRef.from_dict(current)
-        if isinstance(current, ResourceRef):
-            refs[current.revision] = current
-        for event in self._require_writer().list_events(subjects=[document_ref]):
-            for value in event.after_refs:
-                # Existing DAT content events use the document identity kind
-                # for exact revision pins; accept the explicit revision kind
-                # as well for compatible historical readers.
-                if value.kind in {"dat.content.document", "dat.content.revision"} and value.id == document_ref.id:
-                    refs[value.revision] = ResourceRef(value.authority, document_ref.kind, value.id, value.revision)
-        return tuple(refs[key] for key in sorted(refs, key=lambda item: (item is None, item or "")))
+    def _reference_projects(self, exact: ResourceRef, current: ResourceRef) -> tuple[set, bool]:
+        # One selected document only, including pinned and current bindings.
+        # Saturation/oversize is an unknown dependency, never a scan-all loop.
+        page = self.reader.read_identity_page(kind="document-association", limit=100,
+            payload_matches={("association", "document", "ref", "authority"): exact.authority,
+                             ("association", "document", "ref", "kind"): exact.kind,
+                             ("association", "document", "ref", "id"): exact.id})
+        projects = set()
+        for record in page["records"]:
+            if record.payload.get("active") is False:
+                continue
+            association = self._typed_association(record.payload.get("association"))
+            if association is None:
+                return projects, False
+            pin = association.document.ref
+            if pin.revision == exact.revision or (pin.revision is None and current.revision == exact.revision):
+                projects.add(self._identity_tuple(association.subject))
+        return projects, page["next_cursor"] is None and page["held"] == 0
+
+    def _owner_dependency_hold(self, exact: ResourceRef, project: ResourceRef) -> Optional[str]:
+        if self._resolve_dependencies is None:
+            return "dependency-unknown"
+        value = self._resolve_dependencies(exact, project)
+        if not isinstance(value, Mapping) or value.get("complete") is not True:
+            return "dependency-unknown"
+        holds = value.get("holds")
+        if not isinstance(holds, (tuple, list)) or any(x not in {"in-flight-recovery", "dependency-unknown"} for x in holds):
+            return "dependency-unknown"
+        return "in-flight-recovery" if "in-flight-recovery" in holds else ("dependency-unknown" if holds else None)
 
     @staticmethod
     def _dependency_reason(manifest: Mapping[str, Any], reference: ResourceRef,
@@ -849,104 +869,109 @@ class _EvidenceCommandHandlerEngine:
                         return "dependency-unknown"
         return None
 
-    def _reclaim_candidates(
-        self,
-        project: ResourceRef,
-        *,
-        actor: AuthenticatedActor,
-        cutoff: str,
-        dependency_state: Optional[Mapping[str, Any]] = None,
-        recovery_refs: Sequence[Any] = (),
-    ) -> list[dict[str, Any]]:
-        active = self._active_associations()
-        recovery = {self._identity_tuple(item) + (item.revision,) for item in (_ref(value, "recovery_ref") for value in recovery_refs)}
-        candidates: dict[tuple[str, str, str, Optional[str]], dict[str, Any]] = {}
-        cursor = ""
-        while True:
-            page = self.reader.read_identity_page(kind="dat.content.document", after=cursor, limit=100)
+    def _reclaim_item(self, exact: ResourceRef, project: ResourceRef, *, actor: AuthenticatedActor,
+                      cutoff: str, dependency_state=None, recovery_refs=(), pending_key=None,
+                      operation=EVIDENCE_RECLAIM_APPLY_OPERATION) -> Optional[dict]:
+        status = self.status(exact, actor=actor)
+        if status.get("representation") != "managed" or status.get("document", {}).get("role") != "evidence":
+            return None
+        self._authorize_reclaim(status, actor, project, operation)
+        manifest = status["manifest"]
+        recovery = {self._identity_tuple(pin) + (pin.revision,) for pin in (_ref(v, "recovery_ref") for v in recovery_refs)}
+        # Resolve authoritative recovery first, then current references, all
+        # under the same owner transaction when used at the intent boundary.
+        dependency = self._owner_dependency_hold(exact, project)
+        dependency = self._dependency_reason(manifest, exact, dependency_state, recovery) or dependency
+        projects, complete = self._reference_projects(exact, status["current_head"])
+        origin = manifest.get("origin", {})
+        origin_project = origin.get("project_ref") if isinstance(origin, Mapping) else None
+        if not (isinstance(origin_project, Mapping) and self._identity_tuple(origin_project) == self._identity_tuple(project)) and self._identity_tuple(project) not in projects:
+            return None
+        captured = manifest.get("capture", {}).get("captured_at")
+        location = manifest.get("storage", {}).get("location")
+        path = None
+        try:
+            path = self._rooted(location)
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                path = None
+        except EvidenceError:
+            pass
+        hold = dependency or ("dependency-unknown" if not complete else None)
+        hold = hold or ("shared-reference" if any(v != self._identity_tuple(project) for v in projects) else None)
+        hold = hold or ("managed-location-unknown" if path is None else None)
+        if isinstance(captured, str) and captured > cutoff:
+            hold = "after-cutoff"
+        availability = status["availability"]
+        from herzchen.content.reads import reclaim_intent_ref
+        fence = self.reader.get_identity_bounded(reclaim_intent_ref(exact))
+        if fence["state"] != "missing":
+            record = fence["record"]
+            if (record is None or record.payload.get("record_type") != "dat.evidence.reclaim.intent"
+                    or record.payload.get("apply_request_key") != pending_key):
+                hold = hold or "pending-reclaim"
+        if availability == "purged":
+            hold = hold or "already-purged"
+        elif availability in {"missing", "corrupt", "staged"} or (path is not None and not path.exists()):
+            hold = hold or "unavailable"
+        return {"reference": exact, "document_ref": ResourceRef(exact.authority, exact.kind, exact.id),
+                "current_head": status["current_head"], "byte_digest": manifest.get("byte_digest"),
+                "byte_length": manifest.get("byte_length", 0), "format": manifest.get("format"),
+                "origin": dict(origin), "attribution": dict(manifest.get("attribution", {})),
+                "storage_location": location, "cache_location": manifest.get("storage", {}).get("cache_location"),
+                "availability": availability, "eligible": hold is None and path is not None and path.is_file(),
+                "hold": hold, "shared_projects": sorted(projects), "captured_at": captured,
+                "selection_digest": _json_digest({"reference": exact.to_dict(), "byte_digest": manifest.get("byte_digest"), "storage_location": location})}
+
+    def _reclaim_candidates(self, project: ResourceRef, *, actor: AuthenticatedActor, cutoff: str,
+                            dependency_state=None, recovery_refs=(), cursor="", limit=50) -> tuple[list, Optional[str], Mapping]:
+        # Historical managed revision metadata are already admitted immutable
+        # DAT projections. No document/event-history walk is necessary.
+        try:
+            state = json.loads(cursor) if cursor else {"v": 1, "phase": "origin", "after": ""}
+            if set(state) != {"v", "phase", "after"} or state["v"] != 1 or state["phase"] not in {"origin", "links"} or not isinstance(state["after"], str):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise EvidenceError("invalid reclaim cursor") from None
+        if state["phase"] == "origin":
+            page = self.reader.read_identity_page(kind="dat.content.revision", after=state["after"], limit=limit,
+                payload_matches={("record_type",): "dat.content.metadata", ("representation",): "managed",
+                    ("manifest", "origin", "project_ref", "authority"): project.authority,
+                    ("manifest", "origin", "project_ref", "id"): project.id})
+            refs = [_ref(r.payload["reference"], "metadata.reference") for r in page["records"]]
+        else:
+            page = self.reader.read_identity_page(kind="document-association", after=state["after"], limit=limit,
+                payload_matches={("association", "subject", "authority"): project.authority,
+                                 ("association", "subject", "kind"): project.kind,
+                                 ("association", "subject", "id"): project.id})
+            refs = []
             for record in page["records"]:
-                document = record.payload.get("document")
-                role = document.get("role") if isinstance(document, Mapping) else getattr(document, "role", None)
-                if role != "evidence":
+                association = self._typed_association(record.payload.get("association"))
+                if record.payload.get("active") is not False and association is not None and association.document.ref.kind == "dat.content.document":
+                    refs.append(association.document.ref)
+        items = []
+        seen = set()
+        for ref in refs:
+            try:
+                exact = self.status(ref, actor=actor)["reference"] if ref.revision is None else ref
+                if exact in seen:
                     continue
-                document_ref = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
-                history = self._document_history(document_ref)
-                for exact in history:
-                    try:
-                        status = self.status(exact, actor=actor)
-                    except EvidenceAccessDeniedError:
-                        continue
-                    if status.get("representation") != "managed":
-                        continue
-                    manifest = status.get("manifest")
-                    if not isinstance(manifest, Mapping):
-                        continue
-                    origin = manifest.get("origin", {})
-                    origin_project = origin.get("project_ref") if isinstance(origin, Mapping) else None
-                    origin_matches = isinstance(origin_project, Mapping) and self._identity_tuple(origin_project) == self._identity_tuple(project)
-                    assoc_projects: set[tuple[str, str, str]] = set()
-                    assoc_key = (exact.authority, exact.kind, exact.id, exact.revision)
-                    assoc_projects.update(active.get(assoc_key, set()))
-                    # Current-mode links resolve to the exact current head.
-                    head = status.get("current_head")
-                    if isinstance(head, ResourceRef) and head.revision == exact.revision:
-                        assoc_projects.update(active.get((exact.authority, exact.kind, exact.id, None), set()))
-                    if not origin_matches and self._identity_tuple(project) not in assoc_projects:
-                        continue
-                    captured = manifest.get("capture", {}).get("captured_at") if isinstance(manifest.get("capture"), Mapping) else None
-                    if isinstance(captured, str) and captured > cutoff:
-                        reason = "after-cutoff"
-                    else:
-                        reason = None
-                    key = (exact.authority, exact.kind, exact.id, exact.revision)
-                    if key in candidates:
-                        continue
-                    location = manifest.get("storage", {}).get("location") if isinstance(manifest.get("storage"), Mapping) else None
-                    path = None
-                    path_reason = None
-                    if isinstance(location, str):
-                        try:
-                            path = self._rooted(location)
-                            if path.is_symlink() or (path.exists() and not path.is_file()):
-                                path_reason = "managed-location-unknown"
-                        except EvidenceError:
-                            path_reason = "managed-location-unknown"
-                    else:
-                        path_reason = "managed-location-unknown"
-                    tombstone = self._read_tombstone(exact)
-                    availability = "purged" if tombstone is not None else status.get("availability", manifest.get("availability"))
-                    dependency = self._dependency_reason(manifest, exact, dependency_state, recovery)
-                    shared = any(item != self._identity_tuple(project) for item in assoc_projects)
-                    hold = dependency or ("shared-reference" if shared else path_reason)
-                    if reason is not None:
-                        hold = reason
-                    eligible = availability in {"admitted", "verified"} and hold is None and path is not None and path.is_file()
-                    if availability in {"missing", "corrupt", "staged"} and path is not None and not path.exists():
-                        hold = hold or "unavailable"
-                    item = {
-                        "reference": exact,
-                        "document_ref": document_ref,
-                        "current_head": status.get("current_head"),
-                        "byte_digest": manifest.get("byte_digest"),
-                        "byte_length": manifest.get("byte_length", 0),
-                        "format": manifest.get("format"),
-                        "origin": dict(origin) if isinstance(origin, Mapping) else {},
-                        "attribution": dict(manifest.get("attribution", {})),
-                        "storage_location": location,
-                        "cache_location": (manifest.get("storage", {}).get("cache_location")
-                                           if isinstance(manifest.get("storage"), Mapping) else None),
-                        "availability": availability,
-                        "eligible": eligible,
-                        "hold": hold,
-                        "shared_projects": sorted(assoc_projects),
-                        "captured_at": captured,
-                        "selection_digest": _json_digest({"reference": exact.to_dict(), "byte_digest": manifest.get("byte_digest"), "storage_location": location}),
-                    }
-                    candidates[key] = item
-            cursor = page["next_cursor"] or ""
-            if not page["next_cursor"]:
-                break
-        return list(candidates.values())
+                seen.add(exact)
+                item = self._reclaim_item(exact, project, actor=actor, cutoff=cutoff,
+                    dependency_state=dependency_state, recovery_refs=recovery_refs, operation=EVIDENCE_RECLAIM_PREVIEW_OPERATION)
+                if item is not None:
+                    items.append(item)
+            except EvidenceAccessDeniedError:
+                continue
+        if page["next_cursor"]:
+            next_state = dict(state, after=page["next_cursor"])
+        elif state["phase"] == "origin":
+            next_state = {"v": 1, "phase": "links", "after": ""}
+        else:
+            next_state = None
+        return items, canonical_json(next_state) if next_state else None, {
+            "identities_examined": page["examined"], "discovery_metadata_bytes_parsed": page["bytes_parsed"],
+            "oversize_held": page["held"], "selected_pins_checked": len(seen),
+            "payload_bytes_read": 0, "payload_bytes_parsed": 0, "payload_bytes_hashed": 0}
 
     def reclaim_preview(
         self,
@@ -975,17 +1000,15 @@ class _EvidenceCommandHandlerEngine:
         selected_cutoff = cutoff or _now()
         if not isinstance(selected_cutoff, str) or not selected_cutoff.strip():
             raise EvidenceError("reclaim preview cutoff must be non-blank text")
-        items = self._reclaim_candidates(project, actor=actor, cutoff=selected_cutoff,
-                                         dependency_state=dependency_state, recovery_refs=recovery_refs)
-        start = int(cursor) if isinstance(cursor, str) and cursor.isdigit() else 0
-        page_items = items[start:start + limit]
-        next_cursor = str(start + limit) if start + limit < len(items) else None
-        input_value = {"project_ref": project.to_dict(), "cutoff": selected_cutoff, "cursor": str(start), "limit": limit,
+        page_items, next_cursor, io_work = self._reclaim_candidates(project, actor=actor, cutoff=selected_cutoff,
+            dependency_state=dependency_state, recovery_refs=recovery_refs, cursor=cursor, limit=limit)
+        input_value = {"project_ref": project.to_dict(), "cutoff": selected_cutoff, "cursor": cursor, "limit": limit,
                        "dependency_state": _safe(dependency_state or {}), "recovery_refs": [_ref(value, "recovery_ref").to_dict() for value in recovery_refs]}
         record = {
             "record_type": "dat.evidence.reclaim.preview",
-            "project_ref": project.to_dict(), "cutoff": selected_cutoff, "cursor": str(start),
+            "project_ref": project.to_dict(), "cutoff": selected_cutoff, "cursor": cursor,
             "next_cursor": next_cursor, "limit": limit, "items": page_items,
+            "actor": {"authority": actor.authority, "actor": actor.actor}, "io_work": io_work,
             "request_input_digest": _json_digest(input_value), "created_at": _now(),
             "policy": "explicit-project-history-reclaim", "automatic_deletion": False,
         }
@@ -998,7 +1021,7 @@ class _EvidenceCommandHandlerEngine:
         selection_ref = receipt.result_ref
         return {"outcome": "replayed" if receipt.replayed else "previewed", "selection_ref": selection_ref,
                 "receipt": receipt, "selection": dict(persisted), "items": list(persisted.get("items", ())),
-                "next_cursor": persisted.get("next_cursor"),
+                "next_cursor": persisted.get("next_cursor"), "io_work": persisted.get("io_work"),
                 "eligible_unique_managed_bytes": sum(int(item.get("byte_length", 0)) for item in persisted.get("items", ()) if item.get("eligible")),
                 "protected": [item for item in persisted.get("items", ()) if item.get("hold") in {"shared-reference", "in-flight-recovery", "dependency-unknown"}],
                 "unavailable": [item for item in persisted.get("items", ()) if item.get("hold") == "unavailable"],
@@ -1022,14 +1045,18 @@ class _EvidenceCommandHandlerEngine:
         self.pack.validate_operation(EVIDENCE_RECLAIM_APPLY_OPERATION)
         actor = _actor(actor)
         preview_ref = _ref(preview.get("selection_ref") if isinstance(preview, Mapping) and preview.get("selection_ref") is not None else preview, "selection_ref")
-        stored = self._require_writer().get_identity(preview_ref)
+        stored = self.reader.get_identity_bounded(preview_ref)["record"]
         if stored is None or stored.payload.get("record_type") != "dat.evidence.reclaim.preview":
             raise EvidenceCheckinError("reclaim apply requires a retained preview selection")
         selection = stored.payload
         project = _ref(project_ref or selection.get("project_ref"), "project_ref")
         if self._identity_tuple(project) != self._identity_tuple(selection.get("project_ref")):
             raise EvidenceCheckinError("reclaim apply project does not match the preview selection")
+        if selection.get("actor") != {"authority": actor.authority, "actor": actor.actor}:
+            raise EvidenceAccessDeniedError("lifecycle selection unavailable")
         input_value = {"preview_ref": preview_ref.to_dict(), "project_ref": project.to_dict(),
+                       "actor": {"authority": actor.authority, "actor": actor.actor},
+                       "cache_root": str(Path(cache_root).expanduser().resolve()) if cache_root is not None else None,
                        "dependency_state": _safe(dependency_state or {}),
                        "recovery_refs": [_ref(value, "recovery_ref").to_dict() for value in recovery_refs]}
         request_input_digest = _json_digest(input_value)
@@ -1048,98 +1075,130 @@ class _EvidenceCommandHandlerEngine:
                     "tombstones": list(persisted.get("tombstones", ())),
                     "held": list(persisted.get("held", ())), "already": list(persisted.get("already", ())),
                     "decision_history_preserved": True, "automatic_deletion": False}
-        current = self._reclaim_candidates(project, actor=actor, cutoff=selection["cutoff"],
-                                            dependency_state=dependency_state, recovery_refs=recovery_refs)
-        by_key = {(item["reference"].authority, item["reference"].kind, item["reference"].id, item["reference"].revision): item for item in current}
+        writer = self._require_writer()
+        items = selection.get("items", ())
+        if not isinstance(items, (tuple, list)) or len(items) > 100:
+            raise EvidenceCheckinError("retained reclaim selection is not bounded")
+        if selection.get("actor") != {"authority": actor.authority, "actor": actor.actor}:
+            raise EvidenceAccessDeniedError("lifecycle selection unavailable")
+        from herzchen.content.reads import reclaim_intent_ref
         removed_managed = 0
         removed_cache = 0
-        tombstones: list[dict[str, Any]] = []
-        held: list[dict[str, Any]] = []
-        already: list[dict[str, Any]] = []
-        for raw in selection.get("items", ()):
+        tombstones, held, already, intents = [], [], [], []
+        def selected(raw):
             exact = _ref(raw.get("reference"), "preview.item.reference")
-            key = (exact.authority, exact.kind, exact.id, exact.revision)
-            now = by_key.get(key)
-            if now is None:
-                held.append({"reference": exact, "reason": "stale-preview"})
-                continue
-            if now.get("selection_digest") != raw.get("selection_digest"):
-                held.append({"reference": exact, "reason": "stale-preview"})
-                continue
-            # A previous process may have removed the managed file after the
-            # preview but before its apply receipt was committed.  Reconcile
-            # that observable absence into the same honest tombstone path;
-            # absence is not a dependency hold and must not strand recovery.
-            if (now.get("hold") == "unavailable" and
-                    now.get("availability") == "missing" and
-                    isinstance(now.get("storage_location"), str)):
-                try:
-                    missing_path = self._rooted(now["storage_location"])
-                except EvidenceError:
-                    missing_path = None
-                if missing_path is not None and not missing_path.exists():
+            now = self._reclaim_item(exact, project, actor=actor, cutoff=selection["cutoff"],
+                dependency_state=dependency_state, recovery_refs=recovery_refs, pending_key=logical_request_key)
+            if now is None or now.get("selection_digest") != raw.get("selection_digest"):
+                return exact, None, "stale-preview"
+            # Caller metadata can add holds, never clear retained ones. A new
+            # authoritative preview is needed after a dependency resolves.
+            retained = raw.get("hold")
+            reason = retained if retained in {"in-flight-recovery", "dependency-unknown", "shared-reference"} else now.get("hold")
+            return exact, now, reason
+        with writer.transaction():
+            # Authorize all selected pins before admitting any deletion intent.
+            for raw in items:
+                exact, now, reason = selected(raw)
+                if now is not None and now.get("availability") == "purged":
+                    already.append({"reference": exact, "reason": "already-purged"})
+                    continue
+                prior_intent = self.reader.get_identity_bounded(reclaim_intent_ref(exact))
+                own_intent = prior_intent["record"]
+                if own_intent is not None:
+                    payload = own_intent.payload
+                    if payload.get("apply_request_key") == logical_request_key and payload.get("request_input_digest") != request_input_digest:
+                        raise ReplayConflictError("reclaim intent request key was reused with changed inputs")
+                    if (payload.get("record_type") != "dat.evidence.reclaim.intent"
+                            or payload.get("apply_request_key") != logical_request_key
+                            or payload.get("request_input_digest") != request_input_digest
+                            or payload.get("selection_digest") != raw.get("selection_digest")
+                            or payload.get("actor") != {"authority": actor.authority, "actor": actor.actor}):
+                        reason = "pending-reclaim"
+                    elif reason == "unavailable":
+                        reason = None  # Only this exact durable intent proves removal recovery.
+                if reason is not None:
+                    held.append({"reference": exact, "reason": reason})
+                    continue
+                if now is None:
+                    held.append({"reference": exact, "reason": "stale-preview"})
+                    continue
+                intent = {"record_type": "dat.evidence.reclaim.intent", "reference": exact.to_dict(),
+                    "project_ref": project.to_dict(), "preview_ref": preview_ref.to_dict(),
+                    "apply_request_key": logical_request_key, "request_input_digest": request_input_digest,
+                    "selection_digest": now["selection_digest"], "actor": {"authority": actor.authority, "actor": actor.actor},
+                    "storage_location": now["storage_location"], "byte_digest": now["byte_digest"],
+                    "byte_length": now["byte_length"], "created_at": _now(), "state": "pending"}
+                if own_intent is None:
+                    self._persist_lifecycle(operation=EVIDENCE_RECLAIM_APPLY_OPERATION,
+                        event_type=EVIDENCE_RECLAIM_APPLY_EVENT,
+                        logical_request_key=logical_request_key + ":intent:" + reclaim_intent_ref(exact).id,
+                        actor=actor, target_id=reclaim_intent_ref(exact).id,
+                        record=intent, effects={"pending_reclaim": exact, "file_effect": False})
+                intents.append(raw)
+        # Intents have committed before any filesystem effect. The FND owner
+        # lock is reacquired for revalidation/unlink/final receipt; every DAT
+        # link admission uses this same lock and checks the durable fence.
+        if interrupt_at == "before-delete" and intents:
+            raise PublicationInterrupted("reclaim interrupted after durable intent before managed-file removal")
+        with writer.transaction():
+            for raw in intents:
+                exact, now, reason = selected(raw)
+                if reason == "unavailable":
+                    reason = None
+                if reason is not None or now is None:
+                    held.append({"reference": exact, "reason": reason or "stale-preview"})
+                    continue
+                # Validate the exact durable intent again, including owner
+                # authority and request binding, before touching any path.
+                fence = self.reader.get_identity_bounded(reclaim_intent_ref(exact))["record"]
+                if fence is None or fence.payload.get("apply_request_key") != logical_request_key or fence.payload.get("request_input_digest") != request_input_digest:
+                    raise EvidenceCheckinError("durable reclaim intent unavailable")
+                path = self._rooted(now["storage_location"])
+                if path.is_symlink() or (path.exists() and not path.is_file()):
+                    held.append({"reference": exact, "reason": "managed-location-unknown"})
+                    continue
+                if not path.exists():
                     tombstones.append(dict(now, reference=exact, reason="reconciled-missing"))
                     continue
-            if now.get("hold") is not None:
-                if now.get("availability") == "purged":
-                    already.append({"reference": exact, "reason": "already-purged"})
-                else:
-                    held.append({"reference": exact, "reason": now["hold"]})
-                continue
-            location = now.get("storage_location")
-            path = None
-            try:
-                path = self._rooted(location)
-            except EvidenceError:
-                held.append({"reference": exact, "reason": "managed-location-unknown"})
-                continue
-            if path.is_symlink() or (path.exists() and not path.is_file()):
-                held.append({"reference": exact, "reason": "managed-location-unknown"})
-                continue
-            if not path.exists():
-                tombstones.append(dict(now, reference=exact, reason="reconciled-missing"))
-                continue
-            if interrupt_at == "before-delete":
-                raise PublicationInterrupted("reclaim interrupted before managed-file removal")
-            try:
-                length = path.stat().st_size
-                path.unlink()
-                if path.exists():
-                    held.append({"reference": exact, "reason": "managed-file-still-present"})
+                try:
+                    length = path.stat().st_size
+                    path.unlink()
+                    if path.exists():
+                        held.append({"reference": exact, "reason": "managed-file-still-present"})
+                        continue
+                    removed_managed += length
+                    tombstones.append(dict(now, reference=exact, reason="explicit-retention-reclaim"))
+                except OSError:
+                    held.append({"reference": exact, "reason": "managed-file-removal-failed"})
                     continue
-                removed_managed += length
-                tombstones.append(dict(now, reference=exact, reason="explicit-retention-reclaim"))
-            except OSError:
-                held.append({"reference": exact, "reason": "managed-file-removal-failed"})
-                continue
-            cache_location = now.get("cache_location")
-            if cache_root is not None and isinstance(cache_location, str):
-                root = Path(cache_root).expanduser().resolve()
-                cache_path = (root / cache_location).resolve()
-                if root in cache_path.parents and cache_path.is_file() and not cache_path.is_symlink():
-                    try:
-                        cache_size = cache_path.stat().st_size
-                        cache_path.unlink()
-                        if not cache_path.exists():
-                            removed_cache += cache_size
-                    except OSError:
-                        held.append({"reference": exact, "reason": "cache-removal-failed"})
-            if interrupt_at == "after-delete":
-                raise PublicationInterrupted("reclaim interrupted after managed-file removal; reconciliation is required")
-        record = {
-            "record_type": "dat.evidence.reclaim.apply", "preview_ref": preview_ref.to_dict(),
-            "project_ref": project.to_dict(), "policy": "explicit-project-history-reclaim",
-            "items": [dict(item) for item in selection.get("items", ())],
-            "tombstones": [dict(item) for item in tombstones], "held": held, "already": already,
-            "managed_bytes_removed": removed_managed, "cache_bytes_removed": removed_cache,
-            "request_input_digest": request_input_digest, "applied_at": _now(),
-            "decision_history_preserved": True,
-        }
-        receipt, persisted = self._persist_lifecycle(operation=EVIDENCE_RECLAIM_APPLY_OPERATION,
-            event_type=EVIDENCE_RECLAIM_APPLY_EVENT, logical_request_key=logical_request_key,
-            actor=actor, target_id="apply-" + hashlib.sha256(logical_request_key.encode()).hexdigest()[:32],
-            record=record, effects={"managed_bytes_removed": removed_managed, "cache_bytes_removed": removed_cache,
-                                    "tombstones": len(tombstones), "held": len(held)}, tombstones=tombstones)
+                cache_location = now.get("cache_location")
+                if cache_root is not None and isinstance(cache_location, str):
+                    root = Path(cache_root).expanduser().resolve()
+                    cache_path = root / cache_location
+                    if (root in cache_path.resolve().parents and cache_path.is_file() and not cache_path.is_symlink()):
+                        try:
+                            cache_size = cache_path.stat().st_size
+                            cache_path.unlink()
+                            if not cache_path.exists():
+                                removed_cache += cache_size
+                        except OSError:
+                            held.append({"reference": exact, "reason": "cache-removal-failed"})
+                if interrupt_at == "after-delete":
+                    raise PublicationInterrupted("reclaim interrupted after removal; exact durable intent requires reconciliation")
+            record = {"record_type": "dat.evidence.reclaim.apply", "preview_ref": preview_ref.to_dict(),
+                "project_ref": project.to_dict(), "policy": "explicit-project-history-reclaim",
+                "items": [dict(item) for item in items], "tombstones": tombstones, "held": held, "already": already,
+                "managed_bytes_removed": removed_managed, "cache_bytes_removed": removed_cache,
+                "request_input_digest": request_input_digest, "applied_at": _now(),
+                "decision_history_preserved": True,
+                "io_work": {"selected_pins_checked": len(items) + len(intents),
+                            "global_discovery_pages": 0, "payload_bytes_parsed": 0, "payload_bytes_hashed": 0}}
+            receipt, persisted = self._persist_lifecycle(operation=EVIDENCE_RECLAIM_APPLY_OPERATION,
+                event_type=EVIDENCE_RECLAIM_APPLY_EVENT, logical_request_key=logical_request_key,
+                actor=actor, target_id="apply-" + hashlib.sha256(logical_request_key.encode()).hexdigest()[:32],
+                record=record, effects={"managed_bytes_removed": removed_managed, "cache_bytes_removed": removed_cache,
+                                        "tombstones": len(tombstones), "held": len(held)}, tombstones=tombstones)
         return {"outcome": "replayed" if receipt.replayed else "applied", "receipt": receipt,
                 "apply_ref": receipt.result_ref, "preview_ref": preview_ref,
                 "managed_bytes_removed": persisted.get("managed_bytes_removed", 0),
@@ -1147,7 +1206,7 @@ class _EvidenceCommandHandlerEngine:
                 "observed_files_removed": len(persisted.get("tombstones", ())),
                 "tombstones": list(persisted.get("tombstones", ())),
                 "held": list(persisted.get("held", ())), "already": list(persisted.get("already", ())),
-                "decision_history_preserved": True, "automatic_deletion": False}
+                "io_work": persisted.get("io_work"), "decision_history_preserved": True, "automatic_deletion": False}
 
     # Descriptive aliases keep the public surface intention-shaped while
     # retaining one implementation and one pair of finite pack presets.
@@ -1344,7 +1403,7 @@ class _EvidenceCommandHandlerEngine:
         actor = _actor(actor)
         ref = _ref(reference, "reference")
         status = self.status(ref, actor=actor)
-        if status.get("representation") != "managed" or status.get("availability") in {"missing", "corrupt", "purged", "staged"}:
+        if status.get("representation") != "managed" or status.get("availability") in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}:
             raise EvidenceUnavailableError("selected Evidence payload is unavailable")
         if ref.revision is None:
             ref = status["reference"]
@@ -1530,7 +1589,7 @@ class _EvidenceCommandHandlerEngine:
             if availability == "purged":
                 inventory["purged"].append(item)
                 continue
-            if availability in {"missing", "corrupt", "staged"}:
+            if availability in {"missing", "corrupt", "staged", "pending-reclaim"}:
                 inventory["unavailable"].append(item)
                 continue
             location = manifest.get("storage", {}).get("location")
@@ -1832,8 +1891,11 @@ class _EvidenceCommandHandlerEngine:
                 status["availability"] = "purged"
                 status["payload_verification"] = "not-available-after-reclaim"
                 return status
+            if status.get("availability") == "pending-reclaim":
+                status["payload_verification"] = "not-available-during-reclaim"
+                return status
             state = manifest["availability"]
-            if state not in {"missing", "corrupt", "purged", "staged"}:
+            if state not in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}:
                 path = self._rooted(manifest["storage"]["location"])
                 try:
                     actual_length = path.stat().st_size if path.is_file() else None
@@ -1884,7 +1946,7 @@ class _EvidenceCommandHandlerEngine:
         if status["representation"] != "managed":
             return status
         manifest = status["manifest"]
-        if status["availability"] in {"missing", "corrupt", "purged", "staged"}:
+        if status["availability"] in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}:
             return {**status, "bytes": b"", "offset": offset, "next_offset": None}
         location = manifest.get("storage", {}).get("location")
         path = self._rooted(location)

@@ -1051,7 +1051,8 @@ class Store:
             return None if row is None else ResourceRef(ref.authority, ref.kind, ref.id, row[0])
 
     def read_identity_page(self, *, kind: str, after: str = "", limit: int = 50,
-                           max_record_bytes: int = 65536) -> Mapping[str, Any]:
+                           max_record_bytes: int = 65536,
+                           payload_matches: Optional[Mapping[Tuple[str, ...], str]] = None) -> Mapping[str, Any]:
         """Seek a finite PK window before decoding or applying domain filters.
 
         Empty domain pages still advance. Oversized legacy records are held,
@@ -1061,6 +1062,14 @@ class Store:
                 or len(after) > 512 or type(limit) is not int or not 1 <= limit <= 100
                 or type(max_record_bytes) is not int or not 1 <= max_record_bytes <= 65536):
             raise ValueError("invalid bounded identity page")
+        if payload_matches is not None:
+            if not isinstance(payload_matches, Mapping) or len(payload_matches) > 16:
+                raise ValueError("invalid identity page predicates")
+            for path, value in payload_matches.items():
+                if (not isinstance(path, tuple) or not path or len(path) > 8
+                        or not all(isinstance(part, str) and part and part.replace('_', '').isalnum() for part in path)
+                        or not isinstance(value, str)):
+                    raise ValueError("identity page predicates require structural paths and string values")
         with self._transaction_lock:
             self._require_open()
             rows = self._connection.execute(
@@ -1069,6 +1078,18 @@ class Store:
                 "FROM identities WHERE authority = ? AND kind = ? AND id > ? ORDER BY id LIMIT ?",
                 (max_record_bytes, self.authority, kind, after, limit)).fetchall()
             records = tuple(self._identity_from_row(row) for row in rows if row["payload_json"] is not None)
+            # Domain predicates run only AFTER the finite PK/byte window.
+            # SQL JSON predicates would parse arbitrarily large rejected
+            # historical bodies before LIMIT; never hide that work here.
+            def matches(record):
+                for path, value in (payload_matches or {}).items():
+                    found = record.payload
+                    for part in path:
+                        found = found.get(part) if isinstance(found, Mapping) else None
+                    if not isinstance(found, str) or found != value:
+                        return False
+                return True
+            records = tuple(record for record in records if matches(record))
             return {"records": records, "examined": len(rows),
                     "held": sum(row["payload_json"] is None for row in rows),
                     "next_cursor": rows[-1]["id"] if len(rows) == limit else None,
@@ -1953,8 +1974,10 @@ class ConsumerStore:
         return self.__owner.get_identity_ref(ref)
 
     def read_identity_page(self, *, kind: str, after: str = "", limit: int = 50,
-                           max_record_bytes: int = 65536) -> Mapping[str, Any]:
-        return self.__owner.read_identity_page(kind=kind, after=after, limit=limit, max_record_bytes=max_record_bytes)
+                           max_record_bytes: int = 65536,
+                           payload_matches: Optional[Mapping[Tuple[str, ...], str]] = None) -> Mapping[str, Any]:
+        return self.__owner.read_identity_page(kind=kind, after=after, limit=limit,
+            max_record_bytes=max_record_bytes, payload_matches=payload_matches)
 
     def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
         return self.__owner.find_identity_refs(kind=kind, payload_matches=payload_matches)

@@ -203,6 +203,17 @@ class _ContentCommandHandlerEngine:
             if envelope.target != document.ref:
                 raise ContentError("document mutation target must match document identity")
             self._guard_direction_target(envelope.target)
+            # Context-packet inputs are another existing reference admission
+            # seam. Guard their consumed pins in this same owner transaction,
+            # not only while the packet builder resolves its earlier snapshot.
+            if document.role == "context-packet" and isinstance(revision.content, Mapping):
+                from .reads import require_reference_available
+                for item in revision.content.get("inputs", ()):
+                    if isinstance(item, Mapping) and item.get("consumed", True):
+                        value = item.get("resolved_ref")
+                        pin = ResourceRef.from_dict(value) if isinstance(value, Mapping) else value
+                        if isinstance(pin, ResourceRef) and pin.kind == "dat.content.document":
+                            require_reference_available(self.__writer.consumer(), pin)
             current = self.__writer.get_identity(document.ref)
             if current is not None and (current.payload.get("document") or {}).get("role") == "direction":
                 retained = ContentDocument.from_dict(current.payload["document"])
@@ -271,6 +282,9 @@ class _ContentCommandHandlerEngine:
         assert self.__writer is not None
         with self.__writer.transaction() as transaction:
             self._guard_direction_target(target, association)
+            from .reads import require_reference_available
+            if association.document.ref.kind == "dat.content.document":
+                require_reference_available(self.__writer.consumer(), association.document.ref)
             return self.__writer.mutate(
                 CommandEnvelope(envelope.operation, envelope.schema_revision, envelope.target, envelope.context, self._association_payload(association, active=True)),
                 event_type="dat.content.linked",
