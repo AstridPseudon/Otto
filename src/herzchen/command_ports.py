@@ -33,6 +33,7 @@ _COMPOSITION = threading.local()
 _READER_ENDPOINTS = (
     "foreign_keys_enabled", "get_identity", "get_record", "registered_domains",
     "get_reference", "get_receipt", "list_events", "snapshot_counts",
+    "get_identity_bounded", "get_identity_ref", "read_identity_page",
 )
 _OWNER_ONLY_ENDPOINTS = frozenset({"create_and_open", "lifecycle_handler", "retry_materialisation"})
 

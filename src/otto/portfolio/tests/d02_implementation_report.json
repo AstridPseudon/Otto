@@ -1,0 +1,504 @@
+{
+  "baseline_head": "076883718494c418cb9d62cdedbf37f65e6a7d9d",
+  "candidate_committed": false,
+  "canonical_evidence_publication": "No canonical evidence pin minted by leaf; receiving owner captures/publishes verified output via retained occurrence.",
+  "changed_files": [
+    {
+      "byte_length": 36137,
+      "path": "src/herzchen/command_ports.py",
+      "sha256": "0728024f31f8b324bafe42d03dbdc117fa194532e33c52ce2129a37f7b5c9434"
+    },
+    {
+      "byte_length": 16053,
+      "path": "src/herzchen/content/commands.py",
+      "sha256": "06d79abba23846bc81260b80786d72dea7d446cb14913e434bd3029465aaeadb"
+    },
+    {
+      "byte_length": 39070,
+      "path": "src/herzchen/content/packets.py",
+      "sha256": "12ef51f4a0ab3161d52da5f9c225d5729395a4a7cea6eb6eb40f5be3c1002ab4"
+    },
+    {
+      "byte_length": 12410,
+      "path": "src/herzchen/content/reads.py",
+      "sha256": "eb0ce46c3a8ac0c6c8391967c5f76c741a8d954ee7a3bcf5edf4edf8308e7ef4"
+    },
+    {
+      "byte_length": 98376,
+      "path": "src/herzchen/domains/assessment/module.py",
+      "sha256": "caaaf9838774e54dae6ea9c8206b377982231e054e7f2dd0200c5237733d90bc"
+    },
+    {
+      "byte_length": 44957,
+      "path": "src/herzchen/evidence/commands.py",
+      "sha256": "f61fa8259f5b32ffccc151f334f2fa2d5cd0b11cdad59835b7caf32633f98f5e"
+    },
+    {
+      "byte_length": 22098,
+      "path": "src/herzchen/evidence/model.py",
+      "sha256": "6fcf59639395a1d622f2a4beadfe21c7a9838f82b815c027c03e07e62bf5fbc5"
+    },
+    {
+      "byte_length": 99209,
+      "path": "src/herzchen/kernel/store.py",
+      "sha256": "db480eb21a6ea8617e2b360ddfe8a0cd9c57a5fe00fd60c72ba4631cbb9d60fc"
+    },
+    {
+      "byte_length": 698,
+      "path": "src/herzchen/packs/evidence_resource_pack/pack.yaml",
+      "sha256": "df8b97b16e29b5487b60b8d69342646eecf75844bca8310b313812a9fdcd977d"
+    },
+    {
+      "byte_length": 313,
+      "path": "src/herzchen/packs/evidence_resource_pack/presets/list.json",
+      "sha256": "c576633b5b29952248710d4a19bbb7c7f19beae578b61246799e4c6f24a81c24"
+    },
+    {
+      "byte_length": 336,
+      "path": "src/herzchen/packs/evidence_resource_pack/presets/read.json",
+      "sha256": "d849128e269619f85efd0f6ffc74deef7ddf933b150bb61c95e4942434151c8a"
+    },
+    {
+      "byte_length": 66851,
+      "path": "src/otto/portfolio/cli.py",
+      "sha256": "2853f62faefe03bff85820a1257b32ee85f768f06a847717a7e53ea3cb27c7a8"
+    },
+    {
+      "byte_length": 23965,
+      "path": "src/otto/portfolio/documents.py",
+      "sha256": "0e3c8b453eb64268c6851b6d9d128907b9df3bf5e9e818af133ab20d17c2075f"
+    },
+    {
+      "byte_length": 67691,
+      "path": "src/otto/portfolio/execution_host.py",
+      "sha256": "7489c42b7ea098c9ea6cd854b69a2aa16caf78f9acab12a0a0f1d944a115506b"
+    },
+    {
+      "byte_length": 24561,
+      "path": "src/otto/portfolio/manager_application.py",
+      "sha256": "4f9fc94554a47bfb6159f3a49205b90bc599d94365eb62b5b1aa77324c3e7cc0"
+    },
+    {
+      "byte_length": 34121,
+      "path": "src/otto/portfolio/manager_journey_client.py",
+      "sha256": "7bafa99816522c274b345b7358e5a00bf7f41fb4da229aeb2904bd2dfe3c7164"
+    },
+    {
+      "byte_length": 10880,
+      "path": "src/otto/portfolio/retained_projection.py",
+      "sha256": "b50372db3e7a475aeff3dcc35c0ca6c714c4c8fec5681f03f22bcda172a64a79"
+    },
+    {
+      "byte_length": 9003,
+      "path": "src/otto/portfolio/tests/benchmark_bounded_reads.py",
+      "sha256": "2efd70e5b26edb5354b0e3c1588958f456bc6f8e3d58f6a66a8da9f12e7dced1"
+    },
+    {
+      "byte_length": 9164,
+      "path": "src/otto/portfolio/tests/d02_benchmark.json",
+      "sha256": "de49700c7b01e1cca18a639cfd6e9f43f40f977e7c3db6faba6ed91e4e98eada"
+    },
+    {
+      "byte_length": 3348,
+      "path": "src/otto/portfolio/tests/d02_verification.json",
+      "sha256": "47dff26e480e7292ae185e8e7d52f2f5fbb1585cefd599e69e305fb05111d361"
+    },
+    {
+      "byte_length": 17271,
+      "path": "src/otto/portfolio/tests/test_bounded_evidence_reads.py",
+      "sha256": "87cfc7b32894aa94605678b128f26e0f10d0abf9f5fed632f45ccc8d9821c2d1"
+    }
+  ],
+  "effects": {
+    "additional_workers": false,
+    "controller_runtime_modified": false,
+    "deployment": false,
+    "owner_state_modified": false,
+    "package_adopted": false,
+    "project_finished": false,
+    "real_provider_called": false,
+    "release": false,
+    "remote_push": false,
+    "task_accepted": false,
+    "unknown_effect_retried": false
+  },
+  "evidence_handles": [
+    {
+      "kind": "local-file",
+      "path": "src/otto/portfolio/tests/d02_benchmark.json",
+      "sha256": "de49700c7b01e1cca18a639cfd6e9f43f40f977e7c3db6faba6ed91e4e98eada"
+    },
+    {
+      "kind": "local-file",
+      "path": "src/otto/portfolio/tests/d02_verification.json",
+      "sha256": "47dff26e480e7292ae185e8e7d52f2f5fbb1585cefd599e69e305fb05111d361"
+    }
+  ],
+  "implementation": [
+    "FND finite PK seek pages and exact bounded records in existing identities; no new table, descriptor or whole Store rewrite.",
+    "Shared project/exact-role metadata windows, representation/format filters, distinct current heads and associated exact pins; current authorization precedes payload reads.",
+    "New revisions retain immutable metadata projections in the same original transaction; large inline and managed status avoid body hydration.",
+    "Evidence list/read resource presets in candidate pack 1.1.0; pinned historical pack 1.0.0 remains supported. No installation or adoption performed.",
+    "Raw byte ranges capped at 65536 with offsets/continuations and explicit decoding; status manifest verification, admission and actual full-byte verification remain distinct.",
+    "Compact consumer references and representation-aware assessment: managed manifests alone yield UNKNOWN; explicit injected resolver can verify full bytes.",
+    "Production ExecutionHost response writer creates bounded status sidecars with exact artifact digest/length and finite identity/outcome summaries; historical response remains accessible through explicit capped details.",
+    "Reusable immutable preparation checkpoint capture/read/detail API; exact fixture copied once with disclosed linear admission and compact routine projections. Owner-controlled preparation producer is outside this candidate source integration."
+  ],
+  "measured_evidence": {
+    "checkpoint": [
+      {
+        "admission": {
+          "hash_seconds": 0.0003630830000000418,
+          "linear_historical_capture": true,
+          "parse_seconds": 0.0009713749999999965,
+          "payload_bytes_hashed": 1014703,
+          "payload_bytes_parsed": 1014703,
+          "payload_bytes_read": 1014703,
+          "read_seconds": 0.00013166700000000198
+        },
+        "after": {
+          "metadata_bytes_parsed": 16021,
+          "metadata_bytes_read": 16021,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 0,
+          "processing_seconds": 0.00013974999999999405,
+          "processing_seconds_median": 8.866699999998673e-05
+        },
+        "before": {
+          "byte_length": 1014703,
+          "hash_seconds": 0.00044870799999996436,
+          "parse_seconds": 0.0011568330000000238,
+          "payload_bytes_hashed": 1014703,
+          "payload_bytes_parsed": 1014703,
+          "payload_bytes_read": 1014703,
+          "processing_seconds": 0.0019403329999999608,
+          "processing_seconds_median": 0.0014748750000000421,
+          "read_seconds": 0.00033479199999997267,
+          "sha256": "396a4fa6fbefa2a5a283e571288d9228e51e34541f0953271723416fa58ce9f6"
+        },
+        "details": {
+          "next_offset": 4209,
+          "offset": 113,
+          "payload_bytes_read": 4096,
+          "verification": "range-not-revalidated"
+        },
+        "identity_phase_outcome_summary_sha256": "ddc4e7e322fc5b3a74c93b5436c572eeb75a3da963846d679e7240966d96fef1",
+        "label": "synthetic-1MB-variant",
+        "source_pin": {
+          "byte_length": 1014703,
+          "sha256": "396a4fa6fbefa2a5a283e571288d9228e51e34541f0953271723416fa58ce9f6"
+        }
+      },
+      {
+        "admission": {
+          "hash_seconds": 0.01408341599999996,
+          "linear_historical_capture": true,
+          "parse_seconds": 0.06352137499999999,
+          "payload_bytes_hashed": 37657216,
+          "payload_bytes_parsed": 37657216,
+          "payload_bytes_read": 37657216,
+          "read_seconds": 0.0043021249999999345
+        },
+        "after": {
+          "metadata_bytes_parsed": 16022,
+          "metadata_bytes_read": 16022,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 0,
+          "processing_seconds": 0.00013283299999999887,
+          "processing_seconds_median": 8.362500000003159e-05
+        },
+        "before": {
+          "byte_length": 37657216,
+          "hash_seconds": 0.013446167000000009,
+          "parse_seconds": 0.06518458299999996,
+          "payload_bytes_hashed": 37657216,
+          "payload_bytes_parsed": 37657216,
+          "payload_bytes_read": 37657216,
+          "processing_seconds": 0.08300583299999997,
+          "processing_seconds_median": 0.08300583299999997,
+          "read_seconds": 0.004375083000000002,
+          "sha256": "596f8373d84ab87db0fe2130dfe8e0ee3e2590f29b7f503d6ee3671e9cf3d760"
+        },
+        "details": {
+          "next_offset": 4209,
+          "offset": 113,
+          "payload_bytes_read": 4096,
+          "verification": "range-not-revalidated"
+        },
+        "identity_phase_outcome_summary_sha256": "ddc4e7e322fc5b3a74c93b5436c572eeb75a3da963846d679e7240966d96fef1",
+        "label": "exact-offline-fixture",
+        "source_pin": {
+          "byte_length": 37657216,
+          "sha256": "596f8373d84ab87db0fe2130dfe8e0ee3e2590f29b7f503d6ee3671e9cf3d760"
+        }
+      }
+    ],
+    "clock": "same-process perf_counter; warmed offline filesystem; median of 5 reads",
+    "managed_payloads": [
+      {
+        "byte_length": 1000000,
+        "detail": {
+          "metadata_bytes_hashed": 5898,
+          "metadata_bytes_parsed": 6682,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 4096,
+          "processing_seconds": 0.0005768340000000816
+        },
+        "full_verification": {
+          "metadata_bytes_hashed": 5898,
+          "metadata_bytes_parsed": 6682,
+          "payload_bytes_hashed": 1000000,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 1000000,
+          "processing_seconds": 0.001097209000000099
+        },
+        "page": {
+          "associations_examined": 1,
+          "metadata_bytes_hashed": 5898,
+          "metadata_bytes_parsed": 7490,
+          "metadata_bytes_read": 7490,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 0,
+          "processing_seconds": 0.0006543749999998738
+        },
+        "reference": {
+          "authority": "owner",
+          "id": "evidence-d2ca3da98ada031d38acefeecbc7",
+          "kind": "dat.content.document",
+          "revision": "rev-1"
+        },
+        "sha256": "67870dfc9c64e7aa270a3f7e8051ae65d207f93fc3df04d7572e6365af69cd0d",
+        "status": {
+          "metadata_bytes_hashed": 5898,
+          "metadata_bytes_parsed": 6682,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 0,
+          "processing_seconds": 0.005697834000000013
+        },
+        "status_processing_seconds_median": 0.000534208000000147
+      },
+      {
+        "byte_length": 37657216,
+        "detail": {
+          "metadata_bytes_hashed": 5902,
+          "metadata_bytes_parsed": 6686,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 4096,
+          "processing_seconds": 0.0005390000000000672
+        },
+        "full_verification": {
+          "metadata_bytes_hashed": 5902,
+          "metadata_bytes_parsed": 6686,
+          "payload_bytes_hashed": 37657216,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 37657216,
+          "processing_seconds": 0.01773383399999995
+        },
+        "page": {
+          "associations_examined": 1,
+          "metadata_bytes_hashed": 5898,
+          "metadata_bytes_parsed": 7490,
+          "metadata_bytes_read": 7490,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 0,
+          "processing_seconds": 0.0008441669999998958
+        },
+        "reference": {
+          "authority": "owner",
+          "id": "evidence-601df129819774e3526ef4528b4c",
+          "kind": "dat.content.document",
+          "revision": "rev-1"
+        },
+        "sha256": "c1428257a1fb227989d6be499827df135a887ba83cd912360a2999d87cacb67e",
+        "status": {
+          "metadata_bytes_hashed": 5902,
+          "metadata_bytes_parsed": 6686,
+          "payload_bytes_hashed": 0,
+          "payload_bytes_parsed": 0,
+          "payload_bytes_read": 0,
+          "processing_seconds": 0.0004690419999999751
+        },
+        "status_processing_seconds_median": 0.0004479999999997819
+      }
+    ],
+    "offline_fixture": {
+      "byte_length": 37657216,
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-agent-adapter-conformance-20261009/controller/evidence/d05-coordinator-preparation-stages.json",
+      "sha256": "596f8373d84ab87db0fe2130dfe8e0ee3e2590f29b7f503d6ee3671e9cf3d760"
+    },
+    "transport": {
+      "details": {
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 4096
+      },
+      "io_work": {
+        "metadata_bytes_parsed": 965,
+        "metadata_bytes_read": 965,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 5.8749999999996305e-05
+      },
+      "outcome": "unknown",
+      "response_sha256": "ea8c23b6f557addea0f049f5b2104292e8922955717c3932a78b1936559d4602",
+      "response_utf8_bytes": 35650530
+    }
+  },
+  "owner_binding": {
+    "assignment_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "assignment-a3d4afe9d48e9fbcfe5a538a17db",
+      "kind": "wrk.assignment",
+      "revision": "rev-2"
+    },
+    "brief_sha256": "73473bf2949e8a3dc838eb4479333f453c7c78f16c97be933f3d535818e36257",
+    "generation": 1,
+    "logical_request_key": "evidence-D02-B02-worker-xhard-v1:launch",
+    "native_session": "01a1233d-7d48-7c23-a3af-f2a6c778ab4c",
+    "parent": {
+      "assignment_id": "assignment-7f8cdfbe280731995ade2adc8dff",
+      "generation": 1,
+      "principal": "otto-evidence-manager-1",
+      "revision": "rev-4"
+    },
+    "principal": "otto-evidence-d02-worker-1",
+    "project_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "project-1a0a32aa681b82db0da5c844cc07",
+      "kind": "work.project",
+      "revision": "rev-12"
+    },
+    "schedule_id": "worker-0af922da4d27efa2b7be7e1158bb",
+    "selected_execution": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "source": "delivered owner configuration; not independently inferred from identity reads"
+    },
+    "task_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "task-28816510091475c240e2ee75fba9",
+      "kind": "work.task",
+      "revision": "rev-1"
+    }
+  },
+  "proof_limits": [
+    "Application logical byte accounting, SQL seek/limit traces and hydration guards are proven; physical disk/SQLite page I/O is not measured.",
+    "Pages cover one global finite association PK window before project/role filtering. Empty pages may continue; no full inventory or total count is claimed.",
+    "64KiB bounds apply to individual metadata records and projections; a page has at most 100 examined associations and bounded per-item work.",
+    "Offline checkpoint comparison uses the exact 37657216-byte fixture plus a labelled synthetic 1014703-byte variant preserving the same finite summaries.",
+    "Same-length corruption is not detected by status or range. Explicit full verification remains linear.",
+    "Old large transport responses without sidecars intentionally return UNKNOWN/detail-required. Explicit capped reads retain readability; no silent historical migration.",
+    "Source fixture Evidence pack discovery uses retained D01 test doubles and real candidate resources; strict installed loader/adoption behavior is not proven by these mocks.",
+    "Preparation producer wiring and current installed runtime behavior are not established by the reusable API benchmark.",
+    "Local warmed processing medians establish only measured operation costs; no provider, total journey, money or deployment latency claim."
+  ],
+  "schema": "otto.evidence.D02.implementation-report.v1",
+  "self_digest_policy": "Self excluded from file manifest to avoid a recursive digest; final delivery supplies this report hash.",
+  "self_path": "src/otto/portfolio/tests/d02_implementation_report.json",
+  "source_file_manifest_sha256": "9717db26b53c2e0f046d29bdd28dc82cbc389710f625a0f719118c5bcc6f0bd1",
+  "status": "candidate source and focused verification delivered; preparation producer integration remains unresolved",
+  "tracked_diff_sha256": "57836f79315f8b891de2d1391a495e6107b2f31cd20d44ea52218bf2df5c6e98",
+  "unresolved_responsibilities": [
+    {
+      "owner": "assigned manager / operational owner",
+      "work": "Inspect and judge source evidence under existing MAIN. This result does not accept or complete D02."
+    },
+    {
+      "owner": "operational owner with controller authority",
+      "work": "Integrate compact checkpoint API into the retained preparation producer at its authorized boundary, preserving exact assignment/generation/parent binding; verify routine installed preparation/status reads. No controller mutation was authorized to this worker."
+    },
+    {
+      "owner": "assigned manager",
+      "work": "Reconcile the old large legacy transport assertion against UNKNOWN/detail-required plus explicit capped reads; all historical bytes remain retained."
+    },
+    {
+      "owner": "existing predecessor maintenance",
+      "work": "Three baseline-reproduced test failures and one baseline/candidate teardown stall remain unchanged; details in verification journal. No provider or replay repair belongs to this assignment."
+    },
+    {
+      "owner": "D03-D06 assigned implementers / integration owner",
+      "work": "Reuse shared references and receipt timings for checkout, Events/Usage and installation proof; adopt candidate pack resources explicitly. Skill/lifecycle/bundle/delivery tasks remain separate."
+    }
+  ],
+  "verification": {
+    "baseline_and_candidate_stall": {
+      "case": "test_first_manager_wait_receives_original_worker_before_manager_exit",
+      "isolated_timeout_seconds": 12,
+      "original_mixed_suite_interrupted": true,
+      "stack": "ExecutionHost._status_read in external_call, close.join; same baseline and candidate stack"
+    },
+    "baseline_reproduced_failures": [
+      "test_exhausted_allowance_reaches_existing_admission_and_never_provider",
+      "test_existing_designated_approver_is_enforced_by_the_owner",
+      "test_read_only_advisor_decision_state_responds_during_native_wait"
+    ],
+    "environment": {
+      "HERZCHEN_IN_PROCESS_COMMAND_FALLBACK": "1",
+      "PYTHONPATH": "src:tests",
+      "python": "system python3.9"
+    },
+    "errors": [],
+    "failures": [],
+    "known_contract_difference": "Old large legacy transport test requires automatically parsed full body summary; new bounded status holds UNKNOWN/detail-required and explicit capped details remain readable.",
+    "latest_passed_runs": [
+      {
+        "processing_seconds": 4.828,
+        "scope": "Same affected modules listed above except old legacy full-hydration expectation; includes added large legacy transport test",
+        "successful": true,
+        "tests_run": 74
+      },
+      {
+        "processing_seconds": 0.68,
+        "scope": "D02 source tests plus original capture lifecycle after resolver fix, including large old inline detail requirement",
+        "successful": true,
+        "tests_run": 17
+      }
+    ],
+    "modules": [
+      "test_evidence_lifecycle",
+      "src.otto.portfolio.tests.test_bounded_evidence_reads",
+      "test_command_receipt_progress",
+      "test_document_receipt_projection",
+      "test_document_editor_host",
+      "src.otto.portfolio.tests.test_document_verification",
+      "src.otto.portfolio.tests.test_document_sessions",
+      "src.otto.portfolio.tests.test_document_eligibility",
+      "src.otto.portfolio.tests.test_document_failures",
+      "test_local_assessment_composition",
+      "test_manager_journey_command",
+      "src.otto.portfolio.tests.test_operating_composition"
+    ],
+    "output_sha256": null,
+    "previous_broad_run": {
+      "errors": [
+        {
+          "case": "test_terminal_status_is_bounded_and_preserves_full_response (test_manager_reentrant_ipc.ManagerReentrantIPCTests)",
+          "traceback": "Traceback (most recent call last):\n  File \"/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-evidence-lifecycle-20261009/work/integration-owner/tests/test_manager_reentrant_ipc.py\", line 269, in test_terminal_status_is_bounded_and_preserves_full_response\n    self.assertEqual(status[\"summary\"][\"continuation\"][\"result\"][\"unknown_reason\"], \"real-fence\")\nKeyError: 'summary'\n"
+        }
+      ],
+      "output_sha256": "587285c82abd1b9065eef1da644ff47550608552d9941aa884e73bbd4f8baae1",
+      "processing_seconds": 11.55507925,
+      "successful": false,
+      "tests_run": 74
+    },
+    "processing_seconds": 0.68,
+    "schema": "otto.evidence.D02.focused-verification.v1",
+    "static_checks": {
+      "changed_python_ast": "passed",
+      "git_diff_check": "passed",
+      "metadata_cli_help": "passed",
+      "pack_declared_resource_paths": "8 present"
+    },
+    "success_scope": "Latest bounded D02 and affected suites; previous legacy-contract mismatch and baseline failures remain reported separately, not a whole-repository pass.",
+    "successful": true,
+    "tests_run": 17
+  }
+}

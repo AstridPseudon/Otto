@@ -292,6 +292,17 @@ class ProjectDocumentReader:
             "launch": False,
         }
 
+    def list_metadata(self, project_ref: Any, *, actor: Any, exact_role: str,
+                      representation=None, format=None, cursor: str = "", limit: int = 50,
+                      roles: Sequence[str] = (), task_refs: Sequence[Any] = ()) -> dict[str, Any]:
+        """Shared bounded listing; no ProjectSheet export or body resolver."""
+        try:
+            return _json_value(self.content_reader.list_metadata(_resource_ref(project_ref),
+                actor=actor, exact_role=exact_role, representation=representation, format=format,
+                cursor=cursor, limit=limit, roles=tuple(roles), task_refs=tuple(task_refs)))
+        except PermissionError:
+            return {**_unavailable(), "documents": []}
+
     def _visible_document(
         self,
         project_ref: Any,

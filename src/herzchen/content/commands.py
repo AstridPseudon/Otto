@@ -157,6 +157,17 @@ class _ContentCommandHandlerEngine:
                     result["revision"] = revision_record.payload
         return result
 
+    def metadata(self, reference: Any, *, actor: Any, roles=(), scopes=()) -> Mapping[str, Any]:
+        from .reads import document_metadata
+        return document_metadata(self.reader, reference, actor=actor, roles=roles, scopes=scopes)
+
+    def list_metadata(self, project_ref: Any, *, actor: Any, exact_role: str,
+                      representation=None, format=None, cursor: str = "", limit: int = 50,
+                      roles=(), task_refs=()) -> Mapping[str, Any]:
+        from .reads import list_project_metadata
+        return list_project_metadata(self.reader, project_ref, actor=actor, exact_role=exact_role,
+            representation=representation, format=format, cursor=cursor, limit=limit, roles=roles, task_refs=task_refs)
+
     @staticmethod
     def _document_payload(document: ContentDocument, revision: ContentRevision) -> Mapping[str, Any]:
         return {
@@ -217,6 +228,9 @@ class _ContentCommandHandlerEngine:
                 version=0,
                 transaction=transaction,
             )
+            from .reads import metadata_identity, revision_metadata
+            self.__writer.put_identity(metadata_identity(revision.ref), revision_metadata(revision),
+                version=0, transaction=transaction)
             return receipt
 
     def _guard_direction_target(self, target: ResourceRef, association: Any = None) -> None:

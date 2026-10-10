@@ -113,6 +113,17 @@ def build_parser() -> argparse.ArgumentParser:
     doc_list.add_argument("--task-ref", action="append", default=[], help="optional task ResourceRef JSON; repeat to scope")
     _add_format(doc_list)
 
+    doc_metadata = doc_sub.add_parser("metadata", help="bounded project/exact-role metadata page; empty pages may continue")
+    _add_project_actor(doc_metadata)
+    doc_metadata.add_argument("--exact-role", required=True)
+    doc_metadata.add_argument("--representation", choices=("managed", "inline"))
+    doc_metadata.add_argument("--content-format")
+    doc_metadata.add_argument("--cursor", default="")
+    doc_metadata.add_argument("--limit", type=int, default=50)
+    doc_metadata.add_argument("--role", action="append", default=[])
+    doc_metadata.add_argument("--task-ref", action="append", default=[])
+    _add_format(doc_metadata)
+
     doc_search = doc_sub.add_parser("search", help="search visible title, text, role, path alias, or task title")
     _add_project_actor(doc_search)
     doc_search.add_argument("--query", required=True)
@@ -1112,6 +1123,10 @@ def _document_command(args: argparse.Namespace, document_operations: Any) -> dic
     roles: Sequence[str] = tuple(getattr(args, "role", ()) or ())
     task_refs = tuple(_parse_ref(value, "task_ref") for value in (getattr(args, "task_ref", ()) or ()))
     command = args.document_command
+    if command == "metadata":
+        return reader.list_metadata(project, actor=args.actor, roles=roles, task_refs=task_refs,
+            exact_role=args.exact_role, representation=args.representation, format=args.content_format,
+            cursor=args.cursor, limit=args.limit)
     if command == "list":
         return reader.list_documents(project, actor=args.actor, roles=roles, task_refs=task_refs or None)
     if command == "search":

@@ -1041,6 +1041,54 @@ class Store:
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.get_identity(ref)
 
+    def get_identity_ref(self, ref: ResourceRef) -> Optional[ResourceRef]:
+        """Exact existence/current-pin read without selecting payload bytes."""
+        with self._transaction_lock:
+            self._require_open()
+            row = self._connection.execute(
+                "SELECT current_revision FROM identities WHERE authority = ? AND kind = ? AND id = ?",
+                (ref.authority, ref.kind, ref.id)).fetchone()
+            return None if row is None else ResourceRef(ref.authority, ref.kind, ref.id, row[0])
+
+    def read_identity_page(self, *, kind: str, after: str = "", limit: int = 50,
+                           max_record_bytes: int = 65536) -> Mapping[str, Any]:
+        """Seek a finite PK window before decoding or applying domain filters.
+
+        Empty domain pages still advance. Oversized legacy records are held,
+        never hydrated by this metadata reader. No new tables or descriptors.
+        """
+        if (not isinstance(kind, str) or not kind or not isinstance(after, str)
+                or len(after) > 512 or type(limit) is not int or not 1 <= limit <= 100
+                or type(max_record_bytes) is not int or not 1 <= max_record_bytes <= 65536):
+            raise ValueError("invalid bounded identity page")
+        with self._transaction_lock:
+            self._require_open()
+            rows = self._connection.execute(
+                "SELECT authority, kind, id, current_revision, version, edit_token, created_at, updated_at, "
+                "CASE WHEN length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END AS payload_json "
+                "FROM identities WHERE authority = ? AND kind = ? AND id > ? ORDER BY id LIMIT ?",
+                (max_record_bytes, self.authority, kind, after, limit)).fetchall()
+            records = tuple(self._identity_from_row(row) for row in rows if row["payload_json"] is not None)
+            return {"records": records, "examined": len(rows),
+                    "held": sum(row["payload_json"] is None for row in rows),
+                    "next_cursor": rows[-1]["id"] if len(rows) == limit else None,
+                    "bytes_parsed": sum(len(row["payload_json"].encode()) for row in rows if row["payload_json"] is not None)}
+
+    def get_identity_bounded(self, ref: ResourceRef, *, max_record_bytes: int = 65536) -> Mapping[str, Any]:
+        """Exact bounded metadata read; missing and oversize are explicit."""
+        if type(max_record_bytes) is not int or not 1 <= max_record_bytes <= 65536:
+            raise ValueError("invalid metadata byte bound")
+        with self._transaction_lock:
+            self._require_open()
+            row = self._connection.execute(
+                "SELECT authority, kind, id, current_revision, version, edit_token, created_at, updated_at, "
+                "CASE WHEN length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END AS payload_json "
+                "FROM identities WHERE authority = ? AND kind = ? AND id = ?",
+                (max_record_bytes, ref.authority, ref.kind, ref.id)).fetchone()
+            return {"record": self._identity_from_row(row) if row is not None and row["payload_json"] is not None else None,
+                    "state": "missing" if row is None else "detail-required" if row["payload_json"] is None else "available",
+                    "bytes_parsed": len(row["payload_json"].encode()) if row is not None and row["payload_json"] is not None else 0}
+
     def revise_identity(
         self,
         ref: ResourceRef,
@@ -1897,6 +1945,16 @@ class ConsumerStore:
 
     def get_identity(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_identity(ref)
+
+    def get_identity_bounded(self, ref: ResourceRef, *, max_record_bytes: int = 65536) -> Mapping[str, Any]:
+        return self.__owner.get_identity_bounded(ref, max_record_bytes=max_record_bytes)
+
+    def get_identity_ref(self, ref: ResourceRef) -> Optional[ResourceRef]:
+        return self.__owner.get_identity_ref(ref)
+
+    def read_identity_page(self, *, kind: str, after: str = "", limit: int = 50,
+                           max_record_bytes: int = 65536) -> Mapping[str, Any]:
+        return self.__owner.read_identity_page(kind=kind, after=after, limit=limit, max_record_bytes=max_record_bytes)
 
     def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
         return self.__owner.find_identity_refs(kind=kind, payload_matches=payload_matches)

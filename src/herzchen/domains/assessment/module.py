@@ -78,7 +78,7 @@ def _digest(value: Any) -> str:
 
 
 def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
-                        scopes: Sequence[Any] = ()) -> Mapping[str, Any]:
+                        scopes: Sequence[Any] = (), payload_resolver: Any = None) -> Mapping[str, Any]:
     """Resolve one exact DAT revision through the existing visibility/content owners."""
     ref = _ref(evidence, "evidence")
     if ref.kind != "dat.content.document" or ref.revision is None:
@@ -88,6 +88,26 @@ def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
         from herzchen.content.packets import ContextPacketService
 
         scoped = tuple(_ref(value, "evidence scope") for value in scopes if value is not None)
+        metadata = ContentCommandHandler(store).metadata(ref, actor=actor, scopes=scoped)
+        if metadata.get("representation") == "managed":
+            manifest = metadata["manifest"]
+            reference = {"schema": "dat.content.consumer-reference.v1", "reference": ref.to_dict(),
+                "representation": "managed", "content_digest": metadata["content_digest"],
+                "byte_digest": manifest["byte_digest"], "byte_length": manifest["byte_length"],
+                "availability": metadata["availability"], "verification": "manifest-verified"}
+            result = {"state": "unknown", "reason": "managed_payload_not_fully_verified",
+                "manifest_state": "verified", "manifest_digest": metadata["content_digest"],
+                "representation": "managed-bytes.v1", "ref": ref.to_dict(), "consumer_reference": reference}
+            if payload_resolver is not None:
+                observed = payload_resolver.resolve(ref, actor=actor, scopes=scoped,
+                    verify_full=True, max_bytes=0)
+                result["io_work"] = observed.get("io_work")
+                if observed.get("verification") == "full-verified" and observed.get("actual_digest") == manifest["byte_digest"]:
+                    result.update(state="verified", reason="managed_payload_full_verification",
+                        digest=manifest["byte_digest"], algorithm="sha256", verification_scope="full-payload")
+                elif observed.get("availability") == "corrupt":
+                    result.update(state="mismatch", reason="managed_payload_mismatch")
+            return result
         resolved = ContextPacketService(store).resolve_reference(ref, actor=actor, scopes=scoped)
         if resolved.get("foreign") or resolved.get("resolved") != ref:
             return {"state": "unknown", "reason": "evidence_ref_unresolved"}
@@ -97,6 +117,11 @@ def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
         revision = resolved.get("revision")
         stored_digest = revision.get("content_digest") if isinstance(revision, Mapping) else getattr(revision, "content_digest", None)
         content = value.get("content")
+        if isinstance(content, Mapping) and content.get("representation_version") == "managed-bytes.v1":
+            # Historical managed receipts without a bounded projection remain
+            # readable, but a JSON manifest hash is never proof of payload bytes.
+            return {"state": "unknown", "reason": "historical_managed_payload_requires_resolver",
+                    "representation": "managed-bytes.v1", "ref": ref.to_dict()}
         if content is None or not isinstance(stored_digest, str):
             return {"state": "unknown", "reason": "evidence_content_unavailable"}
         digest = _digest(content)

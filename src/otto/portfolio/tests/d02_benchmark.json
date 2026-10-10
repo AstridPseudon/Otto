@@ -1,0 +1,252 @@
+{
+  "baseline_head": "076883718494c418cb9d62cdedbf37f65e6a7d9d",
+  "binding": {
+    "assignment_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "assignment-a3d4afe9d48e9fbcfe5a538a17db",
+      "kind": "wrk.assignment",
+      "revision": "rev-2"
+    },
+    "generation": 1,
+    "native_session": "01a1233d-7d48-7c23-a3af-f2a6c778ab4c",
+    "parent": {
+      "assignment_ref": {
+        "authority": "otto-project-operating-setup-20261005-owner-v1",
+        "id": "assignment-7f8cdfbe280731995ade2adc8dff",
+        "kind": "wrk.assignment",
+        "revision": "rev-4"
+      },
+      "generation": 1,
+      "principal": "otto-evidence-manager-1"
+    },
+    "principal": "otto-evidence-d02-worker-1",
+    "project_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "project-1a0a32aa681b82db0da5c844cc07",
+      "kind": "work.project",
+      "revision": "rev-12"
+    },
+    "task_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "task-28816510091475c240e2ee75fba9",
+      "kind": "work.task",
+      "revision": "rev-1"
+    }
+  },
+  "checkpoint": [
+    {
+      "admission": {
+        "hash_seconds": 0.0003630830000000418,
+        "linear_historical_capture": true,
+        "parse_seconds": 0.0009713749999999965,
+        "payload_bytes_hashed": 1014703,
+        "payload_bytes_parsed": 1014703,
+        "payload_bytes_read": 1014703,
+        "read_seconds": 0.00013166700000000198
+      },
+      "after": {
+        "metadata_bytes_parsed": 16021,
+        "metadata_bytes_read": 16021,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 0.00013974999999999405,
+        "processing_seconds_median": 8.866699999998673e-05
+      },
+      "before": {
+        "byte_length": 1014703,
+        "hash_seconds": 0.00044870799999996436,
+        "parse_seconds": 0.0011568330000000238,
+        "payload_bytes_hashed": 1014703,
+        "payload_bytes_parsed": 1014703,
+        "payload_bytes_read": 1014703,
+        "processing_seconds": 0.0019403329999999608,
+        "processing_seconds_median": 0.0014748750000000421,
+        "read_seconds": 0.00033479199999997267,
+        "sha256": "396a4fa6fbefa2a5a283e571288d9228e51e34541f0953271723416fa58ce9f6"
+      },
+      "details": {
+        "next_offset": 4209,
+        "offset": 113,
+        "payload_bytes_read": 4096,
+        "verification": "range-not-revalidated"
+      },
+      "identity_phase_outcome_summary_sha256": "ddc4e7e322fc5b3a74c93b5436c572eeb75a3da963846d679e7240966d96fef1",
+      "label": "synthetic-1MB-variant",
+      "source_pin": {
+        "byte_length": 1014703,
+        "sha256": "396a4fa6fbefa2a5a283e571288d9228e51e34541f0953271723416fa58ce9f6"
+      }
+    },
+    {
+      "admission": {
+        "hash_seconds": 0.01408341599999996,
+        "linear_historical_capture": true,
+        "parse_seconds": 0.06352137499999999,
+        "payload_bytes_hashed": 37657216,
+        "payload_bytes_parsed": 37657216,
+        "payload_bytes_read": 37657216,
+        "read_seconds": 0.0043021249999999345
+      },
+      "after": {
+        "metadata_bytes_parsed": 16022,
+        "metadata_bytes_read": 16022,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 0.00013283299999999887,
+        "processing_seconds_median": 8.362500000003159e-05
+      },
+      "before": {
+        "byte_length": 37657216,
+        "hash_seconds": 0.013446167000000009,
+        "parse_seconds": 0.06518458299999996,
+        "payload_bytes_hashed": 37657216,
+        "payload_bytes_parsed": 37657216,
+        "payload_bytes_read": 37657216,
+        "processing_seconds": 0.08300583299999997,
+        "processing_seconds_median": 0.08300583299999997,
+        "read_seconds": 0.004375083000000002,
+        "sha256": "596f8373d84ab87db0fe2130dfe8e0ee3e2590f29b7f503d6ee3671e9cf3d760"
+      },
+      "details": {
+        "next_offset": 4209,
+        "offset": 113,
+        "payload_bytes_read": 4096,
+        "verification": "range-not-revalidated"
+      },
+      "identity_phase_outcome_summary_sha256": "ddc4e7e322fc5b3a74c93b5436c572eeb75a3da963846d679e7240966d96fef1",
+      "label": "exact-offline-fixture",
+      "source_pin": {
+        "byte_length": 37657216,
+        "sha256": "596f8373d84ab87db0fe2130dfe8e0ee3e2590f29b7f503d6ee3671e9cf3d760"
+      }
+    }
+  ],
+  "clock": "same-process perf_counter; warmed offline filesystem; median of 5 reads",
+  "limitations": [
+    "Source-only disposable-fixture proof; installation/adoption is D06 responsibility.",
+    "Times cover these warmed local operations, not provider latency, native time, total workflow time or money.",
+    "Admission is linear and accounted separately; historical JSON without projections requires explicit detail capture.",
+    "Metadata byte measures are logical application bytes; no claim about filesystem cache, SQLite pages or physical disk traffic.",
+    "Same-length corruption is not detected by a status/range; explicit full verification detects it."
+  ],
+  "managed_payloads": [
+    {
+      "byte_length": 1000000,
+      "detail": {
+        "metadata_bytes_hashed": 5898,
+        "metadata_bytes_parsed": 6682,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 4096,
+        "processing_seconds": 0.0005768340000000816
+      },
+      "full_verification": {
+        "metadata_bytes_hashed": 5898,
+        "metadata_bytes_parsed": 6682,
+        "payload_bytes_hashed": 1000000,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 1000000,
+        "processing_seconds": 0.001097209000000099
+      },
+      "page": {
+        "associations_examined": 1,
+        "metadata_bytes_hashed": 5898,
+        "metadata_bytes_parsed": 7490,
+        "metadata_bytes_read": 7490,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 0.0006543749999998738
+      },
+      "reference": {
+        "authority": "owner",
+        "id": "evidence-d2ca3da98ada031d38acefeecbc7",
+        "kind": "dat.content.document",
+        "revision": "rev-1"
+      },
+      "sha256": "67870dfc9c64e7aa270a3f7e8051ae65d207f93fc3df04d7572e6365af69cd0d",
+      "status": {
+        "metadata_bytes_hashed": 5898,
+        "metadata_bytes_parsed": 6682,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 0.005697834000000013
+      },
+      "status_processing_seconds_median": 0.000534208000000147
+    },
+    {
+      "byte_length": 37657216,
+      "detail": {
+        "metadata_bytes_hashed": 5902,
+        "metadata_bytes_parsed": 6686,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 4096,
+        "processing_seconds": 0.0005390000000000672
+      },
+      "full_verification": {
+        "metadata_bytes_hashed": 5902,
+        "metadata_bytes_parsed": 6686,
+        "payload_bytes_hashed": 37657216,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 37657216,
+        "processing_seconds": 0.01773383399999995
+      },
+      "page": {
+        "associations_examined": 1,
+        "metadata_bytes_hashed": 5898,
+        "metadata_bytes_parsed": 7490,
+        "metadata_bytes_read": 7490,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 0.0008441669999998958
+      },
+      "reference": {
+        "authority": "owner",
+        "id": "evidence-601df129819774e3526ef4528b4c",
+        "kind": "dat.content.document",
+        "revision": "rev-1"
+      },
+      "sha256": "c1428257a1fb227989d6be499827df135a887ba83cd912360a2999d87cacb67e",
+      "status": {
+        "metadata_bytes_hashed": 5902,
+        "metadata_bytes_parsed": 6686,
+        "payload_bytes_hashed": 0,
+        "payload_bytes_parsed": 0,
+        "payload_bytes_read": 0,
+        "processing_seconds": 0.0004690419999999751
+      },
+      "status_processing_seconds_median": 0.0004479999999997819
+    }
+  ],
+  "provider_called": false,
+  "replay_called": false,
+  "schema": "otto.evidence.D02.offline-benchmark.v1",
+  "source_fixture": {
+    "byte_length": 37657216,
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-agent-adapter-conformance-20261009/controller/evidence/d05-coordinator-preparation-stages.json",
+    "sha256": "596f8373d84ab87db0fe2130dfe8e0ee3e2590f29b7f503d6ee3671e9cf3d760"
+  },
+  "transport": {
+    "details": {
+      "payload_bytes_hashed": 0,
+      "payload_bytes_parsed": 0,
+      "payload_bytes_read": 4096
+    },
+    "io_work": {
+      "metadata_bytes_parsed": 965,
+      "metadata_bytes_read": 965,
+      "payload_bytes_hashed": 0,
+      "payload_bytes_parsed": 0,
+      "payload_bytes_read": 0,
+      "processing_seconds": 5.8749999999996305e-05
+    },
+    "outcome": "unknown",
+    "response_sha256": "ea8c23b6f557addea0f049f5b2104292e8922955717c3932a78b1936559d4602",
+    "response_utf8_bytes": 35650530
+  }
+}

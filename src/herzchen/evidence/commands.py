@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any, Callable, ContextManager, Mapping, Optional, Protocol, Sequence
 
 from herzchen.command_ports import command_facade
@@ -419,6 +420,8 @@ class _EvidenceCommandHandlerEngine:
         return manifest, final_path, sidecar_path
 
     def _validate_admission(self, manifest: Mapping[str, Any], *, operation: str) -> None:
+        if len(canonical_json(manifest).encode("utf-8")) > 32768:
+            raise EvidenceError("managed metadata exceeds the 32768-byte admission bound")
         self.pack.validate_operation(operation)
         self.pack.catalog.role(EVIDENCE_DOCUMENT_ROLE).validate(manifest)
         validate_manifest(manifest)
@@ -470,6 +473,8 @@ class _EvidenceCommandHandlerEngine:
                 "author": actor, "initial": revision.initial,
             }
             writer.put_identity(revision_identity(document.ref, revision.revision), revision_payload, version=0, transaction=transaction)
+            from herzchen.content.reads import metadata_identity, revision_metadata
+            writer.put_identity(metadata_identity(revision.ref), revision_metadata(revision), version=0, transaction=transaction)
         return receipt
 
     def _result(self, receipt: CommandReceipt, *, document_ref: ResourceRef, manifest: Mapping[str, Any], operation: str, replayed: bool = False) -> Mapping[str, Any]:
@@ -629,36 +634,81 @@ class _EvidenceCommandHandlerEngine:
             raise EvidenceError("base_revision is required for checkin")
         return self._submit_or_version(source, actor=actor, logical_request_key=logical_request_key, project_ref=project_ref, task_ref=task_ref, attempt_ref=attempt_ref, original_creator=original_creator, maintainer=maintainer, document_id=ref.id, format=format, provenance=provenance, source_digest=source_digest, source_length=source_length, operation=CHECKIN_OPERATION, interrupt_at=interrupt_at, phase_hook=phase_hook, base_ref=ResourceRef(ref.authority, ref.kind, ref.id, base_revision))
 
-    def status(self, reference: Any, *, actor: AuthenticatedActor) -> Mapping[str, Any]:
-        ref = _ref(reference, "reference")
+    def status(self, reference: Any, *, actor: AuthenticatedActor, roles=(), scopes=()) -> Mapping[str, Any]:
+        from herzchen.content.reads import document_metadata
         actor = _actor(actor)
-        writer = self._require_writer()
-        current = writer.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
-        if current is None:
-            raise EvidenceUnavailableError("Evidence document is not admitted")
-        self._authorize_read(current.payload.get("document", {}), actor, ref)
-        resolved = current.ref if ref.revision is None else ref
-        revision = writer.get_identity(revision_identity(ResourceRef(ref.authority, ref.kind, ref.id), resolved.revision)) if resolved.revision else None
-        if revision is None:
-            raise EvidenceUnavailableError("requested Evidence revision is unavailable")
-        content = revision.payload.get("content", {})
-        if not isinstance(content, Mapping) or content.get("record_type") != EVIDENCE_MANIFEST_KIND:
-            return {"representation": "inline", "reference": resolved, "content": content, "availability": "legacy-inline", "verification": "legacy-inline"}
-        return {"representation": "managed", "reference": resolved, "manifest": dict(content), "availability": content.get("availability"), "verification": "manifest-verified"}
+        def check(document, caller, ref):
+            if self._authorize is not None:
+                self._authorize_read(document, caller, ref)
+            else:
+                from herzchen.content.reads import authorize
+                authorize(document, caller, roles, scopes)
+        try:
+            status = dict(document_metadata(self.reader, reference, actor=actor,
+                authorize_read=check, include_inline=True))
+        except (PermissionError, EvidenceAccessDeniedError):
+            raise EvidenceAccessDeniedError("document unavailable") from None
+        if status["representation"] == "managed":
+            manifest = status["manifest"]
+            state = manifest["availability"]
+            if state not in {"missing", "corrupt", "purged", "staged"}:
+                path = self._rooted(manifest["storage"]["location"])
+                try:
+                    actual_length = path.stat().st_size if path.is_file() else None
+                except OSError:
+                    actual_length = None
+                state = "missing" if actual_length is None else "corrupt" if actual_length != manifest["byte_length"] else "admitted"
+            status["availability"] = state
+            status["payload_verification"] = "not-revalidated"
+        return status
 
-    def resolve(self, reference: Any, *, actor: AuthenticatedActor, offset: int = 0, max_bytes: int = 65536, verify_full: bool = False) -> Mapping[str, Any]:
-        if not isinstance(offset, int) or offset < 0 or not isinstance(max_bytes, int) or max_bytes < 0:
-            raise EvidenceError("offset and max_bytes must be non-negative integers")
-        status = self.status(reference, actor=actor)
-        if status["representation"] == "inline":
+    def list_metadata(self, project_ref: Any, *, actor: AuthenticatedActor, exact_role: str,
+                      representation=None, format=None, cursor: str = "", limit: int = 50,
+                      roles=(), task_refs=()) -> Mapping[str, Any]:
+        from herzchen.content.reads import list_project_metadata
+        return list_project_metadata(self.reader, project_ref, actor=_actor(actor), exact_role=exact_role,
+            representation=representation, format=format, cursor=cursor, limit=limit, roles=roles,
+            task_refs=task_refs, metadata_reader=lambda ref, scopes: self.status(ref, actor=actor, roles=roles, scopes=scopes))
+
+    def list_evidence(self, project_ref: Any, *, actor: AuthenticatedActor, representation=None,
+                      format=None, cursor: str = "", limit: int = 50, roles=(), task_refs=()) -> Mapping[str, Any]:
+        # Evidence is a preset of the shared role query, never a second index.
+        self.pack.validate_operation("dat.content.metadata.list")
+        return self.list_metadata(project_ref, actor=actor, exact_role="evidence",
+            representation=representation, format=format, cursor=cursor, limit=limit, roles=roles, task_refs=task_refs)
+
+    def read_evidence(self, reference: Any, *, actor: AuthenticatedActor, offset: int = 0,
+                      max_bytes: int = 65536, verify_full: bool = False, roles=(), scopes=()) -> Mapping[str, Any]:
+        self.pack.validate_operation("dat.content.payload.read")
+        status = self.status(reference, actor=actor, roles=roles, scopes=scopes)
+        if status["document"].get("role") != "evidence":
+            raise EvidenceAccessDeniedError("document unavailable")
+        return self.resolve(reference, actor=actor, offset=offset, max_bytes=max_bytes,
+                            verify_full=verify_full, roles=roles, scopes=scopes)
+
+    def consumer_reference(self, reference: Any, *, actor: AuthenticatedActor, roles=(), scopes=()) -> Mapping[str, Any]:
+        status = self.status(reference, actor=actor, roles=roles, scopes=scopes)
+        return {"schema": "dat.content.consumer-reference.v1", "reference": status["reference"],
+                "representation": status["representation"], "content_digest": status.get("content_digest"),
+                "availability": status["availability"], "verification": status["verification"],
+                "byte_digest": status.get("manifest", {}).get("byte_digest"),
+                "byte_length": status.get("byte_length"), "format": status.get("format")}
+
+    def resolve(self, reference: Any, *, actor: AuthenticatedActor, offset: int = 0, max_bytes: int = 65536, verify_full: bool = False, roles=(), scopes=()) -> Mapping[str, Any]:
+        started = time.perf_counter()
+        if type(offset) is not int or offset < 0 or type(max_bytes) is not int or not 0 <= max_bytes <= 65536:
+            raise EvidenceError("offset must be non-negative and max_bytes must be 0..65536")
+        status = self.status(reference, actor=actor, roles=roles, scopes=scopes)
+        if status["representation"] != "managed":
             return status
         manifest = status["manifest"]
-        if manifest.get("availability") in {"missing", "corrupt", "purged"}:
-            raise EvidenceUnavailableError(f"Evidence payload is {manifest.get('availability')}")
+        if status["availability"] in {"missing", "corrupt", "purged", "staged"}:
+            return {**status, "bytes": b"", "offset": offset, "next_offset": None}
         location = manifest.get("storage", {}).get("location")
         path = self._rooted(location)
         if not path.is_file():
             return {"representation": "managed", "reference": status["reference"], "manifest": manifest, "availability": "missing", "verification": "missing", "bytes": b"", "offset": offset, "next_offset": None}
+        work = dict(status["io_work"])
         actual_digest = None
         full_verified = False
         if verify_full:
@@ -667,15 +717,32 @@ class _EvidenceCommandHandlerEngine:
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk); total += len(chunk)
+            work["payload_bytes_read"] += total
+            work["payload_bytes_hashed"] += total
             actual_digest = digest.hexdigest()
             full_verified = total == manifest["byte_length"] and actual_digest == manifest["byte_digest"]
             if not full_verified:
-                return {"representation": "managed", "reference": status["reference"], "manifest": dict(manifest, availability="corrupt"), "availability": "corrupt", "verification": "full-mismatch", "bytes": b"", "offset": offset, "next_offset": None, "actual_digest": actual_digest, "actual_length": total}
+                return {"representation": "managed", "reference": status["reference"], "manifest": dict(manifest, availability="corrupt"), "availability": "corrupt", "verification": "full-mismatch", "bytes": b"", "offset": offset, "next_offset": None, "actual_digest": actual_digest, "actual_length": total, "io_work": dict(work, processing_seconds=time.perf_counter()-started)}
         with path.open("rb") as stream:
             stream.seek(offset)
             data = stream.read(max_bytes)
+        work["payload_bytes_read"] += len(data)
+        work["processing_seconds"] = time.perf_counter() - started
         next_offset = offset + len(data) if offset + len(data) < manifest["byte_length"] else None
-        return {"representation": "managed", "reference": status["reference"], "manifest": manifest, "availability": "verified" if full_verified else "admitted", "verification": "full-verified" if full_verified else "range-not-revalidated", "bytes": data, "offset": offset, "next_offset": next_offset, "actual_digest": actual_digest}
+        return {"representation": "managed", "reference": status["reference"], "manifest": manifest, "availability": "verified" if full_verified else "admitted", "verification": "full-verified" if full_verified else "range-not-revalidated", "decoding": "raw-bytes", "io_work": work, "bytes": data, "offset": offset, "next_offset": next_offset, "actual_digest": actual_digest}
+
+    def read_legacy_inline(self, reference: Any, *, actor: AuthenticatedActor, roles=(), scopes=()) -> Mapping[str, Any]:
+        """Explicit historical detail hydration; never a routine status read."""
+        status = self.status(reference, actor=actor, roles=roles, scopes=scopes)
+        if status["representation"] == "managed":
+            raise EvidenceError("managed bytes require the capped resolver")
+        ref = status["reference"]
+        record = self._require_writer().get_identity(revision_identity(ResourceRef(ref.authority, ref.kind, ref.id), ref.revision))
+        content = record.payload["content"]
+        size = len(canonical_json(content).encode())
+        return {**status, "representation": "inline", "content": content,
+                "verification": "legacy-inline", "io_work": {**status["io_work"],
+                    "payload_bytes_parsed": size, "linear_historical_read": True}}
 
 
 EvidenceCommandHandler = command_facade(_EvidenceCommandHandlerEngine, EVIDENCE_DOMAIN_ID)

@@ -25,7 +25,7 @@ EVIDENCE_DOMAIN_ID = "herzchen.evidence"
 EVIDENCE_OWNER = "dat"
 EVIDENCE_DOCUMENT_ROLE = "evidence.managed"
 EVIDENCE_PACK_ID = "evidence"
-EVIDENCE_PACK_VERSION = "1.0.0"
+EVIDENCE_PACK_VERSION = "1.1.0"
 EVIDENCE_HOST_CONTRACT = "herzchen.evidence.host.v1"
 EVIDENCE_MANIFEST_KIND = "dat.evidence.manifest"
 EVIDENCE_MANAGED_KIND = "evidence.submission"
@@ -175,7 +175,7 @@ class EvidenceResourcePack:
     def __post_init__(self) -> None:
         if self.pack_id != EVIDENCE_PACK_ID:
             raise EvidencePackError("selected pack is not the Evidence pack")
-        if self.version != EVIDENCE_PACK_VERSION:
+        if self.version not in {"1.0.0", EVIDENCE_PACK_VERSION}:
             raise EvidencePackError("unsupported Evidence pack version")
         _digest(self.manifest_digest, "pack manifest digest")
         _text(self.source_root, "pack source root")
@@ -223,7 +223,7 @@ class EvidenceResourcePack:
         """Admit one real managed pack into the trusted Evidence command view."""
         if not isinstance(managed, ManagedPack):
             raise EvidencePackError("Evidence admission requires a ManagedPack from public discovery")
-        if managed.pack_id != EVIDENCE_PACK_ID or managed.version != EVIDENCE_PACK_VERSION:
+        if managed.pack_id != EVIDENCE_PACK_ID or managed.version not in {"1.0.0", EVIDENCE_PACK_VERSION}:
             raise EvidencePackError("unsupported managed Evidence pack")
         expected = {
             "schemas/evidence.json": "evidence_schema",
@@ -233,6 +233,8 @@ class EvidenceResourcePack:
             "skill/SKILL.md": "skill",
             "templates/evidence.json": "evidence_template",
         }
+        if managed.version == EVIDENCE_PACK_VERSION:
+            expected.update({"presets/list.json": "evidence_preset", "presets/read.json": "evidence_preset"})
         resources = {item.path: item for item in managed.resources}
         if set(resources) != set(expected):
             raise EvidencePackError("managed Evidence resources are incomplete or contain unknown paths")
@@ -290,7 +292,10 @@ class EvidenceResourcePack:
         resource_path = Path(self.source_root) / path
         if resource_path.is_symlink() or not resource_path.is_file():
             raise EvidencePackError(f"selected Evidence resource is unavailable: {path}")
-        content = resource_path.read_bytes()
+        with resource_path.open("rb") as stream:
+            content = stream.read(65537)
+        if len(content) > 65536:
+            raise EvidencePackError("Evidence policy resource exceeds its metadata bound")
         if hashlib.sha256(content).hexdigest() != pin.digest:
             raise EvidencePackError(f"selected Evidence resource digest changed: {path}")
         return content
@@ -311,6 +316,13 @@ class EvidenceResourcePack:
                 and preset.get("host_contract") == self.host_contract
                 and preset.get("document_role") == EVIDENCE_DOCUMENT_ROLE
             ):
+                if wanted in {"dat.content.metadata.list", "dat.content.payload.read"}:
+                    if preset.get("canonical_role") != "evidence":
+                        raise EvidencePackError("Evidence read preset must select the exact canonical role")
+                    bound = "max_page" if wanted == "dat.content.metadata.list" else "max_bytes"
+                    expected = 100 if bound == "max_page" else 65536
+                    if type(preset.get(bound)) is not int or preset[bound] != expected:
+                        raise EvidencePackError("Evidence read preset exceeds the shared finite bound")
                 return
         raise EvidencePackError(f"Evidence pack has no validated preset for {operation}")
 

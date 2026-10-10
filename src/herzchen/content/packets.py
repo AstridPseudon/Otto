@@ -265,6 +265,32 @@ def _same_identity(left: ResourceRef, right: ResourceRef) -> bool:
     return (left.authority, left.kind, left.id) == (right.authority, right.kind, right.id)
 
 
+def authorize_document(document: Mapping[str, Any], context: VisibilityContext) -> None:
+    visibility = document.get("visibility", "private")
+    maintainer = document.get("maintainer")
+    if context.actor == maintainer:
+        return
+    allowed_actors = set(document.get("allowed_actors", document.get("readers", ())) or ())
+    allowed_roles = set(document.get("allowed_roles", document.get("read_roles", ())) or ())
+    if allowed_actors or allowed_roles:
+        if context.actor not in allowed_actors and not allowed_roles.intersection(context.roles):
+            raise AccessDeniedError("document role/reader policy excludes this actor")
+        return
+    scope = document.get("authoring_scope")
+    if visibility == "public":
+        return
+    if visibility == "shared" and scope is None:
+        return
+    if visibility == "shared" and scope is not None:
+        try:
+            scope_ref = ResourceRef.from_dict(scope) if isinstance(scope, Mapping) else scope
+            if any(_same_identity(scope_ref, candidate) for candidate in context.scopes):
+                return
+        except (TypeError, ValueError):
+            pass
+    raise AccessDeniedError("document is outside the actor/role/scope visibility boundary")
+
+
 class _ContextPacketServiceEngine:
     """Fresh, permission-filtered reads and FND-backed packet mutations."""
 
@@ -289,29 +315,7 @@ class _ContextPacketServiceEngine:
         return VisibilityContext.from_actor(actor, roles, scopes)
 
     def _access(self, document: Mapping[str, Any], context: VisibilityContext) -> None:
-        visibility = document.get("visibility", "private")
-        maintainer = document.get("maintainer")
-        if context.actor == maintainer:
-            return
-        allowed_actors = set(document.get("allowed_actors", document.get("readers", ())) or ())
-        allowed_roles = set(document.get("allowed_roles", document.get("read_roles", ())) or ())
-        if allowed_actors or allowed_roles:
-            if context.actor not in allowed_actors and not allowed_roles.intersection(context.roles):
-                raise AccessDeniedError("document role/reader policy excludes this actor")
-            return
-        scope = document.get("authoring_scope")
-        if visibility == "public":
-            return
-        if visibility == "shared" and scope is None:
-            return
-        if visibility == "shared" and scope is not None:
-            try:
-                scope_ref = ResourceRef.from_dict(scope) if isinstance(scope, Mapping) else scope
-                if any(_same_identity(scope_ref, candidate) for candidate in context.scopes):
-                    return
-            except (TypeError, ValueError):
-                pass
-        raise AccessDeniedError("document is outside the actor/role/scope visibility boundary")
+        authorize_document(document, context)
 
     def resolve_reference(self, reference: Any, context: Optional[VisibilityContext] = None, *, actor: Any = None, roles: Iterable[str] = (), scopes: Iterable[ResourceRef] = ()) -> Mapping[str, Any]:
         """Resolve a current binding to one immutable revision at read time."""

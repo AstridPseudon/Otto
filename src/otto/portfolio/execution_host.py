@@ -27,18 +27,21 @@ from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correl
 
 
 def _atomic_json(path: Path, value: Any) -> None:
-    temporary = path.with_name("." + path.name + ".tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(temporary, flags, 0o600)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(json_value(value), stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    from .retained_projection import atomic_json, finite_summary, projection
+    from .manager_journey_client import command_result_summary
+    safe = json_value(value)
+    capture = atomic_json(path, safe)
+    if path.name.startswith("response-") and path.suffix == ".json":
+        token = path.stem.removeprefix("response-")
+        summary = {**command_result_summary(safe), **finite_summary(safe)}
+        status = projection(safe, artifact={"path": str(path), **capture},
+            binding={"request_id": token}, summary=summary)
+        timing = safe.get("receipt_timing") if isinstance(safe, Mapping) else None
+        if isinstance(timing, Mapping):
+            status["receipt_timing"] = timing
+        if len(json.dumps(status).encode()) > 65536:
+            raise ValueError("transport status exceeds its finite metadata bound")
+        atomic_json(path.with_name("status-" + path.name), status)
 
 
 def _timed_receipt(value: Any, timing: ReceiptTiming) -> Any:

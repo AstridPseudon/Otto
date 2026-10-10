@@ -73,6 +73,9 @@ class _ScopedDocumentReader:
     def list_documents(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return self.__delegate.list_documents(*args, **kwargs) if self._allowed(args, kwargs) else _scope_denied()
 
+    def list_metadata(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self.__delegate.list_metadata(*args, **kwargs) if self._allowed(args, kwargs) else _scope_denied()
+
     def read_document(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return self.__delegate.read_document(*args, **kwargs) if self._allowed(args, kwargs) else _scope_denied()
 

@@ -1,0 +1,11 @@
+{
+  "preset": "read",
+  "operation": "dat.content.payload.read",
+  "host_contract": "herzchen.evidence.host.v1",
+  "document_role": "evidence.managed",
+  "canonical_role": "evidence",
+  "selection": "trusted-finite-owner-byte-range",
+  "max_bytes": 65536,
+  "decoding": "raw-bytes",
+  "full_verification": "explicit-linear-operation"
+}

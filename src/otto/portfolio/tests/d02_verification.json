@@ -1,0 +1,73 @@
+{
+  "baseline_and_candidate_stall": {
+    "case": "test_first_manager_wait_receives_original_worker_before_manager_exit",
+    "isolated_timeout_seconds": 12,
+    "original_mixed_suite_interrupted": true,
+    "stack": "ExecutionHost._status_read in external_call, close.join; same baseline and candidate stack"
+  },
+  "baseline_reproduced_failures": [
+    "test_exhausted_allowance_reaches_existing_admission_and_never_provider",
+    "test_existing_designated_approver_is_enforced_by_the_owner",
+    "test_read_only_advisor_decision_state_responds_during_native_wait"
+  ],
+  "environment": {
+    "HERZCHEN_IN_PROCESS_COMMAND_FALLBACK": "1",
+    "PYTHONPATH": "src:tests",
+    "python": "system python3.9"
+  },
+  "errors": [],
+  "failures": [],
+  "known_contract_difference": "Old large legacy transport test requires automatically parsed full body summary; new bounded status holds UNKNOWN/detail-required and explicit capped details remain readable.",
+  "latest_passed_runs": [
+    {
+      "processing_seconds": 4.828,
+      "scope": "Same affected modules listed above except old legacy full-hydration expectation; includes added large legacy transport test",
+      "successful": true,
+      "tests_run": 74
+    },
+    {
+      "processing_seconds": 0.68,
+      "scope": "D02 source tests plus original capture lifecycle after resolver fix, including large old inline detail requirement",
+      "successful": true,
+      "tests_run": 17
+    }
+  ],
+  "modules": [
+    "test_evidence_lifecycle",
+    "src.otto.portfolio.tests.test_bounded_evidence_reads",
+    "test_command_receipt_progress",
+    "test_document_receipt_projection",
+    "test_document_editor_host",
+    "src.otto.portfolio.tests.test_document_verification",
+    "src.otto.portfolio.tests.test_document_sessions",
+    "src.otto.portfolio.tests.test_document_eligibility",
+    "src.otto.portfolio.tests.test_document_failures",
+    "test_local_assessment_composition",
+    "test_manager_journey_command",
+    "src.otto.portfolio.tests.test_operating_composition"
+  ],
+  "output_sha256": null,
+  "previous_broad_run": {
+    "errors": [
+      {
+        "case": "test_terminal_status_is_bounded_and_preserves_full_response (test_manager_reentrant_ipc.ManagerReentrantIPCTests)",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-evidence-lifecycle-20261009/work/integration-owner/tests/test_manager_reentrant_ipc.py\", line 269, in test_terminal_status_is_bounded_and_preserves_full_response\n    self.assertEqual(status[\"summary\"][\"continuation\"][\"result\"][\"unknown_reason\"], \"real-fence\")\nKeyError: 'summary'\n"
+      }
+    ],
+    "output_sha256": "587285c82abd1b9065eef1da644ff47550608552d9941aa884e73bbd4f8baae1",
+    "processing_seconds": 11.55507925,
+    "successful": false,
+    "tests_run": 74
+  },
+  "processing_seconds": 0.68,
+  "schema": "otto.evidence.D02.focused-verification.v1",
+  "static_checks": {
+    "changed_python_ast": "passed",
+    "git_diff_check": "passed",
+    "metadata_cli_help": "passed",
+    "pack_declared_resource_paths": "8 present"
+  },
+  "success_scope": "Latest bounded D02 and affected suites; previous legacy-contract mismatch and baseline failures remain reported separately, not a whole-repository pass.",
+  "successful": true,
+  "tests_run": 17
+}

@@ -5,6 +5,7 @@ import hashlib
 import json
 import argparse
 import time
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -49,24 +50,63 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
     root = Path(directory)
     response = root / ("response-" + request_id + ".json")
     try:
-        raw = response.read_bytes()
         if pending_only:
-            return None  # call() will consume the terminal response on its next read.
-        value = json.loads(raw)
-        timing = value.get("receipt_timing") if isinstance(value, dict) else None
-        correlation_id = stable_correlation_id(value, fallback=request_id)
-        return {"outcome": value.get("outcome", "unavailable"), "terminal": True,
-                "request_id": request_id, "response_path": str(response),
-                "response_sha256": hashlib.sha256(raw).hexdigest(),
-                "response_utf8_bytes": len(raw), "retry": False,
-                "correlation_id": correlation_id,
-                "receipt_timing": timing if isinstance(timing, dict) else timing_from_receipt(value, fallback_correlation_id=request_id),
-                "summary": command_result_summary(value),
-                "next_action": "Inspect the retained response artifact for full evidence; do not resend this terminal request."}
+            if response.is_file():
+                return None
+        else:
+            from .retained_projection import read_projection
+            try:
+                captured = read_projection(root / ("status-response-" + request_id + ".json"),
+                    expected_binding={"request_id": request_id})
+                artifact = captured["artifact"]
+                if artifact.get("path") != str(response):
+                    raise ValueError("status selects a foreign response")
+                observed_length = response.stat().st_size
+                if observed_length != artifact["byte_length"]:
+                    raise ValueError("retained response length changed")
+                summary = captured["summary"]
+                return {"outcome": summary.get("outcome", "unknown"), "terminal": True,
+                    "request_id": request_id, "response_path": str(response),
+                    "response_sha256": artifact["sha256"], "response_utf8_bytes": artifact["byte_length"],
+                    "artifact_ref": artifact, "verification": captured["verification"],
+                    "summary": summary, "retry": False, "io_work": captured["io_work"],
+                    "correlation_id": request_id, "receipt_timing": captured.get("receipt_timing"),
+                    "next_action": "Read explicit historical detail if needed; do not resend the retained effect."}
+            except FileNotFoundError:
+                pass
+            size = response.stat().st_size
+            if size > 65536:
+                return {"outcome": "unknown", "terminal": True, "request_id": request_id,
+                    "response_path": str(response), "response_utf8_bytes": size,
+                    "response_sha256": None, "verification": "legacy-detail-required", "retry": False,
+                    "io_work": {"payload_bytes_read": 0, "payload_bytes_parsed": 0, "payload_bytes_hashed": 0},
+                    "next_action": "Historical response is retained; explicit detail capture is required. Do not replay."}
+            with response.open("rb") as stream:
+                raw = stream.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("legacy response changed beyond its bounded read")
+            value = json.loads(raw)
+            timing = value.get("receipt_timing") if isinstance(value, dict) else None
+            correlation_id = stable_correlation_id(value, fallback=request_id)
+            return {"outcome": value.get("outcome", "unavailable"), "terminal": True,
+                    "request_id": request_id, "response_path": str(response),
+                    "response_sha256": hashlib.sha256(raw).hexdigest(),
+                    "response_utf8_bytes": len(raw), "retry": False,
+                    "correlation_id": correlation_id,
+                    "receipt_timing": timing if isinstance(timing, dict) else timing_from_receipt(value, fallback_correlation_id=request_id),
+                    "summary": command_result_summary(value),
+                    "io_work": {"payload_bytes_read": len(raw), "payload_bytes_parsed": len(raw), "payload_bytes_hashed": len(raw)},
+                    "next_action": "Inspect the retained response artifact for full evidence; do not resend this terminal request."}
     except FileNotFoundError:
         pass
     try:
-        pending = json.loads((root / ("pending-" + request_id + ".json")).read_text())
+        with (root / ("pending-" + request_id + ".json")).open("rb") as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            return {"outcome": "unknown", "terminal": False, "request_id": request_id,
+                    "retry": False, "verification": "legacy-pending-detail-required",
+                    "next_action": "Inspect the retained original; this bounded read does not authorize replay."}
+        pending = json.loads(raw)
     except FileNotFoundError:
         request = root / ("request-" + request_id + ".json")
         if not request.is_file():
@@ -97,8 +137,30 @@ def read_command_response(directory: str | Path, request_id: str) -> Any:
     if status is None or status.get("terminal") is not True:
         return None
     if status["response_utf8_bytes"] <= 64 * 1024:
-        return json.loads(Path(status["response_path"]).read_text())
+        with Path(status["response_path"]).open("rb") as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("terminal response changed beyond its bounded read")
+        return json.loads(raw)
     return status
+
+
+def read_command_detail(directory: str | Path, request_id: str, *, offset: int = 0,
+                        max_bytes: int = 65536) -> Any:
+    """Explicit capped historical transport bytes, including old inline receipts."""
+    status = read_command_status(directory, request_id)
+    if status is None or status.get("terminal") is not True:
+        return status
+    if type(offset) is not int or offset < 0 or type(max_bytes) is not int or not 0 <= max_bytes <= 65536:
+        raise ValueError("invalid transport detail byte range")
+    path = Path(directory) / ("response-" + request_id + ".json")
+    with path.open("rb") as stream:
+        stream.seek(offset); data = stream.read(max_bytes)
+    size = path.stat().st_size
+    return {"request_id": request_id, "artifact_ref": status.get("artifact_ref"),
+            "bytes": data, "offset": offset, "next_offset": offset + len(data) if offset + len(data) < size else None,
+            "decoding": "raw-bytes", "verification": "range-not-revalidated", "retry": False,
+            "io_work": {"payload_bytes_read": len(data), "payload_bytes_parsed": 0, "payload_bytes_hashed": 0}}
 
 
 def wait_command_response(directory: str | Path, request_id: str, *, timeout_seconds: float = 2.0) -> Any:
@@ -168,7 +230,7 @@ def command_result_summary(value: Any) -> Any:
     for key in ("task_refs", "criteria"):
         items = value.get(key)
         if isinstance(items, dict):
-            summary[key] = {name: ref(item) for name, item in list(items.items())[:64]
+            summary[key] = {name: ref(item) for name, item in islice(items.items(), 64)
                             if isinstance(name, str) and len(name) <= 64 and ref(item)}
     for key in ("native_manager", "manager_assignment", "occurrence"):
         item = value.get(key)
@@ -181,7 +243,7 @@ def command_result_summary(value: Any) -> Any:
     workers = value.get("workers")
     if isinstance(workers, dict):
         summary["workers"] = {}
-        for name, worker in list(workers.items())[:64]:
+        for name, worker in islice(workers.items(), 64):
             if not isinstance(name, str) or len(name) > 64 or not isinstance(worker, dict): continue
             summary["workers"][name] = {field: data for field in fields if field in worker
                 and isinstance((data := worker[field]), (str, bool, int, type(None)))
