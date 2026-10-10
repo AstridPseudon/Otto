@@ -115,6 +115,33 @@ class ReaderCorrectionTests(unittest.TestCase):
             self.assertFalse(state['rows']);state=self.reader.read_state(snapshot=state['snapshot'],cursor=state['next_cursor'],**kwargs)
         self.assertTrue(state['coverage']['active_discovery_complete'])
         self.assertEqual(bool(state['rows']),late_active)
+    def test_exact_discovery_budget_preserves_state_and_overview_continuation(self):
+        from herzchen.kernel.project_history import _token_decode
+        template=list(self.store.connection.execute("SELECT * FROM project_history WHERE subject_kind='work.project' AND subject_id=? LIMIT 1",(self.project.id,)).fetchone())
+        with self.store.transaction() as tx:
+            tx.execute('DELETE FROM project_history')
+            for i in range(1001):
+                row=list(template);row[1]='exact-budget-'+str(i);row[3]=i
+                row[13]='2026-10-01T00:00:00.000000Z' if i in (0,1000) else '2026-10-04T00:00:00.000000Z'
+                status='active' if i in (999,1000) else 'pending'
+                if i==1000:row[10]='work.task';row[11]='budget-carry-task'
+                row[18]=json.dumps({'before':{'exists':True,'fields':{'lifecycle':'pending'}},'after':{'fields':{'lifecycle':status}},'coverage':'captured'})
+                tx.execute('INSERT INTO project_history VALUES('+','.join('?' for _ in row)+')',row)
+        kw=dict(projects=[self.project.ref],active_during=('2026-10-03T00:00:00Z','2026-10-05T00:00:00Z'),limit=20)
+        first=self.reader.read_state(**kw)
+        self.assertTrue(first['coverage']['active_discovery_complete']);self.assertEqual(first['coverage']['active_candidates_examined'],1000)
+        self.assertFalse(first['rows']);self.assertTrue(first['partial']);self.assertTrue(first['next_cursor'])
+        second=self.reader.read_state(snapshot=first['snapshot'],cursor=first['next_cursor'],**kw)
+        self.assertEqual(second['snapshot'],first['snapshot']);self.assertEqual(second['coverage']['active_candidates_examined'],0)
+        old_shape=json.loads(json.dumps(first['snapshot']));old_shape['scope']['active_during']=tuple(old_shape['scope']['active_during'])
+        compatible=self.reader.read_state(snapshot=old_shape,cursor=first['next_cursor'],**kw)
+        self.assertEqual({x['facet_id'] for x in compatible['rows']},{x['facet_id'] for x in second['rows']})
+        self.assertLessEqual(second['io_work']['metadata_candidates_examined'],1000)
+        self.assertEqual({x['subject_ref']['id'] for x in second['rows']},{self.project.id,'budget-carry-task'})
+        views=ObservabilityViews(self.reader);overview=views.read('overview',**kw)
+        self.assertFalse(_token_decode(overview['continuation']['next_cursor'])['subjects_done'])
+        continued=views.read('overview',snapshot=overview['snapshot'],cursor=overview['continuation']['next_cursor'],**kw)
+        self.assertEqual({x['subject_ref']['id'] for x in continued['historical_state']['rows']},{self.project.id,'budget-carry-task'})
     def test_exact_carry_in_detail_and_older_filtered_terminal_negatives(self):
         from herzchen.kernel.project_history import AuthorizationError
         with patch('herzchen.kernel.store._now',return_value='2026-10-01T00:00:00Z'):

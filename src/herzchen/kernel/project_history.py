@@ -508,7 +508,7 @@ class ProjectHistoryReader:
         # Keep the persisted/token form JSON-shaped so a snapshot survives a
         # round trip through the owner reader without changing its normalized
         # scope identity.
-        scope = {"projects": [list(project) for project in projects], "from": from_at, "to": to_at, "active_during": active, "filters": dict(filters)}
+        scope = {"projects": [list(project) for project in projects], "from": from_at, "to": to_at, "active_during": None if active is None else list(active), "filters": dict(filters)}
         shape = {"authority": self.store.authority, "owner_incarnation": self.store.authority, "grant_revision": grant_revision, "generation": generation, "boundary": boundary, "scope": scope}
         return {**shape, "snapshot_digest": _digest(shape)}
 
@@ -543,7 +543,7 @@ class ProjectHistoryReader:
         # boundary.
         boundary = body.get("boundary")
         current_boundary = expected.get("boundary")
-        if (any(body.get(key) != expected.get(key) for key in stable)
+        if (any((_json(body.get(key)) != _json(expected.get(key))) if key == "scope" else body.get(key) != expected.get(key) for key in stable)
                 or type(boundary) is not int or type(current_boundary) is not int
                 or boundary < 0 or boundary > current_boundary):
             raise SnapshotRefreshRequired("snapshot scope, generation, grant, or owner boundary changed")
@@ -809,7 +809,7 @@ class ProjectHistoryReader:
                 "unknown":[[x["authority"],x["id"]] for x in checked["coverage"]["active_unknown_projects"]]}
         start, end = fixed["scope"].get("from"), fixed["scope"].get("to")
         subject_limit = min(limit,(MAX_METADATA_CANDIDATES - checked["io_work"]["metadata_candidates_examined"] - 1) // 2)
-        if not subject_limit:
+        if subject_limit <= 0:
             return {**checked,"rows":[],"partial":True,"next_cursor":_token_encode({"format":CURSOR_FORMAT,"mode":"active-discovery","snapshot":fixed["snapshot_digest"],"key":None,"discovery":discovery})}
         candidates = []
         for authority, project in sorted(scope):
