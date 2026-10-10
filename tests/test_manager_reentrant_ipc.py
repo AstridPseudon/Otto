@@ -182,7 +182,16 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
             self.assertFalse(pending["effects_started"])
             self.assertFalse(pending["retry"])
             from otto.portfolio.manager_journey_client import read_command_status
-            self.assertEqual(read_command_status(self.directory, "ffffff"), pending)
+            retained_path = self.directory / "pending-ffffff.json"
+            retained_bytes = retained_path.read_bytes()
+            observed = read_command_status(self.directory, "ffffff")
+            # A later offline read adds timing gaps; it must preserve the
+            # retained request and all dispatch/effect state exactly.
+            self.assertEqual({k: v for k, v in observed.items() if k != "receipt_timing"},
+                             {k: v for k, v in pending.items() if k != "receipt_timing"})
+            self.assertEqual(retained_path.read_bytes(), retained_bytes)
+            self.assertEqual(observed["receipt_timing"]["correlation_id"],
+                             pending["receipt_timing"]["correlation_id"])
             self.assertTrue((self.directory / "request-ffffff.json").exists())
             self.release.touch()
             self.wait_file(response)

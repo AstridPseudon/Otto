@@ -1178,8 +1178,18 @@ class ManagerJourneyService:
             manager_continuation={"schedule_id": due.schedule_id, "native_session_id": due.target["native_id"],
                 "outcome": "prepared", "requested_continuation": {"settled_schedule_id": anchor}})
         self.server._save_state()
-        return self.host.submit({"command": "manager-task-settlement", "principal": state["manager"],
-                                 "schedule_id": due.schedule_id})
+        try:
+            return self.host.submit({"command": "manager-task-settlement", "principal": state["manager"],
+                                     "schedule_id": due.schedule_id})
+        except RuntimeError as exc:
+            # Preparation may outlive the initial drain check. The durable
+            # callback and committed task remain valid; only admission failed.
+            if (not self.host._closing or
+                    str(exc) != "execution host is draining; no new worker may be admitted"):
+                raise
+            return {"outcome": "held", "provider_called": False,
+                    "schedule_id": due.schedule_id, "callback_prepared": True,
+                    "reason": "owner began draining after callback preparation; resume this exact callback after restart"}
 
     def _refresh_refs(self) -> None:
         from herzchen.contracts import ResourceRef

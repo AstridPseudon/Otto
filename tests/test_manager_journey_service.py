@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from herzchen.contracts import ResourceRef
@@ -779,6 +780,68 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.assertEqual(delivered["outcome"], "succeeded", delivered)
         self.assertIn("uncertain_effects", application.provider.calls[-1])
         self.assertIn("remote_push", application.provider.calls[-1])
+
+
+class TaskSettlementDrainBoundaryTests(unittest.TestCase):
+    def fixture(self, *, closes=True, error=None):
+        state = {"manager": "same-manager", "schedule_id": "original-anchor"}
+        saved, prepared, submitted = [], [], []
+        service = object.__new__(ManagerJourneyService)
+        service.server = SimpleNamespace(state=state, _save_state=lambda: saved.append(dict(state)))
+        host = SimpleNamespace(_closing=False)
+        service.host = host
+
+        def prepare(**options):
+            prepared.append(options)
+            host._closing = closes
+            return {"outcome": "prepared", "schedule_id": "exact-prepared-callback"}
+
+        def submit(request):
+            submitted.append(request)
+            if error is not None:
+                raise RuntimeError(error)
+            return {"outcome": "admitted", "schedule_id": request["schedule_id"]}
+
+        host.submit = submit
+        app = SimpleNamespace(continue_manager_after_tasks=prepare,
+            _read=lambda schedule: SimpleNamespace(schedule_id=schedule, in_flight_request="original-key",
+                instruction="original-instruction", target={"native_id": "same-native-session"}))
+        return service, app, state, saved, prepared, submitted
+
+    def test_drain_after_preparation_preserves_exact_callback_and_completion(self):
+        service, app, state, saved, prepared, submitted = self.fixture(
+            error="execution host is draining; no new worker may be admitted")
+        result = service._retain_task_settlement(app)
+        self.assertEqual(result["outcome"], "held")
+        self.assertFalse(result["provider_called"])
+        self.assertTrue(result["callback_prepared"])
+        self.assertEqual(result["schedule_id"], "exact-prepared-callback")
+        self.assertEqual(state["manager_continuation"]["requested_continuation"]["settled_schedule_id"], "original-anchor")
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(len(submitted), 1)
+
+    def test_other_runtime_error_is_not_disguised_as_drain(self):
+        service, app, *_ = self.fixture(error="receipt admission corrupted")
+        with self.assertRaisesRegex(RuntimeError, "corrupted"):
+            service._retain_task_settlement(app)
+
+    def test_known_error_without_current_drain_is_not_disguised(self):
+        service, app, *_ = self.fixture(closes=False,
+            error="execution host is draining; no new worker may be admitted")
+        with self.assertRaisesRegex(RuntimeError, "draining"):
+            service._retain_task_settlement(app)
+
+    def test_already_draining_does_not_prepare_or_submit(self):
+        service, app, _, saved, prepared, submitted = self.fixture()
+        service.host._closing = True
+        self.assertEqual(service._retain_task_settlement(app)["outcome"], "held")
+        self.assertEqual((saved, prepared, submitted), ([], [], []))
+
+    def test_live_admission_keeps_original_behavior(self):
+        service, app, *_ = self.fixture(closes=False)
+        self.assertEqual(service._retain_task_settlement(app),
+            {"outcome": "admitted", "schedule_id": "exact-prepared-callback"})
 
 
 if __name__ == "__main__":
