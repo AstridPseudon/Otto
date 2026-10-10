@@ -1,0 +1,64 @@
+{
+  "started_at": "2026-10-10T04:45:04.521268+00:00",
+  "finished_at": "2026-10-10T04:45:04.839247+00:00",
+  "duration_seconds": 0.317920792,
+  "exit_status": 0,
+  "script_sha256": "1b8126970a92eff0dc2dc6179f19ff4a3b116b62bc27567e5e791e3360ab4d30",
+  "baseline_source_commit": "f7bbb885e0dd093b83c83e9cf684f91d5d4e95e3",
+  "baseline_path": "/tmp/d02-baseline-u4mg1ujx",
+  "baseline_create_exit_status": 0,
+  "baseline_rejection_exit_status": 0,
+  "successor_schema": "fnd-03.events.v2",
+  "successor_fingerprint": "026b6982ccb53a65e7182986c99119593b952a59e76965e40425be5bec00a27e",
+  "checks": [
+    "actual old writable admission",
+    "actual old Recovery snapshot creation",
+    "new read-only legacy admission",
+    "new legacy writable refusal",
+    "new Recovery restore of actual old snapshot",
+    "resumable successor migration",
+    "exact task receipt equality",
+    "actual old binary successor rejection"
+  ],
+  "migration_switch_receipt": {
+    "schema": "fnd.events-migration.v1",
+    "migration_id": "real-legacy",
+    "source": "/var/folders/0n/hj_vqrps2bz8pnbyvgd58k740000gn/T/d02-real-legacy-ae8c1j2f/owner.sqlite",
+    "backup": "/var/folders/0n/hj_vqrps2bz8pnbyvgd58k740000gn/T/d02-real-legacy-ae8c1j2f/backup.sqlite",
+    "backup_digest": "4e3e875b1c750664a5b0a4b52e90a0bb2c4019b41e58d982aaa68145dbc6c4db",
+    "successor_revision": "fnd-03.events.v2",
+    "successor_fingerprint": "026b6982ccb53a65e7182986c99119593b952a59e76965e40425be5bec00a27e",
+    "source_inventory": {
+      "store_metadata": {
+        "count": 4,
+        "sha256": "9331c6351998deb7c08ba8b5e5576228e6b8d8ca463ab2c948cb1082be97a7e6"
+      },
+      "identities": {
+        "count": 9,
+        "sha256": "1529439ec2eeec75322ef03ee2f7717426dc77ca63ff21b525871c949ad776f1"
+      },
+      "record_references": {
+        "count": 11,
+        "sha256": "15cbb0d866b2dfdff8c3a874a2caf906e40d6efe88465ac9214606698dcf73cc"
+      },
+      "event_sequences": {
+        "count": 2,
+        "sha256": "ddb217999715ef0fcbef291d806af4e2e7b6575ff2f859d4e60411a126e2e3e4"
+      },
+      "command_receipts": {
+        "count": 2,
+        "sha256": "bf4acfeba3ea425460ee1e04c71d7d0d88dd3833a92f942dfdc86ada029e1886"
+      },
+      "events": {
+        "count": 2,
+        "sha256": "8d1823ea95e8d99b84bb035a37789fdb52dee3e7d3d6de96948ddaac29b44264"
+      }
+    },
+    "projection_count": 2,
+    "projection_digest": "400eaf6ebcfecc8852358942830d98de0c8302bd043fca57d44709abba6e0923",
+    "legacy_chronology": "unknown"
+  },
+  "stdout": "baseline legacy writable admission and snapshot: PASS\nactual unchanged baseline binary rejects successor: PASS\n",
+  "provider_calls": 0,
+  "domain_replays": 0
+}

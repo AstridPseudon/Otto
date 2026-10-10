@@ -21,6 +21,8 @@ Read the guide relevant to your work:
 - [Worker](references/worker.md)
 - [Evidence workflow](../../../herzchen/packs/evidence_resource_pack/skill/SKILL.md)
 - [Recovery](recovery/SKILL.md) for interrupted or unknown operations
+- [Retained Events operator views](references/observability.md) for bounded
+  history presets and the honest initial Usage surface
 - [Command details](../../../../docs/manager-journey-commands.md) for delegation,
   results, artifacts and closure
 
@@ -40,3 +42,11 @@ or deliberate retention, consult the adopted Evidence workflow. Use its
 maintained commands and exact pins; do not require a new evidence document for
 routine messages and do not infer deletion authority from project completion,
 pack discovery, disable/remove, or a local materialization's absence.
+
+## Retained Events observability
+
+Use the existing `events` CLI family for Overview, Timeline, Agents,
+Tasks/reviews, Blockers, Usage, Recovery, and selected bounded detail. Every
+view is read-only and retains authorized project/date scope, coverage, lag,
+snapshot, and keyset continuation. A view never executes recovery, repair,
+backfill, or historical mutation advice.

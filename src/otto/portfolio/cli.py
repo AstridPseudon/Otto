@@ -16,6 +16,7 @@ from .assessment import OttoAssessment
 from .intake import OttoPortfolio, PortfolioError
 from .operating_brief import OperatingBriefError, prepare_canonical_operating_brief
 from .resource_sync import ResourceSyncError, resolve_assignment_attachments
+from .observability_views import VIEW_PRESETS
 
 
 TASK_VIEWS = ("all", "upcoming", "ready", "blocked", "in_progress", "completed")
@@ -79,6 +80,31 @@ def build_parser() -> argparse.ArgumentParser:
     recovery.add_argument("--limit", type=int, default=25)
     recovery.add_argument("--cursor")
     _add_format(recovery)
+
+    events = sub.add_parser("events", help="read bounded retained Events operator views")
+    events_sub = events.add_subparsers(dest="events_view", required=True)
+    for view_name in VIEW_PRESETS:
+        view_parser = events_sub.add_parser(view_name, help="read the authorized bounded %s view" % view_name)
+        view_parser.add_argument("--actor", required=True)
+        view_parser.add_argument("--project-ref", action="append", required=True,
+                                 help="authorized work.project ResourceRef JSON; repeat for up to 32 projects")
+        view_parser.add_argument("--from", dest="from_at")
+        view_parser.add_argument("--to", dest="to_at")
+        view_parser.add_argument("--timezone", dest="timezone_name")
+        view_parser.add_argument("--active-during", help="JSON [from,to) range for authorized active discovery")
+        view_parser.add_argument("--limit", type=int, default=50)
+        view_parser.add_argument("--cursor")
+        view_parser.add_argument("--snapshot", help="original snapshot JSON for continuation")
+        view_parser.add_argument("--filters", help="supported role/outcome/facet_type filter JSON")
+        _add_format(view_parser)
+    detail = events_sub.add_parser("detail", help="read one selected authorized bounded history detail")
+    detail.add_argument("--actor", required=True)
+    detail.add_argument("--project-ref", action="append", required=True,
+                        help="authorized work.project ResourceRef JSON; used to establish the grant scope")
+    detail.add_argument("--facet-id", required=True)
+    detail.add_argument("--snapshot", required=True, help="original snapshot JSON from an Events view")
+    detail.add_argument("--max-detail-bytes", type=int, default=64 * 1024)
+    _add_format(detail)
 
     overview = sub.add_parser("overview", help="read one project's overview and a task page")
     overview.add_argument("--actor", required=True)
@@ -885,6 +911,8 @@ def main(
     staged_bundle_context: Any = None,
     bound_actor: Optional[str] = None,
     direction_operations: Any = None,
+    observability_views: Any = None,
+    observability_grant: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -925,6 +953,8 @@ def main(
                     "project_inventory": "OttoPortfolio.list_projects",
                     "task_filters": "OttoPortfolio.list_work",
                     "recovery_discovery": "OttoPortfolio.find_and_continue (read-only; project or retained checkout/session locator required)",
+                    "events_operator_views": "python -m otto.portfolio.cli events {overview,timeline,agents,tasks-reviews,blockers,usage,recovery} --project-ref REF_JSON",
+                    "events_operator_detail": "python -m otto.portfolio.cli events detail --facet-id FACET_ID --snapshot SNAPSHOT_JSON",
                     "skills_index": "src/otto/portfolio/skills/SKILL.md (maintained Otto skill index)",
                     "recovery_skill": "src/otto/portfolio/skills/recovery/SKILL.md (inspect/resume/reassign/verify, including reminders)",
                     "task_detail": "python -m otto.portfolio.cli task --project-ref REF_JSON --task-ref REF_JSON",
@@ -936,6 +966,7 @@ def main(
                     "project_advisor_pair": "OttoPortfolio.pair_project_advisor -> existing ProjectSheet and ResponsibilityAssignments ports",
                     "operating_brief": "resolve_assignment_attachments -> prepare_canonical_operating_brief",
                     "direction": "DirectionSurface read/effective-context/whoami/initial-bind/draft/update/history/overview",
+                    "observability_views": "ObservabilityViews over the injected authenticated project-history reader",
                 },
                 "integration_state": {
                     "assessment_coverage": "available only when the accepted OttoAssessment facade is injected",
@@ -950,6 +981,7 @@ def main(
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
                 "operating_brief_injection": "Supply explicit canonical owner callbacks/readers through cli.main(argv, operating_brief_readers=...).",
                 "direction_injection": "Supply the owner-issued DirectionSurface through cli.main(argv, direction_operations=...).",
+                "observability_injection": "Supply the authenticated ObservabilityViews and grant through cli.main(argv, observability_views=..., observability_grant=...).",
             }
         elif args.command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
             project = _parse_ref(args.project_ref, "project_ref")
@@ -998,6 +1030,8 @@ def main(
                 checkout_ref=_parse_ref(args.checkout_ref, "checkout_ref") if args.checkout_ref else None,
                 session_id=args.session_id, cursor=args.cursor, limit=args.limit,
             )
+        elif args.command == "events":
+            result = _events_command(args, observability_views, observability_grant)
         elif args.command in {"overview", "tasks"}:
             project_ref = _parse_ref(args.project_ref, "project_ref") if args.project_ref else None
             parent_ref = _parse_ref(args.parent_ref, "parent_ref") if args.command == "tasks" and args.parent_ref else None
@@ -1050,6 +1084,40 @@ def main(
         result = _request_error(str(exc))
     _emit(result, getattr(args, "format", "json"))
     return _exit_code(result)
+
+
+def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[str, Any]:
+    if views is None:
+        return _surface_unavailable(
+            "otto.events.operator-view.v1", "observability_views_unavailable",
+            "Inject the authenticated ObservabilityViews facade at cli.main(..., observability_views=...).",
+        )
+    projects = tuple(_parse_ref(value, "project_ref") for value in args.project_ref)
+    if args.events_view == "detail":
+        snapshot = _parse_json(args.snapshot, "snapshot")
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("snapshot must be a JSON object")
+        return views.detail(
+            args.facet_id, snapshot=snapshot, grant=grant, actor=args.actor,
+            max_bytes=args.max_detail_bytes,
+        )
+    active_during = None
+    if args.active_during is not None:
+        active_during = _parse_json(args.active_during, "active_during")
+        if not isinstance(active_during, list) or len(active_during) != 2:
+            raise ValueError("active_during must be a JSON [from,to) pair")
+    snapshot = None if args.snapshot is None else _parse_json(args.snapshot, "snapshot")
+    if snapshot is not None and not isinstance(snapshot, Mapping):
+        raise ValueError("snapshot must be a JSON object")
+    filters = None if args.filters is None else _parse_json(args.filters, "filters")
+    if filters is not None and not isinstance(filters, Mapping):
+        raise ValueError("filters must be a JSON object")
+    return views.read(
+        args.events_view, projects=projects, from_at=args.from_at, to_at=args.to_at,
+        timezone_name=args.timezone_name, active_during=active_during, limit=args.limit,
+        cursor=args.cursor, snapshot=snapshot, grant=grant, actor=args.actor,
+        filters=filters,
+    )
 
 
 def _direction_command(args: argparse.Namespace, operations: Any) -> dict[str, Any]:

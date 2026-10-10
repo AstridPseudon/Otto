@@ -1,0 +1,16 @@
+test_compatible_socket_host_retains_service_and_refuses_a_competing_owner (tests.test_execution_application.ExecutionApplicationTests) ... ERROR
+
+======================================================================
+ERROR: test_compatible_socket_host_retains_service_and_refuses_a_competing_owner (tests.test_execution_application.ExecutionApplicationTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/d02-baseline-u4mg1ujx/tests/test_execution_application.py", line 588, in test_compatible_socket_host_retains_service_and_refuses_a_competing_owner
+    host.start()
+  File "/private/tmp/d02-baseline-u4mg1ujx/src/otto/portfolio/execution_host.py", line 273, in start
+    server.bind(str(self.socket_path))
+PermissionError: [Errno 1] Operation not permitted
+
+----------------------------------------------------------------------
+Ran 1 test in 0.060s
+
+FAILED (errors=1)

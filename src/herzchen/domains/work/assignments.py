@@ -253,6 +253,7 @@ class _ResponsibilityAssignmentsEngine:
                 {"record_type": "work.responsibility", "assignment": ref, "role": role, "principal": _json_safe(principal)},
                 version=0,
                 transaction=tx,
+                history_event_id=receipt.event_ids[0],
             )
             self.__writer.put_reference(responsibility_ref, transaction=tx)
         return self.get(ref), receipt

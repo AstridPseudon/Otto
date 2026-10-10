@@ -220,7 +220,7 @@ class _ProjectBatchesEngine:
                 stream="work:" + record.id,
                 transaction=tx,
             )
-            self._write_child_rows(tx, plan)
+            self._write_child_rows(tx, plan, receipt.event_ids[0])
         fresh = self.graph.get(record.ref)
         mappings = dict(plan["mappings"])
         return BatchResult(fresh, receipt, mappings, project_id=fresh.id)
@@ -675,7 +675,7 @@ class _ProjectBatchesEngine:
             if item.get("scope") not in (None, "", project.id, project.ref.to_dict()):
                 raise WorkValidationError("document change crosses the project scope")
 
-    def _write_child_rows(self, tx: Any, plan: Mapping[str, Any]) -> None:
+    def _write_child_rows(self, tx: Any, plan: Mapping[str, Any], history_event_id: str) -> None:
         for item in plan["planned"]:
             ref = item["ref"]
             payload = item["payload"]
@@ -696,20 +696,21 @@ class _ProjectBatchesEngine:
                     expected_version=current.version,
                     expected_edit_token=current.edit_token,
                     transaction=tx,
+                    history_event_id=history_event_id,
                 )
                 next_ref = revised.ref
             else:
                 next_ref = ResourceRef(ref.authority, ref.kind, ref.id, "rev-1")
-                self.__writer.put_identity(next_ref, payload, version=1, transaction=tx)
+                self.__writer.put_identity(next_ref, payload, version=1, transaction=tx, history_event_id=history_event_id)
                 self.__writer.put_reference(next_ref, transaction=tx)
             for value in payload.get("dependencies", ()):
                 self.__writer.put_reference(self._as_ref(value), transaction=tx)
         for doc in plan["documents"]["changes"]:
-            self._write_document_change(tx, doc)
+            self._write_document_change(tx, doc, history_event_id)
         for link in plan["documents"]["links"]:
             link_ref = link["ref"]
             if self.__writer.get_identity(link_ref) is None:
-                self.__writer.put_identity(ResourceRef(link_ref.authority, link_ref.kind, link_ref.id, "rev-1"), link["payload"], version=1, transaction=tx)
+                self.__writer.put_identity(ResourceRef(link_ref.authority, link_ref.kind, link_ref.id, "rev-1"), link["payload"], version=1, transaction=tx, history_event_id=history_event_id)
             else:
                 current = self.__writer.get_identity(link_ref)
                 assert current is not None
@@ -721,11 +722,12 @@ class _ProjectBatchesEngine:
                     expected_version=current.version,
                     expected_edit_token=current.edit_token,
                     transaction=tx,
+                    history_event_id=history_event_id,
                 )
                 link_ref = revised.ref
             self.__writer.put_reference(link_ref, transaction=tx)
 
-    def _write_document_change(self, tx: Any, change: Mapping[str, Any]) -> None:
+    def _write_document_change(self, tx: Any, change: Mapping[str, Any], history_event_id: str) -> None:
         document = change["document"]
         current = self.__writer.get_identity(document)
         # Recheck inside the transaction: a direction may have been created
@@ -737,10 +739,10 @@ class _ProjectBatchesEngine:
         revision = change["revision"]
         revision_ref = ResourceRef(document.authority, "dat.content.revision", "revision-" + hashlib.sha256((document.id + ":" + revision).encode()).hexdigest()[:28], revision)
         revision_payload = {"record_type": "dat.content.revision", "document": document, "revision": revision, "content": change["content"], "author": change.get("author"), "initial": current is None}
-        self.__writer.put_identity(revision_ref, revision_payload, version=0, transaction=tx)
+        self.__writer.put_identity(revision_ref, revision_payload, version=0, transaction=tx, history_event_id=history_event_id)
         head_payload = {"record_type": "dat.content.document", "document": document, "current_revision": revision_ref}
         if current is None:
-            self.__writer.put_identity(ResourceRef(document.authority, document.kind, document.id, revision), head_payload, version=1, transaction=tx)
+            self.__writer.put_identity(ResourceRef(document.authority, document.kind, document.id, revision), head_payload, version=1, transaction=tx, history_event_id=history_event_id)
         else:
             next_ref = self.__writer.revise_identity(
                 current.ref,
@@ -750,6 +752,7 @@ class _ProjectBatchesEngine:
                 expected_version=current.version,
                 expected_edit_token=current.edit_token,
                 transaction=tx,
+                history_event_id=history_event_id,
             ).ref
         self.__writer.put_reference(revision_ref, transaction=tx)
 

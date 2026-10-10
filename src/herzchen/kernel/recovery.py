@@ -33,7 +33,7 @@ from herzchen.contracts import (
     canonical_json,
 )
 
-from .schema import COMPOSITION, SCHEMA_FINGERPRINT, SCHEMA_REVISION
+from .schema import COMPOSITION, SCHEMA_FINGERPRINT, SCHEMA_REVISION, SUPPORTED_SCHEMAS
 from .store import Store, StoreError, TargetMismatchError, Transaction, VersionConflictError
 
 
@@ -408,7 +408,9 @@ def _validate_expectations(
         raise SnapshotValidationError("snapshot composition does not match caller expectation")
     if manifest.composition_digest != expected_composition_digest or expected_composition_digest != _composition_digest(expected):
         raise SnapshotValidationError("snapshot composition digest does not match caller expectation")
-    if manifest.schema_fingerprint != expected_schema_fingerprint or manifest.schema_revision != SCHEMA_REVISION:
+    admitted = SUPPORTED_SCHEMAS.get(manifest.schema_revision)
+    if (admitted is None or tuple(sorted(admitted[0])) != expected or
+        manifest.schema_fingerprint != admitted[1] or manifest.schema_fingerprint != expected_schema_fingerprint):
         raise SnapshotValidationError("snapshot schema identity does not match caller expectation")
 
 
@@ -689,8 +691,8 @@ def verify_restore_candidate(
         _assert_directory_identity(candidate, candidate_identity, RestoreActivationError)
         _copy_exact(journal, candidate / "journal-evidence" / ("database.sqlite3" + str(name)), SnapshotValidationError)
 
-    # Ordinary open is deliberately used only as a verifier.  It admits the
-    # exact existing composition and performs no migration or repair.
+    # Read-only admission verifies either supported exact composition and
+    # performs no migration or repair.
     try:
         domains = tuple(DomainContribution.from_dict(item) for item in manifest.domain_descriptors)
     except (TypeError, ValueError) as exc:
@@ -699,7 +701,7 @@ def verify_restore_candidate(
     _assert_directory_identity(candidate.parent, candidate_parent_identity, RestoreActivationError)
     _assert_directory_identity(candidate, candidate_identity, RestoreActivationError)
     _regular_file_stat(candidate_db, SnapshotValidationError)
-    checked = Store.open(candidate_db, authority=expected_authority, expected_domains=domains)
+    checked = Store.open_readonly(candidate_db, authority=expected_authority, expected_domains=domains)
     try:
         _verify_public_read_proof(checked, manifest.read_proof)
     finally:
@@ -1286,3 +1288,89 @@ __all__ = [
     "create_snapshot", "verify_restore_candidate", "restore_snapshot", "EventFilter", "EventPage", "EventCursorReader",
     "RecoveryToken", "EpochState", "SettlementRecord", "RecoveryManager", "IntervalState", "IntervalDecision", "IntervalController",
 ]
+
+
+# Closed-owner migration custody is the same durable writer boundary used by
+# Recovery and Store. It is not a boolean supplied by a pack/client.
+from contextlib import contextmanager
+
+_CLOSED_OWNER_CUSTODY_TOKEN = object()
+
+
+class ClosedOwnerCustody:
+    """An active exclusive lock on a closed durable owner installation."""
+    def __init__(self, path, authority, connection, domains, schema_revision, *, _token=None):
+        if _token is not _CLOSED_OWNER_CUSTODY_TOKEN:
+            raise SnapshotError("closed-owner custody is acquired through Recovery's maintained context")
+        self.path, self.authority, self.connection = path, authority, connection
+        self.domains, self.schema_revision = domains, schema_revision
+        self._active = True
+        self.source_file_state = _stable_file_state(path)
+
+    def require_active(self):
+        if not self._active:
+            raise SnapshotError("closed-owner custody is no longer active")
+
+
+@contextmanager
+def closed_owner_custody(path, *, authority, expected_domains=()):
+    """Fence existing owners, verify exact schema and settle SQLite sidecars.
+
+    The host must stop its service before entry. The actual Store lock enforces
+    that condition; a live owner causes WriterBusyError before any copying.
+    Domain/provider work is never invoked by custody or migration.
+    """
+    from .schema import SUPPORTED_SCHEMAS
+    path = Path(os.path.abspath(os.fspath(path)))
+    _regular_file_stat(path)
+    parent = _directory_identity(path.parent)
+    lock_fd = Store._acquire_lock(str(path))
+    connection, custody = None, None
+    try:
+        _assert_directory_identity(path.parent, parent)
+        connection = Store._connect(str(path))
+        metadata = dict(connection.execute("SELECT key, value FROM store_metadata"))
+        revision = metadata.get("schema_revision")
+        if revision not in SUPPORTED_SCHEMAS:
+            raise SnapshotValidationError("closed owner has an unsupported composition")
+        domains = Store._verify(connection, authority, expected_domains, schema_revision=revision)
+        if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise SnapshotValidationError("closed owner failed SQLite integrity verification")
+        # Use Recovery's established stable checkpoint boundary before backup
+        # or filesystem switch. Never carry a stale WAL across replacement.
+        if str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint[0] != 0:
+                raise SnapshotError("closed-owner WAL checkpoint is busy")
+        if str(connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]).lower() != "delete":
+            raise SnapshotError("closed owner could not settle journal mode")
+        custody = ClosedOwnerCustody(path, authority, connection, tuple(domains.values()), revision,
+                                    _token=_CLOSED_OWNER_CUSTODY_TOKEN)
+        yield custody
+    finally:
+        if custody is not None:
+            custody._active = False
+            # Switch replaces the connection while retaining the same custody.
+            custody.connection.close()
+        elif connection is not None:
+            connection.close()
+        Store._release_lock(lock_fd)
+
+
+def backup_closed_owner(custody, target, *, progress=None):
+    """Consistent Recovery backup under exclusive closed-owner custody."""
+    if not isinstance(custody, ClosedOwnerCustody):
+        raise TypeError("backup requires Recovery closed-owner custody")
+    custody.require_active()
+    target = Path(target)
+    _ensure_unused(target, SnapshotError)
+    destination = sqlite3.connect(str(target))
+    try:
+        custody.connection.backup(destination, pages=128, progress=progress)
+        if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise SnapshotValidationError("closed-owner backup failed integrity check")
+    finally:
+        destination.close()
+    with target.open("rb") as handle:
+        os.fsync(handle.fileno())
+    return _file_digest(target)

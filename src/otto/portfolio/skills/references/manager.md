@@ -16,6 +16,15 @@ and finish path. Decide reviewer proposals, add accepted corrections to normal
 planning and delegate them. Preserve original verdicts and consumed allowances.
 Worker success is not task acceptance.
 
+For retained Events work, inspect `events overview` first, then use the
+returned snapshot and keyset cursor for `timeline`, `agents`, `tasks-reviews`,
+`blockers`, `usage`, or `recovery`. Use `events detail` only for a selected
+authorized facet. Distinguish response from application and native result
+from task acceptance; name the actor when retained or say unknown. Never
+infer stuck state from age or completion percentage from mutable inventory.
+Usage reports known attempts and metric availability only. It does not claim
+accounting, cost, or zero for unavailable measurements.
+
 For Evidence work, cite exact immutable pins and distinguish source, test and
 installed proof. Use the maintained Evidence list/read/checkout/bundle flows;
 for retention, preview a bounded project-scoped historical selection and apply

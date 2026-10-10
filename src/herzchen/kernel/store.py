@@ -34,7 +34,10 @@ from herzchen.contracts import (
 )
 
 from herzchen.command_ports import command_facade
-from .schema import COMPOSITION, DDL, SCHEMA_FINGERPRINT, SCHEMA_REVISION
+from .schema import (COMPOSITION, DDL, SCHEMA_FINGERPRINT, SCHEMA_REVISION,
+                     LEGACY_SCHEMA_REVISION, SUPPORTED_SCHEMAS, verify_physical_schema)
+from .history import (HISTORY_SCHEMA, MAX_SUMMARY_BYTES, MAX_INLINE_FACETS,
+                      transition, project_relations)
 
 
 FND02_CONTRACT_REVISION = "fnd-02.v1.1"
@@ -47,6 +50,10 @@ class StoreError(RuntimeError):
 
 class StoreAdmissionError(StoreError):
     """The database is not an admitted FND-03 composition."""
+
+
+class MigrationRequiredError(StoreAdmissionError):
+    """Legacy stores require explicit closed-owner migration before writes."""
 
 
 class StoreExistsError(StoreAdmissionError):
@@ -635,6 +642,9 @@ class Transaction:
         self._savepoint_number = 0
         self._domain_working: Dict[str, DomainContribution] = {}
         self._domain_digest = store._domain_descriptor_digest
+        self._history: Dict[str, list] = {}
+        self._after_commit = []
+        self._history_projection_scheduled = False
 
     def _require_active(self) -> None:
         self.store._require_open()
@@ -656,11 +666,22 @@ class Transaction:
     def _commit(self) -> None:
         self._require_active()
         try:
+            self.store._flush_history(self)
             self.connection.execute("COMMIT")
             self.store._domain_descriptors = dict(self._domain_working)
             self.store._domain_descriptor_digest = self._domain_digest
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
         finally:
             self._active = False
+        # Cleanup is post-commit only. Failure retains recoverable residue and
+        # cannot turn accepted domain work into a rollback/error claim.
+        for callback in self._after_commit:
+            try:
+                callback()
+            except OSError:
+                pass
 
     def _rollback(self) -> None:
         if self._active:
@@ -684,6 +705,9 @@ class Transaction:
         name = "fnd_sp_{}".format(self._savepoint_number)
         domain_snapshot = dict(self._domain_working)
         digest_snapshot = self._domain_digest
+        history_snapshot = {key: len(facets) for key, facets in self._history.items()}
+        callback_count = len(self._after_commit)
+        projection_scheduled = self._history_projection_scheduled
         self.connection.execute("SAVEPOINT " + name)
         try:
             yield self
@@ -692,6 +716,9 @@ class Transaction:
             self.connection.execute("RELEASE SAVEPOINT " + name)
             self._domain_working = domain_snapshot
             self._domain_digest = digest_snapshot
+            self._history = {key: self._history[key][:size] for key, size in history_snapshot.items()}
+            del self._after_commit[callback_count:]
+            self._history_projection_scheduled = projection_scheduled
             raise
         else:
             self.connection.execute("RELEASE SAVEPOINT " + name)
@@ -724,6 +751,10 @@ class Store:
         self._domain_descriptors: Dict[str, DomainContribution] = dict(domain_descriptors or {})
         self._domain_descriptor_digest = _descriptor_digest(self._domain_descriptors.values())
         self._issued_handlers: set[DomainHandler] = set()
+        self._history_publisher = None
+        self._history_projection = None
+        self._history_projection_limit = 100
+        self._read_only = False
 
     @classmethod
     def create(cls, path: Union[os.PathLike, str], *, authority: str = "neutral-store") -> "Store":
@@ -743,6 +774,10 @@ class Store:
                 "schema_fingerprint": SCHEMA_FINGERPRINT,
                 "composition": canonical_json(COMPOSITION),
                 "store_authority": authority,
+                "source_next_append": "1",
+                "history_generation": "1",
+                "history_checkpoint": "0",
+                "legacy_append_boundary": "0",
                 "fnd02_contract_revision": FND02_CONTRACT_REVISION,
                 "fnd02_contract_digest": FND02_CONTRACT_DIGEST,
                 DOMAIN_DESCRIPTOR_DIGEST_KEY: EMPTY_DOMAIN_DESCRIPTOR_DIGEST,
@@ -761,13 +796,19 @@ class Store:
             raise
 
     @classmethod
-    def open(
+    def open(cls, path, *, authority="neutral-store", expected_domains=(), expected_domain_digest=None):
+        return cls._open(path, authority=authority, expected_domains=expected_domains,
+                         expected_domain_digest=expected_domain_digest)
+
+    @classmethod
+    def _open(
         cls,
         path: Union[os.PathLike, str],
         *,
         authority: str = "neutral-store",
         expected_domains: Sequence[DomainContribution] = (),
         expected_domain_digest: Optional[str] = None,
+        _migration_id: Optional[str] = None,
     ) -> "Store":
         path_text = os.fspath(path)
         if path_text == ":memory:":
@@ -779,12 +820,66 @@ class Store:
         try:
             connection = cls._connect(path_text)
             domains = cls._verify(connection, authority, expected_domains, expected_domain_digest)
+            metadata = dict(connection.execute("SELECT key,value FROM store_metadata"))
+            progress = metadata.get("migration_progress")
+            switch_receipt = json.loads(metadata.get("migration_switch_receipt", "null"))
+            phase = json.loads(progress)["phase"] if progress else None
+            valid_receipt = (isinstance(switch_receipt, Mapping) and
+                switch_receipt.get("schema") == "fnd.events-migration.v1" and
+                switch_receipt.get("migration_id") == metadata.get("migration_id") and
+                switch_receipt.get("successor_revision") == SCHEMA_REVISION and
+                switch_receipt.get("successor_fingerprint") == SCHEMA_FINGERPRINT)
+            installed = valid_receipt and (phase == "installed" or
+                (phase == "verified" and os.path.abspath(path_text) == switch_receipt.get("source")))
+            if progress and not installed and _migration_id != metadata.get("migration_id"):
+                raise MigrationRequiredError("migration candidate is not an installed writable owner")
+            if _migration_id is not None and _migration_id != metadata.get("migration_id"):
+                raise StoreAdmissionError("migration candidate identity mismatch")
             return cls(connection, lock_fd, path_text, authority, domains, _owner_token=_OWNER_CONSTRUCTION_TOKEN)
         except BaseException:
             if connection is not None:
                 connection.close()
             cls._release_lock(lock_fd)
             raise
+
+    @classmethod
+    def open_readonly(cls, path, *, authority="neutral-store", expected_domains=(), expected_domain_digest=None):
+        """Admit either supported composition without a writable capability.
+
+        Legacy reads remain current-head reads; this does not invent old-ref
+        state or implement the project history reader. The physical owner lock
+        is retained for the lifetime of this explicit inspection handle.
+        """
+        from pathlib import Path
+        path_text = os.fspath(path)
+        if not os.path.isfile(path_text) or os.path.islink(path_text):
+            raise StoreAdmissionError("read-only admission requires a regular durable file")
+        lock_fd, connection = cls._acquire_lock(path_text), None
+        try:
+            connection = sqlite3.connect(Path(path_text).absolute().as_uri() + "?mode=ro", uri=True,
+                                         isolation_level=None, check_same_thread=False)
+            connection.execute("PRAGMA foreign_keys=ON")
+            metadata = dict(connection.execute("SELECT key,value FROM store_metadata"))
+            revision = metadata.get("schema_revision")
+            domains = cls._verify(connection,authority,expected_domains,expected_domain_digest,
+                                  schema_revision=revision)
+            owner = cls(connection,lock_fd,path_text,authority,domains,_owner_token=_OWNER_CONSTRUCTION_TOKEN)
+            owner._read_only = True
+            return ReadOnlyStore(owner)
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            cls._release_lock(lock_fd)
+            raise
+
+    def defer_after_commit(self, callback):
+        """Trusted Evidence cleanup; retain sidecars on outer rollback."""
+        self._require_open()
+        tx = getattr(self._local, "transaction", None)
+        if tx is not None and tx._active:
+            tx._after_commit.append(callback)
+        else:
+            callback()
 
     @staticmethod
     def _connect(path: str) -> sqlite3.Connection:
@@ -834,16 +929,48 @@ class Store:
         authority: str,
         expected_domains: Sequence[DomainContribution] = (),
         expected_domain_digest: Optional[str] = None,
+        *, schema_revision: str = SCHEMA_REVISION,
     ) -> Dict[str, DomainContribution]:
         actual = cls._user_tables(connection)
-        expected = tuple(sorted(COMPOSITION))
-        if actual != expected:
-            raise CompositionMismatchError("declared tables do not exactly match FND-03 composition: {}".format(actual))
-        rows = dict(connection.execute("SELECT key, value FROM store_metadata").fetchall())
-        if rows.get("schema_revision") != SCHEMA_REVISION or rows.get("schema_fingerprint") != SCHEMA_FINGERPRINT:
-            raise SchemaMismatchError("schema revision or fingerprint is not the admitted FND-03 baseline")
-        if rows.get("composition") != canonical_json(COMPOSITION):
-            raise CompositionMismatchError("stored composition declaration is not the FND-03 composition")
+        if schema_revision not in SUPPORTED_SCHEMAS:
+            raise SchemaMismatchError("unsupported FND composition revision")
+        composition, fingerprint, _ddl = SUPPORTED_SCHEMAS[schema_revision]
+        rows = dict(connection.execute("SELECT key, value FROM store_metadata").fetchall()) if "store_metadata" in actual else {}
+        if rows.get("schema_revision") == LEGACY_SCHEMA_REVISION and schema_revision == SCHEMA_REVISION:
+            raise MigrationRequiredError("legacy FND requires explicit closed-owner migration before writable open")
+        if actual != tuple(sorted(composition)):
+            raise CompositionMismatchError("declared tables do not exactly match FND composition: {}".format(actual))
+        if rows.get("schema_revision") != schema_revision or rows.get("schema_fingerprint") != fingerprint:
+            raise SchemaMismatchError("schema revision or fingerprint is not an admitted FND composition")
+        if rows.get("composition") != canonical_json(composition):
+            raise CompositionMismatchError("stored composition declaration does not match")
+        if not verify_physical_schema(connection, schema_revision):
+            raise SchemaMismatchError("physical FND tables, constraints or indexes do not match")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise StoreAdmissionError("FND foreign-key relations are invalid")
+        if schema_revision == SCHEMA_REVISION:
+            try:
+                next_append = int(rows["source_next_append"])
+                generation = int(rows["history_generation"])
+                checkpoint = int(rows["history_checkpoint"])
+                legacy = int(rows["legacy_append_boundary"])
+                progress = json.loads(rows.get("migration_progress", "null"))
+                if progress is not None:
+                    if not isinstance(progress, dict) or progress.get("phase") not in {
+                        "copy", "order", "normalize", "backfill", "verify", "verified", "installed"}:
+                        raise ValueError("unsupported migration progress")
+                    if not rows.get("migration_id"):
+                        raise ValueError("migration continuation lacks identity")
+                if checkpoint < 0 or legacy < 0:
+                    raise ValueError("negative source/projection boundary")
+                if not progress or progress["phase"] in {"verified", "installed"}:
+                    count, maximum = connection.execute("SELECT count(*),coalesce(max(append_position),0) FROM events").fetchone()
+                    if count != maximum or next_append != maximum + 1 or not (0 <= checkpoint <= maximum and 0 <= legacy <= maximum):
+                        raise ValueError("source append boundary mismatch")
+                if generation < 1 or next_append < 1:
+                    raise ValueError("invalid source/projection generation")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise SchemaMismatchError("successor ordering/projection metadata is invalid") from exc
         if rows.get("store_authority") != authority:
             raise SchemaMismatchError("store authority does not match admission")
         if rows.get("fnd02_contract_revision") != FND02_CONTRACT_REVISION or rows.get("fnd02_contract_digest") != FND02_CONTRACT_DIGEST:
@@ -895,8 +1022,17 @@ class Store:
             return self._connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
     @contextmanager
+    def read_transaction(self):
+        """Trusted domain reads share the SQLite connection's owner mutex."""
+        with self._transaction_lock:
+            self._require_open()
+            yield
+
+    @contextmanager
     def transaction(self) -> Iterator[Transaction]:
         self._require_open()
+        if self._read_only:
+            raise StoreAdmissionError("read-only admission cannot mutate the owner")
         active = getattr(self._local, "transaction", None)
         if active is not None and active._active:
             # A nested transaction is a savepoint, so a caller may handle a
@@ -961,6 +1097,7 @@ class Store:
         version: int = 0,
         edit_token: Optional[str] = None,
         transaction: Optional[Transaction] = None,
+        history_event_id: Optional[str] = None,
     ) -> IdentityRecord:
         if not isinstance(ref, ResourceRef):
             raise TypeError("ref must be a ResourceRef")
@@ -974,10 +1111,10 @@ class Store:
         tx, own = self._active_or_transaction(transaction)
         if own:
             with self.transaction() as owned:
-                return self._put_identity(owned, ref, payload_json, version, edit_token)
-        return self._put_identity(tx, ref, payload_json, version, edit_token)
+                return self._put_identity(owned, ref, payload_json, version, edit_token, history_event_id)
+        return self._put_identity(tx, ref, payload_json, version, edit_token, history_event_id)
 
-    def _put_identity(self, tx: Transaction, ref: ResourceRef, payload_json: str, version: int, edit_token: Optional[str]) -> IdentityRecord:
+    def _put_identity(self, tx: Transaction, ref: ResourceRef, payload_json: str, version: int, edit_token: Optional[str], history_event_id: Optional[str] = None) -> IdentityRecord:
         now = _now()
         existing = tx.execute(
             "SELECT * FROM identities WHERE authority = ? AND kind = ? AND id = ?",
@@ -992,6 +1129,8 @@ class Store:
             "INSERT INTO identities(authority, kind, id, current_revision, version, edit_token, payload_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (ref.authority, ref.kind, ref.id, ref.revision, version, edit_token, payload_json, now, now),
         )
+        if history_event_id is not None:
+            self._capture_child(tx, history_event_id, None, None, ref, json.loads(payload_json))
         return IdentityRecord(ref, version, json.loads(payload_json), edit_token, now, now)
 
     def _identity_from_row(self, row: sqlite3.Row) -> IdentityRecord:
@@ -1120,6 +1259,7 @@ class Store:
         expected_version: int,
         expected_edit_token: Optional[str] = None,
         transaction: Optional[Transaction] = None,
+        history_event_id: Optional[str] = None,
     ) -> IdentityRecord:
         """CAS-revise one admitted identity through the common writer.
 
@@ -1156,8 +1296,8 @@ class Store:
         tx, own = self._active_or_transaction(transaction)
         if own:
             with self.transaction() as owned:
-                return self._revise_identity(owned, ref, new_ref, payload_json, expected_revision, expected_version, expected_edit_token)
-        return self._revise_identity(tx, ref, new_ref, payload_json, expected_revision, expected_version, expected_edit_token)
+                return self._revise_identity(owned, ref, new_ref, payload_json, expected_revision, expected_version, expected_edit_token, history_event_id)
+        return self._revise_identity(tx, ref, new_ref, payload_json, expected_revision, expected_version, expected_edit_token, history_event_id)
 
     def _revise_identity(
         self,
@@ -1168,6 +1308,7 @@ class Store:
         expected_revision: Optional[str],
         expected_version: int,
         expected_edit_token: Optional[str],
+        history_event_id: Optional[str] = None,
     ) -> IdentityRecord:
         with tx.savepoint():
             row = tx.execute(
@@ -1228,6 +1369,8 @@ class Store:
             ).fetchone()
             if revised is None:
                 raise StoreError("revised identity disappeared before readback")
+            if history_event_id is not None:
+                self._capture_child(tx, history_event_id, current.ref, current.payload, new_ref, json.loads(payload_json))
             return self._identity_from_row(revised)
 
     @property
@@ -1658,16 +1801,28 @@ class Store:
             for ref in before + after:
                 self._store_reference(tx, ref)
             recorded_at = _now()
+            effects = json.loads(effects_json)
+            if "history_summary" in effects:
+                raise StoreError("history_summary is reserved for the authoritative writer")
+            facet_type = "creation_or_revision"
+            if row is not None and current_payload.get("lifecycle") != persisted_payload.get("lifecycle"):
+                facet_type = "lifecycle_transition"
+            elif event_type in {"work.assignment.reassigned", "work.assignment.resources-adopted"}:
+                facet_type = "replacement_or_adoption"
+            primary = self._history_transition(tx, None if row is None else ResourceRef(target.authority, target.kind, target.id, current_revision),
+                                               None if row is None else current_payload, result_ref, persisted_payload, facet_type)
+            effects["history_summary"] = {"schema": HISTORY_SCHEMA, "primary": primary, "facets": []}
+            tx._history[event_id] = []
             event = EventEnvelope(
                 event_id, self.authority, stream_name, result_ref, event_schema_revision,
                 event_type, sequence, envelope.context.actor, envelope.operation,
                 envelope.context.correlation_id, envelope.context.causation_id,
-                recorded_at, occurred_at, before, after, json.loads(effects_json),
+                recorded_at, occurred_at, before, after, effects,
             )
             tx.execute(
-                "INSERT INTO events(event_id, store_authority, stream, subject_authority, subject_kind, subject_id, subject_revision, schema_revision, event_type, sequence, actor_authority, actor_id, credential_ref, correlation_id, causation_id, operation, recorded_at, occurred_at, before_refs_json, after_refs_json, effects_json, transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events(append_position, event_id, store_authority, stream, subject_authority, subject_kind, subject_id, subject_revision, schema_revision, event_type, sequence, actor_authority, actor_id, credential_ref, correlation_id, causation_id, operation, recorded_at, occurred_at, before_refs_json, after_refs_json, effects_json, transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    event.event_id, event.store_authority, event.stream, result_ref.authority, result_ref.kind,
+                    self._next_append(tx), event.event_id, event.store_authority, event.stream, result_ref.authority, result_ref.kind,
                     result_ref.id, result_ref.revision, event.schema_revision, event.event_type, event.sequence,
                     event.actor.authority, event.actor.actor, event.actor.credential_ref, event.correlation_id,
                     event.causation_id, event.operation, event.recorded_at, event.occurred_at,
@@ -1682,7 +1837,150 @@ class Store:
             )
             self._store_reference(tx, target)
             self._insert_receipt(tx, receipt)
+            self._schedule_history_projection(tx)
             return receipt
+
+    def _next_append(self, tx: Transaction) -> int:
+        row = tx.execute("SELECT value FROM store_metadata WHERE key = 'source_next_append'").fetchone()
+        if row is None:
+            raise StoreAdmissionError("source append allocator is missing")
+        position = int(row[0])
+        tx.execute("UPDATE store_metadata SET value = ? WHERE key = 'source_next_append'", (str(position + 1),))
+        return position
+
+    def configure_history_publisher(self, publisher) -> None:
+        """Trusted host composition only; never an exposed client endpoint."""
+        self._require_open()
+        if publisher is not None and not callable(publisher):
+            raise TypeError("history publisher must be callable")
+        self._history_publisher = publisher
+
+    def configure_history_projection(self, projection=None, *, manifest_reader=None,
+                                     batch_size: int = 100):
+        """Attach the bounded D03 projector at the owner composition boundary."""
+        from .project_history import ProjectHistoryProjection
+
+        if projection is None:
+            projection = ProjectHistoryProjection(self, manifest_reader=manifest_reader,
+                                                   default_batch=batch_size)
+        if not isinstance(projection, ProjectHistoryProjection) or projection.store is not self:
+            raise StoreError("history projection must be owned by this Store")
+        if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+            raise ValueError("batch_size must be between 1 and 1000")
+        self._history_projection = projection
+        self._history_projection_limit = batch_size
+        return projection
+
+    def project_history_projection(self):
+        """Return the configured projector, or construct an inert owner projector."""
+        if self._history_projection is None:
+            from .project_history import ProjectHistoryProjection
+            self._history_projection = ProjectHistoryProjection(self)
+        return self._history_projection
+
+    def project_history_reader(self, *, grant=None, grant_reader=None, evidence_reader=None):
+        from .project_history import ProjectHistoryReader
+        return ProjectHistoryReader(self, grant=grant, grant_reader=grant_reader,
+                                    evidence_reader=evidence_reader)
+
+    def maintain_project_history(self, *, limit=None):
+        return self.project_history_projection().maintain(limit=limit)
+
+    def rebuild_project_history(self, *, batch_size=None):
+        return self.project_history_projection().rebuild(batch_size=batch_size)
+
+    def _schedule_history_projection(self, tx: Transaction) -> None:
+        projection = self._history_projection
+        if projection is None or getattr(tx, "_history_projection_scheduled", False):
+            return
+        tx._history_projection_scheduled = True
+        tx._after_commit.append(lambda: projection.maintain(limit=self._history_projection_limit))
+
+    def _history_transition(self, tx, before_ref, before_payload, after_ref, after_payload,
+                            facet_type="creation_or_revision"):
+        summary = transition(before_ref, before_payload, after_ref, after_payload, facet_type=facet_type)
+        projects, resolutions = {}, []
+        # Task-scoped assignment membership is resolved from the exact task
+        # revision. A stale pin never borrows a changed current head.
+        for side, payload in (("before", before_payload), ("after", after_payload)):
+            if not payload:
+                continue
+            scope = payload.get("scope")
+            if isinstance(scope, ResourceRef):
+                scope = scope.to_dict()
+            if not (isinstance(scope, Mapping) and scope.get("kind") == "work.task"):
+                continue
+            identity = tx.execute("SELECT current_revision,payload_json FROM identities WHERE authority=? AND kind=? AND id=?",
+                (scope["authority"], scope["kind"], scope["id"])).fetchone()
+            task, provenance = None, "unknown-source-gap"
+            if identity and (scope.get("revision") is None or scope.get("revision") == identity[0]):
+                task, provenance = json.loads(identity[1]), "validated-exact-state-at-capture"
+            elif scope.get("revision") is not None:
+                historical = tx.execute("SELECT json_extract(effects_json,'$.history_summary.primary.after') FROM events "
+                    "WHERE subject_authority=? AND subject_kind=? AND subject_id=? AND subject_revision=? "
+                    "ORDER BY append_position DESC LIMIT 1",
+                    (scope["authority"],scope["kind"],scope["id"],scope["revision"])).fetchone()
+                if historical and historical[0]:
+                    captured = json.loads(historical[0])
+                    if captured.get("ref") == dict(scope):
+                        task, provenance = captured["fields"], "retained-exact-revision-summary"
+            resolutions.append({"side":side,"scope_ref":dict(scope),"coverage":provenance})
+            if task:
+                for field in ("project_ref", "parent"):
+                    project = task.get(field)
+                    if isinstance(project, Mapping) and project.get("kind") == "work.project":
+                        projects[(project["authority"], project["id"])] = project
+        summary["resolved_projects"] = [projects[k] for k in sorted(projects)]
+        summary["project_resolution"] = resolutions
+        if len(_json({"schema": HISTORY_SCHEMA, "primary": summary, "facets": []}).encode()) > MAX_SUMMARY_BYTES:
+            raise StoreError("individual typed history exceeds the inline bound")
+        return summary
+
+    def _capture_child(self, tx, event_id, before_ref, before_payload, after_ref, after_payload):
+        if event_id not in tx._history:
+            raise StoreError("child history requires a source event created in this transaction")
+        summary = self._history_transition(tx, before_ref, before_payload,
+            after_ref, after_payload, facet_type="project_sheet_batch_child" if after_ref.kind == "work.task" else "related_identity_change")
+        parent = tx.execute("SELECT subject_authority,subject_kind,subject_id,subject_revision,event_type FROM events WHERE event_id=?",
+                            (event_id,)).fetchone()
+        if parent[4] == "work.project-sheet.applied" and parent[1] == "work.project":
+            # Document revisions/associations have no intrinsic project field.
+            # Their exact parent sheet establishes this source relation without
+            # copying the sheet or inventing a child event.
+            project = ResourceRef(*parent[:4]).to_dict()
+            projects = {(p["authority"],p["id"]):p for p in summary["resolved_projects"]}
+            projects[(project["authority"],project["id"])] = project
+            summary["resolved_projects"] = [projects[k] for k in sorted(projects)]
+            summary["parent_source_ref"] = project
+        if len(_json(summary).encode()) > MAX_SUMMARY_BYTES:
+            raise StoreError("individual child history exceeds the bounded summary contract")
+        tx._history[event_id].append(summary)
+
+    def _flush_history(self, tx):
+        # Publication can append Evidence events to this transaction. Iterate
+        # until those new source events are sealed as well, without recursion.
+        sealed = set()
+        while set(tx._history) - sealed:
+            event_id = next(k for k in tx._history if k not in sealed)
+            facets = tx._history[event_id]
+            row = tx.execute("SELECT effects_json, after_refs_json FROM events WHERE event_id=?", (event_id,)).fetchone()
+            effects = json.loads(row[0])
+            history = effects["history_summary"]
+            history["facets"] = facets
+            if len(facets) > MAX_INLINE_FACETS or len(_json(history).encode()) > MAX_SUMMARY_BYTES:
+                projects = project_relations(history["primary"])
+                if self._history_publisher is None or len(projects) != 1:
+                    raise StoreError("large history requires the admitted Evidence publisher and one exact project")
+                manifest = self._history_publisher(event_id, tuple(facets), ResourceRef.from_dict(projects[0]))
+                pinned = ResourceRef.from_dict(manifest["ref"])
+                self._store_reference(tx, pinned)
+                history["manifest"], history["facets"] = manifest, []
+                refs = json.loads(row[1]) + [pinned.to_dict()]
+                tx.execute("UPDATE events SET after_refs_json=? WHERE event_id=?", (_json(refs), event_id))
+            if len(_json(history).encode()) > MAX_SUMMARY_BYTES:
+                raise StoreError("history summary and manifest locator exceed the inline bound")
+            tx.execute("UPDATE events SET effects_json=? WHERE event_id=?", (_json(effects), event_id))
+            sealed.add(event_id)
 
     def append_event(
         self,
@@ -1710,6 +2008,8 @@ class Store:
                 if prior != event:
                     raise StoreError("event identity was reused with different content")
                 return prior
+            if "history_summary" in event.effects:
+                raise StoreError("imported events cannot claim writer-validated historical state")
             identity = tx.execute(
                 "SELECT 1 FROM identities WHERE authority = ? AND kind = ? AND id = ?",
                 (event.subject.authority, event.subject.kind, event.subject.id),
@@ -1731,9 +2031,9 @@ class Store:
             else:
                 tx.execute("UPDATE event_sequences SET next_sequence = ? WHERE store_authority = ? AND stream = ?", (event.sequence + 1, self.authority, event.stream))
             tx.execute(
-                "INSERT INTO events(event_id, store_authority, stream, subject_authority, subject_kind, subject_id, subject_revision, schema_revision, event_type, sequence, actor_authority, actor_id, credential_ref, correlation_id, causation_id, operation, recorded_at, occurred_at, before_refs_json, after_refs_json, effects_json, transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events(append_position, event_id, store_authority, stream, subject_authority, subject_kind, subject_id, subject_revision, schema_revision, event_type, sequence, actor_authority, actor_id, credential_ref, correlation_id, causation_id, operation, recorded_at, occurred_at, before_refs_json, after_refs_json, effects_json, transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    event.event_id, event.store_authority, event.stream, event.subject.authority, event.subject.kind,
+                    self._next_append(tx), event.event_id, event.store_authority, event.stream, event.subject.authority, event.subject.kind,
                     event.subject.id, event.subject.revision, event.schema_revision, event.event_type, event.sequence,
                     event.actor.authority, event.actor.actor, event.actor.credential_ref, event.correlation_id,
                     event.causation_id, event.operation, event.recorded_at, event.occurred_at,
@@ -1741,6 +2041,7 @@ class Store:
                     _json(event.effects), transaction_id or "external-" + event.event_id,
                 ),
             )
+            self._schedule_history_projection(tx)
             return event
 
     def list_events(self, *, stream: Optional[str] = None,
@@ -1875,6 +2176,9 @@ class DomainHandler:
     def connection(self) -> sqlite3.Connection:
         return self._owner.connection
 
+    def read_transaction(self):
+        return self._owner.read_transaction()
+
     def transaction(self) -> Any:
         return self._owner.transaction()
 
@@ -1920,6 +2224,9 @@ class DomainHandler:
 
     def put_reference(self, *args: Any, **kwargs: Any) -> ResourceRef:
         return self._owner.put_reference(*args, **kwargs)
+
+    def defer_after_commit(self, callback):
+        self._owner.defer_after_commit(callback)
 
     def consumer(self) -> "ConsumerStore":
         return self._owner.consumer()
@@ -2007,6 +2314,18 @@ class ConsumerStore:
             kwargs["assessment_parent"] = assessment_parent
         return self.__owner.list_events(**kwargs)
 
+    def project_history_reader(self, *, grant=None, grant_reader=None, evidence_reader=None):
+        """Return the bounded D03 reader without exposing the owner SQL port."""
+        return self.__owner.project_history_reader(grant=grant, grant_reader=grant_reader,
+                                                   evidence_reader=evidence_reader)
+
+    def project_history_status(self) -> Mapping[str, Any]:
+        return self.__owner.project_history_projection().status()
+
+    def _project_history_owner(self):
+        """Private composition bridge used by the typed reader constructor."""
+        return self.__owner
+
     def snapshot_counts(self) -> Mapping[str, int]:
         """Return fresh durable counts without exposing a SQL execution port."""
         owner = self.__owner
@@ -2019,6 +2338,24 @@ class ConsumerStore:
             }
 
 
+class ReadOnlyStore(ConsumerStore):
+    """A closable inspection handle; no writer, SQL or command composition."""
+    __slots__ = ("__close_owner",)
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.__close_owner = owner
+
+    def close(self):
+        self.__close_owner.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
 SQLiteStore = Store
 RealmStore = Store
 
@@ -2029,7 +2366,7 @@ __all__ = [
     "OperationOwnerCapability",
     "coerce_operation_owner", "issue_operation_owner",
     "Transaction", "IdentityRecord", "command_facade",
-    "StoreError", "StoreAdmissionError", "StoreExistsError", "SchemaMismatchError",
+    "StoreError", "StoreAdmissionError", "StoreExistsError", "SchemaMismatchError", "MigrationRequiredError", "ReadOnlyStore",
     "CompositionMismatchError", "WriterBusyError", "ClosedStoreError",
     "TargetMismatchError", "VersionConflictError", "DescriptorDigestMismatchError",
     "DescriptorExpectationMismatchError", "MutationAdmissionError",

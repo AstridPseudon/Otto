@@ -592,17 +592,18 @@ class _WorkGraphEngine:
                             "json_extract(payload_json, '$.project_ref.kind') = ?",
                             "json_extract(payload_json, '$.project_ref.id') = ?"])
             args.extend([project.ref.authority, project.ref.kind, project.ref.id])
-        rows = self.__writer.connection.execute(
-            "SELECT authority, kind, id, current_revision FROM identities WHERE "
-            + " AND ".join(clauses) + " ORDER BY kind, id", args).fetchall()
-        ResourceRef = _contract_types()[3]
-        records = []
-        for row in rows:
-            ref = ResourceRef(row["authority"], row["kind"], row["id"], row["current_revision"])
-            identity = self.__writer.get_identity(ref)
-            if identity is not None:
-                records.append(self._from_identity(identity))
-        return tuple(records)
+        with self.__writer.read_transaction():
+            rows = self.__writer.connection.execute(
+                "SELECT authority, kind, id, current_revision FROM identities WHERE "
+                + " AND ".join(clauses) + " ORDER BY kind, id", args).fetchall()
+            ResourceRef = _contract_types()[3]
+            records = []
+            for row in rows:
+                ref = ResourceRef(row["authority"], row["kind"], row["id"], row["current_revision"])
+                identity = self.__writer.get_identity(ref)
+                if identity is not None:
+                    records.append(self._from_identity(identity))
+            return tuple(records)
 
     def _from_identity(self, identity: Any) -> WorkRecord:
         return self._from_payload(identity.ref, identity.version, identity.payload)

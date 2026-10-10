@@ -1,0 +1,364 @@
+{
+  "schema": "otto.events.d02.worker-result.v1",
+  "created_at": "2026-10-10T04:47:01.028452+00:00",
+  "status": "candidate_implemented_focused_verified_requires_manager_judgment",
+  "task_acceptance_recorded": false,
+  "project_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "kind": "work.project",
+    "id": "project-a39879605c476f89a2d8ad1637f5",
+    "revision": "rev-12"
+  },
+  "task_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "kind": "work.task",
+    "id": "task-9d6b7844238c51585a7fb80a2f66",
+    "revision": "rev-1"
+  },
+  "assignment_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "kind": "wrk.assignment",
+    "id": "assignment-49b2eafc417958101b830dab8b96",
+    "revision": "rev-2"
+  },
+  "generation": 1,
+  "principal": "otto-events-d02-worker-1",
+  "physical_session_id": "01a12407-f5e3-7e11-991d-91f2cd96d909",
+  "logical_request_key": "events-D02-worker-xhard-v1:launch",
+  "authority_provenance": "receiving-host-verified owner gateway delivery; leaf workspace source writes only",
+  "selected_execution": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "route": "xhard",
+    "source": "host-delivered canonical selected configuration"
+  },
+  "actual_execution_model_independent_telemetry": {
+    "state": "unavailable",
+    "model": null,
+    "reasoning": null
+  },
+  "native_terminal_exit_status": null,
+  "native_exit_status_responsibility": "owner capture after this turn returns",
+  "interpreter": {
+    "command": "/usr/bin/python3",
+    "resolved_path": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9",
+    "version": "3.9.6 (default, Apr 30 2025, 02:07:17) \n[Clang 17.0.0 (clang-1700.0.13.5)]"
+  },
+  "workspace": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/work/integration-owner",
+  "source_head": "f7bbb885e0dd093b83c83e9cf684f91d5d4e95e3",
+  "source_changed_paths_sha256": "f51fbb5227e508c2d4165c7c01fb522610fe5ed499b2113147507567d9a503ef",
+  "brief_sha256": "d01a8621a337bcceafb92b85a700a6c7299cdb59f6383ef44fe91db2f0286f33",
+  "invocation_sha256": "2d77b70fed25af58792b986fac0d790ebbe8872c7b069c6ffa5379351829db09",
+  "owner_delivery_sha256": "9cace1c595940ecf15171c70ebf2269a1f64702805d70fdf375e172ce2a5eb5a",
+  "adopted_immutable_skill": [
+    {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/controller/selected-pack-source/policy-staging/megado/skill/SKILL.md",
+      "bytes": 41681,
+      "sha256": "06e3af1354ce56bfe9725fb5bdfd08d43cd753b14f5f56d7a5da8e09e00145bf"
+    },
+    {
+      "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/controller/selected-pack-source/policy-staging/megado/skill/references/execution.md",
+      "bytes": 13534,
+      "sha256": "c3ecfe912f1f461f006ff21401961249eec40c08ed6f2b6dda711f3b548dc6fd"
+    }
+  ],
+  "accepted_dependency": {
+    "result_id": "result-7f4924e156dd9e470aa39d0c9f7b",
+    "gate": "journey:events-D01-review-v1:E01:accept",
+    "contract_digest": "087e4cf3a449250abce422815914aef788f25cda5979cc0507a2507379e77f82"
+  },
+  "changed_source_paths": [
+    {
+      "path": "src/herzchen/domains/work/assignments.py",
+      "bytes": 48947,
+      "sha256": "bd91b7cc88d339b5f859e2f328b192d99d6f1ebce82a5536100603cdb5ba313f"
+    },
+    {
+      "path": "src/herzchen/domains/work/batches.py",
+      "bytes": 63317,
+      "sha256": "d412d39a80c17ccc4ea1c9018bb375239cde39e9e66b8e1e9d6b98157ec6dc81"
+    },
+    {
+      "path": "src/herzchen/domains/work/module.py",
+      "bytes": 41140,
+      "sha256": "c53c12b5ed587cc629f77c2ad70c1c9099c9aeb7c99986d55810f0606f9cc341"
+    },
+    {
+      "path": "src/herzchen/evidence/commands.py",
+      "bytes": 122508,
+      "sha256": "104a2b01e462df97a0695a5bbd6b8b825d83abb21d9a9d526e5af24364635fcb"
+    },
+    {
+      "path": "src/herzchen/kernel/__init__.py",
+      "bytes": 4333,
+      "sha256": "ef46deb302b04d2c89a3fd9b0537ef66bbba7670e22265ed21f1401e73241765"
+    },
+    {
+      "path": "src/herzchen/kernel/recovery.py",
+      "bytes": 71064,
+      "sha256": "7464a16ac9a77aa7efe9da00e17ada5cfb9b2f974068d845a39d395a103a9c21"
+    },
+    {
+      "path": "src/herzchen/kernel/schema.py",
+      "bytes": 7149,
+      "sha256": "fb59cb3aa01d71560ef43e2088a4f076e5f13813243a90f164ca31ca9ff133f5"
+    },
+    {
+      "path": "src/herzchen/kernel/store.py",
+      "bytes": 117607,
+      "sha256": "40a1998f2f0e4a63c0dcf98e7615dcbd40957edc513543e4d2efd07ccd7fc277"
+    },
+    {
+      "path": "src/herzchen/kernel/history.py",
+      "bytes": 9364,
+      "sha256": "624b0788e4b71a15968a0a712469a9d6d899a75e857701dec79117b6b4e6f463"
+    },
+    {
+      "path": "src/herzchen/kernel/migration.py",
+      "bytes": 26837,
+      "sha256": "3955851aa2fc9c52b2ed77c42cbb2c84e198b7bedb4e68706b90358bcf38ad21"
+    },
+    {
+      "path": "src/herzchen/kernel/events-migration.md",
+      "bytes": 7433,
+      "sha256": "3c1cf03c0ee8ce4a8238310edbd3bb956c0e5cb672193ef7ab1ee371b6046f04"
+    },
+    {
+      "path": "src/herzchen/kernel/tests/test_events_history.py",
+      "bytes": 36128,
+      "sha256": "c79288fbf4ff36c6da66ac39154dae0d71833445af6259fe00bf2eb37f8bbc44"
+    },
+    {
+      "path": "src/otto/portfolio/manager_journey_command.py",
+      "bytes": 60357,
+      "sha256": "6569787cc7201fce21534f7fac0bdec8d665815d1be2d55cfa5f6045829b2d0a"
+    }
+  ],
+  "preserved_D01_dirty_paths": [
+    {
+      "path": "src/otto/portfolio/__init__.py",
+      "bytes": 6192,
+      "sha256": "7704098e1ee5f9760a958136038cf7279dd5b32d6207d54b973ef91da05fab98"
+    },
+    {
+      "path": "src/otto/portfolio/observability_contract.py",
+      "bytes": 17243,
+      "sha256": "c59e80a062399b2632c82f29691b7308d328d61bd0671b91363648d2bdc1eafc"
+    },
+    {
+      "path": "src/otto/portfolio/tests/test_observability_contract.py",
+      "bytes": 4799,
+      "sha256": "c766f1736777fb68140b18b8dcba37753f4ec876958489381bc1707d369e5dc8"
+    }
+  ],
+  "implemented": [
+    "Writer-reserved bounded pre/post history inside accepted identity/event/receipt transaction; exact membership, lifecycle and assignment generation/responsibility",
+    "Task/document/revision/association child facets attached to exact parent project-sheet event; no fabricated child event or full-sheet copy",
+    "Existing admitted Evidence publication, exact pin/digest/range and essential dependency hold; sidecar cleanup deferred to actual outer commit",
+    "Owner-wide durable transactional append allocation in authoritative events table; causal stream sequences preserved",
+    "Exact physical legacy read-only/new writable admission and maintained single project_history successor composition",
+    "Recovery exclusive closed-owner custody, consistent backup, bounded resumable raw copy/order/backfill, source equality and atomic path switch",
+    "Lost switch reconciliation after successor writes; no stale rollback or provider/domain replay",
+    "Explicit legacy field gaps and oversized field omission; stale pins never borrow changed current heads",
+    "Completion refresh recognizes only reserved schema field and preserves domain effect/actor/adoption checks"
+  ],
+  "schema_identity": {
+    "legacy_revision": "fnd-03.v1",
+    "legacy_fingerprint": "367b22e1a345e13539ce6cef0d302d507bebe36e73cda68010c4f037e8c1ca5c",
+    "successor_revision": "fnd-03.events.v2",
+    "successor_fingerprint": "026b6982ccb53a65e7182986c99119593b952a59e76965e40425be5bec00a27e"
+  },
+  "verification": {
+    "final_affected_suite": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "herzchen.kernel.tests.test_events_history",
+        "otto.portfolio.tests.test_observability_contract",
+        "tests.test_evidence_lifecycle",
+        "tests.test_evidence_reclaim",
+        "tests.test_evidence_projection",
+        "tests.test_execution_application",
+        "tests.test_manager_bootstrap_recovery",
+        "tests.test_final_recovery_composition",
+        "tests.test_existing_project_orchestration",
+        "tests.test_assignment_observation_lookup",
+        "tests.test_completion_project_refresh",
+        "tests.test_manager_journey_command",
+        "tests.test_manager_completion_command",
+        "tests.test_manager_completion_gate",
+        "-v"
+      ],
+      "environment": {
+        "PYTHONPATH": "src:tests"
+      },
+      "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/work/integration-owner",
+      "started_at": "2026-10-10T04:45:03.303530+00:00",
+      "finished_at": "2026-10-10T04:45:18.295865+00:00",
+      "duration_seconds": 14.991068541,
+      "exit_status": 1,
+      "tests": 142,
+      "passed": 141,
+      "errors": 1,
+      "failures": 0,
+      "qualification": "Unix socket bind blocked by sandbox; identical unchanged-baseline error; test retained unchanged"
+    },
+    "focused_D02": {
+      "fixtures": 26,
+      "passed": 26,
+      "inventory": [
+        "test_creation_revision_membership_and_lifecycle_are_atomic",
+        "test_batch_children_have_exact_parent_facets_without_child_events",
+        "test_batch_document_revision_and_association_facets_keep_parent_project",
+        "test_assignment_scope_generation_replacement_and_responsibility",
+        "test_concurrent_store_threads_allocate_owner_order_and_savepoint_rolls_back",
+        "test_large_batch_requires_evidence_and_failure_rolls_back_everything",
+        "test_real_evidence_manifest_pin_range_and_essential_history_protection",
+        "test_failed_outer_commit_retains_evidence_residue_without_domain_history",
+        "test_backup_and_candidate_preparation_interruptions_resume_same_input",
+        "test_legacy_readonly_admission_and_old_reference_truth",
+        "test_source_and_backup_tampering_and_projection_mismatch_refuse_switch",
+        "test_legacy_admission_custody_and_verbatim_migration",
+        "test_resume_interrupted_copy_order_backfill_and_both_sides_of_switch",
+        "test_receipts_logical_keys_decisions_and_real_limit_debits_are_preserved_without_replay",
+        "test_durable_append_resume_and_imported_event_replay",
+        "test_source_drift_backup_drift_and_pending_candidate_admission",
+        "test_recovery_successor_snapshot_restore_preserves_new_composition",
+        "test_closed_owner_custody_cannot_be_fabricated_or_reused_after_exit",
+        "test_recovery_restores_a_migrated_successor_to_a_fresh_path",
+        "test_stale_assignment_scope_uses_retained_exact_revision_not_current_head",
+        "test_individually_oversized_history_rejects_atomically",
+        "test_legacy_oversized_fields_are_disclosed_without_losing_source_bytes",
+        "test_switch_custody_closes_replacement_connection",
+        "test_unknown_migration_progress_cannot_weaken_admission",
+        "test_completion_bridge_preserves_exact_effect_checks_with_history_capture",
+        "test_physical_schema_tampering_is_rejected"
+      ]
+    },
+    "actual_legacy_and_recovery_proof": {
+      "exit_status": 0,
+      "checks": [
+        "actual old writable admission",
+        "actual old Recovery snapshot creation",
+        "new read-only legacy admission",
+        "new legacy writable refusal",
+        "new Recovery restore of actual old snapshot",
+        "resumable successor migration",
+        "exact task receipt equality",
+        "actual old binary successor rejection"
+      ],
+      "started_at": "2026-10-10T04:45:04.521268+00:00",
+      "finished_at": "2026-10-10T04:45:04.839247+00:00",
+      "duration_seconds": 0.317920792,
+      "baseline_source_commit": "f7bbb885e0dd093b83c83e9cf684f91d5d4e95e3",
+      "source_inventory": {
+        "store_metadata": {
+          "count": 4,
+          "sha256": "9331c6351998deb7c08ba8b5e5576228e6b8d8ca463ab2c948cb1082be97a7e6"
+        },
+        "identities": {
+          "count": 9,
+          "sha256": "1529439ec2eeec75322ef03ee2f7717426dc77ca63ff21b525871c949ad776f1"
+        },
+        "record_references": {
+          "count": 11,
+          "sha256": "15cbb0d866b2dfdff8c3a874a2caf906e40d6efe88465ac9214606698dcf73cc"
+        },
+        "event_sequences": {
+          "count": 2,
+          "sha256": "ddb217999715ef0fcbef291d806af4e2e7b6575ff2f859d4e60411a126e2e3e4"
+        },
+        "command_receipts": {
+          "count": 2,
+          "sha256": "bf4acfeba3ea425460ee1e04c71d7d0d88dd3833a92f942dfdc86ada029e1886"
+        },
+        "events": {
+          "count": 2,
+          "sha256": "8d1823ea95e8d99b84bb035a37789fdb52dee3e7d3d6de96948ddaac29b44264"
+        }
+      }
+    },
+    "baseline_socket_reproduction": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "tests.test_execution_application.ExecutionApplicationTests.test_compatible_socket_host_retains_service_and_refuses_a_competing_owner",
+        "-v"
+      ],
+      "environment": {
+        "PYTHONPATH": "src:tests"
+      },
+      "source_commit": "f7bbb885e0dd093b83c83e9cf684f91d5d4e95e3",
+      "exit_status": 1,
+      "error": "PermissionError [Errno 1] at server.bind"
+    },
+    "git_diff_check": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_status": 0
+    }
+  },
+  "unresolved_responsibilities": [
+    {
+      "owner": "manager/receiving owner",
+      "work": "Capture same occurrence, inspect evidence and judge E02; no worker acceptance performed"
+    },
+    {
+      "owner": "host qualification",
+      "work": "Run retained socket fixture where Unix socket bind is permitted"
+    },
+    {
+      "owner": "D03 worker",
+      "work": "Online projection batch/checkpoint/lag and post-commit maintenance, manifest range continuation, rebuild/snapshots and bounded reader"
+    },
+    {
+      "owner": "D05 host/owner",
+      "work": "Installed source/runtime/client/resource adoption, admitted Evidence publisher configuration, closed-service custody and installation migration"
+    },
+    {
+      "owner": "Usage/cost successor",
+      "work": "New capture, accounting and cost remain pending"
+    }
+  ],
+  "limits": [
+    "All migration/Evidence mutations exercised on disposable fixtures; no canonical owner database or controller changed",
+    "Individually oversized new typed history rejects atomically; large facet groups require admitted Evidence publisher and one exact source project",
+    "Stale task scope without retained exact primary revision summary remains a disclosed membership gap",
+    "Legacy cross-stream chronology and missing before-state/active intervals remain unknown; oversized fields remain in authoritative source bytes",
+    "No installed reader/views/online maintenance, deployment/publication/push/adoption, provider call or synthetic usage/cost delivered",
+    "D01 dirt preserved; no commit because repository metadata is outside writable workspace root"
+  ],
+  "handoff_document": "src/herzchen/kernel/events-migration.md",
+  "evidence_files": [
+    {
+      "path": "src/herzchen/kernel/tests/d02-evidence/baseline-socket.log",
+      "bytes": 953,
+      "sha256": "f913a342c0913d9f5c0ea0d0a8295919d520d11d549ff9c5e40a1abfd7d1852d"
+    },
+    {
+      "path": "src/herzchen/kernel/tests/d02-evidence/final-suite.json",
+      "bytes": 1050,
+      "sha256": "d3b7d85114826ef654d5c9940386521c91f9107bedd115cf8192a5488e1dc616"
+    },
+    {
+      "path": "src/herzchen/kernel/tests/d02-evidence/final-suite.log",
+      "bytes": 20192,
+      "sha256": "1cb2db4493a9c6f7970eaccc558935b9a0ae916fb540b8fd146c0ff61a1913c4"
+    },
+    {
+      "path": "src/herzchen/kernel/tests/d02-evidence/legacy-proof.json",
+      "bytes": 2675,
+      "sha256": "5a2b68539a7149442ce92657b284abee5afdd3d58e0c5d04674c03e6024ea3aa"
+    },
+    {
+      "path": "src/herzchen/kernel/tests/d02-evidence/legacy-proof.py",
+      "bytes": 5534,
+      "sha256": "1b8126970a92eff0dc2dc6179f19ff4a3b116b62bc27567e5e791e3360ab4d30"
+    }
+  ]
+}

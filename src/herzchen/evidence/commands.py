@@ -1347,8 +1347,15 @@ class _EvidenceCommandHandlerEngine:
         self._remove_sidecar(sidecar_path)
         return self._result(receipt, document_ref=target, manifest=manifest, operation=operation)
 
+    def _remove_sidecar(self, path: Path) -> None:
+        writer = self.__writer
+        if writer is not None and hasattr(writer, "defer_after_commit"):
+            writer.defer_after_commit(lambda: self._unlink_sidecar(path))
+        else:
+            self._unlink_sidecar(path)
+
     @staticmethod
-    def _remove_sidecar(path: Path) -> None:
+    def _unlink_sidecar(path: Path) -> None:
         try:
             path.unlink()
         except FileNotFoundError:

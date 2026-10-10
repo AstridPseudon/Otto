@@ -2,7 +2,7 @@
 
 This module contains declarations only.  Admission compares the complete
 composition and fingerprint before an existing database is opened for use;
-there is deliberately no migration or repair path here.
+migration is an explicit closed-owner operation, never ordinary open.
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ import json
 from typing import Tuple
 
 
-SCHEMA_REVISION = "fnd-03.v1"
+LEGACY_SCHEMA_REVISION = "fnd-03.v1"
 
 # This is the only table composition an FND-03 store may contain.  Product
 # domains persist their own records elsewhere and use the transaction port.
-COMPOSITION: Tuple[str, ...] = (
+LEGACY_COMPOSITION: Tuple[str, ...] = (
     "store_metadata",
     "identities",
     "record_references",
@@ -25,7 +25,7 @@ COMPOSITION: Tuple[str, ...] = (
     "events",
 )
 
-DDL = """
+LEGACY_DDL = """
 CREATE TABLE store_metadata (
     key TEXT PRIMARY KEY NOT NULL,
     value TEXT NOT NULL
@@ -119,15 +119,76 @@ def _canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-SCHEMA_FINGERPRINT = hashlib.sha256(
-    _canonical(
-        {
-            "revision": SCHEMA_REVISION,
-            "composition": COMPOSITION,
-            "ddl": DDL,
-        }
-    ).encode("utf-8")
-).hexdigest()
+def fingerprint(revision: str, composition: Tuple[str, ...], ddl: str) -> str:
+    return hashlib.sha256(_canonical({"revision": revision, "composition": composition,
+                                     "ddl": ddl}).encode("utf-8")).hexdigest()
 
 
-__all__ = ["COMPOSITION", "DDL", "SCHEMA_FINGERPRINT", "SCHEMA_REVISION"]
+LEGACY_SCHEMA_FINGERPRINT = fingerprint(LEGACY_SCHEMA_REVISION, LEGACY_COMPOSITION, LEGACY_DDL)
+SCHEMA_REVISION = "fnd-03.events.v2"
+COMPOSITION = LEGACY_COMPOSITION + ("project_history",)
+# Source ordering belongs to the existing authoritative event table. The
+# projection has no receipts or independent event authority.
+DDL = LEGACY_DDL.replace("    event_id TEXT PRIMARY KEY NOT NULL,",
+    "    event_id TEXT PRIMARY KEY NOT NULL,\n"
+    "    append_position INTEGER NOT NULL UNIQUE CHECK (append_position >= 1),") + """
+CREATE INDEX events_subject_revision ON events
+    (subject_authority, subject_kind, subject_id, subject_revision, append_position);
+CREATE TABLE project_history (
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    facet_id TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    facet_index INTEGER NOT NULL CHECK (facet_index >= 0),
+    source_append_position INTEGER NOT NULL CHECK (source_append_position >= 1),
+    stream TEXT NOT NULL,
+    stream_sequence INTEGER NOT NULL CHECK (stream_sequence >= 1),
+    project_authority TEXT,
+    project_id TEXT,
+    subject_authority TEXT NOT NULL,
+    subject_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    subject_revision TEXT,
+    recorded_at TEXT NOT NULL,
+    occurred_at TEXT,
+    facet_type TEXT NOT NULL,
+    role TEXT,
+    outcome TEXT,
+    summary_json TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    PRIMARY KEY (generation, facet_id),
+    UNIQUE (generation, source_event_id, facet_index, project_authority, project_id),
+    FOREIGN KEY (source_event_id) REFERENCES events(event_id) ON DELETE RESTRICT
+);
+CREATE INDEX history_project_time ON project_history
+    (generation, project_authority, project_id, recorded_at, source_append_position, facet_index, facet_id);
+CREATE INDEX history_subject_time ON project_history
+    (generation, project_authority, project_id, subject_kind, subject_id, recorded_at, source_append_position, facet_index);
+CREATE INDEX history_lifecycle ON project_history
+    (generation, project_authority, project_id, facet_type, subject_kind, subject_id, recorded_at, source_append_position);
+CREATE INDEX history_source ON project_history (generation, source_append_position, facet_index);
+CREATE INDEX history_role_outcome ON project_history
+    (generation, project_authority, project_id, role, outcome, recorded_at, source_append_position);
+"""
+SCHEMA_FINGERPRINT = fingerprint(SCHEMA_REVISION, COMPOSITION, DDL)
+SUPPORTED_SCHEMAS = {
+    LEGACY_SCHEMA_REVISION: (LEGACY_COMPOSITION, LEGACY_SCHEMA_FINGERPRINT, LEGACY_DDL),
+    SCHEMA_REVISION: (COMPOSITION, SCHEMA_FINGERPRINT, DDL),
+}
+
+
+def verify_physical_schema(connection, revision: str) -> bool:
+    """Compare tables, constraints and indexes, not just self-reported metadata."""
+    import sqlite3
+    expected = sqlite3.connect(":memory:")
+    try:
+        expected.executescript(SUPPORTED_SCHEMAS[revision][2])
+        sql = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        normalize = lambda rows: [tuple(row) for row in rows]
+        return normalize(connection.execute(sql)) == normalize(expected.execute(sql))
+    finally:
+        expected.close()
+
+
+__all__ = ["COMPOSITION", "DDL", "SCHEMA_FINGERPRINT", "SCHEMA_REVISION",
+           "LEGACY_COMPOSITION", "LEGACY_DDL", "LEGACY_SCHEMA_FINGERPRINT",
+           "LEGACY_SCHEMA_REVISION", "SUPPORTED_SCHEMAS", "verify_physical_schema"]

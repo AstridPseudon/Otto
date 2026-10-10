@@ -9,6 +9,13 @@ Implement within scope, preserve unrelated work and run relevant checks. Return
 actual candidate/source identity, artifact refs, test results and limitations.
 Your result does not accept the task, close the project or authorize deployment.
 
+When implementing or exercising retained Events views, preserve the reader's
+authorized project/date scope, coverage and keyset snapshot. Keep Overview's
+response/application and native-result/task-acceptance distinctions explicit;
+unknown actors and legacy gaps stay unknown. Usage may expose retained
+attempt inventory and explicit metric availability, but never invents totals,
+cost, or zero. Views are read-only and do not execute recovery or backfill.
+
 When the brief involves Evidence, use the adopted pack workflow and exact pins.
 Keep captured provenance immutable while treating annotations, aliases and
 checkout copies as separate mutations. A reclaim preview is not deletion;

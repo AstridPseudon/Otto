@@ -6,6 +6,7 @@ import json
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
+from herzchen.kernel.history import HISTORY_SCHEMA
 from .local_assessment_policy import LocalAssessmentPolicy
 from .owner_readers import json_value
 
@@ -588,6 +589,14 @@ class ManagerJourneyCommands:
             before = effects.get("from_assignment")
             after = effects.get("to_assignment")
             relation = effects.get("supervision", {})
+            history = effects.get("history_summary")
+            # FND reserves this capture field at the authoritative writer. It
+            # carries history, never authorization for the completion bridge.
+            allowed_effects = {"from_assignment", "to_assignment", "supervision", "root_resource_refresh"}
+            if history is not None:
+                if not isinstance(history, Mapping) or history.get("schema") != HISTORY_SCHEMA:
+                    raise PermissionError("completion project history summary is invalid")
+                allowed_effects.add("history_summary")
             if (event.event_type != "work.project.supervision-transferred"
                     or event.operation != "work.project.supervision.transfer"
                     or not isinstance(before, Mapping) or not isinstance(after, Mapping)
@@ -595,7 +604,7 @@ class ManagerJourneyCommands:
                     or before == after or relation.get("assignment_ref") != after
                     or relation.get("project_ref") != cursor.to_dict()
                     or not event.actor.authenticated
-                    or set(effects) - {"from_assignment", "to_assignment", "supervision", "root_resource_refresh"}):
+                    or set(effects) - allowed_effects):
                 raise PermissionError("completion project changed beyond same-root resource refresh")
             root_events = self.owner.graph.reader.list_events(stream="assignment:" + after["id"])
             adopted = [e for e in root_events if e.subject == ResourceRef.from_dict(after)

@@ -1,0 +1,157 @@
+test_assignment_scope_generation_replacement_and_responsibility (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_backup_and_candidate_preparation_interruptions_resume_same_input (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_batch_children_have_exact_parent_facets_without_child_events (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_batch_document_revision_and_association_facets_keep_parent_project (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_closed_owner_custody_cannot_be_fabricated_or_reused_after_exit (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_completion_bridge_preserves_exact_effect_checks_with_history_capture (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_concurrent_store_threads_allocate_owner_order_and_savepoint_rolls_back (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_creation_revision_membership_and_lifecycle_are_atomic (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_durable_append_resume_and_imported_event_replay (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_failed_outer_commit_retains_evidence_residue_without_domain_history (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_individually_oversized_history_rejects_atomically (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_large_batch_requires_evidence_and_failure_rolls_back_everything (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_legacy_admission_custody_and_verbatim_migration (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_legacy_oversized_fields_are_disclosed_without_losing_source_bytes (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_legacy_readonly_admission_and_old_reference_truth (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_physical_schema_tampering_is_rejected (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_real_evidence_manifest_pin_range_and_essential_history_protection (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_receipts_logical_keys_decisions_and_real_limit_debits_are_preserved_without_replay (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_recovery_restores_a_migrated_successor_to_a_fresh_path (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_recovery_successor_snapshot_restore_preserves_new_composition (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_resume_interrupted_copy_order_backfill_and_both_sides_of_switch (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_source_and_backup_tampering_and_projection_mismatch_refuse_switch (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_source_drift_backup_drift_and_pending_candidate_admission (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_stale_assignment_scope_uses_retained_exact_revision_not_current_head (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_switch_custody_closes_replacement_connection (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_unknown_migration_progress_cannot_weaken_admission (herzchen.kernel.tests.test_events_history.HistoryTests) ... ok
+test_fixture_inventory_covers_each_d01_qualification_risk (otto.portfolio.tests.test_observability_contract.ObservabilityContractTests) ... ok
+test_historical_contract_is_explicit_and_does_not_invent_legacy_state (otto.portfolio.tests.test_observability_contract.ObservabilityContractTests) ... ok
+test_observation_ref_is_reference_only_and_bounded (otto.portfolio.tests.test_observability_contract.ObservabilityContractTests) ... ok
+test_observation_ref_rejects_unbounded_summary_and_timezone_less_time (otto.portfolio.tests.test_observability_contract.ObservabilityContractTests) ... ok
+test_read_limits_bound_candidates_rows_projects_and_details (otto.portfolio.tests.test_observability_contract.ObservabilityContractTests) ... ok
+test_record_freezes_source_runtime_resource_and_contract_identity (otto.portfolio.tests.test_observability_contract.ObservabilityContractTests) ... ok
+test_payload_manifest_and_receipt_interruption_recover_same_capture (tests.test_evidence_lifecycle.EvidenceLifecycleTests) ... ok
+test_public_managed_discovery_rejects_unmanaged_and_incomplete_selection (tests.test_evidence_lifecycle.EvidenceLifecycleTests) ... ok
+test_text_binary_capture_bindings_resolution_and_replay_boundaries (tests.test_evidence_lifecycle.EvidenceLifecycleTests) ... ok
+test_version_checkin_legacy_inline_and_pack_pin_admission (tests.test_evidence_lifecycle.EvidenceLifecycleTests) ... ok
+test_changed_apply_input_is_rejected_before_a_second_file_effect (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_changed_pending_inputs_cannot_take_over_original_intent (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_concurrent_link_waits_for_intent_and_cannot_race_delete (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_dependency_change_after_preview_is_revalidated_and_unknown_fails_closed (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_explicit_lifecycle_authorization_is_distinct_from_read_authorization (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_filtered_owner_page_is_bounded_and_rejects_ambiguous_predicates (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_final_receipt_failure_leaves_durable_fence_and_same_key_reconciles (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_intent_admission_failure_precedes_any_file_effect (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_interrupted_delete_reconciles_absence_and_disable_preserves_data (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_missing_authoritative_dependency_resolver_fails_closed (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_missing_file_without_original_intent_is_not_attributed_to_reclaim (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_new_reference_after_preview_is_held_at_intent_boundary (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_optional_dependency_omission_cannot_clear_retained_hold (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_pending_intent_also_guards_context_packet_admission (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_pending_intent_blocks_all_content_link_ingress_and_payload_consumers (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_preview_apply_removes_managed_file_and_retains_tombstone (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_preview_includes_eligible_historical_versions (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_preview_work_is_bounded_before_selection_and_apply_does_not_discover (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_read_sharing_does_not_grant_purge_authority_or_preview_disclosure (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_reference_saturation_is_unknown_and_never_exhausts_history (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_rejected_large_history_is_not_json_parsed_before_page_limit (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_serialized_installed_surface_retains_owner_authority_and_returns_real_effect (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_stale_shared_and_dependency_holds_never_remove_files (tests.test_evidence_reclaim.EvidenceReclaimTests) ... ok
+test_alias_collision_returns_recoverable_partial_without_retargeting (tests.test_evidence_projection.EvidenceProjectionTests) ... ok
+test_annotation_and_aliases_preserve_immutable_pin (tests.test_evidence_projection.EvidenceProjectionTests) ... ok
+test_lazy_checkout_materialization_collision_and_local_absence (tests.test_evidence_projection.EvidenceProjectionTests) ... ok
+test_selected_archive_is_stored_and_output_collisions_are_rejected (tests.test_evidence_projection.EvidenceProjectionTests) ... ok
+test_selected_bundle_copies_exact_pins_and_reports_dependency_inventory (tests.test_evidence_projection.EvidenceProjectionTests) ... ok
+test_advisor_stale_recipient_is_rejected_before_provider_or_allowance (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_advisor_unknown_effect_retains_allowance_through_restart_and_does_not_repeat (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_assign_run_repair_publish_restart_and_same_request_duplicate (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_changed_input_on_same_request_is_rejected_before_provider (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_compatible_socket_host_retains_service_and_refuses_a_competing_owner (tests.test_execution_application.ExecutionApplicationTests) ... ERROR
+test_correction_resumes_exact_native_session_and_delivers_fresh_delta (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_host_trigger_pause_restart_and_stop_preserve_canonical_identity (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_inspected_worker_result_closes_task_through_public_manager_acceptance (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_manager_continuation_is_rebuilt_from_canonical_report_after_restart (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_manager_message_uses_exact_native_admission_and_restart_identity (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_ordinary_advisor_launch_resume_and_replay_share_one_allowance_owner (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_owner_custody_is_distinct_from_assignment_manager (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_parent_finishes_while_child_keeps_command_status_and_result_custody (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_partial_preparation_reuses_committed_assignment_after_clock_failure (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_prepared_instruction_is_durable_and_cannot_change_after_native_effect (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_restarted_file_host_recovers_pending_same_request_without_provider_replay (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_retained_manager_settlement_uses_the_same_normalized_contract_as_admission (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_retained_native_advisor_binding_survives_adoption_but_rejects_reassignment (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_scheduled_advisor_joins_real_attention_adoption_allowance_runtime_and_settlement (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_unknown_provider_effect_is_durable_and_not_replayed (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_worker_preparation_reads_document_revision_when_response_omits_record (tests.test_execution_application.ExecutionApplicationTests) ... ok
+test_missing_contract_stops_before_initializer_or_native_session (tests.test_manager_bootstrap_recovery.ManagerBootstrapRecoveryTests) ... ok
+test_foreign_known_scope_is_rejected_and_no_request_can_override_ports (tests.test_final_recovery_composition.ComposedReminderTests) ... ok
+test_installed_startup_readback_recovers_exact_lost_response_then_due_coalesces_once (tests.test_final_recovery_composition.ComposedReminderTests) ... ok
+test_native_recovery_diagnosis_remains_available_under_separate_reminder_hold (tests.test_final_recovery_composition.ComposedReminderTests) ... ok
+test_paused_and_mismatched_readback_hold_without_repeating_mutation (tests.test_final_recovery_composition.ComposedReminderTests) ... ok
+test_unavailable_composition_is_explicit_and_unknown_ids_do_not_admit_work (tests.test_final_recovery_composition.ComposedReminderTests) ... ok
+test_explicit_host_wake_is_observed_but_configuration_time_is_not (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_initial_covered_slot_without_request_or_completion_stays_unknown (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_mismatched_readback_remains_held_without_recreating_schedule (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_missed_slots_coalesce_and_paused_schedule_is_held (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_startup_holds_unknown_host_without_automation_id_before_due (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_startup_reconciles_lost_update_response_without_mutation_replay (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_status_keeps_absent_wake_unknown_and_separates_due_fields (tests.test_reminder_continuity.ReminderContinuityTests) ... ok
+test_default_project_reader_filters_current_records_before_payload_hydration (tests.test_final_recovery_composition.ScopedDiscoveryTests) ... ok
+test_duplicate_selection_and_retained_replay_are_safe (tests.test_existing_project_orchestration.ExistingProjectOrchestrationTests) ... ok
+test_foreign_target_and_stale_selected_inputs_are_rejected_before_effects (tests.test_existing_project_orchestration.ExistingProjectOrchestrationTests) ... ok
+test_noninert_pending_project_requires_assignment_pins (tests.test_existing_project_orchestration.ExistingProjectOrchestrationTests) ... ok
+test_pending_null_pins_cannot_hide_existing_assignment_or_partial_pins (tests.test_existing_project_orchestration.ExistingProjectOrchestrationTests) ... ok
+test_pending_unassigned_projects_attach_without_creating_managers (tests.test_existing_project_orchestration.ExistingProjectOrchestrationTests) ... ok
+test_preview_is_inert_and_valid_selection_attaches_all_projects (tests.test_existing_project_orchestration.ExistingProjectOrchestrationTests) ... ok
+test_exact_stream_and_revision_filters_without_global_payload_sort (tests.test_assignment_observation_lookup.AssignmentObservationLookupTests) ... ok
+test_exact_refresh_finish_and_replay_preserve_review_and_debit (tests.test_completion_project_refresh.CompletionProjectRefreshTests) ... ok
+test_missing_foreign_and_ambiguous_adoption_proof_reject_without_effect (tests.test_completion_project_refresh.CompletionProjectRefreshTests) ... ok
+test_pending_pin_missing_foreign_adoption_or_changed_criteria_rejects (tests.test_completion_project_refresh.CompletionProjectRefreshTests) ... ok
+test_pending_pin_refresh_appends_proof_then_exact_completion_and_replay (tests.test_completion_project_refresh.CompletionProjectRefreshTests) ... ok
+test_pending_pin_unrelated_edit_or_changed_review_proof_rejects_without_effect (tests.test_completion_project_refresh.CompletionProjectRefreshTests) ... ok
+test_unrelated_revision_in_chain_and_stale_generation_reject (tests.test_completion_project_refresh.CompletionProjectRefreshTests) ... ok
+test_cannot_change_shared_role_guidance_or_foreign_root (tests.test_root_direction_synchronization.RootDirectionSynchronizationTests) ... ok
+test_exact_rev2_to3_all_joins_effective_and_lost_response_recovery (tests.test_root_direction_synchronization.RootDirectionSynchronizationTests) ... ok
+test_failure_after_root_adoption_rolls_back_all_then_same_input_succeeds (tests.test_root_direction_synchronization.RootDirectionSynchronizationTests) ... ok
+test_omitted_or_changed_join_and_stale_generation_fail_without_scope_adoption (tests.test_root_direction_synchronization.RootDirectionSynchronizationTests) ... ok
+test_protected_external_owner_route_returns_full_context_and_replays (tests.test_root_direction_synchronization.RootDirectionSynchronizationTests) ... ok
+test_accepted_review_finishes_after_same_generation_resource_adoption_without_reassessment (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_client_definitions_request_judgment_without_owner_pins_or_pool_fields (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_completed_finish_rejects_changed_task_key_and_generation_without_effects (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_completed_finish_replays_exact_receipt_then_settles_later_task (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_current_reassigned_manager_can_review_and_close_with_distinct_orchestrator_epoch (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_existing_bound_pool_with_different_limits_is_rejected (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_native_completion_intent_waits_for_exact_settlement_without_provider_retry (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_one_operation_accepts_source_and_completes_replay_without_provider (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_project_finish_holds_unfinished_tasks_then_records_terminal_and_pending_settlement (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_retained_help_reports_are_hashed_without_reauthoring_or_extra_charge (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_review_reuses_precreated_bound_pool_from_a_different_setup_key (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_rework_never_accepts_and_repaired_evidence_uses_same_required_scope (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_unknown_missing_criteria_foreign_actor_and_stale_source_do_not_autoaccept (tests.test_manager_journey_command.ManagerJourneyCommandTests) ... ok
+test_cli_and_handler_forward_repeated_gates_and_optional_pins (tests.test_manager_completion_command.CompletionCommandTests) ... ok
+test_cli_preserves_rejected_owner_outcome (tests.test_manager_completion_command.CompletionCommandTests) ... ok
+test_cli_requires_gate_before_contacting_ipc (tests.test_manager_completion_command.CompletionCommandTests) ... ok
+test_handler_rejects_malformed_optional_refs_and_source_digest (tests.test_manager_completion_command.CompletionCommandTests) ... ok
+test_handler_rejects_missing_or_malformed_gates_before_owner_call (tests.test_manager_completion_command.CompletionCommandTests) ... ok
+test_required_fields_preserve_same_request_without_optional_pins (tests.test_manager_completion_command.CompletionCommandTests) ... ok
+test_cli_forwards_candidate_decisions_and_aligned_evidence (tests.test_manager_completion_gate.CompletionGateTests) ... ok
+test_initial_read_preserves_blockers_and_records_no_acceptance (tests.test_manager_completion_gate.CompletionGateTests) ... ok
+test_invalid_refs_and_hashes_reject_before_owner_read (tests.test_manager_completion_gate.CompletionGateTests) ... ok
+test_malformed_or_unavailable_owner_read_is_unknown (tests.test_manager_completion_gate.CompletionGateTests) ... ok
+test_unverified_required_evidence_is_unknown_without_blockers (tests.test_manager_completion_gate.CompletionGateTests) ... ok
+test_verified_or_not_required_is_clear_but_provisional (tests.test_manager_completion_gate.CompletionGateTests) ... ok
+
+======================================================================
+ERROR: test_compatible_socket_host_retains_service_and_refuses_a_competing_owner (tests.test_execution_application.ExecutionApplicationTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/work/integration-owner/tests/test_execution_application.py", line 588, in test_compatible_socket_host_retains_service_and_refuses_a_competing_owner
+    host.start()
+  File "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/work/integration-owner/src/otto/portfolio/execution_host.py", line 273, in start
+    server.bind(str(self.socket_path))
+PermissionError: [Errno 1] Operation not permitted
+
+----------------------------------------------------------------------
+Ran 142 tests in 14.381s
+
+FAILED (errors=1)

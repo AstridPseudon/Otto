@@ -1,0 +1,30 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "-m",
+    "unittest",
+    "herzchen.kernel.tests.test_events_history",
+    "otto.portfolio.tests.test_observability_contract",
+    "tests.test_evidence_lifecycle",
+    "tests.test_evidence_reclaim",
+    "tests.test_evidence_projection",
+    "tests.test_execution_application",
+    "tests.test_manager_bootstrap_recovery",
+    "tests.test_final_recovery_composition",
+    "tests.test_existing_project_orchestration",
+    "tests.test_assignment_observation_lookup",
+    "tests.test_completion_project_refresh",
+    "tests.test_manager_journey_command",
+    "tests.test_manager_completion_command",
+    "tests.test_manager_completion_gate",
+    "-v"
+  ],
+  "environment": {
+    "PYTHONPATH": "src:tests"
+  },
+  "cwd": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-events-observability-20261010/work/integration-owner",
+  "started_at": "2026-10-10T04:45:03.303530+00:00",
+  "finished_at": "2026-10-10T04:45:18.295865+00:00",
+  "duration_seconds": 14.991068541,
+  "exit_status": 1
+}
