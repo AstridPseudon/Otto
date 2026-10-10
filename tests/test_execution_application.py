@@ -362,6 +362,45 @@ class ExecutionApplicationTests(unittest.TestCase):
                 "brief": {"role": role, "mandate": "Advance useful project"}, "instruction_contract": contract})
         return assigned, guide.to_dict(), mandate["record"]["payload"]["current_revision"]
 
+    def test_prepared_resources_refresh_each_adoption_without_reusing_initial_receipt(self):
+        assignment, guide, mandate = self.role_handles("manager", "manager", "manager-session")
+        prepared = self.app.prepare_role(role="manager", project_ref=self.project.ref.to_dict(),
+            task_ref=self.task.ref.to_dict(), assignment_ref=assignment.ref.to_dict(), generation=1,
+            mandate_ref=mandate, context_refs=(guide, mandate), request_key="resource-refresh",
+            instruction="Inspect the existing result.", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="manager-session")
+        schedule = prepared["schedule_id"]
+        original = self.port.read_due(schedule)
+        current = assignment
+        for index in range(2):
+            current = self.app.assignments.adopt_resources(current.ref,
+                resources=current.payload["resource_adoptions"], expected_revision=current.revision,
+                expected_generation=1, logical_request_key="resource-refresh-adoption-" + str(index),
+                actor=self.actor)
+            refreshed = self.app.recover(schedule_id=schedule, execute=False)
+            self.assertEqual(refreshed["outcome"], "prepared", refreshed)
+            self.assertEqual(refreshed["assignment_ref"], current.ref.to_dict())
+            self.assertEqual(self.port.read_due(schedule)["target"]["assignment_ref"], current.ref.to_dict())
+            before = self.store.consumer().snapshot_counts()
+            self.compose()
+            self.assertEqual(self.app.recover(schedule_id=schedule, execute=False)["assignment_ref"], current.ref.to_dict())
+            self.assertEqual(self.store.consumer().snapshot_counts(), before)
+        self.assertEqual(self.provider.calls, [])
+        self.assertEqual(self.port.read_due(schedule)["host_evidence"]["resource_adoption"]["allowance_assignment_ref"],
+                         original["host_evidence"]["resource_adoption"]["allowance_assignment_ref"])
+        from otto.attention import InputChangedError
+        with self.assertRaises(InputChangedError):
+            self.port.reconcile_assignment_resources(schedule, assignment_ref=current.ref.to_dict(),
+                expected_version=self.port.read_due(schedule)["version"], request_id="resource-refresh:resources")
+        # A generation change remains a hard fence; no new key weakens it.
+        self.app.assignments.reassign(current.ref, principal="another-manager", expected_generation=1,
+            logical_request_key="resource-refresh-reassign", actor=self.actor)
+        before = self.store.consumer().snapshot_counts()
+        with self.assertRaisesRegex(ValueError, "generation is stale"):
+            self.app.recover(schedule_id=schedule, execute=False)
+        self.assertEqual(self.store.consumer().snapshot_counts(), before)
+        self.assertEqual(self.provider.calls, [])
+
     def test_manager_continuation_is_rebuilt_from_canonical_report_after_restart(self):
         assignment, guide, mandate = self.role_handles("manager", "manager", "manager-session")
         prepared = self.app.prepare_role(role="manager", project_ref=self.project.ref.to_dict(),

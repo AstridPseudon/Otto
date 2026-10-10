@@ -639,7 +639,13 @@ class ExecutionApplication:
         if due.assignment_ref != current.ref.to_dict():
             value = self.due_port.reconcile_assignment_resources(due.schedule_id,
                 assignment_ref=current.ref.to_dict(), expected_version=due.version,
-                request_id=due.invocation_identity + ":resources")
+                # Each authenticated adoption has its own immutable receipt. The
+                # initial preparation already used the legacy :resources key;
+                # reusing it after a later adoption correctly rejects changed
+                # input instead of refreshing this unattempted occurrence.
+                request_id=due.invocation_identity + ":resources:" + _digest({
+                    "assignment_ref": current.ref.to_dict(),
+                    "generation": current.generation}))
             due = DueRecord.from_dict(value)
         current = self._current(due.assignment_ref, due.generation)
         return self._manager_task_reference(self._manager_project_reference(due, current), current)
