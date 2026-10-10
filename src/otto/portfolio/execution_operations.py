@@ -991,6 +991,11 @@ def prepare_current_assignment_occurrence(
         "orchestrator", "project_advisor"
     }:
         expected_mode = "fresh_bounded_role"
+    if ((operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) == "manager"
+            and getattr(due, "execution_mode", None) == "fresh_manager"):
+        # The existing fresh_manager occurrence: the adapter's inert initializer
+        # creates the session and the owner authorizes it before useful input.
+        expected_mode = "fresh_manager"
     if expected_mode is None:
         raise OccurrencePreparationError("unsupported operation/lifecycle pair")
     if getattr(due, "execution_mode", None) != expected_mode:

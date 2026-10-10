@@ -280,16 +280,25 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
                 raise OperatingSetupError("configured role requires an exact active execution mandate contract")
             validate_execution_contract(prepared, due.profile, execution_manager=role == "manager")
             native = native_target_identity(due.target)
-            if native is None:
+            # A fresh manager (an adapter whose CLI creates its session at
+            # first launch) has no conversation yet by design: the inert
+            # initializer reports it and the owner authorizes it before any
+            # useful input. Every other role needs its bound conversation.
+            fresh_manager = (role == "manager" and due.execution_mode == "fresh_manager"
+                             and native is None and (due.host_evidence or {}).get("gateway_attempt") is None)
+            if native is None and not fresh_manager:
                 raise OperatingSetupError("selected role requires an actual bound conversation")
             assignment = prepared["assignment"]
             principal = assignment["principal"]
             principal_id = principal if isinstance(principal, str) else principal["id"]
             if due.recipient != principal_id or due.target.get("principal") != principal:
                 raise OperatingSetupError("selected role recipient differs from canonical principal")
-            native, conversation_source = verify_role_conversation(due=due, assignment=assignment,
-                project_ref=project_ref, due_port=runtime.due_port, actor=runtime.actor, binding_due=binding_due,
-                assignment_history_reader=getattr(runtime.operations, "_owner_reader", None))
+            if fresh_manager:
+                conversation_source = "fresh_manager_first_launch"
+            else:
+                native, conversation_source = verify_role_conversation(due=due, assignment=assignment,
+                    project_ref=project_ref, due_port=runtime.due_port, actor=runtime.actor, binding_due=binding_due,
+                    assignment_history_reader=getattr(runtime.operations, "_owner_reader", None))
             canonical = prepared["canonical_evidence"]
             introduction = role_introduction(canonical)
             roles[role] = {"schedule_id": schedule, "principal": assignment["principal"],

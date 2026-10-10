@@ -1,0 +1,191 @@
+"""Claude Code as a declared MANAGER through the existing owner admission hooks.
+
+Every provider stream here is SYNTHETIC (no model call). The real owner Store,
+Due, operating setup, gateway, owner authorization and capture are exercised;
+only the provider process is substituted. The macOS fence test runs the real
+sandbox-exec profile with a local probe, never the Claude CLI.
+"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from otto.agents.claude_cli import (ClaudeBindingError, ClaudeCliTransport, LauncherPin, MANAGER_TOOLS,
+                                    MacWriteScope, VERSION, WORKER_TOOLS, file_digest)
+from otto.agents.claude_adapter import ClaudeNativeResultVerifier, ClaudeWorkerAdapter, ROLE_PROFILES
+from otto.portfolio.operating_composition import SCHEMA
+import test_execution_application as owner_fixture
+
+MANAGER_PROCESS = r'''
+import sys,json,os,subprocess
+frame=json.loads(sys.stdin.readline());prompt=frame['message']['content'][0]['text'];session=frame.get('session_id') or 'manager-native-session'
+init=prompt.startswith('Initialize this session only.');tools=[] if init else sorted(['Bash','Edit','Glob','Grep','Read','Write']);cwd=os.getcwd()
+def emit(e): print(json.dumps(e),flush=True)
+emit({'type':'system','subtype':'init','session_id':session,'cwd':cwd,'model':'claude-haiku-5-5','permissionMode':'bypassPermissions','tools':tools,'mcp_servers':[],'plugins':[],'skills':[],'slash_commands':[]})
+emit({'type':'user','uuid':'input-init' if init else 'input-work','session_id':session,'message':{'role':'user','content':[{'type':'text','text':prompt}]}})
+if not init:
+ emit({'type':'assistant','uuid':'assistant-1','session_id':session,'message':{'role':'assistant','model':'claude-haiku-5-5','content':[{'type':'tool_use','id':'bash-1','name':'Bash','input':{'command':'ottoctl status'}}]}})
+ out=subprocess.run(['/bin/echo','status read'],capture_output=True,text=True).stdout
+ emit({'type':'user','uuid':'tool-result-1','session_id':session,'message':{'role':'user','content':[{'type':'tool_result','tool_use_id':'bash-1','is_error':False,'content':out}]}})
+emit({'type':'result','subtype':'success','is_error':False,'session_id':session,'uuid':'result-init' if init else 'result-work','result':'READY' if init else 'Manager turn: read status, delegated nothing yet.','usage':{'input_tokens':21,'output_tokens':9}})
+'''
+
+
+class SyntheticScope:
+    identity = MacWriteScope.identity
+
+    def __init__(self, root, state, *, subprocesses):
+        self.workspace, self.state_root, self.allow_subprocesses = root, state, subprocesses
+        self.pin = {'identity': self.identity, 'workspace': root, 'state_root': state,
+                    'evidence_kind': 'SYNTHETIC', 'subprocesses': subprocesses}
+
+    def preflight(self):
+        return {**self.pin, 'verified': True}
+
+    def wrap(self, command, **options):
+        return command
+
+
+def transport(root, state, *, tools, subprocesses, model='claude-haiku-5-5'):
+    executable = str(Path(sys.executable).resolve())
+    pin = LauncherPin(executable, executable, file_digest(Path(executable)), VERSION)
+    calls, processes = [], []
+
+    def factory(command, **kwargs):
+        calls.append(command)
+        process = subprocess.Popen([sys.executable, '-c', MANAGER_PROCESS], **kwargs)
+        processes.append(process)
+        return process
+
+    value = ClaudeCliTransport(pin, SyntheticScope(root, state, subprocesses=subprocesses), model=model,
+                               reasoning='medium', timeout_seconds=10, process_factory=factory, tools=tools,
+                               max_turns=ROLE_PROFILES['manager']['max_turns'] if 'Bash' in tools else 8)
+    value.calls, value.processes = calls, processes
+    return value
+
+
+class ClaudeManagerAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.f = owner_fixture.ExecutionApplicationTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.root = str(Path(self.f.temporary.name).resolve())
+        state = tempfile.TemporaryDirectory(prefix='otto-claude-manager-state-')
+        self.addCleanup(state.cleanup)
+        self.state = str(Path(state.name).resolve())
+        self.worker_t = transport(self.root, self.state, tools=WORKER_TOOLS, subprocesses=False)
+        self.manager_t = transport(self.root, self.state, tools=MANAGER_TOOLS, subprocesses=True)
+        self.observed = []
+
+        def observer(process, authorization):
+            self.observed.append((process.pid, authorization['role'], authorization['physical_session_id']))
+            return lambda: self.observed.append('cleanup')
+
+        self.adapter = ClaudeWorkerAdapter(owner='manager', source=self.root, worktree=self.root,
+            launcher_pin=self.manager_t.pin, state_root=self.state, requested_model='claude-haiku-5-5',
+            requested_reasoning='medium', transport=self.worker_t, roles=('worker', 'manager'),
+            manager_transport=self.manager_t, native_caller_socket=self.root + '/caller.sock',
+            native_process_observer=observer)
+        self.app = self.f.owner.execution_application(due_port=self.f.port, adapter=self.adapter,
+            clock=lambda: owner_fixture.NOW, manager_actor='manager',
+            native_result_verifier=ClaudeNativeResultVerifier())
+        self.f.app = self.app
+        self.assignment, self.guide, self.mandate = self.f.role_handles('manager', 'manager', None)
+
+    def role(self, **extra):
+        return dict(role='manager', project_ref=self.f.project.ref.to_dict(), task_ref=self.f.task.ref.to_dict(),
+                    assignment_ref=self.assignment.ref.to_dict(), generation=1, mandate_ref=self.mandate,
+                    context_refs=(self.guide, self.mandate), request_key='haiku-manager-turn',
+                    instruction='Read the project status and plan the next task.', model='claude-haiku-5-5',
+                    reasoning='medium', profile='workspace-write', **extra)
+
+    def test_manager_role_is_declared_and_default_composition_stays_a_leaf(self):
+        self.adapter.validate_owner_host_composition(role='manager', profile='workspace-write')
+        self.assertEqual(self.adapter.capabilities()['manager']['state'], 'unverified')
+        leaf = ClaudeWorkerAdapter(owner='w', source=self.root, worktree=self.root, launcher_pin=self.worker_t.pin,
+            state_root=self.state, requested_model='claude-haiku-5-5', transport=self.worker_t)
+        self.assertEqual(leaf.capabilities()['manager']['state'], 'unsupported')
+        self.assertNotIn('roles', leaf.pins())
+        with self.assertRaises(ClaudeBindingError):
+            leaf.validate_owner_host_composition(role='manager', profile='workspace-write')
+        with self.assertRaises(ClaudeBindingError):
+            ClaudeWorkerAdapter(owner='w', source=self.root, worktree=self.root, launcher_pin=self.worker_t.pin,
+                state_root=self.state, requested_model='m', transport=self.worker_t, roles=('coordinator',))
+        with self.assertRaises(ClaudeBindingError):
+            ClaudeCliTransport(self.worker_t.pin, SyntheticScope(self.root, self.state, subprocesses=False),
+                               model='m', reasoning='high', tools=MANAGER_TOOLS)
+
+    def test_existing_manager_still_requires_its_native_session_without_fresh_opt_in(self):
+        with self.assertRaisesRegex(Exception, 'existing native session'):
+            self.app.prepare_role(**self.role())
+
+    def test_fresh_haiku_manager_preview_is_inert_and_setup_ready(self):
+        counts = self.f.store.consumer().snapshot_counts()
+        preview = self.app.prepare_role(**self.role(fresh_manager=True), preview=True)
+        self.assertEqual(preview['due']['execution_mode'], 'fresh_manager')
+        self.assertIsNone(self.f.port.read_due(preview['schedule_id']))
+        setup = {'schema': SCHEMA, 'mode': 'manual',
+                 'roles': {'manager': {'assignment_ref': self.assignment.ref.to_dict(), 'generation': 1,
+                                       'task_ref': self.f.task.ref.to_dict(), 'mandate_ref': self.mandate,
+                                       'model': 'claude-haiku-5-5', 'reasoning': 'medium', 'fresh_manager': True}},
+                 'advisor_policy': {'mode': 'disabled', 'reason': 'The orchestrator supervises'},
+                 'acceptance_tasks': []}
+        composed = self.app.compose_operating_setup(project_ref=self.f.project.ref.to_dict(), operation='preview',
+                                                    setup=setup, request_key='haiku-setup')
+        self.assertEqual(composed['outcome'], 'preview', composed)
+        self.assertTrue(composed['readiness']['ready'], composed['readiness']['blockers'])
+        self.assertEqual(composed['readiness']['roles']['manager']['conversation_binding_source'],
+                         'fresh_manager_first_launch')
+        self.assertEqual(self.f.store.consumer().snapshot_counts(), counts)
+        self.assertEqual(self.manager_t.calls + self.worker_t.calls, [])
+
+    def test_fresh_haiku_manager_is_admitted_with_manager_tools_and_registered_process(self):
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        result = self.app.start(schedule_id=prepared['schedule_id'])
+        self.assertEqual(result['outcome'], 'succeeded', result)
+        self.assertEqual(len(self.manager_t.calls), 2)
+        self.assertEqual(self.worker_t.calls, [])
+        work = self.manager_t.calls[-1]
+        self.assertEqual(work[work.index('--tools') + 1], ','.join(MANAGER_TOOLS))
+        self.assertIn('Bash', work[work.index('--allowedTools') + 1:])
+        self.assertEqual(self.manager_t.calls[0][self.manager_t.calls[0].index('--tools') + 1], '')
+        due = self.f.port.read_due(prepared['schedule_id'])
+        admission = due['host_evidence']['gateway_attempt']['delivery_admission']
+        self.assertEqual(admission['physical_session_id'], 'manager-native-session')
+        self.assertEqual(self.observed[0][1:], ('manager', 'manager-native-session'))
+        self.assertEqual(self.observed[-1], 'cleanup')
+        self.assertEqual(self.app.start(schedule_id=prepared['schedule_id'])['outcome'], 'replayed')
+        self.assertEqual(len(self.manager_t.calls), 2)
+
+    def test_leaf_composition_refuses_the_manager_occurrence_before_any_process(self):
+        leaf = ClaudeWorkerAdapter(owner='manager', source=self.root, worktree=self.root,
+            launcher_pin=self.worker_t.pin, state_root=self.state, requested_model='claude-haiku-5-5',
+            requested_reasoning='medium', transport=self.worker_t)
+        app = self.f.owner.execution_application(due_port=self.f.port, adapter=leaf, manager_actor='manager',
+            clock=lambda: owner_fixture.NOW, native_result_verifier=ClaudeNativeResultVerifier())
+        prepared = app.prepare_role(**self.role(fresh_manager=True))
+        result = app.start(schedule_id=prepared['schedule_id'])
+        self.assertNotEqual(result['outcome'], 'succeeded')
+        self.assertEqual(self.worker_t.calls, [])
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').exists(), 'macOS fence')
+class ManagerFenceTests(unittest.TestCase):
+    def test_child_processes_run_and_inherit_the_write_fence(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as state:
+            scope = MacWriteScope(workspace, state, allow_subprocesses=True)
+            proof = scope.preflight()
+            self.assertTrue(proof['verified'])
+            self.assertTrue(proof['subprocesses'])
+            self.assertIn('child process', proof['proof'])
+            leaf = MacWriteScope(workspace, state)
+            self.assertNotIn('subprocesses', leaf.pin)
+            self.assertIn('(deny process-exec)', leaf.policy)
+            self.assertNotIn('(deny process-exec)', scope.policy)
+
+
+if __name__ == '__main__':
+    unittest.main()

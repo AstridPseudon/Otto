@@ -26,6 +26,12 @@ VERSION = "2.1.293 (Claude Code)"
 MAX_LINE = 256 * 1024
 MAX_STREAM = 2 * 1024 * 1024
 MAX_ARTIFACT = 65536
+# Tool surfaces per role profile. A worker leaf reads and writes files only; a
+# manager also runs commands (tests, git, the owner's installed client) and
+# edits files. Agent/Task, MCP and web tools stay disabled for both, so no
+# provider-native child can escape owner custody.
+WORKER_TOOLS = ('Read', 'Write')
+MANAGER_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
 
 
 def digest(value: Any) -> str:
@@ -126,7 +132,8 @@ class MacWriteScope:
     """
     identity = "otto.claude-macos-file-write-scope.v1"
 
-    def __init__(self, workspace: str, state_root: str, *, authentication: str = 'isolated'):
+    def __init__(self, workspace: str, state_root: str, *, authentication: str = 'isolated',
+                 allow_subprocesses: bool = False, extra_write_roots: Any = ()):
         self.workspace = str(Path(workspace).resolve(strict=True))
         self.state_root = str(Path(state_root).resolve(strict=True))
         if (not Path(self.workspace).is_dir() or not Path(self.state_root).is_dir()
@@ -151,21 +158,38 @@ class MacWriteScope:
             helper = Path('/usr/bin/security')
             self.auth_helper = {'executable': str(helper), 'sha256': file_digest(helper),
                                 'lock': str(lock.resolve(strict=True))}
+        if type(allow_subprocesses) is not bool:
+            raise ClaudeBindingError('allow_subprocesses must be explicit')
+        self.allow_subprocesses = allow_subprocesses
+        extra = []
+        for root in tuple(extra_write_roots):
+            resolved = Path(root).resolve(strict=True)
+            if not resolved.is_dir() or any(part in {'.git', '.agents', '.codex', '.aws', '.claude'} for part in resolved.parts):
+                raise ClaudeBindingError('extra write roots must be existing unprotected directories')
+            extra.append(str(resolved))
+        self.extra_write_roots = tuple(dict.fromkeys(extra))
         quote = json.dumps
-        self.policy = ('(version 1)(allow default)(deny file-write*)(deny process-fork)(deny process-exec)'
+        # A manager profile runs commands: its children inherit this same
+        # write fence, so only process creation is relaxed, never file writes.
+        self.policy = ('(version 1)(allow default)(deny file-write*)'
+            + ('' if allow_subprocesses else '(deny process-fork)(deny process-exec)')
             + ''.join('(allow file-write* (subpath ' + quote(root) + '))'
-                      for root in (self.workspace, self.state_root))
+                      for root in (self.workspace, self.state_root, *self.extra_write_roots))
             + '(allow file-write* (literal "/dev/null"))'
             + ''.join('(deny file-write* (subpath ' + quote(str(Path(self.workspace) / name)) + '))'
                       for name in ('.git', '.agents', '.codex', '.aws', '.claude')))
         if self.auth_helper:
-            self.policy += ('(allow process-fork)(allow process-exec (literal "/usr/bin/security"))'
-                            '(allow file-write-data (literal ' + quote(self.auth_helper['lock']) + '))')
+            self.policy += (('' if allow_subprocesses else
+                             '(allow process-fork)(allow process-exec (literal "/usr/bin/security"))')
+                            + '(allow file-write-data (literal ' + quote(self.auth_helper['lock']) + '))')
         self.pin = {"authentication": authentication, "auth_helper": self.auth_helper,
                     "identity": self.identity, "workspace": self.workspace,
                     "state_root": self.state_root, "policy_sha256": hashlib.sha256(self.policy.encode()).hexdigest(),
                     "sandbox_runner": '/usr/bin/sandbox-exec',
                     "sandbox_runner_sha256": file_digest(Path('/usr/bin/sandbox-exec'))}
+        if allow_subprocesses or self.extra_write_roots:
+            # Leaf pins stay byte-identical; only an extended profile adds keys.
+            self.pin.update(subprocesses=allow_subprocesses, extra_write_roots=list(self.extra_write_roots))
         self.preflight_interpreter = dict(_preflight_interpreter())
 
     def preflight(self) -> Mapping[str, Any]:
@@ -188,12 +212,20 @@ class MacWriteScope:
                  'b=tempfile.NamedTemporaryFile(dir=sys.argv[2]); b.write(b"scope"); b.flush(); '
                  '\ntry:\n f=tempfile.NamedTemporaryFile(dir="/private/tmp")\n f.close()\n sys.exit(9)'
                  '\nexcept PermissionError: pass')
+        if self.allow_subprocesses:
+            # A child process must start, and must inherit the write fence.
+            probe += ('\nimport subprocess'
+                      '\nif subprocess.run(["/usr/bin/true"]).returncode: sys.exit(10)'
+                      '\nescape="/private/tmp/otto-scope-probe-%d" % os.getpid()'
+                      '\nif subprocess.run(["/usr/bin/touch", escape], stderr=subprocess.DEVNULL).returncode == 0:'
+                      '\n os.unlink(escape); sys.exit(11)')
         result = subprocess.run(self.wrap([str(interpreter), '-c', probe, self.workspace, self.state_root]),
                                 capture_output=True, text=True, timeout=10)
         if result.returncode:
             raise ClaudeBindingError("OS scope preflight failed: " + result.stderr[:512])
         return {**self.pin, "preflight_interpreter": dict(self.preflight_interpreter),
-                "verified": True, "proof": "permitted writes and denied outside-root create"}
+                "verified": True, "proof": "permitted writes and denied outside-root create"
+                + ("; child process started and inherited the write fence" if self.allow_subprocesses else "")}
 
     def wrap(self, command: list[str], *, initializer: bool = False) -> list[str]:
         # Initializer hooks cannot write task files even before native init.
@@ -357,7 +389,8 @@ class ClaudeCliTransport:
 
     def __init__(self, pin: LauncherPin, scope: MacWriteScope, *, model: str, reasoning: str,
                  timeout_seconds: float = 120, process_factory: Callable[..., Any] = subprocess.Popen,
-                 authentication: str = 'existing-user'):
+                 authentication: str = 'existing-user', tools: tuple = WORKER_TOOLS,
+                 max_turns: int = 8, extra_env: Mapping[str, str] | None = None):
         if authentication not in {'existing-user', 'isolated'}:
             raise ClaudeBindingError('unsupported authentication profile')
         self.authentication = authentication
@@ -368,6 +401,19 @@ class ClaudeCliTransport:
         if type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 1800:
             raise ClaudeBindingError("bounded finite owner timeout required")
         self.timeout_seconds, self.process_factory = timeout_seconds, process_factory
+        tools = tuple(tools)
+        if not tools or set(tools) - set(MANAGER_TOOLS) or len(set(tools)) != len(tools):
+            raise ClaudeBindingError("tool surface must be a subset of the qualified manager tools")
+        if type(max_turns) is not int or not 1 <= max_turns <= 500:
+            raise ClaudeBindingError("bounded native turn limit required")
+        if 'Bash' in tools and not getattr(scope, 'allow_subprocesses', False):
+            raise ClaudeBindingError("Bash requires a scope that admits fenced child processes")
+        self.tools, self.max_turns = tools, max_turns
+        extra_env = dict(extra_env or {})
+        if any(not isinstance(k, str) or not k.startswith('OTTO_') or not isinstance(v, str) or '\x00' in v
+               for k, v in extra_env.items()):
+            raise ClaudeBindingError("extra environment is limited to OTTO_* text values")
+        self.extra_env = extra_env
 
     def preflight(self) -> Mapping[str, Any]:
         self.pin.verify()
@@ -384,22 +430,24 @@ class ClaudeCliTransport:
                if not key.startswith(('CLAUDE_', 'ANTHROPIC_'))}
         env.update(CLAUDE_CODE_SAFE_MODE='1',
                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
-                   TMPDIR=self.scope.state_root)
+                   TMPDIR=self.scope.state_root, **getattr(self, 'extra_env', {}))
         if self.authentication == 'isolated':
             env['CLAUDE_CONFIG_DIR'] = self.scope.state_root
         return env
 
     def run(self, prompt: str, *, session: str | None = None,
-            initializer: bool = False, on_init: Any = None, on_input: Any = None, on_usage: Any = None) -> Mapping[str, Any]:
+            initializer: bool = False, on_init: Any = None, on_input: Any = None, on_usage: Any = None,
+            on_process: Any = None) -> Mapping[str, Any]:
         proof = self.preflight()  # Before process creation, including initialization.
-        tools = () if initializer else ('Read', 'Write')
+        tools = () if initializer else self.tools
         command = [self.pin.realpath, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
                    '--verbose', '--replay-user-messages', '--safe-mode', '--setting-sources', '',
                    '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands',
                    '--dangerously-skip-permissions', '--tools', ','.join(tools), '--model', self.model,
-                   '--effort', self.reasoning, '--max-turns', '1' if initializer else '8']
+                   '--effort', self.reasoning, '--max-turns', '1' if initializer else str(self.max_turns)]
         if not initializer:
-            command.extend(['--allowedTools', 'Read(' + self.scope.workspace + '/**)', 'Write(' + self.scope.workspace + '/**)'])
+            command.extend(['--allowedTools', *(name + '(' + self.scope.workspace + '/**)'
+                                                if name in {'Read', 'Write', 'Edit'} else name for name in tools)])
         if session is not None:
             command.extend(['--resume', text(session, 'exact native session')])
         frame = {'type': 'user', 'session_id': session or '', 'message': {'role': 'user',
@@ -413,6 +461,19 @@ class ClaudeCliTransport:
                               on_usage=on_usage, phase="initializer" if initializer else "work")
         process = self.process_factory(self.scope.wrap(command, initializer=initializer), cwd=self.scope.workspace,
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        cleanup = None
+        if on_process is not None and not initializer:
+            # Host registration of the owned native process (for example the
+            # managed caller socket's peer ancestry). Failure stops the turn.
+            try:
+                cleanup = on_process(process)
+                if not callable(cleanup):
+                    raise ClaudeBindingError("native process registration must return its cleanup")
+            except BaseException:
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                process.wait(timeout=5)
+                raise
         selector = selectors.DefaultSelector()
         stdout = bytearray(); stderr = bytearray(); offset = 0
         deadline = time.monotonic() + self.timeout_seconds
@@ -451,6 +512,8 @@ class ClaudeCliTransport:
                     'launcher': vars(self.pin), 'parser_schema': PARSER_SCHEMA}
         finally:
             selector.close()
+            if cleanup is not None:
+                cleanup()
             if process.poll() is None:
                 # Only this owned process group; no provider-session deletion.
                 try: os.killpg(process.pid, signal.SIGKILL)

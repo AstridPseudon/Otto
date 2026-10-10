@@ -345,14 +345,23 @@ class ExecutionApplication:
                      reasoning: str | None = None, profile: str, native_session_id: Any = _UNSPECIFIED_SESSION,
                      binding_schedule_id: str | None = None,
                      allowance_ref: Mapping[str, Any] | None = None,
-                     timeout_seconds: int = 1200, preview: bool = False) -> dict[str, Any]:
+                     timeout_seconds: int = 1200, preview: bool = False,
+                     fresh_manager: bool = False) -> dict[str, Any]:
         """Prepare an already-assigned role from exact public owner handles.
 
         Native identity for a continuation is checked against the assignment's
         host binding or a prior owner-authorized occurrence, never roster text.
         Omitted instructions/context/bindings come from the adopted BASE and
         its selected role configuration; explicit overrides keep provenance.
+
+        A manager normally continues an existing native session. A host whose
+        CLI creates its session at first launch (any adapter with an inert
+        initializer, e.g. Claude Code) passes ``fresh_manager=True`` to prepare
+        the existing ``fresh_manager`` occurrence instead; the owner then
+        authorizes the session the adapter reports before any useful input.
         """
+        if type(fresh_manager) is not bool or (fresh_manager and role != "manager"):
+            raise OccurrencePreparationError("fresh_manager applies only to an explicit manager preparation")
         if role not in {"worker", "manager", "orchestrator", "project_advisor"}:
             raise OccurrencePreparationError("unsupported execution role")
         assignment = self._current(assignment_ref, generation)
@@ -420,8 +429,10 @@ class ExecutionApplication:
                 return {"outcome": "preview", "schedule_id": schedule, "due": due.to_dict(), "retained": True}
             return self.recover(schedule_id=schedule, execute=False)
         if native_session_id is not None:
+            if fresh_manager:
+                raise OccurrencePreparationError("a fresh manager cannot also continue a native session")
             self._verify_native_binding(assignment, native_session_id, binding_schedule_id, request_key=request_key)
-        elif role == "manager":
+        elif role == "manager" and not fresh_manager:
             raise OccurrencePreparationError("manager requires its existing native session")
         at = self._now()
         target = {"host": "local", "project_ref": dict(project_ref), "task_ref": dict(task_ref),
@@ -444,7 +455,8 @@ class ExecutionApplication:
             purpose="role-execution", lifecycle_owner=self.actor,
             allowance_ref=None if allowance_ref is None else dict(allowance_ref),
             execution_mode="continue_existing" if native_session_id else
-                "fresh_bounded_worker" if role == "worker" else "fresh_bounded_role",
+                "fresh_bounded_worker" if role == "worker" else
+                "fresh_manager" if fresh_manager else "fresh_bounded_role",
             requested_model=model, requested_reasoning=reasoning, context_refs=context_refs,
             result_owner=self.actor, timeout_seconds=timeout_seconds)
         if preview:

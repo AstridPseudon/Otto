@@ -19,7 +19,7 @@ SCHEMA = "otto.operating-composition.v1"
 DEFAULT_FIELDS = {"model", "reasoning", "timeout_seconds"}
 ROLE_FIELDS = {"assignment_ref", "generation", "task_ref", "mandate_ref", "context_refs",
                "instruction", "model", "reasoning", "profile", "native_session_id",
-               "binding_schedule_id", "allowance_ref", "timeout_seconds"}
+               "binding_schedule_id", "allowance_ref", "timeout_seconds", "fresh_manager"}
 
 
 def _normalize(value: Any) -> dict[str, Any]:
@@ -44,6 +44,8 @@ def _normalize(value: Any) -> dict[str, Any]:
         if (not isinstance(spec, Mapping) or set(spec) - ROLE_FIELDS
                 or not {"assignment_ref", "generation", "task_ref", "mandate_ref"} <= set(spec)):
             raise OperatingSetupError("role binding requires assignment_ref, generation, task_ref and mandate_ref")
+        if "fresh_manager" in spec and (type(spec["fresh_manager"]) is not bool or role != "manager"):
+            raise OperatingSetupError("fresh_manager is a boolean manager-role option")
         if isinstance(spec["generation"], bool) or not isinstance(spec["generation"], int) or spec["generation"] < 1:
             raise OperatingSetupError("generation must be a positive integer")
         for field, kind in (("assignment_ref", "wrk.assignment"), ("task_ref", "work.task"),
