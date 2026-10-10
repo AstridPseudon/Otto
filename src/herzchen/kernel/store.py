@@ -318,7 +318,21 @@ class OperationOwnerCapability:
     def event_lineage(self, receipt: CommandReceipt) -> Tuple[EventEnvelope, ...]:
         """Return receipt-linked events in the store's durable order."""
         wanted = set(receipt.event_ids)
-        return tuple(event for event in self.__owner.list_events() if event.event_id in wanted)
+        if not wanted:
+            return ()
+        if isinstance(self.__owner, Store):
+            # Store mutation receipts name their event subject with the exact
+            # result ref (or target for older receipts). Apply this existing
+            # typed predicate before decoding unrelated historical payloads.
+            subject = receipt.result_ref or receipt.target
+            if not isinstance(subject, ResourceRef) or subject.authority != self.authority:
+                raise ValueError("receipt lineage requires a local typed subject")
+            events = self.__owner.list_events(subjects=(subject,))
+        else:
+            # The nominal Runtime bridge already owns the finite lineage
+            # contract; do not substitute an unbounded inventory read.
+            events = self.__owner.event_lineage(receipt)
+        return tuple(event for event in events if event.event_id in wanted)
 
     def issue_command_port(
         self,
