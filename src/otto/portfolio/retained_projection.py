@@ -26,12 +26,14 @@ FIELDS = (
     "logical_request_key", "captured_at", "started_at", "completed_at",
     "capacity_units", "cumulative_allowance_units", "cumulative_used_units", "held_units",
     "resource_name", "content_digest", "native_session_id", "state_sha256",
+    "request_id", "retained_handle", "response_path", "next_command",
 )
 REF_FIELDS = ("ref", "candidate_ref", "result_ref", "project_ref", "task_ref", "assignment_ref",
               "parent_assignment_ref", "mandate_ref", "resource_ref", "original_candidate_ref")
 SLOTS = ("result", "occurrence", "parent", "gateway_attempt", "host_evidence", "request_input",
          "candidate", "worker_result", "completion_evidence", "delivery_evidence", "before_state",
-         "review_input", "parent_binding", "result_destination")
+         "review_input", "parent_binding", "result_destination",
+         "manager_result_notification", "task_settlement_notification")
 
 
 def exact_ref(value: Any) -> dict[str, Any] | None:
