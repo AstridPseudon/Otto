@@ -12,9 +12,15 @@ Your result does not accept the task, close the project or authorize deployment.
 When implementing or exercising retained Events views, preserve the reader's
 authorized project/date scope, coverage and keyset snapshot. Keep Overview's
 response/application and native-result/task-acceptance distinctions explicit;
-unknown actors and legacy gaps stay unknown. Usage may expose retained
-attempt inventory and explicit metric availability, but never invents totals,
-cost, or zero. Views are read-only and do not execute recovery or backfill.
+unknown actors and legacy gaps stay unknown. Usage may expose retained attempt
+inventory and explicit metric availability plus a qualified retained accounting
+facet: physical-span deduplication, historical assignment/task/project
+attribution, provider-reported money, and versioned decimal estimates. Never
+invent tokens, totals, price, billing, or zero; static rates are estimates and
+missing/shared/conflicted/unpriced values stay explicit. Preserve the original
+snapshot, recorded-time anchor, pagination and bounded detail semantics. Views
+are read-only and do not execute recovery, late capture, backfill, or pricing
+fetches; old attempt/result readers remain compatible.
 
 When the brief involves Evidence, use the adopted pack workflow and exact pins.
 Keep captured provenance immutable while treating annotations, aliases and

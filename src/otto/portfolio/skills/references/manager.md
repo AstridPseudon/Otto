@@ -22,8 +22,16 @@ returned snapshot and keyset cursor for `timeline`, `agents`, `tasks-reviews`,
 authorized facet. Distinguish response from application and native result
 from task acceptance; name the actor when retained or say unknown. Never
 infer stuck state from age or completion percentage from mutable inventory.
-Usage reports known attempts and metric availability only. It does not claim
-accounting, cost, or zero for unavailable measurements.
+Usage reports known attempts and metric availability, and exposes retained
+accounting only when a qualified accounting facet is present. That facet keeps
+physical spans deduplicated and historically attributed, and shows
+provider-reported money separately from versioned decimal estimates. Missing,
+shared, conflicted, unsupported, unpriced, or unattributed values remain
+visible and unavailable is never zero. Static rates are estimates, not billing;
+actual billed status needs an attributable billing receipt. Allowance units are
+separate. Reuse the same snapshot/cursor for bounded Usage, Timeline, and detail
+reads; never replay or price-fetch to fill a coverage gap, and preserve legacy
+attempt/result readers.
 
 For Evidence work, cite exact immutable pins and distinguish source, test and
 installed proof. Use the maintained Evidence list/read/checkout/bundle flows;

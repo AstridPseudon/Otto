@@ -43,7 +43,7 @@ _ADAPTER_ROLE_BASE_GUIDANCE = (
     "`execution-control --operation read|recover|stop` applies only to the exact owned occurrence; recover may "
     "settle and stop fences the occurrence without proving native termination. A result is not task acceptance: "
     "separate useful admission, native terminality, required capture, settlement, parent delivery and assessment. "
-    "Usage is observed, invalid or unavailable, never guessed as zero or money. Claude in this scope is mechanical "
+    "Usage is observed, invalid or unavailable, never guessed as zero or money. When qualified retained accounting is present, public Usage/Timeline/detail readback keeps physical-span deduplication and historical agent/task/project attribution visible, and separates provider-reported money from versioned decimal estimates. Static rates are estimates with provenance, not billing; missing model/rate/time/currency, shared, conflicted, unpriced and unknown coverage remain explicit. Allowance units are separate, and missing accounting never authorizes replay or a pricing fetch. Claude in this scope is mechanical "
     "only; do not perform or claim paid initialization/inference/resume. A read-only leaf has authorized delivered context and capture but no managed native caller socket; report unavailable identity reads rather than borrowing credentials. The separate protected external-root client uses launch/lookup/follow/result/artifact/consume; native manager_ctl uses run-worker/lookup-occurrence/follow-occurrence/read-result/read-artifact/consume-result. Read the host-issued root policy and tool entrypoint for actual root execution."
 )
 ROLE_OPERATING_CONTRACTS = {

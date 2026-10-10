@@ -20,10 +20,12 @@ class ManagerJourneyCommands:
     """Trusted service composition; transport input cannot select an actor or pool."""
 
     def __init__(self, *, owner: Any, portfolio: Any, state: Mapping[str, Any], policy: Any = None,
-                 due_port: Any = None, settle_execution: Any = None) -> None:
+                 due_port: Any = None, settle_execution: Any = None,
+                 native_bodies: Any = None) -> None:
         self.owner, self.portfolio, self.state = owner, portfolio, state
         self.policy = policy
         self.due_port, self.settle_execution = due_port, settle_execution
+        self.native_bodies = native_bodies  # Trusted owner composition, never request input.
 
     def _authorize(self) -> Any:
         project = ResourceRef.from_dict(self.state["project_ref"])
@@ -218,8 +220,16 @@ class ManagerJourneyCommands:
                 or result.get("context_digest_verified") is not True):
             return {"outcome": "pending", "schedule_id": worker["schedule_id"], "provider_called": False,
                     "retry_provider": False, "reason": "inspect or settle this exact worker occurrence before judging it"}
-        observations = [item for item in self.owner.assignments.command_port.list_observations(assignment.ref, kind="result")
-                        if json_value(item.value) == result]
+        observations = []
+        for item in self.owner.assignments.command_port.list_observations(assignment.ref, kind="result"):
+            value = json_value(item.value)
+            # Due and WRK store the same immutable native bodies as refs. Compare
+            # their original semantic value through the issued Evidence reader;
+            # retain the observation ref and do not rewrite either record.
+            if self.native_bodies is not None and isinstance(value, Mapping):
+                value = self.native_bodies.unpack_due(value)
+            if value == result:
+                observations.append(item)
         if len(observations) != 1:
             raise ValueError("retained worker result does not identify one exact canonical observation")
         ref = observations[0].ref.to_dict()

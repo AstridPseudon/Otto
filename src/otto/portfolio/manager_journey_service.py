@@ -105,7 +105,8 @@ class ManagerJourneyService:
         self.run_path, self.workspace = Path(run_path).resolve(), Path(workspace).resolve()
         self.commands = ManagerJourneyCommands(owner=server.owner, portfolio=server.portfolio,
             state=server.state, policy=policy, due_port=server.due_port,
-            settle_execution=self._settle_execution)
+            settle_execution=self._settle_execution,
+            native_bodies=getattr(server, "native_bodies", None))
         self.orchestrator_principal, self.observe_schedules = orchestrator_principal, observe_schedules
         self.help_reply_authorizer = help_reply_authorizer
         self.authoring_authorizer = authoring_authorizer

@@ -208,4 +208,45 @@ class WrkRetainedBodyTests(unittest.TestCase):
             with self.assertRaises(ValueError): bodies.resolve(foreign)
         finally: f.doCleanups()
 
+    def test_review_input_resolves_real_wrk_refs_without_rewriting_and_rejects_missing_reader(self):
+        from types import SimpleNamespace
+        from tests import test_execution_application as application_fixture
+        from tests.test_evidence_projection import _v11_pack_hooks
+        from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
+        from herzchen.evidence.model import load_evidence_pack
+        from herzchen.packs.authoring import read_managed_pack
+        from otto.agents.gateway import HerzchenAttemptCapture
+        from otto.portfolio.manager_journey_command import ManagerJourneyCommands, _digest
+        f=application_fixture.ExecutionApplicationTests();f.setUp()
+        try:
+            manager,_,_=f.role_handles('manager','manager','manager-session')
+            worker,_,_=f.role_handles('worker','review-worker','worker-session')
+            register_evidence(f.store)
+            root,discover,loader=_v11_pack_hooks()
+            pack=load_evidence_pack(managed_pack=read_managed_pack('evidence',project_root=root.parents[3],discoverer=discover,loader=loader))
+            handler=EvidenceCommandHandler(f.store,f.path.parent/'review-bodies',pack=pack,adopted_pins=[x.to_dict()for x in pack.resources])
+            bodies=RetainedNativeBodies(handler,f.actor)
+            capture=HerzchenAttemptCapture(f.owner.assignments.command_port,f.store.consumer(),actor=f.actor,native_bodies=bodies)
+            result={'logical_request_key':'review-body-result','request_fingerprint':'review-body-fingerprint','project_ref':f.project.ref.to_dict(),'task_ref':f.task.ref.to_dict(),'assignment_ref':worker.ref.to_dict(),'generation':1,'outcome':'succeeded','context_digest_verified':True,'raw_result':{'stdout':'x'*100000}}
+            capture.record(result)
+            records=f.owner.assignments.command_port.list_observations(worker.ref,kind='result');before=_digest(records[0].value)
+            f.owner.assignments.command_port.append_result(worker.ref,'legacy opaque noncandidate',expected_generation=1,logical_request_key='opaque-legacy-result',actor=f.actor)
+            state={'project_ref':f.project.ref.to_dict(),'assignment_ref':manager.ref.to_dict(),'manager':'manager','manager_generation':1,'task_refs':{'J01':f.task.ref.to_dict()},'workers':{'J01':{'schedule_id':'review-worker-occurrence','assignment_ref':worker.ref.to_dict(),'principal':'review-worker','generation':1}}}
+            due={'assignment_ref':worker.ref.to_dict(),'generation':1,'stop_state':'completed','completion_state':'succeeded','in_flight_request':None,'host_evidence':{'gateway_attempt':{'result':result}}}
+            port=SimpleNamespace(read_due=lambda schedule:due)
+            missing=ManagerJourneyCommands(owner=f.owner,portfolio=f.app.portfolio,state=state,due_port=port)
+            with self.assertRaisesRegex(ValueError,'one exact canonical observation'):missing.review_input('J01')
+            commands=ManagerJourneyCommands(owner=f.owner,portfolio=f.app.portfolio,state=state,due_port=port,native_bodies=bodies)
+            view=commands.review_input('J01');self.assertEqual(view['candidate_ref'],records[0].ref.to_dict());self.assertEqual(view['worker_result_sha256'],_digest(result))
+            again=f.owner.assignments.command_port.list_observations(worker.ref,kind='result');self.assertEqual(len(again),2);retained=next(x for x in again if x.ref==records[0].ref);self.assertEqual(_digest(retained.value),before)
+            self.assertEqual(retained.value['raw_result']['stdout']['schema'],SCHEMA)
+            due['host_evidence']['gateway_attempt']['result']={**result,'raw_result':{'stdout':'different'}}
+            with self.assertRaisesRegex(ValueError,'one exact canonical observation'):commands.review_input('J01')
+            due['generation']=2
+            with self.assertRaisesRegex(PermissionError,'binding differs'):commands.review_input('J01')
+            due['generation']=1;due['host_evidence']['gateway_attempt']['result']=result
+            f.owner.assignments.command_port.append_result(worker.ref,result,expected_generation=1,logical_request_key='duplicate-semantic-result',actor=f.actor)
+            with self.assertRaisesRegex(ValueError,'one exact canonical observation'):commands.review_input('J01')
+        finally:f.doCleanups()
+
 if __name__ == '__main__': unittest.main()

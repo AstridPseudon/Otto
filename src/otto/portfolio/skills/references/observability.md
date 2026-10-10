@@ -26,10 +26,25 @@ earlier activity. Recovery only points to retained facts
 and inspection; it never launches, repairs, backfills, or gives stale
 historical mutation advice.
 
-Usage initially exposes known retained attempts and explicit metric
-availability only. Missing metrics are unavailable, never zero. Events does
-not calculate usage, cost, physical spans, or billing; those belong to the
-separately queued Usage/cost successor.
+Usage exposes known retained attempts and explicit metric availability. When a
+qualified retained accounting facet is attached, the same readback exposes
+physical-span deduplication, historical assignment/generation and proven
+agent/task/project attribution, plus separate provider-reported monetary facts
+and versioned decimal price estimates. It does not synthesize accounting from
+text, duration, allowance, or account percentages. Missing metrics, model,
+rate, qualified consumption time, currency, attribution, shared scope, and
+payload remain unavailable or explicitly covered as unknown; unavailable is
+never zero. Static rates are estimates with retained provenance, not billing;
+an actual billed status requires an attributable billing receipt. Allowance and
+reservation units remain separate from currency and token metrics.
+
+Usage, Timeline, and selected detail reuse the Events authorization, recorded
+time range, snapshot, pagination, and bounds. The first qualified retained
+recorded-time anchor remains stable; later duplicate or correction facts appear
+at their own recorded time and may change only a refreshed snapshot. A detail
+read is bounded and read-only. Missing accounting facets preserve the legacy
+attempt/result reader rather than triggering replay, repair, backfill, or a
+pricing fetch.
 
 Use `events detail` only with a facet reference returned by a page and its
 original snapshot. Details remain authorization-checked, Evidence-linked when
