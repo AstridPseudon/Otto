@@ -114,6 +114,13 @@ def _envelope(view: str, result: Mapping[str, Any], rows: Sequence[Mapping[str, 
         "has_more": result.get("next_cursor") is not None,
         "snapshot_digest": result.get("snapshot_digest"),
     }
+    coverage = _json_value(result.get("coverage", {}))
+    if not isinstance(coverage, Mapping):
+        coverage = {}
+    if view in {"usage", "timeline"}:
+        coverage = {**coverage,
+                    "query": "partial" if result.get("partial", False) else "complete",
+                    "history": "as-of-snapshot"}
     return {
         "outcome": "read",
         "schema": "otto.events.operator-view.v1",
@@ -122,7 +129,7 @@ def _envelope(view: str, result: Mapping[str, Any], rows: Sequence[Mapping[str, 
         "dispatch": False,
         "launch": False,
         "scope": _scope(result),
-        "coverage": _json_value(result.get("coverage", {})),
+        "coverage": coverage,
         "continuation": continuation,
         "snapshot": _json_value(result.get("snapshot")),
         "rows": [_row(row, view) for row in rows],
@@ -132,18 +139,58 @@ def _envelope(view: str, result: Mapping[str, Any], rows: Sequence[Mapping[str, 
 def _usage_row(row: Mapping[str, Any]) -> dict[str, Any]:
     value = _row(row, "usage")
     summary = _mapping(row.get("summary"))
-    usage = summary.get("usage")
+    fields = _mapping(_mapping(summary.get("after")).get("fields"))
+    usage = summary.get("usage") or fields.get("usage")
+    accounting = (summary.get("usage_accounting") or fields.get("usage_accounting")
+                  or summary.get("accounting") or fields.get("accounting"))
     if isinstance(usage, Mapping):
         # Only retain explicitly qualified observations.  No totals, prices,
         # zero values, or accounting fields are derived here.
         value["metric_availability"] = {
-            "state": "known" if usage.get("state") in {"known", "qualified", "available"} else "unavailable",
+            "state": "known" if usage.get("state") in {"known", "qualified", "available", "observed", "zero"} else "unavailable",
             "value": _json_value(usage.get("metrics")) if isinstance(usage.get("metrics"), Mapping) else None,
         }
     else:
         value["metric_availability"] = {"state": "unavailable", "value": None,
                                          "reason": "no qualified metric observation retained"}
+    if isinstance(accounting, Mapping):
+        value["pricing"] = _json_value(accounting.get("pricing") or accounting.get("cost_estimate")
+                                       or accounting.get("price_estimate"))
+        value["provider_reported_money"] = _json_value(accounting.get("provider_reported"))
+        value["monetary_coverage"] = _json_value(accounting.get("coverage", {}).get("monetary")) if isinstance(accounting.get("coverage"), Mapping) else None
+        value["attribution"] = _json_value(accounting.get("attribution"))
+    else:
+        for name in ("provider_reported_money", "provider_reported", "price_estimate", "pricing", "attribution", "first_qualified_recorded_at", "supersedes_ref", "execution_time", "consumption_time"):
+            candidate = summary.get(name) or fields.get(name)
+            if candidate is not None:
+                value[name] = _json_value(candidate)
+    value["payload_availability"] = {
+        "state": "available" if row.get("detail") is not None or row.get("detail_locator") is not None else "summary-only",
+        "raw": "bounded-or-resolvable" if row.get("detail_locator") is not None else "unavailable",
+    }
     return value
+
+
+def _usage_coverage(rows: Sequence[Mapping[str, Any]], result: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose independent query/history, inventory, pricing and payload gaps."""
+    usage_rows = [_usage_row(row) for row in rows]
+    known = sum(item.get("metric_availability", {}).get("state") == "known" for item in usage_rows)
+    priced = sum(item.get("pricing", {}).get("status") == "estimated"
+                 if isinstance(item.get("pricing"), Mapping) else False for item in usage_rows)
+    payload = sum(item.get("payload_availability", {}).get("state") == "available" for item in usage_rows)
+    partial = bool(result.get("partial", False))
+    return {
+        "query": "partial" if partial else "complete",
+        "history": "as-of-snapshot",
+        "known_attempts": len(usage_rows),
+        "identified_turns": sum(bool(item.get("identity")) for item in usage_rows),
+        "measured_spans": known,
+        "metric_pricing_attribution": {"measured": known, "priced": priced,
+                                       "unpriced": max(0, known - priced)},
+        "payload_availability": {"bounded_or_resolvable": payload,
+                                 "summary_only": max(0, len(usage_rows) - payload)},
+        "unknown_is_zero": False,
+    }
 
 
 def _reader_actor(grant: Any, actor: Any) -> Any:
@@ -214,11 +261,20 @@ class ObservabilityViews:
             attempt_rows = [row for row in source_rows
                             if row.get("facet_type") == "retained_attempt_or_result"
                             or isinstance(_mapping(row.get("summary")).get("usage"), Mapping)]
+            usage_rows = [_usage_row(row) for row in attempt_rows]
             value["usage"] = {
-                "known_attempts": [_usage_row(row) for row in attempt_rows],
+                "known_attempts": usage_rows,
                 "metric_availability": [
-                    _usage_row(row)["metric_availability"] for row in attempt_rows
+                    item["metric_availability"] for item in usage_rows
                 ],
+                "coverage": _usage_coverage(attempt_rows, result),
+                "monetary": {
+                    "provider_reported": [item.get("provider_reported_money") for item in usage_rows
+                                           if item.get("provider_reported_money") is not None],
+                    "price_estimates": [item.get("pricing") or item.get("price_estimate") for item in usage_rows
+                                         if item.get("pricing") is not None or item.get("price_estimate") is not None],
+                    "reported_and_estimated_are_separate": True,
+                },
             }
             return value
         value = _envelope(view, result, source_rows)
@@ -240,6 +296,17 @@ class ObservabilityViews:
                 "native_result_task_acceptance": "retained facts are shown independently",
                 "unknowns_are_explicit": True,
             }
+        elif view == "timeline":
+            # Timeline keeps each immutable recorded fact, including a later
+            # duplicate/correction.  It never rewrites the first-qualified
+            # anchor or turns a correction into another spend row.
+            value["timeline"] = [{
+                "facet_id": row.get("facet_id"),
+                "recorded_at": row.get("recorded_at"),
+                "first_qualified_recorded_at": _usage_row(row).get("first_qualified_recorded_at"),
+                "supersedes_ref": _usage_row(row).get("supersedes_ref"),
+                "usage": _usage_row(row),
+            } for row in source_rows]
         elif view == "agents":
             value["agents"] = [{
                 "subject_ref": row.get("subject_ref"),
@@ -290,6 +357,7 @@ class ObservabilityViews:
         if not isinstance(result, Mapping):
             raise ObservabilityViewError("Events reader returned no bounded detail")
         summary = _mapping(result.get("summary"))
+        usage = _usage_row({"summary": summary, "detail": result.get("detail")})
         return {
             "outcome": "read",
             "schema": "otto.events.operator-detail.v1",
@@ -298,11 +366,15 @@ class ObservabilityViews:
             "dispatch": False,
             "launch": False,
             "scope": _scope({"snapshot": result.get("snapshot", snapshot), "projects": [result.get("project_ref")]}),
-            "coverage": {"detail": "selected authorized facet", "bounded": True},
+            "coverage": {"detail": "selected authorized facet", "bounded": True,
+                          "query": "selected", "history": "as-of-snapshot",
+                          "metric_pricing_attribution": usage.get("pricing", "unavailable"),
+                          "payload_availability": usage.get("payload_availability")},
             "continuation": {"snapshot_digest": snapshot.get("snapshot_digest"), "next_cursor": None, "partial": False, "has_more": False},
             "facet_id": facet_id,
             "project_ref": _json_value(result.get("project_ref")),
             "summary": _json_value(summary),
+            "usage": usage,
             "semantic": _semantic({"summary": summary}),
             "detail_locator": _json_value(result.get("detail_locator")),
             "evidence": _json_value(result.get("evidence")),

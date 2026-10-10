@@ -456,6 +456,14 @@ def contract_definition() -> dict[str, Any]:
             "deduplication": "equivalent aliases coalesce; richer components do not create another charge",
         },
         "rates": validate_rate_schedule(),
+        "monetary": {
+            "reported_statuses": ["zero", "missing", "usage_report_estimate", "billed", "unavailable"],
+            "estimate_schema": "otto.usage-price-estimate.v1",
+            "reported_schema": "otto.usage-money.v1",
+            "reported_and_estimated_are_separate": True,
+            "missing_model_rate_time_or_currency": "unavailable",
+            "reasoning_output": "subpartition-of-output-not-additive",
+        },
         "unsupported_routes": [
             "provider billing facts and invoice APIs",
             "online rate fetch and invented FX",
