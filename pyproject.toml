@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otto-herzchen"
+version = "0.1.0"
+description = "Otto owner records and the Herzchen kernel; host-neutral agent orchestration"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+ottoctl = "otto.hostctl.cli:main"
+otto-gateway = "otto.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.json"]
