@@ -1,10 +1,14 @@
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+import zipfile
+from unittest.mock import patch
 
 from herzchen.contracts import AuthenticatedActor, ResourceRef
+from herzchen.evidence import commands as evidence_commands
 from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
 from herzchen.evidence.model import EvidencePathCollisionError
 from herzchen.content.model import domain_contribution as content_domain_contribution
@@ -143,6 +147,91 @@ class EvidenceProjectionTests(unittest.TestCase):
         self.assertEqual(resumed["outcome"], "moved")
         self.assertEqual(self.handler.status(submitted["document_ref"], actor=self.actor)["manifest"]["byte_digest"],
                          hashlib.sha256(b"projection-bytes").hexdigest())
+
+    def test_selected_bundle_copies_exact_pins_and_reports_dependency_inventory(self):
+        text = b"selected text\n" * 64
+        binary = bytes(range(256)) * 32
+        included_text = self.handler.submit(
+            text, actor=self.actor, logical_request_key="bundle-text", project_ref=self.project,
+            original_creator="creator", format="text/plain",
+        )
+        included_binary = self.handler.submit(
+            binary, actor=self.actor, logical_request_key="bundle-binary", project_ref=self.project,
+            original_creator="creator", format="application/octet-stream",
+        )
+        missing = self.handler.submit(
+            b"missing", actor=self.actor, logical_request_key="bundle-missing", project_ref=self.project,
+            original_creator="creator",
+        )
+        purged = self.handler.submit(
+            b"purged", actor=self.actor, logical_request_key="bundle-purged", project_ref=self.project,
+            original_creator="creator",
+        )
+        missing_status = self.handler.status(missing["revision_ref"], actor=self.actor)
+        (Path(self.directory.name) / "managed" / missing_status["manifest"]["storage"]["location"]).unlink()
+        original_status = evidence_commands._EvidenceCommandHandlerEngine.status
+
+        def status(engine, reference, *, actor, roles=(), scopes=()):
+            value = dict(original_status(engine, reference, actor=actor, roles=roles, scopes=scopes))
+            if value["reference"] == purged["revision_ref"]:
+                value["availability"] = "purged"
+                value["manifest"] = dict(value["manifest"], availability="purged")
+            return value
+
+        output = Path(self.directory.name) / "selected-bundle"
+        with patch.object(evidence_commands._EvidenceCommandHandlerEngine, "status", new=status):
+            result = self.handler.bundle_evidence(
+                self.project,
+                [
+                    {"reference": included_text["revision_ref"], "alias": "logs/run.txt"},
+                    {"reference": included_binary["revision_ref"], "alias": "artifacts/data.bin"},
+                    missing["revision_ref"], purged["revision_ref"],
+                ],
+                output,
+                actor=self.actor,
+            )
+
+        self.assertEqual(result["outcome"], "bundled")
+        self.assertFalse(result["canonical_transfer"])
+        self.assertFalse(result["exported_copy_revocable"])
+        self.assertEqual((output / "evidence" / "logs" / "run.txt").read_bytes(), text)
+        self.assertEqual((output / "evidence" / "artifacts" / "data.bin").read_bytes(), binary)
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema"], "dat.evidence.bundle.v1")
+        self.assertEqual(len(manifest["inventory"]["included"]), 2)
+        self.assertEqual(len(manifest["inventory"]["unavailable"]), 1)
+        self.assertEqual(len(manifest["inventory"]["purged"]), 1)
+        self.assertEqual(
+            manifest["inventory"]["included"][0]["manifest"]["byte_digest"],
+            hashlib.sha256(text).hexdigest(),
+        )
+
+    def test_selected_archive_is_stored_and_output_collisions_are_rejected(self):
+        source = b"archive\x00bytes" * 128
+        submitted = self.handler.submit(
+            source, actor=self.actor, logical_request_key="bundle-archive", project_ref=self.project,
+            original_creator="creator", format="application/octet-stream",
+        )
+        archive = Path(self.directory.name) / "selected.zip"
+        result = self.handler.bundle_evidence(
+            self.project, references=[submitted["revision_ref"]], output_path=archive,
+            actor=self.actor, archive=True,
+        )
+        self.assertEqual(result["manifest"]["bundle_kind"], "archive")
+        with zipfile.ZipFile(archive) as bundle:
+            names = set(bundle.namelist())
+            self.assertIn("manifest.json", names)
+            payload_names = [name for name in names if name != "manifest.json"]
+            self.assertEqual(len(payload_names), 1)
+            self.assertEqual(bundle.read(payload_names[0]), source)
+            archive_manifest = json.loads(bundle.read("manifest.json"))
+            self.assertEqual(archive_manifest["inventory"]["included"][0]["reference"],
+                             submitted["revision_ref"].to_dict())
+        with self.assertRaises(EvidencePathCollisionError):
+            self.handler.bundle_evidence(
+                self.project, [submitted["revision_ref"]], archive,
+                actor=self.actor, archive=True,
+            )
 
 
 if __name__ == "__main__":

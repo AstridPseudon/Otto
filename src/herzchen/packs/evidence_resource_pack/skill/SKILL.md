@@ -15,5 +15,14 @@ Replay uses the original logical request key and rejects changed inputs. A
 payload, manifest or receipt interruption may leave honest staged or managed
 residue; reconcile and retry the same request rather than creating a new one.
 
+For a deliberate export, use the trusted Evidence bundle operation with an
+explicit finite selection of exact references. It may produce one bounded
+directory or ZIP archive containing copied text/binary bytes plus a manifest
+with the immutable pins, original provenance and an included/omitted/
+unavailable/purged inventory. The bundle is an authorized copy: the owner
+records remain canonical, no identity or authority is transferred, and an
+exported copy is not revoked. A missing local materialization is not a
+canonical deletion, and bundle export does not provide import or offline sync.
+
 This resource is policy and guidance only. It does not grant actor authority,
 register a new storage system, or authorize deletion.

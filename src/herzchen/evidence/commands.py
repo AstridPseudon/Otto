@@ -8,9 +8,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import time
 from typing import Any, Callable, ContextManager, Mapping, Optional, Protocol, Sequence
+import zipfile
 
 from herzchen.command_ports import command_facade
 from herzchen.contracts import (
@@ -67,6 +69,12 @@ ANNOTATION_OPERATION = "dat.evidence.annotation"
 EVIDENCE_LINK_OPERATION = "dat.evidence.alias.link"
 EVIDENCE_UNLINK_OPERATION = "dat.evidence.alias.unlink"
 EVIDENCE_MOVE_OPERATION = "dat.evidence.alias.move"
+
+# A selected bundle is deliberately finite.  These are bounds on one export,
+# not a general archive or synchronization protocol.
+EVIDENCE_BUNDLE_MAX_ENTRIES = 100
+EVIDENCE_BUNDLE_MAX_BYTES = 256 * 1024 * 1024
+EVIDENCE_BUNDLE_MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 class FNDEvidenceWriter(Protocol):
@@ -877,6 +885,267 @@ class _EvidenceCommandHandlerEngine:
                 "canonical_authority": "owner", "reference": ref, "manifest": dict(manifest),
                 "provenance": {"project_ref": project, "canonical_transfer": False},
                 "docs_materialized": False, "project_json_materialized": False}
+
+    @staticmethod
+    def _bundle_entry(value: Any, index: int) -> tuple[ResourceRef, Optional[str]]:
+        """Decode one explicit selection without accepting caller paths as refs."""
+        alias = None
+        raw = value
+        if isinstance(value, Mapping):
+            raw = value.get("reference", value.get("ref"))
+            alias = value.get("alias", value.get("path"))
+            if alias is not None and not isinstance(alias, str):
+                raise EvidenceCheckinError(f"bundle selection {index} alias must be text")
+        try:
+            ref = _ref(raw, f"bundle selection {index}.reference")
+        except EvidenceBindingError:
+            raise EvidenceCheckinError(f"bundle selection {index} has no valid reference") from None
+        return ref, alias
+
+    @staticmethod
+    def _bundle_alias(ref: ResourceRef, alias: Optional[str]) -> str:
+        if alias is None:
+            # Keep names portable and independent of document identity syntax.
+            token = hashlib.sha256(canonical_json(ref.to_dict()).encode("utf-8")).hexdigest()[:20]
+            return f"evidence/{token}.payload"
+        try:
+            alias = document_path(alias)
+        except Exception as exc:
+            raise EvidenceCheckinError("bundle alias must be a safe relative path") from exc
+        if alias.casefold() in {"manifest.json", ".bundle.json"}:
+            raise EvidencePathCollisionError("bundle alias collides with its manifest")
+        if alias.split("/")[0].casefold() in {".otto", EVIDENCE_PROJECTION_DIR}:
+            raise EvidencePathCollisionError("bundle alias collides with a reserved bundle path")
+        return f"evidence/{alias}"
+
+    @staticmethod
+    def _copy_verified_payload(source: Path, write: Callable[[bytes], None], *, expected_digest: str,
+                               expected_length: int) -> tuple[int, str]:
+        """Copy one managed object while verifying the exact pinned bytes."""
+        if source.is_symlink() or not source.is_file():
+            raise EvidenceUnavailableError("selected Evidence payload is unavailable")
+        digest = hashlib.sha256()
+        length = 0
+        try:
+            with source.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    write(chunk)
+                    digest.update(chunk)
+                    length += len(chunk)
+        except (OSError, ValueError) as exc:
+            raise EvidenceUnavailableError("selected Evidence payload could not be copied") from exc
+        actual_digest = digest.hexdigest()
+        if length != expected_length or actual_digest != expected_digest:
+            raise EvidenceUnavailableError("selected Evidence payload changed during bundle copy")
+        return length, actual_digest
+
+    def bundle_evidence(self, project_ref: Any, selections: Optional[Sequence[Any]] = None,
+                        output_path: Optional[str | os.PathLike[str]] = None, *,
+                        actor: AuthenticatedActor, archive: bool = False,
+                        references: Optional[Sequence[Any]] = None,
+                        max_entries: int = EVIDENCE_BUNDLE_MAX_ENTRIES,
+                        max_bytes: int = EVIDENCE_BUNDLE_MAX_BYTES) -> Mapping[str, Any]:
+        """Export explicit authorized Evidence pins as one bounded bundle.
+
+        The result is an ordinary authorized copy.  The canonical DAT/FND
+        records remain authoritative, and the bundle never grants destination
+        authority or revokes already-exported copies.
+        """
+        actor = _actor(actor)
+        project = _ref(project_ref, "project_ref")
+        self._validate_origin(project, None, None)
+        if selections is None:
+            selections = references
+        if selections is None or isinstance(selections, (str, bytes)):
+            raise EvidenceCheckinError("bundle selections must be an explicit finite sequence")
+        if type(max_entries) is not int or not 1 <= max_entries <= EVIDENCE_BUNDLE_MAX_ENTRIES:
+            raise EvidenceCheckinError("bundle max_entries is outside the supported bound")
+        if type(max_bytes) is not int or not 1 <= max_bytes <= EVIDENCE_BUNDLE_MAX_BYTES:
+            raise EvidenceCheckinError("bundle max_bytes is outside the supported bound")
+        selected = list(selections)
+        if not selected or len(selected) > max_entries:
+            raise EvidenceCheckinError("bundle selection count is outside the supported bound")
+        if output_path is None:
+            raise EvidenceCheckinError("bundle output_path is required")
+
+        output = Path(output_path).expanduser()
+        if output.exists() or output.is_symlink():
+            raise EvidencePathCollisionError("bundle output already exists")
+        parent = output.parent.resolve()
+        if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
+            raise EvidencePathCollisionError("bundle output parent is not a real directory")
+        parent.mkdir(parents=True, exist_ok=True)
+
+        candidates: list[tuple[ResourceRef, Optional[str]]] = [self._bundle_entry(value, index) for index, value in enumerate(selected)]
+        inventory: dict[str, list[Mapping[str, Any]]] = {
+            "included": [], "omitted": [], "unavailable": [], "purged": [],
+        }
+        used_refs: set[tuple[str, str, str, Optional[str]]] = set()
+        used_paths: set[str] = {"manifest.json"}
+        total_bytes = 0
+
+        def requested_item(ref: ResourceRef, alias: Optional[str], **extra: Any) -> dict[str, Any]:
+            item: dict[str, Any] = {"reference": ref.to_dict()}
+            if alias is not None:
+                item["requested_alias"] = alias
+            item.update(extra)
+            return item
+
+        # Resolve metadata and current authorization before creating any copy.
+        resolved: list[tuple[ResourceRef, str, Mapping[str, Any], Path]] = []
+        for index, (requested, alias) in enumerate(candidates):
+            key = (requested.authority, requested.kind, requested.id, requested.revision)
+            if key in used_refs:
+                raise EvidenceCheckinError(f"bundle selection {index} repeats an exact reference")
+            used_refs.add(key)
+            try:
+                status = self.status(requested, actor=actor)
+            except EvidenceAccessDeniedError:
+                inventory["omitted"].append(requested_item(requested, alias, reason="not-authorized"))
+                continue
+            if status.get("representation") != "managed":
+                inventory["omitted"].append(requested_item(requested, alias, reason="unmanaged-representation"))
+                continue
+            exact = status.get("reference")
+            if not isinstance(exact, ResourceRef):
+                exact = _ref(exact, f"bundle selection {index}.resolved_reference")
+            manifest = status.get("manifest")
+            if not isinstance(manifest, Mapping):
+                inventory["unavailable"].append(requested_item(exact, alias, reason="manifest-unavailable"))
+                continue
+            availability = status.get("availability", manifest.get("availability"))
+            item = requested_item(exact, alias, availability=availability, manifest=dict(manifest))
+            if availability == "purged":
+                inventory["purged"].append(item)
+                continue
+            if availability in {"missing", "corrupt", "staged"}:
+                inventory["unavailable"].append(item)
+                continue
+            location = manifest.get("storage", {}).get("location")
+            try:
+                source = self._rooted(location)
+                destination = self._bundle_alias(exact, alias)
+            except (EvidenceError, TypeError) as exc:
+                inventory["unavailable"].append(requested_item(exact, alias, reason="unsafe-managed-location"))
+                continue
+            if destination in used_paths:
+                raise EvidencePathCollisionError("bundle selections resolve to a colliding path")
+            used_paths.add(destination)
+            length = manifest.get("byte_length")
+            if type(length) is not int or length < 0:
+                inventory["unavailable"].append(item | {"reason": "invalid-byte-length"})
+                continue
+            if length > max_bytes or total_bytes + length > max_bytes:
+                inventory["omitted"].append(item | {"reason": "bundle-size-bound"})
+                continue
+            resolved.append((exact, destination, manifest, source))
+            total_bytes += length
+
+        # Build in a private sibling, then publish only the completed selected
+        # directory/archive.  No existing output is overwritten.
+        temp_path: Optional[Path] = None
+        temp_dir: Optional[Path] = None
+        try:
+            if archive:
+                fd, raw_path = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".zip", dir=str(parent))
+                os.close(fd)
+                temp_path = Path(raw_path)
+                writer = zipfile.ZipFile(temp_path, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True)
+            else:
+                temp_dir = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=str(parent)))
+                (temp_dir / "evidence").mkdir()
+                writer = None
+
+            included: list[Mapping[str, Any]] = []
+            for exact, destination, manifest, source in resolved:
+                try:
+                    if writer is not None:
+                        with writer.open(destination, mode="w", force_zip64=True) as stream:
+                            copied_length, copied_digest = self._copy_verified_payload(
+                                source, stream.write, expected_digest=manifest["byte_digest"],
+                                expected_length=manifest["byte_length"])
+                    else:
+                        target = temp_dir / destination
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with target.open("xb") as stream:
+                            copied_length, copied_digest = self._copy_verified_payload(
+                                source, stream.write, expected_digest=manifest["byte_digest"],
+                                expected_length=manifest["byte_length"])
+                        target.chmod(0o444)
+                except EvidenceUnavailableError as exc:
+                    inventory["unavailable"].append({
+                        "reference": exact.to_dict(), "reason": str(exc), "manifest": dict(manifest),
+                    })
+                    continue
+                included.append({
+                    "reference": exact.to_dict(),
+                    "path": destination,
+                    "manifest": dict(manifest),
+                    "provenance": {
+                        "origin": dict(manifest.get("origin", {})),
+                        "attribution": dict(manifest.get("attribution", {})),
+                        "capture": dict(manifest.get("capture", {})),
+                        "canonical_authority": "owner",
+                    },
+                    "byte_length": copied_length,
+                    "byte_digest": copied_digest,
+                })
+
+            bundle_manifest: dict[str, Any] = {
+                "schema": "dat.evidence.bundle.v1",
+                "bundle_kind": "archive" if archive else "directory",
+                "project_ref": project.to_dict(),
+                "created_by": {"authority": actor.authority, "actor": actor.actor, "authenticated": True},
+                "created_at": _now(),
+                "canonical_authority": "owner",
+                "canonical_transfer": False,
+                "exported_copy_revocable": False,
+                "selected": len(selected),
+                "byte_limit": max_bytes,
+                "included_bytes": sum(item["byte_length"] for item in included),
+                "inventory": {
+                    "included": included,
+                    "omitted": inventory["omitted"],
+                    "unavailable": inventory["unavailable"],
+                    "purged": inventory["purged"],
+                },
+            }
+            encoded_manifest = canonical_json(bundle_manifest).encode("utf-8")
+            if len(encoded_manifest) > EVIDENCE_BUNDLE_MAX_MANIFEST_BYTES:
+                raise EvidenceCheckinError("bundle manifest exceeds its metadata bound")
+            if writer is not None:
+                writer.writestr("manifest.json", encoded_manifest)
+                writer.close()
+                writer = None
+            else:
+                (temp_dir / "manifest.json").write_bytes(encoded_manifest)
+            final_temp = temp_path if archive else temp_dir
+            assert final_temp is not None
+            os.replace(final_temp, output)
+            temp_path = None
+            temp_dir = None
+            return {
+                "outcome": "bundled",
+                "path": str(output.resolve()),
+                "manifest": bundle_manifest,
+                "included": included,
+                "omitted": inventory["omitted"],
+                "unavailable": inventory["unavailable"],
+                "purged": inventory["purged"],
+                "canonical_authority": "owner",
+                "canonical_transfer": False,
+                "exported_copy_revocable": False,
+            }
+        finally:
+            if writer is not None:
+                writer.close()
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def cite_evidence(self, reference: Any, *, project_ref: Any, alias: str, actor: AuthenticatedActor,
                       logical_request_key: str) -> Mapping[str, Any]:
