@@ -42,7 +42,7 @@ def _columns(connection, table):
     return tuple(row[1] for row in connection.execute("PRAGMA table_info(" + table + ")"))
 
 
-def _inventory(connection, *, legacy_columns):
+def _inventory(connection, *, legacy_columns, progress=None):
     """One offline streaming equality proof; includes every authoritative byte.
 
     Logical row equality is independent of page/rowid layout. Decision/debit
@@ -68,6 +68,8 @@ def _inventory(connection, *, legacy_columns):
             digest.update(canonical_json(list(row)).encode() + b"\n")
             count += 1
         result[table] = {"count": count, "sha256": digest.hexdigest()}
+        if progress:
+            progress("inventory:" + table + ":" + str(count))
     return result
 
 
@@ -137,7 +139,7 @@ class EventsMigration:
         try:
             Store._verify(self.legacy, custody.authority, custody.domains,
                           schema_revision=LEGACY_SCHEMA_REVISION)
-            self.source_inventory = _inventory(self.legacy, legacy_columns=self.columns)
+            self.source_inventory = _inventory(self.legacy, legacy_columns=self.columns, progress=phase_hook)
             if self.source_inventory != self.journal["source_inventory"]:
                 raise MigrationError("backup source equality proof mismatch")
             if custody.schema_revision == SCHEMA_REVISION:
@@ -159,7 +161,7 @@ class EventsMigration:
                 self.journal["phase"] = "switched"
                 _write_journal(self.journal_path, self.journal)
             elif (custody.schema_revision != LEGACY_SCHEMA_REVISION or
-                  _inventory(custody.connection, legacy_columns=self.columns) != self.source_inventory):
+                  _inventory(custody.connection, legacy_columns=self.columns, progress=phase_hook) != self.source_inventory):
                 raise MigrationError("source changed since consistent backup")
         except BaseException:
             self.legacy.close()
@@ -194,7 +196,7 @@ class EventsMigration:
     def _finish_preparation(custody, journal_path, journal, *, phase_hook=None, clone_qualification=None):
         custody.require_active()
         columns = {t: _columns(custody.connection, t) for t in LEGACY_COMPOSITION}
-        if custody.schema_revision != LEGACY_SCHEMA_REVISION or _inventory(custody.connection, legacy_columns=columns) != journal["source_inventory"]:
+        if custody.schema_revision != LEGACY_SCHEMA_REVISION or _inventory(custody.connection, legacy_columns=columns, progress=phase_hook) != journal["source_inventory"]:
             raise MigrationError("source changed during interrupted preparation")
         if journal.get("capacity_policy"):
             EventsMigration._check_space(journal)
@@ -294,7 +296,7 @@ class EventsMigration:
         for path in (candidate, backup, journal, backup.with_name(backup.name+".partial")):
             _ensure_unused(path)
         columns = {t: _columns(custody.connection, t) for t in LEGACY_COMPOSITION}
-        inventory = _inventory(custody.connection, legacy_columns=columns)
+        inventory = _inventory(custody.connection, legacy_columns=columns, progress=phase_hook)
         _write_journal(journal, {"schema":MIGRATION_SCHEMA, "phase":"preparing", "migration_id":migration_id,
             "source":str(custody.path), "candidate":str(candidate), "backup":str(backup),
             "source_inventory":inventory, "authority":custody.authority,
@@ -390,9 +392,26 @@ class EventsMigration:
             capacity_policy={k:fresh[k] for k in ("headroom_bytes","candidate_growth_reserve_bytes")})
 
     @classmethod
-    def resume(cls, custody, journal_path, *, clone_qualification=None, phase_hook=None):
+    def resume(cls, custody, journal_path, *, clone_qualification=None, phase_hook=None, expected_input=None):
         """Resume only the original durable journal; never allocate a replacement."""
+        if not isinstance(custody, ClosedOwnerCustody):
+            raise TypeError("resume requires actual closed-owner custody")
+        custody.require_active()
+        if expected_input is not None:
+            retained = _read_journal(Path(journal_path))
+            if any(retained.get(key) != value for key,value in expected_input.items()):
+                raise MigrationError("original resume input differs; no replacement or rebinding")
         return cls(custody,journal_path,clone_qualification=clone_qualification,phase_hook=phase_hook)
+
+    def installed_receipt(self):
+        """Read the actual original switch receipt after lost-reply reconciliation."""
+        self.custody.require_active()
+        if self.journal["phase"] != "switched":
+            raise MigrationError("migration has not actually switched")
+        receipt = json.loads(_metadata(self.custody.connection)["migration_switch_receipt"])
+        if receipt["migration_id"] != self.journal["migration_id"]:
+            raise MigrationError("installed switch receipt identity differs")
+        return receipt
 
     def close(self):
         if self.owner is not None:

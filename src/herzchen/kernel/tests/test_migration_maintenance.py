@@ -59,6 +59,7 @@ class CloneMigrationTests(unittest.TestCase):
         with closed_owner_custody(legacy,authority='owner',expected_domains=self.domains) as custody:
             with EventsMigration.resume(custody,self.root/'migration.json') as migration:
                 self.assertEqual(migration.journal['phase'],'switched')
+                self.assertEqual(migration.installed_receipt()['migration_id'],'same')
                 with self.assertRaises(MigrationError): migration.switch()
 
     def test_clone_interruption_resumes_original_journal_and_retains_partial(self):
@@ -70,6 +71,8 @@ class CloneMigrationTests(unittest.TestCase):
                 EventsMigration.apply(custody,plan,clone_qualification=q,
                     phase_hook=lambda phase: (_ for _ in ()).throw(RuntimeError('interrupted')) if phase=='backup-clone' else None)
             self.assertTrue((self.root/'backup.sqlite.partial').exists())
+            with self.assertRaisesRegex(MigrationError,'resume input differs'):
+                EventsMigration.resume(custody,self.root/'migration.json',clone_qualification=q,expected_input={'migration_id':'foreign'})
             with self.assertRaisesRegex(MigrationError,'use resume'):
                 EventsMigration.apply(custody,plan,clone_qualification=q)
             with EventsMigration.resume(custody,self.root/'migration.json',clone_qualification=q) as migration:
