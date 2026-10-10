@@ -19,6 +19,8 @@ from .usage_contract import (
     OBSERVATION_SCHEMA,
     METRIC_FIELDS,
     OBSERVATION_STATES,
+    MODEL_USAGE_SCHEMA,
+    sum_model_metrics,
     validate_rate_schedule,
     physical_span_identity,
 )
@@ -175,42 +177,64 @@ def estimate_span_cost(row: Mapping[str, Any], *, rate_schedule: Mapping[str, An
     observed = row.get("observed") if isinstance(row.get("observed"), Mapping) else {}
     model = observed.get("model") or row.get("model")
     tier = observed.get("tier") or row.get("tier") or "default"
-    entry_info = _rate_entry(schedule, model, tier)
-    if entry_info is None:
-        result["reason"] = "missing-model-or-rate"
-        return result
+    usage_by_model = row.get("model_usage") if isinstance(row.get("model_usage"), Mapping) else None
+    # Claude spans carry per-model additive facts; each model is priced at its
+    # own rate (a single span-level model would misprice a multi-model turn).
+    per_model = (usage_by_model or {}).get("models") if (usage_by_model or {}).get("state") == "observed" else None
+    parts = []
+    if per_model:
+        for item in per_model:
+            info = _rate_entry(schedule, item["model"], tier)
+            if info is None:
+                result["reason"] = "missing-model-or-rate"
+                return result
+            parts.append((item["model"], dict(item["metrics"]), info))
+        model = per_model[0]["model"] if len(per_model) == 1 else None
+    else:
+        entry_info = _rate_entry(schedule, model, tier)
+        if entry_info is None:
+            result["reason"] = "missing-model-or-rate"
+            return result
     item = row.get("_source") if isinstance(row.get("_source"), Mapping) else row
     consumption_time = _consumption_time(item)
     if consumption_time is None:
         result["reason"] = "missing-qualified-consumption-time"
         return result
-    metrics = dict(row["metrics"])
-    namespace = row.get('identity',{}).get('namespace')
-    codex_namespace = ADAPTER_DESCRIPTORS['codex-host']['namespace']
     partition = 'provider-exclusive-input-partitions'
-    if namespace == codex_namespace and 'input_tokens' in metrics:
-        total,cached = metrics['input_tokens'],metrics.get('cached_input_tokens')
-        if type(total) is not int or type(cached) is not int or not 0 <= cached <= total:
-            result['reason']='missing-or-invalid-codex-cache-partition'
-            return result
-        metrics['input_tokens']=total-cached
-        partition='codex-total-input-minus-cached; cached priced once'
-    components: dict[str, str] = {}
+    if not parts:
+        metrics = dict(row["metrics"])
+        namespace = row.get('identity',{}).get('namespace')
+        codex_namespace = ADAPTER_DESCRIPTORS['codex-host']['namespace']
+        if namespace == codex_namespace and 'input_tokens' in metrics:
+            total,cached = metrics['input_tokens'],metrics.get('cached_input_tokens')
+            if type(total) is not int or type(cached) is not int or not 0 <= cached <= total:
+                result['reason']='missing-or-invalid-codex-cache-partition'
+                return result
+            metrics['input_tokens']=total-cached
+            partition='codex-total-input-minus-cached; cached priced once'
+        parts.append((model, metrics, entry_info))
+    totals_by_field: dict[str, Decimal] = {}
+    components_by_model: dict[str, dict[str, str]] = {}
     amount = Decimal("0")
-    for field in CHARGEABLE_FIELDS:
-        if field not in metrics:
-            continue
-        count = metrics[field]
-        if type(count) is not int or count < 0:
-            result["reason"] = "invalid-metrics"
-            return result
-        rate = _money_decimal(entry_info[1].get(field), field)
-        if rate is None:
-            result["reason"] = "missing-rate"
-            return result
-        component = Decimal(count) * rate
-        components[field] = _money_text(component)
-        amount += component
+    for part_model, metrics, info in parts:
+        part_components: dict[str, str] = {}
+        for field in CHARGEABLE_FIELDS:
+            if field not in metrics:
+                continue
+            count = metrics[field]
+            if type(count) is not int or count < 0:
+                result["reason"] = "invalid-metrics"
+                return result
+            rate = _money_decimal(info[1].get(field), field)
+            if rate is None:
+                result["reason"] = "missing-rate"
+                return result
+            component = Decimal(count) * rate
+            part_components[field] = _money_text(component)
+            totals_by_field[field] = totals_by_field.get(field, Decimal("0")) + component
+            amount += component
+        components_by_model[str(part_model)] = part_components
+    components = {field: _money_text(value) for field, value in totals_by_field.items()}
     if not components:
         result["reason"] = "missing-metrics"
         return result
@@ -242,6 +266,9 @@ def estimate_span_cost(row: Mapping[str, Any], *, rate_schedule: Mapping[str, An
         },
         "reasoning_additive": False,
     })
+    if per_model:
+        result["models"] = sorted(components_by_model)
+        result["components_by_model"] = components_by_model
     return result
 
 
@@ -280,6 +307,33 @@ def _monetary_coverage(rows: Sequence[Mapping[str, Any]], *, complete: bool, mis
         "unknown_is_zero": False,
         "reported_and_estimated_are_separate": True,
     }
+
+
+def _validate_model_usage(model_usage: Any, usage: Mapping[str, Any]) -> None:
+    """Per-model facts must be well formed and agree with the span metrics."""
+    if (not isinstance(model_usage, Mapping) or model_usage.get("schema") != MODEL_USAGE_SCHEMA
+            or model_usage.get("state") not in {"observed", "invalid"}
+            or not isinstance(model_usage.get("models"), list)):
+        raise ValueError("model usage carrier is malformed")
+    if model_usage["state"] == "invalid":
+        if model_usage["models"]:
+            raise ValueError("invalid model usage cannot contribute models")
+        return
+    if usage.get("state") not in {"observed", "zero"} or not model_usage["models"]:
+        raise ValueError("model usage requires qualified span metrics")
+    seen = set()
+    for item in model_usage["models"]:
+        if (not isinstance(item, Mapping) or not isinstance(item.get("model"), str) or not item["model"].strip()
+                or item["model"] in seen or not isinstance(item.get("metrics"), Mapping)
+                or set(item["metrics"]) != set(CHARGEABLE_FIELDS)
+                or any(type(v) is not int or v < 0 for v in item["metrics"].values())):
+            raise ValueError("model usage entry is malformed")
+        seen.add(item["model"])
+        cost = item.get("cost")
+        if cost is not None and _money_decimal(cost, "cost") is None:
+            raise ValueError("model usage cost is malformed")
+    if sum_model_metrics(model_usage) != {k: usage["metrics"].get(k, 0) for k in CHARGEABLE_FIELDS}:
+        raise ValueError("model usage differs from span metrics")
 
 
 def qualified_observation(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -321,11 +375,40 @@ def qualified_observation(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("zero state differs from metrics")
     elif metrics:
         raise ValueError("unqualified observations cannot contribute numbers")
+    if "model_usage" in value:
+        _validate_model_usage(value["model_usage"], usage)
     for carrier in ("observed", "requested"):
         metadata = value.get(carrier) or {}
         value[carrier] = {field: metadata.get(field) if isinstance(metadata.get(field), str)
             and metadata[field].strip() else None for field in ("model", "tier")}
     return value
+
+
+def _fold_model_group(bucket_map: dict, row: Mapping[str, Any], metrics: Mapping[str, int]) -> None:
+    """Alternate per-model view; Claude per-model facts, else the span's one model."""
+    usage = row.get("model_usage") if isinstance(row.get("model_usage"), Mapping) else {}
+    if usage.get("state") == "observed":
+        parts = [(i["model"], i["metrics"], i.get("cost")) for i in usage["models"]]
+    else:
+        model = (row.get("observed") or {}).get("model")
+        money = row.get("provider_reported_money") or {}
+        reported = money.get("amount") if money.get("status") in {"zero", "usage_report_estimate", "billed"} else None
+        parts = [(model, metrics, reported)] if model else []
+    for model, part_metrics, cost in parts:
+        bucket = bucket_map.setdefault(model, {"identity": model, "metrics": {}, "span_count": 0,
+            "provider_reported": {"amount": None, "currency": None, "reported_spans": 0}, "roles": []})
+        bucket["span_count"] += 1
+        for association in row.get("associations", ()):
+            role = association.get("role") if isinstance(association, Mapping) else None
+            if isinstance(role, str) and role not in bucket["roles"]:
+                bucket["roles"] = sorted(bucket["roles"] + [role])
+        for field, amount in part_metrics.items():
+            bucket["metrics"][field] = bucket["metrics"].get(field, 0) + amount
+        if cost is not None:
+            reported = bucket["provider_reported"]
+            reported["amount"] = _money_text(Decimal(reported["amount"] or "0") + Decimal(str(cost)))
+            reported["currency"] = "USD"
+            reported["reported_spans"] += 1
 
 
 def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
@@ -366,6 +449,7 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
         spans[item["observation"]["identity"]["span_id"]].append(item)
     rows, excluded, limited = [], [], 0
     totals = {}; groups = {name: {} for name in ("project", "task", "agent")}
+    by_model: dict = {}
     missing = sum(1 for f in facts if f.get("append_position", as_of + 1) <= as_of
         and ref_key(f.get("association", {}).get("project_ref")) in allowed
         and f.get("observation", {}).get("usage", {}).get("state") not in {"observed", "zero"})
@@ -408,9 +492,13 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
                     conflicts.add(field)
                 else:
                     metrics[field] = amount
+        model_usages = {json.dumps(i["observation"]["model_usage"], sort_keys=True) for i in values
+                        if "model_usage" in i["observation"]}
         observed = {field: sorted({i["observation"].get("observed", {}).get(field) for i in values
             if i["observation"].get("observed", {}).get(field) is not None}) for field in ("model", "tier")}
         reason = None
+        if len(model_usages) > 1:
+            conflicts.add("model_usage")
         if conflicts or any(i["observation"]["usage"]["state"] == "conflict" for i in values):
             reason = "conflict"
         elif any(i["observation"]["identity"]["metric_scope"] == "cumulative" for i in values):
@@ -477,6 +565,8 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
             "evidence_refs": [i["ref"] for i in items],
             "execution_time": items[0].get("execution_time"), "consumption_time": consumption_time,
             "provider_reported_money": provider_money, "as_of": as_of}
+        if len(model_usages) == 1:
+            row["model_usage"] = json.loads(next(iter(model_usages)))
         row["price_estimate"] = estimate_span_cost(row)
         rows.append(row)
         if reason:
@@ -494,6 +584,7 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
             bucket = groups[name].setdefault(encoded, {"identity": key, "metrics": {}, "span_count": 0})
             bucket["span_count"] += 1
             for field, amount in metrics.items(): bucket["metrics"][field] = bucket["metrics"].get(field, 0) + amount
+        _fold_model_group(by_model, row, metrics)
     pricing_rows = [r.get("price_estimate") for r in rows if isinstance(r.get("price_estimate"), Mapping)]
     priced = [r for r in pricing_rows if r.get("status") == "estimated"]
     priced_currencies = {r.get("currency") for r in priced if r.get("currency")}
@@ -544,6 +635,7 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
     }
     return {"schema": "otto.usage-accounting.v1", "as_of": as_of, "spans": rows,
         "metrics": totals or None, "groups": {k: list(v.values()) for k, v in groups.items()},
+        "by_model": list(by_model.values()),
         "exclusions": excluded, "pricing": pricing, "cost_estimate": pricing,
         "provider_reported": provider_summary, "monetary": {
             "provider_reported": provider_summary, "price_estimate": pricing,
