@@ -1,0 +1,10 @@
+{
+  "operation": "dat.evidence.reclaim.apply",
+  "host_contract": "herzchen.evidence.host.v1",
+  "document_role": "evidence.managed",
+  "selection": "retained project-scoped historical preview",
+  "max_batch": 100,
+  "automatic_deletion": false,
+  "requires_explicit_request": true,
+  "revalidate_before_delete": true
+}

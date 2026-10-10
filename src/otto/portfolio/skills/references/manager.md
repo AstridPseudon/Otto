@@ -16,6 +16,16 @@ and finish path. Decide reviewer proposals, add accepted corrections to normal
 planning and delegate them. Preserve original verdicts and consumed allowances.
 Worker success is not task acceptance.
 
+For Evidence work, cite exact immutable pins and distinguish source, test and
+installed proof. Use the maintained Evidence list/read/checkout/bundle flows;
+for retention, preview a bounded project-scoped historical selection and apply
+only that retained selection after dependency, recovery and path revalidation.
+Review managed-byte and cache-byte accounting, tombstones and held reasons.
+Stale/shared/in-flight/unknown candidates remain held. Pack upgrades are
+explicit and non-retroactive; disabling/removing Evidence stops new admission
+without deleting documents, bytes, citations, pending recovery or decisions.
+Do not make workers prepare per-command manifests or treat a preview as purge.
+
 Use configured `request-help` for operational blockers and `request-advice` for
 judgment. Include impact, evidence, needed action and resume condition. Verify
 delivery; report unavailable routing and use the available owner channel.

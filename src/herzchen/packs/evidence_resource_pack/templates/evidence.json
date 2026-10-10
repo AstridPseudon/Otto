@@ -3,5 +3,12 @@
   "representation_version": "managed-bytes.v1",
   "origin": {"project_ref": "required", "task_ref": "optional", "attempt_ref": "optional"},
   "attribution": {"original_creator": "required", "submitter": "authenticated", "maintainer": "required"},
-  "annotations": "versioned-separately"
+  "annotations": "versioned-separately",
+  "retention": {
+    "preview_operation": "dat.evidence.reclaim.preview",
+    "apply_operation": "dat.evidence.reclaim.apply",
+    "scope": "project-scoped historical exact pins",
+    "automatic_deletion": false,
+    "tombstone_kind": "dat.evidence.tombstone"
+  }
 }

@@ -11,6 +11,8 @@
     {"path": "presets/version.json", "kind": "evidence_preset"},
     {"path": "presets/list.json", "kind": "evidence_preset"},
     {"path": "presets/read.json", "kind": "evidence_preset"},
+    {"path": "presets/reclaim-preview.json", "kind": "evidence_preset"},
+    {"path": "presets/reclaim-apply.json", "kind": "evidence_preset"},
     {"path": "skill/SKILL.md", "kind": "skill"},
     {"path": "templates/evidence.json", "kind": "evidence_template"}
   ]

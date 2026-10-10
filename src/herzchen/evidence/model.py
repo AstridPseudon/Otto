@@ -33,6 +33,13 @@ EVIDENCE_STREAM_PREFIX = "evidence:"
 EVIDENCE_ALIAS_NAMESPACE = "project.evidence"
 EVIDENCE_PROJECTION_DIR = "evidence"
 EVIDENCE_CHECKOUT_SCHEMA = "dat.evidence.checkout.v1"
+EVIDENCE_LIFECYCLE_KIND = "dat.evidence.lifecycle"
+EVIDENCE_TOMBSTONE_KIND = "dat.evidence.tombstone"
+EVIDENCE_RECLAIM_PREVIEW_OPERATION = "dat.evidence.reclaim.preview"
+EVIDENCE_RECLAIM_APPLY_OPERATION = "dat.evidence.reclaim.apply"
+EVIDENCE_RECLAIM_PREVIEW_EVENT = "dat.evidence.reclaim.previewed"
+EVIDENCE_RECLAIM_APPLY_EVENT = "dat.evidence.reclaim.applied"
+EVIDENCE_TOMBSTONE_EVENT = "dat.evidence.payload.tombstoned"
 
 
 class EvidenceError(ValueError):
@@ -236,6 +243,7 @@ class EvidenceResourcePack:
             raise EvidencePackError("Evidence admission requires a ManagedPack from public discovery")
         if managed.pack_id != EVIDENCE_PACK_ID or managed.version not in {"1.0.0", EVIDENCE_PACK_VERSION}:
             raise EvidencePackError("unsupported managed Evidence pack")
+        resources = {item.path: item for item in managed.resources}
         expected = {
             "schemas/evidence.json": "evidence_schema",
             "policies/provenance.json": "evidence_policy",
@@ -245,8 +253,17 @@ class EvidenceResourcePack:
             "templates/evidence.json": "evidence_template",
         }
         if managed.version == EVIDENCE_PACK_VERSION:
-            expected.update({"presets/list.json": "evidence_preset", "presets/read.json": "evidence_preset"})
-        resources = {item.path: item for item in managed.resources}
+            expected.update({
+                "presets/list.json": "evidence_preset",
+                "presets/read.json": "evidence_preset",
+            })
+            # Reclaim was added without invalidating already-adopted 1.1
+            # readers.  A current pack advertises both finite lifecycle
+            # presets; an older pinned 1.1 view remains readable but cannot
+            # admit the new lifecycle operations.
+            for path in ("presets/reclaim-preview.json", "presets/reclaim-apply.json"):
+                if path in resources:
+                    expected[path] = "evidence_preset"
         if set(resources) != set(expected):
             raise EvidencePackError("managed Evidence resources are incomplete or contain unknown paths")
         for path, kind in expected.items():
@@ -275,6 +292,13 @@ class EvidenceResourcePack:
             raise EvidencePackError("managed Evidence policy does not cover all trusted operations")
         if policy.get("policy_cannot_grant_actor_authority") is not True or policy.get("policy_cannot_overwrite_authenticated_facts") is not True:
             raise EvidencePackError("managed Evidence policy weakens authenticated authority")
+        if policy.get("automatic_deletion") is True:
+            raise EvidencePackError("managed Evidence policy cannot authorize automatic deletion")
+        lifecycle_operations = set(policy.get("lifecycle_operations", ()) or ())
+        if lifecycle_operations and lifecycle_operations != {
+            EVIDENCE_RECLAIM_PREVIEW_OPERATION, EVIDENCE_RECLAIM_APPLY_OPERATION,
+        }:
+            raise EvidencePackError("managed Evidence lifecycle policy has unsupported operations")
 
         pins = tuple(
             EvidenceResourcePin(item.path, item.kind, item.source_digest, managed.version, item.source_ref)
@@ -334,6 +358,17 @@ class EvidenceResourcePack:
                     expected = 100 if bound == "max_page" else 65536
                     if type(preset.get(bound)) is not int or preset[bound] != expected:
                         raise EvidencePackError("Evidence read preset exceeds the shared finite bound")
+                if wanted == EVIDENCE_RECLAIM_PREVIEW_OPERATION:
+                    if (preset.get("automatic_deletion") is not False or
+                            preset.get("requires_explicit_request") is not True or
+                            preset.get("max_page") != 100):
+                        raise EvidencePackError("Evidence reclaim preview preset weakens bounded explicit selection")
+                if wanted == EVIDENCE_RECLAIM_APPLY_OPERATION:
+                    if (preset.get("automatic_deletion") is not False or
+                            preset.get("requires_explicit_request") is not True or
+                            preset.get("revalidate_before_delete") is not True or
+                            preset.get("max_batch") != 100):
+                        raise EvidencePackError("Evidence reclaim apply preset weakens bounded revalidation")
                 return
         raise EvidencePackError(f"Evidence pack has no validated preset for {operation}")
 
@@ -456,6 +491,9 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
 
 __all__ = [
     "ChangedInputError", "EVIDENCE_ALIAS_NAMESPACE", "EVIDENCE_CHECKOUT_SCHEMA", "EVIDENCE_DOCUMENT_ROLE", "EVIDENCE_DOMAIN_ID", "EVIDENCE_HOST_CONTRACT",
+    "EVIDENCE_LIFECYCLE_KIND", "EVIDENCE_RECLAIM_APPLY_EVENT", "EVIDENCE_RECLAIM_APPLY_OPERATION",
+    "EVIDENCE_RECLAIM_PREVIEW_EVENT", "EVIDENCE_RECLAIM_PREVIEW_OPERATION", "EVIDENCE_TOMBSTONE_EVENT",
+    "EVIDENCE_TOMBSTONE_KIND",
     "EVIDENCE_MANIFEST_KIND", "EVIDENCE_MANAGED_KIND", "EVIDENCE_PACK_ID", "EVIDENCE_PACK_VERSION",
     "EVIDENCE_PROJECTION_DIR", "EVIDENCE_ROLE", "EVIDENCE_SCHEMA_REVISION", "EvidenceAccessDeniedError", "EvidenceBindingError",
     "EvidenceCheckinError", "EvidenceError", "EvidencePackError", "EvidencePathCollisionError", "EvidenceResourcePack", "EvidenceResourcePin", "EvidenceSelection",

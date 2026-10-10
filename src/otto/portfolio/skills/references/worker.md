@@ -9,6 +9,14 @@ Implement within scope, preserve unrelated work and run relevant checks. Return
 actual candidate/source identity, artifact refs, test results and limitations.
 Your result does not accept the task, close the project or authorize deployment.
 
+When the brief involves Evidence, use the adopted pack workflow and exact pins.
+Keep captured provenance immutable while treating annotations, aliases and
+checkout copies as separate mutations. A reclaim preview is not deletion;
+apply only a retained selection and report held dependencies, tombstones,
+managed/cache bytes and interruption reconciliation. Never manually remove a
+payload, infer purge authority from completion, or claim pack disable/remove
+deleted data.
+
 Coordinating workers may delegate through their own admitted canonical route
 within finite limits. Keep parent/project/task associations and consume retained
 results. Give children bounded contributions. Leaves execute their own brief;

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -37,6 +38,13 @@ from .model import (
     EVIDENCE_DOMAIN_ID,
     EVIDENCE_ALIAS_NAMESPACE,
     EVIDENCE_CHECKOUT_SCHEMA,
+    EVIDENCE_LIFECYCLE_KIND,
+    EVIDENCE_RECLAIM_APPLY_EVENT,
+    EVIDENCE_RECLAIM_APPLY_OPERATION,
+    EVIDENCE_RECLAIM_PREVIEW_EVENT,
+    EVIDENCE_RECLAIM_PREVIEW_OPERATION,
+    EVIDENCE_TOMBSTONE_EVENT,
+    EVIDENCE_TOMBSTONE_KIND,
     EVIDENCE_DOCUMENT_ROLE,
     EVIDENCE_HOST_CONTRACT,
     EVIDENCE_MANIFEST_KIND,
@@ -94,18 +102,26 @@ def domain_contribution() -> DomainContribution:
         EVIDENCE_DOMAIN_ID,
         "1",
         "dat",
+        (EVIDENCE_LIFECYCLE_KIND, EVIDENCE_TOMBSTONE_KIND),
         (),
         (),
-        (),
-        (CAPTURE_OPERATION, VERSION_OPERATION, CHECKIN_OPERATION),
-        (CAPTURE_EVENT, VERSION_EVENT, CHECKIN_EVENT),
+        (CAPTURE_OPERATION, VERSION_OPERATION, CHECKIN_OPERATION,
+         EVIDENCE_RECLAIM_PREVIEW_OPERATION, EVIDENCE_RECLAIM_APPLY_OPERATION),
+        (CAPTURE_EVENT, VERSION_EVENT, CHECKIN_EVENT,
+         EVIDENCE_RECLAIM_PREVIEW_EVENT, EVIDENCE_RECLAIM_APPLY_EVENT,
+         EVIDENCE_TOMBSTONE_EVENT),
         EVIDENCE_SCHEMA_REVISION,
         (
             "fnd-03.identities", "fnd-03.record_references", "fnd-03.transaction",
             "handler-required", "mutation-resource:dat.content.document",
+            "mutation-resource:dat.evidence.lifecycle",
+            "mutation-resource:dat.evidence.tombstone",
             f"mutation-port:{EVIDENCE_SCHEMA_REVISION}|{CAPTURE_OPERATION}|dat.content.document|{CAPTURE_EVENT}",
             f"mutation-port:{EVIDENCE_SCHEMA_REVISION}|{VERSION_OPERATION}|dat.content.document|{VERSION_EVENT}",
             f"mutation-port:{EVIDENCE_SCHEMA_REVISION}|{CHECKIN_OPERATION}|dat.content.document|{CHECKIN_EVENT}",
+            f"mutation-port:{EVIDENCE_SCHEMA_REVISION}|{EVIDENCE_RECLAIM_PREVIEW_OPERATION}|{EVIDENCE_LIFECYCLE_KIND}|{EVIDENCE_RECLAIM_PREVIEW_EVENT}",
+            f"mutation-port:{EVIDENCE_SCHEMA_REVISION}|{EVIDENCE_RECLAIM_APPLY_OPERATION}|{EVIDENCE_LIFECYCLE_KIND}|{EVIDENCE_RECLAIM_APPLY_EVENT}",
+            f"mutation-port:{EVIDENCE_SCHEMA_REVISION}|{EVIDENCE_RECLAIM_APPLY_OPERATION}|{EVIDENCE_TOMBSTONE_KIND}|{EVIDENCE_TOMBSTONE_EVENT}",
         ),
     )
 
@@ -219,6 +235,7 @@ class _EvidenceCommandHandlerEngine:
         adopted_pins: Optional[Sequence[Mapping[str, Any]]] = None,
         project_root: Optional[str | os.PathLike[str]] = None,
         authorize: Optional[Callable[[Mapping[str, Any], AuthenticatedActor, ResourceRef], bool]] = None,
+        workflow_enabled: bool = True,
     ) -> None:
         content_writer = writer
         if writer is not None and hasattr(writer, "domain_handler"):
@@ -235,6 +252,7 @@ class _EvidenceCommandHandlerEngine:
         self.payload_root = Path(payload_root).expanduser().resolve()
         self.payload_root.mkdir(parents=True, exist_ok=True)
         self._authorize = authorize
+        self.workflow_enabled = bool(workflow_enabled)
         self.pack = pack or load_evidence_pack(project_root=project_root)
         if selection is not None and adopted_pins is not None:
             raise EvidencePackError("provide either an Evidence selection or adopted resource pins, not both")
@@ -246,6 +264,30 @@ class _EvidenceCommandHandlerEngine:
         if self.__writer is None:
             raise EvidenceError("FND-03 writer is required for Evidence commands")
         return self.__writer
+
+    def _require_workflow(self) -> None:
+        if not self.workflow_enabled:
+            raise EvidencePackError("Evidence workflow admission is disabled for new mutations")
+
+    @staticmethod
+    def _tombstone_ref(reference: ResourceRef) -> ResourceRef:
+        exact = reference.to_dict()
+        token = hashlib.sha256(canonical_json(exact).encode("utf-8")).hexdigest()[:40]
+        return ResourceRef(reference.authority, EVIDENCE_TOMBSTONE_KIND, "tombstone-" + token)
+
+    def _read_tombstone(self, reference: ResourceRef) -> Optional[Mapping[str, Any]]:
+        if self.__writer is None:
+            return None
+        writer = self.__writer
+        record = writer.get_identity(self._tombstone_ref(reference))
+        if record is None or not isinstance(record.payload, Mapping):
+            return None
+        if record.payload.get("record_type") != EVIDENCE_TOMBSTONE_KIND:
+            raise EvidenceError("Evidence tombstone identity has an invalid record type")
+        exact = record.payload.get("reference")
+        if exact != reference.to_dict():
+            raise EvidenceError("Evidence tombstone pin does not match its identity")
+        return record.payload
 
     def _rooted(self, relative: str) -> Path:
         path = (self.payload_root / relative).resolve()
@@ -354,6 +396,7 @@ class _EvidenceCommandHandlerEngine:
 
     def _alias_link(self, project_ref: ResourceRef, alias: str, pinned: ResourceRef, *, actor: AuthenticatedActor,
                     logical_request_key: str) -> Mapping[str, Any]:
+        self._require_workflow()
         if pinned.revision is None:
             raise EvidenceCheckinError("evidence aliases must cite an exact revision")
         target, association = self._association(project_ref, alias)
@@ -378,6 +421,7 @@ class _EvidenceCommandHandlerEngine:
 
     def _alias_unlink(self, project_ref: ResourceRef, alias: str, *, actor: AuthenticatedActor,
                       logical_request_key: str) -> Mapping[str, Any]:
+        self._require_workflow()
         target, _placeholder = self._association(project_ref, alias)
         existing = self._require_writer().get_identity(target)
         if existing is None or existing.payload.get("active") is not True:
@@ -651,6 +695,473 @@ class _EvidenceCommandHandlerEngine:
             "resource_selection": self.selection.to_dict(),
         }
 
+    def _persist_lifecycle(
+        self,
+        *,
+        operation: str,
+        event_type: str,
+        logical_request_key: str,
+        actor: AuthenticatedActor,
+        target_id: str,
+        record: Mapping[str, Any],
+        effects: Mapping[str, Any],
+        tombstones: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[CommandReceipt, Mapping[str, Any]]:
+        """Persist one bounded lifecycle decision through the existing FND owner.
+
+        Lifecycle records are ordinary identities/events, not a second table or
+        registry.  Tombstones are committed in the same owner transaction as
+        the apply decision, so a successful receipt always has honest
+        unavailable metadata even though managed bytes are deliberately
+        outside the FND transaction.
+        """
+        writer = self._require_writer()
+        target = ResourceRef(writer.authority, EVIDENCE_LIFECYCLE_KIND, target_id)
+        input_digest = record.get("request_input_digest")
+        if not isinstance(input_digest, str):
+            raise EvidenceError("lifecycle record is missing its request input digest")
+        prior = writer.get_receipt(logical_request_key)
+        if prior is not None:
+            prior_record = writer.get_identity(prior.result_ref or target)
+            if (prior_record is None or not isinstance(prior_record.payload, Mapping) or
+                    prior_record.payload.get("request_input_digest") != input_digest):
+                raise ReplayConflictError("lifecycle request key was reused with changed inputs")
+            # The durable receipt remains unchanged; mark only this returned
+            # observation as a replay so callers can distinguish a no-op read
+            # from the first lifecycle commit.
+            return replace(prior, replayed=True), prior_record.payload
+        if writer.get_identity(target) is not None:
+            raise EvidenceError("lifecycle target identity is occupied without its request receipt")
+        payload = dict(record)
+        payload["record_type"] = payload.get("record_type", "dat.evidence.lifecycle")
+        envelope = self._envelope(operation, target, actor, logical_request_key, payload,
+                                   expected_revision=None, expected_version=0)
+        with writer.transaction() as transaction:
+            receipt = writer.mutate(
+                envelope,
+                identity_payload=payload,
+                event_type=event_type,
+                before_refs=(),
+                # Tombstone identities are created immediately below in the
+                # same transaction.  They intentionally are not event
+                # references here because FND reference rows require the
+                # target identity to exist before the mutation event.
+                after_refs=(),
+                effects=dict(effects),
+                stream="evidence-lifecycle:" + target_id,
+                transaction=transaction,
+            )
+            for item in tombstones:
+                reference = _ref(item["reference"], "tombstone.reference")
+                tombstone_ref = self._tombstone_ref(reference)
+                if writer.get_identity(tombstone_ref) is not None:
+                    continue
+                tombstone = {
+                    "record_type": EVIDENCE_TOMBSTONE_KIND,
+                    "reference": reference.to_dict(),
+                    "document_ref": _ref(item["document_ref"], "tombstone.document_ref").to_dict(),
+                    "byte_digest": item.get("byte_digest"),
+                    "byte_length": item.get("byte_length"),
+                    "format": item.get("format"),
+                    "origin": dict(item.get("origin", {})),
+                    "attribution": dict(item.get("attribution", {})),
+                    "storage_location": item.get("storage_location"),
+                    "purged_at": item.get("purged_at", _now()),
+                    "reason": item.get("reason", "explicit-retention-reclaim"),
+                    "decision_ref": target,
+                    "decision_history_preserved": True,
+                }
+                writer.put_identity(tombstone_ref, tombstone, version=0, transaction=transaction)
+        return receipt, payload
+
+    @staticmethod
+    def _identity_tuple(value: Any) -> tuple[str, str, str]:
+        ref = _ref(value, "reference")
+        return ref.authority, ref.kind, ref.id
+
+    def _active_associations(self) -> Mapping[tuple[str, str, str, Optional[str]], set[tuple[str, str, str]]]:
+        """Read existing association metadata without opening payload bodies."""
+        result: dict[tuple[str, str, str, Optional[str]], set[tuple[str, str, str]]] = {}
+        cursor = ""
+        while True:
+            page = self.reader.read_identity_page(kind="document-association", after=cursor, limit=100)
+            for record in page["records"]:
+                if record.payload.get("active") is False:
+                    continue
+                association = self._typed_association(record.payload.get("association", record.payload))
+                if association is None:
+                    continue
+                binding = association.document
+                key = (binding.ref.authority, binding.ref.kind, binding.ref.id, binding.ref.revision)
+                subject = association.subject
+                result.setdefault(key, set()).add((subject.authority, subject.kind, subject.id))
+            cursor = page["next_cursor"] or ""
+            if not page["next_cursor"]:
+                break
+        return result
+
+    def _document_history(self, document_ref: ResourceRef) -> tuple[ResourceRef, ...]:
+        refs: dict[Optional[str], ResourceRef] = {}
+        head = self._document(document_ref)
+        if head is None:
+            return ()
+        current = head.payload.get("current_revision")
+        if isinstance(current, Mapping):
+            current = ResourceRef.from_dict(current)
+        if isinstance(current, ResourceRef):
+            refs[current.revision] = current
+        for event in self._require_writer().list_events(subjects=[document_ref]):
+            for value in event.after_refs:
+                # Existing DAT content events use the document identity kind
+                # for exact revision pins; accept the explicit revision kind
+                # as well for compatible historical readers.
+                if value.kind in {"dat.content.document", "dat.content.revision"} and value.id == document_ref.id:
+                    refs[value.revision] = ResourceRef(value.authority, document_ref.kind, value.id, value.revision)
+        return tuple(refs[key] for key in sorted(refs, key=lambda item: (item is None, item or "")))
+
+    @staticmethod
+    def _dependency_reason(manifest: Mapping[str, Any], reference: ResourceRef,
+                           dependency_state: Optional[Mapping[str, Any]],
+                           recovery_refs: set[tuple[str, str, str, Optional[str]]]) -> Optional[str]:
+        key = (reference.authority, reference.kind, reference.id, reference.revision)
+        if key in recovery_refs:
+            return "in-flight-recovery"
+        provenance = manifest.get("provenance", {})
+        if not isinstance(provenance, Mapping):
+            provenance = {}
+        if manifest.get("in_flight") is True or manifest.get("pending_recovery") is True or provenance.get("in_flight") is True or provenance.get("pending_recovery") is True:
+            return "in-flight-recovery"
+        if manifest.get("dependency_unknown") is True or provenance.get("dependency_unknown") is True:
+            return "dependency-unknown"
+        if dependency_state:
+            candidates = (dependency_state.get(reference.to_dict().__repr__()),
+                          dependency_state.get(canonical_json(reference.to_dict())),
+                          dependency_state.get(reference.id))
+            for value in candidates:
+                if isinstance(value, str) and value in {"in-flight", "in_flight", "pending", "recovery"}:
+                    return "in-flight-recovery"
+                if isinstance(value, str) and value in {"unknown", "indeterminate", "held"}:
+                    return "dependency-unknown"
+                if isinstance(value, Mapping):
+                    if value.get("in_flight") or value.get("pending_recovery"):
+                        return "in-flight-recovery"
+                    if value.get("unknown") or value.get("state") in {"unknown", "indeterminate", "held"}:
+                        return "dependency-unknown"
+        return None
+
+    def _reclaim_candidates(
+        self,
+        project: ResourceRef,
+        *,
+        actor: AuthenticatedActor,
+        cutoff: str,
+        dependency_state: Optional[Mapping[str, Any]] = None,
+        recovery_refs: Sequence[Any] = (),
+    ) -> list[dict[str, Any]]:
+        active = self._active_associations()
+        recovery = {self._identity_tuple(item) + (item.revision,) for item in (_ref(value, "recovery_ref") for value in recovery_refs)}
+        candidates: dict[tuple[str, str, str, Optional[str]], dict[str, Any]] = {}
+        cursor = ""
+        while True:
+            page = self.reader.read_identity_page(kind="dat.content.document", after=cursor, limit=100)
+            for record in page["records"]:
+                document = record.payload.get("document")
+                role = document.get("role") if isinstance(document, Mapping) else getattr(document, "role", None)
+                if role != "evidence":
+                    continue
+                document_ref = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
+                history = self._document_history(document_ref)
+                for exact in history:
+                    try:
+                        status = self.status(exact, actor=actor)
+                    except EvidenceAccessDeniedError:
+                        continue
+                    if status.get("representation") != "managed":
+                        continue
+                    manifest = status.get("manifest")
+                    if not isinstance(manifest, Mapping):
+                        continue
+                    origin = manifest.get("origin", {})
+                    origin_project = origin.get("project_ref") if isinstance(origin, Mapping) else None
+                    origin_matches = isinstance(origin_project, Mapping) and self._identity_tuple(origin_project) == self._identity_tuple(project)
+                    assoc_projects: set[tuple[str, str, str]] = set()
+                    assoc_key = (exact.authority, exact.kind, exact.id, exact.revision)
+                    assoc_projects.update(active.get(assoc_key, set()))
+                    # Current-mode links resolve to the exact current head.
+                    head = status.get("current_head")
+                    if isinstance(head, ResourceRef) and head.revision == exact.revision:
+                        assoc_projects.update(active.get((exact.authority, exact.kind, exact.id, None), set()))
+                    if not origin_matches and self._identity_tuple(project) not in assoc_projects:
+                        continue
+                    captured = manifest.get("capture", {}).get("captured_at") if isinstance(manifest.get("capture"), Mapping) else None
+                    if isinstance(captured, str) and captured > cutoff:
+                        reason = "after-cutoff"
+                    else:
+                        reason = None
+                    key = (exact.authority, exact.kind, exact.id, exact.revision)
+                    if key in candidates:
+                        continue
+                    location = manifest.get("storage", {}).get("location") if isinstance(manifest.get("storage"), Mapping) else None
+                    path = None
+                    path_reason = None
+                    if isinstance(location, str):
+                        try:
+                            path = self._rooted(location)
+                            if path.is_symlink() or (path.exists() and not path.is_file()):
+                                path_reason = "managed-location-unknown"
+                        except EvidenceError:
+                            path_reason = "managed-location-unknown"
+                    else:
+                        path_reason = "managed-location-unknown"
+                    tombstone = self._read_tombstone(exact)
+                    availability = "purged" if tombstone is not None else status.get("availability", manifest.get("availability"))
+                    dependency = self._dependency_reason(manifest, exact, dependency_state, recovery)
+                    shared = any(item != self._identity_tuple(project) for item in assoc_projects)
+                    hold = dependency or ("shared-reference" if shared else path_reason)
+                    if reason is not None:
+                        hold = reason
+                    eligible = availability in {"admitted", "verified"} and hold is None and path is not None and path.is_file()
+                    if availability in {"missing", "corrupt", "staged"} and path is not None and not path.exists():
+                        hold = hold or "unavailable"
+                    item = {
+                        "reference": exact,
+                        "document_ref": document_ref,
+                        "current_head": status.get("current_head"),
+                        "byte_digest": manifest.get("byte_digest"),
+                        "byte_length": manifest.get("byte_length", 0),
+                        "format": manifest.get("format"),
+                        "origin": dict(origin) if isinstance(origin, Mapping) else {},
+                        "attribution": dict(manifest.get("attribution", {})),
+                        "storage_location": location,
+                        "cache_location": (manifest.get("storage", {}).get("cache_location")
+                                           if isinstance(manifest.get("storage"), Mapping) else None),
+                        "availability": availability,
+                        "eligible": eligible,
+                        "hold": hold,
+                        "shared_projects": sorted(assoc_projects),
+                        "captured_at": captured,
+                        "selection_digest": _json_digest({"reference": exact.to_dict(), "byte_digest": manifest.get("byte_digest"), "storage_location": location}),
+                    }
+                    candidates[key] = item
+            cursor = page["next_cursor"] or ""
+            if not page["next_cursor"]:
+                break
+        return list(candidates.values())
+
+    def reclaim_preview(
+        self,
+        project_ref: Any,
+        *,
+        actor: AuthenticatedActor,
+        logical_request_key: str,
+        cutoff: Optional[str] = None,
+        cursor: str = "",
+        limit: int = 50,
+        dependency_state: Optional[Mapping[str, Any]] = None,
+        recovery_refs: Sequence[Any] = (),
+    ) -> Mapping[str, Any]:
+        """Select one exact, bounded project/history reclaim page.
+
+        Preview is descriptive only.  It never removes a file and completion
+        of a project is not inferred as purge authority.
+        """
+        self._require_workflow()
+        self.pack.validate_operation(EVIDENCE_RECLAIM_PREVIEW_OPERATION)
+        actor = _actor(actor)
+        project = _ref(project_ref, "project_ref")
+        self._validate_origin(project, None, None)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise EvidenceError("reclaim preview limit must be 1..100")
+        selected_cutoff = cutoff or _now()
+        if not isinstance(selected_cutoff, str) or not selected_cutoff.strip():
+            raise EvidenceError("reclaim preview cutoff must be non-blank text")
+        items = self._reclaim_candidates(project, actor=actor, cutoff=selected_cutoff,
+                                         dependency_state=dependency_state, recovery_refs=recovery_refs)
+        start = int(cursor) if isinstance(cursor, str) and cursor.isdigit() else 0
+        page_items = items[start:start + limit]
+        next_cursor = str(start + limit) if start + limit < len(items) else None
+        input_value = {"project_ref": project.to_dict(), "cutoff": selected_cutoff, "cursor": str(start), "limit": limit,
+                       "dependency_state": _safe(dependency_state or {}), "recovery_refs": [_ref(value, "recovery_ref").to_dict() for value in recovery_refs]}
+        record = {
+            "record_type": "dat.evidence.reclaim.preview",
+            "project_ref": project.to_dict(), "cutoff": selected_cutoff, "cursor": str(start),
+            "next_cursor": next_cursor, "limit": limit, "items": page_items,
+            "request_input_digest": _json_digest(input_value), "created_at": _now(),
+            "policy": "explicit-project-history-reclaim", "automatic_deletion": False,
+        }
+        record["selection_digest"] = _json_digest({"project_ref": project.to_dict(), "cutoff": selected_cutoff,
+                                                     "items": page_items})
+        receipt, persisted = self._persist_lifecycle(operation=EVIDENCE_RECLAIM_PREVIEW_OPERATION,
+            event_type=EVIDENCE_RECLAIM_PREVIEW_EVENT, logical_request_key=logical_request_key,
+            actor=actor, target_id="preview-" + hashlib.sha256(logical_request_key.encode()).hexdigest()[:32],
+            record=record, effects={"preview": True, "items": len(page_items), "next_cursor": next_cursor})
+        selection_ref = receipt.result_ref
+        return {"outcome": "replayed" if receipt.replayed else "previewed", "selection_ref": selection_ref,
+                "receipt": receipt, "selection": dict(persisted), "items": list(persisted.get("items", ())),
+                "next_cursor": persisted.get("next_cursor"),
+                "eligible_unique_managed_bytes": sum(int(item.get("byte_length", 0)) for item in persisted.get("items", ()) if item.get("eligible")),
+                "protected": [item for item in persisted.get("items", ()) if item.get("hold") in {"shared-reference", "in-flight-recovery", "dependency-unknown"}],
+                "unavailable": [item for item in persisted.get("items", ()) if item.get("hold") == "unavailable"],
+                "excluded": [item for item in persisted.get("items", ()) if item.get("hold") in {"after-cutoff", "managed-location-unknown"}],
+                "managed_bytes_removed": 0, "cache_bytes_removed": 0}
+
+    def reclaim_apply(
+        self,
+        preview: Any,
+        *,
+        actor: AuthenticatedActor,
+        logical_request_key: str,
+        project_ref: Any = None,
+        dependency_state: Optional[Mapping[str, Any]] = None,
+        recovery_refs: Sequence[Any] = (),
+        cache_root: Optional[str | os.PathLike[str]] = None,
+        interrupt_at: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Revalidate and apply one preview page, retaining tombstones."""
+        self._require_workflow()
+        self.pack.validate_operation(EVIDENCE_RECLAIM_APPLY_OPERATION)
+        actor = _actor(actor)
+        preview_ref = _ref(preview.get("selection_ref") if isinstance(preview, Mapping) and preview.get("selection_ref") is not None else preview, "selection_ref")
+        stored = self._require_writer().get_identity(preview_ref)
+        if stored is None or stored.payload.get("record_type") != "dat.evidence.reclaim.preview":
+            raise EvidenceCheckinError("reclaim apply requires a retained preview selection")
+        selection = stored.payload
+        project = _ref(project_ref or selection.get("project_ref"), "project_ref")
+        if self._identity_tuple(project) != self._identity_tuple(selection.get("project_ref")):
+            raise EvidenceCheckinError("reclaim apply project does not match the preview selection")
+        input_value = {"preview_ref": preview_ref.to_dict(), "project_ref": project.to_dict(),
+                       "dependency_state": _safe(dependency_state or {}),
+                       "recovery_refs": [_ref(value, "recovery_ref").to_dict() for value in recovery_refs]}
+        request_input_digest = _json_digest(input_value)
+        prior = self._require_writer().get_receipt(logical_request_key)
+        if prior is not None:
+            prior_record = self._require_writer().get_identity(prior.result_ref) if prior.result_ref is not None else None
+            if (prior_record is None or not isinstance(prior_record.payload, Mapping) or
+                    prior_record.payload.get("request_input_digest") != request_input_digest):
+                raise ReplayConflictError("lifecycle request key was reused with changed inputs")
+            persisted = prior_record.payload
+            return {"outcome": "replayed", "receipt": replace(prior, replayed=True),
+                    "apply_ref": prior.result_ref, "preview_ref": preview_ref,
+                    "managed_bytes_removed": persisted.get("managed_bytes_removed", 0),
+                    "cache_bytes_removed": persisted.get("cache_bytes_removed", 0),
+                    "observed_files_removed": len(persisted.get("tombstones", ())),
+                    "tombstones": list(persisted.get("tombstones", ())),
+                    "held": list(persisted.get("held", ())), "already": list(persisted.get("already", ())),
+                    "decision_history_preserved": True, "automatic_deletion": False}
+        current = self._reclaim_candidates(project, actor=actor, cutoff=selection["cutoff"],
+                                            dependency_state=dependency_state, recovery_refs=recovery_refs)
+        by_key = {(item["reference"].authority, item["reference"].kind, item["reference"].id, item["reference"].revision): item for item in current}
+        removed_managed = 0
+        removed_cache = 0
+        tombstones: list[dict[str, Any]] = []
+        held: list[dict[str, Any]] = []
+        already: list[dict[str, Any]] = []
+        for raw in selection.get("items", ()):
+            exact = _ref(raw.get("reference"), "preview.item.reference")
+            key = (exact.authority, exact.kind, exact.id, exact.revision)
+            now = by_key.get(key)
+            if now is None:
+                held.append({"reference": exact, "reason": "stale-preview"})
+                continue
+            if now.get("selection_digest") != raw.get("selection_digest"):
+                held.append({"reference": exact, "reason": "stale-preview"})
+                continue
+            # A previous process may have removed the managed file after the
+            # preview but before its apply receipt was committed.  Reconcile
+            # that observable absence into the same honest tombstone path;
+            # absence is not a dependency hold and must not strand recovery.
+            if (now.get("hold") == "unavailable" and
+                    now.get("availability") == "missing" and
+                    isinstance(now.get("storage_location"), str)):
+                try:
+                    missing_path = self._rooted(now["storage_location"])
+                except EvidenceError:
+                    missing_path = None
+                if missing_path is not None and not missing_path.exists():
+                    tombstones.append(dict(now, reference=exact, reason="reconciled-missing"))
+                    continue
+            if now.get("hold") is not None:
+                if now.get("availability") == "purged":
+                    already.append({"reference": exact, "reason": "already-purged"})
+                else:
+                    held.append({"reference": exact, "reason": now["hold"]})
+                continue
+            location = now.get("storage_location")
+            path = None
+            try:
+                path = self._rooted(location)
+            except EvidenceError:
+                held.append({"reference": exact, "reason": "managed-location-unknown"})
+                continue
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                held.append({"reference": exact, "reason": "managed-location-unknown"})
+                continue
+            if not path.exists():
+                tombstones.append(dict(now, reference=exact, reason="reconciled-missing"))
+                continue
+            if interrupt_at == "before-delete":
+                raise PublicationInterrupted("reclaim interrupted before managed-file removal")
+            try:
+                length = path.stat().st_size
+                path.unlink()
+                if path.exists():
+                    held.append({"reference": exact, "reason": "managed-file-still-present"})
+                    continue
+                removed_managed += length
+                tombstones.append(dict(now, reference=exact, reason="explicit-retention-reclaim"))
+            except OSError:
+                held.append({"reference": exact, "reason": "managed-file-removal-failed"})
+                continue
+            cache_location = now.get("cache_location")
+            if cache_root is not None and isinstance(cache_location, str):
+                root = Path(cache_root).expanduser().resolve()
+                cache_path = (root / cache_location).resolve()
+                if root in cache_path.parents and cache_path.is_file() and not cache_path.is_symlink():
+                    try:
+                        cache_size = cache_path.stat().st_size
+                        cache_path.unlink()
+                        if not cache_path.exists():
+                            removed_cache += cache_size
+                    except OSError:
+                        held.append({"reference": exact, "reason": "cache-removal-failed"})
+            if interrupt_at == "after-delete":
+                raise PublicationInterrupted("reclaim interrupted after managed-file removal; reconciliation is required")
+        record = {
+            "record_type": "dat.evidence.reclaim.apply", "preview_ref": preview_ref.to_dict(),
+            "project_ref": project.to_dict(), "policy": "explicit-project-history-reclaim",
+            "items": [dict(item) for item in selection.get("items", ())],
+            "tombstones": [dict(item) for item in tombstones], "held": held, "already": already,
+            "managed_bytes_removed": removed_managed, "cache_bytes_removed": removed_cache,
+            "request_input_digest": request_input_digest, "applied_at": _now(),
+            "decision_history_preserved": True,
+        }
+        receipt, persisted = self._persist_lifecycle(operation=EVIDENCE_RECLAIM_APPLY_OPERATION,
+            event_type=EVIDENCE_RECLAIM_APPLY_EVENT, logical_request_key=logical_request_key,
+            actor=actor, target_id="apply-" + hashlib.sha256(logical_request_key.encode()).hexdigest()[:32],
+            record=record, effects={"managed_bytes_removed": removed_managed, "cache_bytes_removed": removed_cache,
+                                    "tombstones": len(tombstones), "held": len(held)}, tombstones=tombstones)
+        return {"outcome": "replayed" if receipt.replayed else "applied", "receipt": receipt,
+                "apply_ref": receipt.result_ref, "preview_ref": preview_ref,
+                "managed_bytes_removed": persisted.get("managed_bytes_removed", 0),
+                "cache_bytes_removed": persisted.get("cache_bytes_removed", 0),
+                "observed_files_removed": len(persisted.get("tombstones", ())),
+                "tombstones": list(persisted.get("tombstones", ())),
+                "held": list(persisted.get("held", ())), "already": list(persisted.get("already", ())),
+                "decision_history_preserved": True, "automatic_deletion": False}
+
+    # Descriptive aliases keep the public surface intention-shaped while
+    # retaining one implementation and one pair of finite pack presets.
+    preview_reclaim = reclaim_preview
+    apply_reclaim = reclaim_apply
+
+    def disable_workflow(self) -> Mapping[str, Any]:
+        self.workflow_enabled = False
+        return {"outcome": "disabled", "data_preserved": True, "new_workflow_admission": False}
+
+    def enable_workflow(self) -> Mapping[str, Any]:
+        self.workflow_enabled = True
+        return {"outcome": "enabled", "data_preserved": True, "new_workflow_admission": True}
+
     def _submit_or_version(
         self,
         source: Any,
@@ -672,6 +1183,7 @@ class _EvidenceCommandHandlerEngine:
         phase_hook: Optional[Callable[[str], None]],
         base_ref: Optional[ResourceRef] = None,
     ) -> Mapping[str, Any]:
+        self._require_workflow()
         actor = _actor(actor)
         writer = self._require_writer()
         if not isinstance(logical_request_key, str) or not logical_request_key.strip():
@@ -1217,6 +1729,7 @@ class _EvidenceCommandHandlerEngine:
     def annotate(self, document_ref: Any, annotation: Mapping[str, Any], *, actor: AuthenticatedActor,
                  logical_request_key: str, base_revision: Optional[str] = None) -> Mapping[str, Any]:
         """Append a separately versioned annotation while freezing capture facts and bytes."""
+        self._require_workflow()
         actor = _actor(actor)
         if not isinstance(annotation, Mapping) or not annotation:
             raise EvidenceCheckinError("annotation must be a non-empty object")
@@ -1313,6 +1826,12 @@ class _EvidenceCommandHandlerEngine:
             raise EvidenceAccessDeniedError("document unavailable") from None
         if status["representation"] == "managed":
             manifest = status["manifest"]
+            tombstone = self._read_tombstone(status["reference"])
+            if tombstone is not None:
+                status["manifest"] = dict(manifest, availability="purged", tombstone=dict(tombstone))
+                status["availability"] = "purged"
+                status["payload_verification"] = "not-available-after-reclaim"
+                return status
             state = manifest["availability"]
             if state not in {"missing", "corrupt", "purged", "staged"}:
                 path = self._rooted(manifest["storage"]["location"])
@@ -1413,5 +1932,6 @@ EvidenceCommandHandler = command_facade(_EvidenceCommandHandlerEngine, EVIDENCE_
 
 __all__ = [
     "CAPTURE_EVENT", "CAPTURE_OPERATION", "CHECKIN_EVENT", "CHECKIN_OPERATION", "EvidenceCommandHandler",
-    "FNDEvidenceWriter", "VERSION_EVENT", "VERSION_OPERATION", "domain_contribution", "register_evidence",
+    "EVIDENCE_RECLAIM_APPLY_OPERATION", "EVIDENCE_RECLAIM_PREVIEW_OPERATION", "FNDEvidenceWriter",
+    "VERSION_EVENT", "VERSION_OPERATION", "domain_contribution", "register_evidence",
 ]

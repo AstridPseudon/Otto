@@ -1,0 +1,9 @@
+{
+  "operation": "dat.evidence.reclaim.preview",
+  "host_contract": "herzchen.evidence.host.v1",
+  "document_role": "evidence.managed",
+  "selection": "project-scoped historical exact pins",
+  "max_page": 100,
+  "automatic_deletion": false,
+  "requires_explicit_request": true
+}
