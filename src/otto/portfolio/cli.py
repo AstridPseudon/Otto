@@ -49,6 +49,36 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--open", action="store_true", dest="open_project")
     _add_format(create)
 
+    onboarding = sub.add_parser(
+        "onboarding", aliases=("draft",),
+        help="discoverable inert title-plus-brief project workspace",
+        description=(
+            "Create, find, or reopen one pending title-plus-brief workspace. "
+            "This route uses the injected owner authoring, DAT document, and EDT ports; "
+            "it never creates tasks, roles, pools, schedules, or provider effects."
+        ),
+    )
+    onboarding_sub = onboarding.add_subparsers(dest="onboarding_command", required=True)
+    onboarding_create = onboarding_sub.add_parser("create", help="create an inert draft with brief.md")
+    onboarding_create.add_argument("--actor", required=True)
+    onboarding_create.add_argument("--request-id", required=True)
+    onboarding_create.add_argument("--title", required=True)
+    onboarding_create.add_argument("--brief", required=True)
+    onboarding_create.add_argument("--supporting-files", help="JSON object of relative paths to UTF-8 text")
+    onboarding_create.add_argument("--predecessor-ref", help="optional existing project ResourceRef JSON")
+    onboarding_create.add_argument("--template", help="blank or a JSON work-template resource")
+    onboarding_create.add_argument("--template-parameters", help="JSON parameters for the selected template")
+    _add_format(onboarding_create)
+    onboarding_find = onboarding_sub.add_parser("find", help="read one draft by its canonical project reference")
+    onboarding_find.add_argument("--actor", required=True)
+    onboarding_find.add_argument("--project-ref", required=True)
+    _add_format(onboarding_find)
+    onboarding_reopen = onboarding_sub.add_parser("reopen", help="reopen the same draft through the EDT projection")
+    onboarding_reopen.add_argument("--actor", required=True)
+    onboarding_reopen.add_argument("--request-id", required=True)
+    onboarding_reopen.add_argument("--project-ref", required=True)
+    _add_format(onboarding_reopen)
+
     read = sub.add_parser("read", help="read one durable pending-project reference (legacy command)")
     read.add_argument("project_id")
     read.add_argument("--actor", required=True)
@@ -307,6 +337,15 @@ def _parse_json(value: str, field: str) -> Any:
         return json.loads(value)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ValueError(f"{field} must be valid JSON: {exc}") from exc
+
+
+def _parse_json_or_name(value: Optional[str], field: str) -> Any:
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def _parse_ref(value: str, field: str, *, pinned: bool = False) -> dict[str, Any]:
@@ -953,6 +992,7 @@ def main(
                     "project_inventory": "OttoPortfolio.list_projects",
                     "task_filters": "OttoPortfolio.list_work",
                     "recovery_discovery": "OttoPortfolio.find_and_continue (read-only; project or retained checkout/session locator required)",
+                    "project_onboarding": "python -m otto.portfolio.cli onboarding {create,find,reopen} (title+brief, DAT brief membership, EDT projection)",
                     "events_operator_views": "python -m otto.portfolio.cli events {overview,timeline,agents,tasks-reviews,blockers,usage,recovery} --project-ref REF_JSON",
                     "events_operator_detail": "python -m otto.portfolio.cli events detail --facet-id FACET_ID --snapshot SNAPSHOT_JSON",
                     "skills_index": "src/otto/portfolio/skills/SKILL.md (maintained Otto skill index)",
@@ -975,7 +1015,7 @@ def main(
                     "project_advisor_pair": "available only through an explicitly injected owner-bound OttoPortfolio and exact current manager pins",
                     "operating_brief": "available only through injected canonical owner readers; local staged bundles are never treated as adopted resources",
                 },
-                "cli_scope": "owner-backed reads, guarded task completion, current manager/advisor assignment pairing, and execution help; legacy pending-project commands remain; no dispatch, launch, or scheduler command",
+                "cli_scope": "owner-backed reads, inert title+brief onboarding, guarded task completion, current manager/advisor assignment pairing, and execution help; no dispatch, launch, or scheduler command",
                 "document_injection": "Supply the accepted ProjectDocumentOperations instance through cli.main(argv, document_operations=...).",
                 "assessment_injection": "Supply the accepted OttoAssessment facade through cli.main(argv, assessment=...).",
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
@@ -1006,6 +1046,27 @@ def main(
                         request.update({field: getattr(args, field) for field in
                             ("issue_key", "problem", "evidence", "impact", "requested_decision", "return_condition")})
                         result = (portfolio.request_help if args.command == "request-help" else portfolio.request_advice)(**request)
+        elif args.command in {"onboarding", "draft"}:
+            try:
+                if args.onboarding_command == "create":
+                    supporting_files = _parse_json(args.supporting_files, "supporting_files") if args.supporting_files else None
+                    predecessor = _parse_ref(args.predecessor_ref, "predecessor_ref") if args.predecessor_ref else None
+                    parameters = _parse_json(args.template_parameters, "template_parameters") if args.template_parameters else None
+                    result = portfolio.create_draft(
+                        actor=args.actor, request_id=args.request_id, title=args.title, brief=args.brief,
+                        supporting_files=supporting_files, predecessor_ref=predecessor,
+                        template=_parse_json_or_name(args.template, "template"),
+                        template_parameters=parameters,
+                    )
+                elif args.onboarding_command == "find":
+                    result = portfolio.find_draft(actor=args.actor, project_ref=_parse_ref(args.project_ref, "project_ref"))
+                else:
+                    result = portfolio.reopen_draft(
+                        actor=args.actor, request_id=args.request_id,
+                        project_ref=_parse_ref(args.project_ref, "project_ref"),
+                    )
+            except (json.JSONDecodeError, PortfolioError, TypeError, ValueError) as exc:
+                result = _request_error(str(exc))
         elif args.command == "create-pending":
             try:
                 edit = json.loads(args.edit_json)

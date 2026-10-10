@@ -25,6 +25,8 @@ Read the guide relevant to your work:
   history presets and the honest initial Usage surface
 - [Command details](../../../../docs/manager-journey-commands.md) for delegation,
   results, artifacts and closure
+- [Project onboarding](../../../../docs/project-onboarding.md) for the maintained
+  title-plus-brief create/find/reopen entry and its inert effect boundaries
 
 Keep project, assignment, occurrence, result and transport handles distinct.
 Inspect an uncertain original operation before retrying. Process exit, captured

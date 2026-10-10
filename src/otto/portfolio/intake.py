@@ -27,6 +27,8 @@ from .resource_sync import ResourceSyncError, normalize_role_attachments
 
 
 ADMISSION_CHOICES = ("admit", "investigate", "merge", "park", "drop")
+ONBOARDING_SCHEMA = "otto.portfolio.onboarding.v1"
+ONBOARDING_BRIEF_PATH = "brief.md"
 EDITABLE_FIELDS = frozenset(
     {
         "title",
@@ -145,6 +147,48 @@ def _identity_ref(value: Any) -> Optional[tuple[str, str, str]]:
 
 def _digest_json(value: Any) -> str:
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _onboarding_files(brief: str, supporting_files: Optional[Mapping[str, str]]) -> dict[str, str]:
+    """Validate the small title-and-brief file set with the existing folder rules."""
+
+    from .project_folder import validate_files
+
+    files = {ONBOARDING_BRIEF_PATH: brief}
+    if supporting_files is not None:
+        if not isinstance(supporting_files, Mapping):
+            raise PortfolioError("supporting_files must be an object of relative paths to UTF-8 text")
+        for path, content in supporting_files.items():
+            if path == ONBOARDING_BRIEF_PATH:
+                raise PortfolioError("supporting_files cannot replace the canonical brief.md")
+            files[path] = content
+    try:
+        return validate_files(files)
+    except (TypeError, ValueError) as exc:
+        raise PortfolioError(str(exc)) from exc
+
+
+def _onboarding_locator(project_ref: Mapping[str, Any]) -> str:
+    """Return a stable logical locator; EDT checkout paths are intentionally excluded."""
+
+    authority = project_ref.get("authority")
+    project_id = project_ref.get("id")
+    if not isinstance(authority, str) or not authority.strip() or not isinstance(project_id, str) or not project_id.strip():
+        raise PortfolioError("project_ref must contain authority and id for a stable workspace locator")
+    return f"otto://{authority}/work.project/{project_id}"
+
+
+def _onboarding_effects() -> dict[str, Any]:
+    return {
+        "lifecycle": "pending",
+        "tasks": [],
+        "roles": [],
+        "pools": [],
+        "schedules": [],
+        "provider_calls": 0,
+        "dispatch": False,
+        "activation": False,
+    }
 
 
 def _edit(value: Optional[Mapping[str, Any]]) -> dict[str, Any]:
@@ -344,6 +388,10 @@ class OttoPortfolio:
                 "create_pending": "create a pending project; a qualified owner binding uses atomic default-orchestrator placement",
                 "create_with_default_orchestrator": "explicitly require the owner-backed atomic default-orchestrator placement route",
                 "create_and_open": "create_pending with open requested, using the blank starter by default or a selected template resource",
+                "onboarding": "title plus brief create/find/reopen over pending Work, DAT brief membership and an EDT projection; stable project locator, no execution effects",
+                "onboarding_required": "title and brief",
+                "onboarding_optional": "supporting UTF-8 files, an existing predecessor reference, and an owner-adopted template with parameters",
+                "onboarding_next_action": "reopen the stable project locator for EDT editing, then keep exploration, plan, and review as documents",
                 "create_document": "create a typed canonical content document for a pending project",
                 "link_document": "link a typed canonical document association to a project",
                 "read_pending": "read one durable project reference",
@@ -515,6 +563,201 @@ class OttoPortfolio:
     def create_and_open(self, **kwargs: Any) -> dict[str, Any]:
         kwargs["open_project"] = True
         return self.create_pending(**kwargs)
+
+    @staticmethod
+    def _onboarding_contract() -> dict[str, Any]:
+        return {
+            "schema": ONBOARDING_SCHEMA,
+            "required_inputs": {"title": "non-blank text", "brief": "non-blank UTF-8 text"},
+            "optional_inputs": {
+                "supporting_files": "bounded relative-path to UTF-8 text object",
+                "predecessor_ref": "existing project reference, retained as planning context only",
+                "template": "owner-adopted blank or selected work template resource",
+                "template_parameters": "parameters for the selected template only",
+            },
+            "defaults": {
+                "template": "blank",
+                "brief_path": ONBOARDING_BRIEF_PATH,
+                "lifecycle": "pending",
+                "tasks": [],
+                "execution": "inert until explicit activation",
+            },
+            "next_action": "open the draft from its stable workspace locator, then add exploration or plan documents",
+        }
+
+    @staticmethod
+    def _onboarding_binding_gap(result: Mapping[str, Any]) -> dict[str, Any]:
+        value = dict(result)
+        error = value.get("error") if isinstance(value.get("error"), Mapping) else {}
+        value.update({
+            "schema": ONBOARDING_SCHEMA,
+            "binding": {
+                "state": "missing",
+                "required": "authenticated owner-backed project authoring and DAT/EDT ports; find also requires a finite project-read grant",
+                "route": "PortfolioOwnerBootstrap(...).consumer_operations()",
+                "reason": error.get("message", "the accepted owner binding is not installed"),
+            },
+            "next_action": "bind the exact authenticated owner authoring route, then retry this local request; do not create a filesystem project",
+            "effects": _onboarding_effects(),
+        })
+        return value
+
+    def create_draft(
+        self,
+        *,
+        actor: str,
+        request_id: str,
+        title: str,
+        brief: str,
+        supporting_files: Optional[Mapping[str, str]] = None,
+        predecessor_ref: Any = None,
+        template: Any = None,
+        template_parameters: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Create one inert title-and-brief package through existing owner ports.
+
+        This is a finite composition, not a new persistence or workflow layer:
+        create the pending Work project, create/link DAT files, then checkout the
+        semantic ProjectSheet through EDT. Each child request has a stable suffix
+        so a partial or lost local reply can be inspected and resumed exactly.
+        """
+
+        request_id, actor = self._request(request_id, actor)
+        title = _text(title, "title")
+        brief = _text(brief, "brief")
+        files = _onboarding_files(brief, supporting_files)
+        predecessor = None if predecessor_ref is None else _ref(predecessor_ref, "predecessor_ref")
+        metadata = {
+            "onboarding": {
+                "schema": ONBOARDING_SCHEMA,
+                "brief_path": ONBOARDING_BRIEF_PATH,
+                "file_manifest_sha256": _digest_json(files),
+                "predecessor_ref": predecessor,
+            },
+        }
+        created = self.create_pending(
+            actor=actor,
+            request_id=request_id,
+            edit={"title": title, "outcome": "", "metadata": metadata},
+            template=template,
+            template_parameters=template_parameters,
+            open_project=False,
+            orchestrated=False,
+        )
+        base = {**self._onboarding_contract(), "creation_route": "live_inert_owner_authoring",
+                "generic_default_orchestrator": {"used": False, "available_via": "create_with_default_orchestrator"},
+                "predecessor": {"ref": predecessor, "applied": False, "next_phase": "queue-after"},
+                "effects": _onboarding_effects()}
+        if created.get("outcome") in {"unavailable", "denied"}:
+            return self._onboarding_binding_gap({**base, **created})
+        project_ref = created.get("project_ref")
+        if not isinstance(project_ref, Mapping):
+            return {**base, **created, "schema": ONBOARDING_SCHEMA,
+                    "outcome": "error",
+                    "error": {"code": "missing_project_ref", "message": "owner creation returned no canonical project reference"},
+                    "next_action": "inspect the retained create receipt before retrying; do not create a replacement project"}
+
+        documents: list[dict[str, Any]] = []
+        document_errors: list[dict[str, Any]] = []
+        ordered_files = [(ONBOARDING_BRIEF_PATH, brief)] + [
+            (path, content) for path, content in files.items() if path != ONBOARDING_BRIEF_PATH
+        ]
+        for index, (path, content) in enumerate(ordered_files):
+            suffix = "brief" if path == ONBOARDING_BRIEF_PATH else f"supporting-{index}"
+            document = self.create_document(
+                project_ref,
+                actor=actor,
+                request_id=f"{request_id}:{suffix}:document",
+                content=content,
+                role="brief" if path == ONBOARDING_BRIEF_PATH else "supporting",
+                visibility="private",
+                access_mode="write",
+            )
+            if document.get("outcome") not in {"created", "replayed"}:
+                document_errors.append({"path": path, "stage": "document", "result": document})
+                continue
+            document_ref = document.get("document_ref")
+            if not isinstance(document_ref, Mapping):
+                document_errors.append({"path": path, "stage": "document", "result": document,
+                                        "error": {"code": "missing_document_ref", "message": "DAT create returned no document reference"}})
+                continue
+            link = self.link_document(
+                project_ref,
+                document_ref,
+                actor=actor,
+                request_id=f"{request_id}:{suffix}:link",
+                namespace="project.files",
+                key=path,
+                # Associations are read/append references; write custody is
+                # carried by the DAT document itself and the EDT projection.
+                access_mode="read",
+            )
+            if link.get("outcome") not in {"linked", "replayed"}:
+                document_errors.append({"path": path, "stage": "link", "result": link})
+            documents.append({"path": path, "document": document, "link": link})
+
+        opened = self.checkout_project(project_ref, actor=actor, request_id=request_id + ":workspace")
+        if opened.get("outcome") in {"unavailable", "denied"}:
+            return self._onboarding_binding_gap({**base, **created, "documents": documents,
+                                                 "document_errors": document_errors, "open": opened})
+        project = opened.get("project_ref", project_ref)
+        locator = _onboarding_locator(project)
+        result = {**base, **created, "schema": ONBOARDING_SCHEMA,
+                  "outcome": "partial" if document_errors else "created",
+                  "project_ref": project,
+                  "workspace": {
+                      "locator": locator,
+                      "project_ref": project,
+                      "session_id": opened.get("session_id"),
+                      "projection": opened,
+                      "physical_path": "session-scoped and not a stable project locator",
+                  },
+                  "documents": documents, "document_errors": document_errors, "open": opened}
+        if document_errors:
+            result["next_action"] = "inspect retained document receipts and resume the exact missing document/link steps; do not recreate the project"
+        return result
+
+    def find_draft(self, *, actor: str, project_ref: Any) -> dict[str, Any]:
+        """Find one existing draft by canonical project identity, read-only."""
+
+        actor = _text(actor, "actor")
+        ref = _ref(project_ref, "project_ref")
+        found = self.read_pending(ref, actor=actor)
+        base = {**self._onboarding_contract(), "creation_route": "live_inert_owner_authoring",
+                "generic_default_orchestrator": {"used": False, "available_via": "create_with_default_orchestrator"},
+                "read_only": True, "writes": 0, "effects": _onboarding_effects()}
+        if found.get("outcome") in {"unavailable", "denied"}:
+            return self._onboarding_binding_gap({**base, **found})
+        try:
+            locator = _onboarding_locator(found.get("project_ref", ref))
+        except PortfolioError:
+            locator = _onboarding_locator(ref)
+        return {**base, **found, "schema": ONBOARDING_SCHEMA, "workspace": {"locator": locator,
+                "project_ref": found.get("project_ref", ref), "projection": None},
+                "next_action": "use reopen with a fresh request key to obtain the current EDT projection"}
+
+    def reopen_draft(self, *, actor: str, project_ref: Any, request_id: str) -> dict[str, Any]:
+        """Open the same draft identity through the existing ProjectSheet/EDT port."""
+
+        request_id, actor = self._request(request_id, actor)
+        ref = _ref(project_ref, "project_ref")
+        opened = self.checkout_project(ref, actor=actor, request_id=request_id)
+        base = {**self._onboarding_contract(), "creation_route": "live_inert_owner_authoring",
+                "generic_default_orchestrator": {"used": False, "available_via": "create_with_default_orchestrator"},
+                "effects": _onboarding_effects()}
+        if opened.get("outcome") in {"unavailable", "denied"}:
+            return self._onboarding_binding_gap({**base, **opened})
+        project = opened.get("project_ref", ref)
+        return {**base, **opened, "schema": ONBOARDING_SCHEMA, "project_ref": project,
+                "workspace": {"locator": _onboarding_locator(project), "project_ref": project,
+                               "session_id": opened.get("session_id"), "projection": opened,
+                               "physical_path": "session-scoped and not a stable project locator"},
+                "next_action": "edit only through the returned EDT projection, then use the existing check-in/release operation"}
+
+    # Explicit names used by the maintained onboarding entrypoint.
+    onboarding_create = create_draft
+    onboarding_find = find_draft
+    onboarding_reopen = reopen_draft
 
     def create_document(
         self,
