@@ -126,3 +126,28 @@ class OwnerResultReconciliationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ExplicitManagerPublicationTests(unittest.TestCase):
+    def request(self):
+        return dict(role='manager',project_ref={'id':'p'},task_ref={'id':'t'},assignment_ref=ASSIGNMENT,mandate_ref={'id':'m'},schedule_id='d',logical_request_key='request-1',expected_generation=1,lifecycle='active',as_of='2026-10-10T00:00:00Z')
+    def test_invalid_publication_role_or_flag_rejects_before_binding(self):
+        from unittest.mock import Mock
+        from otto.agents.owner_runtime import CanonicalRoleRuntime
+        runtime=SimpleNamespace(_binding=Mock(side_effect=AssertionError('unauthorized binding effect')))
+        for role,flag in [('project_advisor',True),('manager',1),('worker','yes')]:
+            with self.subTest(role=role,flag=flag),self.assertRaises(OwnerRoleRuntimeError):
+                CanonicalRoleRuntime.accept_role_result(runtime,**{**self.request(),'role':role,'publish_result':flag})
+        runtime._binding.assert_not_called()
+    def test_explicit_publication_does_not_bypass_current_scope_authority(self):
+        from unittest.mock import Mock
+        from otto.agents.owner_runtime import CanonicalRoleRuntime
+        runtime=SimpleNamespace(_binding=Mock(side_effect=PermissionError('foreign/current generation rejected')))
+        with self.assertRaises(PermissionError):CanonicalRoleRuntime.accept_role_result(runtime,**self.request(),publish_result=True)
+        runtime._binding.assert_called_once()
+    def test_unknown_or_changed_retained_result_cannot_publish(self):
+        from unittest.mock import Mock
+        capture=FixtureCapture();capture._scope_error=lambda *_:None
+        owner=SimpleNamespace(record=Mock())
+        for result in [capture.result('unknown'),capture.result('succeeded')]:
+            with self.assertRaises(OwnerRoleRuntimeError):capture.publish_analytical_result(result,owner)
+        owner.record.assert_not_called()

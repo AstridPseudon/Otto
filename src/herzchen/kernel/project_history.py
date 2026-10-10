@@ -238,84 +238,153 @@ class ProjectHistoryProjection:
             "schema": SCHEMA, "generation": int(metadata.get("history_generation", "1")),
             "checkpoint": checkpoint, "source_append_boundary": maximum,
             "lag": max(0, maximum - checkpoint), "covered": checkpoint >= maximum,
+            "facet_continuation": {k:v for k,v in json.loads(metadata["history_manifest_continuation:" + str(metadata.get("history_generation", "1"))]).items() if k != "pending_hex"} if metadata.get("history_manifest_continuation:" + str(metadata.get("history_generation", "1"))) else None,
             "last_error": json.loads(metadata["history_lag_error"]) if metadata.get("history_lag_error") else None,
         }
 
-    def _manifest_facets(self, row: Mapping[str, Any], history: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-        manifest = history.get("manifest")
-        if not isinstance(manifest, Mapping) or self.manifest_reader is None:
-            raise ProjectionMaintenanceError("history manifest requires an admitted bounded Evidence reader")
+    def _manifest_page(self, manifest, offset):
         ref = _ref_dict(manifest.get("ref"))
-        if ref is None:
-            raise ProjectionMaintenanceError("history manifest locator is invalid")
-        expected_count = manifest.get("facet_count")
-        expected_digest = manifest.get("byte_digest")
-        data = bytearray()
-        offset = 0
-        facets: list[Mapping[str, Any]] = []
+        if ref is None or self.manifest_reader is None:
+            raise ProjectionMaintenanceError("history manifest requires an exact admitted Evidence reader")
+        if hasattr(self.manifest_reader, "read_evidence"):
+            page = self.manifest_reader.read_evidence(ResourceRef.from_dict(ref), offset=offset, max_bytes=4096)
+        else:
+            page = self.manifest_reader(ref, offset, 4096)
+        if not isinstance(page, Mapping) or not isinstance(page.get("bytes"), (bytes, bytearray)):
+            raise ProjectionMaintenanceError("Evidence manifest range reader returned no bounded bytes")
+        data = bytes(page["bytes"])
+        nxt = page.get("next_offset")
+        if len(data) > 4096 or (nxt is not None and (not data or type(nxt) is not int or nxt != offset + len(data))):
+            raise ProjectionMaintenanceError("Evidence manifest continuation did not advance by its exact bounded bytes")
+        if offset + len(data) > MAX_SUMMARY_BYTES * 128:
+            raise ProjectionMaintenanceError("Evidence manifest exceeds bounded maintenance fan-out")
+        return data, nxt
+
+    def _manifest_facets(self, row, history):
+        """Stream JSONL across arbitrary byte boundaries; never retain the body."""
+        manifest = history["manifest"]
+        offset, count, pending = 0, 0, b""
+        digest = hashlib.sha256()
         while True:
-            if hasattr(self.manifest_reader, "read_evidence"):
-                page = self.manifest_reader.read_evidence(ResourceRef.from_dict(ref), offset=offset, max_bytes=4096)
-            else:
-                page = self.manifest_reader(ref, offset, 4096)
-            if not isinstance(page, Mapping) or not isinstance(page.get("bytes"), (bytes, bytearray)):
-                raise ProjectionMaintenanceError("Evidence manifest range reader returned no bounded bytes")
-            chunk = bytes(page["bytes"])
-            if len(chunk) > 4096:
-                raise ProjectionMaintenanceError("Evidence manifest range exceeded its bound")
-            data.extend(chunk)
-            for line in chunk.splitlines():
+            data, nxt = self._manifest_page(manifest, offset)
+            digest.update(data); pending += data
+            lines = pending.split(b"\n"); pending = lines.pop()
+            if nxt is None and pending:
+                lines.append(pending); pending = b""
+            for line in lines:
                 if line.strip():
+                    if len(line) > MAX_SUMMARY_BYTES:
+                        raise ProjectionMaintenanceError("Evidence manifest facet exceeds its summary bound")
                     item = json.loads(line)
                     if not isinstance(item, Mapping):
                         raise ProjectionMaintenanceError("Evidence manifest facet is not an object")
-                    facets.append(item)
-            next_offset = page.get("next_offset")
-            if next_offset is None:
+                    count += 1
+                    yield item
+            if len(pending) > MAX_SUMMARY_BYTES:
+                raise ProjectionMaintenanceError("Evidence manifest facet exceeds its summary bound")
+            if nxt is None:
                 break
-            if type(next_offset) is not int or next_offset <= offset:
-                raise ProjectionMaintenanceError("Evidence manifest continuation did not progress")
-            offset = next_offset
-            if len(data) > MAX_SUMMARY_BYTES * 128:
-                raise ProjectionMaintenanceError("Evidence manifest exceeds bounded maintenance fan-out")
-        if expected_count is not None and len(facets) != expected_count:
+            offset = nxt
+        if manifest.get("facet_count") is not None and count != manifest["facet_count"]:
             raise ProjectionMaintenanceError("Evidence manifest facet count changed")
-        if expected_digest is not None and hashlib.sha256(data).hexdigest() != expected_digest:
+        if manifest.get("byte_digest") is not None and digest.hexdigest() != manifest["byte_digest"]:
             raise ProjectionMaintenanceError("Evidence manifest digest changed")
-        return facets
 
-    def _rows_for_event(self, row: Mapping[str, Any], generation: int) -> list[tuple[Any, ...]]:
-        effects = json.loads(row["effects_json"])
-        history = effects.get("history_summary")
-        if not isinstance(history, Mapping) or history.get("schema") != HISTORY_SCHEMA:
-            facets = list(source_facets(row))
-        elif history.get("manifest"):
-            facets = [history["primary"]] + self._manifest_facets(row, history)
-        else:
-            facets = [history["primary"]] + list(history.get("facets", ()))
+    def _facet_rows(self, row, facets, generation, start_index=0):
         synthetic = {key: row[key] for key in row.keys()} if hasattr(row, "keys") else dict(row)
         synthetic["effects_json"] = _json({"history_summary": {"schema": HISTORY_SCHEMA, "primary": facets[0], "facets": facets[1:]}})
-        # projection_rows is the single deterministic identity/column mapping.
-        values = list(projection_rows(synthetic, generation=generation))
         try:
             refs = [ref for ref in json.loads(row["after_refs_json"])
                     if isinstance(ref, Mapping) and str(ref.get("kind", "")).startswith("dat.content.")]
         except (TypeError, ValueError, json.JSONDecodeError):
             refs = []
-        for index, value in enumerate(values):
-            locator = json.loads(value[-1])
-            locator["evidence_refs"] = refs
-            values[index] = tuple(list(value[:-1]) + [_json(locator)])
-        return values
+        for value in projection_rows(synthetic, generation=generation, start_index=start_index):
+            locator = json.loads(value[-1]); locator["evidence_refs"] = refs
+            yield tuple(list(value[:-1]) + [_json(locator)])
 
-    def _apply(self, tx: Any, rows: Sequence[Mapping[str, Any]], generation: int) -> tuple[int, int]:
-        projected = 0
-        last = 0
-        for row in rows:
-            values = self._rows_for_event(row, generation)
-            for value in values:
+    def _rows_for_event(self, row, generation):
+        history = json.loads(row["effects_json"]).get("history_summary")
+        if isinstance(history, Mapping) and history.get("schema") == HISTORY_SCHEMA and history.get("manifest"):
+            yield from self._facet_rows(row, [history["primary"]], generation)
+            for index, facet in enumerate(self._manifest_facets(row, history), start=1):
+                yield from self._facet_rows(row, [facet], generation, start_index=index)
+        else:
+            yield from self._facet_rows(row, list(source_facets(row)), generation)
+
+    def _manifest_batch(self, tx, row, history, generation, budget):
+        """Persist byte/facet continuation atomically with the projected rows.
+
+        Only complete verified source positions become visible. The final
+        digest pass streams at most the declared 8 MiB manifest cap; it never
+        accumulates facets or body bytes. Its I/O is explicitly reported.
+        """
+        key = "history_manifest_continuation:" + str(generation)
+        saved = tx.execute("SELECT value FROM store_metadata WHERE key=?", (key,)).fetchone()
+        manifest = history["manifest"]
+        binding = {"event_id": row["event_id"], "position": row["append_position"], "manifest": manifest}
+        progress = json.loads(saved[0]) if saved else {"binding": binding, "offset": 0, "next_index": 1, "pending_hex": "", "eof": False, "primary_done": False}
+        if progress["binding"] != binding:
+            raise ProjectionMaintenanceError("retained manifest continuation belongs to different source work")
+        count = 0
+        def insert(facet, index):
+            nonlocal count
+            for value in self._facet_rows(row, [facet], generation, start_index=index):
                 tx.execute("INSERT OR IGNORE INTO project_history VALUES (" + ",".join("?" for _ in value) + ")", value)
-                projected += 1
+                count += 1
+        if not progress["primary_done"]:
+            insert(history["primary"], 0); progress["primary_done"] = True
+        pending = bytes.fromhex(progress["pending_hex"])
+        units, read_bytes = 0, 0
+        while units < budget:
+            newline = pending.find(b"\n")
+            if newline >= 0 or (progress["eof"] and pending):
+                stop = newline if newline >= 0 else len(pending)
+                line, pending = pending[:stop], pending[stop + (newline >= 0):]
+                if line.strip():
+                    if len(line) > MAX_SUMMARY_BYTES:
+                        raise ProjectionMaintenanceError("Evidence manifest facet exceeds its summary bound")
+                    item = json.loads(line)
+                    if not isinstance(item, Mapping):
+                        raise ProjectionMaintenanceError("Evidence manifest facet is not an object")
+                    insert(item, progress["next_index"]); progress["next_index"] += 1; units += 1
+                continue
+            if progress["eof"] or read_bytes >= 4096 * budget:
+                break
+            data, nxt = self._manifest_page(manifest, progress["offset"])
+            pending += data; read_bytes += len(data); progress["offset"] += len(data); progress["eof"] = nxt is None
+            if b"\n" not in pending and len(pending) > MAX_SUMMARY_BYTES:
+                raise ProjectionMaintenanceError("Evidence manifest facet exceeds its summary bound")
+        progress["pending_hex"] = pending.hex()
+        done = progress["eof"] and not pending
+        verify_bytes = 0
+        if done:
+            # Validate all immutable byte ranges without materializing them.
+            offset = 0; digest = hashlib.sha256()
+            while True:
+                data, nxt = self._manifest_page(manifest, offset); digest.update(data); verify_bytes += len(data)
+                if nxt is None:break
+                offset = nxt
+            if manifest.get("facet_count") != progress["next_index"] - 1 or manifest.get("byte_digest") != digest.hexdigest():
+                raise ProjectionMaintenanceError("Evidence manifest final count or digest changed")
+            tx.execute("DELETE FROM store_metadata WHERE key=?", (key,))
+        else:
+            tx.execute("INSERT OR REPLACE INTO store_metadata(key,value) VALUES (?,?)", (key, _json(progress)))
+        self._last_manifest_io = {"range_bytes_read": read_bytes, "verification_bytes_read": verify_bytes,
+                                  "verification_max_bytes": MAX_SUMMARY_BYTES * 128, "continuation": not done}
+        return count, done
+
+    def _apply(self, tx, rows, generation, facet_budget=None):
+        projected, last = 0, 0
+        for row in rows:
+            history = json.loads(row["effects_json"]).get("history_summary")
+            if isinstance(history, Mapping) and history.get("schema") == HISTORY_SCHEMA and history.get("manifest"):
+                count, done = self._manifest_batch(tx, row, history, generation, facet_budget or self.default_batch)
+                projected += count
+                if not done:break
+            else:
+                for value in self._rows_for_event(row, generation):
+                    tx.execute("INSERT OR IGNORE INTO project_history VALUES (" + ",".join("?" for _ in value) + ")", value)
+                    projected += 1
             last = int(row["append_position"])
         return projected, last
 
@@ -326,15 +395,16 @@ class ProjectHistoryProjection:
         metadata = self._metadata()
         generation = int(metadata.get("history_generation", "1"))
         checkpoint = int(metadata.get("history_checkpoint", "0"))
+        self._last_manifest_io = None
         try:
             with self.store.transaction() as tx:
                 rows = tx.execute("SELECT * FROM events WHERE append_position > ? ORDER BY append_position LIMIT ?", (checkpoint, limit)).fetchall()
-                projected, last = self._apply(tx, rows, generation)
-                if rows:
+                projected, last = self._apply(tx, rows, generation, facet_budget=limit)
+                if last:
                     tx.execute("UPDATE store_metadata SET value=? WHERE key='history_checkpoint'", (str(last),))
                 tx.execute("DELETE FROM store_metadata WHERE key='history_lag_error'")
             result = self.status()
-            result.update({"outcome": "advanced" if rows else "caught_up", "events_examined": len(rows), "rows_projected": projected})
+            result.update({"outcome": "advanced" if rows else "caught_up", "events_examined": len(rows), "rows_projected": projected, "manifest_io": getattr(self, "_last_manifest_io", None)})
             return result
         except Exception as exc:
             error = {"type": type(exc).__name__, "message": str(exc), "checkpoint": checkpoint, "generation": generation}
@@ -358,16 +428,17 @@ class ProjectHistoryProjection:
         try:
             with self.store.transaction() as tx:
                 tx.execute("DELETE FROM project_history WHERE generation=?", (new_generation,))
+                tx.execute("DELETE FROM store_metadata WHERE key=?", ("history_manifest_continuation:" + str(new_generation),))
             checkpoint = 0
             total_rows = 0
             while True:
                 with self.store.transaction() as tx:
                     rows = tx.execute("SELECT * FROM events WHERE append_position > ? ORDER BY append_position LIMIT ?", (checkpoint, batch_size)).fetchall()
-                    projected, last = self._apply(tx, rows, new_generation)
+                    projected, last = self._apply(tx, rows, new_generation, facet_budget=batch_size)
                 if not rows:
                     break
                 total_rows += projected
-                checkpoint = last
+                if last:checkpoint = last
             # Verify the new generation against the deterministic source walk
             # before changing the active generation or invalidating cursors.
             expected = hashlib.sha256(); expected_count = 0
@@ -479,7 +550,7 @@ class ProjectHistoryReader:
 
     def _decode_cursor(self, cursor: str) -> dict[str, Any]:
         value = _token_decode(cursor)
-        if value.get("format") != CURSOR_FORMAT or not isinstance(value.get("snapshot"), Mapping):
+        if value.get("format") != CURSOR_FORMAT or not isinstance(value.get("snapshot"), str) or not value.get("snapshot"):
             raise CursorError("cursor format is unsupported")
         return value
 
@@ -498,33 +569,59 @@ class ProjectHistoryReader:
                 active.add((self.store.authority, row[0]))
         return active, len(rows)
 
-    def _historical_active(self, projects: Sequence[tuple[str, str]], start: str, end: str, *, generation: int, boundary: int) -> set[tuple[str, str]]:
-        """Seek a bounded predecessor/transition window for active discovery."""
-        if not projects:
-            return set()
-        where = " OR ".join("(project_authority=? AND project_id=?)" for _ in projects)
-        args: list[Any] = [generation]
-        args.extend(item for project in projects for item in project)
-        args.extend([boundary, end, MAX_METADATA_CANDIDATES])
-        rows = self.connection.execute("SELECT project_authority,project_id,recorded_at,summary_json FROM project_history WHERE generation=? AND (" + where + ") AND source_append_position<=? AND recorded_at<? ORDER BY project_authority,project_id,recorded_at,source_append_position,facet_index LIMIT ?", args).fetchall()
-        active: set[tuple[str, str]] = set()
-        state: dict[tuple[str, str], Optional[bool]] = {}
-        for row in rows:
-            key = (row[0], row[1])
-            summary = json.loads(row[3])
-            fields = summary.get("after", {}).get("fields", {}) if isinstance(summary, Mapping) else {}
+    def _historical_active_result(self, projects, start, end, *, generation, boundary):
+        """At most three indexed project-subject seeks per authorized project.
+
+        Missing historical state remains an unknown candidate. Current heads
+        never establish membership in an earlier interval.
+        """
+        active, unknown = set(), set()
+        examined = 0
+        for authority, project in projects:
+            where = ("generation=? AND project_authority=? AND project_id=? "
+                     "AND subject_authority=? AND subject_kind='work.project' "
+                     "AND subject_id=? AND source_append_position<=?")
+            args = (generation, authority, project, authority, project, boundary)
+            prior = self.connection.execute(
+                "SELECT summary_json FROM project_history WHERE " + where +
+                " AND recorded_at<? ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC LIMIT 1",
+                (*args, start)).fetchone()
+            examined += int(prior is not None)
+            fields = {} if prior is None else json.loads(prior[0]).get("after", {}).get("fields", {})
             value = fields.get("lifecycle", fields.get("status"))
-            if value is None:
-                continue
-            is_active = value in {"active", "running", "open"}
-            if row[2] < start and key not in state:
-                state[key] = is_active
-            elif row[2] >= start and is_active:
-                active.add(key)
-            elif row[2] >= start and not is_active:
-                state[key] = False
-        active.update(key for key, value in state.items() if value)
-        return active
+            known = value in {"active", "running", "open", "pending", "completed", "closed", "stopped", "withdrawn", "failed"}
+            overlap = value in {"active", "running", "open"}
+            if not known:
+                first = self.connection.execute(
+                    "SELECT summary_json FROM project_history WHERE " + where +
+                    " AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at,source_append_position,facet_index LIMIT 1",
+                    (*args, start, end)).fetchone()
+                examined += int(first is not None)
+                if first is not None:
+                    before = json.loads(first[0]).get("before",{})
+                    bf = before.get("fields",{}); bv=bf.get("lifecycle",bf.get("status"))
+                    if before.get("exists") is False:
+                        known=True
+                    elif bv is not None:
+                        known=bv in {"active","running","open","pending","completed","closed","stopped","withdrawn","failed"}
+                        overlap=bv in {"active","running","open"}
+            transition = self.connection.execute(
+                "SELECT summary_json FROM project_history WHERE " + where +
+                " AND recorded_at>=? AND recorded_at<? AND "
+                "COALESCE(json_extract(summary_json,'$.after.fields.lifecycle'),json_extract(summary_json,'$.after.fields.status')) "
+                "IN ('active','running','open') ORDER BY recorded_at,source_append_position,facet_index LIMIT 1",
+                (*args, start, end)).fetchone()
+            examined += int(transition is not None)
+            if transition is not None or overlap:
+                active.add((authority, project))
+            elif not known:
+                unknown.add((authority, project))
+        return active, unknown, examined
+
+    def _historical_active(self, projects, start, end, *, generation, boundary):
+        active, unknown, _ = self._historical_active_result(
+            projects, start, end, generation=generation, boundary=boundary)
+        return active | unknown
 
     def _query_rows(self, *, snapshot: Mapping[str, Any], projects: Sequence[tuple[str, str]], limit: int, after: Optional[Sequence[Any]], from_at: Optional[str], to_at: Optional[str], filters: Mapping[str, Any]) -> tuple[list[sqlite3.Row], int]:
         where = ["generation=?", "source_append_position<=?"]
@@ -565,6 +662,8 @@ class ProjectHistoryReader:
             decoded = self._decode_cursor(cursor)
             if snapshot is None or decoded["snapshot"] != snapshot.get("snapshot_digest"):
                 raise CursorError("cursor requires its original snapshot")
+            if decoded.get("mode", "facts") != "facts":
+                raise CursorError("state cursor cannot page event facts")
             after = decoded.get("key")
             if not isinstance(after, list) or len(after) != 4:
                 raise CursorError("cursor key is malformed")
@@ -578,21 +677,12 @@ class ProjectHistoryReader:
         if snapshot is not None:
             self._validate_snapshot(snapshot, expected)
             expected = dict(snapshot)
-        active_set, inventory_examined = (set(), 0)
+        active_set, unknown_active, inventory_examined = set(), set(), 0
         if normalized_active is not None:
-            # A fresh read may use the current inventory to preserve the
-            # active-with-no-events behavior.  A fixed snapshot must use only
-            # projection facts covered by that snapshot's boundary; consulting
-            # current identity state would admit late activations.
-            if snapshot is None:
-                active_set, inventory_examined = self._inventory_active(scope)
-            active_set.update(self._historical_active(
-                scope,
-                normalized_active[0],
-                normalized_active[1],
-                generation=int(expected["generation"]),
-                boundary=int(expected["boundary"]),
-            ))
+            known_active, unknown_active, inventory_examined = self._historical_active_result(
+                scope, normalized_active[0], normalized_active[1],
+                generation=int(expected["generation"]), boundary=int(expected["boundary"]))
+            active_set = known_active | unknown_active
         query_from = None if normalized_range is None and normalized_active is None else (normalized_range or normalized_active)[0]
         query_to = None if normalized_range is None and normalized_active is None else (normalized_range or normalized_active)[1]
         rows, examined = self._query_rows(snapshot=expected, projects=scope, limit=limit, after=after, from_at=query_from, to_at=query_to, filters=filters)
@@ -620,7 +710,68 @@ class ProjectHistoryReader:
         matched = set(active_set)
         if normalized_active is None:
             matched.update((row[7], row[8]) for row in rows if row[7] is not None)
-        return {"schema": SCHEMA, "rows": result_rows, "projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in scope], "matched_projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in sorted(matched)], "snapshot": expected, "snapshot_digest": expected["snapshot_digest"], "next_cursor": next_cursor, "partial": bool(not selected and has_more), "coverage": {"projection_generation": generation, "covered_append_position": boundary, "lag": max(0, int(self.connection.execute("SELECT COALESCE(MAX(append_position),0) FROM events").fetchone()[0]) - boundary), "active_inventory": "bounded-current-inventory" if normalized_active is not None else "not-requested"}, "io_work": {"metadata_candidates_examined": examined, "candidate_metadata_bytes": candidate_bytes, "rows_returned": len(result_rows), "summary_bytes_hydrated": hydrated, "detail_bytes_hydrated": detail_hydrated}}
+        return {"schema": SCHEMA, "rows": result_rows, "projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in scope], "matched_projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in sorted(matched)], "snapshot": expected, "snapshot_digest": expected["snapshot_digest"], "next_cursor": next_cursor, "partial": bool(not selected and has_more), "coverage": {"projection_generation": generation, "covered_append_position": boundary, "lag": max(0, int(self.connection.execute("SELECT COALESCE(MAX(append_position),0) FROM events").fetchone()[0]) - boundary), "active_inventory": "bounded-historical-project-seeks" if normalized_active is not None else "not-requested", "active_unknown_projects": [{"authority": a, "kind": "work.project", "id": p} for a,p in sorted(unknown_active)], "active_discovery_complete": True, "active_candidates_examined": inventory_examined}, "io_work": {"metadata_candidates_examined": examined, "candidate_metadata_bytes": candidate_bytes, "rows_returned": len(result_rows), "summary_bytes_hydrated": hydrated, "detail_bytes_hydrated": detail_hydrated}}
+
+    def read_state(self, *, projects=None, from_at=None, to_at=None, timezone_name=None,
+                   active_during=None, limit=50, cursor=None, snapshot=None,
+                   grant=None, actor=None, filters=None):
+        """Bounded subject pages with the latest captured state before exclusive to.
+
+        The same authenticated fixed snapshot governs period facts and state.
+        This never consults current heads or source events, and a missing field
+        in a captured state remains unknown. Subject and fact cursors differ.
+        """
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ProjectHistoryError("limit must be between 1 and 200")
+        # Reuse the single authorization/range/snapshot validation boundary.
+        checked = self.read(projects=projects, from_at=from_at, to_at=to_at,
+            timezone_name=timezone_name, active_during=active_during, limit=1,
+            snapshot=snapshot, grant=grant, actor=actor, filters=filters)
+        fixed = checked["snapshot"]; scope = self._snapshot_projects(fixed)
+        start, end = fixed["scope"].get("from"), fixed["scope"].get("to")
+        after = None
+        if cursor is not None:
+            decoded = self._decode_cursor(cursor)
+            if decoded.get("mode") != "state" or decoded["snapshot"] != fixed["snapshot_digest"]:
+                raise CursorError("subject cursor requires its original state snapshot")
+            after = decoded.get("key")
+            if not isinstance(after, list) or len(after) != 4 or not all(isinstance(x,str) for x in after):
+                raise CursorError("subject cursor key is malformed")
+        candidates = []
+        for authority, project in sorted(scope):
+            if after is not None and (authority, project) < tuple(after[:2]):continue
+            clause = "generation=? AND project_authority=? AND project_id=? AND source_append_position<=?"
+            args = [fixed["generation"], authority, project, fixed["boundary"]]
+            if end is not None:clause += " AND recorded_at<?";args.append(end)
+            if after is not None and (authority, project) == tuple(after[:2]):
+                clause += " AND (subject_kind,subject_id)>(?,?)";args.extend(after[2:])
+            remaining = limit + 1 - len(candidates)
+            keys = self.connection.execute("SELECT DISTINCT subject_kind,subject_id FROM project_history WHERE " + clause +
+                " ORDER BY subject_kind,subject_id LIMIT ?", (*args, remaining)).fetchall()
+            candidates.extend((authority,project,k[0],k[1]) for k in keys)
+            if len(candidates) > limit:break
+        chosen = candidates[:limit]; rows = []; hydrated = 0; detail_hydrated = 0
+        allowed_active = {(x["authority"],x["id"]) for x in checked["matched_projects"]}
+        for authority, project, kind, subject in chosen:
+            if active_during is not None and (authority,project) not in allowed_active:continue
+            clause = "generation=? AND project_authority=? AND project_id=? AND subject_kind=? AND subject_id=? AND source_append_position<=?"
+            args = [fixed["generation"],authority,project,kind,subject,fixed["boundary"]]
+            if end is not None:clause += " AND recorded_at<?";args.append(end)
+            row = self.connection.execute(
+                "SELECT generation,facet_id,source_event_id,facet_index,source_append_position,stream,stream_sequence,project_authority,project_id,subject_authority,subject_kind,subject_id,subject_revision,recorded_at,occurred_at,facet_type,role,outcome,summary_json,detail_json FROM project_history WHERE " + clause +
+                " ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC LIMIT 1", args).fetchone()
+            if row is None:continue
+            summary = json.loads(row[18]);detail = json.loads(row[19]);hydrated += len(row[18].encode());detail_hydrated += len(row[19].encode())
+            fields = summary.get("after",{}).get("fields",{})
+            lifecycle = fields.get("lifecycle",fields.get("status"))
+            if start is not None and row[13] < start and lifecycle in {"completed","closed","resolved","withdrawn","failed","stopped"}:continue
+            memberships = [v for v in fields.values() if isinstance(v,Mapping) and v.get("kind")=="work.project"]
+            if memberships and not any(v.get("authority")==authority and v.get("id")==project for v in memberships):continue
+            if any((filters or {}).get(name) is not None and (filters or {})[name]!=row[index] for name,index in (("role",16),("outcome",17),("facet_type",15))):continue
+            rows.append({"generation":row[0],"facet_id":row[1],"source_event_id":row[2],"facet_index":row[3],"source_append_position":row[4],"stream":row[5],"stream_sequence":row[6],"project_ref":{"authority":authority,"kind":"work.project","id":project},"subject_ref":{"authority":row[9],"kind":kind,"id":subject,"revision":row[12]},"recorded_at":row[13],"occurred_at":row[14],"facet_type":row[15],"role":row[16],"outcome":row[17],"summary":summary,"detail":detail,"state_as_of_before":end,"state_coverage":summary.get("coverage","unknown"),"period_overlap":"unknown" if lifecycle is None else "captured"})
+        more = len(candidates)>limit
+        next_cursor = _token_encode({"format":CURSOR_FORMAT,"mode":"state","snapshot":fixed["snapshot_digest"],"key":list(chosen[-1])}) if more and chosen else None
+        return {**checked,"rows":rows,"next_cursor":next_cursor,"partial":bool(not rows and more),"coverage":{**checked["coverage"],"historical_state":"captured-state-before-exclusive-to","subject_continuation":True,"unknown_fields_preserved":True},"io_work":{"metadata_candidates_examined":len(chosen)*2+checked["io_work"]["metadata_candidates_examined"],"summary_bytes_hydrated":hydrated+checked["io_work"]["summary_bytes_hydrated"],"detail_bytes_hydrated":detail_hydrated+checked["io_work"]["detail_bytes_hydrated"],"validation_io":checked["io_work"],"rows_returned":len(rows)}}
 
     page = read
     query = read

@@ -798,13 +798,18 @@ class CanonicalRoleRuntime:
         assignment_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],
         schedule_id: str, logical_request_key: str, expected_generation: int,
         lifecycle: str, as_of: str, required_resource_names: Sequence[str] = (),
+        publish_result: bool = False,
     ) -> Mapping[str, Any]:
         """Publish/accept a retained verified result without invoking a provider.
 
         This is execution acceptance; substantive task completion still belongs
         to the assessment/completion operations. A publication crash is safely
-        retried through the original assignment receipt.
+        retried through the original assignment receipt. The owner may explicitly
+        publish a manager's same retained result for an installed analytical
+        handoff; this never invokes work or grants task acceptance.
         """
+        if type(publish_result) is not bool or (publish_result and role not in {"manager", "worker"}):
+            raise OwnerRoleRuntimeError("retained result publication requires an explicit manager/worker owner operation")
         _assignment, _target, capture = self._binding(
             role=role, project_ref=project_ref, task_ref=task_ref,
             assignment_ref=assignment_ref, mandate_ref=mandate_ref,
@@ -845,13 +850,14 @@ class CanonicalRoleRuntime:
                 or resource.get("brief_sha256") != current_brief_digest()):
             raise OwnerRoleRuntimeError("retained result does not use the current adopted owner brief")
         published = None
-        if role == "worker":
+        if role == "worker" or publish_result:
             if self.result_capture_factory is None:
-                raise OwnerRoleRuntimeError("worker result publication requires an owner-issued capability")
+                raise OwnerRoleRuntimeError("result publication requires an owner-issued capability")
             result_owner = self.result_capture_factory(
                 project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
                 generation=expected_generation, logical_request_key=logical_request_key,
             )
+            capture.source_result_validator = getattr(self.adapter, "verify_source_result", None)
             published = capture.publish_analytical_result(result, result_owner)
         accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
         return {**accepted, "published_analytical_result": published}

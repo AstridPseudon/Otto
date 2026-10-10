@@ -144,8 +144,8 @@ def source_facets(row: Mapping[str, Any]):
     return [facet]
 
 
-def projection_rows(row: Mapping[str, Any], *, generation: int = 1):
-    for index, facet in enumerate(source_facets(row)):
+def projection_rows(row: Mapping[str, Any], *, generation: int = 1, start_index: int = 0):
+    for index, facet in enumerate(source_facets(row), start=start_index):
         for project in project_relations(facet) or [None]:
             subject = facet["subject"]
             identity = [row["store_authority"], row["event_id"], index, subject,

@@ -9,6 +9,7 @@ recovery, or invents usage/accounting facts.
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Sequence
+from herzchen.kernel.project_history import _token_encode, _token_decode
 
 
 VIEW_PRESETS = (
@@ -178,11 +179,33 @@ class ObservabilityViews:
              filters: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
         if view not in VIEW_PRESETS:
             raise ObservabilityViewError("unsupported Events operator view")
-        result = self.reader.read(
-            projects=projects, from_at=from_at, to_at=to_at, timezone_name=timezone_name,
-            active_during=active_during, limit=limit, cursor=cursor, snapshot=snapshot,
-            grant=grant, actor=_reader_actor(grant, actor), filters=filters,
-        )
+        state_views = {"overview", "agents", "tasks-reviews", "blockers"}
+        common = dict(projects=projects, from_at=from_at, to_at=to_at, timezone_name=timezone_name,
+                      active_during=active_during, limit=limit, snapshot=snapshot,
+                      grant=grant, actor=_reader_actor(grant, actor), filters=filters)
+        state_result = None
+        if view in state_views and callable(getattr(self.reader,"read_state",None)):
+            if view == "overview":
+                facts_cursor, state_cursor = cursor, None
+                facts_done, subjects_done = False, False
+                if cursor is not None:
+                    decoded = _token_decode(cursor)
+                    if decoded.get("format") == "otto.events.overview-cursor.v1":
+                        if snapshot is None or decoded.get("snapshot") != snapshot.get("snapshot_digest"):
+                            raise ObservabilityViewError("overview cursor requires its original snapshot")
+                        facts_cursor, state_cursor = decoded.get("facts"),decoded.get("subjects")
+                        facts_done,subjects_done = decoded.get("facts_done") is True, decoded.get("subjects_done") is True
+                result = self.reader.read(cursor=facts_cursor,**common)
+                state_result = self.reader.read_state(cursor=state_cursor,**{**common,"snapshot":result["snapshot"]})
+                if facts_done:result = {**result,"rows":[],"next_cursor":None,"partial":False}
+                if subjects_done:state_result = {**state_result,"rows":[],"next_cursor":None,"partial":False}
+                fc,sc=result.get("next_cursor"),state_result.get("next_cursor")
+                result = {**result,"next_cursor":_token_encode({"format":"otto.events.overview-cursor.v1","snapshot":result["snapshot_digest"],"facts":fc,"subjects":sc,"facts_done":fc is None,"subjects_done":sc is None}) if fc or sc else None}
+            else:
+                result = self.reader.read_state(cursor=cursor,**common)
+                state_result = result
+        else:
+            result = self.reader.read(cursor=cursor,**common)
         if not isinstance(result, Mapping):
             raise ObservabilityViewError("Events reader returned no bounded response")
         source_rows = [row for row in result.get("rows", ()) if isinstance(row, Mapping)]
@@ -199,6 +222,12 @@ class ObservabilityViews:
             }
             return value
         value = _envelope(view, result, source_rows)
+        if state_result is not None:
+            value["historical_state"] = {"rows":[_row(row,view) for row in state_result.get("rows",())],
+                "coverage":_json_value(state_result.get("coverage",{})),
+                "io_work":_json_value(state_result.get("io_work",{})),
+                "as_of_before":_mapping(_mapping(result.get("snapshot")).get("scope")).get("to"),
+                "partial":bool(state_result.get("partial",False))}
         if view == "overview":
             value["attention"] = [{
                 "subject_ref": row.get("subject_ref"),
