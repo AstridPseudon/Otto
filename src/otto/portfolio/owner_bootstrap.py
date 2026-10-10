@@ -36,7 +36,8 @@ class _BoundResultAccess:
 
     def __init__(self, *, assignments: Any, reader: Any, scope_reader: Any, actor: Any,
                  project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
-                 assignment_ref: Mapping[str, Any], generation: int, logical_request_key: str) -> None:
+                 assignment_ref: Mapping[str, Any], generation: int, logical_request_key: str,
+                 allow_project_manager: bool = False) -> None:
         from herzchen.contracts import ResourceRef
 
         self.__assignments, self.__reader, self.__actor = assignments, reader, actor
@@ -44,6 +45,9 @@ class _BoundResultAccess:
         self.__project = ResourceRef.from_dict(project_ref)
         self.__task = ResourceRef.from_dict(task_ref)
         self.__assignment = ResourceRef.from_dict(assignment_ref)
+        if type(allow_project_manager) is not bool:
+            raise TypeError("manager result capability must be explicit")
+        self.__allow_project_manager = allow_project_manager
         self.__generation, self.__key = generation, logical_request_key
         if (self.__project.kind != "work.project" or self.__task.kind != "work.task"
                 or self.__assignment.kind != "wrk.assignment"
@@ -61,7 +65,7 @@ class _BoundResultAccess:
         scope = _json_value(current.scope)
         task_scope = scope == self.__task.to_dict()
         project_worker_scope = (
-            not task_scope and isinstance(scope, Mapping) and getattr(current, "role", None) in {"worker", "executor"}
+            not task_scope and isinstance(scope, Mapping) and getattr(current, "role", None) in ({"worker", "executor", "manager"} if self.__allow_project_manager else {"worker", "executor"})
             and all(scope.get(key) == self.__project.to_dict()[key] for key in ("authority", "kind", "id"))
         )
         # A project executor is still issued only this exact task and request;
@@ -986,7 +990,8 @@ class PortfolioOwnerBootstrap:
         owner_actor, grant, scope_reader = self.owner_actor, self.project_read_grant, operations.reader
 
         def result_capture(*, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
-                           assignment_ref: Mapping[str, Any], generation: int, logical_request_key: str) -> Any:
+                           assignment_ref: Mapping[str, Any], generation: int, logical_request_key: str,
+                           allow_project_manager: bool = False) -> Any:
             from herzchen.contracts import ResourceRef
 
             project, task = ResourceRef.from_dict(project_ref), ResourceRef.from_dict(task_ref)
@@ -995,7 +1000,8 @@ class PortfolioOwnerBootstrap:
             _read_current_result_task(scope_reader, project_ref, task_ref)
             access = _BoundResultAccess(assignments=assignments, reader=result_reader, scope_reader=scope_reader,
                 actor=owner_actor, project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
-                generation=generation, logical_request_key=logical_request_key)
+                generation=generation, logical_request_key=logical_request_key,
+                allow_project_manager=allow_project_manager)
             capture = HerzchenAttemptCapture(access, access, actor=owner_actor)
             error = capture.validate_generation(assignment_ref, generation)
             if error:

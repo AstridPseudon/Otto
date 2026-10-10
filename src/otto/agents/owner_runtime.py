@@ -890,6 +890,7 @@ class CanonicalRoleRuntime:
             result_owner = self.result_capture_factory(
                 project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
                 generation=expected_generation, logical_request_key=logical_request_key,
+                **({"allow_project_manager": True} if role == "manager" and publish_result else {}),
             )
             capture.source_result_validator = getattr(self.adapter, "verify_source_result", None)
             published = capture.publish_analytical_result(result, result_owner)

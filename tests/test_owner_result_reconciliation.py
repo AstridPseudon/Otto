@@ -175,3 +175,35 @@ class SettledPublicationFenceTests(unittest.TestCase):
         for section,field,value in [('result','outcome','unknown'),('result','context_digest_verified',False),('result','physical_session_id','changed'),('manager_acceptance','owner','foreign'),('manager_acceptance','accepted',False),('manager_acceptance','result_digest','foreign')]:
             with self.subTest(section=section,field=field):
                 due=self.fixture();due.host_evidence['gateway_attempt'][section][field]=value;self.assertFalse(CanonicalRoleRuntime._settled_publication_matches(due,'request-1','owner-principal'))
+
+class ManagerResultCapabilityTests(unittest.TestCase):
+    def fixture(self,role='manager',**overrides):
+        from herzchen.contracts import ResourceRef
+        from unittest.mock import Mock
+        self.project=ResourceRef('owner','work.project','p','rev-1');self.task=ResourceRef('owner','work.task','t','rev-1');self.assignment=ResourceRef.from_dict(ASSIGNMENT);self.actor=SimpleNamespace(authority='owner')
+        self.current=SimpleNamespace(ref=self.assignment,scope=self.project,generation=1,role=role)
+        self.assignments=Mock();self.assignments.get.return_value=self.current
+        return dict(assignments=self.assignments,reader=Mock(),scope_reader=Mock(),actor=self.actor,project_ref=self.project.to_dict(),task_ref=self.task.to_dict(),assignment_ref=ASSIGNMENT,generation=1,logical_request_key='request-1',**overrides)
+    def test_project_manager_requires_explicit_owner_capability(self):
+        from unittest.mock import patch
+        from otto.portfolio.owner_bootstrap import _BoundResultAccess
+        args=self.fixture()
+        with patch('otto.portfolio.owner_bootstrap._read_current_result_task') as membership:
+            with self.assertRaises(PermissionError):_BoundResultAccess(**args)
+            access=_BoundResultAccess(**args,allow_project_manager=True)
+            value=dict(project_ref=self.project.to_dict(),task_ref=self.task.to_dict(),assignment_ref=ASSIGNMENT,generation=1,logical_request_key='request-1')
+            access.append_result(ASSIGNMENT,value,expected_generation=1,logical_request_key='request-1',actor=self.actor)
+            self.assignments.append_result.assert_called_once()
+            with self.assertRaises(PermissionError):access.append_result(ASSIGNMENT,dict(value,task_ref=dict(self.task.to_dict(),id='sibling')),expected_generation=1,logical_request_key='request-1',actor=self.actor)
+            with self.assertRaises(PermissionError):access.append_result(ASSIGNMENT,value,expected_generation=1,logical_request_key='foreign',actor=self.actor)
+            membership.assert_called()
+    def test_advisor_foreign_revision_generation_and_membership_stay_rejected(self):
+        from unittest.mock import patch
+        from herzchen.contracts import ResourceRef
+        from otto.portfolio.owner_bootstrap import _BoundResultAccess
+        for field,value in [('role','project_advisor'),('scope',ResourceRef('owner','work.project','foreign','rev-1')),('generation',2),('ref',ResourceRef('owner','wrk.assignment','a-1','rev-3'))]:
+            with self.subTest(field=field),patch('otto.portfolio.owner_bootstrap._read_current_result_task'):
+                args=self.fixture();setattr(self.current,field,value)
+                with self.assertRaises(PermissionError):_BoundResultAccess(**args,allow_project_manager=True)
+        with patch('otto.portfolio.owner_bootstrap._read_current_result_task',side_effect=PermissionError('changed membership')):
+            with self.assertRaises(PermissionError):_BoundResultAccess(**self.fixture(),allow_project_manager=True)
