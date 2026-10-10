@@ -486,5 +486,23 @@ class EvidenceReclaimTests(unittest.TestCase):
         self.assertEqual(handler.status(item["revision_ref"], actor=self.actor)["availability"], "admitted")
 
 
+    def test_serialized_installed_surface_retains_owner_authority_and_returns_real_effect(self):
+        from herzchen.command_ports import serve_consumer_facade, connect_consumer_facade, close_consumer_facade
+        self.submit(b"serialized fixture")
+        transport = serve_consumer_facade(self.handler)
+        try:
+            client = connect_consumer_facade(transport)
+            preview = client.reclaim_preview(self.project, actor=self.actor, logical_request_key="wire-p", cutoff="9999Z")
+            with self.assertRaises(Exception):
+                client.reclaim_apply(preview["selection_ref"], actor=self.actor, logical_request_key="wire-illicit",
+                    resolve_dependencies={"complete": True, "holds": []})
+            self.assertIsNone(self.store.get_receipt("wire-illicit"))
+            applied = client.reclaim_apply(preview["selection_ref"], actor=self.actor, logical_request_key="wire-a")
+            self.assertEqual(applied["managed_bytes_removed"], len(b"serialized fixture"))
+            self.assertEqual(applied["io_work"]["global_discovery_pages"], 0)
+        finally:
+            close_consumer_facade(transport)
+
+
 if __name__ == "__main__":
     unittest.main()

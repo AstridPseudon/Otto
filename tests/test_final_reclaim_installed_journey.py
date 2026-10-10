@@ -118,9 +118,9 @@ class FinalCorrectionInstalledJourneyTests(unittest.TestCase):
                         known = known and current is not None and current.payload.get("recovery_state") == "settled"
                     return {"complete": bool(known), "holds": () if known else ("dependency-unknown",)}
                 store.revise_identity(task, {**store.get_identity(task).payload, "recovery_state": "settled"},
-                    revision="settled-1", expected_revision=None, expected_version=0)
+                    revision="rev-1", expected_revision=None, expected_version=0)
                 store.revise_identity(attempt, {**store.get_identity(attempt).payload, "recovery_state": "settled"},
-                    revision="settled-1", expected_revision=None, expected_version=0)
+                    revision="rev-1", expected_revision=None, expected_version=0)
                 handler = EvidenceCommandHandler(store, root / "managed", selection=selection,
                     resolve_dependencies=fixture_dependencies)
                 text = _fixture_bytes(b"d06-log-line\n", 1_048_576)
