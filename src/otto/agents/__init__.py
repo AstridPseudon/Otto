@@ -16,6 +16,19 @@ from .gateway import (
     error,
 )
 from .codex_cli import CodexCliAdapter, CodexCliAdapterError, LaunchUncertainError, normalize_codex_jsonl
+from .usage_contract import (
+    CHARGEABLE_FIELDS,
+    CONTRACT_SCHEMA as USAGE_CONTRACT_SCHEMA,
+    OBSERVATION_SCHEMA as USAGE_OBSERVATION_SCHEMA,
+    UsageContractError,
+    adapter_descriptors,
+    contract_definition,
+    fixture_catalog,
+    normalize_usage_event,
+    physical_span_identity,
+    run_fixture_contract,
+    validate_rate_schedule,
+)
 from .orchestrator_route import (
     OrchestratorRouteError,
     invoke_canonical_assignment,
@@ -84,6 +97,17 @@ __all__ = [
     "CodexCliAdapterError",
     "LaunchUncertainError",
     "normalize_codex_jsonl",
+    "CHARGEABLE_FIELDS",
+    "USAGE_CONTRACT_SCHEMA",
+    "USAGE_OBSERVATION_SCHEMA",
+    "UsageContractError",
+    "adapter_descriptors",
+    "contract_definition",
+    "fixture_catalog",
+    "normalize_usage_event",
+    "physical_span_identity",
+    "run_fixture_contract",
+    "validate_rate_schedule",
     "HerzchenAdapterError",
     "HerzchenCodexAdapter",
     "JsonlHostTurnContextReader",
