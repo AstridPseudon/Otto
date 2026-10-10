@@ -37,6 +37,20 @@ def state(ref: Optional[ResourceRef], payload: Optional[Mapping[str, Any]]) -> M
     if payload is None:
         return {"exists": False, "ref": None, "fields": {}, "unknown": []}
     fields = {k: safe(payload[k]) for k in STATE_FIELDS if k in payload}
+    if ref is not None and ref.kind == "authoring-scope" and "project" in fields:
+        # EDT retains the full folder draft for recovery. It is authoritative
+        # authoring content, not a typed historical relation or summary body.
+        value = fields["project"]
+        pin = value.get("ref") if isinstance(value, Mapping) and "ref" in value else value
+        try:
+            project = ResourceRef.from_dict(pin) if isinstance(pin, Mapping) else None
+        except (ValueError, TypeError, KeyError):
+            project = None
+        if (project is not None and project.authority == ref.authority
+                and project.kind == "work.project" and project.revision is not None):
+            fields["project"] = project.to_dict()
+        else:
+            fields.pop("project")
     # A Work result is an immutable owner observation, not task acceptance.
     # Keep only its bounded typed attempt facts, never native output/context.
     value = payload.get("value")

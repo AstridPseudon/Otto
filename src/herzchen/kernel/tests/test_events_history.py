@@ -38,6 +38,38 @@ class HistoryTests(unittest.TestCase):
     def event(self):
         return self.store._event_from_row(self.store.connection.execute('SELECT * FROM events ORDER BY append_position DESC LIMIT 1').fetchone())
 
+    def test_large_authoring_folder_retains_body_but_projects_only_exact_relation(self):
+        from herzchen.authoring.sessions import AuthoringSessionService, register_authoring
+        register_authoring(self.store)
+        from herzchen.kernel.history import transition
+        body = {"ref": self.project.ref.to_dict(), "document_files": {"plan.md": "x" * 100000},
+                "project_json": {"title": "Project"}, "base_task_revisions": {}}
+        sessions = AuthoringSessionService(self.store)
+        opened = sessions.open(self.project.ref, self.actor, request_id="large-folder-open",
+            target_kind="project-sheet", base_revision=self.project.ref.revision,
+            initial_content=b"{}", project=body)
+        self.assertEqual(opened.status, "opened")
+        scope = ResourceRef("owner", "authoring-scope", self.project.id)
+        retained = self.store.get_identity(scope)
+        self.assertEqual(retained.payload["project"], body)
+        # A subsequent selected-document session also encounters the old full
+        # folder in before-state; neither side may copy it into the summary.
+        summary = transition(retained.ref, retained.payload, retained.ref,
+                             {"project": self.project.ref.to_dict()})
+        self.assertEqual(summary["before"]["fields"]["project"], self.project.ref.to_dict())
+        self.assertEqual(summary["after"]["fields"]["project"], self.project.ref.to_dict())
+        self.assertEqual(project_relations(summary), [self.project.ref.to_dict()])
+        self.assertLess(len(canonical_json(summary).encode()), 4096)
+        self.assertNotIn("x" * 1000, canonical_json(summary))
+        for bad in ({"document_files": body["document_files"]},
+                    {"ref": {**self.project.ref.to_dict(), "authority": "foreign"}},
+                    {"ref": {**self.project.ref.to_dict(), "kind": "work.task"}},
+                    {"ref": {**self.project.ref.to_dict(), "revision": None}}):
+            invalid = transition(None, None, retained.ref, {"project": bad})
+            self.assertNotIn("project", invalid["after"]["fields"])
+            self.assertIn("project", invalid["after"]["unknown"])
+            self.assertEqual(project_relations(invalid), [])
+
     def test_creation_revision_membership_and_lifecycle_are_atomic(self):
         project = self.project
         event = self.event()
