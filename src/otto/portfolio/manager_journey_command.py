@@ -501,7 +501,7 @@ class ManagerJourneyCommands:
                     "retry_provider": False,
                     "next_action": "settle this retained native occurrence without resending; repeat this exact finish request"}
         if self.due_port is not None:
-            active = [due for due in self.due_port.list_due()
+            active = [due for due in self.due_port.list_due({"project_ref": manifest["project_ref"]["id"]})
                 if due.get("role") in {"manager", "worker"} and due.get("stop_state") == "active"
                 and due.get("in_flight_request") is not None
                 and ((due.get("host_evidence") or {}).get("gateway_attempt")) is not None
@@ -703,7 +703,7 @@ class ManagerJourneyCommands:
         payload = self.owner.graph.reader.get_identity(candidate).payload.get("value") or {}
         if self.due_port is None:
             return {"outcome": "held", "reason": "native settlement readback is not bound to this owner service"}
-        due_records = [due for due in self.due_port.list_due()
+        due_records = [due for due in self.due_port.list_due({"project_ref": ResourceRef.from_dict(payload["project_ref"]).id})
             if (due.get("assignment_ref") or {}).get("id") == (payload.get("assignment_ref") or {}).get("id")
             and due.get("generation") == payload.get("generation")
             and payload.get("logical_request_key") in {due.get("in_flight_request"), due.get("last_completed_request")}
