@@ -196,16 +196,30 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
         conversation_due = DueRecord.from_dict(proof)
         prior_ref = conversation_due.assignment_ref
         current_ref = due.assignment_ref
+        proof_attempt = (conversation_due.host_evidence or {}).get("gateway_attempt") or {}
+        proof_native = native_target_identity(conversation_due.target)
+        # Fresh manager targets intentionally have no caller-selected session.
+        # Reuse only their completed, context-verified actual admission. The
+        # exact owner authorization/assignment/project checks below still apply.
+        proof_result = proof_attempt.get("result") or {}
+        if (proof_native is None and role == "manager"
+                and conversation_due.execution_mode == "fresh_manager"
+                and conversation_due.stop_state == "completed"
+                and conversation_due.completion_state == "succeeded"
+                and conversation_due.in_flight_request is None
+                and proof_result.get("outcome") == "succeeded"
+                and proof_result.get("context_digest_verified") is True
+                and proof_result.get("physical_session_id") == native):
+            proof_native = (proof_attempt.get("delivery_admission") or {}).get("physical_session_id")
         if (any(prior_ref.get(k) != current_ref.get(k) for k in ("authority", "kind", "id"))
                 or (prior_ref != current_ref and not authenticated_adoption_ancestor(assignment, prior_ref, assignment_history_reader))
                 or conversation_due.generation != due.generation or conversation_due.recipient != due.recipient
                 or conversation_due.role != role or conversation_due.lifecycle_owner != actor
                 or conversation_due.manager_ref != actor
-                or native_target_identity(conversation_due.target) != native
+                or proof_native != native
                 or any(conversation_due.target["project_ref"].get(k) != project_ref.get(k)
                        for k in ("authority", "kind", "id"))):
             raise OperatingSetupError("retained native binding is outside the current adoption/generation")
-        proof_attempt = (conversation_due.host_evidence or {}).get("gateway_attempt") or {}
         if ((proof_attempt.get("delivery_admission") or {}).get("native_turn_started") is not True
                 or (proof_attempt.get("delivery_authorization") or {}).get("status") != "authorized"):
             raise OperatingSetupError("retained native binding lacks actual authenticated admission")

@@ -42,6 +42,49 @@ class OperatingSetupTests(unittest.TestCase):
         return {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": schedule},
                 "advisor_policy": {"mode": "disabled", "reason": "Owner supervises this bounded run"}, "acceptance_tasks": []}
 
+    def test_unstarted_continuation_uses_completed_fresh_manager_admission(self):
+        from copy import deepcopy
+        from otto.portfolio.execution import _digest
+        self.test_pending_callback_keeps_settled_native_proof_for_worker_result()
+        f = self.f
+        current = next(v for v in f.port.list_due() if v["role"] == "manager"
+            and v["schedule_id"] != "owner-bootstrap-native" and v["completion_state"] == "succeeded")
+        proof = deepcopy(f.port.read_due("owner-bootstrap-native"))
+        proof["target"].pop("native_id")
+        proof["execution_mode"] = "fresh_manager"
+        proof["host_evidence"]["gateway_attempt"]["result"].update(
+            outcome="succeeded", context_digest_verified=True, physical_session_id="actual-manager-session")
+        pending = deepcopy(current)
+        pending.update(host_evidence=None, stop_state="active", completion_state="none",
+            in_flight_request="fixture-pending")
+        config = {"schema":"otto.operating-setup.v1", "mode":"manual",
+            "roles":{"manager":pending["schedule_id"]},
+            "advisor_policy":{"mode":"disabled","reason":"Fixture owner"}, "acceptance_tasks":[]}
+        original = f.app.runtime.due_port
+        def ready(candidate):
+            raw = deepcopy(pending)
+            raw["target"]["native_binding"] = {"schedule_id":candidate["schedule_id"], "due_sha256":_digest(candidate)}
+            f.app.runtime.due_port = SimpleNamespace(read_due=lambda schedule:
+                raw if schedule == raw["schedule_id"] else candidate if schedule == candidate["schedule_id"] else original.read_due(schedule))
+            self.last_fresh_readiness = evaluate_setup(f.app.runtime,f.project.ref.to_dict(),config)
+            return self.last_fresh_readiness["ready"]
+        try:
+            self.assertTrue(ready(proof), self.last_fresh_readiness["blockers"])
+            changes = [(("execution_mode",),"continue_existing"), (("completion_state",),"unknown"),
+                (("stop_state",),"active"), (("generation",),2),
+                (("target","project_ref","id"),"foreign-project"),
+                (("host_evidence","gateway_attempt","result","context_digest_verified"),False),
+                (("host_evidence","gateway_attempt","result","physical_session_id"),"foreign-session"),
+                (("host_evidence","gateway_attempt","delivery_admission","native_turn_started"),False),
+                (("host_evidence","gateway_attempt","delivery_authorization","status"),"unverified"),
+                (("host_evidence","gateway_attempt","delivery_authorization","principal"),"foreign")]
+            for path,value in changes:
+                bad=deepcopy(proof); target=bad
+                for key in path[:-1]:target=target[key]
+                target[path[-1]]=value
+                with self.subTest(path=path):self.assertFalse(ready(bad))
+        finally:f.app.runtime.due_port=original
+
     def test_settled_callback_uses_own_admission_after_fresh_initial_target(self):
         from copy import deepcopy
         from otto.portfolio.execution import _digest
