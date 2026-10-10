@@ -25,6 +25,7 @@ FIELDS = (
     "context_digest_verified", "physical_session_id", "observed_turn_id", "request_key",
     "logical_request_key", "captured_at", "started_at", "completed_at",
     "capacity_units", "cumulative_allowance_units", "cumulative_used_units", "held_units",
+    "resource_name", "content_digest", "native_session_id", "state_sha256",
 )
 REF_FIELDS = ("ref", "candidate_ref", "result_ref", "project_ref", "task_ref", "assignment_ref",
               "parent_assignment_ref", "mandate_ref", "resource_ref", "original_candidate_ref")
@@ -204,3 +205,47 @@ def read_checkpoint_detail(path: str | Path, *, expected_binding: Mapping[str, A
             "availability": "admitted", "verification": "range-not-revalidated", "decoding": "raw-bytes",
             "bytes": raw, "offset": offset, "next_offset": offset + len(raw) if offset + len(raw) < size else None,
             "io_work": {**metadata["io_work"], "payload_bytes_read": len(raw)}}
+
+
+def record_preparation_stage(path: str | Path, *, stage: str, value: Mapping[str, Any],
+                             binding: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Advance the owner's finite preparation ledger without copying old bodies.
+
+    Bindings come from the authenticated owning preparation, never a transport
+    request. Each stage retains one immutable detail artifact; the current
+    ledger contains only summaries and exact artifact pins. A partial capture
+    is held for inspection rather than silently overwritten on retry.
+    """
+    path = Path(path)
+    if not isinstance(stage, str) or not stage or len(stage) > 64 or any(
+            not (c.isascii() and (c.isalnum() or c in "-_")) for c in stage):
+        raise ValueError("invalid preparation stage")
+    if path.exists():
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_PROJECTION_BYTES + 1)
+        if len(raw) > MAX_PROJECTION_BYTES:
+            raise ValueError("preparation ledger exceeds its metadata bound")
+        ledger = json.loads(raw)
+        if ledger.get("schema") != "otto.preparation-stages.v1" or ledger.get("binding") != dict(binding):
+            raise PermissionError("preparation ledger binding changed")
+    else:
+        ledger = {"schema": "otto.preparation-stages.v1", "binding": dict(binding), "stages": {}}
+    stages = ledger["stages"]
+    if stage in stages:
+        raise FileExistsError("stage already retained; inspect it instead of repeating the effect")
+    if len(stages) >= MAX_SUMMARY_ITEMS:
+        raise ValueError("preparation stage count exceeds its finite bound")
+    checkpoint = path.with_name(path.stem + "-" + stage + ".json")
+    # Validate the future current projection before producing a detail artifact.
+    summary = finite_summary(value)
+    slot = {**summary, "checkpoint_path": str(checkpoint)}
+    tentative = {**ledger, "stages": {**stages, stage: slot}}
+    if len(json.dumps(tentative).encode()) > MAX_PROJECTION_BYTES - 1024:
+        raise ValueError("preparation ledger exceeds its metadata bound")
+    captured = write_preparation_checkpoint(checkpoint, value, binding=binding)
+    slot["artifact_ref"] = captured["artifact"]
+    stages[stage] = slot
+    if len(json.dumps(ledger).encode()) > MAX_PROJECTION_BYTES:
+        raise ValueError("captured stage retained; preparation ledger exceeds its bound")
+    atomic_json(path, ledger)
+    return slot
