@@ -16,10 +16,13 @@ latest captured subject state immediately before exclusive `to`, including
 carry-in responsibilities and issues. Overview combines period facts with a
 separate `historical_state` section. Its opaque continuation advances both
 streams and remembers a completed stream; pass it unchanged with the snapshot.
-Unknown fields remain unknown. Historical active discovery uses bounded indexed
-project-subject predecessor/transition seeks, preserves overlapping activity
-after an in-period closure, and labels unknown interval candidates; current
-heads never establish earlier activity. Recovery only points to retained facts
+Unknown fields remain unknown. Historical active discovery inspects explicit indexed metadata/summary batches
+within a 1,000-candidate budget. An unfinished scan returns no facts or state,
+marks discovery incomplete, and issues the next fixed-snapshot cursor; follow
+it unchanged until coverage completes. Reported work includes actual summary
+bytes and candidates. Overlapping activity after an in-period closure and
+unknown historical candidates remain visible; current heads never establish
+earlier activity. Recovery only points to retained facts
 and inspection; it never launches, repairs, backfills, or gives stale
 historical mutation advice.
 
@@ -30,7 +33,9 @@ separately queued Usage/cost successor.
 
 Use `events detail` only with a facet reference returned by a page and its
 original snapshot. Details remain authorization-checked, Evidence-linked when
-available, and bounded. Legacy gaps, projection lag, unavailable Evidence,
+available, and bounded. A carry-in detail must be the exact latest captured
+nonterminal predecessor under that snapshot, rather than any older period fact.
+Legacy gaps, projection lag, unavailable Evidence,
 and unknown actors remain visible. Do not infer stuck work from age or
 completion percentage from mutable inventory.
 

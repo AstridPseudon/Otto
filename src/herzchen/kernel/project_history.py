@@ -569,61 +569,99 @@ class ProjectHistoryReader:
                 active.add((self.store.authority, row[0]))
         return active, len(rows)
 
-    def _historical_active_result(self, projects, start, end, *, generation, boundary):
-        """At most three indexed project-subject seeks per authorized project.
+    def _historical_active_result(self, projects, start, end, *, generation, boundary,
+                                  progress=None, return_progress=False):
+        """Inspect at most 1,000 captured summaries, with explicit continuation.
 
-        Missing historical state remains an unknown candidate. Current heads
-        never establish membership in an earlier interval.
+        Metadata keyset seeks precede Python lifecycle inspection. No JSON
+        predicate can hide a scan behind LIMIT. Missing state and unfinished
+        discovery are separate, explicit coverage gaps; current heads are unused.
         """
-        active, unknown = set(), set()
-        examined = 0
-        for authority, project in projects:
+        projects = tuple(projects)
+        state = dict(progress or {"index": 0, "after": None, "known": False,
+                                 "active": [], "unknown": []})
+        if (set(state) != {"index", "after", "known", "active", "unknown"}
+                or type(state["index"]) is not int or not 0 <= state["index"] <= len(projects)
+                or type(state["known"]) is not bool):
+            raise CursorError("active discovery progress is malformed")
+        after = state["after"]
+        if after is not None and (not isinstance(after, list) or len(after) != 4
+                or not isinstance(after[0], str) or type(after[1]) is not int
+                or type(after[2]) is not int or not isinstance(after[3], str)):
+            raise CursorError("active discovery key is malformed")
+        for name in ("active", "unknown"):
+            values = state[name]
+            if not isinstance(values, list) or any(not isinstance(x,list) or tuple(x) not in projects for x in values):
+                raise CursorError("active discovery projects are out of scope")
+        active = {tuple(x) for x in state["active"]}
+        unknown = {tuple(x) for x in state["unknown"]}
+        examined = hydrated = 0
+        while state["index"] < len(projects) and examined < MAX_METADATA_CANDIDATES:
+            authority, project = projects[state["index"]]
             where = ("generation=? AND project_authority=? AND project_id=? "
                      "AND subject_authority=? AND subject_kind='work.project' "
                      "AND subject_id=? AND source_append_position<=?")
             args = (generation, authority, project, authority, project, boundary)
-            prior = self.connection.execute(
-                "SELECT summary_json FROM project_history WHERE " + where +
-                " AND recorded_at<? ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC LIMIT 1",
-                (*args, start)).fetchone()
-            examined += int(prior is not None)
-            fields = {} if prior is None else json.loads(prior[0]).get("after", {}).get("fields", {})
-            value = fields.get("lifecycle", fields.get("status"))
-            known = value in {"active", "running", "open", "pending", "completed", "closed", "stopped", "withdrawn", "failed"}
-            overlap = value in {"active", "running", "open"}
-            if not known:
-                first = self.connection.execute(
+            if state["after"] is None:
+                prior = self.connection.execute(
                     "SELECT summary_json FROM project_history WHERE " + where +
-                    " AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at,source_append_position,facet_index LIMIT 1",
-                    (*args, start, end)).fetchone()
-                examined += int(first is not None)
-                if first is not None:
-                    before = json.loads(first[0]).get("before",{})
-                    bf = before.get("fields",{}); bv=bf.get("lifecycle",bf.get("status"))
-                    if before.get("exists") is False:
-                        known=True
-                    elif bv is not None:
-                        known=bv in {"active","running","open","pending","completed","closed","stopped","withdrawn","failed"}
-                        overlap=bv in {"active","running","open"}
-            transition = self.connection.execute(
-                "SELECT summary_json FROM project_history WHERE " + where +
-                " AND recorded_at>=? AND recorded_at<? AND "
-                "COALESCE(json_extract(summary_json,'$.after.fields.lifecycle'),json_extract(summary_json,'$.after.fields.status')) "
-                "IN ('active','running','open') ORDER BY recorded_at,source_append_position,facet_index LIMIT 1",
-                (*args, start, end)).fetchone()
-            examined += int(transition is not None)
-            if transition is not None or overlap:
-                active.add((authority, project))
-            elif not known:
-                unknown.add((authority, project))
-        return active, unknown, examined
+                    " AND recorded_at<? ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC,facet_id DESC LIMIT 1",
+                    (*args, start)).fetchone()
+                fields = {}
+                if prior is not None:
+                    examined += 1; hydrated += len(prior[0].encode())
+                    fields = json.loads(prior[0]).get("after",{}).get("fields",{})
+                value = fields.get("lifecycle", fields.get("status"))
+                state["known"] = value in {"active","running","open","pending","completed","closed","stopped","withdrawn","failed"}
+                if value in {"active","running","open"}:
+                    active.add((authority,project)); state["index"] += 1
+                    state["known"] = False
+                    continue
+            remaining = MAX_METADATA_CANDIDATES - examined
+            if not remaining: break
+            clause = " AND recorded_at>=? AND recorded_at<?"
+            tail = [start,end]
+            if state["after"] is not None:
+                clause += " AND (recorded_at,source_append_position,facet_index,facet_id)>(?,?,?,?)"
+                tail.extend(state["after"])
+            rows = self.connection.execute(
+                "SELECT recorded_at,source_append_position,facet_index,facet_id,summary_json FROM project_history WHERE " + where + clause +
+                " ORDER BY recorded_at,source_append_position,facet_index,facet_id LIMIT ?",
+                (*args,*tail,remaining)).fetchall()
+            examined += len(rows); hydrated += sum(len(row[4].encode()) for row in rows)
+            found = False
+            for n,row in enumerate(rows):
+                summary = json.loads(row[4])
+                if n == 0 and state["after"] is None and not state["known"]:
+                    before = summary.get("before",{})
+                    fields = before.get("fields",{})
+                    value = fields.get("lifecycle",fields.get("status"))
+                    state["known"] = before.get("exists") is False or value in {"active","running","open","pending","completed","closed","stopped","withdrawn","failed"}
+                    found = value in {"active","running","open"}
+                fields = summary.get("after",{}).get("fields",{})
+                found = found or fields.get("lifecycle",fields.get("status")) in {"active","running","open"}
+                if found: break
+            if found or len(rows) < remaining:
+                if found: active.add((authority,project))
+                elif not state["known"]: unknown.add((authority,project))
+                state["index"] += 1; state["after"] = None; state["known"] = False
+            else:
+                state["after"] = list(rows[-1][:4])
+                break
+        state["active"] = [list(x) for x in sorted(active)]
+        state["unknown"] = [list(x) for x in sorted(unknown)]
+        incomplete = state["index"] < len(projects)
+        unresolved = set(projects[state["index"]:]) if incomplete else set()
+        if return_progress:
+            return active, unknown | unresolved, examined, hydrated, state, not incomplete
+        return active, unknown | unresolved, examined
 
     def _historical_active(self, projects, start, end, *, generation, boundary):
         active, unknown, _ = self._historical_active_result(
             projects, start, end, generation=generation, boundary=boundary)
         return active | unknown
 
-    def _query_rows(self, *, snapshot: Mapping[str, Any], projects: Sequence[tuple[str, str]], limit: int, after: Optional[Sequence[Any]], from_at: Optional[str], to_at: Optional[str], filters: Mapping[str, Any]) -> tuple[list[sqlite3.Row], int]:
+    def _query_rows(self, *, snapshot: Mapping[str, Any], projects: Sequence[tuple[str, str]], limit: int, after: Optional[Sequence[Any]], from_at: Optional[str], to_at: Optional[str], filters: Mapping[str, Any], max_candidates: int = MAX_METADATA_CANDIDATES) -> tuple[list[sqlite3.Row], int]:
         where = ["generation=?", "source_append_position<=?"]
         args: list[Any] = [snapshot["generation"], snapshot["boundary"]]
         if projects:
@@ -635,10 +673,10 @@ class ProjectHistoryReader:
             where.append("recorded_at<?"); args.append(to_at)
         if after is not None:
             where.append("(recorded_at,source_append_position,facet_index,facet_id)>(?,?,?,?)"); args.extend(after)
-        rows = self.connection.execute("SELECT generation,facet_id,source_event_id,facet_index,source_append_position,stream,stream_sequence,project_authority,project_id,subject_authority,subject_kind,subject_id,subject_revision,recorded_at,occurred_at,facet_type,role,outcome FROM project_history WHERE " + " AND ".join(where) + " ORDER BY recorded_at,source_append_position,facet_index,facet_id LIMIT ?", (*args, MAX_METADATA_CANDIDATES)).fetchall()
+        rows = self.connection.execute("SELECT generation,facet_id,source_event_id,facet_index,source_append_position,stream,stream_sequence,project_authority,project_id,subject_authority,subject_kind,subject_id,subject_revision,recorded_at,occurred_at,facet_type,role,outcome FROM project_history WHERE " + " AND ".join(where) + " ORDER BY recorded_at,source_append_position,facet_index,facet_id LIMIT ?", (*args, max_candidates)).fetchall()
         return rows, len(rows)
 
-    def read(self, *, projects: Optional[Sequence[Any]] = None, from_at: Any = None, to_at: Any = None, timezone_name: Optional[str] = None, active_during: Optional[Sequence[Any]] = None, limit: int = 50, cursor: Optional[str] = None, snapshot: Optional[Mapping[str, Any]] = None, grant: Any = None, actor: Any = None, filters: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    def read(self, *, projects: Optional[Sequence[Any]] = None, from_at: Any = None, to_at: Any = None, timezone_name: Optional[str] = None, active_during: Optional[Sequence[Any]] = None, limit: int = 50, cursor: Optional[str] = None, snapshot: Optional[Mapping[str, Any]] = None, grant: Any = None, actor: Any = None, filters: Optional[Mapping[str, Any]] = None, _state_validation: bool = False) -> dict[str, Any]:
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ProjectHistoryError("limit must be between 1 and 200")
         grant = self._current_grant(grant)
@@ -662,10 +700,10 @@ class ProjectHistoryReader:
             decoded = self._decode_cursor(cursor)
             if snapshot is None or decoded["snapshot"] != snapshot.get("snapshot_digest"):
                 raise CursorError("cursor requires its original snapshot")
-            if decoded.get("mode", "facts") != "facts":
+            if decoded.get("mode", "facts") not in ("facts", "active-discovery"):
                 raise CursorError("state cursor cannot page event facts")
             after = decoded.get("key")
-            if not isinstance(after, list) or len(after) != 4:
+            if after is not None and (not isinstance(after, list) or len(after) != 4):
                 raise CursorError("cursor key is malformed")
         else:
             after = None
@@ -678,14 +716,18 @@ class ProjectHistoryReader:
             self._validate_snapshot(snapshot, expected)
             expected = dict(snapshot)
         active_set, unknown_active, inventory_examined = set(), set(), 0
+        discovery, discovery_complete, discovery_bytes = None, True, 0
         if normalized_active is not None:
-            known_active, unknown_active, inventory_examined = self._historical_active_result(
+            known_active, unknown_active, inventory_examined, discovery_bytes, discovery, discovery_complete = self._historical_active_result(
                 scope, normalized_active[0], normalized_active[1],
-                generation=int(expected["generation"]), boundary=int(expected["boundary"]))
+                generation=int(expected["generation"]), boundary=int(expected["boundary"]),
+                progress=None if cursor is None else decoded.get("discovery"), return_progress=True)
             active_set = known_active | unknown_active
         query_from = None if normalized_range is None and normalized_active is None else (normalized_range or normalized_active)[0]
         query_to = None if normalized_range is None and normalized_active is None else (normalized_range or normalized_active)[1]
-        rows, examined = self._query_rows(snapshot=expected, projects=scope, limit=limit, after=after, from_at=query_from, to_at=query_to, filters=filters)
+        metadata_budget = MAX_METADATA_CANDIDATES - inventory_examined
+        if _state_validation: metadata_budget = min(metadata_budget,1)
+        rows, examined = self._query_rows(snapshot=expected, projects=scope, limit=limit, after=after, from_at=query_from, to_at=query_to, filters=filters,max_candidates=metadata_budget) if discovery_complete and metadata_budget else ([], 0)
         def matches(row: sqlite3.Row) -> bool:
             return ((normalized_active is None or (row[7], row[8]) in active_set)
                     and (filters.get("role") is None or row[16] == filters["role"])
@@ -704,13 +746,20 @@ class ProjectHistoryReader:
             detail_hydrated += len(detail_raw.encode())
             candidate_bytes += sum(len(str(row[index]).encode()) for index in (1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17) if row[index] is not None)
             result_rows.append({"generation": row[0], "facet_id": row[1], "source_event_id": row[2], "facet_index": row[3], "source_append_position": row[4], "stream": row[5], "stream_sequence": row[6], "project_ref": None if row[7] is None else {"authority": row[7], "kind": "work.project", "id": row[8]}, "subject_ref": {"authority": row[9], "kind": row[10], "id": row[11], "revision": row[12]}, "recorded_at": row[13], "occurred_at": row[14], "facet_type": row[15], "role": row[16], "outcome": row[17], "summary": summary, "detail": detail})
-        has_more = len(matching) > limit or len(rows) == MAX_METADATA_CANDIDATES
+        has_more = len(matching) > limit or len(rows) == metadata_budget
         cursor_row = selected[-1] if len(matching) > limit else (rows[-1] if rows else None)
         next_cursor = self._encode_cursor(expected, [cursor_row[13], cursor_row[4], cursor_row[3], cursor_row[1]]) if cursor_row is not None and has_more else None
+        if not discovery_complete:
+            next_cursor = _token_encode({"format":CURSOR_FORMAT,"mode":"active-discovery","snapshot":expected["snapshot_digest"],"key":None,"discovery":discovery})
+            has_more = True
+        elif discovery is not None and not metadata_budget:
+            next_cursor = _token_encode({"format":CURSOR_FORMAT,"mode":"facts","snapshot":expected["snapshot_digest"],"key":after,"discovery":discovery})
+        elif next_cursor and discovery is not None:
+            value = self._decode_cursor(next_cursor); value["discovery"] = discovery; next_cursor = _token_encode(value)
         matched = set(active_set)
         if normalized_active is None:
             matched.update((row[7], row[8]) for row in rows if row[7] is not None)
-        return {"schema": SCHEMA, "rows": result_rows, "projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in scope], "matched_projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in sorted(matched)], "snapshot": expected, "snapshot_digest": expected["snapshot_digest"], "next_cursor": next_cursor, "partial": bool(not selected and has_more), "coverage": {"projection_generation": generation, "covered_append_position": boundary, "lag": max(0, int(self.connection.execute("SELECT COALESCE(MAX(append_position),0) FROM events").fetchone()[0]) - boundary), "active_inventory": "bounded-historical-project-seeks" if normalized_active is not None else "not-requested", "active_unknown_projects": [{"authority": a, "kind": "work.project", "id": p} for a,p in sorted(unknown_active)], "active_discovery_complete": True, "active_candidates_examined": inventory_examined}, "io_work": {"metadata_candidates_examined": examined, "candidate_metadata_bytes": candidate_bytes, "rows_returned": len(result_rows), "summary_bytes_hydrated": hydrated, "detail_bytes_hydrated": detail_hydrated}}
+        return {"schema": SCHEMA, "rows": result_rows, "projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in scope], "matched_projects": [{"authority": a, "kind": "work.project", "id": p} for a, p in sorted(matched)], "snapshot": expected, "snapshot_digest": expected["snapshot_digest"], "next_cursor": next_cursor, "partial": bool(not selected and has_more), "coverage": {"projection_generation": generation, "covered_append_position": boundary, "lag": max(0, int(self.connection.execute("SELECT COALESCE(MAX(append_position),0) FROM events").fetchone()[0]) - boundary), "active_inventory": "bounded-historical-project-batches" if normalized_active is not None else "not-requested", "active_unknown_projects": [{"authority": a, "kind": "work.project", "id": p} for a,p in sorted(unknown_active)], "active_discovery_complete": discovery_complete, "active_candidates_examined": inventory_examined, "active_summary_bytes_hydrated": discovery_bytes}, "io_work": {"metadata_candidates_examined": examined + inventory_examined, "active_candidates_examined": inventory_examined, "candidate_metadata_bytes": candidate_bytes, "rows_returned": len(result_rows), "summary_bytes_hydrated": hydrated + discovery_bytes, "detail_bytes_hydrated": detail_hydrated}}
 
     def read_state(self, *, projects=None, from_at=None, to_at=None, timezone_name=None,
                    active_during=None, limit=50, cursor=None, snapshot=None,
@@ -723,20 +772,45 @@ class ProjectHistoryReader:
         """
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ProjectHistoryError("limit must be between 1 and 200")
-        # Reuse the single authorization/range/snapshot validation boundary.
+        decoded = self._decode_cursor(cursor) if cursor is not None else None
+        after = None
+        validation_cursor = None
+        if decoded is not None:
+            if snapshot is None or decoded["snapshot"] != snapshot.get("snapshot_digest"):
+                raise CursorError("subject cursor requires its original state snapshot")
+            if decoded.get("mode") == "active-discovery":
+                validation_cursor = cursor
+            elif decoded.get("mode") == "state":
+                after = decoded.get("key")
+                if not isinstance(after,list) or len(after)!=4 or not all(isinstance(x,str) for x in after):
+                    raise CursorError("subject cursor key is malformed")
+                if decoded.get("discovery") is not None:
+                    validation_cursor = _token_encode({**decoded,"mode":"facts","key":None})
+            else:
+                raise CursorError("facts cursor cannot page historical state")
+        # Reuse the single authorization/range/snapshot boundary. Discovery
+        # must finish before either facts or captured state are presented.
         checked = self.read(projects=projects, from_at=from_at, to_at=to_at,
             timezone_name=timezone_name, active_during=active_during, limit=1,
-            snapshot=snapshot, grant=grant, actor=actor, filters=filters)
+            cursor=validation_cursor,snapshot=snapshot,grant=grant,actor=actor,filters=filters,_state_validation=True)
         fixed = checked["snapshot"]; scope = self._snapshot_projects(fixed)
+        if not checked["coverage"]["active_discovery_complete"]:
+            return {**checked,"rows":[],"partial":True}
+        discovery = None
+        if checked["next_cursor"]:
+            discovery = self._decode_cursor(checked["next_cursor"]).get("discovery")
+        if discovery is None and decoded is not None:
+            discovery = decoded.get("discovery")
+        # A completed discovery without a facts continuation still needs its
+        # exact membership on subsequent subject pages.
+        if active_during is not None and discovery is None:
+            discovery = {"index":len(scope),"after":None,"known":False,
+                "active":[[x["authority"],x["id"]] for x in checked["matched_projects"] if x not in checked["coverage"]["active_unknown_projects"]],
+                "unknown":[[x["authority"],x["id"]] for x in checked["coverage"]["active_unknown_projects"]]}
         start, end = fixed["scope"].get("from"), fixed["scope"].get("to")
-        after = None
-        if cursor is not None:
-            decoded = self._decode_cursor(cursor)
-            if decoded.get("mode") != "state" or decoded["snapshot"] != fixed["snapshot_digest"]:
-                raise CursorError("subject cursor requires its original state snapshot")
-            after = decoded.get("key")
-            if not isinstance(after, list) or len(after) != 4 or not all(isinstance(x,str) for x in after):
-                raise CursorError("subject cursor key is malformed")
+        subject_limit = min(limit,(MAX_METADATA_CANDIDATES - checked["io_work"]["metadata_candidates_examined"] - 1) // 2)
+        if not subject_limit:
+            return {**checked,"rows":[],"partial":True,"next_cursor":_token_encode({"format":CURSOR_FORMAT,"mode":"active-discovery","snapshot":fixed["snapshot_digest"],"key":None,"discovery":discovery})}
         candidates = []
         for authority, project in sorted(scope):
             if after is not None and (authority, project) < tuple(after[:2]):continue
@@ -745,12 +819,12 @@ class ProjectHistoryReader:
             if end is not None:clause += " AND recorded_at<?";args.append(end)
             if after is not None and (authority, project) == tuple(after[:2]):
                 clause += " AND (subject_kind,subject_id)>(?,?)";args.extend(after[2:])
-            remaining = limit + 1 - len(candidates)
+            remaining = subject_limit + 1 - len(candidates)
             keys = self.connection.execute("SELECT DISTINCT subject_kind,subject_id FROM project_history WHERE " + clause +
                 " ORDER BY subject_kind,subject_id LIMIT ?", (*args, remaining)).fetchall()
             candidates.extend((authority,project,k[0],k[1]) for k in keys)
-            if len(candidates) > limit:break
-        chosen = candidates[:limit]; rows = []; hydrated = 0; detail_hydrated = 0
+            if len(candidates) > subject_limit:break
+        chosen = candidates[:subject_limit]; rows = []; hydrated = 0; detail_hydrated = 0
         allowed_active = {(x["authority"],x["id"]) for x in checked["matched_projects"]}
         for authority, project, kind, subject in chosen:
             if active_during is not None and (authority,project) not in allowed_active:continue
@@ -759,7 +833,7 @@ class ProjectHistoryReader:
             if end is not None:clause += " AND recorded_at<?";args.append(end)
             row = self.connection.execute(
                 "SELECT generation,facet_id,source_event_id,facet_index,source_append_position,stream,stream_sequence,project_authority,project_id,subject_authority,subject_kind,subject_id,subject_revision,recorded_at,occurred_at,facet_type,role,outcome,summary_json,detail_json FROM project_history WHERE " + clause +
-                " ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC LIMIT 1", args).fetchone()
+                " ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC,facet_id DESC LIMIT 1", args).fetchone()
             if row is None:continue
             summary = json.loads(row[18]);detail = json.loads(row[19]);hydrated += len(row[18].encode());detail_hydrated += len(row[19].encode())
             fields = summary.get("after",{}).get("fields",{})
@@ -769,9 +843,9 @@ class ProjectHistoryReader:
             if memberships and not any(v.get("authority")==authority and v.get("id")==project for v in memberships):continue
             if any((filters or {}).get(name) is not None and (filters or {})[name]!=row[index] for name,index in (("role",16),("outcome",17),("facet_type",15))):continue
             rows.append({"generation":row[0],"facet_id":row[1],"source_event_id":row[2],"facet_index":row[3],"source_append_position":row[4],"stream":row[5],"stream_sequence":row[6],"project_ref":{"authority":authority,"kind":"work.project","id":project},"subject_ref":{"authority":row[9],"kind":kind,"id":subject,"revision":row[12]},"recorded_at":row[13],"occurred_at":row[14],"facet_type":row[15],"role":row[16],"outcome":row[17],"summary":summary,"detail":detail,"state_as_of_before":end,"state_coverage":summary.get("coverage","unknown"),"period_overlap":"unknown" if lifecycle is None else "captured"})
-        more = len(candidates)>limit
-        next_cursor = _token_encode({"format":CURSOR_FORMAT,"mode":"state","snapshot":fixed["snapshot_digest"],"key":list(chosen[-1])}) if more and chosen else None
-        return {**checked,"rows":rows,"next_cursor":next_cursor,"partial":bool(not rows and more),"coverage":{**checked["coverage"],"historical_state":"captured-state-before-exclusive-to","subject_continuation":True,"unknown_fields_preserved":True},"io_work":{"metadata_candidates_examined":len(chosen)*2+checked["io_work"]["metadata_candidates_examined"],"summary_bytes_hydrated":hydrated+checked["io_work"]["summary_bytes_hydrated"],"detail_bytes_hydrated":detail_hydrated+checked["io_work"]["detail_bytes_hydrated"],"validation_io":checked["io_work"],"rows_returned":len(rows)}}
+        more = len(candidates)>subject_limit
+        next_cursor = _token_encode({"format":CURSOR_FORMAT,"mode":"state","snapshot":fixed["snapshot_digest"],"key":list(chosen[-1]),"discovery":discovery}) if more and chosen else None
+        return {**checked,"rows":rows,"next_cursor":next_cursor,"partial":bool(not rows and more),"coverage":{**checked["coverage"],"historical_state":"captured-state-before-exclusive-to","subject_continuation":True,"unknown_fields_preserved":True},"io_work":{"metadata_candidates_examined":len(candidates)+len(chosen)+checked["io_work"]["metadata_candidates_examined"],"summary_bytes_hydrated":hydrated+checked["io_work"]["summary_bytes_hydrated"],"detail_bytes_hydrated":detail_hydrated+checked["io_work"]["detail_bytes_hydrated"],"validation_io":checked["io_work"],"rows_returned":len(rows)}}
 
     page = read
     query = read
@@ -800,8 +874,20 @@ class ProjectHistoryReader:
         if not isinstance(scope, Mapping):
             raise SnapshotRefreshRequired("snapshot scope is malformed")
         from_at, to_at = scope.get("from"), scope.get("to")
-        if (from_at is None) != (to_at is None) or (from_at is not None and not (from_at <= row[2] < to_at)):
+        if (from_at is None) != (to_at is None) or (to_at is not None and row[2] >= to_at):
             raise AuthorizationError("selected history detail is outside the snapshot range")
+        if from_at is not None and row[2] < from_at:
+            subject = self.connection.execute("SELECT subject_authority,subject_kind,subject_id FROM project_history WHERE generation=? AND facet_id=?", (snapshot["generation"],facet_id)).fetchone()
+            latest = self.connection.execute(
+                "SELECT facet_id FROM project_history WHERE generation=? AND project_authority=? AND project_id=? AND subject_authority=? AND subject_kind=? AND subject_id=? AND source_append_position<=? AND recorded_at<? ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC,facet_id DESC LIMIT 1",
+                (snapshot["generation"],row[0],row[1],*subject,snapshot["boundary"],to_at)).fetchone()
+            fields = json.loads(row[7]).get("after",{}).get("fields",{})
+            lifecycle = fields.get("lifecycle",fields.get("status"))
+            memberships = [x for x in fields.values() if isinstance(x,Mapping) and x.get("kind")=="work.project"]
+            if (latest is None or latest[0] != facet_id
+                    or lifecycle in {"completed","closed","resolved","withdrawn","failed","stopped"}
+                    or (memberships and not any(x.get("authority")==row[0] and x.get("id")==row[1] for x in memberships))):
+                raise AuthorizationError("selected history detail is not a captured carry-in state")
         filters = scope.get("filters", {})
         if not isinstance(filters, Mapping) or set(filters) - {"role", "outcome", "facet_type"}:
             raise SnapshotRefreshRequired("snapshot filters are malformed")

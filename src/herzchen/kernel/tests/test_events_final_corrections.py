@@ -71,6 +71,72 @@ class ReaderCorrectionTests(unittest.TestCase):
         old=self.reader.read_state(projects=[self.project.ref],from_at=kw['from_at'],to_at=kw['to_at'],snapshot=fixed,limit=20)
         br=next(x for x in old['rows']if x['subject_ref']['id']==b.id);self.assertEqual(br['summary']['after']['fields']['lifecycle'],'pending')
 
+    def test_large_negative_activity_discovery_advances_boundedly(self):
+        self._activity_discovery_fixture(False)
+    def test_activity_beyond_first_budget_is_not_silently_excluded(self):
+        self._activity_discovery_fixture(True)
+    def _activity_discovery_fixture(self, late_active):
+        template=list(self.store.connection.execute("SELECT * FROM project_history WHERE subject_kind='work.project' AND subject_id=? LIMIT 1",(self.project.id,)).fetchone())
+        with self.store.transaction() as tx:
+            tx.execute('DELETE FROM project_history')
+            for i in range(5002):
+                row=list(template);row[1]='discovery-'+str(i);row[3]=i
+                row[13]='2026-10-01T00:00:00.000000Z' if i==0 else '2026-10-04T00:00:00.000000Z'
+                status='active' if late_active and i==5001 else 'pending'
+                row[18]=json.dumps({'before':{'exists':True,'fields':{'lifecycle':'pending'}},'after':{'fields':{'lifecycle':status}},'coverage':'captured'})
+                tx.execute('INSERT INTO project_history VALUES('+','.join('?' for _ in row)+')',row)
+        evaluations=[]
+        self.store.connection.create_function('json_extract',2,lambda *_:evaluations.append(1))
+        kwargs=dict(projects=[self.project.ref],active_during=('2026-10-03T00:00:00Z','2026-10-05T00:00:00Z'),limit=1)
+        page=self.reader.read(**kwargs);snapshot=page['snapshot'];examined=[];cursors=[]
+        for _ in range(10):
+            examined.append(page['coverage']['active_candidates_examined'])
+            self.assertLessEqual(examined[-1],1000)
+            self.assertLessEqual(page['io_work']['metadata_candidates_examined'],1000)
+            if page['coverage']['active_discovery_complete']:break
+            self.assertTrue(page['partial']);self.assertFalse(page['rows']);self.assertTrue(page['next_cursor'])
+            self.assertGreater(page['coverage']['active_summary_bytes_hydrated'],0)
+            cursors.append(page['next_cursor'])
+            page=self.reader.read(snapshot=snapshot,cursor=page['next_cursor'],**kwargs)
+        else:self.fail('discovery did not finish its exact snapshot')
+        self.assertGreater(len(cursors),1);self.assertEqual(len(cursors),len(set(cursors)))
+        self.assertEqual(sum(examined),5002);self.assertEqual(evaluations,[])
+        self.assertEqual({x['id'] for x in page['matched_projects']},{self.project.id} if late_active else set())
+        if late_active:
+            more=self.reader.read(snapshot=snapshot,cursor=page['next_cursor'],**kwargs)
+            self.assertTrue(more['coverage']['active_discovery_complete'])
+            self.assertEqual(more['coverage']['active_candidates_examined'],0)
+            self.assertNotEqual(more['rows'][0]['facet_id'],page['rows'][0]['facet_id'])
+        # The subject path follows discovery with its own continuation mode.
+        state=self.reader.read_state(**kwargs)
+        for _ in range(10):
+            self.assertLessEqual(state['io_work']['metadata_candidates_examined'],1000)
+            if state['coverage']['active_discovery_complete']:break
+            self.assertFalse(state['rows']);state=self.reader.read_state(snapshot=state['snapshot'],cursor=state['next_cursor'],**kwargs)
+        self.assertTrue(state['coverage']['active_discovery_complete'])
+        self.assertEqual(bool(state['rows']),late_active)
+    def test_exact_carry_in_detail_and_older_filtered_terminal_negatives(self):
+        from herzchen.kernel.project_history import AuthorizationError
+        with patch('herzchen.kernel.store._now',return_value='2026-10-01T00:00:00Z'):
+            task=self.graph.create_task(self.project.ref,title='carry-detail',logical_request_key='carry-detail')
+            task=self.graph.revise(task,lifecycle='active',logical_request_key='carry-detail-active')
+            closed=self.graph.create_task(self.project.ref,title='closed-detail',logical_request_key='closed-detail')
+            closed=self.graph.revise(closed,lifecycle='completed',logical_request_key='closed-detail-end')
+        kw=dict(projects=[self.project.ref],from_at='2026-10-03T00:00:00Z',to_at='2026-10-05T00:00:00Z')
+        page=self.reader.read_state(**kw);carry=next(x for x in page['rows'] if x['subject_ref']['id']==task.id)
+        detail=self.reader.detail(carry['facet_id'],snapshot=page['snapshot']);self.assertEqual(detail['facet_id'],carry['facet_id'])
+        older=self.store.connection.execute('SELECT facet_id FROM project_history WHERE subject_id=? AND facet_id<>? ORDER BY recorded_at LIMIT 1',(task.id,carry['facet_id'])).fetchone()[0]
+        terminal=self.store.connection.execute('SELECT facet_id FROM project_history WHERE subject_id=? ORDER BY source_append_position DESC LIMIT 1',(closed.id,)).fetchone()[0]
+        for facet in (older,terminal):
+            with self.assertRaises(AuthorizationError):self.reader.detail(facet,snapshot=page['snapshot'])
+        filtered=self.reader.read_state(filters={'facet_type':'never'},**kw)
+        with self.assertRaises(AuthorizationError):self.reader.detail(carry['facet_id'],snapshot=filtered['snapshot'])
+        with patch('herzchen.kernel.store._now',return_value='2026-10-04T00:00:00Z'):
+            self.graph.revise(task,lifecycle='completed',logical_request_key='carry-detail-late')
+        self.assertEqual(self.reader.detail(carry['facet_id'],snapshot=page['snapshot'])['facet_id'],carry['facet_id'])
+        current=self.reader.read_state(**kw)
+        with self.assertRaises(AuthorizationError):self.reader.detail(carry['facet_id'],snapshot=current['snapshot'])
+
 class ManifestCorrectionTests(unittest.TestCase):
     setUp=_HistoryFixture.setUp
     evidence=_HistoryFixture.evidence
