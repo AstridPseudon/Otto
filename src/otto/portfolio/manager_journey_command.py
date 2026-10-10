@@ -772,19 +772,25 @@ class ManagerJourneyCommands:
             actual = {task.id for task in tasks}
             if not required.issubset(actual):
                 raise PermissionError("project closeout is missing an original required task")
+            reader = self.owner.store.consumer()
+            project_executors = tuple(ref for role in ("worker", "executor")
+                for ref in reader.find_identity_refs(kind="wrk.assignment", payload_matches={
+                    ("scope", "authority"): project.ref.authority,
+                    ("scope", "kind"): project.ref.kind, ("scope", "id"): project.ref.id,
+                    ("role",): role}))
             for task in withdrawn:
                 current = self.owner.graph.reader.get_identity(
                     ResourceRef(task.ref.authority, task.ref.kind, task.id))
                 parent = task.payload.get("project_ref") or {}
-                used = self.owner.store.consumer().find_identity_refs(kind="wrk.assignment", payload_matches={
+                used = reader.find_identity_refs(kind="wrk.assignment", payload_matches={
                     ("scope", "authority"): task.ref.authority,
                     ("scope", "kind"): task.ref.kind, ("scope", "id"): task.id})
                 if (task.id in required or current is None or current.ref != task.ref
                         or task.ref.to_dict() not in pins or task.payload.get("completion")
-                        or used or (parent.get("authority"), parent.get("kind"), parent.get("id")) != (
+                        or used or project_executors or (parent.get("authority"), parent.get("kind"), parent.get("id")) != (
                             project.ref.authority, project.ref.kind, project.ref.id)):
                     return {"outcome": "held", "project_completion_recorded": False,
-                            "reason": "withdrawn task is required, used, stale or not explicitly bound unused planning history",
+                            "reason": "withdrawn task is required, used, stale or not provably bound unused planning history; project executors make task use ambiguous",
                             "task_ref": task.ref.to_dict(), "provider_called": False}
                 withdrawn_refs.append(task.ref.to_dict())
             tasks = tuple(task for task in tasks if task.lifecycle.value != "withdrawn")

@@ -304,6 +304,14 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         self.assertEqual(self.close()['outcome'],'held')
         self.assertEqual(self.application.owner.graph.reader.snapshot_counts(),before)
 
+    def test_project_scoped_executor_makes_withdrawn_planning_use_ambiguous(self):
+        planning=self.planning_task();self.complete_required()
+        self.application.owner.assignments.assign(self.application.project.ref,role='executor',principal='project-executor',
+            pins=[planning.ref],logical_request_key='project-executor')
+        before=self.application.owner.graph.reader.snapshot_counts()
+        self.assertEqual(self.close()['outcome'],'held')
+        self.assertEqual(self.application.owner.graph.reader.snapshot_counts(),before)
+
     def test_client_definitions_request_judgment_without_owner_pins_or_pool_fields(self):
         parser = argparse.ArgumentParser()
         add_manager_journey_parsers(parser.add_subparsers(dest="command", required=True))
