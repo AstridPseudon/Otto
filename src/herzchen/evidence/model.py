@@ -30,6 +30,9 @@ EVIDENCE_HOST_CONTRACT = "herzchen.evidence.host.v1"
 EVIDENCE_MANIFEST_KIND = "dat.evidence.manifest"
 EVIDENCE_MANAGED_KIND = "evidence.submission"
 EVIDENCE_STREAM_PREFIX = "evidence:"
+EVIDENCE_ALIAS_NAMESPACE = "project.evidence"
+EVIDENCE_PROJECTION_DIR = "evidence"
+EVIDENCE_CHECKOUT_SCHEMA = "dat.evidence.checkout.v1"
 
 
 class EvidenceError(ValueError):
@@ -58,6 +61,14 @@ class ChangedInputError(EvidenceError):
 
 class PublicationInterrupted(EvidenceError):
     """A deterministic publication boundary was interrupted."""
+
+
+class EvidencePathCollisionError(EvidenceError):
+    """A checkout projection or alias destination is already owned locally."""
+
+
+class EvidenceCheckinError(EvidenceError):
+    """An evidence projection check-in cannot be safely applied."""
 
 
 def _text(value: Any, field: str) -> str:
@@ -444,10 +455,10 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
 
 
 __all__ = [
-    "ChangedInputError", "EVIDENCE_DOCUMENT_ROLE", "EVIDENCE_DOMAIN_ID", "EVIDENCE_HOST_CONTRACT",
+    "ChangedInputError", "EVIDENCE_ALIAS_NAMESPACE", "EVIDENCE_CHECKOUT_SCHEMA", "EVIDENCE_DOCUMENT_ROLE", "EVIDENCE_DOMAIN_ID", "EVIDENCE_HOST_CONTRACT",
     "EVIDENCE_MANIFEST_KIND", "EVIDENCE_MANAGED_KIND", "EVIDENCE_PACK_ID", "EVIDENCE_PACK_VERSION",
-    "EVIDENCE_ROLE", "EVIDENCE_SCHEMA_REVISION", "EvidenceAccessDeniedError", "EvidenceBindingError",
-    "EvidenceError", "EvidencePackError", "EvidenceResourcePack", "EvidenceResourcePin", "EvidenceSelection",
+    "EVIDENCE_PROJECTION_DIR", "EVIDENCE_ROLE", "EVIDENCE_SCHEMA_REVISION", "EvidenceAccessDeniedError", "EvidenceBindingError",
+    "EvidenceCheckinError", "EvidenceError", "EvidencePackError", "EvidencePathCollisionError", "EvidenceResourcePack", "EvidenceResourcePin", "EvidenceSelection",
     "EvidenceUnavailableError", "PublicationInterrupted", "evidence_catalog", "load_evidence_pack",
     "validate_manifest",
 ]

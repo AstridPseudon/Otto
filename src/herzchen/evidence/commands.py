@@ -25,11 +25,16 @@ from herzchen.contracts import (
     canonical_request_digest,
 )
 from herzchen.content.model import ContentDocument, ContentRevision, revision_identity
+from herzchen.content.model import CONTENT_SCHEMA_REVISION, DocumentAssociation, document_path
+from herzchen.content.commands import ContentCommandHandler
+from herzchen.contracts import ReferenceBinding
 from herzchen.extensions.model import DefinitionCatalog
 
 from .model import (
     ChangedInputError,
     EVIDENCE_DOMAIN_ID,
+    EVIDENCE_ALIAS_NAMESPACE,
+    EVIDENCE_CHECKOUT_SCHEMA,
     EVIDENCE_DOCUMENT_ROLE,
     EVIDENCE_HOST_CONTRACT,
     EVIDENCE_MANIFEST_KIND,
@@ -38,12 +43,15 @@ from .model import (
     EVIDENCE_STREAM_PREFIX,
     EvidenceAccessDeniedError,
     EvidenceBindingError,
+    EvidenceCheckinError,
     EvidenceError,
     EvidencePackError,
+    EvidencePathCollisionError,
     EvidenceResourcePack,
     EvidenceSelection,
     EvidenceUnavailableError,
     PublicationInterrupted,
+    EVIDENCE_PROJECTION_DIR,
     load_evidence_pack,
     validate_manifest,
 )
@@ -55,6 +63,10 @@ CHECKIN_OPERATION = "dat.evidence.checkin"
 CAPTURE_EVENT = "dat.evidence.captured"
 VERSION_EVENT = "dat.evidence.versioned"
 CHECKIN_EVENT = "dat.evidence.checked-in"
+ANNOTATION_OPERATION = "dat.evidence.annotation"
+EVIDENCE_LINK_OPERATION = "dat.evidence.alias.link"
+EVIDENCE_UNLINK_OPERATION = "dat.evidence.alias.unlink"
+EVIDENCE_MOVE_OPERATION = "dat.evidence.alias.move"
 
 
 class FNDEvidenceWriter(Protocol):
@@ -200,6 +212,7 @@ class _EvidenceCommandHandlerEngine:
         project_root: Optional[str | os.PathLike[str]] = None,
         authorize: Optional[Callable[[Mapping[str, Any], AuthenticatedActor, ResourceRef], bool]] = None,
     ) -> None:
+        content_writer = writer
         if writer is not None and hasattr(writer, "domain_handler"):
             try:
                 writer = writer.domain_handler((domain_contribution(),))
@@ -207,6 +220,10 @@ class _EvidenceCommandHandlerEngine:
                 pass
         self.__writer = writer
         self.reader = None if writer is None else writer.consumer()
+        # Evidence and DAT content are separate sealed domains.  Keep the
+        # owner-issued writer for the existing content facade instead of
+        # attempting a content mutation through the Evidence handler.
+        self._content = None if content_writer is None else ContentCommandHandler(content_writer)
         self.payload_root = Path(payload_root).expanduser().resolve()
         self.payload_root.mkdir(parents=True, exist_ok=True)
         self._authorize = authorize
@@ -232,6 +249,143 @@ class _EvidenceCommandHandlerEngine:
         staging = self.payload_root / ".staging"
         staging.mkdir(parents=True, exist_ok=True)
         return staging / f"{capture_id}.payload", staging / f"{capture_id}.json"
+
+    @staticmethod
+    def _checkout_root(root: str | os.PathLike[str], *, create: bool = False) -> Path:
+        path = Path(root).expanduser()
+        if path.exists():
+            if path.is_symlink() or not path.is_dir():
+                raise EvidencePathCollisionError("evidence checkout root is not a real directory")
+        elif create:
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            raise EvidenceCheckinError("evidence checkout root does not exist")
+        return path.resolve()
+
+    @staticmethod
+    def _checkout_path(root: Path, relative: str) -> Path:
+        try:
+            relative = document_path(relative)
+        except Exception as exc:
+            raise EvidenceCheckinError("evidence checkout path is not a safe relative path") from exc
+        destination = root.joinpath(*relative.split("/"))
+        current = root
+        for part in relative.split("/"):
+            current = current / part
+            if current.is_symlink():
+                raise EvidencePathCollisionError("evidence checkout path contains a symlink")
+        resolved = destination.resolve()
+        if root not in resolved.parents:
+            raise EvidenceCheckinError("evidence checkout path escaped its root")
+        return destination
+
+    def _projection(self, root: str | os.PathLike[str], *, project_ref: Optional[ResourceRef] = None, create: bool = False) -> tuple[Path, dict[str, Any]]:
+        checkout = self._checkout_root(root, create=create)
+        projection = checkout / EVIDENCE_PROJECTION_DIR
+        if projection.exists():
+            if projection.is_symlink() or not projection.is_dir():
+                raise EvidencePathCollisionError("reserved evidence/ projection collides with an existing path")
+        elif create:
+            projection.mkdir()
+        else:
+            raise EvidenceCheckinError("reserved evidence/ projection is missing")
+        marker_path = projection / ".checkout.json"
+        if not marker_path.is_file() or marker_path.is_symlink():
+            if marker_path.exists():
+                raise EvidencePathCollisionError("evidence checkout marker collides with an existing path")
+            if create:
+                if any(projection.iterdir()):
+                    raise EvidencePathCollisionError("existing evidence/ contents are not an Evidence checkout")
+                return projection, {}
+            raise EvidenceCheckinError("evidence checkout marker is missing")
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EvidenceCheckinError("evidence checkout marker is unreadable") from exc
+        if not isinstance(marker, dict) or marker.get("schema") != EVIDENCE_CHECKOUT_SCHEMA:
+            raise EvidenceCheckinError("unsupported evidence checkout marker")
+        if project_ref is not None and marker.get("project_ref") != project_ref.to_dict():
+            raise EvidenceCheckinError("evidence checkout belongs to another project")
+        return projection, marker
+
+    def _association(self, project_ref: ResourceRef, alias: str) -> tuple[ResourceRef, Any]:
+        try:
+            alias = document_path(alias)
+        except Exception as exc:
+            raise EvidenceCheckinError("evidence alias must be a safe relative path") from exc
+        if alias.casefold() == "project.json" or alias.split("/")[0].casefold() in {".otto", EVIDENCE_PROJECTION_DIR}:
+            raise EvidencePathCollisionError("evidence alias collides with a reserved projection path")
+        association = DocumentAssociation(
+            ResourceRef(project_ref.authority, project_ref.kind, project_ref.id),
+            EVIDENCE_ALIAS_NAMESPACE,
+            alias,
+            ReferenceBinding(ResourceRef(project_ref.authority, "dat.content.document", "placeholder"), "current"),
+        )
+        target = ResourceRef(project_ref.authority, "document-association", association.identity)
+        return target, association
+
+    @staticmethod
+    def _typed_association(value: Any) -> Optional[DocumentAssociation]:
+        if isinstance(value, DocumentAssociation):
+            return value
+        if isinstance(value, Mapping):
+            try:
+                return DocumentAssociation.from_dict(value)
+            except (KeyError, TypeError, ValueError):
+                return None
+        return None
+
+    def _content_context(self, operation: str, target: ResourceRef, actor: AuthenticatedActor, key: str,
+                         payload: Mapping[str, Any], *, expected_revision: Optional[str] = None,
+                         expected_version: Optional[int] = None) -> TransactionContext:
+        context = TransactionContext(actor, key, "0" * 64, expected_revision=expected_revision, expected_version=expected_version)
+        digest = canonical_request_digest(logical_request_key=key, operation=operation,
+            schema_revision=CONTENT_SCHEMA_REVISION, target=target, actor=actor,
+            payload=payload, context=context)
+        return TransactionContext(actor, key, digest, expected_revision=expected_revision, expected_version=expected_version)
+
+    def _alias_link(self, project_ref: ResourceRef, alias: str, pinned: ResourceRef, *, actor: AuthenticatedActor,
+                    logical_request_key: str) -> Mapping[str, Any]:
+        if pinned.revision is None:
+            raise EvidenceCheckinError("evidence aliases must cite an exact revision")
+        target, association = self._association(project_ref, alias)
+        association = DocumentAssociation(association.subject, association.namespace, association.key,
+                                          ReferenceBinding(pinned, "pinned"))
+        existing = self._require_writer().get_identity(target)
+        if existing is not None and existing.payload.get("active") is True:
+            existing_assoc = self._typed_association(existing.payload.get("association"))
+            if isinstance(existing_assoc, DocumentAssociation) and existing_assoc.document.ref == pinned:
+                receipt = self._require_writer().get_receipt(logical_request_key)
+                if receipt is not None:
+                    return {"outcome": "replayed", "receipt": receipt, "association_ref": target,
+                            "alias": alias, "citation": pinned}
+            raise EvidencePathCollisionError("evidence alias already has an active citation")
+        base = None if existing is None else existing.ref.revision
+        payload = {"association": association}
+        context = self._content_context("dat.content.link", target, actor, logical_request_key, payload,
+                                         expected_revision=base, expected_version=0 if existing is None else existing.version)
+        receipt = self._content.execute(self._content.build_link(context, association))
+        return {"outcome": "linked", "receipt": receipt, "association_ref": receipt.result_ref,
+                "alias": alias, "citation": pinned}
+
+    def _alias_unlink(self, project_ref: ResourceRef, alias: str, *, actor: AuthenticatedActor,
+                      logical_request_key: str) -> Mapping[str, Any]:
+        target, _placeholder = self._association(project_ref, alias)
+        existing = self._require_writer().get_identity(target)
+        if existing is None or existing.payload.get("active") is not True:
+            receipt = self._require_writer().get_receipt(logical_request_key)
+            if receipt is not None:
+                return {"outcome": "replayed", "receipt": receipt, "association_ref": target, "alias": alias}
+            raise EvidenceCheckinError("evidence alias is not active")
+        association = self._typed_association(existing.payload.get("association"))
+        if association is None or association.document.mode != "pinned":
+            raise EvidenceCheckinError("evidence alias does not carry an exact citation pin")
+        payload = {"association": association, "preserve_document": True, "preserve_revisions": True}
+        context = self._content_context("dat.content.unlink", target, actor, logical_request_key, payload,
+                                         expected_revision=existing.ref.revision, expected_version=existing.version)
+        receipt = self._content.execute(self._content.build_unlink(context, association))
+        return {"outcome": "unlinked", "receipt": receipt, "association_ref": receipt.result_ref,
+                "alias": alias, "citation": association.document.ref, "canonical_preserved": True}
 
     def _document(self, document_ref: ResourceRef) -> Any:
         writer = self._require_writer()
@@ -633,6 +787,246 @@ class _EvidenceCommandHandlerEngine:
         if not isinstance(base_revision, str) or not base_revision.strip():
             raise EvidenceError("base_revision is required for checkin")
         return self._submit_or_version(source, actor=actor, logical_request_key=logical_request_key, project_ref=project_ref, task_ref=task_ref, attempt_ref=attempt_ref, original_creator=original_creator, maintainer=maintainer, document_id=ref.id, format=format, provenance=provenance, source_digest=source_digest, source_length=source_length, operation=CHECKIN_OPERATION, interrupt_at=interrupt_at, phase_hook=phase_hook, base_ref=ResourceRef(ref.authority, ref.kind, ref.id, base_revision))
+
+    def checkout_evidence(self, project_ref: Any, *, checkout_root: str | os.PathLike[str], actor: AuthenticatedActor,
+                          cursor: str = "", limit: int = 50, representation: Optional[str] = None,
+                          format: Optional[str] = None, task_refs: Sequence[Any] = ()) -> Mapping[str, Any]:
+        """Create/read only the lazy Evidence projection, never project.json or docs/."""
+        actor = _actor(actor)
+        project = _ref(project_ref, "project_ref")
+        origin = self._validate_origin(project, None, None)
+        projection, marker = self._projection(checkout_root, project_ref=project, create=True)
+        if not marker:
+            marker = {
+                "schema": EVIDENCE_CHECKOUT_SCHEMA,
+                "project_ref": project.to_dict(),
+                "created_by": actor.to_dict(),
+                "projection": EVIDENCE_PROJECTION_DIR + "/",
+                "read_only": True,
+                "docs_materialized": False,
+                "project_json_materialized": False,
+                "materialized": [],
+            }
+            (projection / ".checkout.json").write_text(canonical_json(marker), encoding="utf-8")
+        page = self.list_evidence(project, actor=actor, representation=representation, format=format,
+                                   cursor=cursor, limit=limit, task_refs=task_refs)
+        index = {"schema": EVIDENCE_CHECKOUT_SCHEMA, "project_ref": origin["project_ref"], "page": page}
+        (projection / ".index.json").write_text(canonical_json(index), encoding="utf-8")
+        return {"outcome": "checked_out", "projection": EVIDENCE_PROJECTION_DIR + "/",
+                "checkout_root": str(Path(checkout_root).expanduser().resolve()),
+                "manifest": marker, "index": page, "read_only": True,
+                "docs_materialized": False, "project_json_materialized": False,
+                "execution": False, "dispatch": False}
+
+    def materialize_evidence(self, reference: Any, *, checkout_root: str | os.PathLike[str], actor: AuthenticatedActor,
+                             alias: Optional[str] = None) -> Mapping[str, Any]:
+        """Copy one authorized exact pin into an Evidence checkout as a read-only file."""
+        actor = _actor(actor)
+        ref = _ref(reference, "reference")
+        status = self.status(ref, actor=actor)
+        if status.get("representation") != "managed" or status.get("availability") in {"missing", "corrupt", "purged", "staged"}:
+            raise EvidenceUnavailableError("selected Evidence payload is unavailable")
+        if ref.revision is None:
+            ref = status["reference"]
+        origin = status["manifest"].get("origin", {})
+        project_value = origin.get("project_ref")
+        project = _ref(project_value, "manifest.origin.project_ref")
+        projection, marker = self._projection(checkout_root, project_ref=project, create=False)
+        alias = alias or f"{ref.id}-{ref.revision}"
+        try:
+            alias = document_path(alias)
+        except Exception as exc:
+            raise EvidenceCheckinError("materialized Evidence alias is not a safe path") from exc
+        if alias.casefold() == "project.json" or alias.split("/")[0].casefold() in {".otto", EVIDENCE_PROJECTION_DIR}:
+            raise EvidencePathCollisionError("materialized Evidence path is reserved")
+        destination = self._checkout_path(projection, alias)
+        if destination.exists():
+            raise EvidencePathCollisionError("selected Evidence destination already exists")
+        if destination.parent != projection:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        source_path = self._rooted(status["manifest"]["storage"]["location"])
+        if not source_path.is_file():
+            raise EvidenceUnavailableError("selected Evidence payload is missing")
+        digest = hashlib.sha256()
+        length = 0
+        try:
+            with source_path.open("rb") as source, destination.open("xb") as target:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    target.write(chunk)
+                    digest.update(chunk)
+                    length += len(chunk)
+        except Exception:
+            try:
+                destination.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        manifest = status["manifest"]
+        if length != manifest["byte_length"] or digest.hexdigest() != manifest["byte_digest"]:
+            try:
+                destination.unlink()
+            except FileNotFoundError:
+                pass
+            raise EvidenceUnavailableError("materialized Evidence bytes do not match the pinned manifest")
+        destination.chmod(0o444)
+        materialized = list(marker.get("materialized", ()))
+        materialized.append({"path": str(destination.relative_to(projection)), "reference": ref.to_dict()})
+        marker["materialized"] = materialized
+        (projection / ".checkout.json").write_text(canonical_json(marker), encoding="utf-8")
+        return {"outcome": "materialized", "path": str(destination), "read_only": True,
+                "canonical_authority": "owner", "reference": ref, "manifest": dict(manifest),
+                "provenance": {"project_ref": project, "canonical_transfer": False},
+                "docs_materialized": False, "project_json_materialized": False}
+
+    def cite_evidence(self, reference: Any, *, project_ref: Any, alias: str, actor: AuthenticatedActor,
+                      logical_request_key: str) -> Mapping[str, Any]:
+        """Create a mutable alias whose association permanently names an exact pin."""
+        actor = _actor(actor)
+        project = _ref(project_ref, "project_ref")
+        self._validate_origin(project, None, None)
+        ref = _ref(reference, "reference")
+        status = self.status(ref, actor=actor)
+        pinned = status["reference"]
+        if pinned.revision is None:
+            raise EvidenceCheckinError("citation requires a resolved exact revision")
+        return self._alias_link(project, alias, pinned, actor=actor, logical_request_key=logical_request_key)
+
+    def cite(self, reference: Any, *, project_ref: Any, alias: str, actor: AuthenticatedActor,
+             logical_request_key: str) -> Mapping[str, Any]:
+        return self.cite_evidence(reference, project_ref=project_ref, alias=alias, actor=actor,
+                                  logical_request_key=logical_request_key)
+
+    def unlink_alias(self, *, project_ref: Any, alias: str, actor: AuthenticatedActor,
+                     logical_request_key: str) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        project = _ref(project_ref, "project_ref")
+        self._validate_origin(project, None, None)
+        return self._alias_unlink(project, alias, actor=actor, logical_request_key=logical_request_key)
+
+    def move_alias(self, *, project_ref: Any, from_alias: str, to_alias: str, actor: AuthenticatedActor,
+                   logical_request_key: str, interrupt_at: Optional[str] = None) -> Mapping[str, Any]:
+        """Move an alias without changing the exact pin held by the old citation."""
+        actor = _actor(actor)
+        project = _ref(project_ref, "project_ref")
+        self._validate_origin(project, None, None)
+        source_target, _placeholder = self._association(project, from_alias)
+        source = self._require_writer().get_identity(source_target)
+        if source is None or source.payload.get("active") is not True:
+            raise EvidenceCheckinError("source Evidence alias is not active")
+        association = self._typed_association(source.payload.get("association"))
+        if association is None or association.document.mode != "pinned":
+            raise EvidenceCheckinError("source Evidence alias is not pin-preserving")
+        committed: list[Mapping[str, Any]] = []
+        try:
+            link = self._alias_link(project, to_alias, association.document.ref, actor=actor,
+                                    logical_request_key=logical_request_key + ":link")
+            committed.append({"phase": "link", "receipt": link.get("receipt")})
+            if interrupt_at == "after-link":
+                return {"outcome": "partial", "from_alias": from_alias, "to_alias": to_alias,
+                        "citation": association.document.ref, "committed": committed,
+                        "pending": {"operation": "move-alias", "request_key": logical_request_key,
+                                    "from_alias": from_alias, "to_alias": to_alias},
+                        "recovery": "Resume the same logical request key to unlink the old alias.",
+                        "canonical_preserved": True}
+            unlink = self._alias_unlink(project, from_alias, actor=actor,
+                                        logical_request_key=logical_request_key + ":unlink")
+            committed.append({"phase": "unlink", "receipt": unlink.get("receipt")})
+            return {"outcome": "moved", "from_alias": from_alias, "to_alias": to_alias,
+                    "citation": association.document.ref, "committed": committed,
+                    "canonical_preserved": True}
+        except EvidencePathCollisionError:
+            raise
+        except Exception as exc:
+            return {"outcome": "partial", "from_alias": from_alias, "to_alias": to_alias,
+                    "citation": association.document.ref, "committed": committed,
+                    "pending": {"operation": "move-alias", "request_key": logical_request_key,
+                                "from_alias": from_alias, "to_alias": to_alias},
+                    "error": {"code": type(exc).__name__, "message": str(exc)},
+                    "recovery": "Inspect child receipts and resume the same logical request key.",
+                    "canonical_preserved": True}
+
+    def annotate(self, document_ref: Any, annotation: Mapping[str, Any], *, actor: AuthenticatedActor,
+                 logical_request_key: str, base_revision: Optional[str] = None) -> Mapping[str, Any]:
+        """Append a separately versioned annotation while freezing capture facts and bytes."""
+        actor = _actor(actor)
+        if not isinstance(annotation, Mapping) or not annotation:
+            raise EvidenceCheckinError("annotation must be a non-empty object")
+        if set(annotation).intersection({"byte_digest", "byte_length", "format", "storage", "capture", "origin", "resource_selection"}):
+            raise EvidenceCheckinError("annotation cannot overwrite immutable Evidence provenance")
+        if len(canonical_json(annotation).encode("utf-8")) > 8192:
+            raise EvidenceCheckinError("annotation exceeds its bounded metadata limit")
+        ref = _ref(document_ref, "document_ref")
+        status = self.status(ref, actor=actor)
+        if status.get("representation") != "managed":
+            raise EvidenceCheckinError("annotations require managed Evidence")
+        current = self._document(ResourceRef(ref.authority, ref.kind, ref.id))
+        if current is None:
+            raise EvidenceUnavailableError("Evidence document is unavailable")
+        current_ref = ResourceRef.from_dict(current.payload["current_revision"])
+        if base_revision is not None and base_revision != current_ref.revision:
+            raise EvidenceCheckinError("annotation base revision is stale")
+        writer = self._require_writer()
+        prior = writer.get_receipt(logical_request_key)
+        if prior is not None:
+            record = writer.get_identity(prior.result_ref) if prior.result_ref is not None else None
+            manifest = {} if record is None else record.payload.get("content", {})
+            return self._result(prior, document_ref=ResourceRef(ref.authority, ref.kind, ref.id),
+                                manifest=manifest, operation=ANNOTATION_OPERATION, replayed=True)
+        revision_record = writer.get_identity(revision_identity(ResourceRef(ref.authority, ref.kind, ref.id), current_ref.revision))
+        if revision_record is None or not isinstance(revision_record.payload.get("content"), Mapping):
+            raise EvidenceUnavailableError("current Evidence revision is unavailable")
+        manifest = dict(revision_record.payload["content"])
+        annotations = list(manifest.get("annotations", ()))
+        annotations.append({"id": hashlib.sha256((logical_request_key + actor.actor).encode("utf-8")).hexdigest()[:24],
+                            "author": actor.to_dict(), "created_at": _now(), "value": _safe(annotation)})
+        manifest["annotations"] = annotations
+        self._validate_admission(manifest, operation=CHECKIN_OPERATION)
+        document = ContentDocument.from_dict(current.payload["document"])
+        revision = ContentRevision(document.ref, f"rev-{int(current_ref.revision.split('-')[1]) + 1}", manifest,
+                                   actor, parent_revision=current_ref.revision)
+        receipt = self._persist(operation=CHECKIN_OPERATION, event_type=CHECKIN_EVENT, document=document,
+                                revision=revision, key=logical_request_key, actor=actor, manifest=manifest,
+                                current=current)
+        return self._result(receipt, document_ref=document.ref, manifest=manifest,
+                            operation=ANNOTATION_OPERATION)
+
+    def checkin_evidence(self, *, action: str, actor: AuthenticatedActor, logical_request_key: str,
+                         project_ref: Any, document_ref: Any = None, source: Any = None,
+                         base_revision: Optional[str] = None, annotation: Optional[Mapping[str, Any]] = None,
+                         alias: Optional[str] = None, from_alias: Optional[str] = None,
+                         to_alias: Optional[str] = None, **kwargs: Any) -> Mapping[str, Any]:
+        """Finite dispatcher for projection check-in actions; no action is inferred from local files."""
+        action = action.replace("_", "-").lower() if isinstance(action, str) else ""
+        if action in {"submit", "new-version", "version"}:
+            if source is None:
+                raise EvidenceCheckinError("submit/version check-in requires explicit source bytes")
+            if action == "submit":
+                return self.submit(source, actor=actor, logical_request_key=logical_request_key,
+                                   project_ref=project_ref, **kwargs)
+            if document_ref is None or base_revision is None:
+                raise EvidenceCheckinError("new-version check-in requires document_ref and base_revision")
+            current = self._document(_ref(document_ref, "document_ref"))
+            if current is None or ResourceRef.from_dict(current.payload["current_revision"]).revision != base_revision:
+                raise EvidenceCheckinError("new-version check-in base revision is stale")
+            return self.version(document_ref, source, actor=actor, logical_request_key=logical_request_key,
+                                project_ref=project_ref, **kwargs)
+        if action == "annotation":
+            if document_ref is None or annotation is None:
+                raise EvidenceCheckinError("annotation check-in requires document_ref and annotation")
+            return self.annotate(document_ref, annotation, actor=actor, logical_request_key=logical_request_key,
+                                 base_revision=base_revision)
+        if action in {"alias-move", "move-alias"}:
+            if from_alias is None or to_alias is None:
+                raise EvidenceCheckinError("alias move requires from_alias and to_alias")
+            return self.move_alias(project_ref=project_ref, from_alias=from_alias, to_alias=to_alias,
+                                   actor=actor, logical_request_key=logical_request_key,
+                                   interrupt_at=kwargs.get("interrupt_at"))
+        if action in {"unlink", "alias-unlink", "unlink-alias"}:
+            if alias is None:
+                raise EvidenceCheckinError("unlink requires alias")
+            return self.unlink_alias(project_ref=project_ref, alias=alias, actor=actor,
+                                     logical_request_key=logical_request_key)
+        raise EvidenceCheckinError("unsupported Evidence check-in action")
 
     def status(self, reference: Any, *, actor: AuthenticatedActor, roles=(), scopes=()) -> Mapping[str, Any]:
         from herzchen.content.reads import document_metadata
