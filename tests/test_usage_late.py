@@ -41,7 +41,7 @@ class LateUsageTests(unittest.TestCase):
         from herzchen.command_ports import close_consumer_facade
         self.addCleanup(lambda: close_consumer_facade(self.port.transport))
 
-    def original(self, adapter, *, phase='work', metrics=None, anchor=None, source_only=False):
+    def original(self, adapter, *, phase='work', metrics=None, anchor=None, source_only=False, verified_model=None, context_verified=False, result_turn='turn'):
         metrics = {'input_tokens': 10, 'output_tokens': 2} if metrics is None else metrics
         events = native(adapter, metrics)
         line = json.dumps(events[-1])
@@ -60,7 +60,8 @@ class LateUsageTests(unittest.TestCase):
             'physical_session_id': 'session', 'delivery_admission': {'physical_session_id': 'session',
                 'observed_turn_id': 'turn', 'observed_at': '2026-10-05T10:00:00Z'},
             'usage_observations': [observation] if anchor or phase == 'initializer' else [],
-            'result': {'outcome': 'unknown', 'retry_allowed': False, 'raw_result': {'immutable': 'native'}}}}
+            'result': {'outcome': 'unknown', 'retry_allowed': False, 'raw_result': {'immutable': 'native'},
+                'context_digest_verified':context_verified,'observed_model':verified_model,'observed_turn_id':result_turn}}}
         saved = self.port.save_due('schedule', value, request_id='original-due', expected_version=0)
         self.source_ref = ResourceRef('owner','otto.due-record','schedule','rev-1')
         self.source_line = line
@@ -254,6 +255,18 @@ class LateUsageTests(unittest.TestCase):
             authorized_projects=[self.project.ref.to_dict(),project.ref.to_dict()])
         self.assertEqual(combined['metrics']['input_tokens'],10)
         self.assertEqual(combined['groups']['project'],[])
+        from otto.portfolio.observability_views import ObservabilityViews
+        self.store.project_history_projection().maintain(limit=1000)
+        grant=ProjectHistoryGrant(self.actor,(self.project.id,),'public','v1')
+        reader=ProjectHistoryReader(self.store,grant=grant);views=ObservabilityViews(reader)
+        single=views.read('usage',projects=[self.project.ref],limit=50)
+        self.assertEqual(single['usage']['accounting']['coverage']['limited'],1)
+        self.assertIsNone(single['usage']['accounting']['metrics']);self.assertNotIn(project.id,json.dumps(single))
+        self.assertNotIn('"input_tokens": 10',json.dumps(single))
+        reader.grant=ProjectHistoryGrant(self.actor,(self.project.id,project.id),'public','v2')
+        combined=views.read('usage',projects=[self.project.ref,project.ref],limit=50)
+        self.assertEqual(combined['usage']['accounting']['metrics']['input_tokens'],10)
+        self.assertEqual(combined['usage']['accounting']['groups']['project'],[])
 
     def test_imported_task_without_birth_event_uses_exact_admission_project(self):
         # Imported package identities predate a separate per-task event; the
@@ -308,6 +321,46 @@ class LateUsageTests(unittest.TestCase):
         usage = [r for r in new['rows'] if r['summary']['after']['fields'].get('usage_fact')]
         self.assertEqual(len(usage), 1)
         self.assertEqual(usage[0]['summary']['after']['fields']['usage_fact']['first_qualified_recorded_at'], retained['first_qualified_recorded_at'])
+
+    def test_observed_model_requires_verified_same_work_turn_never_initializer(self):
+        for phase,verified,turn,expected in (('work',True,'turn','gpt-5.6-luna'),('work',False,'turn',None),('work',True,'other',None),('initializer',True,'turn',None)):
+            with self.subTest(phase=phase,verified=verified,turn=turn):
+                if hasattr(self,'source_ref'):self.doCleanups();self.setUp()
+                self.original('codex-host',phase=phase,anchor='2026-10-05T10:00:00Z',verified_model='gpt-5.6-luna',context_verified=verified,result_turn=turn)
+                retained=self.append('codex-host',phase=phase)
+                self.assertEqual(retained['observation']['observed']['model'],expected)
+                self.assertEqual(self.port.read_due('schedule'),self.original_value)
+
+    def test_public_usage_and_detail_fold_late_facts_at_original_anchor(self):
+        from otto.portfolio.observability_views import ObservabilityViews
+        self.original('codex-host',anchor='2026-10-05T10:00:00Z',verified_model='gpt-5.6-luna',context_verified=True)
+        projection=self.store.project_history_projection();projection.maintain(limit=1000)
+        grant=ProjectHistoryGrant(self.actor,(self.project.id,),'public','v1');reader=ProjectHistoryReader(self.store,grant=grant);views=ObservabilityViews(reader)
+        args={'projects':[self.project.ref],'from_at':'2026-10-05T00:00:00Z','to_at':'2026-10-06T00:00:00Z','limit':50}
+        old=views.read('usage',**args);retained=self.append('codex-host');projection.maintain(limit=1000)
+        preserved=views.read('usage',snapshot=old['snapshot'],**args);self.assertEqual(preserved['snapshot'],old['snapshot']);self.assertEqual(preserved['rows'],old['rows']);self.assertNotIn('accounting',preserved['usage'])
+        new=views.read('usage',**args);accounting=new['usage']['accounting'];self.assertEqual(accounting['metrics']['input_tokens'],10)
+        self.assertEqual(accounting['pricing']['status'],'estimated');self.assertEqual(accounting['coverage']['totals'],'exact-window')
+        span=accounting['spans'][0];self.assertEqual(span['first_qualified_recorded_at'],'2026-10-05T10:00:00Z');self.assertEqual(span['provider_reported_money']['status'],'missing')
+        row=next(r for r in new['rows']if r['subject_ref']==retained['ref']);detail=views.detail(row['facet_id'],snapshot=new['snapshot'],projects=[self.project.ref.to_dict()]);self.assertEqual(detail['usage']['pricing']['status'],'estimated')
+        timeline=views.read('timeline',projects=[self.project.ref],from_at='2026-10-05T00:00:00Z',to_at='2026-10-06T00:00:00Z');self.assertFalse(any(r['subject_ref']==retained['ref']for r in timeline['rows']))
+        with self.assertRaises(Exception):views.read('timeline',snapshot=new['snapshot'],**args)
+        # A changed grant cannot reuse a formerly authorized snapshot.
+        reader.grant=ProjectHistoryGrant(self.actor,('foreign-project',),'public','v2')
+        from herzchen.kernel.project_history import AuthorizationError
+        with self.assertRaises(AuthorizationError):views.read('usage',snapshot=new['snapshot'],**args)
+
+    def test_public_partial_correction_page_never_invents_new_span_total(self):
+        from otto.portfolio.observability_views import ObservabilityViews
+        self.original('codex-host',anchor='2026-10-05T10:00:00Z',verified_model='gpt-5.6-luna',context_verified=True)
+        first=self.append('codex-host')
+        correction_source=self.bodies.retain(json.dumps(native('codex-host',{'input_tokens':20,'output_tokens':2})[-1]),project_ref=self.project.ref,task_ref=self.task.ref.to_dict(),attempt_ref=self.old.ref.to_dict())
+        second=self.append('codex-host',key='corrected',source=correction_source,supersedes=first['ref']);self.store.project_history_projection().maintain(limit=1000)
+        reader=ProjectHistoryReader(self.store,grant=ProjectHistoryGrant(self.actor,(self.project.id,),'public','v1'));views=ObservabilityViews(reader)
+        args={'projects':[self.project.ref],'from_at':'2026-10-05T00:00:00Z','to_at':'2026-10-06T00:00:00Z','limit':1}
+        page=views.read('usage',**args);self.assertEqual(page['usage']['accounting']['coverage']['totals'],'page-only');self.assertEqual(page['usage']['accounting']['metrics']['input_tokens'],10)
+        nextpage=views.read('usage',snapshot=page['snapshot'],cursor=page['continuation']['next_cursor'],**args);self.assertIsNone(nextpage['usage']['accounting']['metrics']);self.assertEqual(nextpage['usage']['accounting']['coverage']['totals'],'unavailable')
+        complete=views.read('usage',**{**args,'limit':50});self.assertEqual(complete['usage']['accounting']['metrics']['input_tokens'],20);self.assertEqual(complete['usage']['accounting']['coverage']['totals'],'exact-window')
 
 
 if __name__ == '__main__': unittest.main()

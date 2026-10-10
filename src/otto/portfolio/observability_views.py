@@ -143,6 +143,16 @@ def _usage_row(row: Mapping[str, Any]) -> dict[str, Any]:
     usage = summary.get("usage") or fields.get("usage")
     accounting = (summary.get("usage_accounting") or fields.get("usage_accounting")
                   or summary.get("accounting") or fields.get("accounting"))
+    span = row.get('qualified_usage_span')
+    if isinstance(span,Mapping):
+        usage={'state':'qualified' if span.get('metrics') is not None else 'unavailable','metrics':span.get('metrics')}
+        accounting={'pricing':span.get('price_estimate'),'provider_reported':span.get('provider_reported_money'),'attribution':span.get('attribution')}
+        for name in ('identity','first_qualified_recorded_at','execution_time','consumption_time','observed','model_tier_coverage','evidence_refs','state'):
+            value[name]=_json_value(span.get(name))
+    fact=fields.get('usage_fact')
+    if isinstance(fact,Mapping) and fact.get('schema')=='otto.usage-retained-fact.v1':
+        value['first_qualified_recorded_at']=fact.get('first_qualified_recorded_at')
+        value['supersedes_ref']=_json_value(fact.get('supersedes_ref'))
     if isinstance(usage, Mapping):
         # Only retain explicitly qualified observations.  No totals, prices,
         # zero values, or accounting fields are derived here.
@@ -169,6 +179,39 @@ def _usage_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "raw": "bounded-or-resolvable" if row.get("detail_locator") is not None else "unavailable",
     }
     return value
+
+
+def _fold_retained_usage(rows, result, *, complete=False):
+    """Connect bounded admitted Events metadata to the existing pure fold."""
+    from otto.agents.usage_accounting import account_usage, FACT_SCHEMA
+    facts={}
+    for row in rows:
+        fact=_mapping(_mapping(_mapping(row.get('summary')).get('after')).get('fields')).get('usage_fact')
+        if not isinstance(fact,Mapping) or fact.get('schema')!=FACT_SCHEMA:continue
+        ref=row.get('subject_ref');pos=row.get('source_append_position')
+        if not isinstance(ref,Mapping) or type(pos) is not int:continue
+        item={**_json_value(fact),'ref':_json_value(ref),'append_position':pos,'recorded_at':row.get('recorded_at')}
+        item['shared_scope_count']=max(item.get('shared_scope_count',1),row.get('usage_shared_scope_count',1))
+        facts[(ref.get('authority'),ref.get('kind'),ref.get('id'),ref.get('revision'))]=item
+    if not facts:return None,list(rows)
+    snapshot=_mapping(result.get('snapshot'));scope=_mapping(snapshot.get('scope'))
+    projects=result.get('projects') or [{'authority':p[0],'kind':'work.project','id':p[1]}for p in scope.get('projects',())]
+    try:
+        accounting=account_usage(list(facts.values()),as_of=snapshot['boundary'],authorized_projects=projects,complete=complete)
+    except ValueError as exc:
+        # A bounded page can omit a correction predecessor. Never price it as
+        # an independent new span or manufacture a complete-window total.
+        accounting={'schema':'otto.usage-accounting.v1','metrics':None,'spans':[],'coverage':{'totals':'unavailable','reason':str(exc),'unknown_is_zero':False},'pricing':{'status':'unavailable','amount':None},'provider_reported':{'status':'unavailable','amount':None}}
+    spans={s['span_id']:s for s in accounting['spans']}
+    shaped=[]
+    for row in rows:
+        value=_json_value(row);fields=_mapping(_mapping(_mapping(value.get('summary')).get('after')).get('fields'));fact=fields.get('usage_fact')
+        if isinstance(fact,Mapping) and fact.get('schema')==FACT_SCHEMA:
+            span=spans.get(_mapping(_mapping(fact.get('observation')).get('identity')).get('span_id'))
+            if span is not None:value['qualified_usage_span']=span
+            else:fields['usage_fact']={'schema':FACT_SCHEMA,'state':'withheld-or-unavailable','reason':'bounded qualification or shared project scope incomplete'}
+        shaped.append(value)
+    return accounting,shaped
 
 
 def _usage_coverage(rows: Sequence[Mapping[str, Any]], result: Mapping[str, Any]) -> dict[str, Any]:
@@ -252,15 +295,18 @@ class ObservabilityViews:
                 result = self.reader.read_state(cursor=cursor,**common)
                 state_result = result
         else:
-            result = self.reader.read(cursor=cursor,**common)
+            read = getattr(self.reader,'read_usage',None) if view=='usage' else None
+            result = (read if callable(read) else self.reader.read)(cursor=cursor,**common)
         if not isinstance(result, Mapping):
             raise ObservabilityViewError("Events reader returned no bounded response")
         source_rows = [row for row in result.get("rows", ()) if isinstance(row, Mapping)]
         if view == "usage":
+            accounting,source_rows=_fold_retained_usage(source_rows,result,complete=cursor is None and result.get('next_cursor') is None and not result.get('partial',False) and not filters and active_during is None)
             value = _envelope(view, result, source_rows)
             attempt_rows = [row for row in source_rows
                             if row.get("facet_type") == "retained_attempt_or_result"
-                            or isinstance(_mapping(row.get("summary")).get("usage"), Mapping)]
+                            or isinstance(_mapping(row.get("summary")).get("usage"), Mapping)
+                            or isinstance(_mapping(_mapping(_mapping(row.get('summary')).get('after')).get('fields')).get('usage_fact'),Mapping)]
             usage_rows = [_usage_row(row) for row in attempt_rows]
             value["usage"] = {
                 "known_attempts": usage_rows,
@@ -276,6 +322,12 @@ class ObservabilityViews:
                     "reported_and_estimated_are_separate": True,
                 },
             }
+            if accounting is not None:
+                value['usage']['accounting']=accounting
+                value['usage']['coverage'].update(accounting.get('coverage',{}))
+                value['usage']['period_basis']='first-qualified-usage; append knowledge remains Timeline recorded_at'
+                value['usage']['monetary']['provider_reported']=[s.get('provider_reported_money')for s in accounting['spans']]
+                value['usage']['monetary']['price_estimates']=[s.get('price_estimate')for s in accounting['spans']]
             return value
         value = _envelope(view, result, source_rows)
         if state_result is not None:
@@ -357,7 +409,9 @@ class ObservabilityViews:
         if not isinstance(result, Mapping):
             raise ObservabilityViewError("Events reader returned no bounded detail")
         summary = _mapping(result.get("summary"))
-        usage = _usage_row({"summary": summary, "detail": result.get("detail")})
+        _,shaped=_fold_retained_usage([result],{'snapshot':snapshot})
+        summary=_mapping(shaped[0].get('summary'))
+        usage = _usage_row(shaped[0])
         return {
             "outcome": "read",
             "schema": "otto.events.operator-detail.v1",

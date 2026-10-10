@@ -64,10 +64,11 @@ def _source(writer, ref):
         selectors = [(k, '$.record.' + v) for k, v in paths.items() if k != "attempt"]
         selectors += [(k, '$.record.' + paths['attempt'] + '.' + k) for k in attempt_fields]
         selectors += [(k, '$.record.' + paths['attempt'] + '.result.' + k) for k in (
-            "requested_model", "requested_tier", "observed_model", "observed_tier")]
+            "requested_model", "requested_tier", "observed_model", "observed_tier", "context_digest_verified", "observed_turn_id")]
         sql = "SELECT " + ','.join("json_extract(effects_json,?)" for _ in selectors) + " FROM events WHERE event_id=?"
         data = writer.connection.execute(sql, tuple(p for _, p in selectors) + (row[0],)).fetchone()
         result = _selected_values([k for k, _ in selectors], data)
+        result['context_digest_verified'] = writer.connection.execute("SELECT json_type(effects_json,'$.record.host_evidence.gateway_attempt.result.context_digest_verified') FROM events WHERE event_id=?",(row[0],)).fetchone()[0] == 'true'
         # The attempt binding must match the top-level admitted Due identity.
         header = writer.connection.execute(
             "SELECT json_extract(effects_json,'$.record.assignment_ref'),json_extract(effects_json,'$.record.generation') "
@@ -235,7 +236,6 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
         stream = UsageStream(adapter_id, phase=phase, session_id=session_id,
             requested_model=original.get("requested_model"), requested_tier=original.get("requested_tier"),
             turn_resolver=lambda _: turn_id)
-        stream.observed_model = original.get("observed_model")
         # Claude needs its separately verified admitted turn binding; parsing
         # this selected completion does not pretend to be a full live stream.
         stream.turn_id = turn_id
@@ -262,6 +262,16 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
             raise WorkValidationError("selected completion identity differs from requested physical span")
         prior_observations = original.get("usage_observations") or []
         matched = [o for o in prior_observations if o.get("identity") == identity and o.get("phase") == phase]
+        if (phase == 'work' and not observation['observed'].get('model')
+                and original.get('context_digest_verified') is True
+                and original.get('physical_session_id') == session_id
+                and original.get('observed_turn_id') == turn_id
+                and original.get('delivery_admission',{}).get('physical_session_id') == session_id
+                and original.get('delivery_admission',{}).get('observed_turn_id') == turn_id):
+            # Completion lines may omit the model. Use only the original
+            # owner-verified work turn's observed model, never requested/current
+            # configuration or initializer identity.
+            observation['observed']['model'] = original.get('observed_model')
         if not observation["observed"].get("tier"):
             observation["observed"]["tier"] = original.get("observed_tier")
         for model_field in ("model", "tier"):

@@ -667,16 +667,30 @@ class ProjectHistoryReader:
         if projects:
             where.append("(" + " OR ".join("(project_authority=? AND project_id=?)" for _ in projects) + ")")
             for project in projects: args.extend(project)
-        if from_at is not None:
+        usage_period = snapshot["scope"].get("time_basis") == "first-qualified-usage"
+        if from_at is not None and not usage_period:
             where.append("recorded_at>=?"); args.append(from_at)
-        if to_at is not None:
+        if to_at is not None and not usage_period:
             where.append("recorded_at<?"); args.append(to_at)
         if after is not None:
             where.append("(recorded_at,source_append_position,facet_index,facet_id)>(?,?,?,?)"); args.extend(after)
-        rows = self.connection.execute("SELECT generation,facet_id,source_event_id,facet_index,source_append_position,stream,stream_sequence,project_authority,project_id,subject_authority,subject_kind,subject_id,subject_revision,recorded_at,occurred_at,facet_type,role,outcome FROM project_history WHERE " + " AND ".join(where) + " ORDER BY recorded_at,source_append_position,facet_index,facet_id LIMIT ?", (*args, max_candidates)).fetchall()
+        anchor = ",json_extract(summary_json,'$.after.fields.usage_fact.first_qualified_recorded_at')" if usage_period else ""
+        rows = self.connection.execute("SELECT generation,facet_id,source_event_id,facet_index,source_append_position,stream,stream_sequence,project_authority,project_id,subject_authority,subject_kind,subject_id,subject_revision,recorded_at,occurred_at,facet_type,role,outcome" + anchor + " FROM project_history WHERE " + " AND ".join(where) + " ORDER BY recorded_at,source_append_position,facet_index,facet_id LIMIT ?", (*args, max_candidates)).fetchall()
         return rows, len(rows)
 
-    def read(self, *, projects: Optional[Sequence[Any]] = None, from_at: Any = None, to_at: Any = None, timezone_name: Optional[str] = None, active_during: Optional[Sequence[Any]] = None, limit: int = 50, cursor: Optional[str] = None, snapshot: Optional[Mapping[str, Any]] = None, grant: Any = None, actor: Any = None, filters: Optional[Mapping[str, Any]] = None, _state_validation: bool = False) -> dict[str, Any]:
+    def read_usage(self, **kwargs) -> dict[str, Any]:
+        """Bounded source-backed facts by spend anchor; Timeline keeps append time."""
+        return self.read(**kwargs, _usage_period=True)
+
+    def _usage_scope_count(self, stream, snapshot):
+        # Count scope without returning another project's IDs or payloads.
+        if not isinstance(stream,str) or not stream.startswith('usage:'):
+            return 1
+        # Reuse the authoritative stream index and projection source-position
+        # index; do not scan global projection summaries for each page row.
+        return self.connection.execute("SELECT COUNT(DISTINCT h.project_authority||':'||h.project_id) FROM events e JOIN project_history h ON h.source_append_position=e.append_position AND h.generation=? WHERE e.store_authority=? AND e.stream=? AND e.append_position<=?", (snapshot['generation'],self.store.authority,stream,snapshot['boundary'])).fetchone()[0]
+
+    def read(self, *, projects: Optional[Sequence[Any]] = None, from_at: Any = None, to_at: Any = None, timezone_name: Optional[str] = None, active_during: Optional[Sequence[Any]] = None, limit: int = 50, cursor: Optional[str] = None, snapshot: Optional[Mapping[str, Any]] = None, grant: Any = None, actor: Any = None, filters: Optional[Mapping[str, Any]] = None, _state_validation: bool = False, _usage_period: bool = False) -> dict[str, Any]:
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ProjectHistoryError("limit must be between 1 and 200")
         grant = self._current_grant(grant)
@@ -711,6 +725,9 @@ class ProjectHistoryReader:
         generation = int(metadata.get("history_generation", "1"))
         boundary = int(metadata.get("history_checkpoint", "0"))
         expected = self._snapshot(grant_revision=grant_revision, projects=scope, from_at=None if normalized_range is None else normalized_range[0], to_at=None if normalized_range is None else normalized_range[1], active=normalized_active, filters=filters, generation=generation, boundary=boundary)
+        if _usage_period:
+            expected['scope']['time_basis']='first-qualified-usage'
+            expected['snapshot_digest']=_digest({k:v for k,v in expected.items()if k!='snapshot_digest'})
         expected["schema"] = SCHEMA
         if snapshot is not None:
             self._validate_snapshot(snapshot, expected)
@@ -729,6 +746,12 @@ class ProjectHistoryReader:
         if _state_validation: metadata_budget = min(metadata_budget,1)
         rows, examined = self._query_rows(snapshot=expected, projects=scope, limit=limit, after=after, from_at=query_from, to_at=query_to, filters=filters,max_candidates=metadata_budget) if discovery_complete and metadata_budget else ([], 0)
         def matches(row: sqlite3.Row) -> bool:
+            if _usage_period and normalized_range is not None:
+                anchor = row[18] or row[13]
+                try:instant = _iso_datetime(anchor,field='usage anchor')
+                except ProjectHistoryError:return False
+                if not (_iso_datetime(normalized_range[0],field='from') <= instant < _iso_datetime(normalized_range[1],field='to')):
+                    return False
             return ((normalized_active is None or (row[7], row[8]) in active_set)
                     and (filters.get("role") is None or row[16] == filters["role"])
                     and (filters.get("outcome") is None or row[17] == filters["outcome"])
@@ -746,6 +769,8 @@ class ProjectHistoryReader:
             detail_hydrated += len(detail_raw.encode())
             candidate_bytes += sum(len(str(row[index]).encode()) for index in (1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17) if row[index] is not None)
             result_rows.append({"generation": row[0], "facet_id": row[1], "source_event_id": row[2], "facet_index": row[3], "source_append_position": row[4], "stream": row[5], "stream_sequence": row[6], "project_ref": None if row[7] is None else {"authority": row[7], "kind": "work.project", "id": row[8]}, "subject_ref": {"authority": row[9], "kind": row[10], "id": row[11], "revision": row[12]}, "recorded_at": row[13], "occurred_at": row[14], "facet_type": row[15], "role": row[16], "outcome": row[17], "summary": summary, "detail": detail})
+            if summary.get('after',{}).get('fields',{}).get('usage_fact'):
+                result_rows[-1]['usage_shared_scope_count']=self._usage_scope_count(row[5],expected)
         has_more = len(matching) > limit or len(rows) == metadata_budget
         cursor_row = selected[-1] if len(matching) > limit else (rows[-1] if rows else None)
         next_cursor = self._encode_cursor(expected, [cursor_row[13], cursor_row[4], cursor_row[3], cursor_row[1]]) if cursor_row is not None and has_more else None
@@ -874,9 +899,15 @@ class ProjectHistoryReader:
         if not isinstance(scope, Mapping):
             raise SnapshotRefreshRequired("snapshot scope is malformed")
         from_at, to_at = scope.get("from"), scope.get("to")
-        if (from_at is None) != (to_at is None) or (to_at is not None and row[2] >= to_at):
+        usage_period = scope.get('time_basis') == 'first-qualified-usage'
+        selected_time=row[2]
+        if usage_period:
+            selected_time=json.loads(row[7]).get('after',{}).get('fields',{}).get('usage_fact',{}).get('first_qualified_recorded_at') or selected_time
+        if (from_at is None) != (to_at is None) or (to_at is not None and _iso_datetime(selected_time,field='selected time') >= _iso_datetime(to_at,field='to')):
             raise AuthorizationError("selected history detail is outside the snapshot range")
-        if from_at is not None and row[2] < from_at:
+        if from_at is not None and usage_period and _iso_datetime(selected_time,field='selected time') < _iso_datetime(from_at,field='from'):
+            raise AuthorizationError('selected usage detail is outside the spend period')
+        if from_at is not None and not usage_period and row[2] < from_at:
             subject = self.connection.execute("SELECT subject_authority,subject_kind,subject_id FROM project_history WHERE generation=? AND facet_id=?", (snapshot["generation"],facet_id)).fetchone()
             latest = self.connection.execute(
                 "SELECT facet_id FROM project_history WHERE generation=? AND project_authority=? AND project_id=? AND subject_authority=? AND subject_kind=? AND subject_id=? AND source_append_position<=? AND recorded_at<? ORDER BY recorded_at DESC,source_append_position DESC,facet_index DESC,facet_id DESC LIMIT 1",
@@ -918,7 +949,8 @@ class ProjectHistoryReader:
                     evidence = self.evidence_reader.read_evidence(ref, actor=principal, offset=0, max_bytes=max_bytes)
                 except TypeError:
                     evidence = self.evidence_reader.read_evidence(ref, offset=0, max_bytes=max_bytes)
-        return {"schema": SCHEMA, "facet_id": facet_id, "project_ref": {"authority": row[0], "kind": "work.project", "id": row[1]}, "summary": json.loads(row[7]), "detail_locator": locator, "evidence": evidence, "bytes": raw[:max_bytes], "truncated": len(raw) > max_bytes, "io_work": {"detail_bytes_read": min(len(raw), max_bytes), "evidence_bytes_read": 0 if evidence is None else len(evidence.get("bytes", b""))}}
+        meta=self.connection.execute('SELECT stream,subject_authority,subject_kind,subject_id,subject_revision FROM project_history WHERE generation=? AND facet_id=?',(snapshot['generation'],facet_id)).fetchone()
+        return {"schema": SCHEMA, "facet_id": facet_id, "project_ref": {"authority": row[0], "kind": "work.project", "id": row[1]}, "summary": json.loads(row[7]), 'subject_ref':dict(zip(('authority','kind','id','revision'),meta[1:])), 'recorded_at':row[2], 'source_append_position':row[6], 'usage_shared_scope_count':self._usage_scope_count(meta[0],snapshot), "detail_locator": locator, "evidence": evidence, "bytes": raw[:max_bytes], "truncated": len(raw) > max_bytes, "io_work": {"detail_bytes_read": min(len(raw), max_bytes), "evidence_bytes_read": 0 if evidence is None else len(evidence.get("bytes", b""))}}
 
 
 ProjectHistoryMaintainer = ProjectHistoryProjection

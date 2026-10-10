@@ -38,11 +38,16 @@ never zero. Static rates are estimates with retained provenance, not billing;
 an actual billed status requires an attributable billing receipt. Allowance and
 reservation units remain separate from currency and token metrics.
 
-Usage, Timeline, and selected detail reuse the Events authorization, recorded
-time range, snapshot, pagination, and bounds. The first qualified retained
-recorded-time anchor remains stable; later duplicate or correction facts appear
-at their own recorded time and may change only a refreshed snapshot. A detail
-read is bounded and read-only. Missing accounting facets preserve the legacy
+Usage folds admitted retained facts through the shared accounting contract.
+Its period uses the first qualified retained anchor; Timeline uses append time.
+The snapshot binds this time basis, authorization, range and cursor. Later
+duplicate or correction facts change only a refreshed Usage snapshot and add
+knowledge at their own Timeline time. Unfiltered complete windows can expose
+exact totals; bounded pages expose page totals. A page or selected detail that
+omits a correction predecessor reports unavailable rather than pricing it as a
+new independent span. Shared spans require every participating project grant;
+limited views withhold their amounts. Detail reads stay bounded and read-only.
+Missing accounting facets preserve the legacy
 attempt/result reader rather than triggering replay, repair, backfill, or a
 pricing fetch.
 
