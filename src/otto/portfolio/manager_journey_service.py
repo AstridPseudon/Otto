@@ -1312,6 +1312,14 @@ class ManagerJourneyService:
         from .worker_occurrences import parent_for_caller, check_allowance
         from .occurrence_reads import lookup, handle, digest
         caller = _CALLER.get()
+        manager_schedule = None
+        if isinstance(caller, Mapping) and caller.get("role") == "manager":
+            # Native identity uses the canonical occurrence_ref shape. Validate
+            # it before any worker assignment so malformed context cannot leave
+            # a prepared child without its exact result destination.
+            manager_schedule = (caller.get("occurrence_ref") or {}).get("schedule_id")
+            if not isinstance(manager_schedule, str) or not manager_schedule:
+                raise PermissionError("manager caller has no exact authenticated occurrence")
         parent = parent_for_caller(self, caller) if caller and caller.get("role") == "worker" else None
         scope = {"project_ref": state["project_ref"], "task_ref": state["task_refs"][task], "parent": parent}
         historical = lookup(self.server.due_port, scope=scope, request_key=key, request_input=dict(request))
@@ -1480,7 +1488,7 @@ class ManagerJourneyService:
         if isinstance(caller, Mapping) and caller.get("role") == "manager":
             # The authenticated occurrence, never request JSON or old settled
             # state, selects the manager whose preparation admitted this child.
-            state["workers"][task]["manager_schedule_id"] = caller["schedule_id"]
+            state["workers"][task]["manager_schedule_id"] = manager_schedule
         if coordinator_policy is not None:
             self.delegation_policy = {"coordinators": [{"assignment_ref": prepared["assignment_ref"], "generation": prepared["generation"], "native_adapter": app.native_adapter_identity()}],
                 "max_depth": 1, "capacity_units": 1, "cumulative_allowance_units": coordinator_policy["cumulative_allowance_units"]}
