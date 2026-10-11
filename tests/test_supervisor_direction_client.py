@@ -96,9 +96,8 @@ class SupervisorDirectionClientTests(unittest.TestCase):
  def test_current_owner_root_client_composes_supervisor_facade(self):
   from tempfile import TemporaryDirectory
   from otto.portfolio.root_direction_client import install_owner_root_client
-  # Move this exact manager project under the current owner root, then attach
-  # three bounded project joins so supervisor capabilities are issued only
-  # with the complete four-project root scope.
+  # Move this exact manager project under the current owner root. A one-project
+  # scope is sufficient when its canonical supervision join is current.
   project=self.f.owner.graph.get(ResourceRef.from_dict(self.state['project_ref']))
   relation=project.payload['metadata']['otto_orchestrator']
   transfer=self.f.owner.orchestration_port.transfer_supervision(actor=self.f.owner.owner_actor,
@@ -109,18 +108,10 @@ class SupervisorDirectionClientTests(unittest.TestCase):
    target_assignment_ref=self.main.ref.to_dict(),target_assignment_revision=self.main.ref.revision,
    target_assignment_generation=self.main.generation,overlap_acknowledged=True)
   self.state['project_ref']=transfer['project_ref']
-  extras=[self.f.owner.graph.create_project(title='Owner-root scoped '+str(i),logical_request_key='owner-root-extra-'+str(i)) for i in range(3)]
-  self.f.owner.orchestration_port.attach_existing_projects(actor=self.f.owner.owner_actor,
-   request_id='attach-three-owner-root-projects',portfolio_ref=self.main.scope.to_dict(),
-   target_assignment_ref=self.main.ref.to_dict(),target_assignment_revision=self.main.ref.revision,
-   target_assignment_generation=self.main.generation,
-   projects=[{'project_ref':p.ref.to_dict(),'project_version':p.version,'assignment_ref':None,
-      'assignment_revision':None,'assignment_generation':None} for p in extras])
   self.state['orchestrator_assignment_ref']=self.main.ref.to_dict()
-  extra_services=[SimpleNamespace(server=SimpleNamespace(state={'project_ref':p.ref.to_dict()})) for p in extras]
   fallback=lambda request,root: (_ for _ in ()).throw(PermissionError('unsupported fixed-view operation'))
-  project_handler=scoped_supervisor_handler(services=[self.service]+extra_services,fallback=fallback)
-  ids=[self.f.project.id]+[p.ref.id for p in extras]
+  project_handler=scoped_supervisor_handler(services=[self.service],fallback=fallback)
+  ids=[self.f.project.id]
   with TemporaryDirectory() as directory:
    locator,client=install_owner_root_client(service=self.service,directory=directory,
     conversation_ref=self.main.session,request_key='main-root-supervisor-scope',project_ids=ids,

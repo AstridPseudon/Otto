@@ -102,8 +102,7 @@ class RootDirectionClientTests(unittest.TestCase):
  def test_current_root_project_access_is_finite_and_uses_existing_handler(self):
   from otto.portfolio.root_direction_client import install_owner_root_client
   from otto.portfolio.orchestrator_client import ROOT_PROJECT_OPERATIONS
-  from otto.portfolio.supervisor_direction_client import OPERATIONS as SUPERVISOR_OPERATIONS
-  expected_project_operations=ROOT_PROJECT_OPERATIONS-SUPERVISOR_OPERATIONS
+  expected_project_operations=ROOT_PROJECT_OPERATIONS
   from tempfile import TemporaryDirectory
   seen=[]
   def existing_handler(request,current):
@@ -127,9 +126,12 @@ class RootDirectionClientTests(unittest.TestCase):
    with self.assertRaises(PermissionError):
     self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
       operations=['read-manager'],project_ids=[foreign.ref.id],request_key='bad-project')
+   one_scope=self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
+    operations=['supervisor-direction-read'],project_ids=[self.projects[0].ref.id],request_key='one-project-supervisor-scope')
+   self.assertEqual(one_scope['project_ids'],[self.projects[0].ref.id])
    with self.assertRaises(PermissionError):
     self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
-      operations=['supervisor-direction-read'],project_ids=[self.projects[0].ref.id],request_key='narrow-supervisor-scope')
+      operations=['supervisor-direction-read'],project_ids=['one','two','three','four','five'],request_key='over-limit-scope')
 
  def test_compact_task_acceptance_projection_preserves_unknown_and_refs(self):
   from otto.portfolio.execution_operations import compact_task_acceptance_projection

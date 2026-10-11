@@ -125,8 +125,7 @@ class OrchestratorAdmissions:
                 or not isinstance(project_ids, (list, tuple)) or len(project_ids) > 4
                 or any(not isinstance(value, str) or not value.strip() for value in project_ids)
                 or len(set(project_ids)) != len(project_ids)
-                or bool(set(operations) & ROOT_PROJECT_OPERATIONS) != bool(project_ids)
-                or (bool(set(operations) & SUPERVISOR_DIRECTION_OPERATIONS) and len(project_ids) != 4)):
+                or bool(set(operations) & ROOT_PROJECT_OPERATIONS) != bool(project_ids)):
             raise PermissionError('current owner root conversation and finite direction capability required')
         # Project authority is issued only over current canonical supervision
         # joins. The client cannot add projects later or adopt itself.
