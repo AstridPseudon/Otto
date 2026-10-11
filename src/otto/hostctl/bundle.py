@@ -1,10 +1,12 @@
 """Read-only parser for a Megado file-mode run bundle.
 
-A bundle is a directory holding northstar.md, agent_goal.md, plan.md,
-tasklist.md, status.md, exactly one of run.json / run.yaml (JSON content),
-optional extra top-level *.md files, and *.md files in subdirectories (for
-example briefs/M1.md, at most MAX_DEPTH levels; paths use "/"). Each becomes
-one project document at its relative path. Nothing here writes to disk.
+A bundle is a run directory holding northstar.md, agent_goal.md, plan.md,
+tasklist.md, status.md and exactly one of run.json / run.yaml (JSON content).
+The WHOLE directory is the project's record: every other regular UTF-8 text
+file, top level or nested (briefs/M1.md, reviews/astra-high-timing.md,
+archive/...), becomes one project document at its "/"-separated relative
+path. Dotfiles are skipped; symlinks, binary files and nesting deeper than
+MAX_DEPTH are refused rather than silently left out. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -18,9 +20,7 @@ from pathlib import Path
 
 REQUIRED_FILES = ("northstar.md", "agent_goal.md", "plan.md", "tasklist.md", "status.md")
 RUN_FILES = ("run.json", "run.yaml")
-MAX_DEPTH = 2  # e.g. briefs/M1.md or briefs/phase-1/M1.md
-# Otto's project folder bound is 50 documents including its own brief.md.
-MAX_FILES = 49
+MAX_DEPTH = 4  # e.g. reviews/round-2/astra/x.md
 EMPTY_DEPS = {"", "-", "—", "–"}  # "", hyphen, em dash, en dash
 
 _SEP_RE = re.compile(r"^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$")
@@ -36,7 +36,7 @@ class BundleError(ValueError):
 
 
 def _bundle_names(root: Path, prefix: str = "", depth: int = 0) -> list:
-    """Regular *.md files (and the top-level run file), nested up to MAX_DEPTH; no symlinks, no dotfiles."""
+    """Every regular file (no dotfiles), nested up to MAX_DEPTH; symlinks refused."""
     names = []
     with os.scandir(root) as it:
         entries = sorted(it, key=lambda e: e.name)
@@ -46,20 +46,19 @@ def _bundle_names(root: Path, prefix: str = "", depth: int = 0) -> list:
             continue
         mode = os.lstat(entry.path).st_mode
         relative = prefix + name
-        if stat.S_ISDIR(mode) and not stat.S_ISLNK(mode):
-            if depth < MAX_DEPTH:
-                names.extend(_bundle_names(Path(entry.path), relative + "/", depth + 1))
-            continue
-        if not ((depth == 0 and name in RUN_FILES) or name.endswith(".md")):
-            continue
         if stat.S_ISLNK(mode):
-            raise BundleError(f"refusing symlinked bundle file: {relative}")
+            raise BundleError(f"refusing symlinked bundle entry: {relative}")
+        if stat.S_ISDIR(mode):
+            if depth >= MAX_DEPTH:
+                raise BundleError(f"{relative}/ nests deeper than {MAX_DEPTH} levels; flatten it")
+            names.extend(_bundle_names(Path(entry.path), relative + "/", depth + 1))
+            continue
         if stat.S_ISREG(mode):
             names.append(relative)
     return names
 
 
-def read_bundle(path, *, max_files: int = MAX_FILES, max_file_bytes: int = 1 << 20) -> dict:
+def read_bundle(path, *, max_files: int | None = None, max_file_bytes: int = 10 << 20) -> dict:
     """Return {"root", "files", "raw_sha256", "run", "run_file", "tasks", "phases"}.
 
     Reads regular *.md files (top level and nested, e.g. briefs/M1.md) plus
@@ -83,9 +82,8 @@ def read_bundle(path, *, max_files: int = MAX_FILES, max_file_bytes: int = 1 << 
         raise BundleError(f"bundle {root} has both run.json and run.yaml; keep exactly one")
     run_file = run_names[0]
 
-    if len(names) > max_files:
-        raise BundleError(f"bundle has {len(names)} files, more than max_files={max_files} "
-                          "(Otto's project folder holds 50 documents including its brief.md)")
+    if max_files is not None and len(names) > max_files:
+        raise BundleError(f"bundle has {len(names)} files, more than max_files={max_files}")
 
     files: dict = {}
     raw_sha256: dict = {}

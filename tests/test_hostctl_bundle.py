@@ -197,21 +197,30 @@ class ReadBundleTests(unittest.TestCase):
         (root / "briefs" / "phase-1").mkdir(parents=True)
         (root / "briefs" / "M1.md").write_text("# M1\n")
         (root / "briefs" / "phase-1" / "M2.md").write_text("# M2\n")
-        (root / "briefs" / "notes.txt").write_text("not a document\n")
+        (root / "reviews").mkdir()
+        (root / "reviews" / "notes.txt").write_text("a review note\n")
         (root / ".hidden").mkdir()
         (root / ".hidden" / "x.md").write_text("# hidden\n")
         bundle = read_bundle(root)
         self.assertEqual(bundle["files"]["briefs/M1.md"], "# M1\n")
         self.assertIn("briefs/phase-1/M2.md", bundle["files"])
         self.assertEqual(bundle["raw_sha256"]["briefs/M1.md"], hashlib.sha256(b"# M1\n").hexdigest())
-        self.assertNotIn("briefs/notes.txt", bundle["files"])
+        # The whole run dir is the record: any text file, not only Markdown.
+        self.assertEqual(bundle["files"]["reviews/notes.txt"], "a review note\n")
         self.assertFalse(any(path.startswith(".hidden") for path in bundle["files"]))
 
-    def test_nested_symlink_is_error_and_depth_is_bounded(self):
+    def test_nested_symlink_too_deep_and_binary_files_are_refused_not_skipped(self):
         root = write_bundle(self.base / "b")
-        (root / "a" / "b" / "c").mkdir(parents=True)
-        (root / "a" / "b" / "c" / "deep.md").write_text("# too deep\n")
-        self.assertNotIn("a/b/c/deep.md", read_bundle(root)["files"])
+        (root / "a" / "b" / "c" / "d" / "e").mkdir(parents=True)
+        (root / "a" / "b" / "c" / "d" / "e" / "deep.md").write_text("# too deep\n")
+        with self.assertRaisesRegex(BundleError, "deeper"):
+            read_bundle(root)
+        import shutil
+        shutil.rmtree(root / "a")
+        (root / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff")
+        with self.assertRaisesRegex(BundleError, "UTF-8"):
+            read_bundle(root)
+        (root / "image.png").unlink()
         (root / "briefs").mkdir()
         os.symlink(root / "plan.md", root / "briefs" / "link.md")
         with self.assertRaisesRegex(BundleError, "symlink"):
