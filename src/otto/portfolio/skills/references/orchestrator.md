@@ -22,6 +22,12 @@ external-root companion uses `launch`, `lookup`, `follow`, `result`, `artifact`,
 `consume`. Read its help and host policy first. Authoring authority does not grant
 execution. Retain original handles; never borrow a manager identity.
 
+For a manager whose native conversation is owned by Otto, use the issued own
+client's help, result and retained start routes. Do not send directly through
+another host chat connection: it can retain a competing native writer. Read-only
+inspection is not a writer-release receipt; reconcile the exact failed occurrence
+before any supported continuation.
+
 Resolve blockers within your mandate with one accountable owner. Preserve
 judgments and debits when authorizing separate corrections. Act on ready handoffs;
 hourly oversight is a fallback. Verify resolution and resumption, not just message
