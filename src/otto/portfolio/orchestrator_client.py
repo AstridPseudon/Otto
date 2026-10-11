@@ -153,6 +153,26 @@ class ScopedOrchestratorClient:
         project_id = request.get('project_id')
         if project_id is not None and project_id not in self.binding['project_ids']:
             raise PermissionError('project is outside the issued orchestrator scope')
+        payload = request.get('request')
+        if payload is not None:
+            if not isinstance(payload, Mapping):
+                raise ValueError('finite client payload must be an object')
+            if set(payload) & {'actor', 'principal', 'caller_principal', 'assignment_ref', 'generation', 'privilege'}:
+                raise PermissionError('client payload cannot select authority')
+            nested = payload.get('project_ref')
+            if (payload.get('project_id', project_id) != project_id
+                    or nested is not None and (not isinstance(nested, Mapping)
+                        or nested.get('id') != project_id or nested.get('authority') != root.ref.authority
+                        or nested.get('kind') != 'work.project')):
+                raise PermissionError('client payload project differs from issued envelope scope')
+            task = payload.get('task_ref')
+            if task is not None:
+                if not isinstance(task, Mapping) or task.get('authority') != root.ref.authority or task.get('kind') != 'work.task':
+                    raise PermissionError('client payload task scope is invalid')
+                record = self.owner.graph.get(ResourceRef.from_dict(task))
+                parent = record.project_ref
+                if (parent.id if isinstance(parent, ResourceRef) else None) != project_id:
+                    raise PermissionError('client payload task belongs to another project')
         if operation not in {'status', 'whoami', 'portfolio'}:
             if project_id not in self.binding['project_ids']:
                 raise PermissionError('project is outside the issued orchestrator scope')
@@ -175,6 +195,67 @@ def submit_exact(lane, request, *, namespace, request_key):
     elif prior != request:
         raise PermissionError('client request key was reused with changed input')
     return token
+
+class OrchestratorLanePump:
+    """Private issued lanes, marshalled to the existing serialized owner.
+
+    Inbox requests create requests only. Admission/revocation stays on the
+    protected owner's existing route. An interrupted processing receipt is
+    UNKNOWN and is never automatically executed again.
+    """
+    def __init__(self, *, owner_inbox, admissions, clients, owner_call):
+        if not callable(owner_call):
+            raise TypeError('serialized owner callback is required')
+        self.owner_inbox = lanes.private_dir(Path(owner_inbox))
+        self.admissions, self.owner_call = admissions, owner_call
+        self.clients = {lanes.private_dir(Path(path)): client for path, client in clients.items()}
+        if self.owner_inbox in self.clients or len(self.clients) > 16:
+            raise ValueError('inbox and finite issued lanes must be distinct')
+
+    def _execute(self, path, request):
+        if path == self.owner_inbox:
+            if (set(request) != {'operation', 'conversation_ref', 'requested_project_ids', 'request_key'}
+                    or request['operation'] != 'request-enrollment'):
+                raise PermissionError('unenrolled inbox accepts enrollment requests only')
+            return self.admissions.request(conversation_ref=request['conversation_ref'],
+                requested_project_ids=request['requested_project_ids'], request_key=request['request_key'])
+        return self.clients[path].call(request)
+
+    def poll(self, *, limit=4):
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError('finite lane poll limit required')
+        pending = []
+        for lane in (self.owner_inbox, *self.clients):
+            for token, path in lanes.requests(lane):
+                if not lanes.valid_token(token):
+                    continue
+                prior = lanes.read_private_json(lane / ('pending-' + token + '.json'))
+                if prior and prior.get('state') == 'processing':
+                    continue
+                pending.append((path.stat().st_mtime_ns, lane, token, path))
+        completed = []
+        for _, lane, token, path in sorted(pending, key=lambda x: (x[0], str(x[1]), x[2]))[:limit]:
+            prior = lanes.read_private_json(lane / ('pending-' + token + '.json'))
+            if prior and prior.get('state') == 'processing':
+                # A current poll is synchronous; finding this means a previous
+                # process did not publish a terminal receipt. Never replay it.
+                completed.append({'request_id': token, 'outcome': 'unknown', 'retry': False})
+                continue
+            request = lanes.read_private_json(path)
+            lanes.mark_pending(lane, token, 'processing', retry=False)
+            try:
+                value = self.owner_call(lambda: self._execute(lane, request))
+                if not isinstance(value, Mapping):
+                    raise TypeError('finite client handler must return a retained result or handle')
+                result = {**json_value(value), 'request_id': token, 'terminal': True}
+            except Exception as error:
+                result = {'outcome': 'error', 'request_id': token, 'terminal': True,
+                    'error': type(error).__name__, 'message': str(error), 'retry': False,
+                    'effect_state': 'unverified',
+                    'next_action': 'Inspect this exact request and canonical scope; do not replay uncertain effects.'}
+            lanes.respond(lane, token, result)
+            completed.append({'request_id': token, 'outcome': result.get('outcome', result.get('state'))})
+        return completed
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
