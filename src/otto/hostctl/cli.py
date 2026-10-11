@@ -70,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--worktree", help="the manager's workspace root (default: the run's control_root parent)")
     register.add_argument("--request-key", help="stable registration key (default register:<run_id>:v1)")
     register.add_argument("--plan-only", action="store_true", help="print what would be written; write nothing")
+    history = project_sub.add_parser("import-history", help="keep a CLOSED run as history: its whole run dir as "
+                                     "documents, withdrawn (never executed in Otto)")
+    history.add_argument("--bundle", required=True, help="the closed run's directory")
+    history.add_argument("--note", required=True, help="how and why the run closed (kept with the record)")
     status = project_sub.add_parser("status", help="one project's records: tasks, documents, roles, pools, schedules")
     status.add_argument("--project", required=True, help="project id or run id")
     activate = project_sub.add_parser("activate", help="ACTIVATION step 1: materialize tasks, roles, pools and paused "
@@ -342,6 +346,22 @@ def cmd_register(args: argparse.Namespace) -> Any:
     return {"outcome": "registered", **receipt,
             "next_action": "edit the run dir and `ottoctl project sync-docs` until activation; then "
                            "`ottoctl project activate --project " + run_id + "`"}
+
+
+def cmd_import_history(args: argparse.Namespace) -> Any:
+    from otto.agents.host_profiles import profile as model_profile
+    from .register import import_history, plan
+    home = _home(args)
+    config = host_config.load(home)
+    bundle = _client_bundle(args)
+    run_id = bundle["run"].get("run_id") or Path(bundle["root"]).name
+    entry = _host(args, config)
+    computed = plan(bundle, profile=model_profile(entry["model_profile"]), manager_principal=run_id + "-manager",
+                    worktree=str(Path(bundle["root"]).parent), tool_entrypoint=str(home / "bin" / "ottoctl"))
+    with HostSession(config, host=entry) as session:
+        receipt = import_history(session, computed, note=args.note)
+    _receipt(home, "history-" + run_id, receipt)
+    return receipt
 
 
 def _client_bundle(args: argparse.Namespace) -> dict:
@@ -718,7 +738,7 @@ def client_request(args: argparse.Namespace, key: tuple) -> Any:
     lane = Path(entry["lane"])
     command, sub = key
     body = _lane_args(args)
-    if key == ("project", "register"):
+    if key in {("project", "register"), ("project", "import-history")}:
         body.update(_read_client_bundle(args.bundle))
     if key == ("project", "sync-docs") and args.bundle:
         body.update(_read_client_bundle(args.bundle))
@@ -764,6 +784,7 @@ HOST_OPERATIONS = {
     ("projects", None): cmd_projects,
     ("project", "register"): cmd_register, ("project", "status"): cmd_project_status,
     ("project", "sync-docs"): cmd_sync_docs, ("project", "activate"): cmd_activate,
+    ("project", "import-history"): cmd_import_history,
     ("operating-setup", None): cmd_operating_setup,
     ("admission", "dry-run"): cmd_admission_dry_run,
     ("schedules", None): cmd_schedules,

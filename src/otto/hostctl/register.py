@@ -241,6 +241,39 @@ def register(session: Any, registration: Mapping[str, Any], *, key: Optional[str
     return receipt
 
 
+def import_history(session: Any, registration: Mapping[str, Any], *, note: str,
+                   key: Optional[str] = None) -> dict[str, Any]:
+    """Keep a CLOSED run as history: its whole run directory as documents.
+
+    The run is registered on the same onboarding route (in the host's
+    portfolio), marked mode=history, and then withdrawn. That is Otto's
+    lifecycle for a project that ends without Otto completing it. It never
+    ran in Otto, so it gets no tasks, roles, pools or schedules, and its
+    documents are a read-only record.
+    """
+    run_id = registration["run_id"]
+    key = key or "history:" + run_id + ":v1"
+    custom = dict(registration["custom"])
+    facts = dict(custom["otto_host_registration"])
+    facts.update(mode="history", activation_trigger=None,
+                 history={"closed": True, "lifecycle": "withdrawn", "read_only": True, "note": note,
+                          "meaning": "closed outside Otto; imported as the record of the run, never executed here"})
+    custom["otto_host_registration"] = facts
+    receipt = register(session, {**registration, "custom": custom,
+                                 "title": "History: " + registration["title"]}, key=key)
+    ref = ResourceRef.from_dict(receipt["project_ref"])
+    current = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+    if current.lifecycle.value != "withdrawn":
+        session.owner.sheet.withdraw(current.ref, logical_request_key=key + ":withdraw",
+                                     base_revision=current.ref.revision)
+    current = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+    receipt.update(outcome="imported_history", lifecycle=current.lifecycle.value,
+                   project_ref=current.ref.to_dict(), schema="otto.host-history-import.v1")
+    receipt["steps"]["registration"] = {"custom": "otto_host_registration", "mode": "history",
+                                        "tasks": 0, "roles": 0, "pools": 0, "schedules": 0}
+    return receipt
+
+
 def _check_in(session: Any, project_ref: Any, principal: str, key: str, edit: Any,
               opened: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
     if not opened or opened.get("outcome") not in {"opened", "replayed"}:

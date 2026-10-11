@@ -419,6 +419,22 @@ class OwnerServiceClientTests(HostctlFixture):
         code, status = self._client(client, "service", "status")
         self.assertEqual(status["outcome"], "closed", status)
 
+    def test_a_closed_run_is_kept_as_withdrawn_history_with_its_whole_run_dir(self):
+        self._init()
+        Path(self.bundle, "run.json").write_text(json.dumps({**RUN, "run_id": "old-run"}))
+        os.makedirs(os.path.join(self.bundle, "reviews"))
+        Path(self.bundle, "reviews", "final.md").write_text("# Final review\n")
+        code, imported = self._ottoctl("project", "import-history", "--bundle", self.bundle,
+                                       "--note", "Closed and recut as demo-run r2")
+        self.assertEqual((code, imported["outcome"], imported["lifecycle"]), (0, "imported_history", "withdrawn"),
+                         imported)
+        code, status = self._ottoctl("project", "status", "--project", "old-run")
+        self.assertEqual((status["lifecycle"], status["tasks"], status["schedules"]), ("withdrawn", [], []))
+        self.assertEqual(status["registration"]["mode"], "history")
+        self.assertIn("reviews/final.md", {row["path"] for row in status["documents"]})
+        code, replay = self._ottoctl("project", "import-history", "--bundle", self.bundle, "--note", "x")
+        self.assertEqual(replay["project_ref"]["id"], imported["project_ref"]["id"])
+
     def test_nested_run_documents_are_registered_at_their_paths(self):
         os.makedirs(os.path.join(self.bundle, "briefs"))
         Path(self.bundle, "briefs", "T1.md").write_text("# Brief: T1\n\nBuild it.\n")
