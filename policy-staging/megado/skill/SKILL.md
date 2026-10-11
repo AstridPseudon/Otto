@@ -36,6 +36,19 @@ repeat requiring an available explicitly adopted allowance. Planning-only work
 does not activate this stage. Existing projects retain their adopted policy and
 consumed budgets unless explicitly amended. User review overrides prevail.
 
+## Portfolios
+
+Use one orchestrator with a manager per project. Register related projects in
+that orchestrator's portfolio, and express contract-freeze milestones as
+project-to-gate dependencies (`ottoctl project depend --project B --on 'A#contracts-frozen'`).
+Keep contracts in shared portfolio documents (`ottoctl portfolio sync-docs --dir DIR`);
+repeat sync when projects join. Managers read them through `project-documents`.
+Use `ottoctl portfolio status --json` for the hourly check-in and its
+`needs_orchestrator` list. Keep per-project testing light, prove a live walking
+skeleton early, and reserve one final integration project for the complete path.
+The one owner service runs several projects' managers at once (by default three
+active turns; further turns queue and show in `ottoctl service status`).
+
 ## Choose the mode
 
 - **Setup (not activated):** configure roles, tasks, allowances and schedules, register the project pending in Otto (or write the file bundle), record `"mode": "setup_not_activated"`, and stop before any manager launch or dispatch; activation is a separate explicit go.
