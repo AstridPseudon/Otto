@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Optional
+from urllib.parse import quote
 
 from . import config as host_config
 from herzchen.contracts import ResourceRef
@@ -81,6 +82,19 @@ def build_parser() -> argparse.ArgumentParser:
     activate.add_argument("--project", required=True, help="project id or run id")
     activate.add_argument("--manager-principal", help="manager principal (default <run_id>-manager)")
     activate.add_argument("--worktree", help="the manager's workspace root (default: the run's control_root parent)")
+    activate.add_argument("--override-readiness", action="store_true")
+    activate.add_argument("--reason", help="record why the orchestrator overrides unmet dependencies")
+    activate.add_argument("--portfolio", help="owner lane: portfolio id")
+    depend = project_sub.add_parser("depend", help="depend on a project or its gate in this portfolio")
+    depend.add_argument("--project", required=True)
+    depend.add_argument("--on", required=True, help="project id or run id, optionally #gate-id-or-alias")
+    depend.add_argument("--remove", action="store_true")
+    dependencies = project_sub.add_parser("dependencies", help="dependency satisfaction and computed readiness")
+    dependencies.add_argument("--project", required=True)
+    detach = project_sub.add_parser("detach", help="remove supervision and shared document associations")
+    detach.add_argument("--project", required=True)
+    for command in (depend, dependencies, detach):
+        command.add_argument("--portfolio", help="owner lane: portfolio id")
     sync = project_sub.add_parser("sync-docs", help="mirror changed run-dir files into a PENDING project by digest")
     sync.add_argument("--project", required=True, help="project id or run id")
     sync.add_argument("--bundle", help="run directory (default: the registered source bundle)")
@@ -106,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = service_sub.add_parser("run", help="OPERATOR: hold the Store and serve every host (foreground; "
                                  "starts no Due, calls no provider)")
     run.add_argument("--project", help="also attach this activated project's manager lanes now (else on first use)")
+    run.add_argument("--max-active-manager-turns", type=int, default=3,
+                     help="maximum concurrent manager turns across attached projects (default: 3)")
+    drain = service_sub.add_parser("drain", help="OPERATOR: drain one project's attached manager lanes")
+    drain.add_argument("--project", required=True, help="project id or run id")
     admit = service_sub.add_parser("admit-host", help="OPERATOR: admit an agent CLI host as its OWN orchestrator "
                                    "principal and create its lane in its client home")
     admit.add_argument("--host", dest="admit_host", required=True, choices=host_config.HOST_KINDS)
@@ -268,6 +286,10 @@ def _assignments(session: HostSession, record: Any) -> list:
 
 def cmd_portfolio(args: argparse.Namespace) -> Any:
     """Otto's portfolio CLI with this owner's ports injected (one entry, no second CLI)."""
+    from .portfolio import portfolio_command
+    if args.portfolio_args and args.portfolio_args[0] in {
+            "status", "documents", "sync-docs", "apply", "gate", "prerequisite"}:
+        return portfolio_command(args)
     import contextlib, io
     from otto.portfolio import cli as portfolio_cli
     from otto.portfolio.document_navigation import ProjectDocumentOperations
@@ -386,6 +408,14 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=entry, project_ids=(record.ref.id,)) as session:
         record = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        from .portfolio import dependency_service
+        readiness = dependency_service(session, args).activation_check(
+            record.ref, override=getattr(args, "override_readiness", False),
+            reason=getattr(args, "reason", None),
+            request_id="activate-readiness:" + record.ref.id + ":" + str(record.version))
+        if readiness.get("outcome") in {"blocked", "error"}:
+            return readiness
+        record = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         bundle = stored_bundle(session, record)
         run_id = registration.get("run_id") or record.ref.id
@@ -393,11 +423,21 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         computed = plan(bundle, profile=model_profile(entry["model_profile"]),
                         manager_principal=args.manager_principal or run_id + "-manager", worktree=worktree,
                         tool_entrypoint=str(home / "bin" / "ottoctl"))
+        available = set((entry.get("adapters") or {}).keys())
+        unsupported = sorted({binding.get("adapter") for binding in
+                              computed["configuration"].get("roles", {}).values()
+                              if binding.get("adapter") not in available})
+        if unsupported:
+            return {"outcome": "error", "error": {"code": "role_adapter_unavailable",
+                    "message": "activation requires trusted adapter factories for: " + ", ".join(unsupported),
+                    "adapters": unsupported}, "dispatch": False, "provider_called": False,
+                    "readiness": readiness}
         receipt = materialize(session, record, computed)
     _receipt(home, "activate-" + run_id, receipt)
     args.operation = "apply"
     setup = _compose_setup(args)
-    return {"outcome": "prepared", "activation": receipt, "operating_setup": setup, "started": False,
+    return {"outcome": "prepared", "activation": receipt, "readiness": readiness,
+            "operating_setup": setup, "started": False,
             "next_action": "`ottoctl manager --project " + run_id + " start-manager "
                            "--schedule-id <operating_setup.setup.roles.manager>`"}
 
@@ -492,7 +532,7 @@ def _pool_ids(session: HostSession, record: Any) -> list:
     """Pools registered for this project (receipt-recorded ids, owner-verified)."""
     home = Path(session.config["home"])
     custom = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-    receipt = home / "receipts" / ("activate-" + str(custom.get("run_id")) + ".json")
+    receipt = receipt_path(home, "activate-" + str(custom.get("run_id")))
     try:
         steps = json.loads(receipt.read_text())["steps"]["allowances"]
     except (OSError, KeyError, ValueError):
@@ -503,7 +543,7 @@ def _pool_ids(session: HostSession, record: Any) -> list:
 def _manager_handles(session: HostSession, record: Any) -> Mapping[str, Any]:
     home = Path(session.config["home"])
     custom = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-    path = home / "receipts" / ("activate-" + str(custom.get("run_id")) + ".json")
+    path = receipt_path(home, "activate-" + str(custom.get("run_id")))
     if not path.exists():
         raise LookupError("project is a draft: roles exist only after `ottoctl project activate`")
     return json.loads(path.read_text())["steps"]["manager"]
@@ -653,7 +693,15 @@ def cmd_service_run(args: argparse.Namespace) -> Any:
     """OPERATOR: hold the Store and serve every admitted host until stopped."""
     from .service import OwnerService
     config = host_config.load(_home(args))
-    return OwnerService(config).run(emit=lambda value: print(json_out(value), flush=True), project=args.project)
+    return OwnerService(config, max_active_manager_turns=args.max_active_manager_turns).run(
+        emit=lambda value: print(json_out(value), flush=True), project=args.project)
+
+
+def cmd_service_drain(args: argparse.Namespace) -> Any:
+    from .service import owner_lane
+    home = _home(args)
+    host_config.load(home)
+    return _await(owner_lane(home), {"command": "drain", "args": {"project": args.project}}, args.wait_seconds)
 
 
 def cmd_service_admit(args: argparse.Namespace) -> Any:
@@ -734,8 +782,15 @@ def _read_client_bundle(path: str) -> dict:
 
 def client_request(args: argparse.Namespace, key: tuple) -> Any:
     """Send one host command to the owner service through this host's lane."""
-    entry = _client_entry(args)
-    lane = Path(entry["lane"])
+    from .portfolio import prepare_portfolio_request
+    from .service import owner_lane
+    owner_portfolio = getattr(args, "portfolio", None)
+    if key == ("portfolio", None):
+        prepare_portfolio_request(args)
+        owner_portfolio = getattr(args, "portfolio", None)
+    owner_request = bool(owner_portfolio and host_config.config_path(_home(args)).exists()
+                         and not getattr(args, "host", None))
+    lane = owner_lane(_home(args)) if owner_request else Path(_client_entry(args)["lane"])
     command, sub = key
     body = _lane_args(args)
     if key in {("project", "register"), ("project", "import-history")}:
@@ -747,6 +802,8 @@ def client_request(args: argparse.Namespace, key: tuple) -> Any:
     if key == ("manager", None):
         body = _manager_request(args.manager_args)
     request = {"schema": "otto.host-lane-request.v1", "command": command, "sub": sub, "args": body}
+    if owner_request:
+        request = {"command": "portfolio-operation", "args": request}
     result = _await(lane, request, args.wait_seconds)
     if key == ("project", "sync-docs") and isinstance(result, Mapping) and result.get("outcome") == "needs_bundle":
         if not result.get("source_bundle"):
@@ -768,14 +825,25 @@ def _manager_request(argv: list) -> dict:
 def _receipt(home: Path, name: str, value: Any) -> None:
     directory = home / "receipts"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / (name + ".json")
-    temporary = directory / ("." + name + ".tmp")
+    safe_name = quote(str(name), safe="._-")
+    path = directory / (safe_name + ".json")
+    temporary = directory / ("." + safe_name + ".tmp")
     temporary.write_text(json_out(value) + "\n")
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
 
 
+def receipt_path(home: Path, name: str) -> Path:
+    """Path for a receipt name that may contain a slash-bearing Megado run id."""
+    return Path(home) / "receipts" / (quote(str(name), safe="._-") + ".json")
+
+
 # Executed INSIDE the owner service for a host lane request (args.host = the lane's host).
+def cmd_project_portfolio(args: argparse.Namespace) -> Any:
+    from .portfolio import project_command
+    return project_command(args, args.project_operation)
+
+
 HOST_OPERATIONS = {
     ("host", "show"): cmd_host_show, ("host", "qualify-launcher"): cmd_host_qualify,
     ("whoami", None): lambda args: _whoami(args, "whoami"),
@@ -785,6 +853,9 @@ HOST_OPERATIONS = {
     ("project", "register"): cmd_register, ("project", "status"): cmd_project_status,
     ("project", "sync-docs"): cmd_sync_docs, ("project", "activate"): cmd_activate,
     ("project", "import-history"): cmd_import_history,
+    ("project", "depend"): cmd_project_portfolio,
+    ("project", "dependencies"): cmd_project_portfolio,
+    ("project", "detach"): cmd_project_portfolio,
     ("operating-setup", None): cmd_operating_setup,
     ("admission", "dry-run"): cmd_admission_dry_run,
     ("schedules", None): cmd_schedules,
@@ -794,6 +865,7 @@ LOCAL_COMMANDS = {
     ("install", None): cmd_install,
     ("service", "run"): cmd_service_run, ("service", "admit-host"): cmd_service_admit,
     ("service", "status"): cmd_service_status, ("service", "stop"): cmd_service_stop,
+    ("service", "drain"): cmd_service_drain,
     ("request-status", None): cmd_request_status,
     ("skills", "which"): cmd_skills_which, ("skills", "install"): cmd_skills_install,
 }

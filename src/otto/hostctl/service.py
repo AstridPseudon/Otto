@@ -13,13 +13,13 @@ the principal the lane is bound to:
 * one host lane per admitted host (``<client home>/lanes/<kind>``): the host
   principal registers and syncs drafts, activates, reads, answers escalations
   and relays owner-custody manager commands (start-manager, status, ...);
-* the manager lanes of the attached project (``serve.HostOwnerService``):
-  the launched manager's file lane and caller socket.
+* the manager lanes of each attached project (``serve.HostOwnerService``):
+  that launched manager's file lane and caller socket.
 
-All lane work serializes on one command lock (shared with the attached
-project's ExecutionHost; during a manager turn finite operations run on the
-owner's pump between transport polls). The service publishes its status
-(holder, generation, heartbeat, attached project, manager turn, in-flight
+Finite lane work serializes on one command lock shared by all project
+ExecutionHosts. Native waits release it; owner callbacks reacquire it. The
+service publishes its status
+(holder, generation, heartbeat, attached projects, active/queued turns, in-flight
 requests) into the service home and every host lane, so "is the owner busy?"
 is a supported read (``ottoctl service status``), never an inspection of
 another host's folders. Starting it starts no Due and calls no provider.
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -94,13 +95,32 @@ def read_status(path: Path) -> dict[str, Any]:
 
 class OwnerService:
     def __init__(self, config: Mapping[str, Any], *, adapter_factory: Optional[Callable[..., Any]] = None,
-                 poll_seconds: float = 0.05, heartbeat_seconds: float = 1.0) -> None:
+                 poll_seconds: float = 0.05, heartbeat_seconds: float = 1.0,
+                 max_active_manager_turns: Optional[int] = None) -> None:
         self.config = dict(config)
         self.home = Path(config["home"])
         self.lock = threading.RLock()
         self.adapter_factory = adapter_factory
         self.poll_seconds, self.heartbeat_seconds = poll_seconds, heartbeat_seconds
         self.journey: Any = None
+        # A project is attached once and keeps its own manager service and
+        # authentication scope.  The singular ``journey`` remains a
+        # compatibility view of the first attached project for older callers.
+        self.journeys: dict[str, Any] = {}
+        self._project_sessions: dict[str, HostSession] = {}
+        configured_limit = (max_active_manager_turns if max_active_manager_turns is not None
+                            else self.config.get("max_active_manager_turns", 3))
+        # Default 3 suits a small machine; 16 is the most project views one
+        # owner composes (ProjectServices' bound), so it is the ceiling here.
+        if type(configured_limit) is not int or not 1 <= configured_limit <= 16:
+            raise ValueError("max_active_manager_turns must be an integer from 1 through 16")
+        self.max_active_manager_turns = configured_limit
+        self._turn_slots = threading.BoundedSemaphore(self.max_active_manager_turns)
+        self._turn_lock = threading.Lock()
+        self._turn_active: set[str] = set()
+        self._turn_queued: dict[str, int] = {}
+        self._turn_context = threading.local()
+        self._draining_projects: set[str] = set()
         self.store: Any = None
         self.relays: dict[str, dict[str, Any]] = {}
         self.in_flight: dict[str, dict[str, Any]] = {}
@@ -109,6 +129,7 @@ class OwnerService:
         self.generation = 0
         self.started_at = None
         self._stopping = threading.Event()
+        self._dispatch_context = threading.local()
 
     # -- lifecycle ------------------------------------------------------------------
     def run(self, *, emit: Callable[[Mapping[str, Any]], None], project: Optional[str] = None) -> Mapping[str, Any]:
@@ -144,9 +165,13 @@ class OwnerService:
                 self._stopping.set()
                 if heartbeat.is_alive():
                     heartbeat.join(timeout=5)
-                if self.journey is not None:
-                    self.journey.execution_host.begin_drain()
-                    self.journey.execution_host.close()
+                for journey in list(self.journeys.values()):
+                    journey.execution_host.begin_drain()
+                for journey in list(self.journeys.values()):
+                    journey.execution_host.close()
+                for session in self._project_sessions.values():
+                    session.__exit__(None, None, None)
+                self._project_sessions.clear()
                 self._publish(state="closed")
         return {"outcome": "closed", "generation": self.generation, "requests_served": self.served,
                 "relays_open": len(self.relays), "provider_called": False}
@@ -166,7 +191,11 @@ class OwnerService:
         def run() -> Any:
             with service_store(self.store):
                 return operation()
-        journey = self.journey
+        project_id = getattr(self._dispatch_context, "project_id", None)
+        with self.lock:
+            journey = self.journeys.get(project_id) if project_id else None
+            if journey is None and project_id:
+                journey = next((item for item in self.journeys.values() if item.run_id == project_id), None)
         if journey is not None:
             host = journey.execution_host
             if hold_during_turn and host._external_waiting:
@@ -207,6 +236,14 @@ class OwnerService:
                     continue
                 request = None
             self.in_flight[token] = {"lane": who, "since": _now()}
+            prior_project = getattr(self._dispatch_context, "project_id", None)
+            args = (request or {}).get("args") or {}
+            if who == "owner" and (request or {}).get("command") == "portfolio-operation":
+                args = args.get("args") or {}
+            project_id = args.get("project") if isinstance(args, Mapping) else None
+            if project_id is None and isinstance(args, Mapping) and isinstance(args.get("request"), Mapping):
+                project_id = args["request"].get("project")
+            self._dispatch_context.project_id = project_id
             try:
                 if request is None:
                     raise ValueError("the request is not a JSON object")
@@ -217,6 +254,7 @@ class OwnerService:
                 result = {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
                           "provider_called": False}
             finally:
+                self._dispatch_context.project_id = prior_project
                 entry = self.in_flight.pop(token, {})
             self.served += 1
             self.last_completed = {"token": token, "lane": who, "command": entry.get("command"), "at": _now()}
@@ -255,8 +293,33 @@ class OwnerService:
             return self.call(lambda: self._admit_host(args))
         if command == "attach":
             return self.call(lambda: self._attach(args["project"], host_kind=None))
+        if command in {"drain", "drain-project"}:
+            return self._drain_project(str(args["project"]))
         if command == "status":
             return self._status()
+        if command == "portfolio-operation":
+            from .cli import HOST_OPERATIONS
+            # Owner custody is established by this lane, never a client argument.
+            operation = (args.get("command"), args.get("sub"))
+            allowed = {("portfolio", None), ("project", "depend"), ("project", "dependencies"),
+                       ("project", "detach"), ("project", "activate")}
+            if operation not in allowed:
+                raise PermissionError("operation is not an owner portfolio command")
+            values = {key: value for key, value in dict(args.get("args") or {}).items()
+                      if key not in {"home", "host", "owner_authorized", "service_status", "project_operation"}}
+            portfolio = values.get("portfolio")
+            entries = [entry for entry in self.config.get("hosts", {}).values()
+                       if entry.get("portfolio_ref", {}).get("id") == portfolio]
+            if len(entries) != 1:
+                raise LookupError("name exactly one admitted portfolio with --portfolio")
+            namespace = argparse.Namespace(**values, home=str(self.home), host=entries[0]["kind"],
+                owner_authorized=True, service_status=self._status(), project_operation=operation[1])
+            result = self.call(lambda: self._run_operation(HOST_OPERATIONS[operation], namespace, operation),
+                               hold_during_turn=operation == ("project", "activate"))
+            if operation == ("project", "detach") and result.get("outcome") not in {"error", "held"}:
+                drain = self._drain_project(str(values["project"]))
+                return {**result, "service_drain": drain}
+            return result
         return {"outcome": "unavailable", "reason": "unknown owner command " + repr(command), "provider_called": False}
 
     def _admit_host(self, args: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -300,7 +363,8 @@ class OwnerService:
         if request.get("schema") != lanes.REQUEST_SCHEMA:
             raise ValueError("not an " + lanes.REQUEST_SCHEMA + " request")
         command, sub = request.get("command"), request.get("sub")
-        args = {key: value for key, value in dict(request.get("args") or {}).items() if key not in {"home", "host"}}
+        args = {key: value for key, value in dict(request.get("args") or {}).items()
+                if key not in {"home", "host", "owner_authorized", "service_status", "project_operation"}}
         if (command, sub) == ("service", "ping"):
             return self._status()
         if (command, sub) == ("manager", None):
@@ -314,16 +378,35 @@ class OwnerService:
         if handler is None:
             return {"outcome": "unavailable", "provider_called": False,
                     "reason": "no host operation " + repr([command, sub])}
-        namespace = argparse.Namespace(**args, home=str(self.home), host=kind)
+        namespace = argparse.Namespace(**args, home=str(self.home), host=kind,
+            owner_authorized=False, service_status=self._status(), project_operation=sub)
         hold = ((command, sub) == ("project", "activate")
                 or (command == "operating-setup" and args.get("operation", "read") != "read"))
-        return self.call(lambda: handler(namespace), hold_during_turn=hold)
+        result = self.call(lambda: self._run_operation(handler, namespace, (command, sub)), hold_during_turn=hold)
+        if (command, sub) == ("project", "detach") and result.get("outcome") not in {"error", "held"}:
+            return {**result, "service_drain": self._drain_project(str(args["project"]))}
+        return result
+
+    def _run_operation(self, handler: Callable[..., Any], namespace: Any, operation: tuple) -> Any:
+        """Run under the shared command lock, fencing detach against admission."""
+        if operation == ("project", "detach"):
+            namespace.service_status = self._status()
+        result = handler(namespace)
+        if operation == ("project", "detach") and result.get("outcome") == "detached":
+            project_id = result["project_ref"]["id"]
+            journey = self.journeys.get(project_id)
+            if journey is not None:
+                self._draining_projects.add(project_id)
+                journey.execution_host.begin_drain()
+        return result
 
     def _journey_for(self, kind: str, project: Optional[str]) -> Any:
         if project is None:
-            if self.journey is None:
+            if not self.journeys:
                 raise LookupError("no project is attached; name it with --project")
-            project = self.journey.state["project_ref"]["id"]
+            if len(self.journeys) != 1:
+                raise ValueError("--project is required when multiple projects are attached")
+            project = next(iter(self.journeys))
         return self.call(lambda: self._attach(project, host_kind=kind))
 
     def _relay_manager(self, kind: str, args: Mapping[str, Any], token: str, lane: Path) -> Any:
@@ -351,7 +434,7 @@ class OwnerService:
         return self._relay(journey, request, token=token, lane=lane, who=kind, grant_principal=principal)
 
     def _attach(self, project: str, *, host_kind: Optional[str]) -> Any:
-        """Attach one activated project's manager lanes (once; one project at a time)."""
+        """Attach one activated project's isolated manager lanes once."""
         from .cli import _resolve_project
         from .serve import attach
         with HostSession(self.config) as session:
@@ -362,31 +445,127 @@ class OwnerService:
                            if (entry.get("root_assignment_ref") or {}).get("id") == supervisor.get("id")), None)
         if host_kind is not None and host_kind != owner_kind:
             raise PermissionError("project " + project + " is supervised by another principal, not this host's")
-        if self.journey is not None:
-            if self.journey.state["project_ref"]["id"] == record.ref.id:
-                return self.journey
-            raise RuntimeError("this owner service has project " + self.journey.run_id + " attached; one project's "
-                               "manager lanes at a time (restart with `service run --project`)")
         if owner_kind is None:
             raise LookupError("project " + project + " has no admitted host supervising it")
-        session = HostSession(self.config, host=hosts[owner_kind], project_ids=(record.ref.id,)).__enter__()
-        self.journey = attach(session, record, command_lock=self.lock, adapter_factory=self.adapter_factory)
+        project_id = record.ref.id
+        with self.lock:
+            if project_id in self._draining_projects:
+                raise RuntimeError("project " + project + " is draining; retry after service status clears it")
+            if project_id in self.journeys:
+                return self.journeys[project_id]
+        session = HostSession(self.config, host=hosts[owner_kind], project_ids=(project_id,)).__enter__()
+        journey = attach(session, record, command_lock=self.lock, adapter_factory=self.adapter_factory,
+                         turn_admission=lambda: self._manager_turn(project_id))
+        with self.lock:
+            self._project_sessions[project_id] = session
+            self.journeys[project_id] = journey
+            if self.journey is None:
+                self.journey = journey
         self._publish()
-        return self.journey
+        return journey
+
+    @contextmanager
+    def _manager_turn(self, project_id: str):
+        """Bound provider-bearing manager dispatches across all project lanes."""
+        nested = set(getattr(self._turn_context, "projects", ()))
+        if project_id in nested:
+            # A retained worker/help result can be serviced by this same
+            # project's owner pump during the current turn. Reuse its slot.
+            yield
+            return
+        # Publish admission under the same fence as detach's activity check.
+        # Release it before waiting for capacity, so other projects can settle.
+        with self.lock:
+            if project_id in self._draining_projects:
+                raise RuntimeError("project " + project_id + " is draining")
+            with self._turn_lock:
+                self._turn_queued[project_id] = self._turn_queued.get(project_id, 0) + 1
+        # Wait for a slot without blocking a drain or stop of this project.
+        while not self._turn_slots.acquire(timeout=0.2):
+            if project_id in self._draining_projects or self._stopping.is_set():
+                with self._turn_lock:
+                    waiting = self._turn_queued.get(project_id, 1) - 1
+                    if waiting:
+                        self._turn_queued[project_id] = waiting
+                    else:
+                        self._turn_queued.pop(project_id, None)
+                raise RuntimeError("project " + project_id + " is draining; its queued manager turn was not started")
+        with self._turn_lock:
+            waiting = self._turn_queued.get(project_id, 1) - 1
+            if waiting:
+                self._turn_queued[project_id] = waiting
+            else:
+                self._turn_queued.pop(project_id, None)
+            self._turn_active.add(project_id)
+        nested.add(project_id)
+        self._turn_context.projects = nested
+        try:
+            yield
+        finally:
+            nested.remove(project_id)
+            self._turn_context.projects = nested
+            with self._turn_lock:
+                self._turn_active.discard(project_id)
+            self._turn_slots.release()
+
+    def _drain_project(self, project: str) -> Mapping[str, Any]:
+        """Stop accepting work on one project's lanes and close its retained view."""
+        from .cli import _resolve_project
+        with self.lock, service_store(self.store):
+            with HostSession(self.config) as session:
+                record = _resolve_project(session, project)
+            project_id = record.ref.id
+            journey = self.journeys.get(project_id)
+            if journey is not None:
+                self._draining_projects.add(project_id)
+                self.journeys.pop(project_id, None)
+        if journey is None:
+            return {"outcome": "already_detached", "project_id": project_id, "provider_called": False}
+        # Do not hold the shared Store lock while close joins command threads;
+        # they may be finishing a finite owner callback under that lock.
+        journey.execution_host.begin_drain()
+        journey.execution_host.close()
+        session = self._project_sessions.pop(project_id, None)
+        if session is not None:
+            session.__exit__(None, None, None)
+        with self.lock:
+            self._draining_projects.discard(project_id)
+            if self.journey is journey:
+                self.journey = next(iter(self.journeys.values()), None)
+        self._publish()
+        return {"outcome": "drained", "project_id": project_id, "provider_called": False}
 
     def _attached(self) -> Optional[dict[str, Any]]:
-        if self.journey is None:
+        with self.lock:
+            journey = self.journey
+        if journey is None:
             return None
-        return {"project_id": self.journey.state["project_ref"]["id"], "run_id": self.journey.run_id,
-                "manager": self.journey.state["manager"], "manager_ipc": str(self.journey.paths["ipc"]),
-                "caller_socket": str(self.journey.paths["socket"])}
+        return {"project_id": journey.state["project_ref"]["id"], "run_id": journey.run_id,
+                "manager": journey.state["manager"], "manager_ipc": str(journey.paths["ipc"]),
+                "caller_socket": str(journey.paths["socket"])}
+
+    def _attached_projects(self) -> list[dict[str, Any]]:
+        with self.lock:
+            journeys = dict(self.journeys)
+            draining = set(self._draining_projects)
+        rows = [{"project_id": project_id, "run_id": journey.run_id,
+                 "manager": journey.state["manager"], "manager_ipc": str(journey.paths["ipc"]),
+                 "caller_socket": str(journey.paths["socket"])}
+                for project_id, journey in sorted(journeys.items())]
+        rows.extend({"project_id": project_id, "state": "draining"} for project_id in sorted(draining))
+        return rows
 
     # -- status -------------------------------------------------------------------------
     def _status(self, state: str = "serving") -> dict[str, Any]:
-        journey = self.journey
-        queued = 0
-        if journey is not None:
-            queued = sum(1 for _ in lanes.requests(journey.paths["ipc"]))
+        projects = self._attached_projects()
+        with self.lock:
+            journeys = dict(self.journeys)
+        lane_queued = {project_id: sum(1 for _ in lanes.requests(journey.paths["ipc"]))
+                       for project_id, journey in journeys.items()}
+        with self._turn_lock:
+            manager_turns = {"active": len(self._turn_active), "active_projects": sorted(self._turn_active),
+                "queued": sum(self._turn_queued.values()), "queued_by_project": dict(self._turn_queued),
+                "limit": self.max_active_manager_turns}
         return {"schema": STATUS_SCHEMA, "state": state, "outcome": "serving" if state == "serving" else state,
                 "holder": {"pid": os.getpid(), "owner_actor": self.config["owner"]["actor"],
                            "started_at": self.started_at},
@@ -394,11 +573,12 @@ class OwnerService:
                 "store": {"authority": self.config["store"]["authority"],
                           "domain_descriptor_digest": self.config["store"].get("domain_descriptor_digest")},
                 "hosts": sorted((self.config.get("hosts") or {})), "attached_project": self._attached(),
-                "manager_turn_active": bool(journey is not None and journey.execution_host._external_waiting),
+                "attached_projects": projects, "projects": projects, "manager_turns": manager_turns,
+                "manager_turn_active": manager_turns["active"] > 0,
                 "in_flight": {"lane_requests": [{"token": t, **v} for t, v in list(self.in_flight.items())],
                               "relays": [{"token": t, "lane": v["who"], "command": v.get("command")}
                                          for t, v in list(self.relays.items())],
-                              "manager_lane_queued": queued},
+                              "manager_lane_queued": lane_queued},
                 "last_completed": self.last_completed, "requests_served": self.served, "provider_called": False}
 
     def _publish(self, state: str = "serving") -> None:

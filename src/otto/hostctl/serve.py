@@ -59,7 +59,8 @@ def project_runtime(config: Mapping[str, Any], project_id: str) -> dict[str, Pat
 
 def _registration(config: Mapping[str, Any], run_id: str) -> Mapping[str, Any]:
     """The activation receipt: the roles, pools and checks materialized at activation."""
-    path = Path(config["home"]) / "receipts" / ("activate-" + run_id + ".json")
+    from .cli import receipt_path
+    path = receipt_path(Path(config["home"]), "activate-" + run_id)
     if not path.exists():
         raise LookupError("project " + run_id + " is not activated; run `ottoctl project activate` first")
     return json.loads(path.read_text())
@@ -73,7 +74,8 @@ class HostOwnerService:
     """The ``server`` object ManagerJourneyService expects, for one project."""
 
     def __init__(self, session: HostSession, record: Any, *, command_lock: Any = None,
-                 adapter_factory: Optional[Callable[..., Any]] = None) -> None:
+                 adapter_factory: Optional[Callable[..., Any]] = None,
+                 turn_admission: Optional[Callable[[], Any]] = None) -> None:
         from otto.portfolio.execution_host import ExecutionHost
         from otto.portfolio.native_caller_ingress import NativeProcessCallerIngress, managed_caller_binding
         self.session, self.config = session, session.config
@@ -96,15 +98,18 @@ class HostOwnerService:
                                                                          self.due_port))
         self.portfolio = self.owner.portfolio(due_port=self.due_port, issue_delivery=self.help_delivery)
         self.adapter_factory = adapter_factory or self._claude_adapter
+        self.turn_admission = turn_admission
         self.native_callers = NativeProcessCallerIngress(lambda authorization: managed_caller_binding(self, authorization))
         self.execution_host = ExecutionHost(directory=self.paths["ipc"], handler=self.handle,
             owner_path=self.paths["owner"], socket_path=self.paths["socket"],
             caller_binding_reader=self.native_callers, caller_context_resolver=self._caller_context,
             caller_authorizer=self._authorize_caller, owner_file_compatibility=True)
+        self.execution_host.turn_admission = turn_admission
         if command_lock is not None:
             # One owner process, one custodian: lane operations and this
             # project's commands serialize on the same lock.
             self.execution_host._command_lock = command_lock
+            self.execution_host.release_command_lock_during_wait = True
 
     # -- state ----------------------------------------------------------------
     def _load_state(self, record: Any, registration: Mapping[str, Any]) -> dict[str, Any]:
@@ -265,15 +270,26 @@ class HostOwnerService:
         allowed = {"list": {"command", "operation"}, "read": {"command", "operation", "path"}}
         if operation not in allowed or set(request) - allowed[operation] or (operation == "read" and not request.get("path")):
             raise ValueError("project-documents takes --operation list, or --operation read --path <project path>")
-        rows = self._documents(ResourceRef.from_dict(self.state["project_ref"]))
+        from otto.portfolio.shared_documents import project_shared_documents
+        project_ref = ResourceRef.from_dict(self.state["project_ref"])
         common = {"project_ref": self.state["project_ref"], "read_only": True, "provider_called": False,
                   "authority": "otto project.files (canonical after activation)"}
+        if operation == "read" and request["path"].startswith("portfolio/"):
+            return {**common, **project_shared_documents(self.owner, project_ref,
+                operation="read", path=request["path"][len("portfolio/"):])}
+        rows = self._documents(project_ref)
         if operation == "list":
-            return {**common, "outcome": "listed", "documents": [
+            shared = project_shared_documents(self.owner, project_ref)
+            return {**common, "outcome": "listed", "portfolio": [
+                {**row, "path": "portfolio/" + row["path"]} for row in shared["documents"]], "documents": [
                 {"path": row["path"], "role": row["role"], "revision_ref": row["revision_ref"],
                  "bytes": len(row["text"].encode()) if isinstance(row["text"], str) else None} for row in rows]}
         row = next((item for item in rows if item["path"] == request["path"]), None)
         if row is None:
+            shared_read = project_shared_documents(self.owner, project_ref, operation="read", path=request["path"])
+            if shared_read.get("outcome") == "read":
+                return {**common, **shared_read}
+
             return {**common, "outcome": "unavailable", "path": request["path"],
                     "reason": "no such project document; list them with --operation list"}
         return {**common, "outcome": "read", "path": row["path"], "role": row["role"],
@@ -370,10 +386,12 @@ def observe_schedules_factory(service: HostOwnerService) -> Callable[[str], Mapp
 
 
 def attach(session: HostSession, record: Any, *, command_lock: Any,
-           adapter_factory: Optional[Callable[..., Any]] = None) -> HostOwnerService:
+           adapter_factory: Optional[Callable[..., Any]] = None,
+           turn_admission: Optional[Callable[[], Any]] = None) -> HostOwnerService:
     """Compose and start one activated project's manager lanes (no Due, no provider)."""
     from otto.portfolio.manager_journey_service import install_manager_journey_service
-    service = HostOwnerService(session, record, command_lock=command_lock, adapter_factory=adapter_factory)
+    service = HostOwnerService(session, record, command_lock=command_lock, adapter_factory=adapter_factory,
+                               turn_admission=turn_admission)
     service._save_state()
     install_manager_journey_service(service, run_path=service.render_run_view(),
         workspace=service.worktree(), orchestrator_principal=session.actor.actor,

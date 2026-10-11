@@ -94,7 +94,7 @@ def sync_documents(session: Any, record: Any, bundle_source: Any, *, apply: bool
     if not changes or not apply:
         return result
     key = "sync:" + (registration.get("run_id") or record.ref.id) + ":" + hashlib.sha256(
-        canonical_json(files).encode()).hexdigest()[:20]
+        canonical_json(files).encode()).hexdigest()[:20] + ":" + str(record.version)
     actor = session.host["principal"] if session.host else session.actor.actor
     opened = session.portfolio.checkout_project(record.ref.to_dict(), actor=actor, request_id=key + ":open")
     if opened.get("outcome") not in {"opened", "replayed"}:

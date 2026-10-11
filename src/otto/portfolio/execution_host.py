@@ -95,6 +95,8 @@ def _same_process_start_identity(value: Any, expected: Mapping[str, Any]) -> boo
 
 _DISPATCH_CONTEXT = threading.local()
 _COMMAND_TRANSPORT = ContextVar("otto_command_transport", default=None)
+_MANAGER_TURN_COMMANDS = frozenset({"start-manager", "manager-continue", "manager-worker-result",
+                                   "manager-help-result", "manager-task-settlement"})
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
                                  "effective-context", "whoami", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                                  "manager-assessment", "manager-assessment-pool",
@@ -383,8 +385,16 @@ class ExecutionHost:
         return dict(result, caller_context=context,
                     target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean})
 
-    def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
+    def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None,
+                  _turn_admitted: bool = False) -> Any:
         try:
+            # Admission happens before taking the shared Store command lock.
+            # A queued manager must not block another project's owner pump.
+            turn_admission = getattr(self, "turn_admission", None)
+            if (not _turn_admitted and callable(turn_admission)
+                    and request.get("command") in _MANAGER_TURN_COMMANDS):
+                with turn_admission():
+                    return self._dispatch(request, ingress=ingress, _turn_admitted=True)
             if self._closing and _starts_work(request):
                 return {"outcome": "held", "reason": "owner host is draining",
                         "provider_called": False, "effects_started": False, "retry": False}
@@ -490,9 +500,15 @@ class ExecutionHost:
                 if not status:
                     # A compatible socket dispatch may own a native wait. Do
                     # not claim/block its child's file before its pump sees it.
-                    acquired = self._command_lock.acquire(blocking=False)
-                    if not acquired:
-                        continue
+                    # Turn admission can wait for a global slot; let it do so
+                    # before taking the shared Store lock so active projects
+                    # can keep pumping finite owner callbacks.
+                    queued_turn = (callable(getattr(self, "turn_admission", None))
+                                   and command in _MANAGER_TURN_COMMANDS)
+                    if not queued_turn:
+                        acquired = self._command_lock.acquire(blocking=False)
+                        if not acquired:
+                            continue
                     if self._closing and _starts_work(request):
                         continue
                 with self._lock:
@@ -593,7 +609,10 @@ class ExecutionHost:
             except queue.Empty:
                 return
             try:
-                result["value"] = operation()
+                # The transport wait may release a shared multi-project
+                # command lock. Reacquire it for every finite Store callback.
+                with self._command_lock:
+                    result["value"] = operation()
             except BaseException as exc:
                 result["error"] = exc
             finally:
@@ -603,10 +622,11 @@ class ExecutionHost:
     def external_call(operation: Callable[[], Any]) -> Any:
         """Yield only an admitted manager's transport wait, never owner custody.
 
-        The owner thread retains its command lock and executes finite nested
-        commands and native admission callbacks itself. The transport thread
-        cannot read/mutate the owner through an unwrapped callback. Other long
-        dispatches remain queued; result capture/settlement resumes on owner.
+        The owner thread executes finite nested commands and native admission
+        callbacks itself. A multi-project service may release the shared lock
+        during the wait and reacquire it for those callbacks. The transport
+        thread cannot mutate the owner through an unwrapped callback; result
+        capture and settlement resume on the owner.
         """
         context = getattr(_DISPATCH_CONTEXT, "value", None)
         if context is None or not context[2]:
@@ -626,6 +646,14 @@ class ExecutionHost:
 
         with host._lock:
             host._external_waiting += 1
+        # A one-owner service can admit multiple project manager turns while
+        # retaining a single Store write lock. Release only for the external
+        # provider wait; owner callbacks and retained commands reacquire it.
+        lock_state = None
+        if getattr(host, "release_command_lock_during_wait", False):
+            release_save = getattr(host._command_lock, "_release_save", None)
+            if callable(release_save):
+                lock_state = release_save()
         transport = threading.Thread(target=run, name="otto-manager-transport", daemon=False)
         try:
             transport.start()
@@ -646,6 +674,8 @@ class ExecutionHost:
                     waiting.set()
             if transport.ident is not None:
                 transport.join()
+            if lock_state is not None:
+                host._command_lock._acquire_restore(lock_state)
         if "error" in result:
             raise result["error"]
         return result["value"]
