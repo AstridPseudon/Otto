@@ -27,6 +27,39 @@ from otto.portfolio.resource_sync import normalize_instruction_contract
 from otto.portfolio.resource_drift import apply_resource_sync_action, select_resource_sync_action
 
 
+def _completed_worker_support_refs(result, verifier, authorization):
+    """Exact delivered pins for authenticated completed-result reconstruction only."""
+    if (not isinstance(result, Mapping) or result.get("context_digest_verified") is not True
+            or not (result.get("outcome") == "succeeded" or (result.get("outcome") == "unknown"
+                and result.get("unknown_reason") == "adopted operating setup changed before delivery"))):
+        return ()
+    brief = (result.get("resource_evidence") or {}).get("brief") or {}
+    evidence = result.get("task_bound_evidence")
+    digest = hashlib.sha256(json.dumps(brief, ensure_ascii=False, sort_keys=True,
+                                      separators=(",", ":")).encode()).hexdigest()
+    if (not isinstance(authorization, Mapping) or not isinstance(evidence, Mapping)
+            or authorization.get("brief_sha256") != digest
+            or evidence.get("owner_delivery_authorization") != authorization):
+        raise OwnerRoleRuntimeError("completed worker retained authorization differs")
+    work = (result.get("raw_result") or {}).get("work_envelope")
+    if not isinstance(work, Mapping) or work.get("exit_status") is None or not isinstance(work.get("host_evidence", {}).get("otto_host_turn_context"), Mapping):
+        # Other retained provider schemas keep the original current-brief path.
+        return ()
+    if work.get("exit_status") != 0:
+        raise OwnerRoleRuntimeError("completed worker retained transport is not successful")
+    parsed = verifier.observe_context(work.get("host_evidence", {}).get("otto_host_turn_context"),
+        expected_session_id=result.get("physical_session_id"),
+        expected_turn_id=result.get("observed_turn_id"),
+        expected_profile=result.get("requested_profile"),
+        expected_read_targets=brief.get("instruction_contract", {}).get("read_targets"),
+        expected_read_scope=brief.get("instruction_contract", {}).get("read_scope"))
+    if (parsed.get("task_bound_evidence") != evidence
+            or parsed.get("model") != result.get("observed_model")
+            or parsed.get("reasoning") != result.get("observed_reasoning")):
+        raise OwnerRoleRuntimeError("completed worker retained native evidence differs")
+    return tuple(item["ref"] for item in brief.get("context", {}).get("supporting_context", []))
+
+
 class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
     """Finite delivery authorization within the existing owner attempt CAS."""
 
@@ -891,6 +924,8 @@ class CanonicalRoleRuntime:
         result = attempt.get("result")
         resource = result.get("resource_evidence") if isinstance(result, Mapping) else None
         retained_context = ((resource or {}).get("brief") or {}).get("context", {}).get("operating_setup")
+        completed_support_refs = _completed_worker_support_refs(result, self.native_result_verifier,
+            attempt.get("delivery_authorization")) if role == "worker" else ()
 
         def current_brief_digest() -> str:
             prepared = prepare_canonical_assignment_role_brief(
@@ -907,6 +942,7 @@ class CanonicalRoleRuntime:
                 # Settlement verifies the admitted packet. A peer replacement
                 # or setup revision affects future turns, not this observation.
                 operating_context_reader=lambda: retained_context,
+                completed_support_refs=completed_support_refs,
                 include_role_context="introduction" in ((resource or {}).get("brief") or {}).get("operating_core", {}),
             )
             return _canonical_operation_evidence(
@@ -1214,27 +1250,8 @@ class CanonicalRoleRuntime:
         original = (((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("result") or {})
         original_brief = (original.get("resource_evidence") or {}).get("brief") or {}
         retained_context = original_brief.get("context", {}).get("operating_setup")
-        completed_support_refs = ()
-        # A completed, authenticated worker cannot be invalidated by later
-        # supporting-document HEAD changes. Reconstruct only the immutable
-        # pins actually delivered, while retaining current assignment/mandate,
-        # task membership and exact brief/native authorization checks below.
-        if (original.get("outcome") == "unknown"
-                and original.get("unknown_reason") == "adopted operating setup changed before delivery"
-                and original.get("context_digest_verified") is True
-                and (original.get("raw_result") or {}).get("work_envelope", {}).get("exit_status") == 0):
-            context = (original.get("raw_result") or {}).get("work_envelope", {}).get("host_evidence", {}).get("otto_host_turn_context")
-            parsed = self.native_result_verifier.observe_context(context,
-                expected_session_id=original.get("physical_session_id"),
-                expected_turn_id=original.get("observed_turn_id"),
-                expected_profile=original.get("requested_profile"),
-                expected_read_targets=original_brief.get("instruction_contract", {}).get("read_targets"),
-                expected_read_scope=original_brief.get("instruction_contract", {}).get("read_scope"))
-            if (parsed.get("task_bound_evidence") != original.get("task_bound_evidence")
-                    or parsed.get("model") != original.get("observed_model")
-                    or parsed.get("reasoning") != original.get("observed_reasoning")):
-                raise OwnerRoleRuntimeError("completed worker retained native evidence differs")
-            completed_support_refs = tuple(item["ref"] for item in original_brief.get("context", {}).get("supporting_context", []))
+        completed_support_refs = _completed_worker_support_refs(original, self.native_result_verifier,
+            ((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("delivery_authorization"))
 
         def current_brief_digest() -> str:
             prepared = prepare_canonical_assignment_role_brief(

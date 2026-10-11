@@ -30,3 +30,34 @@ class CompletedWorkerSupportTests(unittest.TestCase):
    supporting_context(self.base,self.port,completed_support_refs=({**self.pin,'id':'other'},))
   missing={**self.pin,'revision':'rev-404'};base=deepcopy(self.base);base['content']['supporting_refs']=[missing]
   with self.assertRaises(RoleContextError):supporting_context(base,self.port,completed_support_refs=(missing,))
+
+class CompletedNativeSupportGateTests(unittest.TestCase):
+ def fixture(self):
+  from types import SimpleNamespace
+  brief={'instruction_contract':{},'context':{'supporting_context':[{'ref':{'authority':'owner','kind':'dat.content.document','id':'support','revision':'rev-1'}}]}}
+  authorization={'brief_sha256':hashlib.sha256(json.dumps(brief,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()}
+  evidence={'owner_delivery_authorization':authorization}
+  parsed={'task_bound_evidence':evidence,'model':'gpt-test','reasoning':'high'}
+  verifier=SimpleNamespace(observe_context=lambda *a,**kw:parsed)
+  result={'context_digest_verified':True,'outcome':'succeeded','resource_evidence':{'brief':brief},'task_bound_evidence':evidence,'observed_model':'gpt-test','observed_reasoning':'high','raw_result':{'work_envelope':{'exit_status':0,'host_evidence':{'otto_host_turn_context':{}}}}}
+  return result,verifier,authorization
+ def test_success_and_exact_setup_unknown_use_same_verified_native_pins(self):
+  from otto.agents.owner_runtime import _completed_worker_support_refs
+  result,verifier,authorization=self.fixture()
+  pins=_completed_worker_support_refs(result,verifier,authorization);self.assertEqual(len(pins),1)
+  result.update(outcome='unknown',unknown_reason='adopted operating setup changed before delivery')
+  self.assertEqual(_completed_worker_support_refs(result,verifier,authorization),pins)
+  result['unknown_reason']='transport_missing';self.assertEqual(_completed_worker_support_refs(result,verifier,authorization),())
+ def test_wrong_authorization_native_and_failed_transport_reject(self):
+  from otto.agents.owner_runtime import _completed_worker_support_refs,OwnerRoleRuntimeError
+  for change in ('auth','native','transport'):
+   with self.subTest(change=change):
+    result,verifier,authorization=self.fixture()
+    if change=='auth':authorization=dict(authorization,brief_sha256='0'*64)
+    if change=='native':result['observed_model']='foreign'
+    if change=='transport':result['raw_result']['work_envelope']['exit_status']=1
+    with self.assertRaises(OwnerRoleRuntimeError):_completed_worker_support_refs(result,verifier,authorization)
+ def test_other_provider_schema_keeps_original_current_brief_validation(self):
+  from otto.agents.owner_runtime import _completed_worker_support_refs
+  result,verifier,authorization=self.fixture();del result['raw_result']['work_envelope']['exit_status']
+  self.assertEqual(_completed_worker_support_refs(result,verifier,authorization),())
