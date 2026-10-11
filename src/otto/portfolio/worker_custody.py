@@ -377,7 +377,16 @@ def inspect_preinitialization_role(execution, *, schedule_id, _due=None):
     due=_due or execution._read(schedule_id)
     _require(execution.actor==due.lifecycle_owner==due.owner==due.manager_ref,
              'current lifecycle owner required')
-    assignment=execution._current(due.assignment_ref,due.generation)
+    assignment=execution.assignments.get(ResourceRef.from_dict(due.assignment_ref))
+    if _due is not None and assignment.ref.to_dict()!=due.assignment_ref:
+        from .operating_setup import authenticated_adoption_ancestor
+        _require(authenticated_adoption_ancestor({'ref':assignment.ref.to_dict(),
+            'principal':assignment.principal,'role':assignment.role,'generation':assignment.generation,
+            'payload':assignment.payload},due.assignment_ref,execution.portfolio.operations._owner_reader),
+            'historical guard requires authenticated consecutive same-generation adoption')
+        assignment=execution._current(assignment.ref.to_dict(),due.generation)
+    else:
+        assignment=execution._current(due.assignment_ref,due.generation)
     attempt=(due.host_evidence or {}).get('gateway_attempt') or {}
     result=attempt.get('result') or {}
     from otto.agents.herzchen_adapter import HerzchenCodexAdapter

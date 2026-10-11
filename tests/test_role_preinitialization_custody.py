@@ -2,6 +2,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import unittest
+from unittest.mock import patch
 from herzchen.contracts import ResourceRef
 from otto.portfolio.execution_operations import OccurrencePreparationError
 from otto.portfolio.worker_custody import (PREINITIALIZATION_ERROR,inspect_preinitialization_role,
@@ -69,6 +70,10 @@ class PreinitializationCustodyTests(unittest.TestCase):
   self.assertNotEqual(current.ref,old.ref)
   body=retained_preinitialization_release(f.app,f.app._read(self.schedule));self.assertEqual(body['scope']['assignment_ref'],old.ref.to_dict())
   permits_preinitialization_role(f.app,schedule_id=self.schedule,assignment=current,project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),request_key='separate-delivery')
+  reader=f.app.portfolio.operations._owner_reader
+  with patch.object(reader,'list_events',return_value=()):
+   with self.assertRaises(OccurrencePreparationError):retained_preinitialization_release(f.app,f.app._read(self.schedule))
+  with self.assertRaises(OccurrencePreparationError):permits_preinitialization_role(f.app,schedule_id=self.schedule,assignment=replace(current,generation=2),project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),request_key='separate-delivery')
   self.assertEqual(f.provider.calls,[])
 
 if __name__=='__main__':unittest.main()
