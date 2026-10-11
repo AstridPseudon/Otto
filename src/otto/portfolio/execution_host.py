@@ -267,6 +267,9 @@ class ExecutionHost:
         # UNKNOWN/stop/cancel alone do not prove native exit. The existing
         # exact owner custody disposition can release a terminal failed turn.
         released = due.stop_state == "completed" and due.completion_state == "succeeded"
+        if not released:
+            from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+            released = retained_aborted_manager_capture(due, app.actor)
         if not released and (due.host_evidence or {}).get("role_preinitialization_custody_release"):
             from .worker_custody import retained_preinitialization_release
             try:

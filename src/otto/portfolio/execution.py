@@ -568,9 +568,14 @@ class ExecutionApplication:
                     initialized_worker_continuity(self, assignment, self._read(pin['schedule_id']), session,
                         request_key or value.get('in_flight_request'))
                     return
+                from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+                terminal_abort = retained_aborted_manager_capture(proof, self.actor)
+                proof_session = proof["target"].get("native_id")
+                if terminal_abort:
+                    proof_session = proof["host_evidence"]["gateway_attempt"]["result"]["physical_session_id"]
                 if (pin["due_sha256"] != _digest(proof)
                         or not (proof.get("host_evidence") or {}).get("gateway_attempt")
-                        or proof.get("stop_state") != "completed" or proof.get("completion_state") != "succeeded"
+                        or proof.get("stop_state") != "completed" or (proof.get("completion_state") != "succeeded" and not terminal_abort)
                         or proof.get("in_flight_request") is not None
                         or any(prior_ref.get(k) != proof_ref.get(k) for k in ("authority", "kind", "id"))
                         or (proof_ref != prior_ref and not authenticated_adoption_ancestor(
@@ -579,7 +584,7 @@ class ExecutionApplication:
                             getattr(self.portfolio.operations, "_owner_reader", None)))
                         or any(value.get(k) != proof.get(k) for k in ("generation", "role", "recipient", "manager_ref", "lifecycle_owner"))
                         or _identity(value["target"]["project_ref"]) != _identity(proof["target"]["project_ref"])
-                        or value["target"].get("native_id") != session or proof["target"].get("native_id") != session):
+                        or value["target"].get("native_id") != session or proof_session != session):
                     raise OccurrencePreparationError("prepared native binding differs from its settled owner anchor")
                 value = proof
             attempt = (value.get("host_evidence") or {}).get("gateway_attempt") or {}
@@ -1141,6 +1146,21 @@ class ExecutionApplication:
             return {**handle, "assignment_ref": due.assignment_ref, "due_version": due.version,
                     "outcome": "prepared", "next_action": "start this exact occurrence"}
         self._current(due.assignment_ref, due.generation)
+        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        if retained_aborted_manager_capture(due, self.actor):
+            # The original turn cannot be retried. This settles only its exact
+            # terminal capture; any in-turn command UNKNOWN remains separate.
+            completed = replace(due, stop_state="completed", completion_state="failed",
+                in_flight_request=None, delivery_state="returned", last_completed_request=due.in_flight_request,
+                completed_at=self._now(), last_result={"outcome": "failed",
+                    "physical_session_id": result["physical_session_id"],
+                    "observed_turn_id": result["observed_turn_id"]})
+            saved = self.due_port.save_due(schedule_id, completed.to_dict(),
+                request_id=due.invocation_identity + ":terminal-abort-finalize", expected_version=due.version)
+            return {**handle, "due_version": saved["version"], "outcome": "failed",
+                "result": dict(result), "provider_called": False, "retry": False,
+                "command_effects_reconciled": False,
+                "next_action": "Consume this failed original capture and reconcile each original command handle; authorize only a distinct same-manager continuation, never replay this turn."}
         if not isinstance(result, Mapping):
             return {**handle, "outcome": "pending", "physical_session_id": attempt.get("physical_session_id"),
                     "next_action": "await the admitted worker or reconcile its retained host evidence"}
@@ -1512,9 +1532,11 @@ class ExecutionApplication:
                     "manager_generation": current.generation}
         key = "help-result:" + _digest([current.ref.id, current.generation, report_ref])
         schedule = "manager-help-callback-" + _digest(key)[:28]
+        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        failed_terminal = retained_aborted_manager_capture(prior, self.actor)
         if (prior.completion_state == "unknown" or
                 (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
-                or prior.stop_state == "completed" and prior.completion_state != "succeeded"):
+                or prior.stop_state == "completed" and prior.completion_state != "succeeded" and not failed_terminal):
             return {"outcome": "held", "provider_called": False, "effects_started": False,
                     "reason": "reconcile the retained manager effect before help continuation", "retry": False}
         existing = self.due_port.read_due(schedule)
@@ -1525,7 +1547,7 @@ class ExecutionApplication:
             if prior.schedule_id != schedule and prior.stop_state != "completed":
                 return {"outcome": "pending", "provider_called": False, "effects_started": False, "retry": False}
             return self.recover(schedule_id=schedule, execute=execute)
-        if prior.stop_state != "completed" or prior.completion_state != "succeeded" or prior.in_flight_request is not None:
+        if prior.stop_state != "completed" or (prior.completion_state != "succeeded" and not failed_terminal) or prior.in_flight_request is not None:
             return {"outcome": "pending", "provider_called": False, "effects_started": False,
                     "reason": "manager must settle before help continuation", "retry": False}
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])

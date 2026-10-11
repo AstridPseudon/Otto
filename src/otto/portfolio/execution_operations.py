@@ -912,9 +912,11 @@ def build_manager_callback_due(
     run-specific policy outside the execution layer.
     """
 
+    from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+    terminal_abort = retained_aborted_manager_capture(prior, prior.lifecycle_owner)
     if not (
         getattr(prior, "stop_state", None) == "completed"
-        and getattr(prior, "completion_state", None) == "succeeded"
+        and (getattr(prior, "completion_state", None) == "succeeded" or terminal_abort)
         and getattr(prior, "in_flight_request", None) is None
         and getattr(prior, "delivery_state", None) == "returned"
     ):

@@ -214,6 +214,10 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
         # Reuse only their completed, context-verified actual admission. The
         # exact owner authorization/assignment/project checks below still apply.
         proof_result = proof_attempt.get("result") or {}
+        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        if (proof_native is None and retained_aborted_manager_capture(conversation_due, actor)
+                and proof_result.get("physical_session_id") == native):
+            proof_native = (proof_attempt.get("delivery_admission") or {}).get("physical_session_id")
         if (proof_native is None and role == "manager"
                 and conversation_due.execution_mode == "fresh_manager"
                 and conversation_due.stop_state == "completed"

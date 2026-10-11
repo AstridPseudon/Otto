@@ -48,9 +48,59 @@ class MissingManagerCaptureTests(unittest.TestCase):
             expected_claim_sha256=fixture.digest(claim))['replayed'])
         self.assertEqual((root / 'submitted.jsonl').read_bytes(), before)
 
+    def test_admitted_abort_is_failed_settlement_and_physical_release_not_success(self):
+        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        from otto.portfolio.execution_host import ExecutionHost
+        f, root, claim = self.claimed()
+        trace = root / 'native.jsonl'
+        rows = [json.loads(v) for v in trace.read_text().splitlines()]
+        for row in rows:
+            payload = row.get('payload', {})
+            if payload.get('type') == 'task_complete' and payload.get('turn_id') == 'work-turn':
+                payload.update(type='turn_aborted', reason='interrupted')
+        trace.write_text(''.join(json.dumps(v) + '\n' for v in rows))
+        before = (root / 'submitted.jsonl').read_bytes()
+        key = fixture.digest(claim)
+        result = f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
+            expected_claim_sha256=key)
+        self.assertEqual(result['reconciliation']['native_terminal_state'], 'aborted')
+        recovered = f.app.recover(schedule_id='fresh-manager', execute=False)
+        self.assertEqual(recovered['outcome'], 'failed')
+        self.assertFalse(recovered['retry'])
+        self.assertFalse(recovered['result']['context_digest_verified'])
+        self.assertFalse(recovered['command_effects_reconciled'])
+        due = f.app._read('fresh-manager')
+        self.assertEqual((due.stop_state, due.completion_state, due.in_flight_request),
+                         ('completed', 'failed', None))
+        self.assertTrue(retained_aborted_manager_capture(due, f.app.actor))
+        host = ExecutionHost(directory=root/'ipc', handler=lambda request: None)
+        host.restore_execution(f.app, due)
+        self.assertNotIn('fresh-manager', host._capacity_holds)
+        # A distinct response-driven same-native callback can be prepared;
+        # the original aborted occurrence itself is never resumed.
+        from otto.portfolio.execution_operations import build_manager_callback_due
+        callback = build_manager_callback_due(due, schedule_id='abort-response-callback',
+            request_key='abort-response-callback', assignment_ref=due.assignment_ref,
+            guide_ref=next(ref for ref in due.context_refs if ref != due.target['mandate_ref']),
+            mandate_ref=due.target['mandate_ref'], due_at=due.due_at,
+            timeout_seconds=due.timeout_seconds, native_adapter=f.app.native_adapter_identity())
+        f.port.save_due(callback.schedule_id, callback.to_dict(), expected_version=0,
+                        request_id='fixture-abort-response-callback')
+        f.app._verify_native_binding(f.app._current(due.assignment_ref, due.generation),
+                                    callback.target['native_id'], callback.schedule_id)
+        f.app.runtime.prepare_execution_readiness(due=callback)
+        self.assertEqual(callback.target['native_id'], due.last_result['physical_session_id'])
+        self.assertNotEqual(callback.schedule_id, due.schedule_id)
+        self.assertEqual(f.app.recover(schedule_id='fresh-manager', execute=True)['outcome'], 'replayed')
+        changed = due.to_dict()
+        changed['host_evidence']['gateway_attempt']['result']['error']['message'] = 'changed'
+        self.assertFalse(retained_aborted_manager_capture(changed, f.app.actor))
+        self.assertFalse(retained_aborted_manager_capture(due, 'foreign'))
+        self.assertEqual((root / 'submitted.jsonl').read_bytes(), before)
+
     def test_missing_foreign_changed_and_active_evidence_stays_held(self):
         for mode in ('claim_digest', 'missing_terminal', 'active_turn', 'wrong_model',
-                     'changed_prompt', 'wrong_session', 'missing_admission', 'changed_assignment'):
+                     'changed_prompt', 'wrong_session', 'missing_admission', 'changed_assignment', 'abort_overlap'):
             with self.subTest(mode=mode):
                 f, root, claim = self.claimed()
                 trace = root / 'native.jsonl'; raw = trace.read_text()
@@ -61,6 +111,10 @@ class MissingManagerCaptureTests(unittest.TestCase):
                         if not ('task_complete' in v and 'work-turn' in v)) + '\n')
                 elif mode == 'active_turn':
                     trace.write_text(raw + json.dumps({'type': 'event_msg', 'payload': {
+                        'type': 'task_started', 'turn_id': 'foreign-active'}}) + '\n')
+                elif mode == 'abort_overlap':
+                    altered = raw.replace('task_complete', 'turn_aborted')
+                    trace.write_text(altered + json.dumps({'type': 'event_msg', 'payload': {
                         'type': 'task_started', 'turn_id': 'foreign-active'}}) + '\n')
                 elif mode == 'wrong_model': trace.write_text(raw.replace('gpt-test', 'wrong-model'))
                 elif mode == 'changed_prompt': trace.write_text(raw.replace('Produce actual requested artifact', 'different request'))

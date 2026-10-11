@@ -112,7 +112,7 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
         if kind == "task_started":
             active.add(ident)
             if ident == turn: starts.append(payload)
-        elif kind in {"task_complete", "task_aborted"}:
+        elif kind in {"task_complete", "task_aborted", "turn_aborted"}:
             active.discard(ident)
             if ident == turn: ends.append(payload)
         elif (ident == turn and kind == "item_completed"
@@ -120,7 +120,8 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
             user_texts.append("\n".join(v.get("text", "")
                 for v in payload["item"].get("content", []) if v.get("type") in {"text", "Text"}))
     require(not active and len(starts) == len(ends) == len(user_texts) == 1
-            and ends[0].get("type") == "task_complete" and ends[0].get("error") is None
+            and ends[0].get("type") in {"task_complete", "turn_aborted"}
+            and (ends[0].get("type") == "turn_aborted" or ends[0].get("error") is None)
             and starts[0].get("started_at", -1) <= ends[0].get("completed_at", -1),
             "exact admitted native turn is missing, repeated, aborted or still active")
     observed = datetime.fromisoformat(admission["observed_at"].replace("Z", "+00:00"))
@@ -156,38 +157,58 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
     logical = capture.principal if isinstance(capture.principal, str) else capture.principal["id"]
     host_request = HostRequest(HostOperation.RESUME, HostIdentity(logical, session),
                               ResourceRef.from_dict(capture.task_ref), due["profile"])
-    context = _native_host_context(selected, request=host_request, session_id=session,
-        turn_id=turn, delivered_brief=brief, delivered_authorization=authorization)
-    parsed = runtime.native_result_verifier.observe_context(context, expected_session_id=session,
-        expected_turn_id=turn, expected_profile=due["profile"],
-        expected_read_targets=brief["instruction_contract"].get("read_targets"),
-        expected_read_scope=brief["instruction_contract"].get("read_scope"))
-    require(parsed["model"] == due["requested_model"] and parsed["reasoning"] == due["requested_reasoning"],
-            "actual native model or reasoning differs")
-    from .gateway import AttemptEnvelope
-    from otto.portfolio.resource_sync import brief_resource_evidence
-    resource = brief_resource_evidence({**brief, "brief_sha256": digest(brief)},
-                                      delivery_state="completed", native_identity=session)
-    result = AttemptEnvelope(attempt["logical_request_key"], logical, capture.project_ref,
-        capture.task_ref, capture.assignment_ref, capture.generation,
-        "invoke" if launch["native_session"].get("fresh_binding") else "resume",
-        due["profile"], due["requested_model"], due["requested_reasoning"], logical, session,
-        parsed["model"], parsed["reasoning"], "done", "succeeded",
-        request_fingerprint=attempt["request_fingerprint"], resource_evidence=resource).to_dict()
-    result.update(observed_turn_id=turn, observed_profile=parsed["observed_profile"],
-        observed_context_digest=parsed["context_digest"], context_digest_verified=True,
-        task_bound_evidence=parsed["task_bound_evidence"], worker_content=parsed["worker_content"],
-        raw_result={"transport_outcome": "unavailable_after_owner_interruption",
-            "original_transport_exit_status": None, "owner_delivery_authorization": authorization,
-            "work_envelope": {"exit_status": None, "host_evidence": {"otto_host_turn_context": context}}})
-    capture.validate_completed_manager_result(result)
+    aborted = ends[0]["type"] == "turn_aborted"
+    if aborted:
+        from .gateway import AttemptEnvelope
+        from otto.portfolio.resource_sync import brief_resource_evidence
+        resource = brief_resource_evidence({**brief, "brief_sha256": digest(brief)},
+                                          delivery_state="completed", native_identity=session)
+        result = AttemptEnvelope(attempt["logical_request_key"], logical, capture.project_ref,
+            capture.task_ref, capture.assignment_ref, capture.generation,
+            "invoke" if launch["native_session"].get("fresh_binding") else "resume",
+            due["profile"], due["requested_model"], due["requested_reasoning"], logical, session,
+            None, None, "done", "failed", request_fingerprint=attempt["request_fingerprint"],
+            resource_evidence=resource).to_dict()
+        result.update(observed_turn_id=turn, context_digest_verified=False,
+            error={"code": "admitted_native_turn_aborted", "message": ends[0].get("reason", "native aborted")},
+            raw_result={"transport_outcome": "unavailable_after_owner_interruption",
+                "original_transport_exit_status": None, "owner_delivery_authorization": authorization,
+                "native_terminal": deepcopy(ends[0]), "command_effects_reconciled": False})
+    else:
+        context = _native_host_context(selected, request=host_request, session_id=session,
+            turn_id=turn, delivered_brief=brief, delivered_authorization=authorization)
+        parsed = runtime.native_result_verifier.observe_context(context, expected_session_id=session,
+            expected_turn_id=turn, expected_profile=due["profile"],
+            expected_read_targets=brief["instruction_contract"].get("read_targets"),
+            expected_read_scope=brief["instruction_contract"].get("read_scope"))
+        require(parsed["model"] == due["requested_model"] and parsed["reasoning"] == due["requested_reasoning"],
+                "actual native model or reasoning differs")
+        from .gateway import AttemptEnvelope
+        from otto.portfolio.resource_sync import brief_resource_evidence
+        resource = brief_resource_evidence({**brief, "brief_sha256": digest(brief)},
+                                          delivery_state="completed", native_identity=session)
+        result = AttemptEnvelope(attempt["logical_request_key"], logical, capture.project_ref,
+            capture.task_ref, capture.assignment_ref, capture.generation,
+            "invoke" if launch["native_session"].get("fresh_binding") else "resume",
+            due["profile"], due["requested_model"], due["requested_reasoning"], logical, session,
+            parsed["model"], parsed["reasoning"], "done", "succeeded",
+            request_fingerprint=attempt["request_fingerprint"], resource_evidence=resource).to_dict()
+        result.update(observed_turn_id=turn, observed_profile=parsed["observed_profile"],
+            observed_context_digest=parsed["context_digest"], context_digest_verified=True,
+            task_bound_evidence=parsed["task_bound_evidence"], worker_content=parsed["worker_content"],
+            raw_result={"transport_outcome": "unavailable_after_owner_interruption",
+                "original_transport_exit_status": None, "owner_delivery_authorization": authorization,
+                "work_envelope": {"exit_status": None, "host_evidence": {"otto_host_turn_context": context}}})
+        capture.validate_completed_manager_result(result)
     proof = {"schema": "otto.missing-manager-capture-reconciliation.v1", "resolver": runtime.actor,
         "effect": "trusted_admitted_terminal_capture_no_provider_replay",
         "source_claim": deepcopy(attempt), "source_claim_sha256": expected_claim_sha256,
         "result_sha256": digest(result), "physical_session_id": session, "observed_turn_id": turn,
         "native_file_identity": [metadata.st_dev, metadata.st_ino],
         "trace_sha256": hashlib.sha256("\n".join(selected).encode()).hexdigest(),
-        "original_transport_exit_status": None, "native_terminal_observed": True}
+        "original_transport_exit_status": None, "native_terminal_observed": True,
+        "native_terminal_state": "aborted" if aborted else "completed",
+        "command_effects_reconciled": False if aborted else None}
     if validate_only:
         return {"outcome": "qualified", "provider_called": False, "store_mutated": False,
                 "reconciliation": proof}
@@ -206,6 +227,29 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
                       "otto-missing-capture-proof:" + attempt["logical_request_key"] + ":" + expected_claim_sha256)
     capture.record(result)
     return {"outcome": "reconciled", "provider_called": False, "reconciliation": proof}
+
+
+def retained_aborted_manager_capture(due, lifecycle_owner):
+    """Retained owner capture proves physical terminality, never command effects."""
+    value = due.to_dict() if hasattr(due, "to_dict") else due
+    attempt = (value.get("host_evidence") or {}).get("gateway_attempt") or {}
+    proof = attempt.get("missing_capture_reconciliation") or {}
+    result = attempt.get("result") or {}
+    claim = proof.get("source_claim") or {}
+    return (value.get("role") == "manager" and value.get("lifecycle_owner") == lifecycle_owner
+        and proof.get("schema") == "otto.missing-manager-capture-reconciliation.v1"
+        and proof.get("resolver") == lifecycle_owner and proof.get("native_terminal_state") == "aborted"
+        and proof.get("native_terminal_observed") is True
+        and proof.get("command_effects_reconciled") is False
+        and digest(claim) == proof.get("source_claim_sha256")
+        and attempt.get("state") == "result" and digest(result) == proof.get("result_sha256")
+        and result.get("outcome") == "failed" and result.get("delivery_state") == "done"
+        and (result.get("error") or {}).get("code") == "admitted_native_turn_aborted"
+        and claim.get("assignment_ref") == value.get("assignment_ref")
+        and claim.get("generation") == value.get("generation")
+        and result.get("physical_session_id") == proof.get("physical_session_id")
+        and result.get("observed_turn_id") == proof.get("observed_turn_id")
+        and (claim.get("delivery_admission") or {}).get("observed_turn_id") == proof.get("observed_turn_id"))
 
 
 def completed_resume_admission(attempt, lifecycle_owner):
