@@ -804,9 +804,12 @@ class CodexCliBinding(HostPort):
                 if turn_id is None:
                     if trace_path is None or resume_boundary is None:
                         raise ValueError("native trace boundary is unavailable at turn start")
+                    # Compaction can publish task_started before the exact
+                    # UserMessage. Use the already authorized finite turn
+                    # budget rather than failing its admission after five seconds.
                     deadline = min(
-                        self.monotonic_clock() + 5,
-                        self.occurrence_deadline or self.monotonic_clock() + 5,
+                        self.monotonic_clock() + effective_timeout,
+                        self.occurrence_deadline or self.monotonic_clock() + effective_timeout,
                     )
                     admitted = None
                     while admitted is None and self.monotonic_clock() < deadline:

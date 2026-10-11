@@ -137,6 +137,15 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
                 and proof.get("observed_turn_id") == result.get("observed_turn_id")
                 and proof.get("task_bound_evidence_sha256") == digest(result.get("task_bound_evidence"))):
             return proof
+        if (proof.get("schema") == "otto.completed-resume-capture-reconciliation.v1"
+                and proof.get("resolver") == self.lifecycle_owner
+                and proof.get("effect") == "trusted_completed_resume_no_provider_replay"
+                and digest(prior) == proof.get("source_unknown_sha256")
+                and prior.get("operation") == "resume" and prior.get("outcome") == "unknown"
+                and proof.get("physical_session_id") == result.get("physical_session_id")
+                and (digest(result) == proof.get("source_unknown_sha256")
+                     or digest(result) == proof.get("replacement_sha256"))):
+            return proof
         return {}
 
     def verify_completed_delivery(self, logical_request_key: str, physical_session_id: str,
@@ -923,6 +932,14 @@ class CanonicalRoleRuntime:
             published = capture.publish_analytical_result(result, result_owner)
         accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
         return {**accepted, "published_analytical_result": published}
+
+    def reconcile_completed_resume_capture(self, *, schedule_id: str,
+                                          expected_unknown_sha256: str,
+                                          validate_only: bool = False) -> Mapping[str, Any]:
+        """Reparse an exact completed authorized resume; retain failed transport."""
+        from .manager_capture_reconciliation import reconcile_completed_resume_capture
+        return reconcile_completed_resume_capture(self, schedule_id=schedule_id,
+            expected_unknown_sha256=expected_unknown_sha256, validate_only=validate_only)
 
     def reconcile_fresh_manager_result(self, *, schedule_id: str,
                                        expected_unknown_sha256: str,

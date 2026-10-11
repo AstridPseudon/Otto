@@ -23,6 +23,32 @@ class NativeResumeTraceTests(unittest.TestCase):
    self.assertEqual(receipt.outcome.value,'succeeded')
    self.assertTrue(envelope['host_evidence']['invocation_turn_verified'])
    self.assertEqual(b.trusted_thread_reader.call_count,1)
+ def test_delayed_exact_message_uses_existing_finite_admission_budget(self):
+  with tempfile.TemporaryDirectory() as directory:
+   path=Path(directory)/'native.jsonl';b,_=self.fixture(path)
+   clock=[0.0]; sleeps=[]; prompt_value=[]
+   b.monotonic_clock=lambda:clock[0]
+   b._native_start_callback=Mock()
+   def append(event):
+    with path.open('ab') as stream:stream.write((json.dumps(event)+'\n').encode())
+   def advance(_):
+    clock[0]+=6; sleeps.append(clock[0])
+    if len(sleeps)==2:
+     append({'type':'event_msg','payload':{'type':'item_completed','turn_id':'turn1','thread_id':'issued-session','item':{'type':'UserMessage','content':[{'type':'Text','text':prompt_value[0]}]}}})
+   def finish(process,prompt,**kwargs):
+    prompt_value.append(prompt)
+    append({'type':'event_msg','payload':{'type':'task_started','turn_id':'turn1','started_at':int(time.time())}})
+    append({'type':'turn_context','payload':{'turn_id':'turn1','model':'fixture','collaboration_mode':{'settings':{'reasoning_effort':'high'}},'sandbox_policy':{'type':'read-only'},'approval_policy':'never'}})
+    kwargs['native_start_callback'](None,'current-start')
+    append({'type':'event_msg','payload':{'type':'task_complete','turn_id':'turn1','completed_at':int(time.time())}})
+    return json.dumps({'type':'thread.started','thread_id':'issued-session'})+'\n'+json.dumps({'type':'turn.completed','turn_id':'turn1'}),'',0,None
+   with patch.object(host.subprocess,'Popen',return_value=Mock(pid=1234)),patch.object(host,'_communicate_after_native_start',side_effect=finish),patch.object(host.time,'sleep',side_effect=advance):
+    receipt,envelope=b.execute(HostRequest(HostOperation.RESUME,HostIdentity('fixture-worker','issued-session'),ResourceRef('fixture','work.task','task','rev-1'),'read-only'))
+   self.assertEqual(receipt.outcome.value,'succeeded',(receipt,envelope))
+   self.assertEqual(sleeps,[6,12])
+   self.assertEqual(b._native_start_callback.call_count,1)
+   self.assertEqual(b._native_start_callback.call_args.args[0],'turn1')
+   self.assertTrue(envelope['host_evidence']['invocation_turn_verified'])
  def test_file_replacement_header_boundary_and_symlink_fail_closed(self):
   for mode in ['replacement','header','truncate','boundary','symlink']:
    with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
