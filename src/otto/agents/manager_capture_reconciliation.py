@@ -23,6 +23,28 @@ def require(value, reason):
         raise OwnerRoleRuntimeError(reason)
 
 
+def completed_resume_admission(attempt, lifecycle_owner):
+    """Project a verified terminal reparse, never the missing live callback."""
+    proof = attempt.get("delivery_admission_reconciliation") or {}
+    result = attempt.get("result") or {}
+    source = proof.get("source_unknown") or {}
+    if (proof.get("schema") != "otto.completed-resume-capture-reconciliation.v1"
+            or proof.get("resolver") != lifecycle_owner
+            or proof.get("effect") != "trusted_completed_resume_no_provider_replay"
+            or proof.get("source_unknown_sha256") != digest(source)
+            or source.get("operation") != "resume" or source.get("outcome") != "unknown"
+            or proof.get("replacement_sha256") != digest(result)
+            or result.get("outcome") != "succeeded" or result.get("context_digest_verified") is not True
+            or result.get("delivery_state") != "done"
+            or proof.get("native_turn_started") is not True
+            or proof.get("physical_session_id") != result.get("physical_session_id")
+            or proof.get("observed_turn_id") != result.get("observed_turn_id")):
+        return {}
+    return {"physical_session_id": result["physical_session_id"],
+            "observed_turn_id": result["observed_turn_id"], "native_turn_started": True,
+            "origin": "trusted_completed_resume_reparse", "original_live_admission": False}
+
+
 def reconcile_completed_resume_capture(runtime, *, schedule_id,
                                       expected_unknown_sha256, validate_only=False):
     due = runtime.due_port.read_due(schedule_id) or {}

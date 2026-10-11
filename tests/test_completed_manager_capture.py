@@ -64,6 +64,29 @@ class CompletedResumeCaptureTests(unittest.TestCase):
         self.assertEqual((root / "submitted.jsonl").read_bytes(), submitted)
         self.assertTrue(f.app.runtime.reconcile_completed_resume_capture(schedule_id=schedule,
             expected_unknown_sha256=digest(prior))["replayed"])
+        next_role = f.app.prepare_role(role="manager", project_ref=prior["project_ref"],
+            task_ref=prior["task_ref"], assignment_ref=prior["assignment_ref"],
+            generation=prior["generation"], mandate_ref=before["target"]["mandate_ref"],
+            request_key="continue-after-reconciled-capture", instruction="Advance retained work",
+            model="gpt-test", reasoning="high", profile="workspace-write",
+            native_session_id=prior["physical_session_id"], binding_schedule_id=schedule)
+        from otto.portfolio.operating_setup import verify_role_conversation
+        next_due = f.app._read(next_role["schedule_id"])
+        assignment = f.app.runtime._assignment_reader(next_due.assignment_ref)(
+            {k: next_due.assignment_ref[k] for k in ("authority", "kind", "id")})
+        native, _ = verify_role_conversation(due=next_due, assignment=assignment,
+            project_ref=prior["project_ref"], due_port=f.port, actor=f.app.runtime.actor)
+        self.assertEqual(native, prior["physical_session_id"])
+        self.assertEqual((root / "submitted.jsonl").read_bytes(), submitted)
+        from copy import deepcopy
+        from otto.agents.manager_capture_reconciliation import completed_resume_admission
+        attempt = f.port.read_due(schedule)["host_evidence"]["gateway_attempt"]
+        for field, value in (("resolver", "foreign-owner"),
+                             ("replacement_sha256", "0" * 64),
+                             ("observed_turn_id", "foreign-turn")):
+            changed = deepcopy(attempt)
+            changed["delivery_admission_reconciliation"][field] = value
+            self.assertEqual(completed_resume_admission(changed, f.app.runtime.actor), {})
 
     def test_foreign_active_changed_prompt_model_and_stale_custody_are_rejected(self):
         for mode in ("foreign_session", "active", "model", "prompt", "no_completion", "digest", "stale"):

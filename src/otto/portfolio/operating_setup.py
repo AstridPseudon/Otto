@@ -154,6 +154,16 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
     a request-provided native ID or pin field alone never establishes authority.
     """
     from otto.attention import DueRecord, native_target_identity
+    from otto.agents.manager_capture_reconciliation import completed_resume_admission
+    def admission_for(record):
+        attempt = (record.host_evidence or {}).get("gateway_attempt") or {}
+        direct = attempt.get("delivery_admission") or {}
+        if direct:
+            return direct
+        if (record.role == "manager" and record.stop_state == "completed"
+                and record.completion_state == "succeeded" and record.in_flight_request is None):
+            return completed_resume_admission(attempt, record.lifecycle_owner)
+        return {}
     role = due.role
     native = native_target_identity(due.target)
     principal = assignment["principal"]
@@ -220,11 +230,11 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
                 or any(conversation_due.target["project_ref"].get(k) != project_ref.get(k)
                        for k in ("authority", "kind", "id"))):
             raise OperatingSetupError("retained native binding is outside the current adoption/generation")
-        if ((proof_attempt.get("delivery_admission") or {}).get("native_turn_started") is not True
+        if (admission_for(conversation_due).get("native_turn_started") is not True
                 or (proof_attempt.get("delivery_authorization") or {}).get("status") != "authorized"):
             raise OperatingSetupError("retained native binding lacks actual authenticated admission")
     attempt = (conversation_due.host_evidence or {}).get("gateway_attempt") or {}
-    admission = attempt.get("delivery_admission") or {}
+    admission = admission_for(conversation_due)
     authorization = attempt.get("delivery_authorization") or {}
     if bound is not None and bound != native:
         raise OperatingSetupError("role conversation differs from current assignment binding")
