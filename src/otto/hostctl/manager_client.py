@@ -16,8 +16,6 @@ Two callers use it:
 from __future__ import annotations
 
 import argparse
-import json
-import os
 from pathlib import Path
 from typing import Any, Mapping
 import uuid
@@ -84,13 +82,7 @@ def run_launched(argv: list[str], environ: Mapping[str, str]) -> Mapping[str, An
         return call(caller_socket, args)
     if ipc.name != "manager-ipc" or not ipc.is_dir():
         raise PermissionError("this process has no manager lane (OTTO_MANAGER_IPC)")
-    token = uuid.uuid4().hex
-    request = ipc / ("request-" + token + ".json")
-    fd = os.open(request, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w") as stream:
-        json.dump(args, stream, separators=(",", ":"))
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    from .lanes import submit
+    token = submit(ipc, args, token=uuid.uuid4().hex)  # written aside, linked into place
     result = wait_command_response(ipc, token, timeout_seconds=timeout)
     return result if isinstance(result, Mapping) else {"outcome": "unknown", "request_id": token}

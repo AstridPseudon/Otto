@@ -198,9 +198,18 @@ class OwnerService:
                                       "manager_token": pending["manager_token"], "who": who,
                                       "command": pending.get("command")}
                 continue
-            self.in_flight[token] = {"lane": who, "since": _now()}
             try:
                 request = lanes.read_private_json(path)
+            except ValueError:
+                # A writer that does not link its request into place may still
+                # be writing: retry on the next poll, answer only if it stays bad.
+                if time.time() - path.stat().st_mtime < 10:
+                    continue
+                request = None
+            self.in_flight[token] = {"lane": who, "since": _now()}
+            try:
+                if request is None:
+                    raise ValueError("the request is not a JSON object")
                 self.in_flight[token]["command"] = [request.get("command"), request.get("sub")]
                 lanes.mark_pending(lane, token, "processing", lane_principal=who)
                 result = handler(who, request, token, lane)

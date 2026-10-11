@@ -91,12 +91,19 @@ def submit(lane: Path, request: Mapping[str, Any], *, token: Optional[str] = Non
     if not valid_token(token):
         raise ValueError("lane token must be 32 lowercase hexadecimal characters")
     path = lane / ("request-" + token + ".json")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w") as stream:
-        json.dump(dict(request), stream, separators=(",", ":"), sort_keys=True, default=_default)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    # Write aside, then link into place: the service never sees a partial
+    # request, and an existing request is never replaced.
+    temporary = lane / (".request-" + token + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(dict(request), stream, separators=(",", ":"), sort_keys=True, default=_default)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return token
 
 
