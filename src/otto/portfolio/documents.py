@@ -311,12 +311,14 @@ class ProjectDocumentReader:
         actor: Any,
         roles: Sequence[str],
         task_refs: Optional[Sequence[Any]],
+        listed: Optional[Mapping[str, Any]] = None,
     ) -> tuple[Any, Any, Mapping[str, Any]] | None:
         from herzchen.contracts import ResourceRef
 
         try:
             requested = _resource_ref(document_ref, field="document_ref")
-            listed = self.list_documents(project_ref, actor=actor, roles=roles, task_refs=task_refs)
+            if listed is None:
+                listed = self.list_documents(project_ref, actor=actor, roles=roles, task_refs=task_refs)
             if listed.get("outcome") != "listed":
                 return None
             item = next((item for item in listed["documents"] if _identity(_resource_ref(item["document_ref"])) == _identity(requested)), None)
@@ -334,9 +336,17 @@ class ProjectDocumentReader:
         actor: Any,
         roles: Sequence[str] = (),
         task_refs: Optional[Sequence[Any]] = None,
+        listed: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Read the current or exact pinned revision of a visible project doc."""
-        visible = self._visible_document(project_ref, document_ref, actor=actor, roles=roles, task_refs=task_refs)
+        """Read the current or exact pinned revision of a visible project doc.
+
+        ``listed`` is this reader's own list_documents result for the same
+        project, actor, roles and task_refs, when the caller reads many
+        documents from one listing (it is not re-derived per document). The
+        exact document is still resolved through the visibility owner.
+        """
+        visible = self._visible_document(project_ref, document_ref, actor=actor, roles=roles, task_refs=task_refs,
+                                         listed=listed)
         if visible is None:
             return _unavailable()
         requested, item, provenance = visible
@@ -395,8 +405,10 @@ class ProjectDocumentReader:
                 "error": {"code": "read_many_limit_exceeded", "message": f"at most {MAX_READ_MANY} document references may be read at once"},
             }
         items = []
+        listed = self.list_documents(project_ref, actor=actor, roles=roles, task_refs=task_refs)
         for index, ref in enumerate(document_refs):
-            result = self.read_document(project_ref, ref, actor=actor, roles=roles, task_refs=task_refs)
+            result = self.read_document(project_ref, ref, actor=actor, roles=roles, task_refs=task_refs,
+                                        listed=listed)
             items.append({"position": index, **result})
         return {"outcome": "read_many", "items": items, "count": len(items), "read_only": True, "dispatch": False, "launch": False}
 

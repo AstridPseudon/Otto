@@ -152,7 +152,7 @@ def _digest_json(value: Any) -> str:
 def _onboarding_files(brief: str, supporting_files: Optional[Mapping[str, str]]) -> dict[str, str]:
     """Validate the small title-and-brief file set with the existing folder rules."""
 
-    from .project_folder import validate_files
+    from .project_folder import validate_operation_files
 
     files = {ONBOARDING_BRIEF_PATH: brief}
     if supporting_files is not None:
@@ -163,7 +163,7 @@ def _onboarding_files(brief: str, supporting_files: Optional[Mapping[str, str]])
                 raise PortfolioError("supporting_files cannot replace the canonical brief.md")
             files[path] = content
     try:
-        return validate_files(files)
+        return validate_operation_files(files)
     except (TypeError, ValueError) as exc:
         raise PortfolioError(str(exc)) from exc
 

@@ -14,17 +14,29 @@ from herzchen.content.model import CONTENT_SCHEMA_REVISION, PROJECT_FILES_NAMESP
 from herzchen.contracts import (ReferenceBinding, ResourceRef, TransactionContext,
                                canonical_json, canonical_request_digest)
 
-MAX_FILES = 50
-MAX_FILE_BYTES = 1024 * 1024
-MAX_TREE_BYTES = 1024 * 1024
+# A project's folder has no product limit. Bounds apply to ONE file and to
+# ONE operation (what a single import, check-in or transfer carries); larger
+# work is split across operations, each with its exact partial recovery.
+MAX_FILE_BYTES = 10 * 1024 * 1024
+MAX_OPERATION_FILES = 1000
+MAX_OPERATION_BYTES = 256 * 1024 * 1024
+# A checkout materializes every file, so a whole tree is refused only when it
+# is pathological. This is a sanity bound, not a project size limit.
+MAX_PROJECT_FILES = 100_000
+MAX_PROJECT_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def _identity(ref: ResourceRef) -> ResourceRef:
     return ResourceRef(ref.authority, ref.kind, ref.id)
 
 
-def validate_files(files: Mapping[str, str]) -> dict[str, str]:
-    if not isinstance(files, Mapping) or len(files) > MAX_FILES:
+def validate_files(files: Mapping[str, str], *, max_files: int = MAX_PROJECT_FILES,
+                   max_bytes: int = MAX_PROJECT_BYTES) -> dict[str, str]:
+    """Portable paths and UTF-8 text; the defaults bound a whole tree (sanity only).
+
+    Callers validating what one operation carries pass the operation bounds.
+    """
+    if not isinstance(files, Mapping) or len(files) > max_files:
         raise ValueError("files must be a bounded path-to-UTF-8-text object")
     paths = {}
     total = 0
@@ -47,9 +59,14 @@ def validate_files(files: Mapping[str, str]) -> dict[str, str]:
             if previous is not None and (previous != entry or entry[1]):
                 raise ValueError("ambiguous or conflicting portable file paths")
             paths[folded] = entry
-    if total > MAX_TREE_BYTES:
+    if total > max_bytes:
         raise ValueError("document tree exceeds the byte bound")
     return dict(sorted(files.items()))
+
+
+def validate_operation_files(files: Mapping[str, str]) -> dict[str, str]:
+    """What ONE import or onboarding operation may carry; split larger inputs."""
+    return validate_files(files, max_files=MAX_OPERATION_FILES, max_bytes=MAX_OPERATION_BYTES)
 
 
 class ProjectFolderOwner:
@@ -100,7 +117,7 @@ class ProjectFolderOwner:
                        and member['subject_kind'] == 'project']
             if not members:
                 continue
-            read = reader.read_document(project, item['document_ref'], actor=actor)
+            read = reader.read_document(project, item['document_ref'], actor=actor, listed=listed)
             if read['outcome'] != 'read' or not isinstance(read['content'], str):
                 raise ValueError('folder document is not available UTF-8 text')
             if (item['document'].get('import_mode') != 'owned'
@@ -149,7 +166,7 @@ class ProjectFolderOwner:
                 'read_only': True, 'execution': False, 'dispatch': False}
 
     def import_project_folder(self, *, project_json, files, actor, request_id):
-        files = validate_files(files)
+        files = validate_operation_files(files)
         edit = self._json_mapping(project_json, 'project_json')
         # The normal sheet validator rejects authority and observation fields.
         # Pending import is intentionally restricted to the inert author fields.
@@ -229,8 +246,13 @@ class ProjectFolderOwner:
                 'files_preserved': True, 'execution': False, 'dispatch': False}
 
     def _folder_changes(self, state, raw):
-        if not isinstance(raw, (list, tuple)) or len(raw) > MAX_FILES:
-            raise ValueError('document_changes must be a bounded explicit action list')
+        if not isinstance(raw, (list, tuple)) or len(raw) > MAX_OPERATION_FILES:
+            raise ValueError('document_changes must be a bounded explicit action list; '
+                             'split larger change sets across check-ins')
+        carried = sum(len(change.get('content', '').encode('utf-8')) for change in raw
+                      if isinstance(change, Mapping) and isinstance(change.get('content'), str))
+        if carried > MAX_OPERATION_BYTES:
+            raise ValueError('document_changes carry more text than one check-in may; split them')
         files = dict(state.get('document_files', {}))
         seen = set()
         changes = []
@@ -406,8 +428,9 @@ def validate_transfer(snapshot):
             or project.get('project_ref') != source.to_dict()):
         raise ValueError('transfer project/source revision refs are inconsistent')
     docs, links = snapshot.get('documents', []), snapshot.get('document_links', [])
-    if not isinstance(docs, list) or not isinstance(links, list) or len(docs) > MAX_FILES or len(links) > MAX_FILES:
-        raise ValueError('transfer document selection exceeds the bound')
+    if (not isinstance(docs, list) or not isinstance(links, list) or len(docs) > MAX_OPERATION_FILES
+            or len(links) > 4 * MAX_OPERATION_FILES):
+        raise ValueError('transfer document selection exceeds one operation; transfer in selections')
     selected = set()
     paths = {}
     for item in docs:
