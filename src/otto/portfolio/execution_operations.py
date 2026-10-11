@@ -987,6 +987,38 @@ def prepare_current_assignment_occurrence(
     if not isinstance(request_key, str) or not request_key.strip():
         raise OccurrencePreparationError("request_key is required")
     expected_mode = _MODES.get((operation, lifecycle))
+    if (operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) == "manager":
+        # This entrance is only the exact separately authorized delivery after
+        # the retained guard-before-initializer disposition, never generic retry.
+        proof = (getattr(due, "target", None) or {}).get("preinitialization_recovery") or {}
+        old_value = due_port.read_due(proof.get("original_schedule_id", ""))
+        marker = ((old_value or {}).get("host_evidence") or {}).get("role_preinitialization_custody_release") or {}
+        observations = assignments.list_observations(ResourceRef.from_dict(assignment_ref), kind="report")
+        report = next((r for r in observations if r.ref.to_dict() == proof.get("disposition_ref")), None)
+        scope = {} if report is None else report.value.get("scope", {})
+        from .worker_custody import PREINITIALIZATION_SCHEMA
+        import hashlib, json
+        old_result = (((old_value or {}).get("host_evidence") or {}).get("gateway_attempt") or {}).get("result")
+        old_result_sha = hashlib.sha256(json.dumps(old_result, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        if (not old_value or report is None or marker.get("schema") != PREINITIALIZATION_SCHEMA
+                or old_value.get("stop_state") != "stopped" or old_value.get("in_flight_request") is not None
+                or old_value.get("lifecycle_owner") != due.lifecycle_owner
+                or report.value.get("schema") != PREINITIALIZATION_SCHEMA
+                or report.value.get("fresh_occurrence_limit") != 1
+                or report.value.get("provider_retry_allowed") is not False
+                or old_result_sha != proof.get("original_result_sha256")
+                or marker.get("disposition_ref") != proof.get("disposition_ref")
+                or report.value.get("fresh_request_key") != proof.get("fresh_request_key")
+                or proof.get("fresh_request_key") != request_key
+                or scope.get("result_sha256") != proof.get("original_result_sha256")
+                or scope.get("project_ref") != due.target.get("project_ref")
+                or scope.get("task_ref") != due.target.get("task_ref")
+                or scope.get("generation") != due.generation
+                or any(scope.get("assignment_ref", {}).get(k) != assignment_ref.get(k)
+                       for k in ("authority", "kind", "id"))):
+            raise OccurrencePreparationError("manager launch lacks exact finite preinitialization disposition")
+        expected_mode = "fresh_manager"
     if (operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) in {
         "orchestrator", "project_advisor"
     }:

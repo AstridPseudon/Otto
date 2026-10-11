@@ -230,6 +230,9 @@ class ManagerJourneyService:
             if isinstance(worker, Mapping) and isinstance(worker.get("schedule_id"), str):
                 if worker["schedule_id"] not in ids:
                     ids.append(worker["schedule_id"])
+        for schedule in state.get("retired_manager_occurrences", ()):
+            if isinstance(schedule, str) and schedule and schedule not in ids:
+                ids.append(schedule)
         return ids
 
     def _operating_setup(self, state: Mapping[str, Any]) -> Mapping[str, Any]:

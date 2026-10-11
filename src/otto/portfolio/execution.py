@@ -420,10 +420,16 @@ class ExecutionApplication:
                                   target={**due.target, "assignment_ref": dict(assignment_ref)})
                 return {"outcome": "preview", "schedule_id": schedule, "due": due.to_dict(), "retained": True}
             return self.recover(schedule_id=schedule, execute=False)
+        preinitialization_recovery = None
         if native_session_id is not None:
             self._verify_native_binding(assignment, native_session_id, binding_schedule_id, request_key=request_key)
         elif role == "manager":
-            raise OccurrencePreparationError("manager requires its existing native session")
+            if binding_schedule_id is None:
+                raise OccurrencePreparationError("manager requires its existing native session")
+            from .worker_custody import permits_preinitialization_role
+            preinitialization_recovery = permits_preinitialization_role(self,
+                schedule_id=binding_schedule_id, assignment=assignment,
+                project_ref=project_ref, task_ref=task_ref, request_key=request_key)
         at = self._now()
         target = {"host": "local", "project_ref": dict(project_ref), "task_ref": dict(task_ref),
                   "native_adapter": self.native_adapter_identity(),
@@ -437,6 +443,8 @@ class ExecutionApplication:
                 proof = self.due_port.read_due(binding_schedule_id)
                 target["native_binding"] = {"schedule_id": binding_schedule_id,
                                             "due_sha256": _digest(proof)}
+        elif preinitialization_recovery is not None:
+            target["preinitialization_recovery"] = preinitialization_recovery
         due = DueRecord(schedule_id=schedule, recipient=assignment.principal, instruction=instruction,
             profile=profile, anchor=at, due_at=at, last_covered_slot=0,
             invocation_identity=request_key + ":" + semantic, in_flight_request=request_key,
@@ -445,6 +453,7 @@ class ExecutionApplication:
             purpose="role-execution", lifecycle_owner=self.actor,
             allowance_ref=None if allowance_ref is None else dict(allowance_ref),
             execution_mode="continue_existing" if native_session_id else
+                "fresh_manager" if preinitialization_recovery is not None else
                 "fresh_bounded_worker" if role == "worker" else "fresh_bounded_role",
             requested_model=model, requested_reasoning=reasoning, context_refs=context_refs,
             result_owner=self.actor, timeout_seconds=timeout_seconds)

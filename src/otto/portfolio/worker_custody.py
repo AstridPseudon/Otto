@@ -367,3 +367,109 @@ def inspect_initialized_worker(execution, *, schedule_id):
 
 def release_initialized_worker(execution, **request):
     return release_capacity_failed_worker(execution,**request,_initializer_only=True)
+
+# A precise Codex guard exception precedes every initializer/native binding.
+# This does not generalize FAILED, absent sessions, or UNKNOWN into no effect.
+PREINITIALIZATION_SCHEMA = 'otto.role-preinitialization-custody-disposition.v1'
+PREINITIALIZATION_ERROR = {'code':'adapter_error','message':'owner workspace contract is unsupported before initialization','operation':'invoke'}
+
+def inspect_preinitialization_role(execution, *, schedule_id, _due=None):
+    due=_due or execution._read(schedule_id)
+    _require(execution.actor==due.lifecycle_owner==due.owner==due.manager_ref,
+             'current lifecycle owner required')
+    assignment=execution._current(due.assignment_ref,due.generation)
+    attempt=(due.host_evidence or {}).get('gateway_attempt') or {}
+    result=attempt.get('result') or {}
+    from otto.agents.herzchen_adapter import HerzchenCodexAdapter
+    import inspect
+    adapter=execution.runtime.adapter
+    _require(isinstance(adapter,HerzchenCodexAdapter)
+        and type(adapter)._invoke_owner_authorized is HerzchenCodexAdapter._invoke_owner_authorized,
+        'only the maintained exact Codex preinitialization guard qualifies')
+    _require(due.role=='manager' and assignment.role=='manager'
+        and assignment.principal==due.recipient and (_due is not None or assignment.session is None)
+        and due.execution_mode=='fresh_manager' and due.stop_state=='active'
+        and due.completion_state=='none' and due.in_flight_request
+        and not any(k in due.target for k in ('native_id','native_session_id','physical_session_id','native_binding')),
+        'only an original fresh uninitialized manager occurrence qualifies')
+    allowed={'assignment_ref','delivery_state','error','generation','logical_agent_id','logical_request_key',
+        'native_session_id','observed_model','observed_reasoning','operation','outcome','owner','physical_session_id',
+        'project_ref','replayed','request_fingerprint','requested_model','requested_profile','requested_reasoning',
+        'resource_evidence','task_ref','timeout','unknown_reason'}
+    _require(set(result)<=allowed and attempt.get('state')=='result'
+        and result.get('outcome')=='failed' and result.get('operation')=='invoke'
+        and result.get('error')==PREINITIALIZATION_ERROR
+        and result.get('unknown_reason')==PREINITIALIZATION_ERROR['message']
+        and result.get('delivery_state')=='unknown' and result.get('replayed') is False
+        and all(result.get(k) is None for k in ('physical_session_id','native_session_id','observed_model','observed_reasoning','timeout'))
+        and all(attempt.get(k) is None for k in ('physical_session_id','delivery_authorization','delivery_admission','manager_acceptance')),
+        'failed result is not exact guard-before-initializer evidence')
+    for body in(attempt,result):
+        _require(body.get('assignment_ref')==due.assignment_ref and body.get('generation')==due.generation
+            and body.get('logical_request_key')==due.in_flight_request,'original canonical attempt binding differs')
+    _require(result.get('logical_agent_id')==result.get('owner')==due.recipient
+        and result.get('project_ref')==due.target['project_ref'] and result.get('task_ref')==due.target['task_ref']
+        and result.get('requested_model')==due.requested_model and result.get('requested_reasoning')==due.requested_reasoning
+        and result.get('requested_profile')==due.profile,'original role/project/task/model scope differs')
+    brief=(result.get('resource_evidence') or {}).get('brief') or {}
+    snapshot=(brief.get('context')or{}).get('canonical_snapshot')or{}
+    _require(snapshot.get('native_session') is None and snapshot.get('assignment_ref')==due.assignment_ref
+        and snapshot.get('generation')==due.generation and snapshot.get('task_ref')==due.target['task_ref'],
+        'retained canonical fresh-role evidence differs')
+    return {'schedule_id':schedule_id,'due_version':due.version,'due_sha256':_digest(due.to_dict()),
+        'result_sha256':_digest(result),'assignment_ref':due.assignment_ref,'generation':due.generation,
+        'project_ref':due.target['project_ref'],'task_ref':due.target['task_ref'],'principal':due.recipient,
+        'guard_sha256':hashlib.sha256(inspect.getsource(HerzchenCodexAdapter._invoke_owner_authorized).encode()).hexdigest(),
+        'initializer_occurred':False,'native_effect_occurred':False}
+
+def retained_preinitialization_release(execution,due):
+    marker=(due.host_evidence or{}).get('role_preinitialization_custody_release')or{}
+    _require(marker.get('schema')==PREINITIALIZATION_SCHEMA and due.stop_state=='stopped'
+        and due.in_flight_request is None,'exact retired preinitialization custody required')
+    rows=execution.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref),kind='report')
+    report=next((r for r in rows if r.ref.to_dict()==marker.get('disposition_ref')),None)
+    _require(report is not None,'canonical preinitialization disposition missing')
+    body=report.value;scope=body.get('scope')or{}
+    _require(body.get('schema')==PREINITIALIZATION_SCHEMA and body.get('fresh_occurrence_limit')==1
+        and body.get('fresh_request_key')==marker.get('fresh_request_key') and body.get('provider_retry_allowed')is False,
+        'canonical finite preinitialization disposition differs')
+    host={k:v for k,v in due.host_evidence.items()if k!='role_preinitialization_custody_release'}
+    before=replace(due,**body['before'],version=scope['due_version'],host_evidence=host)
+    _require(inspect_preinitialization_role(execution,schedule_id=due.schedule_id,_due=before)==scope,
+        'original failed guard evidence changed')
+    reader=execution.portfolio.operations._owner_reader
+    _require(any(e.operation=='work.report.append'and e.actor==execution.binding.authenticated_actor(execution.actor)
+        for e in reader.list_events(subjects=(report.ref,))), 'disposition lacks authenticated lifecycle-owner event')
+    return body
+
+def release_preinitialization_role(execution,*,schedule_id,request_key,fresh_request_key):
+    _require(isinstance(request_key,str)and request_key.strip()==request_key and request_key
+        and isinstance(fresh_request_key,str)and fresh_request_key.strip()==fresh_request_key and fresh_request_key!=request_key,
+        'distinct finite exact disposition/delivery keys required')
+    due=execution._read(schedule_id)
+    if(due.host_evidence or{}).get('role_preinitialization_custody_release'):
+        body=retained_preinitialization_release(execution,due)
+        _require(body['request_key']==request_key and body['fresh_request_key']==fresh_request_key,'disposition replay input changed')
+        return {'outcome':'replayed',**due.host_evidence['role_preinitialization_custody_release'],'provider_called':False}
+    scope=inspect_preinitialization_role(execution,schedule_id=schedule_id)
+    body={'schema':PREINITIALIZATION_SCHEMA,'request_key':request_key,'fresh_request_key':fresh_request_key,
+        'scope':scope,'fresh_occurrence_limit':1,'provider_retry_allowed':False,'historical_failed_unknown_preserved':True,
+        'before':{k:due.to_dict()[k]for k in('stop_state','completion_state','in_flight_request')}}
+    current=execution._current(due.assignment_ref,due.generation)
+    report=execution.assignments.append_report(current.ref,body,expected_generation=due.generation,
+        logical_request_key=request_key,actor=execution.binding.authenticated_actor(execution.actor))
+    _require(_digest(execution._read(schedule_id).to_dict())==scope['due_sha256'],'occurrence changed before exact custody retirement')
+    marker={'schema':PREINITIALIZATION_SCHEMA,'disposition_ref':report.ref.to_dict(),'fresh_request_key':fresh_request_key,'provider_retry_allowed':False}
+    stopped=replace(due,stop_state='stopped',in_flight_request=None,
+        host_evidence={**due.host_evidence,'role_preinitialization_custody_release':marker})
+    execution.due_port.save_due(schedule_id,stopped.to_dict(),request_id=request_key+':stop',expected_version=due.version)
+    return {'outcome':'released',**marker,'scope':scope,'provider_called':False}
+
+def permits_preinitialization_role(execution,*,schedule_id,assignment,project_ref,task_ref,request_key):
+    old=execution._read(schedule_id);body=retained_preinitialization_release(execution,old);scope=body['scope']
+    _require(body['fresh_request_key']==request_key and old.role=='manager'
+        and all(assignment.ref.to_dict()[k]==scope['assignment_ref'][k]for k in('authority','kind','id'))
+        and assignment.generation==scope['generation'] and assignment.principal==scope['principal']
+        and project_ref==scope['project_ref']and task_ref==scope['task_ref']and assignment.session is None,
+        'recovery delivery is outside exact original role/project/task/generation')
+    return {'original_schedule_id':schedule_id,'disposition_ref':old.host_evidence['role_preinitialization_custody_release']['disposition_ref'],'fresh_request_key':request_key,'original_result_sha256':scope['result_sha256']}

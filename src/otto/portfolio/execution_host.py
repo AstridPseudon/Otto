@@ -261,6 +261,13 @@ class ExecutionHost:
         # UNKNOWN/stop/cancel alone do not prove native exit. The existing
         # exact owner custody disposition can release a terminal failed turn.
         released = due.stop_state == "completed" and due.completion_state == "succeeded"
+        if not released and (due.host_evidence or {}).get("role_preinitialization_custody_release"):
+            from .worker_custody import retained_preinitialization_release
+            try:
+                retained_preinitialization_release(app, due)
+                released = True
+            except (ValueError, KeyError, TypeError, OSError):
+                pass  # A missing or changed exact guard proof retains custody.
         if not released and (due.host_evidence or {}).get("worker_custody_release"):
             from .worker_custody import retained_capacity_release, INITIALIZER_SCHEMA
             marker = due.host_evidence["worker_custody_release"]
