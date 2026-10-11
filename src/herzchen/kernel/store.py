@@ -14,6 +14,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple, Union
 
 from herzchen.contracts import (
@@ -34,7 +35,7 @@ from herzchen.contracts import (
 )
 
 from herzchen.command_ports import command_facade
-from .schema import (COMPOSITION, DDL, SCHEMA_FINGERPRINT, SCHEMA_REVISION,
+from .schema import (COMPOSITION, DDL, SCHEMA_FINGERPRINT, SCHEMA_REVISION, IDENTITY_LOOKUP_INDEXES,
                      LEGACY_SCHEMA_REVISION, SUPPORTED_SCHEMAS, verify_physical_schema)
 from .history import (HISTORY_SCHEMA, MAX_SUMMARY_BYTES, MAX_INLINE_FACETS,
                       transition, project_relations)
@@ -1152,6 +1153,41 @@ class Store:
             ).fetchone()
             return None if row is None else self._identity_from_row(row)
 
+    def prepare_identity_lookup_indexes(self, *, timeout_seconds: float = 300.0) -> Mapping[str, Any]:
+        """Explicit trusted-owner maintenance at a closed host boundary.
+
+        Build only declared current-reference accelerators in one rollbackable
+        SQLite transaction. No canonical payload, event, revision or allowance
+        changes. Ordinary open and consumer readers never invoke maintenance.
+        """
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not 0 < timeout_seconds <= 3600):
+            raise ValueError("index build requires a finite positive deadline <= 3600 seconds")
+        if getattr(self._local, "transaction", None) is not None:
+            raise StoreAdmissionError("index maintenance requires its own closed-owner transaction")
+        started = time.monotonic()
+        with self._transaction_lock:
+            self._require_open()
+            if not verify_physical_schema(self._connection, SCHEMA_REVISION):
+                raise SchemaMismatchError("index maintenance requires exact admitted physical schema")
+            present = {row[0] for row in self._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'")}
+            missing = [name for name in IDENTITY_LOOKUP_INDEXES if name not in present]
+            self._connection.set_progress_handler(lambda: int(time.monotonic() - started > timeout_seconds), 1000)
+            try:
+                with self.transaction() as tx:
+                    for name in missing:
+                        if time.monotonic() - started > timeout_seconds:
+                            raise sqlite3.OperationalError("interrupted: identity lookup index deadline")
+                        tx.execute(IDENTITY_LOOKUP_INDEXES[name])
+            finally:
+                self._connection.set_progress_handler(None, 0)
+            if not verify_physical_schema(self._connection, SCHEMA_REVISION):
+                raise SchemaMismatchError("completed index definitions differ from exact declarations")
+        return {"outcome": "prepared", "created_indexes": missing,
+                "indexes": list(IDENTITY_LOOKUP_INDEXES), "elapsed_seconds": time.monotonic() - started,
+                "canonical_rows_changed": False}
+
     def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
         """Current owner references matching exact string fields, before hydration.
 
@@ -1161,7 +1197,22 @@ class Store:
         """
         if not isinstance(kind, str) or not kind.strip() or not isinstance(payload_matches, Mapping) or not payload_matches:
             raise ValueError("identity kind and exact payload predicates required")
-        clauses, args = ["authority = ?", "kind = ?"], [self.authority, kind]
+        # These literal paths exactly match the declared expression indexes.
+        # Bound JSON-path parameters cannot use SQLite expression indexes.
+        indexed_paths = {('project_ref',): '$.project_ref',
+            ('target', 'native_adapter'): '$.target.native_adapter',
+            ('host_evidence', 'gateway_attempt', 'delivery_authorization', 'physical_session_id'):
+                '$.host_evidence.gateway_attempt.delivery_authorization.physical_session_id'}
+        indexed = kind == 'otto.due-record' and all(isinstance(path, tuple) and path in indexed_paths for path in payload_matches)
+        if indexed:
+            with self._transaction_lock:
+                self._require_open()
+                present = {row[0] for row in self._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'")}
+                indexed = set(IDENTITY_LOOKUP_INDEXES).issubset(present)
+        clauses, args = ["authority = ?", "kind = 'otto.due-record'" if indexed else "kind = ?"], [self.authority]
+        if not indexed:
+            args.append(kind)
         structural, structural_args, candidates, candidate_args = [], [], [], []
         for path, value in payload_matches.items():
             if (not isinstance(path, tuple) or not path or len(path) > 8
@@ -1169,6 +1220,12 @@ class Store:
                     or not isinstance(value, str)):
                 raise ValueError("identity payload predicates require structural paths and string values")
             json_path = '$.' + '.'.join(path)
+            if indexed:
+                literal = indexed_paths[path]
+                clauses.extend(["json_type(payload_json, '" + literal + "') = 'text'",
+                                "json_extract(payload_json, '" + literal + "') = ?"])
+                args.append(value)
+                continue
             structural.extend(["json_type(payload_json, ?) = 'text'", "json_extract(payload_json, ?) = ?"])
             structural_args.extend([json_path, json_path, value])
             candidates.append("instr(payload_json, ?) > 0")
@@ -1178,13 +1235,19 @@ class Store:
         # for non-candidates; the original type/path/equality checks still decide
         # authority. False-positive tokens (including nested history) never match
         # by themselves. No identity/context cache or schema change is involved.
-        clauses.append("CASE WHEN " + " AND ".join(candidates) + " THEN (" +
-                       " AND ".join(structural) + ") ELSE 0 END")
-        args.extend(candidate_args + structural_args)
+        if not indexed:
+            clauses.append("CASE WHEN " + " AND ".join(candidates) + " THEN (" +
+                           " AND ".join(structural) + ") ELSE 0 END")
+            args.extend(candidate_args + structural_args)
         with self._transaction_lock:
             self._require_open()
+            index_clause = ""
+            if indexed:
+                index_clause = " INDEXED BY " + ("identities_due_native_lookup"
+                    if ('target', 'native_adapter') in payload_matches else "identities_due_project_lookup"
+                    if ('project_ref',) in payload_matches else "identities_due_native_lookup")
             rows = self._connection.execute(
-                "SELECT authority, kind, id, current_revision FROM identities WHERE " +
+                "SELECT authority, kind, id, current_revision FROM identities" + index_clause + " WHERE " +
                 " AND ".join(clauses) + " ORDER BY id", args).fetchall()
             return tuple(ResourceRef(row[0], row[1], row[2], row[3]) for row in rows)
 

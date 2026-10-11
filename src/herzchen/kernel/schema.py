@@ -176,6 +176,15 @@ SUPPORTED_SCHEMAS = {
 }
 
 
+# Optional, owner-built read accelerators. They change neither canonical rows
+# nor the schema revision. Admission still rejects every undeclared index and
+# checks these exact definitions when present; ordinary open never builds them.
+IDENTITY_LOOKUP_INDEXES = {
+    "identities_due_native_lookup": "CREATE INDEX identities_due_native_lookup ON identities (authority, kind, json_extract(payload_json, '$.target.native_adapter'), json_extract(payload_json, '$.host_evidence.gateway_attempt.delivery_authorization.physical_session_id')) WHERE kind = 'otto.due-record'",
+    "identities_due_project_lookup": "CREATE INDEX identities_due_project_lookup ON identities (authority, kind, json_extract(payload_json, '$.project_ref')) WHERE kind = 'otto.due-record'",
+}
+
+
 def verify_physical_schema(connection, revision: str) -> bool:
     """Compare tables, constraints and indexes, not just self-reported metadata."""
     import sqlite3
@@ -184,7 +193,13 @@ def verify_physical_schema(connection, revision: str) -> bool:
         expected.executescript(SUPPORTED_SCHEMAS[revision][2])
         sql = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
         normalize = lambda rows: [tuple(row) for row in rows]
-        return normalize(connection.execute(sql)) == normalize(expected.execute(sql))
+        actual = normalize(connection.execute(sql))
+        if revision == SCHEMA_REVISION:
+            present = {row[1] for row in actual if row[0] == 'index'}
+            for name, ddl in IDENTITY_LOOKUP_INDEXES.items():
+                if name in present:
+                    expected.execute(ddl)
+        return actual == normalize(expected.execute(sql))
     finally:
         expected.close()
 
