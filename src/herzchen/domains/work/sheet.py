@@ -762,6 +762,28 @@ class _ProjectSheetEngine:
             raise SheetSelectionError("unsupported sheet relation")
         if not subjects:
             return ()
+        if field == 'assignment' and set(kinds).issubset({DISPATCH_KIND, RESULT_KIND, REPORT_KIND}):
+            connection = self.__writer.connection
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                    ('identities_work_assignment_lookup',)).fetchone() is not None:
+                # Optional closed-owner accelerator over the SAME structural
+                # relation. Events are not relationship authority: eventless
+                # records and direct canonical revisions must remain visible.
+                rows = {}
+                for ref in subjects:
+                    selected = connection.execute(
+                        "SELECT authority, kind, id, current_revision FROM identities "
+                        "INDEXED BY identities_work_assignment_lookup WHERE authority = ? "
+                        "AND kind IN ('wrk.dispatch', 'wrk.result', 'wrk.report') "
+                        "AND kind IN (SELECT value FROM json_each(?)) "
+                        "AND CASE WHEN json_type(payload_json, '$.assignment') = 'object' THEN json_extract(json_extract(payload_json, '$.assignment'), '$.authority') END = ? "
+                        "AND CASE WHEN json_type(payload_json, '$.assignment') = 'object' THEN json_extract(json_extract(payload_json, '$.assignment'), '$.kind') END = ? "
+                        "AND CASE WHEN json_type(payload_json, '$.assignment') = 'object' THEN json_extract(json_extract(payload_json, '$.assignment'), '$.id') END = ?",
+                        (self.__writer.authority, canonical_json(list(kinds)), ref.authority, ref.kind, ref.id),
+                    ).fetchall()
+                    for row in selected:
+                        rows[(row['kind'], row['id'])] = row
+                return tuple(rows[key] for key in sorted(rows))
         # Reject unrelated canonical payloads before parsing their potentially
         # large retained result bodies. The encoded identity token is only a
         # candidate filter: the original relation/path/authority/kind checks

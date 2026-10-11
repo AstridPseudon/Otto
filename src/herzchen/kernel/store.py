@@ -1209,7 +1209,7 @@ class Store:
                 self._require_open()
                 present = {row[0] for row in self._connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'index'")}
-                indexed = set(IDENTITY_LOOKUP_INDEXES).issubset(present)
+                indexed = {'identities_due_native_lookup', 'identities_due_project_lookup'}.issubset(present)
         clauses, args = ["authority = ?", "kind = 'otto.due-record'" if indexed else "kind = ?"], [self.authority]
         if not indexed:
             args.append(kind)
@@ -2227,11 +2227,21 @@ class Store:
                 raise ValueError("event subjects must be local typed references")
             if not subjects:
                 return ()
-            clauses.append("EXISTS (SELECT 1 FROM json_each(?) wanted WHERE "
-                           "json_extract(wanted.value, '$.authority') = e.subject_authority AND "
-                           "json_extract(wanted.value, '$.kind') = e.subject_kind AND "
-                           "json_extract(wanted.value, '$.id') = e.subject_id)")
-            args.append(_json([ref.to_dict() for ref in subjects]))
+            if len(subjects) == 1:
+                # The persisted subject columns already have an identity index.
+                # A correlated JSON predicate instead scans all event rows.
+                clauses.extend(["e.subject_authority = ?", "e.subject_kind = ?", "e.subject_id = ?"])
+                args.extend([subjects[0].authority, subjects[0].kind, subjects[0].id])
+            else:
+                # Keep wanted identities outermost so each performs an indexed
+                # lookup. IN deduplicates repeated subjects; the final ordering
+                # and revision-independent identity semantics remain unchanged.
+                clauses.append("e.rowid IN (SELECT matched.rowid FROM json_each(?) wanted "
+                    "CROSS JOIN events matched WHERE "
+                    "matched.subject_authority = json_extract(wanted.value, '$.authority') AND "
+                    "matched.subject_kind = json_extract(wanted.value, '$.kind') AND "
+                    "matched.subject_id = json_extract(wanted.value, '$.id'))")
+                args.append(_json([ref.to_dict() for ref in subjects]))
         if subject_kinds is not None:
             if isinstance(subject_kinds, (str, bytes)):
                 raise ValueError("event subject kinds must be a sequence of nonempty kind names")
