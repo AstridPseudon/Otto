@@ -1386,7 +1386,9 @@ def _storage_diagnostics_closed_owner_impl(custody, *, group_limit=32, progress=
     Queries stream scalar values without GROUP BY/ORDER BY sorters. A shared
     SQLite VM-step/deadline budget plus row/table/allocation caps makes partial
     output explicit rather than turning an interrupted scan into a full scan.
-    Payload values and JSON are never returned or hydrated. dbstat allocation
+    These are cooperative SQLite bounds, not a hard wall-clock or RSS limit:
+    one scalar operation can still touch an individual large value before the
+    VM progress callback runs. Payload values and JSON are never returned or hydrated. dbstat allocation
     is logical SQLite page ownership, not unique physical CoW allocation.
     """
     if not isinstance(custody, ClosedOwnerCustody):
@@ -1442,6 +1444,8 @@ def _storage_diagnostics_closed_owner_impl(custody, *, group_limit=32, progress=
             if "interrupted" in str(error).lower():
                 return values, count, False, budget_reason or "diagnostic_interrupted"
             raise
+        except StopIteration:
+            return values, count, False, "consumer_stop"
         finally:
             if cursor is not None:
                 cursor.close()
@@ -1536,24 +1540,22 @@ def _storage_diagnostics_closed_owner_impl(custody, *, group_limit=32, progress=
             item["payload_bytes"] += size
             item["max_payload_bytes"] = max(item["max_payload_bytes"], size)
         nonlocal_over = [False]
-        try:
-            _, scanned_group_rows, complete, reason = bounded_rows(
+        _, scanned_group_rows, complete, reason = bounded_rows(
             "SELECT " + label + ",length(CAST(" + payload + " AS BLOB)) FROM " + table,
             row_limit=max_rows_per_table, consume=accumulate_group)
-        except StopIteration:
-            complete, reason = False, "group_limit"
         over_group_limit = nonlocal_over[0]
+        group_reason = "group_limit" if over_group_limit else reason
         groups[table] = {"total_groups": None if not complete or over_group_limit else len(observed),
                          "truncated": not complete or over_group_limit,
                          "complete": complete and not over_group_limit,
-                         "reason": "group_limit" if over_group_limit else reason,
+                         "reason": group_reason,
                          "groups": [{"kind": name, **item} for name, item in observed.items()]}
         if not complete:
-            stages["payload_groups"] = {"state": "partial", "reason": reason, "table": table}
+            stages["payload_groups"] = {"state": "partial", "reason": group_reason, "table": table}
             if reason != "row_limit":
                 break
         if over_group_limit:
-            stages["payload_groups"] = {"state": "partial", "reason": "group_limit", "table": table}
+            stages["payload_groups"] = {"state": "partial", "reason": group_reason, "table": table}
             break
     allocation = {"state": "unavailable", "reason": "not_run_after_work_limit"}
     if time.monotonic() < deadline and vm_steps < max_vm_steps:
@@ -1569,12 +1571,11 @@ def _storage_diagnostics_closed_owner_impl(custody, *, group_limit=32, progress=
                 item["allocated_bytes"] += int(size)
                 item["payload_bytes"] += int(payload_bytes)
                 item["unused_bytes"] += int(unused)
-            try:
-                _, allocation_rows, complete, reason = bounded_rows(
-                    "SELECT name,pgsize,payload,unused FROM dbstat", row_limit=max_allocation_rows,
-                    consume=accumulate_allocation)
-            except StopIteration:
-                complete, reason = False, "allocation_object_limit"
+            _, allocation_rows, complete, reason = bounded_rows(
+                "SELECT name,pgsize,payload,unused FROM dbstat", row_limit=max_allocation_rows,
+                consume=accumulate_allocation)
+            if not complete and reason == "consumer_stop":
+                reason = "allocation_object_limit"
             allocation = {"state": "available" if complete else "partial",
                           "reason": reason, "objects": [{"name": name, **item}
                               for name, item in list(objects.items())[:64]],
@@ -1595,8 +1596,11 @@ def _storage_diagnostics_closed_owner_impl(custody, *, group_limit=32, progress=
             "file_allocated_bytes": state.st_blocks * 512, "page_size": page_size,
             "page_count": pages, "freelist_pages": free_pages, "freelist_bytes": free_pages * page_size,
             "tables": sizes, "payload_groups": groups, "page_allocation": allocation, "stages": stages,
-            "work": {"state": "complete" if all(v.get("state") == "complete" for v in stages.values()) else "partial",
-                     "reason": budget_reason, "sqlite_vm_steps": vm_steps,
+            "work": {"state": "complete" if all(v.get("state") in ("complete", "available")
+                                                   for v in stages.values()) else "partial",
+                     "reason": budget_reason or next((v.get("reason") for v in stages.values()
+                                                       if v.get("state") not in ("complete", "available")), None),
+                     "sqlite_vm_steps": vm_steps,
                      "elapsed_seconds": round(time.monotonic() - started, 6)},
             "limits": {"deadline_seconds": float(deadline_seconds), "sqlite_vm_steps": max_vm_steps,
                        "rows_per_table": max_rows_per_table, "tables": max_tables,

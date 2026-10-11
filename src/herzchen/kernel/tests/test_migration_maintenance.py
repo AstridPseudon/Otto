@@ -65,6 +65,8 @@ class BoundedDiagnosticTests(unittest.TestCase):
         self.assertEqual(self.conn.total_changes, before)
         self.assertFalse(report['payload_content_returned'])
         self.assertFalse(report['records_modified'])
+        self.assertEqual(report['work']['state'], 'complete')
+        self.assertEqual(report['stages']['allocation']['state'], 'available')
         self.assertNotIn('x' * 100, json.dumps(report))
         self.assertEqual(report['payload_groups']['events']['groups'][0]['payload_bytes'],
                          16 * len('{"large":"' + ('x' * (256 * 1024)) + '"}'))
@@ -89,6 +91,18 @@ class BoundedDiagnosticTests(unittest.TestCase):
         self.assertEqual(vm_limited['work']['state'], 'partial')
         self.assertEqual(vm_limited['work']['reason'], 'sqlite_vm_step_limit')
         self.assertFalse(vm_limited['records_modified'])
+
+    def test_allocation_object_cap_is_partial_with_scanned_count(self):
+        for i in range(65):
+            self.conn.execute('CREATE INDEX idx_{} ON events(event_type)'.format(i))
+        self.conn.commit()
+        report = storage_diagnostics_closed_owner(self.custody, max_tables=128)
+        self.assertEqual(report['stages']['allocation']['state'], 'partial')
+        self.assertEqual(report['stages']['allocation']['reason'], 'allocation_object_limit')
+        self.assertGreater(report['stages']['allocation']['pages_scanned'], 0)
+        self.assertLessEqual(report['stages']['allocation']['pages_scanned'], 100000)
+        self.assertEqual(len(report['page_allocation']['objects']), 64)
+        self.assertEqual(report['work']['state'], 'partial')
 
     def test_inactive_custody_error_is_not_masked_by_handler_cleanup(self):
         stale = object.__new__(ClosedOwnerCustody)
