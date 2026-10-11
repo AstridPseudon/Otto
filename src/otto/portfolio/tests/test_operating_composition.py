@@ -42,6 +42,48 @@ class OperatingCompositionTests(unittest.TestCase):
         return self.f.app.compose_operating_setup(project_ref=self.f.project.ref.to_dict(), operation=operation,
             setup=setup or self.config(), request_key=key, expected_setup_ref=expected)
 
+    def selector_pair(self):
+        applied = self.call("apply")
+        old = applied["setup"]["roles"]["manager"]
+        result = self.f.app.start(schedule_id=old)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        prior = self.f.app._read(old)
+        new = self.f.app.prepare_role(role="manager", project_ref=prior.target["project_ref"],
+            task_ref=prior.target["task_ref"], assignment_ref=prior.assignment_ref, generation=prior.generation,
+            mandate_ref=prior.target["mandate_ref"], context_refs=prior.context_refs,
+            request_key="next-current-manual-manager", instruction="Advance ready work",
+            model="gpt-test", reasoning="high", profile="workspace-write", native_session_id="manager-session")
+        return applied, old, new["schedule_id"]
+
+    def test_normal_start_updates_only_manual_manager_selector_and_replays_without_provider(self):
+        applied, old, new = self.selector_pair()
+        old_bytes = self.f.port.read_due(old)
+        result = self.f.app.start(schedule_id=new)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        setup = self.f.app.read_operating_setup(project_ref=self.f.project.ref.to_dict())
+        self.assertEqual(setup["setup"]["roles"]["manager"], new)
+        for field in ("mode", "advisor_policy", "acceptance_tasks"):
+            self.assertEqual(setup["setup"][field], applied["setup"][field])
+        self.assertEqual(self.f.port.read_due(old), old_bytes)
+        calls = len(self.f.provider.calls)
+        replay = self.f.app.start(schedule_id=new)
+        self.assertEqual(replay["outcome"], "replayed", replay)
+        self.assertEqual(len(self.f.provider.calls), calls)
+
+    def test_manual_selector_holds_unknown_predecessor_without_setup_or_provider_effect(self):
+        from dataclasses import replace
+        applied, old, new = self.selector_pair()
+        due = self.f.app._read(old)
+        self.f.port.save_due(old, replace(due, stop_state="active", completion_state="unknown").to_dict(),
+            request_id="fixture-unknown-predecessor", expected_version=due.version)
+        counts = self.f.store.consumer().snapshot_counts()
+        calls = len(self.f.provider.calls)
+        with self.assertRaisesRegex(Exception, "require reconciliation"):
+            self.f.app.synchronize_manual_manager_occurrence(schedule_id=new)
+        self.assertEqual(self.f.store.consumer().snapshot_counts(), counts)
+        self.assertEqual(len(self.f.provider.calls), calls)
+        self.assertEqual(self.f.app.read_operating_setup(project_ref=self.f.project.ref.to_dict())["setup_ref"], applied["setup_ref"])
+
     def test_preview_apply_read_update_and_old_replay_preserve_canonical_records(self):
         f = self.f
         before = f.store.consumer().snapshot_counts()

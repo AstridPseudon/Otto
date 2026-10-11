@@ -219,6 +219,33 @@ class ManagerJourneyService:
                 rows.append(dict(value))
         return rows
 
+    def _current_manager_schedule(self) -> str:
+        """Select current owner-issued preparation without discarding effects."""
+        state = self.server.state
+        historical = (state.get("manager_continuation") or {}).get("schedule_id")
+        for schedule in dict.fromkeys(filter(None, (historical, state.get("schedule_id")))):
+            due = self.server.due_port.read_due(schedule)
+            if not isinstance(due, Mapping):
+                raise PermissionError("retained manager occurrence is missing")
+            if (due.get("role") != "manager" or due.get("recipient") != state["manager"]
+                    or tuple(due["target"]["project_ref"][k] for k in ("authority", "kind", "id"))
+                    != tuple(state["project_ref"][k] for k in ("authority", "kind", "id"))
+                    or tuple(due["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                    != tuple(state["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                    or due.get("generation") != state["manager_generation"]):
+                raise PermissionError("retained manager occurrence is foreign")
+            if due.get("assignment_ref") == state["assignment_ref"]:
+                return schedule
+            # Only a verified finalized success can be historical under a new
+            # adopted BASE. UNKNOWN or unattempted stale intent is held.
+            evidence = due.get("completion_evidence") or {}
+            if (due.get("stop_state") != "completed" or due.get("completion_state") != "succeeded"
+                    or due.get("in_flight_request") is not None
+                    or evidence.get("schema") != "otto.role-result.v1"
+                    or not evidence.get("result_digest")):
+                raise PermissionError("stale manager effects require exact reconciliation")
+        raise PermissionError("no current owner-issued manager occurrence")
+
     @staticmethod
     def _known_schedule_ids(state: Mapping[str, Any]) -> list[str]:
         """Share bounded locators without hydrating result payloads."""
@@ -576,7 +603,7 @@ class ManagerJourneyService:
                     or not isinstance(worker, Mapping) or worker.get("principal") != request.get("principal")
                     or worker.get("schedule_id") != request.get("schedule_id")):
                 raise PermissionError("worker-result continuation handle is stale or foreign")
-            current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+            current_id = self._current_manager_schedule()
             app = self._execution(principal=state["manager"], model=state["requested_model"],
                 reasoning=state["requested_reasoning"], evidence_id="manager-worker-result-" + worker["schedule_id"])
             result = app.continue_manager_from_worker(manager_schedule_id=current_id,
@@ -650,6 +677,11 @@ class ManagerJourneyService:
             app = self._execution(principal=worker["principal"], model=worker["model"],
                 reasoning=worker["reasoning"], evidence_id=worker["schedule_id"],
                 selection=((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
+            if command == "start-retained-worker":
+                manager_schedule = worker.get("manager_schedule_id") or (self.server.state.get("manager_continuation") or {}).get("schedule_id") or self.server.state["schedule_id"]
+                sync = getattr(app, "synchronize_manual_manager_occurrence", None)
+                if callable(sync):
+                    sync(schedule_id=manager_schedule)
             result = (app.start(schedule_id=worker["schedule_id"]) if command == "start-retained-worker" else
                       app.recover(schedule_id=worker["schedule_id"], execute=False))
             def complete(result):
@@ -1439,6 +1471,11 @@ class ManagerJourneyService:
         state.setdefault("workers", {})[task] = {**prepared, "principal": principal,
                                                  "model": model, "reasoning": reasoning,
                                                  "request_key": key, "submission": dict(request)}
+        caller = _CALLER.get()
+        if isinstance(caller, Mapping) and caller.get("role") == "manager":
+            # The authenticated occurrence, never request JSON or old settled
+            # state, selects the manager whose preparation admitted this child.
+            state["workers"][task]["manager_schedule_id"] = caller["schedule_id"]
         if coordinator_policy is not None:
             self.delegation_policy = {"coordinators": [{"assignment_ref": prepared["assignment_ref"], "generation": prepared["generation"], "native_adapter": app.native_adapter_identity()}],
                 "max_depth": 1, "capacity_units": 1, "cumulative_allowance_units": coordinator_policy["cumulative_allowance_units"]}

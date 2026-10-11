@@ -125,6 +125,50 @@ class ExecutionApplication:
                 "setup": setup, "setup_ref": observed["current_revision"],
                 "canonical_lifecycle": current["lifecycle"]}
 
+    def synchronize_manual_manager_occurrence(self, *, schedule_id: str) -> dict[str, Any]:
+        """Carry an existing manual selector to its exact current manager.
+
+        Called only at owner effect entrances, never by identity/setup reads.
+        Policy, other roles, budgets and historical occurrences are unchanged.
+        """
+        from copy import deepcopy
+        from .operating_setup import read_setup, setup_reference
+        due = self._read(schedule_id)
+        current = self._current(due.assignment_ref, due.generation)
+        if due.role != "manager" or current.role != "manager" or current.principal != due.recipient:
+            raise OccurrencePreparationError("manual selector requires the exact current manager")
+        project = due.target["project_ref"]
+        if _identity(json_value(current.scope)) != _identity(project):
+            raise OccurrencePreparationError("manual selector manager belongs to another project")
+        setup = read_setup(self.portfolio.operations, project)
+        if setup is None or setup["mode"] != "manual":
+            return {"outcome": "not-applicable", "provider_called": False}
+        original = setup["roles"]["manager"]
+        if original == schedule_id:
+            return {"outcome": "already-current", "provider_called": False}
+        prior = self._read(original)
+        if (prior.role != "manager" or prior.recipient != due.recipient
+                or _identity(prior.assignment_ref) != _identity(due.assignment_ref)
+                or prior.generation != due.generation
+                or _identity(prior.target["project_ref"]) != _identity(project)):
+            raise OccurrencePreparationError("manual selector predecessor is foreign")
+        attempt = (prior.host_evidence or {}).get("gateway_attempt")
+        if attempt is not None and (prior.stop_state != "completed"
+                or prior.completion_state != "succeeded" or prior.in_flight_request is not None):
+            raise OccurrencePreparationError("manual selector predecessor effects require reconciliation")
+        # compose_setup validates the new complete canonical readiness tuple
+        # before any update. No historical receipt or Due is rewritten here.
+        updated = deepcopy(setup)
+        updated["roles"]["manager"] = schedule_id
+        expected = self.portfolio.operations.content_port.read(setup_reference(project))["current_revision"]
+        result = self.compose_operating_setup(project_ref=project, operation="update",
+            setup=updated, expected_setup_ref=expected,
+            request_key="manual-manager-selector:" + _digest([project, due.assignment_ref,
+                due.generation, schedule_id, expected]))
+        if result["outcome"] not in {"updated", "replayed"}:
+            raise OccurrencePreparationError("manual selector update did not qualify")
+        return result
+
     def activate_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
         """Start the configured manager through the shared runtime admission guard."""
         from .operating_setup import read_setup
@@ -992,6 +1036,8 @@ class ExecutionApplication:
             return self.recover(schedule_id=schedule_id, execute=False)
         try:
             due = self._resources(due)
+            if due.role == "manager":
+                self.synchronize_manual_manager_occurrence(schedule_id=due.schedule_id)
             kwargs = self._kwargs(due)
             result = self.runtime.invoke_role(role=due.role, mode="direct", **kwargs)
         except Exception as exc:
