@@ -818,10 +818,16 @@ Path(sys.argv[4]).write_text(json.dumps(result))
 
 class TaskSettlementDrainBoundaryTests(unittest.TestCase):
     def fixture(self, *, closes=True, error=None):
-        state = {"manager": "same-manager", "schedule_id": "original-anchor"}
+        project_ref = {"authority": "owner", "kind": "work.project", "id": "fixture-project", "revision": "rev-1"}
+        assignment_ref = {"authority": "owner", "kind": "wrk.assignment", "id": "fixture-manager", "revision": "rev-1"}
+        state = {"manager": "same-manager", "schedule_id": "original-anchor",
+                 "project_ref": project_ref, "assignment_ref": assignment_ref, "manager_generation": 1}
         saved, prepared, submitted = [], [], []
         service = object.__new__(ManagerJourneyService)
-        service.server = SimpleNamespace(state=state, _save_state=lambda: saved.append(dict(state)))
+        due = {"role": "manager", "recipient": state["manager"], "target": {"project_ref": project_ref},
+               "assignment_ref": assignment_ref, "generation": state["manager_generation"]}
+        service.server = SimpleNamespace(state=state, due_port=SimpleNamespace(read_due=lambda schedule: due),
+                                          _save_state=lambda: saved.append(dict(state)))
         host = SimpleNamespace(_closing=False)
         service.host = host
 
