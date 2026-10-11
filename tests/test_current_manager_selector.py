@@ -48,3 +48,21 @@ class CurrentManagerSelectorTests(unittest.TestCase):
         self.rows = deepcopy(original);self.rows.pop("current")
         with self.assertRaisesRegex(PermissionError,"missing"):
             self.service._current_manager_schedule()
+
+class WorkerFocusInputBoundaryTests(unittest.TestCase):
+    def test_invalid_focus_rejected_before_canonical_preparation_or_host_effects(self):
+        for value in ('', ' ', 'x' * 4001, None):
+            with self.subTest(focus=value if value is None else len(value)):
+                service = object.__new__(ManagerJourneyService)
+                service.commands = SimpleNamespace(_authorize=lambda:None, _key=lambda request:request['request_key'])
+                service.host = SimpleNamespace(_closing=False)
+                service.server = SimpleNamespace(state={'task_refs':{'T1':{'id':'task'}}})
+                # No run_path, reader, execution factory or submit capability:
+                # reaching any of those is a test failure at this boundary.
+                result = service._submit_worker({'command':'run-worker','task':'T1','route':'normal',
+                    'principal':'worker','request_key':'rejected-original','focus':value})
+                self.assertEqual(result['outcome'], 'rejected')
+                self.assertFalse(result['effects_started'])
+                self.assertFalse(result['provider_called'])
+                self.assertFalse(result['retry'])
+                self.assertIn('manifest', result['next_action'])

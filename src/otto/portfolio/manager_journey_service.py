@@ -1300,6 +1300,14 @@ class ManagerJourneyService:
             raise ValueError("worker requires a current task and configured route")
         if not isinstance(principal, str) or not principal.strip() or principal != principal.strip():
             raise ValueError("worker principal must be exact nonblank text")
+        focus = request.get("focus")
+        if not isinstance(focus, str) or not focus.strip() or len(focus) > 4000:
+            # This validation precedes canonical lookup/preparation/allowance
+            # effects. Classify this exact boundary, not arbitrary exceptions.
+            return {"outcome": "rejected", "error": {"code": "worker_focus_length", "kind": "input",
+                "message": "worker focus must describe 1..4000 characters of current intent"},
+                "provider_called": False, "effects_started": False, "retry": False,
+                "next_action": "Correct a new bounded intent with a distinct stable key. Pin the exact owned scope-manifest path and SHA instead of embedding a long file list; preserve this rejected receipt."}
         config = json.loads((self.run_path / "run.yaml").read_text())
         from .worker_occurrences import parent_for_caller, check_allowance
         from .occurrence_reads import lookup, handle, digest
@@ -1331,9 +1339,6 @@ class ManagerJourneyService:
         if (not isinstance(model, str) or not model or any(char.isspace() for char in model)
                 or reasoning not in {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}):
             raise ValueError("worker route model/reasoning configuration is invalid")
-        focus = request.get("focus")
-        if not isinstance(focus, str) or not focus.strip() or len(focus) > 4000:
-            raise ValueError("worker focus must describe 1..4000 characters of current intent")
         previous = None if parent is not None else (state.get("workers") or {}).get(task)
         if isinstance(previous, Mapping):
             previous_app = self._execution(principal=previous["principal"], model=previous["model"],
