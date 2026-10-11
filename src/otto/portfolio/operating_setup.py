@@ -291,7 +291,8 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
                 project_ref=project_ref, due_port=runtime.due_port, actor=runtime.actor, binding_due=binding_due,
                 assignment_history_reader=getattr(runtime.operations, "_owner_reader", None))
             canonical = prepared["canonical_evidence"]
-            introduction = role_introduction(canonical)
+            supervisor = runtime._manager_supervisor(project_ref) if role == "manager" else None
+            introduction = role_introduction(canonical, operational_supervisor=supervisor)
             roles[role] = {"schedule_id": schedule, "principal": assignment["principal"],
                            "assignment_ref": due.assignment_ref, "generation": due.generation,
                            "conversation_id": native,

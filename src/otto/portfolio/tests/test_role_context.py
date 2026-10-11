@@ -99,6 +99,69 @@ class RoleContextTests(unittest.TestCase):
         self.assertIsNotNone(match)
         return json.loads(match.group(1))
 
+    def strict_manager_context(self, *, guide=True, supervisor=True):
+        standard = self.document("skill", {"text": "Canonical manager duties and blocker receipt contract"})
+        content = self.f.owner.content.read(ResourceRef.from_dict(standard))["content"]
+        pin = {"ref": standard, "content_sha256": hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
+        recipient = {"project_ref": self.f.project.ref.to_dict(), "assignment_ref": {"authority": self.f.actor.authority, "kind": "wrk.assignment", "id": "root", "revision": "rev-1"}, "generation": 1, "principal": "root", "conversation_ref": {"host": "codex", "native_id": "root-chat"}}
+        config = dict(self.configuration(), manager_context_required=True)
+        if guide: config["standard_manager_guide"] = pin
+        if supervisor: config["operational_supervisor"] = recipient
+        self.f.app.runtime._manager_supervisor = lambda _project: recipient if supervisor else None
+        ref = self.document("run_configuration", config)
+        return [ref, standard], recipient
+
+    def test_enrolled_manager_default_derives_standard_context_without_config_flag(self):
+        sources, recipient = self.strict_manager_context()
+        configuration = self.f.owner.content.read(ResourceRef.from_dict(sources[0]))["content"]
+        for key in ("manager_context_required", "standard_manager_guide", "operational_supervisor"):
+            configuration.pop(key)
+        sources[0] = self.document("run_configuration", configuration)
+        self.f.project = self.f.owner.graph.create_project(title="New enrolled project", metadata={"otto_orchestrator": {"assignment_ref": recipient["assignment_ref"], "generation": 1}}, logical_request_key="enrolled-manager")
+        self.f.task = self.f.owner.graph.create_task(self.f.project.ref, title="First useful task", logical_request_key="enrolled-first-task")
+        self.f.compose()
+        recipient["project_ref"] = self.f.project.ref.to_dict()
+        self.f.app.runtime._manager_supervisor = lambda _: recipient
+        _manager, schedule, request = self.role(sources=sources)
+        result = self.f.app.start(schedule_id=schedule)
+        self.assertEqual(result["outcome"], "succeeded", result.get("error"))
+        context = self.packet()["operating_core"]["introduction"]["manager_operating_context"]
+        self.assertEqual(context["operational_supervisor"], recipient)
+        self.assertEqual(context["standard_manager_guide"]["ref"], context["base_resource"])
+        self.assertTrue(context["standard_manager_guide"]["standard_contract_sha256"])
+
+    def test_new_manager_custom_mandate_cannot_omit_standard_context(self):
+        sources, recipient = self.strict_manager_context()
+        _manager, schedule, request = self.role(sources=sources, overrides={"instruction": "Custom project inventory, then return"})
+        self.assertEqual(self.f.app.start(schedule_id=schedule)["outcome"], "succeeded")
+        context = self.packet()["operating_core"]["introduction"]["manager_operating_context"]
+        self.assertEqual(context["operational_supervisor"], recipient)
+        self.assertEqual(context["standard_manager_guide"]["ref"], sources[1])
+        from otto.agents.orchestrator_route import prepare_canonical_assignment_role_brief
+        runtime = self.f.app.runtime
+        callback = prepare_canonical_assignment_role_brief(role="manager", project_ref=request["project_ref"], task_ref=request["task_ref"], assignment_ref=request["assignment_ref"], mandate_ref=request["mandate_ref"], expected_generation=1, project_reader=runtime._project_reader(request["project_ref"]), task_reader=runtime._task_reader(request["project_ref"], request["task_ref"]), assignment_reader=runtime._assignment_reader(request["assignment_ref"]), mandate_reader=runtime._mandate_reader(request["project_ref"], request["mandate_ref"]), resource_reader=runtime.operations.content_port, lifecycle="callback", as_of=self.f.app._now(), include_role_context=False, direction_context_reader=runtime.operations.direction_context_reader, supervisor_reader=lambda: recipient)
+        self.assertEqual(callback["brief"]["operating_core"]["introduction"]["manager_operating_context"]["operational_supervisor"], recipient)
+
+    def test_new_manager_missing_standard_guide_or_supervisor_is_pre_effect(self):
+        for guide, supervisor in ((False, True), (True, False)):
+            with self.subTest(guide=guide, supervisor=supervisor):
+                case = RoleContextTests(); case.setUp(); self.addCleanup(case.doCleanups)
+                sources, _ = case.strict_manager_context(guide=guide, supervisor=supervisor)
+                _manager, schedule, _ = case.role(sources=sources, overrides={"instruction": "Custom mandate cannot remove manager duties"})
+                result = case.f.app.start(schedule_id=schedule)
+                self.assertEqual(result["outcome"], "partial")
+                self.assertIn("requires its adopted standard guide and current supervisor", result["error"]["message"])
+                self.assertEqual(case.f.provider.calls, [])
+
+    def test_new_manager_changed_supervisor_is_not_config_authority(self):
+        sources, recipient = self.strict_manager_context()
+        self.f.app.runtime._manager_supervisor = lambda _: {**recipient, "generation": 2}
+        _manager, schedule, _ = self.role(sources=sources)
+        result = self.f.app.start(schedule_id=schedule)
+        self.assertEqual(result["outcome"], "partial")
+        self.assertIn("differs from current authenticated", result["error"]["message"])
+        self.assertEqual(self.f.provider.calls, [])
+
     def test_sparse_role_receives_selected_policy_sources_bindings_and_disabled_advisor(self):
         f = self.f
         configuration = self.document("run_configuration", self.configuration())
@@ -120,6 +183,13 @@ class RoleContextTests(unittest.TestCase):
         result = f.app.activate_operating_setup(project_ref=f.project.ref.to_dict())
         self.assertEqual(result["outcome"], "succeeded", {k: result.get(k) for k in ("stage", "error", "next_action")})
         packet = self.packet()
+        manager_context = packet["operating_core"]["introduction"]["manager_operating_context"]
+        self.assertEqual(manager_context["project_ref"], f.project.ref.to_dict())
+        self.assertEqual(manager_context["task_ref"], f.task.ref.to_dict())
+        self.assertEqual(manager_context["tool_entrypoint"], "manager_ctl.py --help")
+        self.assertIn("retain the issue and delivery receipt", manager_context["instructions"])
+        self.assertIn("not submission", manager_context["instructions"])
+        self.assertEqual(packet["operating_core"]["introduction"]["effective_context"]["manager_operating_context"], manager_context)
         self.assertIn("delegate implementation", packet["operating_core"]["operating_contract"])
         installed_evidence = packet["operating_core"]["introduction"]["operating_guidance"]["installed_evidence"]
         self.assertIn("criteria that explicitly require installed behavior", installed_evidence)

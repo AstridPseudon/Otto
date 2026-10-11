@@ -207,7 +207,7 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
     }
 
 
-def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
+def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from .operating_brief import ROLE_CONTEXT_GUIDANCE, ROLE_OPERATING_CONTRACTS
     render = canonical["render"]
     state, snapshot = render["project_state"], render["snapshot"]
@@ -229,7 +229,7 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
         raise RoleContextError("selected role policy must be non-blank text")
     tool_entrypoint = entrypoint or "python -m otto.portfolio.cli help --format text"
     effective_context = effective_context_projection(canonical, tool_entrypoint=tool_entrypoint)
-    return {"schema": "otto.role-introduction.v1", "role": canonical["role"],
+    result = {"schema": "otto.role-introduction.v1", "role": canonical["role"],
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
             "generation": snapshot["generation"], "responsibility": ROLE_OPERATING_CONTRACTS[canonical["role"]],
             "responsibility_ref": snapshot.get("responsibility_ref"),
@@ -256,3 +256,44 @@ def role_introduction(canonical: Mapping[str, Any]) -> dict[str, Any]:
             "tool_entrypoint_source": configuration["ref"] if entrypoint else "installed Otto portfolio help",
             "effective_context": effective_context,
             "source": "canonical owner records and adopted role resources", "dispatch": False}
+    if canonical["role"] == "manager":
+        # Composed for every manager at the canonical launch seam, including
+        # custom mandates. These are information pins, never host credentials.
+        config = configuration["content"] if configuration else {}
+        standard_guide = config.get("standard_manager_guide")
+        enrolled = isinstance(project.get("payload", {}).get("metadata", {}).get("otto_orchestrator"), Mapping)
+        if standard_guide is None and enrolled:
+            standard_guide = {"ref": canonical["base_resource"]["ref"], "content_sha256": canonical["base_resource"]["content_sha256"], "standard_contract_sha256": hashlib.sha256(json.dumps({"responsibility": ROLE_OPERATING_CONTRACTS["manager"], "guidance": ROLE_CONTEXT_GUIDANCE["manager"]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "source": "current adopted BASE and installed canonical manager contract"}
+        if config.get("standard_manager_guide") is not None and (not isinstance(standard_guide, Mapping) or not any(
+                item.get("ref") == standard_guide.get("ref")
+                and item.get("content_sha256") == standard_guide.get("content_sha256")
+                for item in canonical.get("supporting_context", []))):
+            raise RoleContextError("standard manager guide must be an exact adopted supporting source")
+        supervisor = operational_supervisor
+        declared = config.get("operational_supervisor")
+        if declared is not None and declared != supervisor:
+            raise RoleContextError("selected supervisor differs from current authenticated project supervision")
+        if (config.get("manager_context_required") is True or enrolled) and (standard_guide is None or supervisor is None):
+            raise RoleContextError("manager launch requires its adopted standard guide and current supervisor")
+        if supervisor is not None:
+            if not isinstance(supervisor, Mapping) or not isinstance(supervisor.get("project_ref"), Mapping) or any(key not in supervisor for key in
+                    ("project_ref", "assignment_ref", "generation", "principal", "conversation_ref")):
+                raise RoleContextError("manager supervisor requires a full adopted binding")
+            if any(supervisor["project_ref"].get(k) != project["ref"].get(k)
+                   for k in ("authority", "kind", "id")):
+                raise RoleContextError("manager supervisor belongs to another project")
+        result["manager_operating_context"] = {
+            "schema": "otto.manager-operating-context.v1",
+            "project_ref": project["ref"], "task_ref": None if task is None else task["ref"],
+            "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
+            "generation": snapshot["generation"], "operational_supervisor": supervisor,
+            "supervisor_source": None if configuration is None else configuration["ref"],
+            "standard_manager_guide": standard_guide,
+            "base_resource": canonical["base_resource"]["ref"],
+            "project_and_custom_context_refs": result["supporting_refs"],
+            "mandate_ref": snapshot["mandate_ref"], "tool_entrypoint": tool_entrypoint,
+            "instructions": ROLE_CONTEXT_GUIDANCE["manager"]["help"],
+            "precedence": "Current authenticated authority and adopted directions govern; standard manager duties and selected pack policy accompany the custom mandate. Information pins grant no new authority.",
+        }
+        effective_context["manager_operating_context"] = result["manager_operating_context"]
+    return result

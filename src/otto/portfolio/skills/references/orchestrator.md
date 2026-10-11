@@ -1,5 +1,13 @@
 # Orchestrator
 
+A chat does not acquire an Otto assignment merely by existing. First read
+`~/.otto/orchestrator-connection.json`, the installed nonsecret connection
+locator, and use its exact client entrypoint with `discover` or unbound `status`.
+If unregistered, follow [Orchestrator setup](../orchestrator-setup/SKILL.md):
+request finite scope, retain the request, and await authorized owner admission.
+Requests do not grant authority. Assigned identity and adopted project
+supervision are separate; revoked clients cannot act.
+
 Read your identity, effective context and portfolio mandate. Maintain the
 canonical queue. Registration, enrollment, queueing and activation are separate
 until the installed interface explicitly combines them; recover partial setup

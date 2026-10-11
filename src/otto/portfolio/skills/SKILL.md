@@ -17,6 +17,7 @@ Read the guide relevant to your work:
 
 - [Identity and directions](references/identity-and-directions.md)
 - [Orchestrator](references/orchestrator.md)
+- [Orchestrator setup](orchestrator-setup/SKILL.md) for first-use enrollment and scoped client status
 - [Manager](references/manager.md)
 - [Worker](references/worker.md)
 - [Evidence workflow](../../../herzchen/packs/evidence_resource_pack/skill/SKILL.md)

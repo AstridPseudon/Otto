@@ -22,7 +22,7 @@ def requires_native_caller(command: str) -> bool:
                        "report", "status", "review-input", "review-task", "finish-task", "finish-project",
                        "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
                        "worker-status", "manager-assessment", "manager-assessment-pool", "completion-gate",
-                       "complete-task", "manager-continue", "execution-control"}
+                       "complete-task", "manager-continue", "execution-control", "operating-setup"}
 
 
 FINISH_PROJECT_EXAMPLE = (

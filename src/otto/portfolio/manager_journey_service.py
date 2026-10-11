@@ -408,6 +408,8 @@ class ManagerJourneyService:
         Operational reply grants keep their existing separate ingress.
         """
         state = self.server.state
+        if request.get("command") == "operating-setup" and request.get("operation", "read") not in {"read", "preview"}:
+            raise PermissionError("native setup callers may read or preview; setup mutations require owner custody")
         if getattr(self.host, "bounded_transports", False) and (
                 request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help",
                     "manager-worker-result", "manager-task-settlement", "manager-help-result",

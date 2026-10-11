@@ -48,6 +48,14 @@ judgment. Include impact, evidence, needed action and resume condition. Verify
 delivery; report unavailable routing and use the available owner channel.
 Continue independent ready work.
 
+Before returning blocked on owner action, submit canonical `request-help` to
+your adopted project supervisor and retain its issue and delivery receipt.
+Final text or a local Markdown file is not submission. If the tool fails,
+preserve its exact handle and use the supplied supported fallback once; say
+delivery is unavailable until confirmed. Apply an authenticated owner reply,
+then continue the same manager. Operational blockers do not wait for an hourly
+summary; routine progress stays in the canonical records.
+
 Complete the pack's final review and corrections. Check `finish-project --help`,
 then verify `project_completion_recorded=true`, `settlement_pending=false`,
 lifecycle `completed` and reconciliation `reconciled` via `project-lifecycle-read`.

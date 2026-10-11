@@ -1162,14 +1162,25 @@ class Store:
         if not isinstance(kind, str) or not kind.strip() or not isinstance(payload_matches, Mapping) or not payload_matches:
             raise ValueError("identity kind and exact payload predicates required")
         clauses, args = ["authority = ?", "kind = ?"], [self.authority, kind]
+        structural, structural_args, candidates, candidate_args = [], [], [], []
         for path, value in payload_matches.items():
             if (not isinstance(path, tuple) or not path or len(path) > 8
                     or not all(isinstance(part, str) and part and part.replace('_', '').isalnum() for part in path)
                     or not isinstance(value, str)):
                 raise ValueError("identity payload predicates require structural paths and string values")
             json_path = '$.' + '.'.join(path)
-            clauses.extend(["json_type(payload_json, ?) = 'text'", "json_extract(payload_json, ?) = ?"])
-            args.extend([json_path, json_path, value])
+            structural.extend(["json_type(payload_json, ?) = 'text'", "json_extract(payload_json, ?) = ?"])
+            structural_args.extend([json_path, json_path, value])
+            candidates.append("instr(payload_json, ?) > 0")
+            candidate_args.append(canonical_json(value))
+        # Store writes canonical JSON. Every matching string therefore has
+        # this exact encoded token. CASE short-circuits structural JSON parsing
+        # for non-candidates; the original type/path/equality checks still decide
+        # authority. False-positive tokens (including nested history) never match
+        # by themselves. No identity/context cache or schema change is involved.
+        clauses.append("CASE WHEN " + " AND ".join(candidates) + " THEN (" +
+                       " AND ".join(structural) + ") ELSE 0 END")
+        args.extend(candidate_args + structural_args)
         with self._transaction_lock:
             self._require_open()
             rows = self._connection.execute(

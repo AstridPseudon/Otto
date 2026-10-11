@@ -247,6 +247,7 @@ def prepare_canonical_assignment_role_brief(
     task_ref: Mapping[str, Any] | None = None,
     task_reader: Callable[[Mapping[str, Any]], Any] | None = None,
     operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
+    supervisor_reader: Callable[[], Mapping[str, Any] | None] | None = None,
     include_role_context: bool = True,
     direction_context_reader: Any = None,
 ) -> dict[str, Any]:
@@ -289,11 +290,22 @@ def prepare_canonical_assignment_role_brief(
     # Mandatory on all routes, including callback/override preparation which
     # omits the optional generic role introduction.
     context["direction_context"] = canonical["direction_context"]
-    if include_role_context:
+    from otto.portfolio.role_context import selected_configuration
+    configuration = selected_configuration(canonical["supporting_context"])
+    required_manager_context = role == "manager" and ((configuration is not None and configuration["content"].get("manager_context_required") is True) or isinstance(render["project_state"]["project"].get("payload", {}).get("metadata", {}).get("otto_orchestrator"), Mapping))
+    supervisor = None
+    observed_supervisor = None
+    if include_role_context or required_manager_context:
         from otto.portfolio.role_context import role_introduction, selected_configuration
         context["supporting_context"] = canonical["supporting_context"]
         context["selected_configuration"] = selected_configuration(canonical["supporting_context"])
-        core["introduction"] = role_introduction(canonical)
+        recipient = ((operating_context or {}).get("operational_help") or {}).get("recipient")
+        observed_supervisor = None if supervisor_reader is None else supervisor_reader()
+        supervisor = observed_supervisor
+        if supervisor is None and role == "manager" and isinstance(recipient, Mapping):
+            supervisor = {"project_ref": render["project_state"]["project"]["ref"],
+                          **{k: recipient[k] for k in ("assignment_ref", "generation", "principal", "conversation_ref")}}
+        core["introduction"] = role_introduction(canonical, operational_supervisor=supervisor)
     if operating_context is not None:
         context["operating_setup"] = operating_context
     if "mandate_instruction_contract" in canonical:
@@ -316,6 +328,8 @@ def prepare_canonical_assignment_role_brief(
     fresh = canonical_read()
     if fresh["evidence_sha256"] != canonical["evidence_sha256"]:
         raise OrchestratorRouteError("canonical owner state changed during resource resolution")
+    if role == "manager" and (include_role_context or required_manager_context) and supervisor_reader is not None and not _same_value(observed_supervisor, supervisor_reader()):
+        raise OrchestratorRouteError("manager supervisor changed during resource resolution")
     if operating_context_reader is not None and not _same_value(operating_context, operating_context_reader()):
         raise OrchestratorRouteError("operating role context changed during resource resolution")
     prepared["canonical_evidence"] = canonical
@@ -415,6 +429,7 @@ def invoke_canonical_assignment(
     requested_profile: str = "default",
     direction_context_reader: Any = None,
     operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
+    supervisor_reader: Callable[[], Mapping[str, Any] | None] | None = None,
 ) -> Any:
     """Prepare and deliver from canonical role/project/assignment records."""
     valid_pairs = {"invoke": {"launch", "replace"}, "resume": {"resume"}, "send": {"resume"}}
@@ -428,7 +443,7 @@ def invoke_canonical_assignment(
         lifecycle=lifecycle, as_of=as_of,
         required_resource_names=required_resource_names,
         task_ref=task_ref, task_reader=task_reader,
-        operating_context_reader=operating_context_reader,
+        operating_context_reader=operating_context_reader, supervisor_reader=supervisor_reader,
         direction_context_reader=direction_context_reader,
     )
     assignment = prepared["assignment"]

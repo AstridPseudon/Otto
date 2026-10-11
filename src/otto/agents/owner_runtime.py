@@ -524,6 +524,7 @@ class CanonicalRoleRuntime:
             assignment_reader=self._assignment_reader(due.assignment_ref),
             mandate_reader=self._mandate_reader(target["project_ref"], target["mandate_ref"]),
             resource_reader=self.operations.content_port,
+            supervisor_reader=(lambda: self._manager_supervisor(target["project_ref"])) if due.role == "manager" else None,
             direction_context_reader=getattr(self.operations, "direction_context_reader", None),
             lifecycle="resume" if due.execution_mode == "continue_existing" else "launch", as_of=due.anchor,
         )
@@ -548,6 +549,16 @@ class CanonicalRoleRuntime:
         from herzchen.contracts import ResourceRef
 
         return ResourceRef.from_dict(value)
+
+    def _manager_supervisor(self, project_ref):
+        """Current project recipient from the existing authenticated issue port."""
+        loop = self.portfolio._issue_loop()
+        describe = getattr(loop.ports.delivery, "describe", None) if loop else None
+        if not callable(describe):
+            return None
+        value = describe(project_ref)
+        return {"project_ref": dict(project_ref), **{k: value[k] for k in
+                ("assignment_ref", "generation", "principal", "conversation_ref")}}
 
     def _project_reader(self, project_pin: Mapping[str, Any]) -> Callable[[Mapping[str, Any]], Any]:
         return project_reader(self.operations, project_pin)
@@ -760,6 +771,7 @@ class CanonicalRoleRuntime:
                     assignment_reader=self._assignment_reader(assignment_ref),
                     mandate_reader=self._mandate_reader(project_ref, mandate_ref),
                     resource_reader=self.operations.content_port,
+                supervisor_reader=(lambda: self._manager_supervisor(project_ref)) if role == "manager" else None,
                     direction_context_reader=getattr(self.operations, "direction_context_reader", None),
                     lifecycle=lifecycle, as_of=as_of,
                     required_resource_names=required_resource_names,
@@ -815,6 +827,7 @@ class CanonicalRoleRuntime:
             project_reader=self._project_reader(project_ref), task_reader=self._task_reader(project_ref, task_ref),
             assignment_reader=self._assignment_reader(assignment_ref), mandate_reader=self._mandate_reader(project_ref, mandate_ref),
             resource_reader=self.operations.content_port,
+            supervisor_reader=(lambda: self._manager_supervisor(project_ref)) if role == "manager" else None,
             direction_context_reader=getattr(self.operations, "direction_context_reader", None), owner=logical_agent_id,
             logical_agent_id=logical_agent_id, operation=operation, packet_digest=packet_digest,
             logical_request_key=logical_request_key, request=request, lifecycle=lifecycle, as_of=as_of,
@@ -878,6 +891,7 @@ class CanonicalRoleRuntime:
                 assignment_reader=self._assignment_reader(assignment_ref),
                 mandate_reader=self._mandate_reader(project_ref, mandate_ref),
                 resource_reader=self.operations.content_port,
+                supervisor_reader=(lambda: self._manager_supervisor(project_ref)) if role == "manager" else None,
                 direction_context_reader=getattr(self.operations, "direction_context_reader", None), lifecycle=lifecycle,
                 as_of=as_of, required_resource_names=required_resource_names,
                 task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
@@ -1191,7 +1205,7 @@ class CanonicalRoleRuntime:
                 assignment_reader=self._assignment_reader(assignment_ref),
                 mandate_reader=self._mandate_reader(project_ref, mandate_ref),
                 resource_reader=self.operations.content_port,
-                direction_context_reader=getattr(self.operations, "direction_context_reader", None),
+                                direction_context_reader=getattr(self.operations, "direction_context_reader", None),
                 lifecycle=lifecycle, as_of=as_of,
                 required_resource_names=required_resource_names,
                 task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
@@ -1286,6 +1300,7 @@ class CanonicalRoleRuntime:
             project_reader=self._project_reader(project),
             assignment_reader=self._assignment_reader(assignment_ref),
             mandate_reader=self._mandate_reader(project, mandate), resource_reader=self.operations.content_port,
+            supervisor_reader=(lambda: self._manager_supervisor(project)) if role == "manager" else None,
             direction_context_reader=getattr(self.operations, "direction_context_reader", None),
             lifecycle=kwargs.get("lifecycle", "launch"), as_of=kwargs.get("as_of", ""),
             required_resource_names=kwargs.get("required_resource_names", ()),

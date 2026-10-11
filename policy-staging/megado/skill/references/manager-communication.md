@@ -6,9 +6,9 @@ This is the default communication policy for every newly created manager.
 - Use canonical Otto records for routine bookkeeping: launches, findings, decisions, failures, completions, receipts, blockers and next actions belong in the owner records and run evidence.
 - Coordinate routine execution directly with assigned workers and peer managers. Do not send routine unsolicited progress, launch, finding or completion updates to the root or user.
 - The root pulls one consolidated portfolio summary hourly. An hourly pull is a reporting boundary, not a work gate.
-- Interrupt the root only when an actual user decision is urgently required to proceed or an imminent material loss, irreversible deadline or comparable time-critical risk needs action. Otherwise leave the durable record for the next portfolio pull.
+- Submit an operational blocker through canonical `request-help` to the adopted project supervisor as soon as owner action is required. Retain the issue and delivery receipt before returning; advance independent work. Routine progress remains for the portfolio pull. An urgent user decision or imminent material loss also warrants immediate escalation.
 
-An instance may adopt a narrower communication rule, but a new manager must not weaken this default without an explicit current instruction.
+Current adopted project directions specify the supervisor and supported delivery route; never infer delivery from a local file or final text. If the tool itself fails, preserve its exact failed handle and use the supplied supported fallback once, reporting unavailable delivery honestly. Apply the authenticated response before same-manager continuation.
 
 ## Help, context and continuation
 
