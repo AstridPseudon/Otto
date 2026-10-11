@@ -116,6 +116,100 @@ In merge order (each commit message has the details):
     **`otto.hostctl`** (the service, lanes, register, sync, activate and
     history) and the packaging that installs `ottoctl`. These are new files
     only.
+11. `d04796d` **Kernel seams for portfolios:**
+    - `WorkGraph.unlink_dependency`;
+    - `detach_existing_project`, a supervision transfer to no supervisor;
+    - the `portfolio.shared` association key;
+    - `Store.project_identity_fields`, a bounded current-field projection.
+12. `091ee9c`, `f7bdf57`, `d2c777d` and `c179e2d` **Portfolio:**
+    - dependencies, readiness, shared documents and status;
+    - concurrent managers in one service. ExecutionHost: an opt-in lock
+      release during provider waits, and turn admission before the lock;
+    - `ottoctl` portfolio commands and `apply`;
+    - docs and skill.
+
+## Portfolio: one orchestrator, many projects (core now, a pack later)
+
+The orchestrator runs a portfolio of related projects, each with its own
+manager. It is built in CORE now, because packs are content-only and cannot
+yet carry code or storage. It moves to a pack once the pack platform can. It
+adds no table and no record kind; it uses the work graph, supervision, DAT and
+the host lanes.
+
+**The pieces:**
+- **Grouping:** the orchestrator's `wrk.portfolio` and the existing
+  supervision relation.
+- **Dependencies:** a project may depend on another project, or on a gate in
+  another project, within the same portfolio. Project-level cycles are
+  refused. External prerequisites are gates. Readiness (ready, or blocked with
+  its blockers) is computed on read. Activation is refused while blocked,
+  unless the orchestrator or owner overrides it with a recorded reason.
+- **Shared documents:** standalone DAT documents scoped to the portfolio and
+  associated with each project in `portfolio.shared`. They use the same
+  three-way, never-overwrite sync. A project's manager and workers read them
+  through that project's current supervision; only the orchestrator or owner
+  writes them.
+- **Status:** `portfolio status` is one read per kind, through the kernel's
+  `project_identity_fields`, with no sheet exports. Per project it shows:
+  - readiness;
+  - manager state;
+  - tasks;
+  - help requests;
+  - allowances;
+  - last activity.
+
+  It also lists what needs the orchestrator.
+- **Concurrent managers:** the one service runs several projects' managers at
+  once.
+  - Each attached project keeps an isolated journey.
+  - Turns are bounded: 3 by default, 1–16 configurable; the rest queue.
+  - All projects share ONE Store lock. A manager's provider wait releases it,
+    and every owner callback reacquires it.
+  - Each project can be drained on its own.
+- **Detach:** removes supervision and shared associations, but never while a
+  manager runs or is queued.
+
+**Commands** (all through the host's lane; the owner can pass `--portfolio`):
+```sh
+ottoctl portfolio apply --root <portfolio dir> [--dry-run] [--import-history <closed run>]
+ottoctl portfolio status --json
+ottoctl portfolio documents --operation list|read [--path P]
+ottoctl portfolio sync-docs --dir DIR
+ottoctl portfolio gate complete --project A --gate contracts-v1 --evidence "<accepted proof>"
+ottoctl portfolio prerequisite complete --project A --id codex-port-published --evidence "<receipt>"
+ottoctl project depend --project B --on 'A#contracts-v1' [--remove]
+ottoctl project dependencies --project B
+ottoctl project detach --project J
+ottoctl service run --max-active-manager-turns 3 ; ottoctl service drain --project X
+```
+
+The timeline refactor is ONE command once Claude is admitted:
+```sh
+ottoctl portfolio apply --root …/timeline-platform-r4 --import-history …/timeline-platform-r3
+```
+r4 is the portfolio root, never a project. Codex's port is an external
+prerequisite, not a project.
+
+**Proof:**
+- **Disposable Stores only.**
+- **Real bundle:** ten projects A–J, 99 shared documents, r3 as history.
+  - It was applied, re-applied (`in_sync`), and taken through readiness
+    waves, gate completion, activation, detach and reattach.
+  - Timings on Python 3.11: apply 4.2 s, re-apply 9.7 s, status about 0.1 s.
+- **Native concurrency proof:** two scripted Claude managers ran at once under
+  the real fences, with two active turns.
+  - Each authenticated over its own socket.
+  - Each read its own brief and the shared document.
+  - A foreign brief was refused.
+  - Drain and reattach succeeded.
+  - It passed on Python 3.9 and 3.11.
+
+**Codex-side notes:**
+- Codex adapter execution for C, E and H is not qualified on this host;
+  activation refuses unadmitted adapters.
+- Converging the service with ProjectServices still applies; see below.
+- The design spec is `docs/portfolio-spec.md`; the user guide is
+  `docs/portfolio.md`.
 
 ## How this coexists with Codex's current controllers
 
@@ -182,13 +276,17 @@ turn settles. The port's manager goes last, or at its completion.
   - it admits hosts;
   - it publishes status;
   - it routes each host lane as an authenticated owner route.
-- Today it attaches one project's view at a time
-  (`serve.HostOwnerService`, which is exactly the `server` object a
-  ManagerJourneyService view expects).
-- Convergence: the service installs ProjectServices with one
-  HostOwnerService view per attached project. Host lanes and their grants
-  become ProjectServices' `owner_route`. There is no second multi-project
-  mechanism.
+- Today it attaches several projects, each as a `serve.HostOwnerService`
+  view (exactly the `server` object a ManagerJourneyService view expects).
+  Each view has its own ExecutionHost, but all of them share ONE Store lock
+  and one bound on concurrent turns.
+- ProjectServices is still uncommitted in Codex's tree, so it could not be
+  reused here. This per-project-ExecutionHost arrangement is the interim.
+- Convergence: the service installs ProjectServices, with one
+  HostOwnerService view per attached project, over one bounded ExecutionHost.
+  Host lanes and their grants become ProjectServices' `owner_route`. The
+  shared lock and the turn bound move into that host, leaving one
+  multi-project mechanism.
 
 **Decision points for the user:**
 1. Admit Claude Code to the shared Store, and who performs the admission.
@@ -316,13 +414,14 @@ head; later commits change only the skill text and docs).
 | | Tests | Failing |
 |---|---|---|
 | `a0392d3` (Codex head) | 943 | 15, plus `test_initial_manager_transport`, which hangs past 900 s |
-| this branch | 1050 | 14, plus the same hang |
+| this branch before Portfolio (`0625c5c`) | 1050 | 14, plus the same hang |
+| this branch with Portfolio (`c179e2d`) | 1094 | **13**, plus the same hang. The two fixes below hold; nothing new fails |
 
 - **Fixed on the branch (2):**
   - `test_native_caller_ingress …same_uid_spoof`;
   - `test_worker_occurrences …capacity_one_real_parent…`.
   Both are fixed by the ancestry correction (`0aa435c`).
-- **New on the branch (1):**
+- **New on the pre-Portfolio run (1), not reproduced:**
   `test_manager_assessment_ipc …test_unknown_is_not_accepted…` failed once.
   The test's `wait_file` helper read a child receipt while it was being
   written (JSONDecodeError). The module passed that test in two reruns; the
