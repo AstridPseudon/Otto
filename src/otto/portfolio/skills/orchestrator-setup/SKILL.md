@@ -5,7 +5,7 @@ description: Request or inspect an Otto orchestrator's scoped enrollment for an 
 
 # Orchestrator setup
 
-A conversation or coordination message does not register an orchestrator. Enrollment issues an authenticated identity; project supervision is a separate canonical adoption. Use the owner-provided installed `orchestrator_client_ctl.py` invocation, interpreter, connection locator, inbox and binding locator exactly as supplied. Start with `discover` and `status`; a missing installed connection requires the accountable owner's setup. Do not guess a module entrypoint, open the Store, borrow another role's binding, or create another owner service.
+A conversation or coordination message does not register an orchestrator. Enrollment issues an authenticated identity; project supervision is a separate canonical adoption. For cold first use, read the nonsecret installed locator `~/.otto/orchestrator-connection.json`. It supplies `python`, `client_entrypoint` and `owner_inbox`; invoke that interpreter and entrypoint with `--connection` selecting this locator, then `discover` and `status`. An issued binding locator supplies your own private lane. A missing connection requires the accountable owner's installation; it is distinct from an unregistered chat. Do not guess a module entrypoint, open the Store, borrow another role's binding, or create another owner service.
 
 ## Request and approval
 

@@ -11,7 +11,7 @@ is planned and reviewed.
 Use your role introduction's exact installed entrypoint. Check its help and,
 where supported, `whoami` and `effective-context`. Use your own binding; never
 borrow an identity or open the live database. If no binding was delivered,
-request it from the responsible owner.
+use [Orchestrator setup](orchestrator-setup/SKILL.md) and the installed nonsecret `~/.otto/orchestrator-connection.json` for cold orchestrator discovery and enrollment; other roles request their binding from the responsible owner.
 
 Read the guide relevant to your work:
 
