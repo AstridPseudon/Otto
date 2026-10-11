@@ -687,7 +687,10 @@ class ManagerJourneyService:
                 reasoning=worker["reasoning"], evidence_id=worker["schedule_id"],
                 selection=((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
             if command == "start-retained-worker":
-                manager_schedule = worker.get("manager_schedule_id") or (self.server.state.get("manager_continuation") or {}).get("schedule_id") or self.server.state["schedule_id"]
+                # The worker's original parent remains immutable historical evidence.
+                # Resource adoption may advance that parent's assignment pins;
+                # synchronize only the fixed view's current manager entrance.
+                manager_schedule = self._current_manager_schedule()
                 sync = getattr(app, "synchronize_manual_manager_occurrence", None)
                 if callable(sync):
                     sync(schedule_id=manager_schedule)
