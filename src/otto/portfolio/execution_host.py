@@ -138,6 +138,9 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
         if request.get("operation") == "events-read":
             return ("admitted" if set(request) == {"command", "operation", "request_key", "handle"}
                     and isinstance(request.get("handle"), Mapping) else "held")
+        if request.get("operation") == "retention-read":
+            return ("admitted" if set(request) == {"command", "operation", "request_key", "handle"}
+                    and isinstance(request.get("handle"), Mapping) else "held")
         return ("admitted" if request.get("operation") in {
             "whoami", "effective-context", "direction-read", "direction-history"}
             and set(request) == {"command", "operation", "request_key"}

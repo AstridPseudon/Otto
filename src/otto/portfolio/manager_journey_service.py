@@ -848,7 +848,9 @@ class ManagerJourneyService:
             fields |= {"document_ref", "expected_binding_ref", "handle"}
         elif operation == "events-read":
             fields |= {"handle"}
-        elif operation not in {"whoami", "effective-context", "direction-read", "direction-history"}:
+        elif operation == "retention-read":
+            fields |= {"handle"}
+        elif operation not in {"whoami", "effective-context", "direction-read", "direction-history", "retention-read"}:
             raise ValueError("unsupported external owner context operation")
         if set(request) != fields:
             raise ValueError("owner context fields differ; identity and subject are host-bound")
@@ -862,7 +864,6 @@ class ManagerJourneyService:
                 or root.status.value == "cancelled"):
             raise PermissionError("current host root portfolio responsibility is stale or foreign")
         subject = ResourceRef.from_dict(root.payload["responsibility_ref"])
-        surface = owner.direction_surface()
         common = {"schema": "otto.external-owner-context.v1",
                   "identity_origin": "authenticated external owner input capability",
                   "native_process_identity_claimed": False,
@@ -870,6 +871,13 @@ class ManagerJourneyService:
                   "principal": root.principal, "role": root.role,
                   "assignment_ref": root.ref.to_dict(), "generation": root.generation,
                   "scope_ref": root.scope.to_dict(), "responsibility_ref": subject.to_dict()}
+        if operation == "retention-read":
+            capability = getattr(self, "retention_owner_read", None)
+            if capability is None:
+                return {**common, "outcome": "unavailable", "read_only": True,
+                        "reason": "trusted retention readers are not installed", "provider_called": False}
+            return {**common, **capability.call(request, root=root, actor=actor)}
+        surface = owner.direction_surface()
         if operation == "events-read":
             return {**common, "outcome": "read", "read_only": True,
                     **self._owner_events_read(request["handle"], actor, root)}
