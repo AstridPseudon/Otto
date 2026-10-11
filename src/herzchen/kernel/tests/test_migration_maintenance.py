@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 import test_events_history as fixture
 from herzchen.kernel.recovery import (ClosedOwnerCustody, closed_owner_custody,
-    storage_diagnostics_closed_owner)
+    SnapshotError, storage_diagnostics_closed_owner)
 
 class MaintenanceTests(unittest.TestCase):
     setUp = fixture.HistoryTests.setUp
@@ -89,6 +89,14 @@ class BoundedDiagnosticTests(unittest.TestCase):
         self.assertEqual(vm_limited['work']['state'], 'partial')
         self.assertEqual(vm_limited['work']['reason'], 'sqlite_vm_step_limit')
         self.assertFalse(vm_limited['records_modified'])
+
+    def test_inactive_custody_error_is_not_masked_by_handler_cleanup(self):
+        stale = object.__new__(ClosedOwnerCustody)
+        stale.connection = sqlite3.connect(':memory:')
+        stale.connection.close()
+        stale._active = False
+        with self.assertRaisesRegex(SnapshotError, 'closed-owner custody is no longer active'):
+            storage_diagnostics_closed_owner(stale)
 
 
 class CloneMigrationTests(unittest.TestCase):

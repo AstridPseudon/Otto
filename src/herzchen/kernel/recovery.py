@@ -1611,7 +1611,14 @@ def storage_diagnostics_closed_owner(custody, *, group_limit=32, progress=None,
                                      max_rows_per_table=100_000, max_tables=64,
                                      max_allocation_rows=100_000):
     """Public diagnostic entrypoint; always remove the connection-local VM guard."""
-    conn = custody.connection if isinstance(custody, ClosedOwnerCustody) else None
+    if not isinstance(custody, ClosedOwnerCustody):
+        return _storage_diagnostics_closed_owner_impl(
+            custody, group_limit=group_limit, progress=progress,
+            deadline_seconds=deadline_seconds, max_vm_steps=max_vm_steps,
+            max_rows_per_table=max_rows_per_table, max_tables=max_tables,
+            max_allocation_rows=max_allocation_rows)
+    custody.require_active()
+    conn = custody.connection
     try:
         return _storage_diagnostics_closed_owner_impl(
             custody, group_limit=group_limit, progress=progress,
@@ -1619,8 +1626,12 @@ def storage_diagnostics_closed_owner(custody, *, group_limit=32, progress=None,
             max_rows_per_table=max_rows_per_table, max_tables=max_tables,
             max_allocation_rows=max_allocation_rows)
     finally:
-        if conn is not None:
+        try:
             conn.set_progress_handler(None, 0)
+        except sqlite3.ProgrammingError:
+            # A closed custody can invalidate the connection during cleanup;
+            # never replace the diagnostic's original exception with that.
+            pass
 
 
 def _clonefile(source, target):
