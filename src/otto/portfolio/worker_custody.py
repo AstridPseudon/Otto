@@ -495,7 +495,7 @@ def retained_stopped_writer_conflict_release(execution, due):
     failure plus authenticated original delivery proves this process started
     no turn. Current normal admission must still test the native writer lock.
     """
-    _require(due.stop_state == 'stopped' and due.in_flight_request is None
+    _require(due.stop_state == 'stopped'
         and due.completion_state in {'none', 'unknown'} and due.role == 'manager'
         and execution.actor == due.lifecycle_owner == due.owner == due.manager_ref,
         'exact lifecycle-owner stopped manager required')
@@ -539,6 +539,8 @@ def retained_stopped_writer_conflict_release(execution, due):
         and result.get('task_ref') == due.target['task_ref']
         and result.get('logical_agent_id') == result.get('owner') == due.recipient,
         'original authenticated delivery scope differs')
+    _require(due.in_flight_request is None or due.in_flight_request == auth['logical_request_key'],
+        'retained in-flight token differs from exact terminal failed process')
     _require(raw.get('initialization_envelope') is None and raw.get('initialization_receipt') is None
         and raw.get('transport_operation') == 'resume' and raw.get('worker_content') == []
         and raw.get('task_bound_evidence') is None and work.get('stdout') == ''

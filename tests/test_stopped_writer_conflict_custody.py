@@ -31,6 +31,13 @@ class StoppedWriterConflictTests(unittest.TestCase):
         with patch.object(host,'_execution_scope',return_value={'role':'manager'}):host.restore_execution(self.app,self.due)
         self.assertNotIn('old',host._capacity_holds)
 
+    def test_exact_terminal_inflight_token_is_preserved_not_replayed(self):
+        self.due.in_flight_request = 'original'
+        before = copy.deepcopy(vars(self.due))
+        out = retained_stopped_writer_conflict_release(self.app, self.due)
+        self.assertFalse(out['provider_retry_allowed'])
+        self.assertEqual(vars(self.due), before)
+
     def test_ambiguous_foreign_or_started_turn_never_releases(self):
         cases=[lambda d:setattr(d,'stop_state','active'),lambda d:setattr(d,'in_flight_request','unknown'),lambda d:setattr(d,'lifecycle_owner','foreign'),lambda d:setattr(d,'generation',2),lambda d:d.target.update(native_id='foreign'),lambda d:d.host_evidence['gateway_attempt']['result'].update(observed_turn_id='turn'),lambda d:d.host_evidence['gateway_attempt']['result']['raw_result']['work_envelope'].update(stdout='{"type":"turn.started"}'),lambda d:d.host_evidence['gateway_attempt']['result']['raw_result']['work_envelope'].update(exit_status=None),lambda d:d.host_evidence['gateway_attempt']['result']['raw_result']['work_envelope'].update(stderr='generic failure'),lambda d:d.host_evidence['gateway_attempt']['result']['raw_result']['work_envelope']['host_evidence'].update(session_created=True),lambda d:d.host_evidence['gateway_attempt']['result']['raw_result']['owner_delivery_authorization'].update(principal='foreign')]
         for change in cases:
