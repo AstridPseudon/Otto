@@ -188,6 +188,89 @@ class ExecutionApplication:
             raise OccurrencePreparationError("execution actor does not own the assignment")
         return current
 
+    def _manager_adoption_anchor(self, prior: DueRecord) -> Any:
+        """Bridge only canonical unchanged-identity resource-adoption history.
+
+        Historical Due stays immutable. Generic _current remains exact; only
+        manager continuation joins may use this authenticated future boundary.
+        """
+        current = self.assignments.get(ResourceRef.from_dict(prior.assignment_ref))
+        if current.ref.to_dict() == prior.assignment_ref:
+            return self._current(prior.assignment_ref, prior.generation)
+        from .operating_setup import authenticated_adoption_ancestor
+        if (prior.role != 'manager' or current.role != 'manager'
+                or current.principal != prior.recipient or current.principal != self.manager_actor
+                or current.generation != prior.generation
+                or _identity(current.scope.to_dict()) != _identity(prior.target['project_ref'])
+                or not authenticated_adoption_ancestor(
+                    {'ref': current.ref.to_dict(), 'principal': current.principal, 'role': current.role,
+                     'generation': current.generation, 'payload': current.payload}, prior.assignment_ref,
+                    getattr(self.portfolio.operations, '_owner_reader', None))):
+            raise OccurrencePreparationError('manager anchor lacks authenticated same-generation adoption history')
+        return current
+
+    @staticmethod
+    def directive_anchor_digest(prior: DueRecord) -> str:
+        return _digest(prior.to_dict())
+
+    def continue_manager_from_directive(self, *, manager_schedule_id: str,
+            report_ref: Mapping[str, Any], supervisor_ref: Mapping[str, Any], execute: bool = False):
+        """A supervisor-authored application receipt, never a manager/help report."""
+        prior = self._read(manager_schedule_id)
+        current = self._manager_adoption_anchor(prior)
+        supervisor = self.assignments.get(ResourceRef.from_dict(supervisor_ref))
+        reader = getattr(self.portfolio.operations, '_owner_reader', None)
+        if reader is None: raise OccurrencePreparationError('directive canonical read capability unavailable')
+        report = reader.get_record(ResourceRef.from_dict(report_ref))
+        value = report.payload.get('value') if report is not None else None
+        project = project_reader(self.portfolio.operations, prior.target['project_ref'])(_identity(prior.target['project_ref']))
+        relation = project['payload'].get('metadata', {}).get('otto_orchestrator', {})
+        if (report is None or report.ref.to_dict() != dict(report_ref) or report.ref.kind != 'wrk.report'
+                or report.payload.get('assignment') != dict(supervisor_ref)
+                or supervisor.ref.to_dict() != dict(supervisor_ref) or supervisor.role != 'orchestrator'
+                or not isinstance(value, Mapping) or value.get('schema') != 'otto.supervisor-directive-application.v1'
+                or value.get('supervisor_assignment_ref') != dict(supervisor_ref)
+                or relation.get('assignment_ref') != dict(supervisor_ref)
+                or relation.get('generation') != supervisor.generation
+                or value.get('manager_assignment_ref') != current.ref.to_dict()
+                or value.get('before_manager_ref') != prior.assignment_ref
+                or value.get('manager_generation') != current.generation
+                or value.get('anchor_schedule_id') != prior.schedule_id
+                or value.get('anchor_sha256') != _digest(prior.to_dict())):
+            raise OccurrencePreparationError('directive requires exact supervised canonical application receipt')
+        receipt = reader.get_receipt(value['adoption_key'])
+        if (receipt is None or receipt.operation != 'work.assignment.adopt-resources'
+                or receipt.target.to_dict() != prior.assignment_ref or receipt.result_ref != current.ref):
+            raise OccurrencePreparationError('directive manager revision has no exact adoption receipt')
+        schedule = value['continuation_schedule_id']
+        existing = self.due_port.read_due(schedule)
+        if existing is not None:
+            if (existing.get('host_evidence') or {}).get('supervisor_directive_ref') != dict(report_ref):
+                raise OccurrencePreparationError('directive continuation key changed')
+            return self.recover(schedule_id=schedule, execute=execute)
+        _, _, held = self._manager_anchor(prior, current, schedule=schedule, purpose='supervisor directive')
+        if held is not None: return held
+        bases = [r['resource_ref'] for r in current.payload.get('resource_adoptions', ())
+                 if r['required'] and r['resource_name'] == 'BASE']
+        if len(bases) != 1 or bases[0] != value['BASE_ref']:
+            raise OccurrencePreparationError('directive callback requires exact newly adopted BASE')
+        guide = bases[0]
+        due = build_manager_callback_due(prior, schedule_id=schedule, request_key=schedule,
+            assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target['mandate_ref'],
+            due_at=self._now(), timeout_seconds=prior.timeout_seconds, native_adapter=self.native_adapter_identity())
+        due = replace(due, instruction='Read and acknowledge the exact adopted supervisor directive before continuing your existing manager objective. Preserve any active worker on its retained contract; this invocation grants no new worker allowance.',
+            message=json.dumps({'supervisor_directive_ref':dict(report_ref), 'direction_ref':value['direction_ref'],
+                'BASE_ref':value['BASE_ref'], 'source':'authenticated own project supervisor'}, sort_keys=True),
+            host_evidence={'supervisor_directive_ref':dict(report_ref)})
+        prepared = prepare_current_assignment_occurrence(due_port=self.due_port, assignments=self.assignments,
+            binding=self.binding, due=due, assignment_ref=current.ref.to_dict(), assignment_owner=self.manager_actor,
+            operation='resume', lifecycle='callback', request_key=schedule)
+        if prepared['outcome'] == 'committed':
+            due = self._resources(self._read(schedule))
+            self._verify_native_binding(current, due.target['native_id'], schedule)
+            prepared = {**prepared, 'due_version':due.version}
+        return self.start(schedule_id=schedule) if execute and prepared['outcome'] == 'committed' else prepared
+
     def caller_context(self, binding: Any) -> Mapping[str, Any]:
         """Read identity/direction from a host-supplied binding, never JSON IDs."""
         from .identity_context import resolve_caller_context

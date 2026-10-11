@@ -23,6 +23,44 @@ Ordinary scoped project clients do not gain this owner capability. Adding strate
 project references to a directive does not transfer supervision, register or
 activate projects, or allocate budgets.
 
+## Issued project-supervisor directive
+
+When your own installed client help and issued policy include
+`supervisor-direction-read`, use it with the exact supervised `--project-id`.
+This reads the **manager responsibility's controlling direction**, not your
+own orchestrator instruction adoption or the project-level direction binding.
+Those surfaces can be unbound independently. The returned `subject_ref`,
+binding, latest/effective/adopted document refs and current manager head are
+the pins for this route. If this read reports first binding or missing BASE,
+stop at the stated hold; this facade cannot create the missing binding.
+
+`supervisor-direction-draft --request-key KEY --request JSON` takes exactly
+`content` (the complete instruction document, preserving its constraints and
+supporting refs) and `expected_revision` from that read. The canonical JSON
+payload is bounded to 65536 bytes. Draft saves only; it is not adoption or
+delivery. After drafting, read again and submit
+`supervisor-direction-adopt-and-continue` with exactly `document_ref` from
+the draft and fresh `expected_binding_ref`, `expected_direction_ref`,
+`expected_manager_ref`, `expected_manager_generation`, `expected_schedule_id`.
+The latter direction pin is the read's `latest_ref`. Use a distinct stable
+request key for each distinct operation; retain UNKNOWN handles without resend.
+
+This operation requires the existing manager to have settled. It atomically
+adopts the bound direction and corresponding manager BASE, records its canonical
+application and prepares one same-session continuation. It preserves active
+workers on their immutable contracts and adds no allowance. Its delivery is
+`prepared-not-started`. Start only the returned current schedule using your
+existing `manager-start` with `{"schedule_id":"<returned-current-schedule>"}`.
+Read retained completion and actual manager acknowledgement before claiming
+consumption. The worker-result route selects this current manager head, and
+merges a delayed original result into that one unstarted continuation.
+
+This route is available only after normal owner deployment and explicit issuance
+of these three operations to your existing own policy. It grants neither the
+main-root direction capability nor generic `project-authoring`, package CRUD,
+first binding, new supervision, activation or direct native messaging. A CLI
+name or source test alone does not prove an installed handler or issued access.
+
 Maintain the canonical queue. Registration, enrollment, queueing and activation are separate
 until the installed interface explicitly combines them; recover partial setup
 using the existing project.

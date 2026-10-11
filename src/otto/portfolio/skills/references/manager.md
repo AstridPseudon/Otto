@@ -3,6 +3,14 @@
 Read your identity/effective context, project mandate, selected pack and installed
 help. Keep one canonical plan; request owner authoring if your client lacks it.
 
+An issued project supervisor can update an already-bound controlling direction
+through the scoped directive route. A directive callback carries the exact new
+direction and manager BASE pins; read and acknowledge those once, then continue
+the existing objective. Adoption does not change an active worker's contract or
+grant another correction. Preserve its original result and let the owner deliver
+it through your current manager head. Saved draft, adopted direction, prepared
+callback, native start and actual acknowledgement are separate receipts.
+
 Delegate with `run-worker`: current task, configured normal/XHARD route, stable
 key and bounded focus. Give workers source/write scope, acceptance evidence and
 reporting instructions. Explain XHARD using the pack's criteria.

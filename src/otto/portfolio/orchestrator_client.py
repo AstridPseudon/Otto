@@ -15,8 +15,9 @@ import json
 from . import client_lanes as lanes
 
 ROOT_DIRECTION_OPERATIONS = frozenset({'direction-read', 'direction-draft', 'direction-update'})
+from .supervisor_direction_client import OPERATIONS as SUPERVISOR_DIRECTION_OPERATIONS
 
-OPERATIONS = ROOT_DIRECTION_OPERATIONS | frozenset({'status', 'whoami', 'effective-context', 'portfolio',
+OPERATIONS = ROOT_DIRECTION_OPERATIONS | SUPERVISOR_DIRECTION_OPERATIONS | frozenset({'status', 'whoami', 'effective-context', 'portfolio',
     'read-manager', 'read-help', 'respond-help', 'delivery-ack',
     'project-authoring', 'manager-start'})
 
@@ -319,15 +320,17 @@ def main(argv=None):
     enroll.add_argument('--project-id', action='append', required=True)
     for operation in sorted(OPERATIONS):
         command = sub.add_parser(operation)
-        command.add_argument('--request-key', required=operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'})
+        command.add_argument('--request-key', required=operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'} | (SUPERVISOR_DIRECTION_OPERATIONS - {'supervisor-direction-read'}))
         command.add_argument('--project-id')
-        if operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'}:
+        if operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'} | (SUPERVISOR_DIRECTION_OPERATIONS - {'supervisor-direction-read'}):
             command.add_argument('--request', required=True, help=(
                 'respond-help JSON contains only issue_id, authority_source, response, '
                 'proposed_solution and next_action; command and request_key are supplied by this client.'
                 if operation == 'respond-help' else
                 'content + expected_revision; saves a draft without adoption.' if operation == 'direction-draft' else
                 'content + expected_direction_ref + expected_binding_ref. Uses current own-root policy; atomically adopts direction/BASE/current joins only at a quiescent boundary; no activation or budgets.' if operation == 'direction-update' else
+                'content + expected_revision; draft only, requires issued project supervision.' if operation == 'supervisor-direction-draft' else
+                'document_ref + expected_binding_ref + expected_direction_ref + expected_manager_ref + expected_manager_generation + expected_schedule_id; adopt existing bound manager direction and prepare same-manager continuation; existing worker pins unchanged. No provider call; prepared delivery is not consumption.' if operation == 'supervisor-direction-adopt-and-continue' else
                 'Operation payload JSON; routing and request key stay in CLI flags.'))
     command = sub.add_parser('request-status'); command.add_argument('--request-id', required=True)
     args = parser.parse_args(argv)
