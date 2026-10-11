@@ -28,11 +28,24 @@ class DocumentReceiptProjectionTests(unittest.TestCase):
             def list_events(inner, **kw):raise AssertionError('unexpected read')
         self.assertEqual(self.operation(Reader())._events_for(self.receipt(event_ids=[])),[])
     def test_other_operation_keeps_existing_projection_order(self):
+        calls=[]
         class Reader:
             def list_events(inner, **kw):
-                self.assertEqual(kw,{})
+                calls.append(kw)
                 return (SimpleNamespace(event_id='second'),SimpleNamespace(event_id='first'))
         self.assertEqual(self.operation(Reader())._events_for(self.receipt(operation='work.sheet.apply',event_ids=['first','second'])),['second','first'])
+        # The receipt's own subject filters the read; a shared Store's whole history is not decoded.
+        self.assertEqual(calls,[{'subjects':(ResourceRef('owner','dat.content.document','doc'),)}])
+    def test_other_operation_falls_back_to_the_full_read_when_its_subject_misses_an_event(self):
+        calls=[]
+        class Reader:
+            def list_events(inner, **kw):
+                calls.append(kw)
+                if kw:
+                    return (SimpleNamespace(event_id='first'),)
+                return (SimpleNamespace(event_id='second'),SimpleNamespace(event_id='first'))
+        self.assertEqual(self.operation(Reader())._events_for(self.receipt(operation='work.sheet.apply',event_ids=['first','second'])),['second','first'])
+        self.assertEqual(calls[1:],[{}])
     def test_real_owner_document_commit_and_exact_replay_keep_receipt_events(self):
         f=fixtures.PortfolioDirectionTests();f.setUp();self.addCleanup(f.doCleanups)
         from otto.portfolio.intake import OttoPortfolio
