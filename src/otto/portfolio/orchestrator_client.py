@@ -243,17 +243,29 @@ class OrchestratorLanePump:
                 continue
             request = lanes.read_private_json(path)
             lanes.mark_pending(lane, token, 'processing', retry=False)
-            try:
-                value = self.owner_call(lambda: self._execute(lane, request))
+            def publish(value, lane=lane, token=token):
                 if not isinstance(value, Mapping):
                     raise TypeError('finite client handler must return a retained result or handle')
                 result = {**json_value(value), 'request_id': token, 'terminal': True}
-            except Exception as error:
+                lanes.respond(lane, token, result)
+                return result
+            def failed(error, lane=lane, token=token):
                 result = {'outcome': 'error', 'request_id': token, 'terminal': True,
                     'error': type(error).__name__, 'message': str(error), 'retry': False,
                     'effect_state': 'unverified',
                     'next_action': 'Inspect this exact request and canonical scope; do not replay uncertain effects.'}
-            lanes.respond(lane, token, result)
+                lanes.respond(lane, token, result)
+                return result
+            try:
+                from .owner_completion import after_owner, OwnerCompletion
+                # Register terminal publication on the owner before returning;
+                # an admitted native transport never blocks the client pump.
+                result = self.owner_call(lambda: after_owner(self._execute(lane, request), publish, failed))
+                if isinstance(result, OwnerCompletion):
+                    completed.append({'request_id': token, 'outcome': 'processing', 'retry': False})
+                    continue
+            except Exception as error:
+                result = failed(error)
             completed.append({'request_id': token, 'outcome': result.get('outcome', result.get('state'))})
         return completed
 

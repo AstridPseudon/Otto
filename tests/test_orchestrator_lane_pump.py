@@ -50,5 +50,19 @@ class LanePumpTests(unittest.TestCase):
   for payload in [{'project_ref':{'authority':'owner','kind':'work.project','id':'foreign'}},{'principal':'owner-root'},{'project_id':'foreign'}]:
    with self.assertRaises(PermissionError):client.call({**envelope,'request':payload})
   self.assertEqual(calls,[])
+ def test_async_owner_completion_releases_pump_and_retains_one_terminal(self):
+  from otto.portfolio.owner_completion import OwnerCompletion
+  future=OwnerCompletion();calls=[]
+  def call(request):calls.append(request);return future if request['operation']=='manager-start' else {'outcome':'read'}
+  self.client.call=call
+  start=lanes.submit(self.lane,{'operation':'manager-start','request_key':'start'})
+  read=lanes.submit(self.lane,{'operation':'whoami','request_key':'read'})
+  self.pump.poll();self.pump.poll()
+  self.assertEqual(len(calls),2);self.assertTrue((self.lane/('response-'+read+'.json')).exists())
+  self.assertFalse((self.lane/('response-'+start+'.json')).exists())
+  future.resolve({'outcome':'succeeded','original_schedule':'same'})
+  result=lanes.read_private_json(self.lane/('response-'+start+'.json'))
+  self.assertEqual(result['original_schedule'],'same');self.assertTrue(result['terminal'])
+  self.pump.poll();self.assertEqual(len(calls),2)
 
 if __name__=='__main__':unittest.main()
