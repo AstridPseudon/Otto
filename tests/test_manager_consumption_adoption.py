@@ -116,5 +116,46 @@ class ManagerConsumptionAdoptionTests(unittest.TestCase):
                     with self.assertRaises(PermissionError):
                         manager_consumption_parent(self.service, self.context, self.child)
 
+
+class PreparedManagerWorkerDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.f = f = ExecutionApplicationTests(); f.setUp(); self.addCleanup(f.doCleanups)
+        manager, guide, mandate = f.role_handles('manager', 'manager', 'manager-session')
+        args = dict(role='manager', project_ref=f.project.ref.to_dict(), task_ref=f.task.ref.to_dict(),
+            assignment_ref=manager.ref.to_dict(), generation=1, mandate_ref=mandate,
+            context_refs=(guide, mandate), instruction='Inspect this task', model='gpt-test',
+            reasoning='high', profile='workspace-write', native_session_id='manager-session')
+        first = f.app.prepare_role(**args, request_key='settled-manager')
+        self.assertEqual(f.app.start(schedule_id=first['schedule_id'])['outcome'], 'succeeded')
+        self.worker = f.app.assign_and_start(**f.request())
+        self.assertEqual(self.worker['outcome'], 'succeeded')
+        self.prepared = f.app.prepare_role(**args, request_key='current-prepared-manager',
+            binding_schedule_id=first['schedule_id'])
+        self.worker_before = f.port.read_due(self.worker['schedule_id'])
+
+    def test_current_generic_same_native_preparation_consumes_settled_worker_once(self):
+        f = self.f; before = len(f.provider.calls)
+        result = f.app.continue_manager_from_worker(manager_schedule_id=self.prepared['schedule_id'],
+            worker_schedule_id=self.worker['schedule_id'], execute=True)
+        self.assertEqual(result['outcome'], 'succeeded', result)
+        self.assertEqual(result['schedule_id'], self.prepared['schedule_id'])
+        self.assertEqual(len(f.provider.calls), before + 1)
+        self.assertEqual(f.port.read_due(self.worker['schedule_id']), self.worker_before)
+        replay = f.app.continue_manager_from_worker(manager_schedule_id=self.prepared['schedule_id'],
+            worker_schedule_id=self.worker['schedule_id'], execute=True)
+        self.assertEqual(replay['outcome'], 'replayed', replay)
+        self.assertEqual(len(f.provider.calls), before + 1)
+
+    def test_unknown_preparation_is_held_without_worker_or_provider_changes(self):
+        f = self.f; prior = f.port.read_due(self.prepared['schedule_id'])
+        f.port.save_due(prior['schedule_id'], dict(prior, completion_state='unknown'),
+            request_id='retain-unknown', expected_version=prior['version'])
+        before = len(f.provider.calls)
+        result = f.app.continue_manager_from_worker(manager_schedule_id=prior['schedule_id'],
+            worker_schedule_id=self.worker['schedule_id'], execute=True)
+        self.assertEqual(result['outcome'], 'held', result)
+        self.assertEqual(len(f.provider.calls), before)
+        self.assertEqual(f.port.read_due(self.worker['schedule_id']), self.worker_before)
+
 if __name__ == '__main__':
     unittest.main()

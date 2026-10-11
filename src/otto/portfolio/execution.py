@@ -1394,7 +1394,9 @@ class ExecutionApplication:
             if retained:
                 existing, schedule = retained[0], retained[0]["schedule_id"]
         if (existing is None and prior.stop_state == "active" and prior.completion_state == "none"
-                and prior.purpose == "Canonical manager callback continuation"
+                and (prior.purpose == "Canonical manager callback continuation"
+                     or (prior.purpose == "role-execution"
+                         and isinstance(prior.target.get("native_binding"), Mapping)))
                 and prior.delivery_state == "ready" and prior.in_flight_request is not None
                 and (prior.host_evidence or {}).get("gateway_attempt") is None):
             # Startup/report preparation may already have committed the next
