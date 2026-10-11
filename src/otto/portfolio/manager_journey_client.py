@@ -391,7 +391,13 @@ def add_help_parsers(commands: Any) -> list[Any]:
         description="Record what the manager actually applied and the next action. Refresh current assignment/generation/conversation after role replacement; a retained or unknown delivery must be reconciled before continuation.")
     resolve.add_argument("--request-key", required=True)
     resolve.add_argument("--issue-id", required=True)
-    resolve.add_argument("--evidence", required=True, type=json.loads)
+    def evidence_array(text):
+        value = json.loads(text)
+        if not isinstance(value, list):
+            raise argparse.ArgumentTypeError('--evidence requires a JSON array, for example [{"kind":"response_application","report_ref":{"authority":"OWNER","kind":"wrk.report","id":"REPORT","revision":"rev-1"}}]. No request was submitted; correct the array shape before sending.')
+        return value
+    resolve.add_argument("--evidence", required=True, type=evidence_array,
+                         help='JSON array of applied-response evidence, e.g. [{"kind":"response_application","report_ref":{"authority":"OWNER","kind":"wrk.report","id":"REPORT","revision":"rev-1"}}]; use exact retained refs')
     resolve.add_argument("--next-action", required=True)
     return [*parsers, read, reply, resolve]
 

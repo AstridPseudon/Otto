@@ -659,7 +659,73 @@ class ExecutionApplication:
                     "generation": current.generation}))
             due = DueRecord.from_dict(value)
         current = self._current(due.assignment_ref, due.generation)
+        due = self._assignment_mandate(due, current)
         return self._manager_task_reference(self._manager_project_reference(due, current), current)
+
+    def _assignment_mandate(self, due: DueRecord, assignment: Any) -> DueRecord:
+        """Carry authenticated resource adoption into an unattempted mandate.
+
+        Due and mandate describe one assignment. A resource adoption can advance
+        its revision, but cannot change principal, generation or permissions.
+        Derive an immutable document rather than editing the admitted mandate.
+        """
+        target = due.target
+        if (due.role not in {"manager", "worker"}
+                or due.stop_state != "active" or not isinstance(target, Mapping)
+                or (due.host_evidence or {}).get("gateway_attempt") is not None
+                or due.last_result or due.completion_evidence or due.completed_at
+                or not assignment.payload.get("resource_adoptions")
+                or ((due.host_evidence or {}).get("resource_adoption") or {}).get("assignment_ref") != due.assignment_ref):
+            return due
+        from .owner_readers import mandate_reader
+        from .operating_setup import authenticated_adoption_ancestor
+        before_ref = target["mandate_ref"]
+        before = mandate_reader(self.portfolio.operations, target["project_ref"], before_ref)(_identity(before_ref))["payload"]
+        prior_ref = before.get("assignment_ref")
+        if prior_ref is None or prior_ref == due.assignment_ref:
+            # Missing authority remains a normal readiness failure. This
+            # operation never fills in an incomplete execution mandate.
+            return due
+        projection = {"ref": assignment.ref.to_dict(), "principal": assignment.principal,
+                      "role": assignment.role, "generation": assignment.generation,
+                      "payload": assignment.payload}
+        if (not isinstance(prior_ref, Mapping)
+                or not authenticated_adoption_ancestor(projection, prior_ref,
+                    getattr(self.portfolio.operations, "_owner_reader", None))):
+            raise OccurrencePreparationError("execution mandate lacks authenticated adoption continuity")
+        expected = {"role": due.role, "status": "active", "dispatch_enabled": True,
+                    "task_ref": target["task_ref"], "generation": due.generation}
+        contract = normalize_instruction_contract(before.get("instruction_contract"))
+        authority = contract.get("authority", {})
+        scope = target["project_ref"] if due.role == "manager" else target["task_ref"]
+        if ((due.role == "manager" and assignment.role != "manager") or assignment.principal != due.recipient
+                or _identity(assignment.scope.to_dict()) != _identity(scope)
+                or any(type(before.get(k)) is not type(v) or before.get(k) != v for k, v in expected.items())
+                or contract.get("task_ref") != target["task_ref"]
+                or authority.get("source") != "canonical_owner"
+                or authority.get("owner_actor") != assignment.principal
+                or authority.get("effect_profile") != "workspace-write-" + due.role
+                or (due.role == "manager" and "canonical_manager_commands" not in contract.get("allowed_operations", ()))):
+            raise OccurrencePreparationError("execution mandate adoption differs from its retained authority")
+        if any(item.get("resource_ref") == before_ref for item in assignment.payload.get("resource_adoptions", ())):
+            raise OccurrencePreparationError("adopted execution mandate requires explicit resource adoption")
+        content = {**before, "assignment_ref": due.assignment_ref}
+        key = due.invocation_identity + ":mandate-adoption:" + _digest(due.assignment_ref)
+        created = self.portfolio.create_document(target["project_ref"], actor=self.actor,
+            request_id=key, document_id="role-adoption-mandate-" + _digest(key)[:24],
+            role="mandate", content=content)
+        mandate = self._document_revision(created, "adopted role mandate")
+        receipt = {"schema": "otto.role-mandate-adoption.v1", "before_assignment_ref": prior_ref,
+                   "current_assignment_ref": due.assignment_ref, "generation": due.generation,
+                   "before_mandate_ref": before_ref, "current_mandate_ref": mandate,
+                   "before_mandate_sha256": _digest(before), "current_mandate_sha256": _digest(content),
+                   "before_due_version": due.version, "provider_called": False}
+        saved = self.due_port.save_due(due.schedule_id, replace(due,
+            target={**target, "mandate_ref": mandate},
+            context_refs=tuple(mandate if ref == before_ref else ref for ref in due.context_refs),
+            host_evidence={**(due.host_evidence or {}), "role_mandate_adoption": receipt}).to_dict(),
+            request_id=key + ":due", expected_version=due.version)
+        return DueRecord.from_dict(saved)
 
     def _manager_project_reference(self, due: DueRecord, assignment: Any) -> DueRecord:
         """Refresh only the project snapshot of an unattempted bound callback.
@@ -992,6 +1058,14 @@ class ExecutionApplication:
             due = self._resources(due)
             if execute:
                 return self.start(schedule_id=schedule_id)
+            try:
+                self.runtime.prepare_execution_readiness(due=due)
+            except Exception as exc:
+                return {**handle, "assignment_ref": due.assignment_ref, "due_version": due.version,
+                        "outcome": "adoption-required", "stage": "preparation",
+                        "error": {"code": type(exc).__name__, "message": str(exc)},
+                        "provider_called": False, "retry": False,
+                        "next_action": "Owner must explicitly adopt the exact missing supporting context or mandate, then qualify this same occurrence; do not start or replace it."}
             return {**handle, "assignment_ref": due.assignment_ref, "due_version": due.version,
                     "outcome": "prepared", "next_action": "start this exact occurrence"}
         self._current(due.assignment_ref, due.generation)

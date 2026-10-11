@@ -381,6 +381,12 @@ class ExecutionApplicationTests(unittest.TestCase):
             self.assertEqual(refreshed["outcome"], "prepared", refreshed)
             self.assertEqual(refreshed["assignment_ref"], current.ref.to_dict())
             self.assertEqual(self.port.read_due(schedule)["target"]["assignment_ref"], current.ref.to_dict())
+            due = self.app._read(schedule)
+            derived = self.owner.content.read(ResourceRef.from_dict(due.target["mandate_ref"]))["content"]
+            original_content = self.owner.content.read(ResourceRef.from_dict(mandate))["content"]
+            self.assertEqual(derived, {**original_content, "assignment_ref": current.ref.to_dict()})
+            self.assertEqual(due.host_evidence["role_mandate_adoption"]["current_assignment_ref"], current.ref.to_dict())
+            self.app.runtime.prepare_execution_readiness(due=due)
             before = self.store.consumer().snapshot_counts()
             self.compose()
             self.assertEqual(self.app.recover(schedule_id=schedule, execute=False)["assignment_ref"], current.ref.to_dict())
@@ -399,6 +405,105 @@ class ExecutionApplicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "generation is stale"):
             self.app.recover(schedule_id=schedule, execute=False)
         self.assertEqual(self.store.consumer().snapshot_counts(), before)
+        self.assertEqual(self.provider.calls, [])
+
+    def test_prepared_worker_with_missing_support_is_held_without_provider(self):
+        from otto.attention import DueRecord
+        prepared = self.app.assign_worker(**self.request())
+        schedule = prepared["schedule_id"]
+        due = DueRecord.from_dict(self.port.read_due(schedule))
+        assignment = self.app.assignments.get(ResourceRef.from_dict(due.assignment_ref))
+        guide = self.owner.content.read(ResourceRef.from_dict(prepared["guide_ref"]))["content"]
+        missing = {"authority": "execution-owner", "kind": "dat.content.document",
+                   "id": "missing-current-run-yaml", "revision": "rev-1"}
+        content = {**guide, "supporting_refs": [missing]}
+        created = self.app.portfolio.create_document(self.project.ref.to_dict(), actor="manager",
+            request_id="worker-support-adoption", document_id="worker-support-adoption", role="BASE", content=content)
+        ref = created["record"]["payload"]["current_revision"]
+        current = self.app.assignments.adopt_resources(assignment.ref,
+            resources=[{"resource_ref": ref, "resource_name": content["name"],
+                        "content_digest": validate_instruction_content(content), "required": True}],
+            expected_revision=assignment.revision, expected_generation=1,
+            logical_request_key="worker-support-adoption:assign", actor=self.actor)
+        recovered = self.app.recover(schedule_id=schedule, execute=False)
+        self.assertEqual(recovered["outcome"], "adoption-required", recovered)
+        self.assertIn(missing["id"], recovered["error"]["message"])
+        self.assertFalse(recovered["retry"])
+        self.assertFalse(recovered["provider_called"])
+        actual = self.port.read_due(schedule)
+        self.assertEqual(actual["assignment_ref"], current.ref.to_dict())
+        self.assertIsNone(actual["host_evidence"].get("gateway_attempt"))
+        self.assertEqual(self.provider.calls, [])
+        repaired = self.app.assignments.adopt_resources(current.ref,
+            resources=assignment.payload["resource_adoptions"], expected_revision=current.revision,
+            expected_generation=1, logical_request_key="worker-support-adoption:repair", actor=self.actor)
+        result = self.app.start(schedule_id=schedule)
+        self.assertEqual(result["outcome"], "succeeded", result)
+        self.assertEqual(len(self.provider.calls), 1)
+
+        actual = self.port.read_due(schedule)
+        self.assertEqual(actual["assignment_ref"], repaired.ref.to_dict())
+        self.assertEqual(actual["host_evidence"]["resource_adoption"]["allowance_assignment_ref"],
+                         due.host_evidence["resource_adoption"]["allowance_assignment_ref"])
+        self.compose()
+        self.assertEqual(self.app.recover(schedule_id=schedule, execute=False)["outcome"], "replayed")
+        self.assertEqual(len(self.provider.calls), 1)
+
+    def test_manager_starts_once_with_adopted_mandate_and_preserved_allowance(self):
+        assignment, guide, mandate = self.role_handles("manager", "manager", "manager-session")
+        prepared = self.app.prepare_role(role="manager", project_ref=self.project.ref.to_dict(),
+            task_ref=self.task.ref.to_dict(), assignment_ref=assignment.ref.to_dict(), generation=1,
+            mandate_ref=mandate, context_refs=(guide, mandate), request_key="adopted-manager-start",
+            instruction="Advance current task.", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="manager-session")
+        original = self.port.read_due(prepared["schedule_id"])
+        current = self.app.assignments.adopt_resources(assignment.ref,
+            resources=assignment.payload["resource_adoptions"], expected_revision=assignment.revision,
+            expected_generation=1, logical_request_key="adopted-manager-start:adopt", actor=self.actor)
+        result = self.app.start(schedule_id=prepared["schedule_id"])
+        self.assertEqual(result["outcome"], "succeeded", result)
+        self.assertEqual(len(self.provider.calls), 1)
+        due = self.port.read_due(prepared["schedule_id"])
+        self.assertEqual(due["assignment_ref"], current.ref.to_dict())
+        self.assertEqual(due["host_evidence"]["resource_adoption"]["allowance_assignment_ref"],
+                         original["host_evidence"]["resource_adoption"]["allowance_assignment_ref"])
+        self.compose()
+        before = self.store.consumer().snapshot_counts()
+        replay = self.app.recover(schedule_id=prepared["schedule_id"], execute=False)
+        self.assertEqual(replay["outcome"], "replayed")
+        self.assertEqual(self.store.consumer().snapshot_counts(), before)
+        self.assertEqual(len(self.provider.calls), 1)
+
+    def test_manager_adoption_derivative_denies_changed_authority_without_writes(self):
+        from unittest.mock import patch
+        from otto.attention import DueRecord
+        assignment, guide, mandate = self.role_handles("manager", "manager", "manager-session")
+        prepared = self.app.prepare_role(role="manager", project_ref=self.project.ref.to_dict(),
+            task_ref=self.task.ref.to_dict(), assignment_ref=assignment.ref.to_dict(), generation=1,
+            mandate_ref=mandate, context_refs=(guide, mandate), request_key="deny-mandate-adoption",
+            instruction="Advance current task.", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="manager-session")
+        current = self.app.assignments.adopt_resources(assignment.ref,
+            resources=assignment.payload["resource_adoptions"], expected_revision=assignment.revision,
+            expected_generation=1, logical_request_key="deny-mandate-adoption:assign", actor=self.actor)
+        due = self.app._read(prepared["schedule_id"])
+        updated = self.port.reconcile_assignment_resources(due.schedule_id, assignment_ref=current.ref.to_dict(),
+            expected_version=due.version, request_id="deny-mandate-adoption:after-adoption:resources")
+        original = self.owner.content.read(ResourceRef.from_dict(mandate))["content"]
+        import copy
+        for kind in ("generation", "actor", "task", "foreign-assignment", "missing-chain"):
+            content = copy.deepcopy(original)
+            if kind == "generation": content["generation"] = 2
+            if kind == "actor": content["instruction_contract"]["authority"]["owner_actor"] = "foreign"
+            if kind == "task": content["task_ref"]["id"] = "foreign-task"
+            if kind == "foreign-assignment": content["assignment_ref"]["id"] = "foreign-assignment"
+            if kind == "missing-chain": content["assignment_ref"]["revision"] = "rev-0"
+            counts = self.store.consumer().snapshot_counts()
+            with self.subTest(kind=kind), patch("otto.portfolio.owner_readers.mandate_reader",
+                    return_value=lambda _identity: {"payload": content}):
+                with self.assertRaises(ValueError):
+                    self.app._assignment_mandate(DueRecord.from_dict(updated), current)
+            self.assertEqual(self.store.consumer().snapshot_counts(), counts)
         self.assertEqual(self.provider.calls, [])
 
     def test_manager_continuation_is_rebuilt_from_canonical_report_after_restart(self):
