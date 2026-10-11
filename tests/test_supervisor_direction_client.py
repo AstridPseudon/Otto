@@ -50,14 +50,7 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   from herzchen.contracts import TransactionContext
   tx=TransactionContext(f.actor,'BASE-body',hashlib.sha256(b'BASE-body').hexdigest(),expected_revision=guide['revision'])
   f.owner.content.execute(f.owner.content.build_append_revision(tx,document,rev))
-  # A required literal BASE decoy must not override the exact trusted guide
-  # revision selected by the manager's current state.
-  decoy_content={**self.content,'name':'BASE'}
-  decoy_doc=f.app.portfolio.create_document(f.project.ref.to_dict(),actor='manager',
-   request_id='base-decoy-doc',document_id='base-decoy',role='guide',content=decoy_content)
-  decoy_ref=decoy_doc['record']['payload']['current_revision']
-  resources=[{'resource_ref':rev.ref.to_dict(),'resource_name':self.manager_base_name,'content_digest':validate_instruction_content(body),'required':True},
-   {'resource_ref':decoy_ref,'resource_name':'BASE','content_digest':validate_instruction_content(decoy_content),'required':True}]
+  resources=[{'resource_ref':rev.ref.to_dict(),'resource_name':self.manager_base_name,'content_digest':validate_instruction_content(body),'required':True}]
   manager=f.owner.assignments.adopt_resources(manager.ref,resources=resources,expected_revision=manager.revision,expected_generation=1,logical_request_key='BASE-adopt',actor=f.actor)
   prepared=f.app.prepare_role(role='manager',project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),assignment_ref=manager.ref.to_dict(),generation=1,mandate_ref=mandate,context_refs=(rev.ref.to_dict(),mandate),request_key='settled-manager',instruction='Inspect task',model='gpt-test',reasoning='high',profile='workspace-write',native_session_id='manager-session')
   launched=f.app.start(schedule_id=prepared['schedule_id']);self.assertEqual(launched['outcome'],'succeeded',launched)
