@@ -9,7 +9,9 @@ reporting instructions. Explain XHARD using the pack's criteria.
 Identity/context `read_only` or `dispatch:false` describes that read's effects.
 It does not deny the separately authenticated `run-worker` preparation route.
 Submit the first worker before `review-input`; review needs its retained candidate.
-The owner validates the task, policy and allowance, then starts the retained child.
+The owner validates the task, adopted policy and applicable explicit allowance,
+then starts the retained child. Do not infer an ordinary NORMAL numerical pool
+from local assessment units or an absent allowance reference.
 
 Inspect retained handles with `worker-status`, `command-status` or occurrence/result
 reads, and read actual artifacts. Yield when your active turn prevents delivery
@@ -84,6 +86,19 @@ is unchanged. Its retained handle leads to `command-status` and the exact detail
 artifact. The compact digest hashes canonical JSON, not original artifact bytes.
 This presentation grants no authority, saves no additional owner effect and
 does not assert improved server query time or a sent notification.
+
+When installed help exposes `worker-readiness`, read it once for exact current
+owner-known task slots and explicitly named Due pools. Its observation time and
+coverage distinguish available, missing and over-bound metadata. It does not
+recover work or prove an exhaustive portfolio roster; generic `host_state:
+unknown` alone is not a native identity hold. Preserve actual UNKNOWN custody
+and let canonical admission revalidate current task/identity/capacity. An
+undeclared NORMAL allowance is neither unlimited nor zero. Assessment units do
+not grant worker authority. Named pool metadata is not a numerical balance:
+held/used/remaining are explicitly unavailable in this finite reader. Terminal
+status may require explicit retained detail
+when optional metadata exceeds its bound; the original outcome, raw artifact and
+captured byte hash remain preserved. Do not resend to fill omitted fields.
 
 Complete the pack's final review and corrections. Check `finish-project --help`,
 then verify `project_completion_recorded=true`, `settlement_pending=false`,

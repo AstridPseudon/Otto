@@ -21,7 +21,7 @@ def requires_native_caller(command: str) -> bool:
                        "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                        "report", "status", "review-input", "review-task", "finish-task", "finish-project",
                        "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
-                       "worker-status", "manager-assessment", "manager-assessment-pool", "completion-gate",
+                       "worker-status", "worker-readiness", "manager-assessment", "manager-assessment-pool", "completion-gate",
                        "complete-task", "manager-continue", "execution-control", "operating-setup", "vision"}
 
 
@@ -95,7 +95,8 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
                     "request_id": request_id, "response_path": str(response),
                     "response_sha256": artifact["sha256"], "response_utf8_bytes": artifact["byte_length"],
                     "artifact_ref": artifact, "verification": captured["verification"],
-                    "summary": summary, "retry": False, "io_work": captured["io_work"],
+                    "summary": summary, "summary_availability": captured.get("summary_availability"),
+                    "retry": False, "io_work": captured["io_work"],
                     "correlation_id": request_id, "receipt_timing": captured.get("receipt_timing"),
                     "next_action": "Read explicit historical detail if needed; do not resend the retained effect."}
             except FileNotFoundError:
@@ -222,6 +223,17 @@ def command_result_summary(value: Any) -> Any:
     """
     if not isinstance(value, dict):
         return {"outcome": "unavailable"}
+    if value.get("schema") == "otto.worker-readiness-read.v1":
+        # This reader already has a fixed current-slot inventory. Preserve its
+        # coverage and explicit undeclared/unknown distinctions, never prose.
+        selected = {key: value[key] for key in ("schema", "outcome", "as_of", "project_ref",
+            "manager_assignment_ref", "manager_generation", "current_worker_slots", "coverage", "read_bounds",
+            "active_or_uncertain_current_slots", "named_due_pool_snapshots", "ordinary_normal_allowance",
+            "read_only", "provider_called", "effects_started", "dispatch", "retry") if key in value}
+        if len(json.dumps(selected).encode()) <= 49152:
+            return selected
+        return {"outcome": value.get("outcome"), "read_only": True,
+                "readiness_availability": "detail-required; complete metadata exceeds finite summary bound; inspect exact retained artifact. No roster clipping or absent allowance/custody inference."}
     fields = ("outcome", "stage", "schedule_id", "principal", "generation",
               "provider_called", "retry_provider", "retry", "unknown_reason",
               "observed_model", "observed_reasoning", "observed_turn_id",
@@ -449,6 +461,8 @@ def add_manager_journey_parsers(commands: Any) -> None:
     compact.add_argument("--read", required=True, choices=READS)
     compact.add_argument("--task", default=argparse.SUPPRESS, help="required only for review-input")
     compact.add_argument("--delivery-id", default=argparse.SUPPRESS, help="required only for exact read-help; no broad issue scan")
+    commands.add_parser("worker-readiness", help="bounded current owner-known worker slots and explicitly named Due pools; no dispatch or allowance grant",
+        description="Reads current metadata for this manager's own retained slots only. Missing/oversize/foreign pins remain unavailable, not zero. Named Due pools are observed accounting, never a promise that ordinary run-worker enforces a NORMAL pool or an assessment-budget grant.")
     add_help_parsers(commands)
     lookup = commands.add_parser("lookup-occurrence", help="pure exact historical scope/key read after a lost launch reply")
     lookup.add_argument("--scope", required=True, type=json.loads)

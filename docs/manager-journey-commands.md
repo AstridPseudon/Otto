@@ -237,6 +237,26 @@ principal, exact logical request key and bounded focus. Use `worker-status` and
 `command-status` for the returned retained handles. A worker result is evidence
 for manager judgment, not automatic acceptance or task completion.
 
+When installed help exposes `worker-readiness`, use that one authenticated read
+for current owner-known worker slots and any explicitly named Due allowance
+pools. It returns exact task/assignment/generation/occurrence pins, observation
+time and coverage. It does not enumerate other projects, hidden coordinator
+children or all historical workers. Missing/over-bound metadata remains unknown;
+a generic `host_state: unknown` alone is not an identity hold. Current admission
+revalidates actual custody and capacity.
+
+`ordinary_normal_allowance` is explicitly undeclared by this reader. Do not call
+it unlimited or zero, infer a NORMAL allocation from assessment bookkeeping, or
+treat observed named pool units as a new worker grant. Maintain the actual finite
+authorization and configured limits. The read does not prepare/recover a worker.
+If terminal `command-status` says metadata `detail-required`, the original raw
+response and exact captured byte hash remain available at its artifact path.
+Inspect that exact detail when needed; omitted summary fields are not absent
+effects, allowance or authority. Never resend an UNKNOWN operation from this.
+Named pool declarations expose exact metadata revision and capacity; this finite
+read leaves held/used/remaining totals explicitly unavailable because the existing
+totals reader hydrates reservation history. It does not invent a balance.
+
 The owner service retains settled worker-result delivery to the same manager.
 After the last accepted finish intent actually commits and that manager turn
 settles, it also retains one same-manager closeout inspection. Neither delivery

@@ -36,7 +36,7 @@ def _atomic_json(path: Path, value: Any) -> None:
         token = path.stem.removeprefix("response-")
         summary = {**command_result_summary(safe), **finite_summary(safe)}
         status = projection(safe, artifact={"path": str(path), **capture},
-            binding={"request_id": token}, summary=summary)
+            binding={"request_id": token}, summary=summary, oversize="detail")
         timing = safe.get("receipt_timing") if isinstance(safe, Mapping) else None
         if isinstance(timing, Mapping):
             status["receipt_timing"] = timing
@@ -102,7 +102,7 @@ _MANAGER_TURN_COMMANDS = frozenset({"start-manager", "manager-continue", "manage
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
                                  "effective-context", "whoami", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                                  "manager-assessment", "manager-assessment-pool",
-                                 "run-worker", "worker-status", "start-retained-worker",
+                                 "run-worker", "worker-status", "worker-readiness", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
                                  "review-input", "task-list-author",
                                  "request-help", "request-advice", "read-help", "respond-help", "resolve-help",

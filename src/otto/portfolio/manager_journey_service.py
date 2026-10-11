@@ -564,6 +564,9 @@ class ManagerJourneyService:
             return result
         if command == "status":
             return self._status(request)
+        if command == "worker-readiness":
+            from .worker_readiness import read_worker_readiness
+            return read_worker_readiness(self, request, context=_CALLER.get())
         if command in {"request-help", "request-advice", "read-help", "respond-help", "resolve-help"}:
             return self._help(request)
         if command == "start-retained-help":

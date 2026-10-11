@@ -107,12 +107,34 @@ def atomic_json(path: Path, value: Any) -> dict[str, Any]:
             "capture_processing_seconds": time.perf_counter() - started}
 
 
-def projection(value: Any, *, artifact: Mapping[str, Any], binding: Mapping[str, Any], summary=None) -> dict[str, Any]:
+def projection(value: Any, *, artifact: Mapping[str, Any], binding: Mapping[str, Any], summary=None,
+               oversize: str = "error") -> dict[str, Any]:
+    if oversize not in {"error", "detail"}:
+        raise ValueError("unsupported projection overflow policy")
     result = {"schema": SCHEMA, "artifact": dict(artifact), "binding": dict(binding),
               "summary": finite_summary(value) if summary is None else summary,
               "verification": "captured-exact-reference; current-bytes-not-revalidated"}
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_PROJECTION_BYTES:
-        raise ValueError("retained projection exceeds its finite metadata bound")
+        if oversize == "error":
+            raise ValueError("retained projection exceeds its finite metadata bound")
+        # Terminal transport capture already preserved exact raw bytes. Do not
+        # turn a successful read/mutation into an error just because optional
+        # metadata includes a full direction or before-state. No body clipping
+        # or false absence: only top-level finite outcome/pins survive here.
+        small = {key: item for key in FIELDS if isinstance(value, Mapping) and key in value
+                 and isinstance((item := value[key]), (str, bool, int, type(None)))
+                 and (not isinstance(item, str) or len(item) <= 512)}
+        for key in REF_FIELDS:
+            ref = exact_ref(value.get(key)) if isinstance(value, Mapping) else None
+            if ref:
+                small[key] = ref
+        result["summary"] = small
+        result["summary_availability"] = {
+            "state": "detail-required", "reason": "complete summary exceeds finite metadata bound",
+            "full_response_preserved": True,
+            "next_action": "Inspect the exact artifact path/digest; do not resend or infer absent effects/budgets from omitted metadata."}
+        if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_PROJECTION_BYTES:
+            raise ValueError("retained artifact/binding metadata exceeds its finite bound")
     return result
 
 
