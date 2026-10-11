@@ -485,6 +485,17 @@ class ExecutionApplication:
             preinitialization_recovery = permits_preinitialization_role(self,
                 schedule_id=binding_schedule_id, assignment=assignment,
                 project_ref=project_ref, task_ref=task_ref, request_key=request_key)
+        elif role == "worker" and binding_schedule_id is not None:
+            from .worker_custody import permits_preinitialization_role, DRAIN_PREINITIALIZATION_SCHEMA
+            preinitialization_recovery = permits_preinitialization_role(self,
+                schedule_id=binding_schedule_id, assignment=assignment,
+                project_ref=project_ref, task_ref=task_ref, request_key=request_key)
+            original = self._read(binding_schedule_id)
+            marker = (original.host_evidence or {}).get("role_preinitialization_custody_release") or {}
+            if (marker.get("schema") != DRAIN_PREINITIALIZATION_SCHEMA
+                    or model != original.requested_model or reasoning != original.requested_reasoning
+                    or profile != original.profile or allowance_ref != original.allowance_ref):
+                raise OccurrencePreparationError("worker recovery changed original model/profile/allowance")
         at = self._now()
         target = {"host": "local", "project_ref": dict(project_ref), "task_ref": dict(task_ref),
                   "native_adapter": self.native_adapter_identity(),
@@ -500,6 +511,10 @@ class ExecutionApplication:
                                             "due_sha256": _digest(proof)}
         elif preinitialization_recovery is not None:
             target["preinitialization_recovery"] = preinitialization_recovery
+            if role == "worker":
+                old_launch = self._read(binding_schedule_id).target.get("launch_request")
+                if old_launch is not None:
+                    target["launch_request"] = dict(old_launch)
         due = DueRecord(schedule_id=schedule, recipient=assignment.principal, instruction=instruction,
             profile=profile, anchor=at, due_at=at, last_covered_slot=0,
             invocation_identity=request_key + ":" + semantic, in_flight_request=request_key,
@@ -508,7 +523,7 @@ class ExecutionApplication:
             purpose="role-execution", lifecycle_owner=self.actor,
             allowance_ref=None if allowance_ref is None else dict(allowance_ref),
             execution_mode="continue_existing" if native_session_id else
-                "fresh_manager" if fresh_manager or preinitialization_recovery is not None else
+                "fresh_manager" if fresh_manager or preinitialization_recovery is not None and role == "manager" else
                 "fresh_bounded_worker" if role == "worker" else "fresh_bounded_role",
             requested_model=model, requested_reasoning=reasoning, context_refs=context_refs,
             result_owner=self.actor, timeout_seconds=timeout_seconds)

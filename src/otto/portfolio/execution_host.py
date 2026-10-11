@@ -96,6 +96,7 @@ def _same_process_start_identity(value: Any, expected: Mapping[str, Any]) -> boo
 
 _DISPATCH_CONTEXT = threading.local()
 _COMMAND_TRANSPORT = ContextVar("otto_command_transport", default=None)
+_ACTIVE_EXECUTION = ContextVar("otto_active_execution", default=None)
 _MANAGER_TURN_COMMANDS = frozenset({"start-manager", "manager-continue", "manager-worker-result",
                                    "manager-help-result", "manager-task-settlement"})
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
@@ -346,7 +347,7 @@ class ExecutionHost:
     def _start_ready_executions(self) -> None:
         if self._closing:
             return
-        while True:
+        while not self._closing:
             ready = [value for value in self._executions.values()
                      if not value["running"] and self._eligible(value["scope"])]
             if not ready:
@@ -381,7 +382,13 @@ class ExecutionHost:
                 job["completion"].resolve(value, error)
 
             try:
-                result = job["context"].run(job["operation"])
+                def admitted_operation():
+                    token = _ACTIVE_EXECUTION.set((self, job))
+                    try:
+                        return job["operation"]()
+                    finally:
+                        _ACTIVE_EXECUTION.reset(token)
+                result = job["context"].run(admitted_operation)
                 after_owner(result, finish, lambda error, finish=finish: finish(error=error))
             except BaseException as error:
                 finish(error=error)
@@ -409,7 +416,13 @@ class ExecutionHost:
                     with host._lock:
                         host._external_waiting -= 1
             host._owner_calls.put((capture, threading.Event(), {}))
-        host.retain(name="otto-native-transport", operation=run)
+        try:
+            host.retain(name="otto-native-transport", operation=run,
+                        _admitted_execution=_ACTIVE_EXECUTION.get())
+        except BaseException:
+            with host._lock:
+                host._external_waiting -= 1
+            raise
         return result
 
     def start(self) -> None:
@@ -1140,7 +1153,8 @@ class ExecutionHost:
         response.unlink()
         return {**receipt, "replayed": False}
 
-    def retain(self, *, name: str, operation: Callable[[], Any]) -> threading.Thread:
+    def retain(self, *, name: str, operation: Callable[[], Any],
+               _admitted_execution: Any = None) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""
         def run() -> None:
             try:
@@ -1153,7 +1167,19 @@ class ExecutionHost:
         with self._lock:
             if not self._threads:
                 raise RuntimeError("execution host must be started before admitting a child")
-            if self._closing:
+            admitted = False
+            if _admitted_execution is not None:
+                # This is a continuation of a job admitted before drain, not
+                # another capacity admission. Caller context and exact object
+                # custody must both match; native input cannot mint this tuple.
+                owner, job = _admitted_execution
+                admitted = (owner is self and self.current_bounded() is self
+                    and _ACTIVE_EXECUTION.get() is _admitted_execution
+                    and self._executions.get(job["scope"]["schedule_id"]) is job
+                    and job["running"] is True)
+                if not admitted:
+                    raise PermissionError("transport has no exact admitted execution custody")
+            if self._closing and not admitted:
                 raise RuntimeError("execution host is draining; no new child may be admitted")
             thread = threading.Thread(target=run, name=name, daemon=False)
             self._children.add(thread)
