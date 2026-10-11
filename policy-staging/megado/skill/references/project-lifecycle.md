@@ -15,22 +15,23 @@ and report explicitly that the draft has not been registered or queued in Otto.
 
 ## Find the actual tools first
 
-Read the installed Otto skill and your current role introduction. Use that
-role's exact installed entrypoint and its `--help`, `status`, identity and
-effective-context reads. Never substitute another project's controller path or
-another actor's credentials. The maintained [manager command guide](../../../../docs/manager-journey-commands.md)
-explains execution commands; its sample identities and paths are examples,
-not your binding.
+Read the installed Otto skill (the sibling skill, [manager reference](../../otto/references/manager.md))
+and your current role introduction. Use that role's exact installed entrypoint
+and its `--help`, `status`, identity and effective-context reads
+(`ottoctl manager --help`, `ottoctl whoami`). Never substitute another project's
+controller path or another actor's credentials. Sample identities and paths in
+command guides are examples, not your binding.
 
-Creation, document check-in, enrollment and queue edits need the host's supported
-owner authoring surface. A manager's execution client may not expose those
-operations. Inspect the current authoring help/schema before writing, use current
-revision refs and retain the returned handles. Do not invent a universal
-`create-project` or `queue-after` command: the combined onboarding flow is not
-yet delivered in this edition. If the caller lacks this surface, prepare the
-same draft bundle and send the exact requested authoring action to the authorized
-owner. Identify the missing binding; do not open the live database or copy a
-previous controller script as a new writer. Continue independent planning.
+Creation, document check-in, enrollment and queue edits are owner operations.
+In one Otto there is one running owner service; your host performs these as its
+OWN principal through it: `ottoctl project register` (an inert draft with the
+whole run directory), `ottoctl project sync-docs`, `ottoctl project activate`.
+A manager's execution client does not expose them. If your host is not admitted
+yet, the operator admits it (`ottoctl service admit-host --host <kind>
+--client-home <your OTTO_HOME>`); until then prepare the same draft bundle as
+files and name the missing admission. Never open the store, start a second owner
+or copy a previous controller script as a new writer. Continue independent
+planning.
 
 ## 0. Adopt work already in flight
 

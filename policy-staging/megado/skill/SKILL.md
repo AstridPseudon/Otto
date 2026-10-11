@@ -21,11 +21,16 @@ working method; Otto owns project identity, authoring, dispatch and accounting.
 Begin with the user's requested phase and reuse existing project state. For work
 already in flight, first [adopt it](references/project-lifecycle.md#0-adopt-work-already-in-flight).
 
-**Mode check first:** run your role introduction's entrypoint or `command -v ottoctl && ottoctl host show`. If it reports a host and store, you are in native (Otto) mode and the project lifecycle applies. Otherwise say up front: "file mode: Otto is not installed on this host, so this run will not be registered or queued in Otto" and use the file layout.
+**Mode check first:** run your role introduction's entrypoint or `command -v ottoctl && ottoctl service status`. There is ONE Otto per machine: one running owner service holds its store, and every agent CLI host is a client of it with its own principal.
+- `outcome: running` with your host named (`as_host`): native (Otto) mode; the project lifecycle applies.
+- Otto is installed but your host is not admitted, or no service is running: ask the operator to admit your host (`ottoctl service admit-host`) or start the service (`ottoctl service run`). Meanwhile prepare the draft as files. Never open the store, start a second owner or copy another host's controller.
+- Otto is not installed at all: say up front "file mode: Otto is not installed on this host, so this run will not be registered or queued in Otto" and use the file layout.
 
-For a new substantial delivery, include a final independent review by the profile's
-final_reviewer (**Astra High** on Codex, Opus on Claude Code) of the integrated
-outcome and its evidence. Declare that stage and its finite
+**Everything ends up in Otto.** Register the whole run directory (plan, briefs, specs, reviews, decisions, status) as the project's documents; record later work with `ottoctl project sync-docs`, before and after activation; keep a closed run as history (`ottoctl project import-history`). A file that exists only in the run directory is not yet part of the record.
+
+For a new substantial delivery, include a final independent review by the
+profile's **final_reviewer slot** (its model binding is in the run template for
+your host) of the integrated outcome and its evidence. Declare that stage and its finite
 allowance when preparing execution; the default is one review, with any needed
 repeat requiring an available explicitly adopted allowance. Planning-only work
 does not activate this stage. Existing projects retain their adopted policy and
