@@ -152,14 +152,31 @@ class OwnerIssueReaders:
         scopes = {record.ref.id, *(item["ref"]["id"] for item in view["tasks"])}
         result = []
         seen = set()
-        # Existing event subjects enumerate immutable reports across assignment
-        # revisions and supervisor transfers; the kind predicate excludes large
-        # unrelated Due event payloads before hydration. No issue index is kept.
-        # The general project reader intentionally exposes only Work records.
-        # Owner composition scopes immutable observations here, before returning
-        # them to the finite issue surface (including old assignment revisions).
+        # Project/task assignment observations retain old manager identities.
+        # Exact project history also carries previous supervisor assignments.
+        # Select their immutable streams before hydrating report/result bodies;
+        # revision equality must NOT exclude pre-adoption observations.
         owner_reader = self.operations._owner_reader
-        for event in owner_reader.list_events(subject_kinds=("wrk.report", "wrk.result")):
+        assignments = {}
+        def remember(value):
+            value = _json_value(value)
+            if (isinstance(value, Mapping) and value.get("authority") == record.ref.authority
+                    and value.get("kind") == "wrk.assignment" and isinstance(value.get("id"), str)):
+                assignments[value["id"]] = value
+        for row in (view["project"], *view["tasks"]):
+            for assignment in row.get("observed", {}).get("assignments", ()):
+                remember(assignment.get("ref"))
+        relation = record.payload.get("metadata", {}).get("otto_orchestrator", {})
+        if isinstance(relation, Mapping):
+            remember(relation.get("assignment_ref"))
+        for event in owner_reader.list_events(stream="work:" + record.ref.id, subjects=(record.ref,)):
+            for ref in (*event.before_refs, *event.after_refs):
+                remember(ref)
+            for name in ("from_assignment", "to_assignment"):
+                remember(event.effects.get(name))
+        events = (event for ident in sorted(assignments) for kind in ("report", "result")
+                  for event in owner_reader.list_events(stream=kind + ":" + ident))
+        for event in events:
             if event.subject.kind not in {"wrk.report", "wrk.result"} or event.subject.id in seen:
                 continue
             seen.add(event.subject.id)
@@ -184,11 +201,8 @@ class OwnerIssueReaders:
     def due_records(self, project: Mapping[str, Any]) -> list[dict[str, Any]]:
         record = self.project(project)
         manager = self.current_manager(project)
-        ids = {event.subject.id for event in self.operations._owner_reader.list_events()
-               if event.subject.kind == "otto.due-record"}
         result = []
-        for schedule_id in sorted(ids):
-            due = self.due_port.read_due(schedule_id)
+        for due in self.due_port.list_due({"project_ref": record.ref.id}):
             if (isinstance(due, Mapping) and due.get("project_ref") == record.ref.id
                     and due.get("role") == "manager" and due.get("manager_ref") == manager.ref.id
                     and due.get("generation") == manager.generation):

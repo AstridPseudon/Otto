@@ -762,17 +762,23 @@ class _ProjectSheetEngine:
             raise SheetSelectionError("unsupported sheet relation")
         if not subjects:
             return ()
+        # Reject unrelated canonical payloads before parsing their potentially
+        # large retained result bodies. The encoded identity token is only a
+        # candidate filter: the original relation/path/authority/kind checks
+        # below remain decisive, including embedded and substring false hits.
         relation = ("CASE WHEN json_type(payload_json, '$.association') = 'object' "
                     "THEN json_extract(payload_json, '$.association.subject') "
                     "ELSE json_extract(payload_json, '$.subject') END") if field == "document_subject" else "json_extract(payload_json, '$." + field + "')"
         return self.__writer.connection.execute(
             "SELECT authority, kind, id, current_revision FROM identities WHERE authority = ? "
-            "AND kind IN (SELECT value FROM json_each(?)) AND EXISTS ("
-            "SELECT 1 FROM json_each(?) wanted WHERE "
+            "AND kind IN (SELECT value FROM json_each(?)) AND CASE WHEN (" +
+            " OR ".join("instr(payload_json, ?) > 0" for _ in subjects) +
+            ") THEN EXISTS (SELECT 1 FROM json_each(?) wanted WHERE "
             "json_extract(" + relation + ", '$.authority') = json_extract(wanted.value, '$.authority') AND "
             "json_extract(" + relation + ", '$.kind') = json_extract(wanted.value, '$.kind') AND "
-            "json_extract(" + relation + ", '$.id') = json_extract(wanted.value, '$.id')) ORDER BY kind, id",
+            "json_extract(" + relation + ", '$.id') = json_extract(wanted.value, '$.id')) ELSE 0 END ORDER BY kind, id",
             (self.__writer.authority, canonical_json(list(kinds)),
+             *(canonical_json(ref.id) for ref in subjects),
              canonical_json([ref.to_dict() for ref in subjects])),
         ).fetchall()
 
