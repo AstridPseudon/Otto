@@ -255,7 +255,8 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             "tool_entrypoint": tool_entrypoint,
             "tool_entrypoint_source": configuration["ref"] if entrypoint else "installed Otto portfolio help",
             "effective_context": effective_context,
-            "source": "canonical owner records and adopted role resources", "dispatch": False}
+            "source": "canonical owner records and adopted role resources", "dispatch": False,
+            "dispatch_scope": "This informational context projection dispatches nothing; command authority is checked separately."}
     if canonical["role"] == "manager":
         # Composed for every manager at the canonical launch seam, including
         # custom mandates. These are information pins, never host credentials.

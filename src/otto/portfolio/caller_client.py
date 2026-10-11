@@ -7,7 +7,39 @@ import argparse
 import json
 from pathlib import Path
 import socket
+from typing import Optional
 import uuid
+
+_DEFAULT_TIMEOUT = 15
+_LONG_OPERATION_TIMEOUT = 60
+_LONG_OPERATIONS = frozenset({"report", "request-help", "respond-help", "resolve-help", "read-help"})
+_LAUNCH_OPERATIONS = frozenset({"launch", "run-worker"})
+
+
+def _operation(request: dict) -> Optional[str]:
+    value = request.get("command", request.get("operation"))
+    return value if isinstance(value, str) else None
+
+
+def _timeout_for(request: dict, explicit: Optional[float]) -> float:
+    """Use longer bounded waits for report/help reads and mutations."""
+    if explicit is not None:
+        return explicit
+    return _LONG_OPERATION_TIMEOUT if _operation(request) in _LONG_OPERATIONS else _DEFAULT_TIMEOUT
+
+
+def _recovery_advice(request: dict, request_id: str) -> str:
+    operation = _operation(request)
+    first = f"Run command-status --request-id {request_id} first; do not resend."
+    if operation in _LAUNCH_OPERATIONS:
+        return (first + " If status remains unknown, use lookup-occurrence only for this exact launch/run-worker, "
+                "with its original scope, canonical request key and complete original input. "
+                "Retention and effects remain unconfirmed until read back.")
+    if operation in _LONG_OPERATIONS or operation in {"outcome", "help"}:
+        return (first + " If status remains uncaptured, inspect the exact scope and canonical logical request key "
+                "for the existing report/help/outcome; do not replay it. Retention and effects remain "
+                "unconfirmed until read back.")
+    return first + " Retention and effects remain unconfirmed until read back; do not infer absence or replay."
 
 
 def call_connection(connection: socket.socket, request: dict) -> dict:
@@ -38,16 +70,17 @@ def call_connection(connection: socket.socket, request: dict) -> dict:
         return json.loads(b"".join(chunks))
     except (OSError, ValueError) as exc:
         return {"outcome": "unknown" if sent else "unavailable", "retry": False,
-                "outer_command": {"transport": "unix-socket", "request_id": request_id, "retained": False},
+                "outer_command": {"transport": "unix-socket", "request_id": request_id,
+                                  "retained": None, "retention": "unconfirmed"},
                 "error": {"kind": "transport", "code": type(exc).__name__, "message": str(exc)},
-                "next_action": "use exact scope/request-key lookup to inspect the retained launch; do not resend"}
+                "next_action": _recovery_advice(request, request_id)}
 
 
-def call(path: str, request: dict, *, timeout: float = 15) -> dict:
+def call(path: str, request: dict, *, timeout: Optional[float] = None) -> dict:
     if not Path(path).is_absolute() or not isinstance(request, dict):
         raise ValueError("absolute installed socket and command object required")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(timeout)
+        connection.settimeout(_timeout_for(request, timeout))
         try:
             connection.connect(path)
         except OSError as exc:

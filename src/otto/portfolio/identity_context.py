@@ -126,7 +126,12 @@ def resolve_caller_context(application: Any, binding: HostCallerBinding) -> dict
                            "assignment_ref": binding.assignment_ref.to_dict(),
                            "logical_request_key": authorization["logical_request_key"]},
         "direction_context": directions, "read_only": True,
-        "authority": "caller identity only; commands retain their existing authorization"}
+        "authority": "caller identity only; commands retain their existing authorization",
+        "read_effect_scope": "read_only describes this identity read, not a denial of separately authorized commands",
+        "manager_worker_route": ({"prepare_command": "run-worker", "native_start": "owner retained start only",
+            "authorization": "The command validates current task, route, adopted policy and finite allowance; this read grants none.",
+            "candidate_order": "Prepare the first worker before review-input; review-input requires its retained candidate."}
+            if role == "manager" else None)}
 
 
 def check_caller_claims(context: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:

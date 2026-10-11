@@ -7,7 +7,7 @@ import argparse
 import time
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .recovery_timing import stable_correlation_id, timing_from_receipt
 
@@ -51,11 +51,29 @@ No low-level lifecycle pins or controller-source inspection are needed.
 """
 
 
-def read_command_status(directory: str | Path, request_id: str, *, pending_only: bool = False) -> Any:
+def read_command_status(directory: str | Path, request_id: str, *, pending_only: bool = False,
+                        expected_socket_scope: Mapping[str, Any] | None = None) -> Any:
     """Read the exact retained transport handle without sending another command."""
     if not isinstance(request_id, str) or not request_id or any(c not in "0123456789abcdef" for c in request_id):
         raise ValueError("request_id must be the exact hexadecimal transport handle")
     root = Path(directory)
+    if expected_socket_scope is not None:
+        # A fixed project client supplies its installed scope, never command
+        # JSON. These local receipts remain under the private owner's filesystem
+        # custody; this check prevents accidental cross-view result selection.
+        with (root / ("socket-intent-" + request_id + ".json")).open("rb") as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise PermissionError("socket intent exceeds its metadata bound")
+        intent = json.loads(raw)
+        caller = intent.get("caller", {})
+        actual = {"principal": caller.get("principal"), "generation": caller.get("generation"),
+            "assignment_identity": {key: caller.get("assignment_ref", {}).get(key)
+                for key in ("authority", "kind", "id")},
+            "project_identity": intent.get("project_identity")}
+        if (intent.get("schema") != "otto.authenticated-socket-intent.v1"
+                or intent.get("request_id") != request_id or actual != dict(expected_socket_scope)):
+            raise PermissionError("socket result belongs to a different installed caller scope")
     response = root / ("response-" + request_id + ".json")
     try:
         if pending_only:
@@ -210,7 +228,8 @@ def command_result_summary(value: Any) -> Any:
               "physical_session_id", "context_digest_verified", "request_key", "delivery_state",
               "model", "reasoning", "native_session_id", "retained_handle", "response_path",
               "version", "in_flight_request", "stop_state", "completion_state", "role", "status", "manager",
-              "project_completion_recorded", "settlement_pending", "canonical_lifecycle", "blocked_operation")
+              "project_completion_recorded", "settlement_pending", "canonical_lifecycle", "blocked_operation",
+              "issue_id", "state", "delivery_id", "disposition", "request_id", "awaiting")
     summary = {key: item for key in fields if key in value
                and isinstance((item := value[key]), (str, bool, int, type(None)))
                and (not isinstance(item, str) or len(item) <= 512)}
@@ -235,6 +254,9 @@ def command_result_summary(value: Any) -> Any:
         return {key: item[key] for key in keys if isinstance(item.get(key), str) and len(item[key]) <= 256}
     if ref(value.get("project_ref")):
         summary["project_ref"] = ref(value["project_ref"])
+    for key in ("report_ref", "applied_response_ref", "assignment_ref", "task_ref"):
+        if ref(value.get(key)):
+            summary[key] = ref(value[key])
     for key in ("task_refs", "criteria"):
         items = value.get(key)
         if isinstance(items, dict):

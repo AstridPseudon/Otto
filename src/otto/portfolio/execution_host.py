@@ -517,6 +517,66 @@ class ExecutionHost:
     def command_handle(self) -> Any:
         return _COMMAND_TRANSPORT.get()
 
+    def _retain_socket_admission(self, request, binding, context):
+        """Capture an authenticated finite intent without enqueueing a replay.
+
+        The request file namespace belongs to owner file commands. Socket
+        receipts deliberately have no request-*.json and are never dispatched
+        on restart. A pending receipt after interruption remains UNKNOWN.
+        """
+        outer = self.command_handle()
+        if not outer or outer["transport"] != "unix-socket":
+            return None
+        from herzchen.contracts import canonical_json
+        token = outer["request_id"]
+        metadata = {"schema": "otto.authenticated-socket-intent.v1", "request_id": token,
+            "command": request.get("command"), "operation": request.get("operation"),
+            "input_sha256": hashlib.sha256(canonical_json(request).encode()).hexdigest(),
+            "caller": {"principal": binding.actor.actor,
+                "assignment_ref": binding.assignment_ref.to_dict(), "generation": binding.generation,
+                "adapter": binding.adapter, "native_session_id": binding.native_session_id,
+                "schedule_id": binding.schedule_id},
+            "project_identity": {k: context["project_ref"][k] for k in ("authority", "kind", "id")}}
+        path = self.directory / ("socket-intent-" + token + ".json")
+        response = self.directory / ("response-" + token + ".json")
+        pending = self.directory / ("pending-" + token + ".json")
+        with self._lock:
+            if path.exists():
+                with path.open("rb") as stream:
+                    raw = stream.read(65537)
+                if len(raw) > 65536 or json.loads(raw) != metadata:
+                    raise PermissionError("socket handle belongs to different input or caller")
+                outer["retained"] = True
+                outer["recovered"] = True
+                from .manager_journey_client import read_command_status
+                retained = read_command_status(self.directory, token)
+                return retained or {"outcome": "unknown", "terminal": False, "retry": False,
+                    "request_id": token, "next_action": "Original authenticated intent is retained; reconcile its effect. Do not resend."}
+            if response.exists() or pending.exists() or (self.directory / ("request-" + token + ".json")).exists():
+                raise PermissionError("socket handle collides with an existing retained command")
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _atomic_json(path, metadata)
+            _atomic_json(pending, {"outcome": "pending", "terminal": False,
+                "request_id": token, "request_retained": True, "response_path": str(response),
+                "transport": "unix-socket", "authenticated_intent": metadata,
+                "retry": False, "next_action": "Read command-status for this exact handle; pending does not prove absence of effects and never authorizes replay."})
+            outer["retained"] = True
+        return None
+
+    def _retain_socket_terminal(self, result, outer):
+        if outer is not None and isinstance(result, Mapping):
+            result = {**result, "outer_command": dict(outer)}
+            if (outer["transport"] == "unix-socket" and outer["retained"]
+                    and not outer.get("recovered")):
+                # Publish before sendall, including a disconnected client's
+                # late completion. The owner receipt survives broken pipes.
+                response = self.directory / ("response-" + outer["request_id"] + ".json")
+                with self._lock:
+                    if response.exists():
+                        raise RuntimeError("authenticated socket terminal receipt already exists")
+                    _atomic_json(response, result)
+        return result
+
     def _call_bound(self, request: Mapping[str, Any], ingress: Any) -> Any:
         request = dict(request)
         request_id = request.pop("transport_request_id", None)
@@ -531,9 +591,17 @@ class ExecutionHost:
                     "retained": transport == "file-ipc"}
         token = _COMMAND_TRANSPORT.set(outer)
         try:
-            result = self._call_bound_command(request, ingress)
-            return after_owner(result, lambda result:
-                {**result, "outer_command": outer} if outer is not None and isinstance(result, Mapping) else result)
+            try:
+                result = self._call_bound_command(request, ingress)
+            except Exception as exc:
+                if not (outer and outer["transport"] == "unix-socket" and outer["retained"]):
+                    raise
+                result = {"outcome": "unknown", "error": type(exc).__name__, "message": str(exc),
+                    "retry": False, "next_action": "Inspect the exact retained command; this exception does not establish absence of effects."}
+            return after_owner(result, lambda result: self._retain_socket_terminal(result, outer),
+                lambda exc: self._retain_socket_terminal({"outcome": "unknown", "retry": False,
+                    "error": type(exc).__name__, "message": str(exc),
+                    "next_action": "Reconcile this exact retained command; completion failure does not prove absence of effects."}, outer))
         finally:
             _COMMAND_TRANSPORT.reset(token)
 
@@ -561,12 +629,18 @@ class ExecutionHost:
             if identity_read:
                 if set(clean) != {"command"}:
                     raise PermissionError("effective-context reads only the bound caller; administrative targets need a separate authorized command")
+                recovered = self._retain_socket_admission(clean, binding, context)
+                if recovered is not None:
+                    return recovered
                 return {"outcome": "read", "caller_context": context, "provider_called": False, "effects_started": False}
             authorizer = self.caller_authorizer or getattr(self.handler, "authorize_caller", None)
             if not callable(authorizer):
                 raise PermissionError("command has no caller-aware owner authorization")
             if authorizer(context, clean) is False:
                 raise PermissionError("owner command authorization rejected this caller")
+            recovered = self._retain_socket_admission(clean, binding, context)
+            if recovered is not None:
+                return recovered
         except Exception as exc:
             return {"outcome": "error", "error": type(exc).__name__, "message": str(exc),
                     "provider_called": False, "effects_started": False,

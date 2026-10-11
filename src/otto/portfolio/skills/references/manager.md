@@ -6,6 +6,10 @@ help. Keep one canonical plan; request owner authoring if your client lacks it.
 Delegate with `run-worker`: current task, configured normal/XHARD route, stable
 key and bounded focus. Give workers source/write scope, acceptance evidence and
 reporting instructions. Explain XHARD using the pack's criteria.
+Identity/context `read_only` or `dispatch:false` describes that read's effects.
+It does not deny the separately authenticated `run-worker` preparation route.
+Submit the first worker before `review-input`; review needs its retained candidate.
+The owner validates the task, policy and allowance, then starts the retained child.
 
 Inspect retained handles with `worker-status`, `command-status` or occurrence/result
 reads, and read actual artifacts. Yield when your active turn prevents delivery
@@ -55,6 +59,9 @@ preserve its exact handle and use the supplied supported fallback once; say
 delivery is unavailable until confirmed. Apply an authenticated owner reply,
 then continue the same manager. Operational blockers do not wait for an hourly
 summary; routine progress stays in the canonical records.
+Recover a timed-out socket command with `command-status` for its exact handle;
+use launch lookup only for a launch. Preserve unresolved bookkeeping once and
+continue independently authorized work; do not create recursive help about help.
 
 Complete the pack's final review and corrections. Check `finish-project --help`,
 then verify `project_completion_recorded=true`, `settlement_pending=false`,
