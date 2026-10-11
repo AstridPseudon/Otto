@@ -906,8 +906,8 @@ def compact_task_acceptance_projection(
     """Return bounded current task lifecycle and canonical acceptance refs.
 
     The caller supplies a fresh ProjectSheet view selected to the finite task
-    refs. Missing authored acceptance, decision, or criterion data stays
-    explicitly unknown; this projection never consults execution history.
+    refs. Historical decisions remain individually labeled evidence and never
+    derive current task acceptance; missing data stays explicitly unknown.
     """
     if not isinstance(project_view, Mapping) or not isinstance(task_refs, Mapping) or len(task_refs) > 32:
         raise OccurrencePreparationError("bounded selected task view is required")
@@ -931,6 +931,7 @@ def compact_task_acceptance_projection(
                 context_by_id[(str(subject["authority"]), str(subject["kind"]), str(subject["id"]))] = context
 
     projected = {}
+    decision_limit = 16
     for row in rows:
         if not isinstance(row, Mapping) or not isinstance(row.get("ref"), Mapping):
             continue
@@ -944,19 +945,34 @@ def compact_task_acceptance_projection(
         context = context_by_id.get(identity)
         decisions = context.get("decisions") if isinstance(context, Mapping) else None
         if isinstance(decisions, (list, tuple)):
-            accepted = [d for d in decisions if isinstance(d, Mapping) and
-                        str(d.get("disposition", "")).lower() in {
-                            "accept", "accepted", "accepted-for-task", "accepted-for-project"}]
-            decision_projection = {"state": "known", "accepted": bool(accepted),
-                "accepted_decision_refs": [d["ref"] for d in accepted if isinstance(d.get("ref"), Mapping)],
-                "source_refs": [d["ref"] for d in decisions if isinstance(d, Mapping) and isinstance(d.get("ref"), Mapping)]}
-            criteria = [d["criterion_ref"] for d in decisions if isinstance(d, Mapping)
-                        and isinstance(d.get("criterion_ref"), Mapping)]
+            rows_out = []
+            criteria = []
+            historical_accepts = []
+            for decision in decisions[:decision_limit]:
+                if not isinstance(decision, Mapping):
+                    continue
+                row_out = {key: decision[key] for key in (
+                    "ref", "disposition", "candidate_ref", "candidate_pin", "criterion_ref",
+                    "applicability", "assessment_result_ref") if key in decision}
+                rows_out.append(row_out)
+                criterion = decision.get("criterion_ref")
+                if isinstance(criterion, Mapping):
+                    criteria.append(criterion)
+                if (isinstance(decision.get("ref"), Mapping) and
+                        str(decision.get("disposition", "")).lower() in {
+                            "accept", "accepted", "accepted-for-task", "accepted-for-project"}):
+                    historical_accepts.append(decision["ref"])
+            truncated = len(decisions) > decision_limit
+            decision_projection = {"state": "known", "rows": rows_out,
+                "observed_count": len(decisions), "truncated": truncated,
+                "historical_acceptance_decision_refs": historical_accepts[:decision_limit]}
             criteria_projection = {"state": "known" if criteria else "unknown", "refs": criteria,
+                "truncated": truncated,
                 "reason": None if criteria else "canonical decisions expose no criterion refs"}
         else:
-            decision_projection = {"state": "unknown", "accepted": None,
-                "accepted_decision_refs": [], "source_refs": [],
+            decision_projection = {"state": "unknown", "rows": [],
+                "observed_count": None, "truncated": None,
+                "historical_acceptance_decision_refs": [],
                 "reason": "canonical task decision context is unavailable"}
             criteria_projection = {"state": "unknown", "refs": [],
                 "reason": "canonical task criterion refs are unavailable"}
@@ -967,7 +983,9 @@ def compact_task_acceptance_projection(
             "authored_acceptance": {"state": "known" if acceptance_present else "unknown",
                 "value": authored.get("acceptance") if acceptance_present else None},
             "criteria": criteria_projection,
-            "accepted_decisions": decision_projection,
+            "decision_history": decision_projection,
+            "task_acceptance": {"state": "unknown", "value": None,
+                "reason": "historical decisions do not derive current task acceptance"},
         }
     for alias, ref in task_refs.items():
         if alias in projected:
@@ -978,8 +996,10 @@ def compact_task_acceptance_projection(
                 "reason": "selected canonical task was not returned"},
             "criteria": {"state": "unknown", "refs": [],
                 "reason": "selected canonical task was not returned"},
-            "accepted_decisions": {"state": "unknown", "accepted": None,
-                "accepted_decision_refs": [], "source_refs": [],
+            "decision_history": {"state": "unknown", "rows": [], "observed_count": None,
+                "truncated": None, "historical_acceptance_decision_refs": [],
+                "reason": "selected canonical task was not returned"},
+            "task_acceptance": {"state": "unknown", "value": None,
                 "reason": "selected canonical task was not returned"},
         }
     return {"schema": "otto.task-acceptance-projection.v1", "tasks": projected,

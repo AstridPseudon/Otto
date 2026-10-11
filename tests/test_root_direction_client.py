@@ -121,9 +121,10 @@ class RootDirectionClientTests(unittest.TestCase):
    self.assertEqual([row[0]['operation'] for row in seen],sorted(ROOT_PROJECT_OPERATIONS))
    with self.assertRaises(PermissionError):
     client.call({'operation':'read-help','project_id':'foreign-project','request_key':'foreign-project'})
+   foreign=self.owner.graph.create_project(title='Unsupervised project',logical_request_key='unsupervised-root-scope-test')
    with self.assertRaises(PermissionError):
     self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
-      operations=['read-manager'],project_ids=['not-supervised'],request_key='bad-project')
+      operations=['read-manager'],project_ids=[foreign.ref.id],request_key='bad-project')
 
  def test_compact_task_acceptance_projection_preserves_unknown_and_refs(self):
   from otto.portfolio.execution_operations import compact_task_acceptance_projection
@@ -133,14 +134,19 @@ class RootDirectionClientTests(unittest.TestCase):
   view={'tasks':[{'ref':task,'authored':{'acceptance':'All checks pass'},
     'observed':{'lifecycle':'pending'}}], 'decision_context':[{'subject':task,'decisions':[
       {'ref':decision,'criterion_ref':criterion,'disposition':'accepted'}]}]}
+  rework={'authority':'owner','kind':'wrk.decision','id':'decision-b','revision':'rev-1'}
+  view['decision_context'][0]['decisions'].append({'ref':rework,'criterion_ref':criterion,'disposition':'rework'})
   projected=compact_task_acceptance_projection(view,task_refs={'A':task})['tasks']['A']
   self.assertEqual(projected['lifecycle'],'pending')
   self.assertEqual(projected['criteria']['refs'],[criterion])
-  self.assertEqual(projected['accepted_decisions']['accepted_decision_refs'],[decision])
+  self.assertEqual(projected['decision_history']['historical_acceptance_decision_refs'],[decision])
+  self.assertEqual([row['disposition'] for row in projected['decision_history']['rows']],['accepted','rework'])
+  self.assertEqual(projected['task_acceptance'],{'state':'unknown','value':None,
+    'reason':'historical decisions do not derive current task acceptance'})
   unknown=compact_task_acceptance_projection({'tasks':[{'ref':task,'authored':{},'observed':{}}]},
     task_refs={'A':task})['tasks']['A']
   self.assertEqual(unknown['criteria']['state'],'unknown')
-  self.assertIsNone(unknown['accepted_decisions']['accepted'])
+  self.assertIsNone(unknown['decision_history']['observed_count'])
 
  def test_draft_is_not_adoption_and_live_obligation_holds_update(self):
   read=self.read();content=self.intent()['request']['content']
