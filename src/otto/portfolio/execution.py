@@ -462,7 +462,8 @@ class ExecutionApplication:
         return prepare_current_assignment_occurrence(due_port=self.due_port, assignments=self.assignments,
             binding=self.binding, due=due, assignment_ref=assignment_ref, assignment_owner=self.manager_actor,
             operation="resume" if native_session_id else "invoke",
-            lifecycle="resume" if native_session_id else "launch", request_key=request_key)
+            lifecycle="resume" if native_session_id else "launch", request_key=request_key,
+            portfolio=self.portfolio)
 
     def _verify_native_binding(self, assignment: Any, session: str, schedule_id: str | None, *, request_key: str | None = None) -> None:
         _text(session, "native_session_id")

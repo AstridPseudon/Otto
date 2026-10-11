@@ -976,7 +976,7 @@ def build_manager_callback_due(
 def prepare_current_assignment_occurrence(
     *, due_port: Any, assignments: Any, binding: Any, due: Any,
     assignment_ref: Mapping[str, Any], assignment_owner: str,
-    operation: str, lifecycle: str, request_key: str,
+    operation: str, lifecycle: str, request_key: str, portfolio: Any = None,
 ) -> dict[str, Any]:
     """Create a Due on the adoption base, then reconcile it to current refs.
 
@@ -993,9 +993,9 @@ def prepare_current_assignment_occurrence(
         proof = (getattr(due, "target", None) or {}).get("preinitialization_recovery") or {}
         old_value = due_port.read_due(proof.get("original_schedule_id", ""))
         marker = ((old_value or {}).get("host_evidence") or {}).get("role_preinitialization_custody_release") or {}
-        observations = assignments.list_observations(ResourceRef.from_dict(assignment_ref), kind="report")
-        report = next((r for r in observations if r.ref.to_dict() == proof.get("disposition_ref")), None)
-        scope = {} if report is None else report.value.get("scope", {})
+        report = None if portfolio is None or not proof.get("disposition_ref") else portfolio.operations._owner_reader.get_record(ResourceRef.from_dict(proof['disposition_ref']))
+        report_value = {} if report is None else report.payload.get('value', {})
+        scope = report_value.get("scope", {})
         from .worker_custody import PREINITIALIZATION_SCHEMA
         import hashlib, json
         old_result = (((old_value or {}).get("host_evidence") or {}).get("gateway_attempt") or {}).get("result")
@@ -1004,12 +1004,16 @@ def prepare_current_assignment_occurrence(
         if (not old_value or report is None or marker.get("schema") != PREINITIALIZATION_SCHEMA
                 or old_value.get("stop_state") != "stopped" or old_value.get("in_flight_request") is not None
                 or old_value.get("lifecycle_owner") != due.lifecycle_owner
-                or report.value.get("schema") != PREINITIALIZATION_SCHEMA
-                or report.value.get("fresh_occurrence_limit") != 1
-                or report.value.get("provider_retry_allowed") is not False
+                or report.payload.get('record_type') != 'work.observation'
+                or report.payload.get('observation_kind') != 'report'
+                or report.payload.get('assignment') != old_value.get('assignment_ref')
+                or report.payload.get('generation') != due.generation
+                or report_value.get("schema") != PREINITIALIZATION_SCHEMA
+                or report_value.get("fresh_occurrence_limit") != 1
+                or report_value.get("provider_retry_allowed") is not False
                 or old_result_sha != proof.get("original_result_sha256")
                 or marker.get("disposition_ref") != proof.get("disposition_ref")
-                or report.value.get("fresh_request_key") != proof.get("fresh_request_key")
+                or report_value.get("fresh_request_key") != proof.get("fresh_request_key")
                 or proof.get("fresh_request_key") != request_key
                 or scope.get("result_sha256") != proof.get("original_result_sha256")
                 or scope.get("project_ref") != due.target.get("project_ref")

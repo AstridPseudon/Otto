@@ -63,5 +63,12 @@ class PreinitializationCustodyTests(unittest.TestCase):
   self.change(lambda a:a['result'].update(observed_model='unexpected-start'))
   host.restore_execution(f.app,f.app._read(self.schedule));self.assertIn(self.schedule,host._capacity_holds)
   self.assertEqual(f.provider.calls,[])
+ def test_exact_historical_disposition_survives_same_generation_resource_adoption(self):
+  self.release();f=self.f;old=self.manager
+  current=f.app.assignments.adopt_resources(old.ref,resources=old.payload['resource_adoptions'],expected_revision=old.revision,expected_generation=1,logical_request_key='next-supported-BASE',actor=f.actor)
+  self.assertNotEqual(current.ref,old.ref)
+  body=retained_preinitialization_release(f.app,f.app._read(self.schedule));self.assertEqual(body['scope']['assignment_ref'],old.ref.to_dict())
+  permits_preinitialization_role(f.app,schedule_id=self.schedule,assignment=current,project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),request_key='separate-delivery')
+  self.assertEqual(f.provider.calls,[])
 
 if __name__=='__main__':unittest.main()

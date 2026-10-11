@@ -427,10 +427,14 @@ def retained_preinitialization_release(execution,due):
     marker=(due.host_evidence or{}).get('role_preinitialization_custody_release')or{}
     _require(marker.get('schema')==PREINITIALIZATION_SCHEMA and due.stop_state=='stopped'
         and due.in_flight_request is None,'exact retired preinitialization custody required')
-    rows=execution.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref),kind='report')
-    report=next((r for r in rows if r.ref.to_dict()==marker.get('disposition_ref')),None)
-    _require(report is not None,'canonical preinitialization disposition missing')
-    body=report.value;scope=body.get('scope')or{}
+    reader=execution.portfolio.operations._owner_reader
+    report=reader.get_record(ResourceRef.from_dict(marker['disposition_ref']))
+    _require(report is not None and report.ref.to_dict()==marker['disposition_ref']
+        and report.payload.get('record_type')=='work.observation'
+        and report.payload.get('observation_kind')=='report'
+        and report.payload.get('assignment')==due.assignment_ref
+        and report.payload.get('generation')==due.generation,'canonical exact historical disposition missing')
+    body=report.payload['value'];scope=body.get('scope')or{}
     _require(body.get('schema')==PREINITIALIZATION_SCHEMA and body.get('fresh_occurrence_limit')==1
         and body.get('fresh_request_key')==marker.get('fresh_request_key') and body.get('provider_retry_allowed')is False,
         'canonical finite preinitialization disposition differs')
@@ -438,7 +442,6 @@ def retained_preinitialization_release(execution,due):
     before=replace(due,**body['before'],version=scope['due_version'],host_evidence=host)
     _require(inspect_preinitialization_role(execution,schedule_id=due.schedule_id,_due=before)==scope,
         'original failed guard evidence changed')
-    reader=execution.portfolio.operations._owner_reader
     _require(any(e.operation=='work.report.append'and e.actor==execution.binding.authenticated_actor(execution.actor)
         for e in reader.list_events(subjects=(report.ref,))), 'disposition lacks authenticated lifecycle-owner event')
     return body
