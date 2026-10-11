@@ -438,6 +438,24 @@ class _WorkGraphEngine:
             self._retain_links(tx, None, (prerequisite_value.ref,))
         return self.get(record_value.ref)
 
+    def unlink_dependency(self, record: Any, prerequisite: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
+        """Remove a current graph edge, retaining its ordinary revision history."""
+        request_key = self._request_key(logical_request_key)
+        request_payload = {"record": self._request_locator(record), "prerequisite": self._request_locator(prerequisite), "remove": True}
+        replay = self._replay_revision(request_key, request_payload, actor, "work.revised")
+        if replay is not None:
+            return self._replay_result(replay)
+        current, dependency = self._require(record), self._require(prerequisite)
+        retained = [ref for ref in current.dependencies if (ref.authority, ref.kind, ref.id) !=
+                    (dependency.ref.authority, dependency.ref.kind, dependency.ref.id)]
+        if len(retained) == len(current.dependencies):
+            return current
+        payload = dict(current.payload, dependencies=[self._ref_dict(ref) for ref in retained])
+        ensure_completed_task_unchanged(current, payload)
+        with self.__writer.transaction() as tx:
+            self._write_revision(tx, current, payload, request_key, actor, "work.revised", request_payload=request_payload)
+        return self.get(current.ref)
+
     def withdraw(self, target: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         return self.revise(target, lifecycle=Lifecycle.WITHDRAWN, logical_request_key=logical_request_key, actor=actor)
 
