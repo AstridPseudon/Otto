@@ -15,6 +15,7 @@ import json
 from . import client_lanes as lanes
 
 ROOT_DIRECTION_OPERATIONS = frozenset({'direction-read', 'direction-draft', 'direction-update'})
+ROOT_PROJECT_OPERATIONS = frozenset({'read-manager', 'read-help', 'respond-help', 'manager-start'})
 from .supervisor_direction_client import OPERATIONS as SUPERVISOR_DIRECTION_OPERATIONS
 
 OPERATIONS = ROOT_DIRECTION_OPERATIONS | SUPERVISOR_DIRECTION_OPERATIONS | frozenset({'status', 'whoami', 'effective-context', 'portfolio',
@@ -106,7 +107,8 @@ class OrchestratorAdmissions:
             logical_request_key='orchestrator-policy:' + request_key, actor=actor)
         return {**policy, 'policy_ref': json_value(report.ref), 'supervision_adopted': False}
 
-    def admit_current_root(self, *, actor, conversation_ref, operations, request_key):
+    def admit_current_root(self, *, actor, conversation_ref, operations, request_key,
+                           project_ids=()):
         """Trusted deployment only: issue a lane for the EXISTING owner root.
 
         No assignment, enrollment, project transfer or execution grant is made.
@@ -118,12 +120,23 @@ class OrchestratorAdmissions:
                 or set(conversation_ref) != {'host', 'native_id'}
                 or any(not isinstance(v, str) or not v.strip() for v in conversation_ref.values())
                 or not isinstance(operations, list) or not operations
-                or not set(operations).issubset(ROOT_DIRECTION_OPERATIONS | {'whoami', 'status'})):
+                or not set(operations).issubset(ROOT_DIRECTION_OPERATIONS | ROOT_PROJECT_OPERATIONS | {'whoami', 'status'})
+                or not isinstance(project_ids, (list, tuple)) or len(project_ids) > 4
+                or any(not isinstance(value, str) or not value.strip() for value in project_ids)
+                or len(set(project_ids)) != len(project_ids)
+                or bool(set(operations) & ROOT_PROJECT_OPERATIONS) != bool(project_ids)):
             raise PermissionError('current owner root conversation and finite direction capability required')
+        # Project authority is issued only over current canonical supervision
+        # joins. The client cannot add projects later or adopt itself.
+        for project_id in project_ids:
+            project = self.owner.graph.get(ResourceRef(root.ref.authority, 'work.project', project_id))
+            relation = project.payload.get('metadata', {}).get('otto_orchestrator', {})
+            if relation.get('assignment_ref') != root.ref.to_dict() or relation.get('generation') != root.generation:
+                raise PermissionError('project is not currently supervised by this owner root')
         policy = {'schema': 'otto.orchestrator-client-policy.v1', 'state': 'assigned',
             'assignment_ref': root.ref.to_dict(), 'generation': root.generation,
             'principal': root.principal, 'portfolio_ref': json_value(root.scope),
-            'conversation_ref': dict(conversation_ref), 'project_ids': [],
+            'conversation_ref': dict(conversation_ref), 'project_ids': list(project_ids),
             'operations': sorted(set(operations)), 'request_namespace': root.ref.id,
             'root_direction_authority': True}
         report = self.owner.assignments.append_report(root.ref, policy,

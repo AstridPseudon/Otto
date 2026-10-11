@@ -900,6 +900,92 @@ def compact_project_status(
     }
 
 
+def compact_task_acceptance_projection(
+    project_view: Mapping[str, Any], *, task_refs: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return bounded current task lifecycle and canonical acceptance refs.
+
+    The caller supplies a fresh ProjectSheet view selected to the finite task
+    refs. Missing authored acceptance, decision, or criterion data stays
+    explicitly unknown; this projection never consults execution history.
+    """
+    if not isinstance(project_view, Mapping) or not isinstance(task_refs, Mapping) or len(task_refs) > 32:
+        raise OccurrencePreparationError("bounded selected task view is required")
+    if any(not isinstance(alias, str) or not isinstance(ref, Mapping)
+           or not ref.get("authority") or ref.get("kind") != "work.task" or not ref.get("id")
+           for alias, ref in task_refs.items()):
+        raise OccurrencePreparationError("selected task refs must be exact canonical task identities")
+    rows = project_view.get("tasks")
+    contexts = project_view.get("decision_context")
+    if not isinstance(rows, (list, tuple)):
+        raise OccurrencePreparationError("selected task view is unavailable")
+    by_identity = {(str(ref.get("authority")), str(ref.get("kind")), str(ref.get("id"))): alias
+                   for alias, ref in task_refs.items()
+                   if isinstance(alias, str) and isinstance(ref, Mapping)
+                   and ref.get("authority") and ref.get("kind") == "work.task" and ref.get("id")}
+    context_by_id = {}
+    if isinstance(contexts, (list, tuple)):
+        for context in contexts:
+            subject = context.get("subject") if isinstance(context, Mapping) else None
+            if isinstance(subject, Mapping) and subject.get("id") and subject.get("authority") and subject.get("kind"):
+                context_by_id[(str(subject["authority"]), str(subject["kind"]), str(subject["id"]))] = context
+
+    projected = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or not isinstance(row.get("ref"), Mapping):
+            continue
+        ref = row["ref"]
+        identity = (str(ref.get("authority")), str(ref.get("kind")), str(ref.get("id")))
+        alias = by_identity.get(identity)
+        if alias is None:
+            continue
+        authored = row.get("authored") if isinstance(row.get("authored"), Mapping) else {}
+        observed = row.get("observed") if isinstance(row.get("observed"), Mapping) else {}
+        context = context_by_id.get(identity)
+        decisions = context.get("decisions") if isinstance(context, Mapping) else None
+        if isinstance(decisions, (list, tuple)):
+            accepted = [d for d in decisions if isinstance(d, Mapping) and
+                        str(d.get("disposition", "")).lower() in {
+                            "accept", "accepted", "accepted-for-task", "accepted-for-project"}]
+            decision_projection = {"state": "known", "accepted": bool(accepted),
+                "accepted_decision_refs": [d["ref"] for d in accepted if isinstance(d.get("ref"), Mapping)],
+                "source_refs": [d["ref"] for d in decisions if isinstance(d, Mapping) and isinstance(d.get("ref"), Mapping)]}
+            criteria = [d["criterion_ref"] for d in decisions if isinstance(d, Mapping)
+                        and isinstance(d.get("criterion_ref"), Mapping)]
+            criteria_projection = {"state": "known" if criteria else "unknown", "refs": criteria,
+                "reason": None if criteria else "canonical decisions expose no criterion refs"}
+        else:
+            decision_projection = {"state": "unknown", "accepted": None,
+                "accepted_decision_refs": [], "source_refs": [],
+                "reason": "canonical task decision context is unavailable"}
+            criteria_projection = {"state": "unknown", "refs": [],
+                "reason": "canonical task criterion refs are unavailable"}
+        acceptance_present = "acceptance" in authored
+        projected[alias] = {
+            "task_ref": dict(ref),
+            "lifecycle": observed.get("lifecycle", authored.get("lifecycle")),
+            "authored_acceptance": {"state": "known" if acceptance_present else "unknown",
+                "value": authored.get("acceptance") if acceptance_present else None},
+            "criteria": criteria_projection,
+            "accepted_decisions": decision_projection,
+        }
+    for alias, ref in task_refs.items():
+        if alias in projected:
+            continue
+        projected[alias] = {
+            "task_ref": dict(ref), "lifecycle": None,
+            "authored_acceptance": {"state": "unknown", "value": None,
+                "reason": "selected canonical task was not returned"},
+            "criteria": {"state": "unknown", "refs": [],
+                "reason": "selected canonical task was not returned"},
+            "accepted_decisions": {"state": "unknown", "accepted": None,
+                "accepted_decision_refs": [], "source_refs": [],
+                "reason": "selected canonical task was not returned"},
+        }
+    return {"schema": "otto.task-acceptance-projection.v1", "tasks": projected,
+            "read_only": True, "dispatch": False, "launch": False}
+
+
 def build_manager_callback_due(
     prior: Any,
     *,
@@ -1119,7 +1205,7 @@ def prepare_current_assignment_occurrence(
 
 __all__ = [
     "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
-    "compact_operation_status", "compact_project_status", "derive_manager_continuation_request", "manager_continuation_schedule_id",
+    "compact_operation_status", "compact_project_status", "compact_task_acceptance_projection", "derive_manager_continuation_request", "manager_continuation_schedule_id",
     "complete_task_from_command",
     "prepare_current_assignment_occurrence", "read_project_progress_reports",
     "validate_owner_timeout_seconds",

@@ -11,7 +11,8 @@ from typing import Any, Mapping
 from herzchen.contracts import ResourceRef
 
 from .manager_journey_command import ManagerJourneyCommands
-from .execution_operations import compact_project_status, read_project_progress_reports
+from .execution_operations import (compact_project_status, compact_task_acceptance_projection,
+    read_project_progress_reports)
 from .owner_readers import json_value
 from .manager_handoff import compose_manager_handoff
 from .owner_completion import after_owner
@@ -253,6 +254,22 @@ class ManagerJourneyService:
             "handoff": handoff,
             "status": status, **status,
         }
+
+    def _task_acceptance_projection(self) -> Mapping[str, Any]:
+        """Read current selected task acceptance refs without execution history."""
+        self.commands._authorize()
+        state = self.server.state
+        refs = state.get("task_refs")
+        if not isinstance(refs, Mapping) or len(refs) > 32:
+            raise ValueError("current bounded task refs are unavailable")
+        sheet = getattr(self.server.portfolio.operations, "sheet_port", None)
+        if not callable(getattr(sheet, "export", None)):
+            return {"schema": "otto.task-acceptance-projection.v1", "state": "unknown",
+                    "reason": "canonical ProjectSheet read port is unavailable", "tasks": {},
+                    "read_only": True, "dispatch": False, "launch": False}
+        selected = [ResourceRef.from_dict(ref) for ref in refs.values()]
+        view = json_value(sheet.export(ResourceRef.from_dict(state["project_ref"]), task_refs=selected))
+        return compact_task_acceptance_projection(view, task_refs=refs)
 
     def _known_occurrences(self, state: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         """Read only exact handles already named by the current owner state."""

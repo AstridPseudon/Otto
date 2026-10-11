@@ -101,7 +101,8 @@ class RootDirectionAuthoring:
                 'client_binding_refresh_required': True}
 
 
-def install_owner_root_client(*, service, directory, conversation_ref, request_key):
+def install_owner_root_client(*, service, directory, conversation_ref, request_key,
+                              project_ids=(), project_handler=None):
     """Normal trusted host deployment of one same-root client lane.
 
     Call while composing/requalifying the owner, before native admission. The
@@ -111,13 +112,18 @@ def install_owner_root_client(*, service, directory, conversation_ref, request_k
     """
     from pathlib import Path
     from . import client_lanes as lanes
-    from .orchestrator_client import OrchestratorAdmissions, ScopedOrchestratorClient, ROOT_DIRECTION_OPERATIONS
+    from .orchestrator_client import (OrchestratorAdmissions, ScopedOrchestratorClient,
+        ROOT_DIRECTION_OPERATIONS, ROOT_PROJECT_OPERATIONS)
+    if project_ids and not callable(project_handler):
+        raise ValueError('finite owner-root project scope requires the existing scoped project handler')
     root = service.server.owner.assignments.get(service.server.state['orchestrator_assignment_ref'])
     admissions = OrchestratorAdmissions(service.server.owner,
         main_assignment_ref=root.ref.to_dict(), generation=root.generation)
     binding = admissions.admit_current_root(actor=service.server.owner.owner_actor,
         conversation_ref=conversation_ref,
-        operations=sorted(ROOT_DIRECTION_OPERATIONS | {'whoami', 'status'}),
+        operations=sorted(ROOT_DIRECTION_OPERATIONS | {'whoami', 'status'} |
+                          (ROOT_PROJECT_OPERATIONS if project_ids else frozenset())),
+        project_ids=list(project_ids),
         request_key=request_key + ':' + root.ref.revision)
     directory = lanes.private_dir(Path(directory))
     lane = lanes.private_dir(directory / 'lane')
@@ -132,6 +138,8 @@ def install_owner_root_client(*, service, directory, conversation_ref, request_k
                     'generation': current.generation, 'principal': current.principal,
                     'portfolio_ref': current.scope.to_dict(), 'canonical_conversation': json_value(current.session),
                     'operations': binding['operations'], 'read_only': True, 'provider_called': False}
+        if request['operation'] in ROOT_PROJECT_OPERATIONS:
+            return project_handler(request, current)
         return service.root_direction_client(request, current)
     return locator, ScopedOrchestratorClient(owner=service.server.owner, binding=binding,
         handlers={op: handle for op in binding['operations']})

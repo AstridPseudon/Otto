@@ -99,6 +99,49 @@ class RootDirectionClientTests(unittest.TestCase):
   self.assertEqual(current['binding']['assignment_ref']['id'],self.root.ref.id)
   with self.assertRaises(PermissionError):install_owner_root_client(service=self.service,directory=directory,conversation_ref={'host':'codex','native_id':'foreign'},request_key='foreign')
 
+ def test_current_root_project_access_is_finite_and_uses_existing_handler(self):
+  from otto.portfolio.root_direction_client import install_owner_root_client
+  from otto.portfolio.orchestrator_client import ROOT_PROJECT_OPERATIONS
+  from tempfile import TemporaryDirectory
+  seen=[]
+  def existing_handler(request,current):
+   seen.append((request,current.ref.to_dict(),current.generation))
+   return {'existing_handler':True,'operation':request['operation']}
+  with TemporaryDirectory() as directory:
+   locator,client=install_owner_root_client(service=self.service,directory=directory,
+    conversation_ref=self.root.session,request_key='finite-root',
+    project_ids=[p.ref.id for p in self.projects],project_handler=existing_handler)
+   self.assertEqual(set(locator['binding']['operations']) & ROOT_PROJECT_OPERATIONS,ROOT_PROJECT_OPERATIONS)
+   self.assertEqual(locator['binding']['assignment_ref'],self.root.ref.to_dict())
+   self.assertEqual(locator['binding']['generation'],1)
+   for index,operation in enumerate(sorted(ROOT_PROJECT_OPERATIONS)):
+    result=client.call({'operation':operation,'project_id':self.projects[index % len(self.projects)].ref.id,
+      'request_key':'call-'+operation,'request':{'sentinel':'preserve-existing-handler-input'}})
+    self.assertTrue(result['existing_handler'])
+   self.assertEqual([row[0]['operation'] for row in seen],sorted(ROOT_PROJECT_OPERATIONS))
+   with self.assertRaises(PermissionError):
+    client.call({'operation':'read-help','project_id':'foreign-project','request_key':'foreign-project'})
+   with self.assertRaises(PermissionError):
+    self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
+      operations=['read-manager'],project_ids=['not-supervised'],request_key='bad-project')
+
+ def test_compact_task_acceptance_projection_preserves_unknown_and_refs(self):
+  from otto.portfolio.execution_operations import compact_task_acceptance_projection
+  task={'authority':'owner','kind':'work.task','id':'task-a','revision':'rev-2'}
+  decision={'authority':'owner','kind':'wrk.decision','id':'decision-a','revision':'rev-1'}
+  criterion={'authority':'owner','kind':'wrk.criterion','id':'criterion-a','revision':'rev-1'}
+  view={'tasks':[{'ref':task,'authored':{'acceptance':'All checks pass'},
+    'observed':{'lifecycle':'pending'}}], 'decision_context':[{'subject':task,'decisions':[
+      {'ref':decision,'criterion_ref':criterion,'disposition':'accepted'}]}]}
+  projected=compact_task_acceptance_projection(view,task_refs={'A':task})['tasks']['A']
+  self.assertEqual(projected['lifecycle'],'pending')
+  self.assertEqual(projected['criteria']['refs'],[criterion])
+  self.assertEqual(projected['accepted_decisions']['accepted_decision_refs'],[decision])
+  unknown=compact_task_acceptance_projection({'tasks':[{'ref':task,'authored':{},'observed':{}}]},
+    task_refs={'A':task})['tasks']['A']
+  self.assertEqual(unknown['criteria']['state'],'unknown')
+  self.assertIsNone(unknown['accepted_decisions']['accepted'])
+
  def test_draft_is_not_adoption_and_live_obligation_holds_update(self):
   read=self.read();content=self.intent()['request']['content']
   draft=self.client.call({'operation':'direction-draft','request_key':'draft','request':{'content':content,'expected_revision':read['assignment_direction']['latest_ref']['revision']}})
