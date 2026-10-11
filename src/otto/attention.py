@@ -1268,7 +1268,7 @@ class _DueRecordOwnerEngine:
 
     def _stale_manager_stop_only(self, schedule_id: str, desired: Mapping[str, JSONValue],
                                  assignment: Any, old_ref: Any) -> bool:
-        """Stop old custody after one same-generation instruction adoption.
+        """Stop old custody after consecutive same-generation instruction adoptions.
 
         This grants no recovery or replay. Every old execution/evidence field
         stays byte-equivalent in the owner value; only the lifecycle owner may
@@ -1286,7 +1286,7 @@ class _DueRecordOwnerEngine:
         scope = payload.get("scope") or {}
         target = before.get("target") or {}
         return (before.get("role") == "manager" and payload.get("role") == "manager"
-                and payload.get("resource_adoption_base_ref") == old_ref.to_dict()
+                and self._stop_adoption_chain(assignment, old_ref, before)
                 and payload.get("generation") == before.get("generation")
                 and payload.get("principal") == before.get("recipient")
                 and target.get("principal") == before.get("recipient")
@@ -1296,6 +1296,47 @@ class _DueRecordOwnerEngine:
                 and before.get("owner") == self._actor.actor
                 and before.get("assignment_ref") == old_ref.to_dict()
                 and target.get("assignment_ref") == old_ref.to_dict())
+
+    def _stop_adoption_chain(self, assignment: Any, old_ref: Any,
+                             before: Mapping[str, JSONValue]) -> bool:
+        """Authenticate adoption ancestry for a stop-only CAS, never dispatch."""
+        if assignment.payload.get("resource_adoption_base_ref") == old_ref.to_dict():
+            return True
+        from herzchen.contracts import ResourceRef
+        events = self._writer.list_events(stream="assignment:" + old_ref.id)
+        cursor = assignment.ref
+        seen = set()
+        while cursor != old_ref:
+            if cursor in seen or (cursor.authority, cursor.kind, cursor.id) != (old_ref.authority, old_ref.kind, old_ref.id):
+                return False
+            seen.add(cursor)
+            candidates = [event for event in events if cursor in event.after_refs
+                          and event.event_type == "work.assignment.resources-adopted"]
+            if len(candidates) != 1:
+                return False
+            event = candidates[0]
+            payload = event.effects.get("result_payload") or {}
+            base = payload.get("resource_adoption_base_ref")
+            if not isinstance(base, Mapping):
+                return False
+            try:
+                parent = ResourceRef.from_dict(base)
+                consecutive = int(cursor.revision.removeprefix("rev-")) == int(parent.revision.removeprefix("rev-")) + 1
+            except (TypeError, ValueError, AttributeError):
+                return False
+            if (not consecutive or parent not in event.before_refs
+                    or event.store_authority != self._writer.authority
+                    or event.subject != cursor
+                    or payload.get("resource_adoption_revision") != cursor.revision
+                    or payload.get("generation") != before.get("generation")
+                    or payload.get("principal") != before.get("recipient")
+                    or payload.get("role") != "manager"
+                    or payload.get("scope") != assignment.payload.get("scope")
+                    or event.actor.actor != (payload.get("manager") or payload.get("principal"))
+                    or not payload.get("resource_adoptions") or not payload.get("resource_adoption_digest")):
+                return False
+            cursor = parent
+        return True
 
     def _save_due(
         self,

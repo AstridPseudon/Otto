@@ -34,6 +34,28 @@ class StaleManagerStopTests(unittest.TestCase):
   current=self.f.port.read_due(self.schedule)
   self.assertEqual(DurableAttention(None,due_port=self.f.port).stop(self.schedule,request_id='exact-owner-stop',expected_version=current['version'])['outcome'],'replayed')
   self.assertEqual(self.f.provider.calls,calls)
+ def second_adoption(self):
+  current=self.adopted
+  self.adopted=self.f.owner.assignments.command_port.adopt_resources(current.ref,resources=current.payload['resource_adoptions'],expected_revision=current.revision,expected_generation=1,logical_request_key='second-adoption',actor=self.f.actor)
+ def test_multiple_consecutive_adoptions_stop_without_rebinding_or_replay(self):
+  self.second_adoption();calls=self.f.provider.calls[:]
+  self.assertEqual(self.stop()['outcome'],'stopped')
+  self.assertEqual(self.f.port.read_due(self.schedule),{**self.before,'stop_state':'stopped','version':self.before['version']+1})
+  self.assertEqual(self.f.provider.calls,calls)
+ def test_missing_foreign_and_changed_generation_ancestry_fail_closed(self):
+  from dataclasses import replace
+  from types import SimpleNamespace
+  from otto.attention import _DueRecordOwnerEngine
+  self.second_adoption();events=self.f.store.consumer().list_events(stream='assignment:'+self.adopted.id)
+  engine=object.__new__(_DueRecordOwnerEngine)
+  engine._writer=SimpleNamespace(authority=self.adopted.ref.authority,list_events=lambda **kw:events)
+  old=ResourceRef.from_dict(self.before['assignment_ref'])
+  self.assertTrue(engine._stop_adoption_chain(self.adopted,old,self.before))
+  adoption=[e for e in events if e.event_type=='work.assignment.resources-adopted'][-1]
+  for name,mutation in [('missing',lambda e:None),('foreign',lambda e:replace(e,store_authority='foreign')),('generation',lambda e:replace(e,effects={**e.effects,'result_payload':{**e.effects['result_payload'],'generation':2}})),('principal',lambda e:replace(e,effects={**e.effects,'result_payload':{**e.effects['result_payload'],'principal':'foreign'}})),('base',lambda e:replace(e,effects={**e.effects,'result_payload':{**e.effects['result_payload'],'resource_adoption_base_ref':old.to_dict()}}))]:
+   with self.subTest(name=name):
+    changed=mutation(adoption);engine._writer.list_events=lambda **kw:tuple(changed if e==adoption else e for e in events if changed is not None or e!=adoption)
+    self.assertFalse(engine._stop_adoption_chain(self.adopted,old,self.before))
  def test_modified_old_effect_or_binding_cannot_use_stop_exception(self):
   for field,value in [('completion_state','succeeded'),('in_flight_request',None),('instruction','changed'),('lifecycle_owner','foreign')]:
    with self.subTest(field=field):
