@@ -22,7 +22,7 @@ SNAPSHOT_SCHEMA_REVISION = "otto.operating-snapshot.v1"
 _ROLES = frozenset({"orchestrator", "manager", "worker", "project_advisor"})
 _USER_FIELDS = ("mandate", "user_constraints")
 _AGENT_FIELDS = ("priorities", "operational_constraints", "continuation", "links")
-_ADAPTER_ROLE_BASE_GUIDANCE = (
+_CODEX_ADAPTER_ROLE_BASE_GUIDANCE = (
     " For the maintained agent-adapter route, use the exact tool_entrypoint emitted by the current role "
     "introduction. The currently inspected installed prefix is "
     "`/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9 "
@@ -46,6 +46,37 @@ _ADAPTER_ROLE_BASE_GUIDANCE = (
     "Usage is observed, invalid or unavailable, never guessed as zero or money. When qualified retained accounting is present, public Usage/Timeline/detail readback keeps physical-span deduplication and historical agent/task/project attribution visible, and separates provider-reported money from versioned decimal estimates. Static rates are estimates with provenance, not billing; missing model/rate/time/currency, shared, conflicted, unpriced and unknown coverage remain explicit. Allowance units are separate, and missing accounting never authorizes replay or a pricing fetch. Claude in this scope is mechanical "
     "only; do not perform or claim paid initialization/inference/resume. A read-only leaf has authorized delivered context and capture but no managed native caller socket; report unavailable identity reads rather than borrowing credentials. The separate protected external-root client uses launch/lookup/follow/result/artifact/consume; native manager_ctl uses run-worker/lookup-occurrence/follow-occurrence/read-result/read-artifact/consume-result. Read the host-issued root policy and tool entrypoint for actual root execution."
 )
+
+
+def _host_role_guidance(environ: Optional[Mapping[str, str]] = None) -> str:
+    """The shared adapter-route guidance, with this host's installed command.
+
+    A Codex host (no selection) keeps the original text byte-for-byte. A host
+    installed through ottoctl exports OTTO_HOST_KIND / OTTO_TOOL_ENTRYPOINT so
+    new role briefs name its own command instead of another host's paths.
+    """
+    import os
+    env = os.environ if environ is None else environ
+    entrypoint = env.get("OTTO_TOOL_ENTRYPOINT")
+    kind = env.get("OTTO_HOST_KIND")
+    text = _CODEX_ADAPTER_ROLE_BASE_GUIDANCE
+    if not entrypoint and kind in (None, "", "codex"):
+        return text
+    start = text.index("The currently inspected installed prefix is ")
+    end = text.index("package-adoption claim. ") + len("package-adoption claim. ")
+    installed = ("The installed command on this host is `" + (entrypoint or "ottoctl") + "`; it is host evidence, "
+                 "not a borrowed identity. ")
+    text = text[:start] + installed + text[end:]
+    if kind and kind != "codex":
+        text = text.replace("Claude in this scope is mechanical only; do not perform or claim paid "
+                            "initialization/inference/resume.",
+                            "Claude Code roles on this host are those its adapter configuration declares "
+                            "(worker leaf, manager); follow the delivered role introduction.")
+    return text
+
+
+_ADAPTER_ROLE_BASE_GUIDANCE = _host_role_guidance()
+
 ROLE_OPERATING_CONTRACTS = {
     "orchestrator": (
         "Own human-facing portfolio coordination: delegate concrete projects to their assigned managers, "

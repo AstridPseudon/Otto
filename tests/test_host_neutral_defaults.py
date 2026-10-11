@@ -153,6 +153,19 @@ class LeafAdapterTests(unittest.TestCase):
         self.assertEqual(contract["read_targets"], [str(root.resolve())])
 
 
+class RoleGuidanceTests(unittest.TestCase):
+    def test_codex_guidance_is_unchanged_and_a_host_names_its_own_command(self):
+        from otto.portfolio import operating_brief
+        self.assertEqual(operating_brief._host_role_guidance({}), operating_brief._CODEX_ADAPTER_ROLE_BASE_GUIDANCE)
+        self.assertIn("Documents/Codex", operating_brief._host_role_guidance({"OTTO_HOST_KIND": "codex"}))
+        claude = operating_brief._host_role_guidance({"OTTO_HOST_KIND": "claude-code",
+                                                      "OTTO_TOOL_ENTRYPOINT": "/home/u/.otto-claude/bin/ottoctl"})
+        self.assertIn("`/home/u/.otto-claude/bin/ottoctl`", claude)
+        self.assertNotIn("Documents/Codex", claude)
+        self.assertNotIn("mechanical only", claude)
+        self.assertIn("run-worker --task TASK", claude)
+
+
 class ManagerPortConfigTests(unittest.TestCase):
     def test_defaults_are_the_original_codex_run_layout(self):
         module = load_manager_ctl({})
