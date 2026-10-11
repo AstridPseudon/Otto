@@ -956,7 +956,7 @@ def compact_task_acceptance_projection(
                     "applicability", "assessment_result_ref") if key in decision}
                 rows_out.append(row_out)
                 criterion = decision.get("criterion_ref")
-                if isinstance(criterion, Mapping):
+                if isinstance(criterion, Mapping) and criterion not in criteria:
                     criteria.append(criterion)
                 if (isinstance(decision.get("ref"), Mapping) and
                         str(decision.get("disposition", "")).lower() in {
