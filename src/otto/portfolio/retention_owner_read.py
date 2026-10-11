@@ -270,7 +270,9 @@ class RetentionOwnerRead:
             elif key.endswith("_sha256") and isinstance(value, str) and len(value) == 64 \
                     and all(char in "0123456789abcdef" for char in value.lower()):
                 custody_view[key] = value.lower()
-        diagnostics_view = {"work": work_view, "stages": stages, "records_modified": diagnostics.get("records_modified") is False}
+        records_modified = diagnostics.get("records_modified")
+        diagnostics_view = {"work": work_view, "stages": stages,
+                            "records_modified": records_modified if type(records_modified) is bool else None}
         for key in ("source_bytes", "file_allocated_bytes", "page_size", "page_count", "freelist_pages", "freelist_bytes"):
             value = diagnostics.get(key)
             if type(value) is int and 0 <= value <= 10**15:
@@ -314,11 +316,13 @@ class RetentionOwnerRead:
                       and custody_view.get("store_closed") is True
                       and custody_view.get("owner_alive") is False
                       and custody_view.get("supervisor_alive") is False)
+        stages_ok = (all(stages.get(name, {}).get("state") == "complete"
+                         for name in ("pages", "tables", "payload_groups"))
+                     and stages.get("allocation", {}).get("state") in {"complete", "available"})
         required_stages = {"pages", "tables", "payload_groups", "allocation"}
         complete = (work_view["state"] == "complete" and custody_ok
                     and required_stages.issubset(stages)
-                    and all(stages[name]["state"] == "complete" for name in required_stages)
-                    and diagnostics_view["records_modified"] is True)
+                    and stages_ok and diagnostics_view["records_modified"] is False)
         return {"outcome": "read" if complete else "partial", "view": "storage",
                 "observed_at": observed_at, "source_commit": source_commit[:128],
                 "custody": custody_view or "not-recorded", "diagnostics": diagnostics_view,

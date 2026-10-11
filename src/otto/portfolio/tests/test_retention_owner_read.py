@@ -131,8 +131,8 @@ class RetentionOwnerReadTests(unittest.TestCase):
                 "diagnostics": {"source_bytes": 1000, "file_allocated_bytes": 4096, "page_size": 4096,
                     "page_count": 1, "freelist_pages": 0, "freelist_bytes": 0,
                     "work": {"state": "complete", "reason": "bounded"},
-                    "stages": {name: {"state": "complete"} for name in
-                        ("pages", "tables", "payload_groups", "allocation")},
+                    "stages": {**{name: {"state": "complete"} for name in
+                        ("pages", "tables", "payload_groups")}, "allocation": {"state": "available"}},
                     "tables": [{"name": "identity", "rows": 3}],
                     "payload_groups": {"state": "complete", "groups": 2},
                     "page_allocation": {"allocated_bytes": 4096},
@@ -141,9 +141,10 @@ class RetentionOwnerReadTests(unittest.TestCase):
             closed = future.call({"handle": {"view": "storage"}}, root=root, actor=self.actor)
             self.assertTrue(closed["complete"])
             self.assertEqual(closed["diagnostics"]["source_bytes"], 1000)
-            self.assertEqual(closed["diagnostics"]["stages"]["allocation"]["state"], "complete")
+            self.assertEqual(closed["diagnostics"]["stages"]["allocation"]["state"], "available")
             self.assertEqual(closed["diagnostics"]["payload_groups"]["groups"], 2)
             self.assertEqual(closed["diagnostics"]["physical_unique_CoW_bytes"], "unavailable")
+            self.assertIs(closed["diagnostics"]["records_modified"], False)
             self.assertEqual(closed["custody"]["store_closed"], True)
             self.assertEqual(closed["custody"]["receipt_sha256"], "b" * 64)
             self.assertEqual(closed["custody"]["store_ref"]["id"], "one")
