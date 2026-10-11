@@ -194,7 +194,7 @@ class RetentionOwnerRead:
                     "currentness": "not-revalidated", "provider_called": False, "writes": 0,
                     "reason": "no trusted bounded storage observation was injected"}
         # Only explicitly retained facts cross this boundary. In particular,
-        # absent page, source and custody details remain absent/unknown.
+        # absent source and custody details remain absent/unknown.
         if receipt.get("schema") == "otto.closed-storage-diagnostic-receipt.v1":
             return self._closed_storage(receipt)
         allowed = ("schema", "at", "outcome", "exit_status", "provider_called",
@@ -207,10 +207,8 @@ class RetentionOwnerRead:
             if key not in receipt:
                 continue
             value = receipt[key]
-            if key in {"sample_ref", "partial_log_ref"}:
-                value = _safe_ref(value)
-                if value is not None:
-                    projected[key] = value
+            if key in {"sample_ref", "partial_log_ref"} and isinstance(value, str):
+                projected["sample_locator" if key == "sample_ref" else "partial_log_locator"] = value[:512]
             elif type(value) in {int, bool}:
                 projected[key] = value
             elif isinstance(value, str):
@@ -239,43 +237,94 @@ class RetentionOwnerRead:
             return {"outcome": "unavailable", "view": "storage", "complete": False,
                     "currentness": "not-revalidated", "provider_called": False, "writes": 0,
                     "reason": "closed storage receipt lacks bounded source, custody or diagnostics"}
-        stages = {}
-        for raw_name, raw_stage in diagnostics.items():
-            if (not isinstance(raw_name, str) or not raw_name or len(raw_name) > 64
-                    or not all(char.isalnum() or char in "-_" for char in raw_name)
-                    or not isinstance(raw_stage, Mapping) or len(raw_stage) > 24):
-                continue
-            stage = {}
-            for key in ("state", "availability", "available", "status"):
-                value = raw_stage.get(key)
-                if isinstance(value, str):
-                    stage[key] = value[:64]
-                elif type(value) is bool:
-                    stage[key] = value
-            metrics = {}
-            for key, value in raw_stage.items():
-                if (isinstance(key, str) and len(key) <= 64 and type(value) is int
-                        and 0 <= value <= 10**15):
-                    metrics[key] = value
-            stage["numeric_metrics"] = metrics
-            stages[raw_name] = stage
-        if not stages:
+        stages_source = diagnostics.get("stages")
+        if not isinstance(stages_source, Mapping) or not stages_source or len(stages_source) > 16:
             return {"outcome": "unavailable", "view": "storage", "complete": False,
                     "currentness": "not-revalidated", "provider_called": False, "writes": 0,
-                    "reason": "closed storage receipt has no bounded diagnostic stages"}
+                    "reason": "closed storage receipt has no bounded stage summaries"}
+        stages = {}
+        for name, raw_stage in stages_source.items():
+            if (not isinstance(name, str) or not name or len(name) > 64
+                    or not all(char.isalnum() or char in "-_" for char in name)
+                    or not isinstance(raw_stage, Mapping) or len(raw_stage) > 12):
+                continue
+            state = raw_stage.get("state")
+            stages[name] = {"state": state[:64] if isinstance(state, str) else "unknown",
+                            "reason": _bounded_label(raw_stage.get("reason"))}
+        work = diagnostics.get("work")
+        work_view = ({"state": _bounded_label(work.get("state")) or "unknown",
+                      "reason": _bounded_label(work.get("reason"))}
+                     if isinstance(work, Mapping) else {"state": "unknown", "reason": None})
         custody_view = {}
-        for key in ("state", "owner", "operator", "custodian"):
+        for key in ("ordinary_exit_status", "store_closed", "owner_alive", "supervisor_alive"):
             value = custody.get(key)
-            if isinstance(value, str):
-                custody_view[key] = value[:128]
-        complete = receipt.get("complete") is True or receipt.get("complete_storage_diagnostic") is True
+            if type(value) in {int, bool}:
+                custody_view[key] = value
+        for key, value in custody.items():
+            if not isinstance(key, str) or len(key) > 64:
+                continue
+            if key.endswith("_ref"):
+                ref = _object_ref(value)
+                if ref is not None:
+                    custody_view[key] = ref
+            elif key.endswith("_sha256") and isinstance(value, str) and len(value) == 64 \
+                    and all(char in "0123456789abcdef" for char in value.lower()):
+                custody_view[key] = value.lower()
+        diagnostics_view = {"work": work_view, "stages": stages, "records_modified": diagnostics.get("records_modified") is False}
+        for key in ("source_bytes", "file_allocated_bytes", "page_size", "page_count", "freelist_pages", "freelist_bytes"):
+            value = diagnostics.get(key)
+            if type(value) is int and 0 <= value <= 10**15:
+                diagnostics_view[key] = value
+        for name in ("tables", "payload_groups"):
+            values = diagnostics.get(name)
+            if isinstance(values, (list, tuple)):
+                summaries = []
+                for item in values[:64]:
+                    if not isinstance(item, Mapping):
+                        continue
+                    summary = {}
+                    for key in ("name", "table", "state"):
+                        if isinstance(item.get(key), str):
+                            summary[key] = item[key][:64]
+                    for key, value in item.items():
+                        if isinstance(key, str) and type(value) is int and 0 <= value <= 10**15:
+                            summary[key] = value
+                    summaries.append(summary)
+                diagnostics_view[name] = {"items": summaries, "count": len(values), "truncated": len(values) > 64}
+            elif isinstance(values, Mapping):
+                metrics = {key: value for key, value in values.items()
+                           if isinstance(key, str) and len(key) <= 64 and type(value) is int
+                           and 0 <= value <= 10**15}
+                state = values.get("state")
+                if isinstance(state, str):
+                    metrics["state"] = state[:64]
+                diagnostics_view[name] = metrics
+        page_allocation = diagnostics.get("page_allocation")
+        if isinstance(page_allocation, Mapping):
+            diagnostics_view["page_allocation"] = {
+                key: value for key, value in page_allocation.items()
+                if isinstance(key, str) and len(key) <= 64
+                and (isinstance(value, str) and len(value) <= 64
+                     or type(value) is int and 0 <= value <= 10**15
+                     or type(value) is bool)}
+        physical_cow = diagnostics.get("physical_unique_CoW_bytes")
+        if isinstance(physical_cow, str):
+            diagnostics_view["physical_unique_CoW_bytes"] = physical_cow[:64]
+        custody_ok = (custody_view.get("ordinary_exit_status") == 0
+                      and custody_view.get("store_closed") is True
+                      and custody_view.get("owner_alive") is False
+                      and custody_view.get("supervisor_alive") is False)
+        required_stages = {"pages", "tables", "payload_groups", "allocation"}
+        complete = (work_view["state"] == "complete" and custody_ok
+                    and required_stages.issubset(stages)
+                    and all(stages[name]["state"] == "complete" for name in required_stages)
+                    and diagnostics_view["records_modified"] is True)
         return {"outcome": "read" if complete else "partial", "view": "storage",
                 "observed_at": observed_at, "source_commit": source_commit[:128],
-                "custody": custody_view or "not-recorded", "diagnostics": stages,
+                "custody": custody_view or "not-recorded", "diagnostics": diagnostics_view,
                 "complete": complete, "currentness": "retained-observation-not-revalidated",
-                "capacity_fit": _bounded_label(receipt.get("capacity_fit")) or "unavailable",
+                "capacity_fit": "unavailable",
                 "provider_called": False,
-                "receipt_provider_called": receipt.get("provider_called") is True,
                 "writes": 0}
 
     def _preview(self, handle: Mapping[str, Any], *, root: Any, actor: Any, request_key: Any) -> Mapping[str, Any]:

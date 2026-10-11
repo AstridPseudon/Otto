@@ -111,6 +111,7 @@ class RetentionOwnerReadTests(unittest.TestCase):
         receipt = {"schema": "otto.owner-storage-diagnostic-partial.v1", "at": "2026-10-11T23:08:00Z",
                    "outcome": "cancelled-resource-pressure", "complete_storage_diagnostic": False,
                    "capacity_fit": "unavailable", "observed_free_before_bytes": 1234,
+                   "sample_ref": "/trusted/retained/sample.txt",
                    "unsafe_private": "must not escape"}
         capability = RetentionOwnerRead(service, storage_receipt=receipt)
         with patch("otto.portfolio.retention_owner_read.USAGE_PROJECT_ID", project.ref.id):
@@ -119,18 +120,35 @@ class RetentionOwnerReadTests(unittest.TestCase):
             self.assertEqual(result["currentness"], "not-revalidated")
             self.assertNotIn("unsafe_private", result["receipt"])
             self.assertEqual(result["receipt"]["observed_free_before_bytes"], 1234)
+            self.assertEqual(result["receipt"]["sample_locator"], "/trusted/retained/sample.txt")
             future = RetentionOwnerRead(service, storage_receipt={
                 "schema": "otto.closed-storage-diagnostic-receipt.v1", "observed_at": "2026-10-12T00:00:00Z",
-                "source_commit": "a" * 40, "custody": {"state": "retained", "secret": "omit"},
-                "diagnostics": {"identities": {"state": "available", "rows_examined": 3,
-                                                  "payload_bytes": 100}},
-                "complete": True, "provider_called": True})
+                "source_commit": "a" * 40,
+                "custody": {"ordinary_exit_status": 0, "store_closed": True,
+                            "owner_alive": False, "supervisor_alive": False,
+                            "store_ref": {"authority": "owner", "kind": "store", "id": "one"},
+                            "receipt_sha256": "b" * 64, "secret": "omit"},
+                "diagnostics": {"source_bytes": 1000, "file_allocated_bytes": 4096, "page_size": 4096,
+                    "page_count": 1, "freelist_pages": 0, "freelist_bytes": 0,
+                    "work": {"state": "complete", "reason": "bounded"},
+                    "stages": {name: {"state": "complete"} for name in
+                        ("pages", "tables", "payload_groups", "allocation")},
+                    "tables": [{"name": "identity", "rows": 3}],
+                    "payload_groups": {"state": "complete", "groups": 2},
+                    "page_allocation": {"allocated_bytes": 4096},
+                    "records_modified": False, "physical_unique_CoW_bytes": "unavailable"},
+                "provider_called": False})
             closed = future.call({"handle": {"view": "storage"}}, root=root, actor=self.actor)
             self.assertTrue(closed["complete"])
-            self.assertEqual(closed["diagnostics"]["identities"]["numeric_metrics"],
-                             {"rows_examined": 3, "payload_bytes": 100})
+            self.assertEqual(closed["diagnostics"]["source_bytes"], 1000)
+            self.assertEqual(closed["diagnostics"]["stages"]["allocation"]["state"], "complete")
+            self.assertEqual(closed["diagnostics"]["payload_groups"]["groups"], 2)
+            self.assertEqual(closed["diagnostics"]["physical_unique_CoW_bytes"], "unavailable")
+            self.assertEqual(closed["custody"]["store_closed"], True)
+            self.assertEqual(closed["custody"]["receipt_sha256"], "b" * 64)
+            self.assertEqual(closed["custody"]["store_ref"]["id"], "one")
+            self.assertNotIn("secret", closed["custody"])
             self.assertFalse(closed["provider_called"])
-            self.assertTrue(closed["receipt_provider_called"])
             held = capability.call({"request_key": "p", "handle": {"view": "reclaim-preview",
                 "cutoff": "9999-01-01T00:00:00Z", "cursor": "", "limit": 10}}, root=root, actor=self.actor)
         self.assertEqual(held["outcome"], "unavailable")
