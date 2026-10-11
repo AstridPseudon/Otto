@@ -1250,7 +1250,7 @@ class ManagerJourneyService:
             return {"outcome": "held", "provider_called": False,
                     "reason": "owner is draining; preserve completion intents for same-manager closeout after restart"}
         state = self.server.state
-        anchor = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+        anchor = self._current_manager_schedule()
         prepared = app.continue_manager_after_tasks(manager_schedule_id=anchor, execute=False)
         if prepared.get("outcome") not in {"committed", "prepared"}:
             return prepared

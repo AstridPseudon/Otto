@@ -98,6 +98,26 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertEqual(f.port.read_due(old['schedule_id']), old_due)
         self.assertEqual(len(f.provider.calls), calls)
         self.assertEqual(f.owner.graph.reader.snapshot_counts(), before)
+        # The installed service must choose the same current verified anchor,
+        # even when its informational continuation metadata still names the
+        # original successful manager revision. Neither acceptance nor provider
+        # work is repeated merely to prepare a task-settlement destination.
+        from types import SimpleNamespace
+        from otto.portfolio.manager_journey_service import ManagerJourneyService
+        service = object.__new__(ManagerJourneyService)
+        current_due = f.port.read_due(settled['schedule_id'])
+        service.server = SimpleNamespace(state={'assignment_ref': current_due['assignment_ref'],
+            'project_ref': current_due['target']['project_ref'], 'manager': 'manager',
+            'manager_generation': 1, 'schedule_id': current_due['schedule_id'],
+            'manager_continuation': {'schedule_id': old_due['schedule_id']}}, due_port=f.port)
+        service.host = SimpleNamespace(_closing=False)
+        current_before = f.port.read_due(current_due['schedule_id'])
+        selected = service._retain_task_settlement(f.app)
+        self.assertEqual(selected['outcome'], 'already_observed', selected)
+        self.assertEqual(f.port.read_due(current_due['schedule_id']), current_before)
+        self.assertEqual(f.port.read_due(old_due['schedule_id']), old_due)
+        self.assertEqual(len(f.provider.calls), calls)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), before)
         # Unknown historical delivery is not promoted to observed/success.
         read_due = f.port.read_due
         with patch.object(type(f.port), 'read_due', new=lambda port, schedule: (
