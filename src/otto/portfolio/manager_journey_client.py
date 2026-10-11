@@ -17,7 +17,7 @@ def requires_native_caller(command: str) -> bool:
     Owner grants and retained delivery remain their distinct owner entrances.
     File IPC cannot select a manager view in a shared-owner host.
     """
-    return command in {"whoami", "effective-context", "task-list-author", "run-worker",
+    return command in {"whoami", "effective-context", "compact-read", "task-list-author", "run-worker",
                        "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                        "report", "status", "review-input", "review-task", "finish-task", "finish-project",
                        "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
@@ -293,8 +293,14 @@ def command_result_summary(value: Any) -> Any:
             continue
         aliases = original.get("criterion_aliases")
         if isinstance(aliases, dict) and len(aliases) <= 256:
-            target["criterion_aliases"] = {name: ref(item) for name, item in aliases.items()
-                                         if isinstance(name, str) and len(name) <= 256 and ref(item)}
+            mapped = {name: ref(item) for name, item in aliases.items()
+                      if isinstance(name, str) and len(name) <= 256 and ref(item)}
+            if len(mapped) == len(aliases):
+                target["criterion_aliases"] = mapped
+            else:
+                target["criterion_aliases_availability"] = "invalid mapping; inspect retained full response"
+        elif aliases is not None:
+            target["criterion_aliases_availability"] = "over-bound mapping; inspect retained full response"
         schema = original.get("inspection_schema")
         if isinstance(schema, dict) and schema.get("type") == "object" and schema.get("min_properties") == 1:
             target["inspection_schema"] = {"type": "object", "min_properties": 1,
@@ -437,6 +443,12 @@ def add_help_parsers(commands: Any) -> list[Any]:
 
 def add_manager_journey_parsers(commands: Any) -> None:
     """Add intention-shaped operations without copying the existing transport."""
+    from .compact_reads import READS
+    compact = commands.add_parser("compact-read", help="one launched caller's authenticated read with pins/status, not repeated direction prose",
+        description="Uses one existing identity-bearing read and its retained full response. No new owner operation, authority, notification or replay. Full readers remain available; excluded/over-bound fields are explicit.")
+    compact.add_argument("--read", required=True, choices=READS)
+    compact.add_argument("--task", default=argparse.SUPPRESS, help="required only for review-input")
+    compact.add_argument("--delivery-id", default=argparse.SUPPRESS, help="required only for exact read-help; no broad issue scan")
     add_help_parsers(commands)
     lookup = commands.add_parser("lookup-occurrence", help="pure exact historical scope/key read after a lost launch reply")
     lookup.add_argument("--scope", required=True, type=json.loads)

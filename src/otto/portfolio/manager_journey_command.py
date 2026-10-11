@@ -198,8 +198,14 @@ class ManagerJourneyCommands:
     def _review_criteria(self, task_ref: Mapping[str, Any], policy: LocalAssessmentPolicy) -> dict[str, Any]:
         criteria = {criterion for task, criterion in policy.task_criterion_pairs
                     if task.to_dict() == task_ref}
-        return {name: ref for name, ref in self.state["criterion_refs"].items()
-                if ResourceRef.from_dict(ref) in criteria}
+        aliases = {name: ref for name, ref in self.state["criterion_refs"].items()
+                   if ResourceRef.from_dict(ref) in criteria}
+        if (not criteria or {ResourceRef.from_dict(ref) for ref in aliases.values()} != criteria
+                or len(aliases) > 256 or any(not isinstance(name, str) or not name
+                                            or len(name) > 256 for name in aliases)):
+            raise PermissionError("configured criterion alias coverage is incomplete or exceeds the finite read contract; "
+                                  "accountable owner must reconcile the policy mapping before review")
+        return aliases
 
     @staticmethod
     def _inspection_schema() -> dict[str, Any]:

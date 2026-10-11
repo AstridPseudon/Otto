@@ -70,6 +70,21 @@ Recover a timed-out socket command with `command-status` for its exact handle;
 use launch lookup only for a launch. Preserve unresolved bookkeeping once and
 continue independently authorized work; do not create recursive help about help.
 
+When your installed help includes `compact-read`, check current context once:
+`compact-read --read effective-context`. It uses one existing authenticated read
+and preserves actor, assignment/generation, project/task, native occurrence and
+direction pins without repeating direction prose. Do not routinely repeat
+whoami, effective-context and setup after that check. Use
+`compact-read --read review-input --task <alias>` for the current candidate and
+complete criterion mapping, or
+`compact-read --read read-help --delivery-id <exact-id>` for the delivered reply.
+Read `compact-read --read operating-setup` only for an actual setup question.
+Omitted/over-bound fields have explicit availability; the full original response
+is unchanged. Its retained handle leads to `command-status` and the exact detail
+artifact. The compact digest hashes canonical JSON, not original artifact bytes.
+This presentation grants no authority, saves no additional owner effect and
+does not assert improved server query time or a sent notification.
+
 Complete the pack's final review and corrections. Check `finish-project --help`,
 then verify `project_completion_recorded=true`, `settlement_pending=false`,
 lifecycle `completed` and reconciliation `reconciled` via `project-lifecycle-read`.

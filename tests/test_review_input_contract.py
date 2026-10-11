@@ -123,6 +123,21 @@ class ReviewInputContractTests(unittest.TestCase):
         self.assertIn("nonempty JSON object", help_text)
         self.assertIn("not a JSON string", help_text)
 
+    def test_missing_policy_alias_refuses_instead_of_exposing_partial_criteria(self):
+        self.commands.policy = LocalAssessmentPolicy.from_run_config(self.state["assessment_policy"], state=self.state)
+        before = self.f.owner.graph.reader.snapshot_counts()
+        del self.state["criterion_refs"]["C09"]
+        with self.assertRaisesRegex(PermissionError, "alias coverage is incomplete"):
+            self.commands.review_input("PA01")
+        with self.assertRaisesRegex(PermissionError, "alias coverage is incomplete"):
+            self.commands.review_task(self.request("missing-policy-alias"))
+        self.assertEqual(self.f.owner.graph.reader.snapshot_counts(), before)
+        aliases = {str(i): self.observation.ref.to_dict() for i in range(80)}
+        self.assertEqual(command_result_summary({"criterion_aliases": aliases})["criterion_aliases"], aliases)
+        broken = command_result_summary({"criterion_aliases": {"C01": {}}})
+        self.assertNotIn("criterion_aliases", broken)
+        self.assertIn("criterion_aliases_availability", broken)
+
 
 if __name__ == "__main__":
     unittest.main()

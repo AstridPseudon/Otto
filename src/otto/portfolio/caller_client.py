@@ -79,6 +79,11 @@ def call_connection(connection: socket.socket, request: dict) -> dict:
 def call(path: str, request: dict, *, timeout: Optional[float] = None) -> dict:
     if not Path(path).is_absolute() or not isinstance(request, dict):
         raise ValueError("absolute installed socket and command object required")
+    compact_operation = None
+    if request.get("command") == "compact-read":
+        from .compact_reads import compact_read_request
+        request = compact_read_request(request)
+        compact_operation = request["command"]
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(_timeout_for(request, timeout))
         try:
@@ -87,7 +92,11 @@ def call(path: str, request: dict, *, timeout: Optional[float] = None) -> dict:
             return {"outcome": "unavailable", "retry": False,
                     "error": {"kind": "transport", "code": type(exc).__name__, "message": str(exc)},
                     "next_action": "restore the supported owner connection; no command was sent"}
-        return call_connection(connection, request)
+        result = call_connection(connection, request)
+        if compact_operation is not None:
+            from .compact_reads import compact_read_response
+            return compact_read_response(result, operation=compact_operation)
+        return result
 
 
 def main():
