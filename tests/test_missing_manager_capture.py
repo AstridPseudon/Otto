@@ -173,8 +173,13 @@ class MissingManagerCaptureTests(unittest.TestCase):
             'assignment_ref':due.assignment_ref,'manager_generation':1,'project_ref':f.project.ref.to_dict(),
             'task_refs':{'T1':f.task.ref.to_dict()},'schedule_id':due.schedule_id,
             'requested_model':'gpt-test','requested_reasoning':'high'}
+        state_path = root / "joined-state.json"
+        def save_state():
+            from otto.portfolio.execution_host import _atomic_json
+            _atomic_json(state_path, server.state)
         server=SimpleNamespace(owner=f.owner,portfolio=portfolio,state=state,due_port=f.port,
-            _execution=lambda **_:f.app,_save_state=lambda:None,handle=lambda r:{'outcome':'unsupported'})
+            _execution=lambda **_:f.app,_save_state=save_state,handle=lambda r:{'outcome':'unsupported'})
+        save_state()
         host=ExecutionHost(directory=root/'joined-ipc',handler=server.handle);server.execution_host=host;host._closing=True
         service=install_manager_journey_service(server,run_path=str(root),workspace=str(root),
             orchestrator_principal='root',help_reply_authorizer=lambda _:f.binding.authenticated_actor('root'))
@@ -206,6 +211,71 @@ class MissingManagerCaptureTests(unittest.TestCase):
         self.assertEqual(current.last_result['physical_session_id'],due.last_result['physical_session_id'])
         self.assertIn(new['report_ref']['id'],current.message)
         self.assertEqual(current.host_evidence['help_continuation']['report_ref'],new['report_ref'])
+        # Reopen from durable state and redeliver the exact original request.
+        # Canonical Due/outcome is retained; this does not submit another turn.
+        server.state = json.loads(state_path.read_text())
+        reopened = install_manager_journey_service(server, run_path=str(root), workspace=str(root),
+            orchestrator_principal='root', help_reply_authorizer=lambda _:f.binding.authenticated_actor('root'))
+        count = len((root/'submitted.jsonl').read_text().splitlines())
+        replay = reopened({'command':'manager-help-result','principal':'manager','generation':1,
+            'schedule_id':old['schedule_id'],'report_ref':new['report_ref']})
+        self.assertEqual(replay['outcome'], 'replayed')
+        self.assertEqual(len((root/'submitted.jsonl').read_text().splitlines()), count)
+        self.assertEqual(f.port.read_due('fresh-manager'), original)
+
+    def test_shared_anchor_classification_keeps_abort_help_only_and_unknown_held(self):
+        from dataclasses import replace
+        from herzchen.contracts import ResourceRef
+        f, root, claim = self.claimed()
+        trace = root/'native.jsonl'
+        trace.write_text(trace.read_text().replace('task_complete', 'turn_aborted'))
+        f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
+            expected_claim_sha256=fixture.digest(claim))
+        self.assertEqual(f.app.recover(schedule_id='fresh-manager', execute=False)['outcome'], 'failed')
+        aborted = f.app._read('fresh-manager')
+        current = f.app.assignments.get(ResourceRef.from_dict(aborted.assignment_ref))
+        before = f.port.read_due('fresh-manager')
+        for purpose, accept_abort in (('help continuation', True),
+                                     ('worker-result continuation', False),
+                                     ('task-settlement continuation', False)):
+            with self.subTest(purpose=purpose):
+                anchor, superseded, blocked = f.app._manager_anchor(aborted, current,
+                    schedule='new-callback', purpose=purpose, accept_aborted=accept_abort)
+                self.assertIsNone(superseded)
+                self.assertEqual(anchor, aborted)
+                self.assertEqual(blocked is None, accept_abort)
+                if blocked is not None:
+                    self.assertEqual(blocked['outcome'], 'held')
+                    self.assertEqual(blocked['schedule_id'], aborted.schedule_id)
+                    self.assertFalse(blocked['provider_called'])
+                unknown = replace(aborted, completion_state='unknown')
+                _, _, blocked = f.app._manager_anchor(unknown, current,
+                    schedule='new-callback', purpose=purpose, accept_aborted=accept_abort)
+                self.assertEqual(blocked['outcome'], 'held')
+        self.assertEqual(f.port.read_due('fresh-manager'), before)
+
+    def test_delayed_completion_cannot_overwrite_newer_durable_head(self):
+        from types import SimpleNamespace
+        from otto.portfolio.manager_journey_service import advance_manager_head, complete_manager_head
+        from otto.portfolio.owner_completion import OwnerCompletion, after_owner
+        from otto.portfolio.execution_host import _atomic_json
+        f, root, _ = self.claimed()
+        path = root/'head-state.json'
+        state = {'schedule_id':'old', 'manager_continuation':{'schedule_id':'old','outcome':'prepared'}}
+        pending = OwnerCompletion()
+        callback = after_owner(pending, lambda result: complete_manager_head(state, schedule_id='old', result=result))
+        newer = SimpleNamespace(schedule_id='new', target={'native_id':fixture.SESSION})
+        self.assertTrue(advance_manager_head(state, expected='old', due=newer, settled_anchor='old'))
+        _atomic_json(path, state)
+        state.clear(); state.update(json.loads(path.read_text()))
+        before = copy.deepcopy(state)
+        pending.resolve({'outcome':'succeeded', 'schedule_id':'old', 'provider_called':True})
+        self.assertFalse(callback.value)
+        self.assertEqual(state, before)
+        self.assertFalse(advance_manager_head(state, expected='old', due=newer, settled_anchor='old'))
+        self.assertTrue(complete_manager_head(state, schedule_id='new', result={'outcome':'succeeded'}))
+        _atomic_json(path, state)
+        self.assertEqual(json.loads(path.read_text())['manager_continuation']['outcome'], 'succeeded')
 
     def test_missing_foreign_changed_and_active_evidence_stays_held(self):
         for mode in ('claim_digest', 'missing_terminal', 'active_turn', 'wrong_model',

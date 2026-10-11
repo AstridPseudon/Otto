@@ -469,47 +469,23 @@ class Tests(unittest.TestCase):
         self.assertEqual(f.provider.calls, [])
 
     def test_settled_manager_builds_same_session_callback(self):
-        prior = type("ManagerDue", (), {
-            "stop_state": "completed", "completion_state": "succeeded",
-            "in_flight_request": None, "delivery_state": "returned",
-            "target": {"native_id": "session", "assignment_ref": BASE},
-            "last_result": {"physical_session_id": "session"},
-        })()
-        # dataclasses.replace is the production mechanism; use a real flexible
-        # dataclass in this focused fixture.
-        @dataclass(frozen=True)
-        class ManagerDue:
-            schedule_id: str = "old"
-            instruction: str = "old"
-            anchor: str = "old"
-            due_at: str = "old"
-            last_covered_slot: int = 1
-            invocation_identity: str = "old"
-            in_flight_request: str | None = None
-            delivery_state: str = "returned"
-            assignment_ref: dict | None = None
-            target: dict | None = None
-            purpose: str = "old"
-            host_state: str = "active"
-            execution_mode: str = "continue_existing"
-            context_refs: tuple = ()
-            timeout_seconds: int = 1
-            stop_state: str = "completed"
-            last_completed_request: str | None = "old"
-            last_result: dict | None = None
-            delivered_at: str | None = "old"
-            delivery_evidence: dict | None = None
-            completed_at: str | None = "old"
-            completion_state: str = "succeeded"
-            completion_evidence: dict | None = None
-            host_evidence: dict | None = None
-            def to_dict(self):
-                from dataclasses import asdict
-                return asdict(self)
-        prior = ManagerDue(target={"native_id": "session"}, last_result={"physical_session_id": "session"})
+        project = {"authority":"owner","kind":"work.project","id":"p","revision":"rev-1"}
+        task = {"authority":"owner","kind":"work.task","id":"t","revision":"rev-1"}
+        mandate = {"authority":"owner","kind":"dat.content.document","id":"m","revision":"rev-1"}
+        guide = {**mandate,"id":"g"}
+        prior = DueRecord(schedule_id="old", recipient="manager", instruction="Inspect task",
+            profile="workspace-write", anchor="2026-10-03T00:00:00Z",due_at="2026-10-03T00:00:00Z",
+            last_covered_slot=1,invocation_identity="old", project_ref="p",manager_ref="owner",
+            assignment_ref=BASE,generation=1,role="manager",lifecycle_owner="owner",
+            target={"host":"local","project_ref":project,"task_ref":task,"assignment_ref":BASE,
+                "mandate_ref":mandate,"native_id":"session","role":"manager","principal":"manager",
+                "requested_model":"gpt-test","requested_reasoning":"high","requested_profile":"workspace-write"},
+            execution_mode="continue_existing",requested_model="gpt-test",requested_reasoning="high",
+            context_refs=(guide,mandate),timeout_seconds=1200,stop_state="completed",completion_state="succeeded",
+            delivery_state="returned",last_result={"physical_session_id":"session"})
         result = build_manager_callback_due(
             prior, schedule_id="next", request_key="callback-v1", assignment_ref=REF,
-            guide_ref={"id": "guide"}, mandate_ref={"id": "mandate"},
+            guide_ref=guide, mandate_ref=mandate,
             due_at="2026-10-03T00:00:00Z", timeout_seconds=1200,
         )
         self.assertEqual(result.schedule_id, "next")

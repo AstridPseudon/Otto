@@ -1156,6 +1156,91 @@ class ExecutionHost:
         response.unlink()
         return {**receipt, "replayed": False}
 
+    def rearm_pre_effect_worker_start(self, request: Mapping[str, Any], *,
+                                     application: Any, expected_response_sha256: str) -> Mapping[str, Any]:
+        """Closed owner resumes the same unattempted worker after selector reconciliation.
+
+        A failed control command is not itself no-effect proof. Both the exact
+        validation failure and the current canonical occurrence must agree.
+        The original response and its status stay immutable in history; neither
+        a native attempt nor an allowance is reset by this transport recovery.
+        """
+        from herzchen.contracts import ResourceRef
+        if (not isinstance(expected_response_sha256, str) or len(expected_response_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in expected_response_sha256)):
+            raise ValueError("exact historical response digest required")
+        if self._threads or self._children or self._active_files:
+            raise RuntimeError("close the owner before retained start recovery")
+        if self.owner_path.exists():
+            try:
+                os.kill(int(json.loads(self.owner_path.read_text())["pid"]), 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise RuntimeError("another live owner holds this start")
+        if (set(request) != {"command", "task", "principal", "schedule_id"}
+                or request.get("command") != "start-retained-worker"):
+            raise ValueError("exact retained worker start required")
+        due = application._read(request["schedule_id"])
+        if (due.role != "worker" or due.recipient != request["principal"]
+                or due.lifecycle_owner != application.actor or due.manager_ref != application.actor
+                or due.stop_state != "active" or due.completion_state != "none"
+                or (due.host_evidence or {}).get("gateway_attempt") or due.last_result is not None):
+            raise PermissionError("only the same owner-bound unattempted worker may recover")
+        current = application.assignments.get(ResourceRef.from_dict(due.assignment_ref))
+        if current.ref.to_dict() != due.assignment_ref or current.generation != due.generation:
+            raise PermissionError("worker assignment changed before recovery")
+        ready = application.recover(schedule_id=due.schedule_id, execute=False)
+        if ready.get("outcome") != "prepared":
+            raise ValueError("retained worker requires canonical preparation reconciliation")
+        token = hashlib.sha256(json.dumps(json_value(request), sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        response = self.directory / ("response-" + token + ".json")
+        history = self.directory / ("reconciled-start-response-" + token + "-" + expected_response_sha256 + ".json")
+        receipt_path = self.directory / ("start-reconciliation-" + token + ".json")
+        receipt = {"schema": "otto.pre-effect-worker-start-reconciliation.v1",
+            "retained_handle": token, "request": dict(request),
+            "assignment_ref": due.assignment_ref, "generation": due.generation,
+            "source_response_sha256": expected_response_sha256,
+            "source_response_path": str(history), "provider_called": False,
+            "effect": "same_unattempted_worker_start_rearmed_after_canonical_reconciliation"}
+        if receipt_path.exists():
+            if json.loads(receipt_path.read_text()) != receipt or hashlib.sha256(history.read_bytes()).hexdigest() != expected_response_sha256:
+                raise ValueError("retained start reconciliation differs")
+            path = self.directory / ("request-" + token + ".json")
+            if response.exists() and hashlib.sha256(response.read_bytes()).hexdigest() == expected_response_sha256:
+                _atomic_json(path, dict(request)); response.unlink()
+            elif not response.exists() and not path.exists():
+                _atomic_json(path, dict(request))
+            return {**receipt, "replayed": True}
+        raw = response.read_bytes()
+        failure = json.loads(raw)
+        if (hashlib.sha256(raw).hexdigest() != expected_response_sha256
+                or failure.get("correlation_id") != token
+                or failure.get("outcome") != "error"
+                or failure.get("error") != "OccurrencePreparationError"
+                or failure.get("message") != "manual selector predecessor effects require reconciliation"):
+            raise ValueError("exact pre-start selector rejection required")
+        if history.exists() and history.read_bytes() != raw:
+            raise ValueError("historical start response differs")
+        if not history.exists():
+            fd = os.open(history, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        status = self.directory / ("status-response-" + token + ".json")
+        if status.exists():
+            status_history = self.directory / ("reconciled-start-status-" + token + ".json")
+            if status_history.exists() and status_history.read_bytes() != status.read_bytes():
+                raise ValueError("historical start status differs")
+            if not status_history.exists():
+                fd = os.open(status_history, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(status.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+        _atomic_json(receipt_path, receipt)
+        _atomic_json(self.directory / ("request-" + token + ".json"), dict(request))
+        response.unlink()
+        return {**receipt, "replayed": False}
+
     def retain(self, *, name: str, operation: Callable[[], Any],
                _admitted_execution: Any = None) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""

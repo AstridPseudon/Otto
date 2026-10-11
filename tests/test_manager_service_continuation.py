@@ -72,6 +72,14 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         old = f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=True)
         self.assertEqual(old['outcome'], 'succeeded', old)
         old_due = f.port.read_due(old['schedule_id'])
+        # Revisit the exact already-created callback before any resource
+        # adoption. Recovery must not reference help-only variables or submit
+        # another native turn/debit for the same completed-task notification.
+        calls_after = len(f.provider.calls)
+        same = f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=True)
+        self.assertEqual(same['outcome'], 'replayed', same)
+        self.assertEqual(f.port.read_due(old['schedule_id']), old_due)
+        self.assertEqual(len(f.provider.calls), calls_after)
         base = f.app.assignments.get(ResourceRef.from_dict(prior.assignment_ref))
         content = f.owner.content.read(ResourceRef.from_dict(guide))['content']
         current = f.app.assignments.adopt_resources(base.ref,

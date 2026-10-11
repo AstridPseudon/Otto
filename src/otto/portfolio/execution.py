@@ -1460,10 +1460,10 @@ class ExecutionApplication:
                 host_evidence={**(prior.host_evidence or {}), "worker_result_continuation": evidence}).to_dict(),
                 request_id=key + ":deliver-worker-result", expected_version=prior.version)
             return self.recover(schedule_id=prior.schedule_id, execute=execute)
-        if ((prior.stop_state != "completed" or prior.completion_state != "succeeded"
-                or prior.in_flight_request is not None) and prior.schedule_id != schedule):
-            return {"outcome": "pending", "provider_called": False, "effects_started": False,
-                    "reason": "manager must settle before worker-result continuation", "retry": False}
+        prior, _, blocked = self._manager_anchor(prior, current, schedule=schedule,
+            purpose="worker-result continuation")
+        if blocked is not None:
+            return blocked
         if existing is not None:
             if (existing.get("host_evidence") or {}).get("worker_result_continuation") != evidence:
                 raise OccurrencePreparationError("retained worker-result continuation evidence differs")
@@ -1490,6 +1490,72 @@ class ExecutionApplication:
             reconciled = self._resources(self._read(schedule))
             prepared = {**prepared, "due_version": reconciled.version}
         return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared
+
+    def _manager_anchor(self, prior: DueRecord, current: Any, *, schedule: str,
+                        purpose: str, accept_aborted: bool = False,
+                        supersede_prepared: bool = False,
+                        reports: list[Mapping[str, Any]] | None = None):
+        """Classify one current occurrence; only help may use a proven abort.
+
+        An unattempted help callback requires its exact retained report and
+        independently settled native anchor. Worker delivery keeps its existing
+        merge-before-start entrance instead of superseding that preparation.
+        """
+        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        superseded = None
+        reports = reports or []
+        old_help = (prior.host_evidence or {}).get("help_continuation")
+        if (supersede_prepared and prior.schedule_id != schedule and isinstance(old_help, Mapping)
+                and not (prior.host_evidence or {}).get("gateway_attempt")
+                and prior.completion_state == "none"):
+            # A prepared callback has no returned turn to wait for. A newer
+            # authenticated response can use the actual settled admission;
+            # it cannot treat this unattempted callback as native evidence.
+            old_report = next((r for r in reports if r.get("ref") == old_help.get("report_ref")), None)
+            old_value = old_report.get("value") if old_report else None
+            old_key = "help-result:" + _digest([current.ref.id, current.generation, old_help.get("report_ref")])
+            pin = prior.target.get("native_binding")
+            if (prior.schedule_id != "manager-help-callback-" + _digest(old_key)[:28]
+                    or not isinstance(old_value, Mapping) or _digest(old_value) != old_help.get("report_sha256")
+                    or old_help.get("manager_assignment_ref") != current.ref.to_dict()
+                    or old_help.get("manager_generation") != current.generation
+                    or not isinstance(pin, Mapping) or set(pin) != {"schedule_id", "due_sha256"}
+                    or pin["schedule_id"] == prior.schedule_id
+                    or prior.stop_state not in {"active", "stopped"}):
+                raise OccurrencePreparationError("prepared help predecessor is not an exact retained callback")
+            anchor = self._read(pin["schedule_id"])
+            if (any(getattr(prior, k) != getattr(anchor, k) for k in
+                    ("generation", "role", "recipient", "manager_ref", "lifecycle_owner"))
+                    or _identity(prior.assignment_ref) != _identity(anchor.assignment_ref)
+                    or any(_identity(prior.target[k]) != _identity(anchor.target[k]) for k in ("project_ref", "task_ref"))
+                    or prior.target.get("native_id") != (anchor.last_result or {}).get("physical_session_id")
+                    or anchor.target.get("native_id") not in {None, prior.target.get("native_id")}
+                    or anchor.stop_state != "completed" or anchor.in_flight_request is not None
+                    or (anchor.completion_state != "succeeded" and not (accept_aborted and retained_aborted_manager_capture(anchor, self.actor)))):
+                raise OccurrencePreparationError("prepared help predecessor has no exact settled native anchor")
+            self._verify_native_binding(current, prior.target["native_id"], anchor.schedule_id)
+            superseded = prior
+            # The old hash remains historical. The new callback obtains a NEW
+            # exact hash of independently verified current terminal evidence.
+            # No stale prepared binding is refreshed or used to launch.
+            prior = anchor
+            manager_schedule_id = anchor.schedule_id
+        failed_terminal = accept_aborted and retained_aborted_manager_capture(prior, self.actor)
+        if (prior.completion_state == "unknown" or
+                (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
+                or prior.stop_state == "completed" and prior.completion_state != "succeeded" and not failed_terminal):
+            return prior, superseded, {"outcome": "held", "provider_called": False,
+                "effects_started": False, "stage": "manager-anchor", "schedule_id": prior.schedule_id,
+                "generation": prior.generation, "reason": "reconcile the retained manager effect before " + purpose,
+                "next_action": "reconcile this exact retained occurrence; do not replay", "retry": False}
+        if (prior.schedule_id != schedule and (prior.stop_state != "completed"
+                or (prior.completion_state != "succeeded" and not failed_terminal)
+                or prior.in_flight_request is not None)):
+            return prior, superseded, {"outcome": "pending", "provider_called": False,
+                "effects_started": False, "stage": "manager-anchor", "schedule_id": prior.schedule_id,
+                "generation": prior.generation, "reason": "manager must settle before " + purpose,
+                "next_action": "return from the current turn; preserve its exact occurrence", "retry": False}
+        return prior, superseded, None
 
     def _supersede_unattempted_help(self, old: DueRecord, anchor: DueRecord,
                                    schedule: str, report_ref: Mapping[str, Any]) -> None:
@@ -1553,64 +1619,19 @@ class ExecutionApplication:
                     "manager_generation": current.generation}
         key = "help-result:" + _digest([current.ref.id, current.generation, report_ref])
         schedule = "manager-help-callback-" + _digest(key)[:28]
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
-        superseded = None
-        old_help = (prior.host_evidence or {}).get("help_continuation")
-        if (prior.schedule_id != schedule and isinstance(old_help, Mapping)
-                and not (prior.host_evidence or {}).get("gateway_attempt")
-                and prior.completion_state == "none"):
-            # A prepared callback has no returned turn to wait for. A newer
-            # authenticated response can use the actual settled admission;
-            # it cannot treat this unattempted callback as native evidence.
-            old_report = next((r for r in reports if r.get("ref") == old_help.get("report_ref")), None)
-            old_value = old_report.get("value") if old_report else None
-            old_key = "help-result:" + _digest([current.ref.id, current.generation, old_help.get("report_ref")])
-            pin = prior.target.get("native_binding")
-            if (prior.schedule_id != "manager-help-callback-" + _digest(old_key)[:28]
-                    or not isinstance(old_value, Mapping) or _digest(old_value) != old_help.get("report_sha256")
-                    or old_help.get("manager_assignment_ref") != current.ref.to_dict()
-                    or old_help.get("manager_generation") != current.generation
-                    or not isinstance(pin, Mapping) or set(pin) != {"schedule_id", "due_sha256"}
-                    or pin["schedule_id"] == prior.schedule_id
-                    or prior.stop_state not in {"active", "stopped"}):
-                raise OccurrencePreparationError("prepared help predecessor is not an exact retained callback")
-            anchor = self._read(pin["schedule_id"])
-            if (any(getattr(prior, k) != getattr(anchor, k) for k in
-                    ("generation", "role", "recipient", "manager_ref", "lifecycle_owner"))
-                    or _identity(prior.assignment_ref) != _identity(anchor.assignment_ref)
-                    or any(_identity(prior.target[k]) != _identity(anchor.target[k]) for k in ("project_ref", "task_ref"))
-                    or prior.target.get("native_id") != (anchor.last_result or {}).get("physical_session_id")
-                    or anchor.target.get("native_id") not in {None, prior.target.get("native_id")}
-                    or anchor.stop_state != "completed" or anchor.in_flight_request is not None
-                    or (anchor.completion_state != "succeeded" and not retained_aborted_manager_capture(anchor, self.actor))):
-                raise OccurrencePreparationError("prepared help predecessor has no exact settled native anchor")
-            self._verify_native_binding(current, prior.target["native_id"], anchor.schedule_id)
-            superseded = prior
-            # The old hash remains historical. The new callback obtains a NEW
-            # exact hash of independently verified current terminal evidence.
-            # No stale prepared binding is refreshed or used to launch.
-            prior = anchor
-            manager_schedule_id = anchor.schedule_id
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
-        failed_terminal = retained_aborted_manager_capture(prior, self.actor)
-        if (prior.completion_state == "unknown" or
-                (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
-                or prior.stop_state == "completed" and prior.completion_state != "succeeded" and not failed_terminal):
-            return {"outcome": "held", "provider_called": False, "effects_started": False,
-                    "reason": "reconcile the retained manager effect before help continuation", "retry": False}
+        prior, superseded, blocked = self._manager_anchor(prior, current, schedule=schedule,
+            purpose="help continuation", accept_aborted=True, supersede_prepared=True, reports=reports)
+        if blocked is not None:
+            return blocked
+        manager_schedule_id = prior.schedule_id
         existing = self.due_port.read_due(schedule)
         if existing is not None:
             if ((existing.get("host_evidence") or {}).get("help_continuation") != evidence
                     or existing["target"].get("native_id") != prior.target.get("native_id")):
                 raise OccurrencePreparationError("retained help continuation binding differs")
-            if prior.schedule_id != schedule and prior.stop_state != "completed":
-                return {"outcome": "pending", "provider_called": False, "effects_started": False, "retry": False}
             if superseded is not None:
                 self._supersede_unattempted_help(superseded, prior, schedule, report_ref)
             return self.recover(schedule_id=schedule, execute=execute)
-        if prior.stop_state != "completed" or (prior.completion_state != "succeeded" and not failed_terminal) or prior.in_flight_request is not None:
-            return {"outcome": "pending", "provider_called": False, "effects_started": False,
-                    "reason": "manager must settle before help continuation", "retry": False}
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
@@ -1699,11 +1720,14 @@ class ExecutionApplication:
                     "acceptance": "recorded task completion; authentic evidence and project closeout remain manager responsibilities"}
         key = "task-settlement:" + _digest([current.ref.id, current.generation, evidence])
         schedule = "manager-finish-callback-" + _digest(key)[:28]
-        if (prior.completion_state == "unknown" or
-                (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"
-                or prior.stop_state == "completed" and prior.completion_state != "succeeded"):
-            return {"outcome": "held", "provider_called": False, "effects_started": False,
-                    "reason": "reconcile the retained manager effect before task-settlement continuation", "retry": False}
+        reports = None
+        if (prior.host_evidence or {}).get("help_continuation") is not None:
+            reports = self.portfolio._issue_loop()._issue_reports(prior.target["project_ref"])
+        prior, superseded, blocked = self._manager_anchor(prior, current, schedule=schedule,
+            purpose="task-settlement continuation", supersede_prepared=True, reports=reports)
+        if blocked is not None:
+            return blocked
+        manager_schedule_id = prior.schedule_id
         existing = self.due_port.read_due(schedule)
         if existing is not None:
             # The completed-task set is deliberately stable across resource
@@ -1727,12 +1751,7 @@ class ExecutionApplication:
                     or existing.get("generation") != current.generation
                     or existing["target"].get("native_id") != prior.target.get("native_id")):
                 raise OccurrencePreparationError("retained task-settlement continuation binding differs")
-            if superseded is not None:
-                self._supersede_unattempted_help(superseded, prior, schedule, report_ref)
             return self.recover(schedule_id=schedule, execute=execute)
-        if prior.stop_state != "completed" or prior.completion_state != "succeeded" or prior.in_flight_request is not None:
-            return {"outcome": "pending", "provider_called": False, "effects_started": False,
-                    "reason": "manager must settle before task-settlement continuation", "retry": False}
         guide = next(ref for ref in prior.context_refs if ref != prior.target["mandate_ref"])
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=key,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target["mandate_ref"],
@@ -1755,6 +1774,10 @@ class ExecutionApplication:
         if prepared["outcome"] == "committed":
             reconciled = self._resources(self._read(schedule))
             prepared = {**prepared, "due_version": reconciled.version}
+        if superseded is not None and prepared.get("outcome") in {"committed", "prepared", "replayed"}:
+            self._supersede_unattempted_help(superseded, prior, schedule,
+                superseded.host_evidence["help_continuation"]["report_ref"])
+            prepared = {**prepared, "superseded_unattempted_schedule_id": superseded.schedule_id}
         return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared
 
     def continue_manager(self, *, schedule_id: str, execute: bool = True,

@@ -19,6 +19,35 @@ from .owner_completion import after_owner
 
 _CALLER = ContextVar("otto_trusted_command_caller", default=None)
 
+def manager_head(state: Mapping[str, Any]) -> str | None:
+    return (state.get("manager_continuation") or {}).get("schedule_id") or state.get("schedule_id")
+
+
+def advance_manager_head(state: dict[str, Any], *, expected: str, due: Any,
+                         settled_anchor: str) -> bool:
+    """Advance the pointer only from the head used to prepare this occurrence."""
+    if manager_head(state) != expected:
+        return False
+    state["manager_continuation"] = {"schedule_id": due.schedule_id,
+        "native_session_id": due.target.get("native_id"), "outcome": "prepared",
+        "requested_continuation": {"settled_schedule_id": settled_anchor}}
+    return True
+
+
+def complete_manager_head(state: dict[str, Any], *, schedule_id: str,
+                          result: Mapping[str, Any]) -> bool:
+    """A completion describes its own Due; it cannot stamp a newer head."""
+    if manager_head(state) != schedule_id:
+        return False
+    head = dict(state.get("manager_continuation") or {})
+    head.update(schedule_id=schedule_id, outcome=result["outcome"])
+    head["operational_disposition"] = {k: json_value(result[k]) for k in
+        ("stage", "error", "reason", "next_action", "effects_started", "provider_called",
+         "superseded_unattempted_schedule_id") if k in result}
+    state["manager_continuation"] = head
+    return True
+
+
 def _run_config_name(run_path: Path) -> str:
     from .run_config import run_config_path
     return run_config_path(run_path).name
@@ -535,7 +564,7 @@ class ManagerJourneyService:
             original = app._read(request["schedule_id"])
             if original.assignment_ref["id"] != state["assignment_ref"]["id"] or original.generation != request["generation"]:
                 raise PermissionError("help continuation anchor is stale or foreign")
-            current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
+            current_id = self._current_manager_schedule()
             prepared = app.continue_manager_from_help(manager_schedule_id=current_id,
                 report_ref=request["report_ref"], execute=False)
             if prepared.get("outcome") not in {"committed", "prepared", "replayed"}:
@@ -543,17 +572,14 @@ class ManagerJourneyService:
             if prepared["outcome"] == "replayed":
                 return prepared  # An old reply never replaces the current manager handle.
             due = app._read(prepared["schedule_id"])
-            state["manager_continuation"] = {"schedule_id": due.schedule_id,
-                "native_session_id": due.target["native_id"], "outcome": "prepared",
-                "requested_continuation": {"settled_schedule_id": current_id}}
+            if not advance_manager_head(state, expected=current_id, due=due, settled_anchor=current_id):
+                return {**prepared, "outcome": "held", "reason": "manager head advanced after preparation",
+                        "provider_called": False, "effects_started": False, "retry": False}
             self.server._save_state()
             result = app.recover(schedule_id=due.schedule_id, execute=True)
             def complete(result):
-                state["manager_continuation"]["outcome"] = result["outcome"]
-                state["manager_continuation"]["operational_disposition"] = {
-                    k: json_value(result[k]) for k in ("stage", "error", "reason", "next_action",
-                        "effects_started", "provider_called", "superseded_unattempted_schedule_id") if k in result}
-                self.server._save_state()
+                if complete_manager_head(state, schedule_id=due.schedule_id, result=result):
+                    self.server._save_state()
                 result = self._finalize_manager_completion(result, app=app)
                 return result
             return after_owner(result, complete)
@@ -598,8 +624,8 @@ class ManagerJourneyService:
             result = app.recover(schedule_id=due.schedule_id, execute=True)
             def complete(result):
                 if result.get("outcome") in {"succeeded", "replayed"}:
-                    state["manager_continuation"].update(outcome=result["outcome"],
-                        requested_continuation={"settled_schedule_id": due.schedule_id})
+                    if complete_manager_head(state, schedule_id=due.schedule_id, result=result):
+                        self.server._save_state()
                     result = self._finalize_manager_completion(result, app=app)
                 return result
             return after_owner(result, complete)
@@ -622,9 +648,10 @@ class ManagerJourneyService:
                 worker_schedule_id=worker["schedule_id"], execute=True)
             def complete(result):
                 if result.get("outcome") in {"succeeded", "replayed"}:
-                    state["manager_continuation"] = {"schedule_id": result["schedule_id"],
-                        "native_session_id": app._read(result["schedule_id"]).target["native_id"],
-                        "outcome": result["outcome"], "requested_continuation": {"settled_schedule_id": result["schedule_id"]}}
+                    if advance_manager_head(state, expected=current_id,
+                            due=app._read(result["schedule_id"]), settled_anchor=current_id):
+                        complete_manager_head(state, schedule_id=result["schedule_id"], result=result)
+                        self.server._save_state()
                     result = self._finalize_manager_completion(result, app=app)
                 return result
             return after_owner(result, complete)
@@ -1270,10 +1297,11 @@ class ManagerJourneyService:
         if prepared.get("outcome") not in {"committed", "prepared"}:
             return prepared
         due = app._read(prepared["schedule_id"])
+        if not advance_manager_head(state, expected=anchor, due=due, settled_anchor=anchor):
+            return {**prepared, "outcome": "held", "reason": "manager head advanced after preparation",
+                    "provider_called": False, "effects_started": False, "retry": False}
         state.update(schedule_id=due.schedule_id, logical_request_key=due.in_flight_request,
-            manager_start_instruction=due.instruction,
-            manager_continuation={"schedule_id": due.schedule_id, "native_session_id": due.target["native_id"],
-                "outcome": "prepared", "requested_continuation": {"settled_schedule_id": anchor}})
+            manager_start_instruction=due.instruction)
         self.server._save_state()
         try:
             return self.host.submit({"command": "manager-task-settlement", "principal": state["manager"],

@@ -318,10 +318,16 @@ class HostOwnerService:
         setup = read_setup(self.portfolio.operations, self.state["project_ref"])
         if setup is None or setup["roles"].get("manager") != request["schedule_id"]:
             raise PermissionError("start-manager requires the adopted operating setup's manager occurrence")
-        self.state["schedule_id"] = request["schedule_id"]
-        self._save_state()
+        from otto.portfolio.manager_journey_service import manager_head, advance_manager_head, complete_manager_head
+        expected_head = manager_head(self.state)
         app = self._execution(principal=self.state["manager"], model=self.state["requested_model"],
                               reasoning=self.state["requested_reasoning"], evidence_id="manager-initial")
+        if not advance_manager_head(self.state, expected=expected_head,
+                due=app._read(request["schedule_id"]), settled_anchor=expected_head):
+            return {"outcome": "held", "reason": "manager head advanced before start",
+                    "provider_called": False, "effects_started": False, "retry": False}
+        self.state["schedule_id"] = request["schedule_id"]
+        self._save_state()
         result = app.start(schedule_id=request["schedule_id"])
         due = self.due_port.read_due(request["schedule_id"]) or {}
         attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
@@ -329,8 +335,11 @@ class HostOwnerService:
         self.state["manager_launch"] = {"outcome": result.get("outcome"), "physical_session_id": session,
                                         "completion_state": due.get("completion_state")}
         if due.get("completion_state") == "succeeded" and isinstance(session, str):
-            self.state["manager_continuation"] = {"schedule_id": due["schedule_id"], "native_session_id": session,
-                                                  "outcome": "succeeded"}
+            current = app._read(due["schedule_id"])
+            # The original invocation can settle after another retained head
+            # has been selected. Preserve its result without moving that head.
+            if complete_manager_head(self.state, schedule_id=due["schedule_id"], result=result):
+                self.state["manager_continuation"]["native_session_id"] = session
         self._save_state()
         return result
 
