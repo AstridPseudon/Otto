@@ -486,3 +486,96 @@ def permits_preinitialization_role(execution,*,schedule_id,assignment,project_re
         and project_ref==scope['project_ref']and task_ref==scope['task_ref']and assignment.session is None,
         'recovery delivery is outside exact original role/project/task/generation')
     return {'original_schedule_id':schedule_id,'disposition_ref':old.host_evidence['role_preinitialization_custody_release']['disposition_ref'],'fresh_request_key':request_key,'original_result_sha256':scope['result_sha256']}
+
+
+def retained_stopped_writer_conflict_release(execution, due):
+    """Release this failed CLI's capacity, never the external writer's custody.
+
+    A stop alone does not qualify. Exact terminal pre-session persistence
+    failure plus authenticated original delivery proves this process started
+    no turn. Current normal admission must still test the native writer lock.
+    """
+    _require(due.stop_state == 'stopped' and due.in_flight_request is None
+        and due.completion_state in {'none', 'unknown'} and due.role == 'manager'
+        and execution.actor == due.lifecycle_owner == due.owner == due.manager_ref,
+        'exact lifecycle-owner stopped manager required')
+    current = execution.assignments.get(ResourceRef.from_dict(due.assignment_ref))
+    _require(current.role == 'manager' and current.principal == due.recipient
+        and current.generation == due.generation, 'current manager identity differs')
+    execution._current(current.ref.to_dict(), due.generation)
+    if current.ref.to_dict() != due.assignment_ref:
+        from .operating_setup import authenticated_adoption_ancestor
+        _require(authenticated_adoption_ancestor({'ref': current.ref.to_dict(),
+            'principal': current.principal, 'role': current.role,
+            'generation': current.generation, 'payload': current.payload},
+            due.assignment_ref, execution.portfolio.operations._owner_reader),
+            'historical failure requires consecutive authenticated resource adoptions')
+    attempt = (due.host_evidence or {}).get('gateway_attempt') or {}
+    result = attempt.get('result') or {}
+    raw = result.get('raw_result') or {}
+    auth = raw.get('owner_delivery_authorization') or {}
+    work = raw.get('work_envelope') or {}; receipt = raw.get('work_receipt') or {}
+    host = work.get('host_evidence') or {}; candidate = host.get('native_candidate') or {}
+    session = result.get('physical_session_id')
+    from otto.attention import native_target_identity
+    _require(isinstance(session, str) and session and session == native_target_identity(due.target)
+        and attempt.get('state') == 'result' and attempt.get('physical_session_id') == session
+        and result.get('outcome') == 'unknown' and result.get('delivery_state') == 'unknown'
+        and result.get('context_digest_verified') is False and result.get('observed_turn_id') is None
+        and result.get('native_session_id') == session
+        and (result.get('error') or {}).get('code') == 'authorized_result_unverified',
+        'original exact failed native binding required')
+    expected = {'assignment_ref': due.assignment_ref, 'generation': due.generation,
+        'physical_session_id': session, 'project_ref': due.target['project_ref'],
+        'task_ref': due.target['task_ref'], 'role': 'manager', 'principal': due.recipient,
+        'lifecycle_owner': execution.actor, 'status': 'authorized'}
+    _require(attempt.get('delivery_authorization') == auth
+        and all(type(auth.get(k)) is type(v) and auth.get(k) == v for k, v in expected.items())
+        and isinstance(auth.get('logical_request_key'), str) and auth['logical_request_key']
+        and all(body.get('logical_request_key') == auth['logical_request_key']
+            and body.get('assignment_ref') == due.assignment_ref
+            and body.get('generation') == due.generation for body in (attempt, result))
+        and result.get('project_ref') == due.target['project_ref']
+        and result.get('task_ref') == due.target['task_ref']
+        and result.get('logical_agent_id') == result.get('owner') == due.recipient,
+        'original authenticated delivery scope differs')
+    _require(raw.get('initialization_envelope') is None and raw.get('initialization_receipt') is None
+        and raw.get('transport_operation') == 'resume' and raw.get('worker_content') == []
+        and raw.get('task_bound_evidence') is None and work.get('stdout') == ''
+        and work.get('fnd_receipt') == receipt and work.get('runner') == 'codex-cli'
+        and work.get('status') == receipt.get('outcome') == 'failed'
+        and work.get('exit_status') == 1 and work.get('transport_operation') == receipt.get('operation') == 'resume'
+        and work.get('physical_session_id') == session
+        and work.get('logical_agent_id') == work.get('owner') == due.recipient
+        and isinstance(work.get('process_id'), str) and work['process_id'].isdigit()
+        and receipt.get('process_id') == work['process_id']
+        and receipt.get('identity') == {'logical_agent_id': due.recipient, 'physical_session_id': session}
+        and work.get('timeout') is None and work.get('cancel') is None
+        and work.get('result_ref') is None and receipt.get('result_ref') is None,
+        'terminal failed CLI envelope differs')
+    start, end = (datetime.fromisoformat(work[k].replace('Z', '+00:00'))
+                  for k in ('started_at', 'ended_at'))
+    _require(start.tzinfo is not None and end.tzinfo is not None and end >= start,
+        'terminal CLI timestamps differ')
+    stamp = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z'
+    conflict = re.escape('thread-store conflict: thread ' + session + ' already has an active writer')
+    diagnostic = (stamp + r' ERROR codex_core::session::session: failed to initialize thread persistence: ' + conflict
+        + r'\n' + stamp + r' ERROR codex_core::session: Failed to create session: ' + conflict
+        + r'\nError: thread/resume: thread/resume failed: thread ' + re.escape(session)
+        + r' already has an active writer \(code -32600\)\n')
+    _require(isinstance(work.get('stderr'), str) and len(work['stderr'].encode()) <= 4096
+        and re.fullmatch(diagnostic, work['stderr']) is not None
+        and host.get('session_id') == session and host.get('process_started') is True
+        and host.get('session_created') is False and host.get('native_turn_started') is False
+        and host.get('invocation_turn_verified') is False and host.get('turn_id') is None
+        and host.get('provenance') == 'host_native_jsonl'
+        and host.get('otto_host_turn_context') is None
+        and candidate.get('capture_utf8_bytes') == 0 and candidate.get('capture_sha256') == hashlib.sha256(b'').hexdigest()
+        and candidate.get('native_records') == [] and candidate.get('turn_id') is None
+        and candidate.get('task_bound') is False and candidate.get('retry_allowed') is False
+        and candidate.get('status') == 'unsupported',
+        'exact persistence rejection before native turn required')
+    return {'outcome': 'this-failed-process-capacity-released', 'schedule_id': due.schedule_id,
+        'unknown_result_sha256': _digest(result), 'work_envelope_sha256': _digest(work),
+        'original_UNKNOWN_preserved': True, 'external_writer_release_verified': False,
+        'provider_retry_allowed': False}

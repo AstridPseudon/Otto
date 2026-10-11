@@ -277,6 +277,13 @@ class ExecutionHost:
                 released = True
             except (ValueError, KeyError, TypeError, OSError):
                 pass  # Missing/stale terminal proof keeps the conservative hold.
+        if not released and due.stop_state == "stopped":
+            from .worker_custody import retained_stopped_writer_conflict_release
+            try:
+                retained_stopped_writer_conflict_release(app, due)
+                released = True
+            except (ValueError, KeyError, TypeError, OSError):
+                pass  # Any changed/ambiguous terminal proof keeps custody.
         if attempt and not released:
             self._capacity_holds[due.schedule_id] = self._execution_scope(app, due)
         else:
