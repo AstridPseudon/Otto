@@ -81,7 +81,10 @@ class VisionCommandSurface:
             return self.help()
         if operation == "create":
             content = args.get("content")
-            result = self.authoring.create(content, request_id=request_key)
+            options = {"request_id": request_key}
+            if args.get("project_ref") is not None:
+                options["project_ref"] = args["project_ref"]
+            result = self.authoring.create(content, **options)
             return {"schema": "vision.create.v1", "outcome": "created", **_wire(result), "resource_selection": self.pack.selection()}
         if operation == "read":
             return {**_wire(self.queries.read(args["document_ref"], project_ref=args.get("project_ref"))), "resource_selection": self.pack.selection()}

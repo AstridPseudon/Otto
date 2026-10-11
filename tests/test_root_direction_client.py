@@ -131,7 +131,7 @@ class RootDirectionClientTests(unittest.TestCase):
    self.assertEqual(one_scope['project_ids'],[self.projects[0].ref.id])
    with self.assertRaises(PermissionError):
     self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
-      operations=['supervisor-direction-read'],project_ids=['one','two','three','four','five'],request_key='over-limit-scope')
+      operations=['supervisor-direction-read'],project_ids=['project-over-bound-'+str(i)for i in range(17)],request_key='over-limit-scope')
 
  def test_compact_task_acceptance_projection_preserves_unknown_and_refs(self):
   from otto.portfolio.execution_operations import compact_task_acceptance_projection
@@ -162,5 +162,45 @@ class RootDirectionClientTests(unittest.TestCase):
   host=SimpleNamespace(prepare_root_direction_adoption=lambda:{'outcome':'held','reason':'retained native obligation','retry':False})
   self.service.host=host;counts=self.f.store.consumer().snapshot_counts();result=self.client.call(self.intent())
   self.assertEqual(result['outcome'],'held');self.assertFalse(result['canonical_effect_recorded']);self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
+
+ def test_expanded_nine_current_owned_projects_keep_finite_auth_and_replay(self):
+  from otto.portfolio.root_direction_client import install_owner_root_client
+  from otto.portfolio.orchestrator_client import ROOT_PROJECT_OPERATIONS
+  from tempfile import TemporaryDirectory
+  extra=[]
+  for index in range(7):
+   project=self.owner.graph.create_project(title='Planned '+str(index),logical_request_key='planned:'+str(index))
+   extra.append(project)
+  self.owner.consumer_operations().execute('work.orchestrator.projects.attach',{
+   'target_assignment_ref':self.root.ref.to_dict(),'target_assignment_revision':self.root.revision,
+   'target_assignment_generation':self.root.generation,
+   'projects':[{'project_ref':p.ref.to_dict(),'project_version':p.version,'assignment_ref':None,'assignment_revision':None,'assignment_generation':None}for p in extra]},request_id='expand-owned-scope',actor='owner')
+  ids=[p.id for p in self.projects]+[p.id for p in extra]
+  before={p.id:deepcopy(self.owner.graph.get(p.ref).payload)for p in self.projects+extra}
+  seen=[]
+  def handler(request,current):
+   seen.append(request['project_id']);return {'read_only':True,'principal':current.principal}
+  with TemporaryDirectory()as directory:
+   kwargs=dict(service=self.service,directory=directory,conversation_ref=self.root.session,
+               request_key='nine-policy',project_ids=ids,project_handler=handler)
+   locator,client=install_owner_root_client(**kwargs)
+   self.assertEqual(locator['binding']['project_ids'],ids)
+   self.assertTrue(ROOT_PROJECT_OPERATIONS<=set(locator['binding']['operations']))
+   for project_id in ids:
+    self.assertTrue(client.call({'operation':'read-manager','project_id':project_id,'request_key':'read:'+project_id})['read_only'])
+   self.assertEqual(seen,ids)
+   counts=self.f.store.consumer().snapshot_counts()
+   replay,_=install_owner_root_client(**kwargs);self.assertEqual(replay,locator)
+   self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
+   foreign=self.owner.graph.create_project(title='Not supervised',logical_request_key='foreign-nine')
+   counts=self.f.store.consumer().snapshot_counts()
+   for scope in (ids[:-1]+[foreign.id],ids+["project-bound-"+str(i)for i in range(8)]):
+    with self.assertRaises(PermissionError):install_owner_root_client(**{**kwargs,'request_key':'denied','project_ids':scope})
+    self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
+   with self.assertRaises(PermissionError):client.call({'operation':'read-manager','project_id':foreign.id,'request_key':'foreign-read'})
+  for project_id,payload in before.items():
+   current=self.owner.graph.get(ResourceRef(self.root.ref.authority,'work.project',project_id))
+   self.assertEqual(current.payload,payload)
+   self.assertEqual(current.payload['lifecycle'],'pending');self.assertFalse(current.payload['tasks'])
 
 if __name__=='__main__':unittest.main()

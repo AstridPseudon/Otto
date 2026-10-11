@@ -246,6 +246,36 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "queued", result)
         self.assertEqual(_nested_capability({**request, "activate": True}), "held")
 
+    def test_fresh_owner_read_keys_preserve_old_receipt_and_same_queue_for_consumers(self):
+        ingress = OwnerAuthoringIngress(actor=self.owner.owner_actor, owner_actor=self.owner.owner_actor,
+                                        directory=Path(self.temp.name) / "fresh-ingress")
+        service = ManagerJourneyService(server=SimpleNamespace(owner=self.owner, portfolio=None, state={},
+            due_port=None, _execution=lambda **kw: None), host=None, run_path=Path(self.temp.name),
+            workspace=Path(self.temp.name), authoring_authorizer=ingress.authorize)
+        first = {"command":"project-queue", "operation":"read", "consumer":"root", "request_key":"before"}
+        with self.assertRaises(PermissionError): service(first)
+        issued = ingress.publish({"schema":ingress.schema, "request":first})
+        old = service(first); retained = Path(issued["response_path"])
+        retained.write_text(json.dumps(old, sort_keys=True))
+        raw = retained.read_bytes()
+        appended = self.append(); self.assertEqual(appended["outcome"], "queued")
+        counts = self.store.consumer().snapshot_counts(); refs = []
+        for consumer in ("root", "continuation", "observer"):
+            request = {**first,"consumer":consumer,"request_key":"after:"+consumer}
+            fresh = ingress.publish({"schema":ingress.schema,"request":request})
+            self.assertNotEqual(fresh["request_id"], issued["request_id"])
+            value = service(request); refs.append(value["queue_ref"])
+            self.assertEqual(value["order"], appended["readback"]["order"])
+        self.assertEqual(refs,[appended["readback"]["queue_ref"]]*3)
+        self.assertEqual(self.store.consumer().snapshot_counts(),counts)
+        self.assertEqual(retained.read_bytes(),raw)
+        for key in ("", " ", " padded ", 17):
+            invalid={**first,"request_key":key}
+            ingress.publish({"schema":ingress.schema,"request":invalid})
+            with self.assertRaises(ValueError): service(invalid)
+        with self.assertRaises(PermissionError):
+            service.dispatch_bound({"role":"manager","principal":"manager"},{**first,"request_key":"no-owner-grant"})
+
     def test_queue_request_is_serialized_during_native_wait(self):
         ipc = Path(self.temp.name) / "pump"
         ingress = OwnerAuthoringIngress(actor=self.owner.owner_actor, owner_actor=self.owner.owner_actor, directory=ipc)

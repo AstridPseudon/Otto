@@ -36,13 +36,29 @@ class VisionAuthoring:
     def __init__(self, authoring: DocumentAuthoringHandler, actor: AuthenticatedActor):
         self.authoring, self.actor = authoring, actor
 
-    def create(self, content: Mapping[str, Any], *, request_id: str) -> VisionCreationResult:
+    def create(
+        self,
+        content: Mapping[str, Any],
+        *,
+        request_id: str,
+        project_ref: ResourceRef | Mapping[str, Any] | None = None,
+    ) -> VisionCreationResult:
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("creation requires a nonempty request key")
+        scope = None
+        if project_ref is not None:
+            scope = (project_ref if isinstance(project_ref, ResourceRef)
+                     else ResourceRef.from_dict(project_ref))
+            if (scope.authority != self.actor.authority or scope.kind != "work.project"
+                    or scope.revision is not None):
+                raise ValueError("project_ref must be an unpinned local work.project")
         # DAT has opaque stable IDs. Titles, locators and root state are not
         # identity inputs. EDT's open and finish receipts bind the exact bytes.
         ref = self.creation_ref(request_id)
-        document = ContentDocument(ref, "vision", "private", "write", self.actor.actor)
+        document = ContentDocument(
+            ref, "vision", "shared" if scope is not None else "private", "write",
+            self.actor.actor, authoring_scope=scope,
+        )
         draft = {"document": document, "content": content}
         # Validate before reserving; existing canonical metadata/pin wins.
         parsed = self.authoring.validate(draft, target=document)

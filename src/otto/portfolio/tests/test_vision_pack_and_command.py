@@ -81,3 +81,13 @@ def test_main_cli_routes_only_through_injected_surface(capsys):
     )
     assert code == 0
     assert json.loads(capsys.readouterr().out)["schema"] == "vision.help.v1"
+
+
+def test_private_create_keeps_injected_authoring_signature():
+    surface = VisionCommandSurface(authoring=FakeAuthoring(), queries=FakeQueries(),
+        pack=load_vision_pack(managed_pack=managed_vision_pack()))
+    value = surface.dispatch({"command":"vision", "operation":"create",
+        "request_key":"legacy-private", "arguments":{"content":{"fixture":True}}})
+    assert value["outcome"] == "created"
+    assert value["request_id"] == "legacy-private"
+    assert value["content"] == {"fixture":True}

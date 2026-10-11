@@ -1181,6 +1181,13 @@ class ManagerJourneyService:
                   "seed": {"command", "operation", "request_key", "order", "rule"},
                   "after": {"command", "operation", "request_key", "order", "rule",
                             "expected_revision", "predecessor_ref", "project_ref"}}
+        # Correlate a fresh inert read without changing the queue or its
+        # canonical mutation keys; retained prior transport responses stay intact.
+        if operation == "read" and "request_key" in values:
+            key = values["request_key"]
+            if not isinstance(key, str) or not key.strip() or key != key.strip():
+                raise ValueError("queue read correlation key must be exact nonempty text")
+            fields["read"].add("request_key")
         if operation not in fields or set(values) != fields[operation]:
             raise ValueError("queue requires exactly its finite operation fields")
         from .project_queue import ProjectQueue

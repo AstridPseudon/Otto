@@ -122,7 +122,7 @@ class OrchestratorAdmissions:
                 or any(not isinstance(v, str) or not v.strip() for v in conversation_ref.values())
                 or not isinstance(operations, list) or not operations
                 or not set(operations).issubset(ROOT_DIRECTION_OPERATIONS | ROOT_PROJECT_OPERATIONS | {'whoami', 'status'})
-                or not isinstance(project_ids, (list, tuple)) or len(project_ids) > 4
+                or not isinstance(project_ids, (list, tuple)) or len(project_ids) > 16
                 or any(not isinstance(value, str) or not value.strip() for value in project_ids)
                 or len(set(project_ids)) != len(project_ids)
                 or bool(set(operations) & ROOT_PROJECT_OPERATIONS) != bool(project_ids)):

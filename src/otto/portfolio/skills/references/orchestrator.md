@@ -146,3 +146,11 @@ Follow the original retained handle in the same turn to a bounded deadline; a
 snapshot follow does not wait. Preserve exact transport timeout/UNKNOWN receipts
 and distinguish them from later canonical success. Keep status and audit packets
 compact: current custodian, action, immutable receipt refs and links to history.
+
+For a fresh canonical queue read through the authenticated owner input, use
+`project-queue` read with its exact consumer and a fresh optional `request_key`.
+The key correlates transport only: prior receipts stay retained and the queue
+revision changes only through the existing seed/after CAS operations. Consumer
+labels do not grant manager authority. Project registration, portfolio
+supervision, materialization, service installation and native start remain
+separate; a strategy reference is not a supervision grant.

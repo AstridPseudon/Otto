@@ -504,7 +504,7 @@ def add_manager_journey_parsers(commands: Any) -> None:
     vision.add_argument("--operation", required=True, choices=("help", "read", "query", "context", "history"))
     vision.add_argument("--arguments", type=json.loads, default={}, help="JSON object; scoped reads require exact current project_ref")
     queue = commands.add_parser("project-queue", help="read one canonical queue or enroll an inert project after its exact tail",
-        description="Requires exact host owner authentication. Seed adopts the authorized existing enrolled order once. After preserves that prefix using the exact queue revision; enrollment and DAT publication have separate receipts. UNKNOWN requires exact transport reconciliation. Read joins current Work state for root, continuation and observer; activation stays separate.")
+        description="Requires exact host owner authentication. Seed adopts the authorized existing enrolled order once. After preserves that prefix using the exact queue revision; enrollment and DAT publication have separate receipts. UNKNOWN requires exact transport reconciliation. Read joins current Work state for root, continuation and observer; an optional fresh request-key avoids replaying an older retained transport read without a canonical effect. Activation stays separate.")
     queue.add_argument("--operation", choices=("read", "seed", "after"), default="read")
     queue.add_argument("--consumer", choices=("root", "continuation", "observer"), default=None)
     queue.add_argument("--request-key")
