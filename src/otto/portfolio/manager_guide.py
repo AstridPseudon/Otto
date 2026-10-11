@@ -24,8 +24,9 @@ def resolve_required_instruction_adoption(adoptions, trusted_ref, content_reader
         raise ValueError('exactly one required adoption of the trusted manager guide is needed')
     row = matches[0]
     observed = json_value(content_reader.read(ref))
-    if not isinstance(observed, Mapping) or observed.get('current_revision') != full_ref:
-        raise ValueError('trusted manager guide is not at its exact current revision')
+    if (not isinstance(observed, Mapping) or observed.get('identity') != full_ref
+            or observed.get('revision') != ref.revision):
+        raise ValueError('trusted manager guide read does not match its exact immutable revision')
     content = observed.get('content')
     digest = validate_instruction_content(content)
     if row.get('resource_name') != content.get('name') or row.get('content_digest') != digest:

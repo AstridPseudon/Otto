@@ -22,7 +22,8 @@ class ManagerGuideTests(unittest.TestCase):
                'content_digest': digest, 'required': True}
         decoy = {'resource_ref': ResourceRef('owner', 'document', 'decoy', 'rev-1').to_dict(),
                  'resource_name': 'BASE', 'content_digest': 'decoy', 'required': True}
-        reader = SimpleNamespace(read=lambda pin: {'current_revision': ref, 'content': content})
+        read_value = {'identity': ref, 'revision': 'rev-1', 'content': content}
+        reader = SimpleNamespace(read=lambda pin: read_value)
         selected, _, _ = resolve_required_instruction_adoption([decoy, row], ref, reader)
         self.assertEqual(selected, row)
 
@@ -35,7 +36,7 @@ class ManagerGuideTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_required_instruction_adoption([row], {**ref, 'revision': None}, reader)
         stale = SimpleNamespace(read=lambda pin: {
-            'current_revision': {**ref, 'revision': 'rev-2'}, 'content': content})
+            'identity': {**ref, 'revision': 'rev-2'}, 'revision': 'rev-2', 'content': content})
         with self.assertRaises(ValueError):
             resolve_required_instruction_adoption([row], ref, stale)
 

@@ -9,6 +9,7 @@ from herzchen.content import ContentRevision
 from herzchen.content.instructions import validate_instruction_content
 from otto.portfolio.orchestrator_client import OrchestratorAdmissions, ScopedOrchestratorClient
 from otto.portfolio.supervisor_direction_client import SupervisorDirectionAuthoring, OPERATIONS, scoped_supervisor_handler
+from otto.portfolio.manager_guide import resolve_required_instruction_adoption
 from otto.portfolio.manager_journey_service import manager_head, ManagerJourneyService
 from tests.test_execution_application import ExecutionApplicationTests
 
@@ -65,6 +66,14 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   self.client=ScopedOrchestratorClient(owner=f.owner,binding=self.binding,handlers={op:facade for op in OPERATIONS})
  def call(self,operation,payload=None,key='read'):
   return self.client.call({'operation':operation,'project_id':self.f.project.id,'request_key':key,'request':payload})
+ def test_exact_guide_resolver_uses_real_disposable_content_reader(self):
+  manager=self.f.owner.assignments.get(ResourceRef.from_dict(self.state['assignment_ref']))
+  row,observed,digest=resolve_required_instruction_adoption(
+   manager.payload['resource_adoptions'],self.state['guide_ref'],self.f.owner.content)
+  self.assertEqual(row['resource_name'],self.manager_base_name)
+  self.assertEqual(observed['identity'],self.state['guide_ref'])
+  self.assertEqual(observed['revision'],self.state['guide_ref']['revision'])
+  self.assertEqual(row['content_digest'],digest)
  def draft_and_intent(self):
   read=self.call('supervisor-direction-read');content={**self.content,'instructions':'Updated project direction','bundle_digest':hashlib.sha256(b'Updated project direction').hexdigest()}
   draft=self.call('supervisor-direction-draft',{'content':content,'expected_revision':read['direction']['latest_ref']['revision']},'draft')
