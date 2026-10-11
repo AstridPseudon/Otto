@@ -15,7 +15,14 @@ from tests.test_execution_application import ExecutionApplicationTests
 class SupervisorDirectionClientTests(unittest.TestCase):
  def setUp(self):
   self.f=f=ExecutionApplicationTests();f.setUp();self.addCleanup(f.doCleanups)
-  main=f.owner.assignments.assign(ResourceRef(f.store.authority,'wrk.portfolio','shared'),role='orchestrator',principal='manager',logical_request_key='main')
+  from unittest.mock import patch
+  from herzchen.domains.work.assignments import ResponsibilityAssignments
+  original_assign=ResponsibilityAssignments.assign
+  def assign_with_root_chat(port,*args,**kwargs):
+   if kwargs.get('role')=='orchestrator':kwargs.setdefault('session',{'host':'codex','native_id':'own-root-chat'})
+   return original_assign(port,*args,**kwargs)
+  with patch.object(ResponsibilityAssignments,'assign',assign_with_root_chat):
+   main=f.owner.assignments.assign(ResourceRef(f.store.authority,'wrk.portfolio','shared'),role='orchestrator',principal='manager',logical_request_key='main')
   self.main=main
   from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
   from otto.portfolio.herzchen_binding import ProjectReadGrant
@@ -85,6 +92,60 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   delivered=self.f.app.start(schedule_id=result['continuation']['schedule_id']);self.assertEqual(delivered['outcome'],'succeeded',delivered)
   self.assertEqual(len(self.f.provider.calls),calls+1)
   again=self.f.app.start(schedule_id=result['continuation']['schedule_id']);self.assertEqual(again['outcome'],'replayed');self.assertEqual(len(self.f.provider.calls),calls+1)
+
+ def test_current_owner_root_client_composes_supervisor_facade(self):
+  from tempfile import TemporaryDirectory
+  from otto.portfolio.root_direction_client import install_owner_root_client
+  # Move this exact manager project under the current owner root, then attach
+  # three bounded project joins so supervisor capabilities are issued only
+  # with the complete four-project root scope.
+  project=self.f.owner.graph.get(ResourceRef.from_dict(self.state['project_ref']))
+  relation=project.payload['metadata']['otto_orchestrator']
+  transfer=self.f.owner.orchestration_port.transfer_supervision(actor=self.f.owner.owner_actor,
+   request_id='move-supervisor-project-to-owner-root',portfolio_ref=self.main.scope.to_dict(),
+   project_ref=project.ref.to_dict(),expected_project_revision=project.ref.revision,
+   expected_project_version=project.version,current_assignment_ref=relation['assignment_ref'],
+   current_assignment_revision=relation['assignment_revision'],current_assignment_generation=relation['generation'],
+   target_assignment_ref=self.main.ref.to_dict(),target_assignment_revision=self.main.ref.revision,
+   target_assignment_generation=self.main.generation,overlap_acknowledged=True)
+  self.state['project_ref']=transfer['project_ref']
+  extras=[self.f.owner.graph.create_project(title='Owner-root scoped '+str(i),logical_request_key='owner-root-extra-'+str(i)) for i in range(3)]
+  self.f.owner.orchestration_port.attach_existing_projects(actor=self.f.owner.owner_actor,
+   request_id='attach-three-owner-root-projects',portfolio_ref=self.main.scope.to_dict(),
+   target_assignment_ref=self.main.ref.to_dict(),target_assignment_revision=self.main.ref.revision,
+   target_assignment_generation=self.main.generation,
+   projects=[{'project_ref':p.ref.to_dict(),'project_version':p.version,'assignment_ref':None,
+      'assignment_revision':None,'assignment_generation':None} for p in extras])
+  self.state['orchestrator_assignment_ref']=self.main.ref.to_dict()
+  extra_services=[SimpleNamespace(server=SimpleNamespace(state={'project_ref':p.ref.to_dict()})) for p in extras]
+  fallback=lambda request,root: (_ for _ in ()).throw(PermissionError('unsupported fixed-view operation'))
+  project_handler=scoped_supervisor_handler(services=[self.service]+extra_services,fallback=fallback)
+  ids=[self.f.project.id]+[p.ref.id for p in extras]
+  with TemporaryDirectory() as directory:
+   locator,client=install_owner_root_client(service=self.service,directory=directory,
+    conversation_ref=self.main.session,request_key='main-root-supervisor-scope',project_ids=ids,
+    project_handler=project_handler)
+   self.assertTrue(OPERATIONS.issubset(set(locator['binding']['operations'])))
+   request=lambda op,payload,key:{'operation':op,'project_id':self.f.project.id,'request_key':key,'request':payload}
+   read=client.call(request('supervisor-direction-read',{},'main-read'))
+   self.assertEqual(read['outcome'],'read');self.assertEqual(read['manager_assignment_ref'],self.state['assignment_ref'])
+   revised={**self.content,'instructions':'Main-root scoped update',
+    'bundle_digest':hashlib.sha256(b'Main-root scoped update').hexdigest()}
+   draft=client.call(request('supervisor-direction-draft',{'content':revised,
+    'expected_revision':read['direction']['latest_ref']['revision']},'main-draft'))
+   current=client.call(request('supervisor-direction-read',{},'main-readback'))
+   intent={'document_ref':draft['draft']['revision_ref'],'expected_binding_ref':current['direction']['binding_ref'],
+    'expected_direction_ref':current['direction']['latest_ref'],'expected_manager_ref':current['manager_assignment_ref'],
+    'expected_manager_generation':current['manager_generation'],'expected_schedule_id':current['manager_schedule_id']}
+   calls=len(self.f.provider.calls)
+   result=client.call(request('supervisor-direction-adopt-and-continue',intent,'main-adopt'))
+   self.assertEqual(result['outcome'],'adopted');self.assertEqual(result['delivery'],'prepared-not-started')
+   self.assertFalse(result['provider_called']);self.assertEqual(len(self.f.provider.calls),calls)
+   self.assertEqual(self.f.port.read_due(self.worker['schedule_id']),self.worker_before)
+   self.assertEqual(self.state['assignment_ref']['id'],intent['expected_manager_ref']['id'])
+   self.assertEqual(self.state['schedule_id'],result['continuation']['schedule_id'])
+   with self.assertRaises(PermissionError):
+    client.call({'operation':'supervisor-direction-read','project_id':'foreign-project','request_key':'main-foreign'})
  def test_stale_foreign_changed_key_and_current_head_rejected_before_effect(self):
   intent=self.draft_and_intent();counts=self.f.store.consumer().snapshot_counts()
   for change in [{'expected_manager_generation':2},{'expected_schedule_id':'foreign'},{'expected_manager_ref':{**intent['expected_manager_ref'],'revision':'rev-0'}},{'document_ref':{**intent['document_ref'],'id':'foreign'}}]:

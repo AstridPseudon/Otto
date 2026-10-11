@@ -113,16 +113,18 @@ def install_owner_root_client(*, service, directory, conversation_ref, request_k
     from pathlib import Path
     from . import client_lanes as lanes
     from .orchestrator_client import (OrchestratorAdmissions, ScopedOrchestratorClient,
-        ROOT_DIRECTION_OPERATIONS, ROOT_PROJECT_OPERATIONS)
+        ROOT_DIRECTION_OPERATIONS, ROOT_PROJECT_OPERATIONS, SUPERVISOR_DIRECTION_OPERATIONS)
     if project_ids and not callable(project_handler):
         raise ValueError('finite owner-root project scope requires the existing scoped project handler')
     root = service.server.owner.assignments.get(service.server.state['orchestrator_assignment_ref'])
     admissions = OrchestratorAdmissions(service.server.owner,
         main_assignment_ref=root.ref.to_dict(), generation=root.generation)
+    project_operations = (ROOT_PROJECT_OPERATIONS if len(project_ids) == 4
+                          else ROOT_PROJECT_OPERATIONS - SUPERVISOR_DIRECTION_OPERATIONS)
     binding = admissions.admit_current_root(actor=service.server.owner.owner_actor,
         conversation_ref=conversation_ref,
         operations=sorted(ROOT_DIRECTION_OPERATIONS | {'whoami', 'status'} |
-                          (ROOT_PROJECT_OPERATIONS if project_ids else frozenset())),
+                          (project_operations if project_ids else frozenset())),
         project_ids=list(project_ids),
         request_key=request_key + ':' + root.ref.revision)
     directory = lanes.private_dir(Path(directory))

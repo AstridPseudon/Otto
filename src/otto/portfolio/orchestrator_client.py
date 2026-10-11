@@ -15,8 +15,9 @@ import json
 from . import client_lanes as lanes
 
 ROOT_DIRECTION_OPERATIONS = frozenset({'direction-read', 'direction-draft', 'direction-update'})
-ROOT_PROJECT_OPERATIONS = frozenset({'read-manager', 'read-help', 'respond-help', 'manager-start'})
 from .supervisor_direction_client import OPERATIONS as SUPERVISOR_DIRECTION_OPERATIONS
+ROOT_PROJECT_OPERATIONS = (frozenset({'read-manager', 'read-help', 'respond-help', 'manager-start'})
+                           | SUPERVISOR_DIRECTION_OPERATIONS)
 
 OPERATIONS = ROOT_DIRECTION_OPERATIONS | SUPERVISOR_DIRECTION_OPERATIONS | frozenset({'status', 'whoami', 'effective-context', 'portfolio',
     'read-manager', 'read-help', 'respond-help', 'delivery-ack',
@@ -124,7 +125,8 @@ class OrchestratorAdmissions:
                 or not isinstance(project_ids, (list, tuple)) or len(project_ids) > 4
                 or any(not isinstance(value, str) or not value.strip() for value in project_ids)
                 or len(set(project_ids)) != len(project_ids)
-                or bool(set(operations) & ROOT_PROJECT_OPERATIONS) != bool(project_ids)):
+                or bool(set(operations) & ROOT_PROJECT_OPERATIONS) != bool(project_ids)
+                or (bool(set(operations) & SUPERVISOR_DIRECTION_OPERATIONS) and len(project_ids) != 4)):
             raise PermissionError('current owner root conversation and finite direction capability required')
         # Project authority is issued only over current canonical supervision
         # joins. The client cannot add projects later or adopt itself.

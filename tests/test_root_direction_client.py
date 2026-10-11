@@ -102,6 +102,8 @@ class RootDirectionClientTests(unittest.TestCase):
  def test_current_root_project_access_is_finite_and_uses_existing_handler(self):
   from otto.portfolio.root_direction_client import install_owner_root_client
   from otto.portfolio.orchestrator_client import ROOT_PROJECT_OPERATIONS
+  from otto.portfolio.supervisor_direction_client import OPERATIONS as SUPERVISOR_OPERATIONS
+  expected_project_operations=ROOT_PROJECT_OPERATIONS-SUPERVISOR_OPERATIONS
   from tempfile import TemporaryDirectory
   seen=[]
   def existing_handler(request,current):
@@ -111,20 +113,23 @@ class RootDirectionClientTests(unittest.TestCase):
    locator,client=install_owner_root_client(service=self.service,directory=directory,
     conversation_ref=self.root.session,request_key='finite-root',
     project_ids=[p.ref.id for p in self.projects],project_handler=existing_handler)
-   self.assertEqual(set(locator['binding']['operations']) & ROOT_PROJECT_OPERATIONS,ROOT_PROJECT_OPERATIONS)
+   self.assertEqual(set(locator['binding']['operations']) & ROOT_PROJECT_OPERATIONS,expected_project_operations)
    self.assertEqual(locator['binding']['assignment_ref'],self.root.ref.to_dict())
    self.assertEqual(locator['binding']['generation'],1)
-   for index,operation in enumerate(sorted(ROOT_PROJECT_OPERATIONS)):
+   for index,operation in enumerate(sorted(expected_project_operations)):
     result=client.call({'operation':operation,'project_id':self.projects[index % len(self.projects)].ref.id,
       'request_key':'call-'+operation,'request':{'sentinel':'preserve-existing-handler-input'}})
     self.assertTrue(result['existing_handler'])
-   self.assertEqual([row[0]['operation'] for row in seen],sorted(ROOT_PROJECT_OPERATIONS))
+   self.assertEqual([row[0]['operation'] for row in seen],sorted(expected_project_operations))
    with self.assertRaises(PermissionError):
     client.call({'operation':'read-help','project_id':'foreign-project','request_key':'foreign-project'})
    foreign=self.owner.graph.create_project(title='Unsupervised project',logical_request_key='unsupervised-root-scope-test')
    with self.assertRaises(PermissionError):
     self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
       operations=['read-manager'],project_ids=[foreign.ref.id],request_key='bad-project')
+   with self.assertRaises(PermissionError):
+    self.admissions.admit_current_root(actor=self.owner.owner_actor,conversation_ref=self.root.session,
+      operations=['supervisor-direction-read'],project_ids=[self.projects[0].ref.id],request_key='narrow-supervisor-scope')
 
  def test_compact_task_acceptance_projection_preserves_unknown_and_refs(self):
   from otto.portfolio.execution_operations import compact_task_acceptance_projection
