@@ -462,6 +462,13 @@ class Tests(unittest.TestCase):
         self.assertEqual({row["ref"]["id"] for row in observed}, {row.ref.id for row in retained})
         self.assertEqual(streams, sorted({"report:" + first.ref.id, "report:" + other.ref.id}))
         self.assertEqual({row["value"]["summary"] for row in observed}, {"old-manager", "root-note", "new-manager"})
+        # The current assignment locator addresses its immutable stream, which
+        # retains same-manager reports written before the assignment revision.
+        streams.clear()
+        current_only = read_project_progress_reports(ExactReader(), f.project.ref.to_dict(),
+            assignment_refs=[current.ref.to_dict()])
+        self.assertEqual({row["value"]["summary"] for row in current_only}, {"old-manager", "new-manager"})
+        self.assertEqual(streams, ["report:" + current.ref.id])
         self.assertEqual(read_project_progress_reports(ExactReader(), f.project.ref.to_dict(), assignment_refs=[]), [])
         with self.assertRaises(OccurrencePreparationError):
             read_project_progress_reports(ExactReader(), f.project.ref.to_dict(),

@@ -747,7 +747,8 @@ class ManagerJourneyService:
             result = manager_continuation_from_command(request=request, execution=app,
                 anchor_schedule_id=anchor, current_schedule_id=current_id,
                 task_refs=state["task_refs"], native_session_id=metadata.get("native_session_id"),
-                read_reports=lambda: read_project_progress_reports(self.server.store.consumer(), state["project_ref"]),
+                read_reports=lambda: read_project_progress_reports(self.server.store.consumer(), state["project_ref"],
+                    assignment_refs=[state["assignment_ref"]]),
                 preserve_execution_binding=True)
             return after_owner(result, lambda result: self._finalize_manager_completion(result, app=app))
         if command in {"review-task", "finish-task", "finish-project"}:
