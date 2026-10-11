@@ -3,11 +3,13 @@ from datetime import timedelta
 from dataclasses import replace
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from herzchen.domains.work import Lifecycle
 
 from otto.portfolio.manager_continuation_command import manager_continuation_from_command
 from otto.portfolio.execution_operations import derive_manager_continuation_request, read_project_progress_reports
+from otto.portfolio.manager_journey_service import ManagerJourneyService
 from tests.test_execution_application import ExecutionApplicationTests, NOW
 
 
@@ -38,6 +40,43 @@ class ManagerServiceContinuationTests(unittest.TestCase):
     def reports(self):
         f = self.fixture
         return read_project_progress_reports(f.store.consumer(), f.project.ref.to_dict())
+
+    def test_manager_continue_handler_scopes_report_read_and_prepares_without_provider(self):
+        f = self.fixture
+        due = f.port.read_due(self.anchor)
+        state = {"owner": "manager", "manager": "manager", "project_ref": f.project.ref.to_dict(),
+                 "task_refs": {"PA02": f.task.ref.to_dict()}, "assignment_ref": due["assignment_ref"],
+                 "manager_generation": due["generation"], "schedule_id": self.anchor,
+                 "manager_continuation": {"schedule_id": self.anchor, "native_session_id": "manager-session"},
+                 "requested_model": "gpt-test", "requested_reasoning": "high"}
+        server = SimpleNamespace(state=state, owner=f.owner, portfolio=f.app.portfolio,
+            due_port=f.port, store=f.store, _execution=lambda **options: f.app)
+        host = SimpleNamespace(_closing=False, bounded_transports=False)
+        service = ManagerJourneyService(server=server, host=host,
+            run_path=f.temporary.name, workspace=f.temporary.name)
+        service._execution = lambda **options: f.app
+        reader = f.store.consumer()
+        streams = []
+
+        class CurrentAssignmentReader:
+            def list_events(self, *, stream=None):
+                if stream is None:
+                    raise AssertionError("manager continuation must not hydrate unscoped event history")
+                streams.append(stream)
+                return reader.list_events(stream=stream)
+
+            def get_record(self, ref):
+                return reader.get_record(ref)
+
+        calls = len(f.provider.calls)
+        with patch.object(f.store, "consumer", return_value=CurrentAssignmentReader()):
+            prepared = service({"command": "manager-continue", "operation": "prepare",
+                                "report_key": self.key})
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        self.assertEqual(prepared["request"]["logical_request_key"], self.key)
+        self.assertEqual(streams, ["report:" + due["assignment_ref"]["id"]])
+        self.assertFalse(prepared["provider_called"])
+        self.assertEqual(len(f.provider.calls), calls)
 
     def test_settled_task_notification_is_not_replayed_after_public_resource_adoption(self):
         from herzchen.contracts import ResourceRef

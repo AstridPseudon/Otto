@@ -483,40 +483,6 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.assertEqual(self.fixture.port.read_due(self.anchor), before)
         self.assertEqual(len(self.fixture.provider.calls), 1)
 
-    def test_manager_continue_reads_only_current_manager_stream_before_prepare(self):
-        self.install_candidate()
-        f = self.fixture
-        assignment = ResourceRef.from_dict(self.server.state["assignment_ref"])
-        key = "bounded-current-manager-continuation"
-        f.app.assignments.append_report(assignment,
-            {"schema": "otto.manager-progress.v1", "project_ref": f.project.ref.to_dict(),
-             "task_alias": "J01", "task_ref": f.task.ref.to_dict(), "continue_requested": True,
-             "next_action": "Inspect the retained J01 evidence without resubmitting prior work.",
-             "logical_request_key": key, "recorded_at": NOW.isoformat()},
-            expected_generation=1, logical_request_key=key, actor=f.actor)
-        reader = f.store.consumer()
-        streams = []
-
-        class CurrentAssignmentReader:
-            def list_events(self, *, stream=None):
-                if stream is None:
-                    raise AssertionError("manager continuation must not hydrate unscoped event history")
-                streams.append(stream)
-                return reader.list_events(stream=stream)
-
-            def get_record(self, ref):
-                return reader.get_record(ref)
-
-        calls = len(f.provider.calls)
-        with patch.object(f.store, "consumer", return_value=CurrentAssignmentReader()):
-            prepared = self.host.handler({"command": "manager-continue", "operation": "prepare",
-                                          "report_key": key})
-        self.assertEqual(prepared["outcome"], "committed", prepared)
-        self.assertEqual(prepared["request"]["logical_request_key"], key)
-        self.assertEqual(streams, ["report:" + assignment.id])
-        self.assertFalse(prepared["provider_called"])
-        self.assertEqual(len(f.provider.calls), calls)
-
     def test_worker_roots_follow_actual_adapter_and_owner_configured_cold_operation(self):
         self.install_candidate()
         config = json.loads((self.service.RUN / "run.yaml").read_text())
