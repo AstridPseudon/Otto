@@ -390,7 +390,7 @@ class ExecutionHost:
                         "provider_called": False, "effects_started": False, "retry": False}
             # The manager-only planning write uses the same custodian pump,
             # with socket peer authorization before its finite public effect.
-            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker"}:
+            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker", "project-documents"}:
                 def finite():
                     previous = getattr(_DISPATCH_CONTEXT, "value", None)
                     _DISPATCH_CONTEXT.value = (self, threading.get_ident(), False)

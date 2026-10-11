@@ -241,7 +241,8 @@ class ClaudeWorkerAdapter:
                  transport: ClaudeCliTransport | None = None, authentication: str = 'existing-user',
                  roles: tuple = ('worker',), manager_transport: ClaudeCliTransport | None = None,
                  manager_write_roots: tuple = (), native_caller_socket: str | None = None,
-                 native_process_observer: Any = None, manager_timeout_seconds: float = 1800):
+                 native_process_observer: Any = None, manager_timeout_seconds: float = 1800,
+                 manager_env: Mapping[str, str] | None = None):
         self.owner, self.source = text(owner, 'owner'), text(source, 'source')
         self.worktree = str(Path(worktree).resolve(strict=True))
         self.writable_roots = ()
@@ -264,7 +265,8 @@ class ClaudeWorkerAdapter:
                 model=requested_model, reasoning=requested_reasoning, authentication=authentication,
                 tools=MANAGER_TOOLS, max_turns=ROLE_PROFILES['manager']['max_turns'],
                 timeout_seconds=manager_timeout_seconds,
-                extra_env={} if native_caller_socket is None else {'OTTO_CALLER_SOCKET': native_caller_socket})
+                extra_env={**dict(manager_env or {}),
+                           **({} if native_caller_socket is None else {'OTTO_CALLER_SOCKET': native_caller_socket})})
         self._role = None
         self._authorizer = self._verifier = self._completed_verifier = None
         self._thread_started_callback = self._turn_started_callback = None
@@ -295,7 +297,10 @@ class ClaudeWorkerAdapter:
                 'snapshot_follow': cap('supported', 'existing retained owner snapshot reads'),
                 'native_streaming': cap('unsupported', 'no partial-token stream advertised'),
                 'attach': cap('unsupported', 'no native attach binding'),
-                'resume': cap('unsupported', 'exact initializer-to-work continuation is internal; no later resume qualification'),
+                'resume': (cap('unverified', 'declared manager continuation of the exact owner-bound session '
+                               '(--resume); synthetic conformance only')
+                           if 'manager' in self.roles else
+                           cap('unsupported', 'exact initializer-to-work continuation is internal; no later resume qualification')),
                 'cancel': cap('degraded', 'transport unwinding reaps its owned process group; owner stop is only a fence'),
                 'steering': cap('unsupported', 'stdin sealed for bounded leaf'),
                 'native_children': cap('unsupported', 'Agent/Bash/MCP/customizations disabled; child frames rejected'),
@@ -330,16 +335,32 @@ class ClaudeWorkerAdapter:
         prior = self._turn_started_callback; self._turn_started_callback = callback; return prior
 
     def invoke(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._owner_turn(request, operation='invoke')
+
+    def resume(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Continue the exact owner-bound manager session (`--resume`), no initializer.
+
+        Only the declared manager role continues a session: the owner's
+        continuation (after a worker result, a report or help) authorizes the
+        same native session again before the new turn's input is delivered.
+        """
+        return self._owner_turn(request, operation='resume')
+
+    def _owner_turn(self, request: Mapping[str, Any], *, operation: str) -> Mapping[str, Any]:
         from otto.portfolio.execution_host import ExecutionHost
         from herzchen.adapters.host import _owner_delivery_appendix
-        typed, brief_digest, brief = HerzchenCodexAdapter._typed_request(self, 'invoke', request)
+        typed, brief_digest, brief = HerzchenCodexAdapter._typed_request(self, operation, request)
         contract = brief['instruction_contract']; authority = contract['authority']
         role = self._role or 'worker'
         profile = ROLE_PROFILES[role]
         transport = self._transport_for(role)
+        existing = request.get('physical_session_id')
+        if operation == 'resume' and (role != 'manager' or not isinstance(existing, str) or not existing.strip()):
+            raise ClaudeBindingError('only the declared manager role continues an exact existing session')
         if (self._used or not callable(self._authorizer) or not callable(self._verifier)
-                or not callable(self._thread_started_callback) or not callable(self._turn_started_callback)
-                or request.get('physical_session_id') is not None or request.get('expected_role') != role
+                or not callable(self._thread_started_callback)
+                or not callable(self._turn_started_callback)
+                or (operation == 'invoke' and existing is not None) or request.get('expected_role') != role
                 or typed.requested_profile != 'workspace-write' or contract.get('delegation') is not None
                 or authority.get('gateway_claim_required') is not True
                 or authority.get('owner_write') is not False or authority.get('dispatch') is not False
@@ -362,12 +383,18 @@ class ClaudeWorkerAdapter:
         usage_callback = ExecutionHost.owner_callback(getattr(self, "_usage_callback", None))
         usage_options = {} if usage_callback is None else {"on_usage": usage_callback}
         try:
-            init = ExecutionHost.external_call(lambda: transport.run(
-                'Initialize this session only. Do not use tools or do task work. Return READY.',
-                initializer=True, on_init=on_thread, **usage_options))
-            session = init['session_id']
-            if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
-                raise ClaudeBindingError('inert native initializer was not exact READY')
+            if operation == 'resume':
+                # Owner-bound continuation: no new initializer. Bind the existing
+                # session to this occurrence's claim before authorization.
+                init = {}
+                on_thread(existing)
+            else:
+                init = ExecutionHost.external_call(lambda: transport.run(
+                    'Initialize this session only. Do not use tools or do task work. Return READY.',
+                    initializer=True, on_init=on_thread, **usage_options))
+                session = init['session_id']
+                if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
+                    raise ClaudeBindingError('inert native initializer was not exact READY')
             authorization = authorize(session, brief_digest)
             expected = {'status': 'authorized', 'physical_session_id': session,
                 'brief_sha256': brief_digest, 'logical_request_key': request['logical_request_key'],

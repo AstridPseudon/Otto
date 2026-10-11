@@ -155,7 +155,9 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
     """
     from otto.attention import DueRecord, native_target_identity
     role = due.role
-    native = native_target_identity(due.target)
+    # A launched fresh manager's conversation is the session its first
+    # owner-authorized delivery bound (its target carries no native id).
+    native = _bound_conversation(due)
     principal = assignment["principal"]
     principal_id = principal if isinstance(principal, str) else principal["id"]
     if (not native or (actor is not None and (due.lifecycle_owner != actor or due.manager_ref != actor))
@@ -245,6 +247,20 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
         {"source": "assignment" if bound is not None else "admitted_role", "schedule_id": conversation_due.schedule_id})
 
 
+def _bound_conversation(due: Any) -> Any:
+    """The role's conversation: its native target, or for a launched fresh
+    manager the session its first owner-authorized delivery bound."""
+    from otto.attention import native_target_identity
+    native = native_target_identity(due.target)
+    if native is not None or due.execution_mode != "fresh_manager":
+        return native
+    authorization = ((due.host_evidence or {}).get("gateway_attempt") or {}).get("delivery_authorization") or {}
+    if (authorization.get("status") == "authorized" and authorization.get("generation") == due.generation
+            and authorization.get("assignment_ref") == due.assignment_ref):
+        return authorization.get("physical_session_id")
+    return None
+
+
 def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[str, Any], *, current_due: Any = None,
                    due_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Read a connected setup without changing due state, allowances or roles."""
@@ -264,9 +280,14 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             binding_due = DueRecord.from_dict(raw)
             due = binding_due
             if current_due is not None and current_due.role == role:
+                left, right = _bound_conversation(current_due), _bound_conversation(due)
+                # The same fresh-manager occurrence observed before and after
+                # its owner authorization binds the session is one binding.
+                same_fresh = (current_due.schedule_id == due.schedule_id and due.execution_mode == "fresh_manager"
+                              and (left is None or right is None))
                 if (any(current_due.assignment_ref.get(k) != due.assignment_ref.get(k)
                         for k in ("authority", "kind", "id")) or current_due.generation != due.generation
-                        or native_target_identity(current_due.target) != native_target_identity(due.target)):
+                        or (left != right and not same_fresh)):
                     raise OperatingSetupError("execution differs from adopted role binding; refresh operating setup")
                 due = current_due
             for scoped in (binding_due, due):
@@ -283,9 +304,20 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             # A fresh manager (an adapter whose CLI creates its session at
             # first launch) has no conversation yet by design: the inert
             # initializer reports it and the owner authorizes it before any
-            # useful input. Every other role needs its bound conversation.
-            fresh_manager = (role == "manager" and due.execution_mode == "fresh_manager"
-                             and native is None and (due.host_evidence or {}).get("gateway_attempt") is None)
+            # useful input. Once launched, the owner's own recorded delivery
+            # authorization binds that session. Every other role needs its
+            # bound conversation.
+            attempt = (due.host_evidence or {}).get("gateway_attempt")
+            fresh_manager = role == "manager" and due.execution_mode == "fresh_manager" and native is None
+            authorized_session = None
+            if fresh_manager and attempt is not None:
+                authorization = attempt.get("delivery_authorization") or {}
+                if (authorization.get("status") != "authorized"
+                        or authorization.get("assignment_ref") != due.assignment_ref
+                        or authorization.get("generation") != due.generation
+                        or not isinstance(authorization.get("physical_session_id"), str)):
+                    raise OperatingSetupError("launched fresh manager has no owner-authorized session")
+                authorized_session = authorization["physical_session_id"]
             if native is None and not fresh_manager:
                 raise OperatingSetupError("selected role requires an actual bound conversation")
             assignment = prepared["assignment"]
@@ -293,7 +325,9 @@ def evaluate_setup(runtime: Any, project_ref: Mapping[str, Any], setup: Mapping[
             principal_id = principal if isinstance(principal, str) else principal["id"]
             if due.recipient != principal_id or due.target.get("principal") != principal:
                 raise OperatingSetupError("selected role recipient differs from canonical principal")
-            if fresh_manager:
+            if fresh_manager and authorized_session is not None:
+                native, conversation_source = authorized_session, "fresh_manager_owner_authorized_session"
+            elif fresh_manager:
                 conversation_source = "fresh_manager_first_launch"
             else:
                 native, conversation_source = verify_role_conversation(due=due, assignment=assignment,
