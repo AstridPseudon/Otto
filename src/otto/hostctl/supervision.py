@@ -2,11 +2,122 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
 import subprocess
 from typing import Any, Mapping
+
+
+def _digest(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                    ensure_ascii=False).encode()).hexdigest()
+
+
+def _private_create(path: Path, value: Mapping[str, Any]) -> None:
+    """Publish an immutable prepared receipt, never a replaceable policy."""
+    data = (json.dumps(value, sort_keys=True) + '\n').encode()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except FileExistsError:
+        if path.is_symlink() or json.loads(path.read_text()) != value:
+            raise PermissionError('maintenance receipt already has different input')
+        return
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(data); stream.flush(); os.fsync(stream.fileno())
+
+
+def prepare_planned_maintenance(*, old_path: Path, expected_policy_sha256: str,
+        expected_exits: Mapping[str, str], new_path: Path, source_identity: Mapping[str, Any],
+        request_key: str, custody: Mapping[str, Any]) -> Mapping[str, Any]:
+    """One owner-authorized source cutover after an exact ordinary closure.
+
+    No process or Store is opened here. The installer supplies fresh, verified
+    closed custody; filesystem permissions are not a substitute for that proof.
+    Old policy/exits remain immutable. The prepared successor is seeded with
+    the remaining crash allowance, so its initial planned launch is distinct
+    from automatic crash retries. Ordinary supervise(resume=True) stays strict.
+    """
+    old_path, new_path = Path(old_path), Path(new_path)
+    if (old_path == new_path or old_path.parent != new_path.parent or old_path.is_symlink()
+            or new_path.is_symlink() or not request_key or len(request_key) > 200):
+        raise PermissionError('exact same-home maintenance lineage/key required')
+    if (custody.get('ordinary_exit_status') != 0 or custody.get('store_closed') is not True
+            or custody.get('owner_alive') is not False or custody.get('supervisor_alive') is not False
+            or custody.get('native_active_or_uncertain') != 0 or custody.get('holds') != []
+            or custody.get('in_flight') != []):
+        raise PermissionError('planned maintenance requires verified closed, effect-free custody')
+    raw = old_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_policy_sha256:
+        raise PermissionError('prior supervision policy CAS differs')
+    old = json.loads(raw)
+    keys = ('argv', 'source_identity', 'max_restarts', 'restart_delay', 'max_restart_delay')
+    policy = {k: old[k] for k in keys}
+    if old.get('schema') != 'otto.owner-host-supervision.v2' or old.get('policy_sha256') != _digest(policy):
+        raise PermissionError('prior supervision policy is not exact v2')
+    paths = sorted(old_path.parent.glob(old_path.name + '.exit-*.json'))
+    measured = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    if measured != dict(expected_exits) or not paths:
+        raise PermissionError('exact completed supervision exit tail required')
+    exits = [json.loads(p.read_text()) for p in paths]
+    exits.sort(key=lambda x: x.get('index', -1))
+    if any(e.get('schema') != 'otto.owner-host-exit.v2' or e.get('policy_sha256') != old['policy_sha256']
+           or e.get('source_identity') != old['source_identity'] or e.get('index') != i
+           or type(e.get('exit_status')) is not int for i, e in enumerate(exits)):
+        raise PermissionError('uncertain, foreign or noncontiguous prior exit tail')
+    if exits[-1]['exit_status'] != 0:
+        raise PermissionError('maintenance cannot reinterpret a failed/UNKNOWN exit as an ordinary stop')
+    consumed = max(0, len(exits) - 1)
+    if consumed > old['max_restarts']:
+        raise PermissionError('prior automatic restart allowance exhausted')
+    if not isinstance(source_identity, Mapping) or not source_identity:
+        raise ValueError('new exact compatible source identity required')
+    successor = {**policy, 'source_identity': dict(source_identity),
+                 'max_restarts': old['max_restarts'] - consumed}
+    transition = {'schema': 'otto.owner-planned-maintenance.v1', 'request_key': request_key,
+        'prior_policy': str(old_path), 'prior_policy_sha256': expected_policy_sha256,
+        'prior_exits': measured, 'successor_policy': str(new_path),
+        'successor_policy_sha256': _digest(successor), 'source_identity': dict(source_identity),
+        'automatic_restart_budget': {'original_max': old.get('planned_maintenance', {}).get(
+            'automatic_restart_budget', {}).get('original_max', old['max_restarts']),
+            'previously_consumed': old.get('planned_maintenance', {}).get(
+                'automatic_restart_budget', {}).get('previously_consumed', 0) + consumed,
+            'remaining': successor['max_restarts']}, 'custody': dict(custody),
+        'provider_called': False, 'store_opened': False}
+    # One successor per prior ledger; replay of the exact preparation is safe
+    # even if the process stopped between publishing this record and its seed.
+    _private_create(old_path.with_name(old_path.name + '.maintenance.json'), transition)
+    _private_create(new_path, {'schema': 'otto.owner-host-supervision.v2', **successor,
+        'policy_sha256': _digest(successor), 'planned_maintenance': transition})
+    return transition
+
+
+def maintenance_restart_limit(intent: Mapping[str, Any]) -> int:
+    """Read a prepared successor; never issue a new budget from an intent."""
+    path = Path(intent['supervision_path'])
+    if not path.exists():
+        if intent.get('metadata', {}).get('planned_maintenance'):
+            raise PermissionError('planned maintenance policy was not prepared')
+        return 2  # Existing installed wrapper's declared original policy.
+    policy = json.loads(path.read_text())
+    transition = policy.get('planned_maintenance')
+    if not transition:
+        return 2
+    keys = ('argv', 'source_identity', 'max_restarts', 'restart_delay', 'max_restart_delay')
+    if (policy['argv'] != intent['argv'] or policy['source_identity'] != intent['metadata']
+            or policy['policy_sha256'] != _digest({k: policy[k] for k in keys})
+            or transition['successor_policy'] != str(path)
+            or transition['successor_policy_sha256'] != policy['policy_sha256']
+            or transition['automatic_restart_budget']['remaining'] != policy['max_restarts']):
+        raise PermissionError('prepared maintenance policy differs from installed intent')
+    prior = Path(transition['prior_policy'])
+    if (hashlib.sha256(prior.read_bytes()).hexdigest() != transition['prior_policy_sha256']
+            or json.loads(prior.with_name(prior.name + '.maintenance.json').read_text()) != transition
+            or {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in prior.parent.glob(
+                prior.name + '.exit-*.json')} != transition['prior_exits']):
+        raise PermissionError('retained maintenance ancestry changed')
+    return policy['max_restarts']
 
 
 def installed_argv(config: Mapping[str, Any], *, requested_limit: int) -> list[str]:
