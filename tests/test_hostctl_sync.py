@@ -73,6 +73,44 @@ class SyncDocsTests(_Fixture):
         plan = next(row for row in status["documents"] if row["path"] == "plan.md")
         self.assertEqual(plan["revision_ref"]["revision"], "rev-2", "Otto's edit stays the current revision")
 
+    def test_onboarding_open_checkout_is_held_then_exact_release_allows_sync(self):
+        self._init()
+        code, draft = self._ottoctl("portfolio", "onboarding", "create", "--actor", "claude-code-orchestrator",
+            "--request-id", "new-draft", "--title", "Draft", "--brief", "Plan this", "--format", "json")
+        self.assertEqual((code, draft["outcome"]), (0, "created"), draft)
+        project = draft["project_ref"]["id"]
+        sid = draft["open"]["session_id"]
+        code, held = self._ottoctl("project", "sync-docs", "--project", project, "--bundle", self.bundle)
+        self.assertEqual(held["outcome"], "held", held)
+        self.assertIn("scope is occupied", held["reason"])
+        self.assertIn("release-checkout", held["next_action"])
+        _, wrong = self._ottoctl("project", "release-checkout", "--project", project,
+            "--session-id", "wrong-session", "--request-key", "wrong-release")
+        self.assertEqual(wrong["outcome"], "rejected", wrong)
+        _, admitted = self._ottoctl("service", "admit-host", "--host", "codex")
+        self.assertIn(admitted["outcome"], ("admitted", "replayed"))
+        _, foreign = self._ottoctl("--host", "codex", "project", "release-checkout", "--project", project,
+            "--session-id", sid, "--request-key", "foreign-release")
+        self.assertIn(foreign["outcome"], ("error", "rejected"), foreign)
+        self.assertIn(foreign["error"]["code"], ("LookupError", "PermissionError"))
+        _, released = self._ottoctl("--host", "claude-code", "project", "release-checkout", "--project", project,
+            "--session-id", sid, "--request-key", "release-draft")
+        self.assertEqual(released["outcome"], "released", released)
+        self.assertTrue(released["files_preserved"])
+        self.assertFalse(released["dispatch"])
+        _, replay = self._ottoctl("--host", "claude-code", "project", "release-checkout", "--project", project,
+            "--session-id", sid, "--request-key", "release-draft")
+        self.assertIn(replay["outcome"], ("released", "replayed"), replay)
+        _, synced = self._ottoctl("--host", "claude-code", "project", "sync-docs", "--project", project, "--bundle", self.bundle)
+        self.assertEqual(synced["outcome"], "synced", synced)
+        _, after = self._ottoctl("--host", "claude-code", "project", "status", "--project", project)
+        self.assertEqual(after["lifecycle"], "pending")
+        self.assertEqual(after["tasks"], [])
+        self.assertEqual(after["assignments"], [])
+        self.assertTrue(all(d["matches_registered_bytes"] for d in after["documents"]
+                            if d["registered_raw_sha256"] is not None))
+        self.assertIn("brief.md", [d["path"] for d in after["documents"]])
+
     def _otto_side_edit(self, path, text):
         from otto.hostctl.cli import _resolve_project
         from otto.hostctl.owner import HostSession

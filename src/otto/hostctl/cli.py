@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--bundle", help="run directory (default: the registered source bundle)")
     sync.add_argument("--check", action="store_true", help="report drift only; record nothing")
 
+    release = project_sub.add_parser("release-checkout", help="release this host's exact project checkout, preserving files/history; no activation")
+    release.add_argument("--project", required=True)
+    release.add_argument("--session-id", required=True, help="exact session returned by onboarding/open")
+    release.add_argument("--request-key", required=True, help="stable logical request key")
+
     setup = sub.add_parser("operating-setup", help="read a project's operating setup readiness (pure read)")
     setup.add_argument("--project", required=True)
     setup.add_argument("--operation", choices=("read", "preview", "apply"), default="read",
@@ -440,6 +445,20 @@ def cmd_activate(args: argparse.Namespace) -> Any:
             "operating_setup": setup, "started": False,
             "next_action": "`ottoctl manager --project " + run_id + " start-manager "
                            "--schedule-id <operating_setup.setup.roles.manager>`"}
+
+
+def cmd_release_checkout(args: argparse.Namespace) -> Any:
+    """Own-host finite EDT release; no native-manager identity or takeover."""
+    config = host_config.load(_home(args))
+    host = _host_opt(args, config)
+    if host is None:
+        raise PermissionError("checkout release requires an admitted host")
+    with HostSession(config, host=host) as session:
+        record = _resolve_project(session, args.project)
+    with HostSession(config, host=host, project_ids=(record.ref.id,)) as session:
+        result = session.portfolio.release_project(record.ref.to_dict(),
+            session_id=args.session_id, actor=session.host_principal(), request_id=args.request_key)
+    return {**result, "provider_called": False}
 
 
 def cmd_sync_docs(args: argparse.Namespace) -> Any:
@@ -852,6 +871,7 @@ HOST_OPERATIONS = {
     ("projects", None): cmd_projects,
     ("project", "register"): cmd_register, ("project", "status"): cmd_project_status,
     ("project", "sync-docs"): cmd_sync_docs, ("project", "activate"): cmd_activate,
+    ("project", "release-checkout"): cmd_release_checkout,
     ("project", "import-history"): cmd_import_history,
     ("project", "depend"): cmd_project_portfolio,
     ("project", "dependencies"): cmd_project_portfolio,
