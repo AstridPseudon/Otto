@@ -141,6 +141,18 @@ class PreparedManagerWorkerDeliveryTests(unittest.TestCase):
         self.assertEqual(result['schedule_id'], self.prepared['schedule_id'])
         self.assertEqual(len(f.provider.calls), before + 1)
         self.assertEqual(f.port.read_due(self.worker['schedule_id']), self.worker_before)
+        callback = f.port.read_due(result['schedule_id'])
+        self.assertEqual(callback['target']['reported_task_ref'], self.worker_before['target']['task_ref'])
+        context = {'role': 'manager', 'assignment_ref': callback['assignment_ref'],
+            'generation': callback['generation'],
+            'occurrence_ref': {'schedule_id': callback['schedule_id']},
+            'native_session': {'id': callback['target']['native_id']}}
+        service = SimpleNamespace(server=SimpleNamespace(
+            state={'assignment_ref': callback['assignment_ref'], 'manager_generation': 1,
+                   'manager': 'manager'}, owner=f.owner, portfolio=f.app.portfolio, due_port=f.port))
+        parent = manager_consumption_parent(service, context, self.worker_before)
+        self.assertEqual(parent['callback_schedule_id'], callback['schedule_id'])
+        self.assertEqual(parent['child_schedule_id'], self.worker['schedule_id'])
         replay = f.app.continue_manager_from_worker(manager_schedule_id=self.prepared['schedule_id'],
             worker_schedule_id=self.worker['schedule_id'], execute=True)
         self.assertEqual(replay['outcome'], 'replayed', replay)

@@ -1408,6 +1408,7 @@ class ExecutionApplication:
                 instruction=prior.instruction + "\nInspect the observed settled worker result and continue ready work; worker success is not acceptance.",
                 message=(prior.message or "") + "\nObserved owner worker-result context:\n" +
                     json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+                target={**prior.target, "reported_task_ref": worker.target["task_ref"]},
                 host_evidence={**(prior.host_evidence or {}), "worker_result_continuation": evidence}).to_dict(),
                 request_id=key + ":deliver-worker-result", expected_version=prior.version)
             return self.recover(schedule_id=prior.schedule_id, execute=execute)
