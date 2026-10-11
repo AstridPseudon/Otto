@@ -28,11 +28,13 @@ class RoleContextError(ValueError):
     """A declared role source is missing, stale, or incompatible."""
 
 
-def supporting_context(base: Mapping[str, Any], reader: Any, *, exact_direction_inputs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def supporting_context(base: Mapping[str, Any], reader: Any, *, exact_direction_inputs: list[dict[str, Any]] | None = None,
+                       completed_support_refs: tuple[Mapping[str, Any], ...] = ()) -> list[dict[str, Any]]:
     refs = base.get("content", {}).get("supporting_refs", [])
     if not isinstance(refs, list) or len(refs) > 32:
         raise RoleContextError("BASE supporting_refs must be a bounded list")
     result, seen = [], {}
+    retained = [owner_ref(ref, "completed supporting reference") for ref in completed_support_refs]
     authorized = {tuple(item["ref"][k] for k in ("authority", "kind", "id")): item
                   for item in (exact_direction_inputs or [])}
     for raw in refs:
@@ -52,14 +54,26 @@ def supporting_context(base: Mapping[str, Any], reader: Any, *, exact_direction_
             result.append(dict(item, source="scope-authorized assignment direction", adopted_by=base["resource_ref"]))
             continue
         try:
-            observed = json_value(reader.read(ResourceRef.from_dict({k: ref[k] for k in ("authority", "kind", "id")})))
+            # Only completed-result reconstruction may resolve its exact
+            # immutable delivered support pins. New delivery still reads HEAD.
+            completed = ref in retained
+            lookup = {k: ref[k] for k in ("authority", "kind", "id")}
+            observed = json_value(reader.read(ResourceRef.from_dict(lookup)))
+            if completed:
+                exact = json_value(reader.read(ResourceRef.from_dict(ref)))
+                if (not isinstance(exact, Mapping) or exact.get("identity") != ref
+                        or exact.get("revision") != ref["revision"] or "content" not in exact):
+                    raise RoleContextError("completed supporting revision unavailable: " + ref["id"])
+                # Immutable DAT reads expose revision/content separately; current
+                # metadata still supplies the live document identity/role.
+                observed = dict(observed, revision={"revision": exact["revision"], "content": exact["content"]})
         except Exception as exc:
             raise RoleContextError("required supporting context unavailable: " + ref["id"]) from exc
         revision = observed.get("revision") if isinstance(observed, Mapping) else None
         current = observed.get("current_revision") if isinstance(observed, Mapping) else None
         document = observed.get("document") if isinstance(observed, Mapping) else None
         if (not isinstance(revision, Mapping) or revision.get("revision") != ref["revision"]
-                or not isinstance(current, Mapping) or current != ref
+                or (not completed and (not isinstance(current, Mapping) or current != ref))
                 or not isinstance(document, Mapping)
                 or not isinstance(document.get("ref"), Mapping)
                 or any(document["ref"].get(k) != ref[k] for k in ("authority", "kind", "id"))

@@ -250,6 +250,7 @@ def prepare_canonical_assignment_role_brief(
     supervisor_reader: Callable[[], Mapping[str, Any] | None] | None = None,
     include_role_context: bool = True,
     direction_context_reader: Any = None,
+    completed_support_refs: tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Prepare role instructions only from current canonical owner reads.
 
@@ -267,6 +268,7 @@ def prepare_canonical_assignment_role_brief(
                 mandate_reader=mandate_reader, resource_reader=resource_reader, as_of=as_of,
                 task_ref=task_ref, task_reader=task_reader,
                 direction_context_reader=direction_context_reader,
+                completed_support_refs=completed_support_refs,
             )
         except OperatingBriefError as exc:
             raise OrchestratorRouteError(str(exc)) from exc

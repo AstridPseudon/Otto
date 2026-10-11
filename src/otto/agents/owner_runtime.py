@@ -1212,7 +1212,29 @@ class CanonicalRoleRuntime:
         )
         due = self.due_port.read_due(schedule_id) or {}
         original = (((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("result") or {})
-        retained_context = ((original.get("resource_evidence") or {}).get("brief") or {}).get("context", {}).get("operating_setup")
+        original_brief = (original.get("resource_evidence") or {}).get("brief") or {}
+        retained_context = original_brief.get("context", {}).get("operating_setup")
+        completed_support_refs = ()
+        # A completed, authenticated worker cannot be invalidated by later
+        # supporting-document HEAD changes. Reconstruct only the immutable
+        # pins actually delivered, while retaining current assignment/mandate,
+        # task membership and exact brief/native authorization checks below.
+        if (original.get("outcome") == "unknown"
+                and original.get("unknown_reason") == "adopted operating setup changed before delivery"
+                and original.get("context_digest_verified") is True
+                and (original.get("raw_result") or {}).get("work_envelope", {}).get("exit_status") == 0):
+            context = (original.get("raw_result") or {}).get("work_envelope", {}).get("host_evidence", {}).get("otto_host_turn_context")
+            parsed = self.native_result_verifier.observe_context(context,
+                expected_session_id=original.get("physical_session_id"),
+                expected_turn_id=original.get("observed_turn_id"),
+                expected_profile=original.get("requested_profile"),
+                expected_read_targets=original_brief.get("instruction_contract", {}).get("read_targets"),
+                expected_read_scope=original_brief.get("instruction_contract", {}).get("read_scope"))
+            if (parsed.get("task_bound_evidence") != original.get("task_bound_evidence")
+                    or parsed.get("model") != original.get("observed_model")
+                    or parsed.get("reasoning") != original.get("observed_reasoning")):
+                raise OwnerRoleRuntimeError("completed worker retained native evidence differs")
+            completed_support_refs = tuple(item["ref"] for item in original_brief.get("context", {}).get("supporting_context", []))
 
         def current_brief_digest() -> str:
             prepared = prepare_canonical_assignment_role_brief(
@@ -1227,6 +1249,7 @@ class CanonicalRoleRuntime:
                 required_resource_names=required_resource_names,
                 task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
                 operating_context_reader=lambda: retained_context,
+                completed_support_refs=completed_support_refs,
                 include_role_context="introduction" in ((original.get("resource_evidence") or {}).get("brief") or {}).get("operating_core", {}),
             )
             return _canonical_operation_evidence(

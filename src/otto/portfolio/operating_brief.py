@@ -476,6 +476,7 @@ def prepare_canonical_operating_brief(
     task_ref: Optional[Mapping[str, Any]] = None,
     task_reader: Optional[Callable[[Mapping[str, Any]], Any]] = None,
     direction_context_reader: Any = None,
+    completed_support_refs: tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Prepare a brief only from exact records returned by trusted owner readers.
 
@@ -629,7 +630,7 @@ def prepare_canonical_operating_brief(
             project_ref=project_pin, task_ref=task_pin)
     try:
         directions = read_directions()
-        sources = supporting_context(base, resource_reader, exact_direction_inputs=direction_inputs(directions))
+        sources = supporting_context(base, resource_reader, exact_direction_inputs=direction_inputs(directions), completed_support_refs=completed_support_refs)
     except ValueError as exc:
         raise OperatingBriefError(str(exc)) from exc
     base_content = base.get("content")
@@ -733,7 +734,7 @@ def prepare_canonical_operating_brief(
             raise OperatingBriefError("adopted BASE role resource changed during refresh")
         fresh_directions = read_directions()
         fresh_sources = supporting_context(fresh_attachments[0], resource_reader,
-            exact_direction_inputs=direction_inputs(fresh_directions))
+            exact_direction_inputs=direction_inputs(fresh_directions), completed_support_refs=completed_support_refs)
     except (ResourceSyncError, RoleContextError) as exc:
         raise OperatingBriefError(f"adopted BASE resource refresh failed: {exc}") from exc
     comparisons = [(project, fresh_project), (assignment, fresh_assignment), (mandate_record, fresh_mandate)]
