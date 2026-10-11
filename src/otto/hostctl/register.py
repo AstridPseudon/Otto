@@ -87,11 +87,21 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     title = heading if heading.startswith(run_id) else (run_id + ": " + heading if heading else run_id)
     task_ids = [task["id"] for task in bundle["tasks"]]
     tasks = []
+    card_dependencies = run.get("card_dependencies") or {}
     for task in bundle["tasks"]:
         internal = [dep for dep in task["deps"] if dep in task_ids]
+        declared_dependencies = card_dependencies.get(task["id"])
+        if declared_dependencies is None:
+            # The Megado parser intentionally extracts local task ids only;
+            # retain explicit milestone/external tokens from the source too.
+            dependency_text = re.sub(r"\([^)]*\)", " ", task.get("deps_text") or "")
+            declared_dependencies = [token.strip().strip("*`") for token in
+                re.split(r",|;|\band\b", dependency_text, flags=re.I)
+                if "#" in token or token.strip().startswith("user:")]
         custom = {"megado": {"phase": task["phase"], "route": task["route"], "route_text": task["route_text"],
                              "repo": task["repo"], "who": task["who"], "deps_text": task["deps_text"],
                              "external_deps": [dep for dep in task["deps"] if dep not in task_ids],
+                             "card_dependencies": list(declared_dependencies or ()),
                              "source": "tasklist.md"}}
         # The alias keeps the Megado id (M1, P1–P7, ...) as the durable task handle.
         value = {"id": task["id"], "alias": task["id"], "title": task["title"] or task["id"], "outcome": task["outcome"],
@@ -99,16 +109,31 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
         tasks.append(value)
     roles = run.get("roles") or {}
     slot_bindings = {}
+    profile_names = set()
     for slot, default in profile["roles"].items():
         configured = roles.get(slot) or {}
-        slot_bindings[slot] = {"adapter": profile["adapter"],
-                               "model": configured.get("model", default["model"]),
+        model = configured.get("model", default["model"])
+        # File-mode runs can intentionally mix adapter families. Preserve the
+        # declared model family in drafts; an adapter is runtime authority and
+        # is only inferred for the two built-in model namespaces.
+        inferred = ("codex" if str(model).startswith(("gpt-", "o1", "o3", "o4")) else
+                    "claude-code" if str(model).startswith("claude-") else profile["adapter"])
+        adapter = configured.get("adapter") or inferred
+        if adapter == "codex":
+            profile_names.add("codex")
+        elif adapter == "claude-code":
+            profile_names.add("claude")
+        else:
+            profile_names.add(str(adapter))
+        slot_bindings[slot] = {"adapter": adapter,
+                               "model": model,
                                "reasoning": configured.get("reasoning", default["reasoning"]),
                                "provenance": {"model": "run file roles." + slot if "model" in configured
                                               else "host profile " + profile["name"],
                                               "reasoning": "run file roles." + slot if "reasoning" in configured
                                               else "host profile " + profile["name"]}}
-    configuration = {"schema": "otto.role-configuration.v1", "model_profile": profile["name"],
+    configuration = {"schema": "otto.role-configuration.v1",
+                     "model_profile": next(iter(profile_names)) if len(profile_names) == 1 else "mixed",
                      "roles": slot_bindings,
                      "role_bindings": {"manager": "coordinator", "orchestrator": "oracle"},
                      "worker_routes": {"normal": "worker_normal", "xhard": "worker_xhard"},
@@ -209,9 +234,13 @@ def register(session: Any, registration: Mapping[str, Any], *, key: Optional[str
                                  "workspace": (created.get("workspace") or {}).get("locator")}
     # 2. Registration facts on the draft (custom), through its own workspace.
     current = session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id))
-    if ((current.payload.get("custom") or {}).get("otto_host_registration") or {}).get("run_id") != run_id:
+    current_custom = current.payload.get("custom") or {}
+    wanted_custom = {**current_custom, **registration["custom"]}
+    if current_custom != wanted_custom:
         # Use the draft's own open workspace (create_draft leaves it open).
-        _check_in(session, created["project_ref"], principal, key + ":registration",
+        custom_key = hashlib.sha256(canonical_json(registration["custom"]).encode("utf-8")).hexdigest()[:16]
+        _check_in(session, created["project_ref"], principal,
+                  key + ":registration:" + custom_key + ":" + str(current.version),
                   lambda draft: draft.update(custom={**(draft.get("custom") or {}), **registration["custom"]}),
                   opened=(created.get("workspace") or {}).get("projection"))
     receipt["steps"]["registration"] = {"custom": "otto_host_registration", "lifecycle": "pending",

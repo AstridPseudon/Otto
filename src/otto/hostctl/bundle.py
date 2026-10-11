@@ -231,6 +231,11 @@ def _build_tasks(tables) -> list[dict]:
 
 
 def _make_task(phase, cells: dict, known: set) -> dict:
+    cells = dict(cells)
+    for alias, canonical in (("acceptance evidence", "proof"),
+                             ("deps (accepted milestones)", "deps"), ("executor", "who")):
+        if alias in cells and canonical not in cells:
+            cells[canonical] = cells[alias]
     tid = _clean_id(cells.get("id", ""))
     deps_text = cells["deps"].strip() if "deps" in cells else None
     route_text = cells["route"].strip() if "route" in cells else None
