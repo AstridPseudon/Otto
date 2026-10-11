@@ -21,7 +21,7 @@ class PreinitializationCustodyTests(unittest.TestCase):
   due=f.app._read(self.schedule)
   result={'assignment_ref':due.assignment_ref,'generation':1,'logical_request_key':due.in_flight_request,
    'outcome':'failed','operation':'invoke','error':deepcopy(PREINITIALIZATION_ERROR),'unknown_reason':PREINITIALIZATION_ERROR['message'],
-   'delivery_state':'unknown','replayed':False,'physical_session_id':None,'native_session_id':None,'observed_model':None,'observed_reasoning':None,'timeout':None,
+   'delivery_state':'unknown','replayed':False,'physical_session_id':None,'native_session_id':None,'observed_model':None,'observed_reasoning':None,'timeout':False,
    'logical_agent_id':'manager','owner':'manager','project_ref':due.target['project_ref'],'task_ref':due.target['task_ref'],
    'requested_model':due.requested_model,'requested_reasoning':due.requested_reasoning,'requested_profile':due.profile,
    'resource_evidence':{'brief':{'context':{'canonical_snapshot':{'native_session':None,'assignment_ref':due.assignment_ref,'generation':1,'task_ref':due.target['task_ref']}}}}}
@@ -40,7 +40,7 @@ class PreinitializationCustodyTests(unittest.TestCase):
   prepared=f.app.prepare_role(role='manager',project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),assignment_ref=self.manager.ref.to_dict(),generation=1,mandate_ref=self.mandate,context_refs=(self.guide,self.mandate),request_key='separate-delivery',instruction='Useful same-task delivery',model='gpt-test',reasoning='high',profile='workspace-write',native_session_id=None,binding_schedule_id=self.schedule)
   self.assertNotEqual(prepared['schedule_id'],self.schedule);self.assertEqual(f.app._read(prepared['schedule_id']).execution_mode,'fresh_manager');self.assertEqual(f.provider.calls,[])
  def test_other_failure_or_initializer_or_unknown_cannot_release(self):
-  for name,fn in [('error',lambda a:a['result']['error'].update(message='other failure')),('native',lambda a:a['result'].update(native_session_id='started')),('raw',lambda a:a['result'].update(raw_result={'initializer':True})),('unknown',lambda a:a['result'].update(outcome='unknown')),('authorized',lambda a:a.update(delivery_authorization={'status':'authorized'}))]:
+  for name,fn in [('error',lambda a:a['result']['error'].update(message='other failure')),('native',lambda a:a['result'].update(native_session_id='started')),('raw',lambda a:a['result'].update(raw_result={'initializer':True})),('unknown',lambda a:a['result'].update(outcome='unknown')),('timeout',lambda a:a['result'].update(timeout=True)),('authorized',lambda a:a.update(delivery_authorization={'status':'authorized'}))]:
    with self.subTest(name=name):
     original=deepcopy(self.before['host_evidence']);due=self.f.app._read(self.schedule);host=deepcopy(original);fn(host['gateway_attempt']);self.f.port.save_due(self.schedule,replace(due,host_evidence=host).to_dict(),request_id='negative-'+name,expected_version=due.version)
     with self.assertRaises(OccurrencePreparationError):self.release()

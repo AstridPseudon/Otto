@@ -401,7 +401,8 @@ def inspect_preinitialization_role(execution, *, schedule_id, _due=None):
         and result.get('error')==PREINITIALIZATION_ERROR
         and result.get('unknown_reason')==PREINITIALIZATION_ERROR['message']
         and result.get('delivery_state')=='unknown' and result.get('replayed') is False
-        and all(result.get(k) is None for k in ('physical_session_id','native_session_id','observed_model','observed_reasoning','timeout'))
+        and result.get('timeout') is False
+        and all(result.get(k) is None for k in ('physical_session_id','native_session_id','observed_model','observed_reasoning'))
         and all(attempt.get(k) is None for k in ('physical_session_id','delivery_authorization','delivery_admission','manager_acceptance')),
         'failed result is not exact guard-before-initializer evidence')
     for body in(attempt,result):
