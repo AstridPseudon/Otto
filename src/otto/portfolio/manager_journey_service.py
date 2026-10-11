@@ -785,6 +785,20 @@ class ManagerJourneyService:
             return after_owner(result, complete)
         return self.server.handle(request)
 
+    def root_direction_client(self, request: Mapping[str, Any], root: Any) -> Mapping[str, Any]:
+        """Trusted scoped-client handler after canonical policy verification.
+
+        This is not a JSON dispatch command. The installed lane supplies the
+        canonical root object; neither the payload nor a secondary root selects
+        an owner actor or direction subject.
+        """
+        from .root_direction_client import RootDirectionAuthoring
+        current = self.server.state['orchestrator_assignment_ref']
+        if (root.ref.to_dict() != current or root.principal != self.server.owner.owner_actor.actor
+                or root.role != 'orchestrator' or root.generation < 1):
+            raise PermissionError('direction client is not the exact current host owner root')
+        return RootDirectionAuthoring(self).call(request, root)
+
     def _owner_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Finite external owner capability; never native process identity.
 
@@ -794,6 +808,12 @@ class ManagerJourneyService:
         if not callable(self.authoring_authorizer):
             raise PermissionError("external owner context ingress is not installed")
         actor = self.authoring_authorizer(request)
+        owner = self.server.owner
+        if actor != owner.owner_actor:
+            raise PermissionError("owner context requires the authenticated service owner")
+        return self._authenticated_owner_context(request, actor)
+
+    def _authenticated_owner_context(self, request: Mapping[str, Any], actor: Any) -> Mapping[str, Any]:
         owner = self.server.owner
         if actor != owner.owner_actor:
             raise PermissionError("owner context requires the authenticated service owner")

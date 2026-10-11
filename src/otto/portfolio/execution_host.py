@@ -1314,6 +1314,19 @@ class ExecutionHost:
                 self.owner_path.unlink()
                 self._owns_owner_file = False
 
+    def prepare_root_direction_adoption(self) -> Mapping[str, Any]:
+        """Existing owner-lane boundary for a root-only direction/BASE change.
+
+        Preserve every retained native job/UNKNOWN fence. The quiescent update
+        closes future admission so runtime joins can be normally requalified.
+        """
+        with self._lock:
+            if self._executions or self._capacity_holds or self._external_waiting:
+                return {'outcome': 'held', 'reason': 'retained native obligations must settle before root direction adoption',
+                        'retry': False, 'runtime_requalification_required': True}
+            self._closing = True
+        return {'outcome': 'quiescent', 'provider_called': False}
+
     def begin_drain(self) -> Mapping[str, Any]:
         """Stop admission without joining the command that requests the drain.
 

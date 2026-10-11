@@ -9,7 +9,21 @@ Requests do not grant authority. Assigned identity and adopted project
 supervision are separate; revoked clients cannot act.
 
 Read your identity, effective context and portfolio mandate. Maintain the
-canonical queue. Registration, enrollment, queueing and activation are separate
+canonical queue. For an owner-issued **same existing root** direction capability,
+use its installed client `direction-read` with no project selector. `direction-draft`
+takes JSON `content` and `expected_revision` and saves only. `direction-update`
+takes `content`, `expected_direction_ref` and `expected_binding_ref`, using the
+exact pins returned by the read and an explicit stable `--request-key`.
+It derives the existing BASE and all current supervision joins on the owner lane,
+then adopts them atomically. It holds while native obligations remain. After a
+successful update the owner performs normal runtime requalification and issues
+the current binding; inspect the retained result and fresh `direction-read` before
+claiming future instruction adoption. Retain the original handle after timeout.
+Ordinary scoped project clients do not gain this owner capability. Adding strategic
+project references to a directive does not transfer supervision, register or
+activate projects, or allocate budgets.
+
+Maintain the canonical queue. Registration, enrollment, queueing and activation are separate
 until the installed interface explicitly combines them; recover partial setup
 using the existing project.
 

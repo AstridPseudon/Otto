@@ -14,7 +14,9 @@ import argparse
 import json
 from . import client_lanes as lanes
 
-OPERATIONS = frozenset({'status', 'whoami', 'effective-context', 'portfolio',
+ROOT_DIRECTION_OPERATIONS = frozenset({'direction-read', 'direction-draft', 'direction-update'})
+
+OPERATIONS = ROOT_DIRECTION_OPERATIONS | frozenset({'status', 'whoami', 'effective-context', 'portfolio',
     'read-manager', 'read-help', 'respond-help', 'delivery-ack',
     'project-authoring', 'manager-start'})
 
@@ -75,7 +77,7 @@ class OrchestratorAdmissions:
         if (not isinstance(project_ids, list) or not project_ids or len(project_ids) > 16
                 or len(set(project_ids)) != len(project_ids)
                 or not set(project_ids).issubset(value['requested_project_ids'])
-                or not isinstance(operations, list) or not operations or not set(operations).issubset(OPERATIONS)):
+                or not isinstance(operations, list) or not operations or not set(operations).issubset(OPERATIONS - ROOT_DIRECTION_OPERATIONS)):
             raise PermissionError('owner must issue finite requested project and operation scope')
         if any(isinstance(r.value, Mapping) and r.value.get('schema') == 'otto.orchestrator-enrollment-disposition.v1' and r.value.get('state') == 'denied' and r.value.get('request_ref') == request_ref for r in self.owner.assignments.list_observations(main.ref, kind='report')):
             raise PermissionError('enrollment request was canonically denied')
@@ -101,6 +103,31 @@ class OrchestratorAdmissions:
                   'operations': sorted(set(operations)), 'request_namespace': root.ref.id}
         report = self.owner.assignments.append_report(root.ref, policy, expected_generation=root.generation,
             logical_request_key='orchestrator-policy:' + request_key, actor=actor)
+        return {**policy, 'policy_ref': json_value(report.ref), 'supervision_adopted': False}
+
+    def admit_current_root(self, *, actor, conversation_ref, operations, request_key):
+        """Trusted deployment only: issue a lane for the EXISTING owner root.
+
+        No assignment, enrollment, project transfer or execution grant is made.
+        The exact canonical conversation and current owner principal must match.
+        """
+        root = self._owner(actor); _key(request_key)
+        if (root.principal != actor.actor or json_value(root.session) != conversation_ref
+                or not isinstance(conversation_ref, Mapping)
+                or set(conversation_ref) != {'host', 'native_id'}
+                or any(not isinstance(v, str) or not v.strip() for v in conversation_ref.values())
+                or not isinstance(operations, list) or not operations
+                or not set(operations).issubset(ROOT_DIRECTION_OPERATIONS | {'whoami', 'status'})):
+            raise PermissionError('current owner root conversation and finite direction capability required')
+        policy = {'schema': 'otto.orchestrator-client-policy.v1', 'state': 'assigned',
+            'assignment_ref': root.ref.to_dict(), 'generation': root.generation,
+            'principal': root.principal, 'portfolio_ref': json_value(root.scope),
+            'conversation_ref': dict(conversation_ref), 'project_ids': [],
+            'operations': sorted(set(operations)), 'request_namespace': root.ref.id,
+            'root_direction_authority': True}
+        report = self.owner.assignments.append_report(root.ref, policy,
+            expected_generation=root.generation, logical_request_key='owner-root-policy:' + request_key,
+            actor=actor)
         return {**policy, 'policy_ref': json_value(report.ref), 'supervision_adopted': False}
 
     def revoke(self, *, actor, binding, request_key):
@@ -150,6 +177,16 @@ class ScopedOrchestratorClient:
             raise
         if operation not in self.binding['operations'] or operation not in self.handlers:
             raise PermissionError('operation is outside the issued client scope')
+        if operation in ROOT_DIRECTION_OPERATIONS:
+            if (self.binding.get('root_direction_authority') is not True
+                    or root.principal != self.owner.owner_actor.actor
+                    or request.get('project_id') is not None):
+                raise PermissionError('direction authoring requires the issued current owner-root capability')
+            payload = request.get('request') or {}
+            if not isinstance(payload, Mapping) or set(payload) & {'actor', 'principal', 'assignment_ref', 'generation', 'privilege', 'project_ref', 'project_id'}:
+                raise PermissionError('direction payload cannot select authority or scope')
+            key = _key(request.get('request_key'))
+            return self.handlers[operation]({**request, 'request_key': self.binding['request_namespace'] + ':' + key}, root)
         project_id = request.get('project_id')
         if project_id is not None and project_id not in self.binding['project_ids']:
             raise PermissionError('project is outside the issued orchestrator scope')
@@ -282,13 +319,16 @@ def main(argv=None):
     enroll.add_argument('--project-id', action='append', required=True)
     for operation in sorted(OPERATIONS):
         command = sub.add_parser(operation)
-        command.add_argument('--request-key', required=operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start'})
+        command.add_argument('--request-key', required=operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'})
         command.add_argument('--project-id')
-        if operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start'}:
+        if operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'}:
             command.add_argument('--request', required=True, help=(
                 'respond-help JSON contains only issue_id, authority_source, response, '
                 'proposed_solution and next_action; command and request_key are supplied by this client.'
-                if operation == 'respond-help' else 'Operation payload JSON; routing and request key stay in CLI flags.'))
+                if operation == 'respond-help' else
+                'content + expected_revision; saves a draft without adoption.' if operation == 'direction-draft' else
+                'content + expected_direction_ref + expected_binding_ref. Uses current own-root policy; atomically adopts direction/BASE/current joins only at a quiescent boundary; no activation or budgets.' if operation == 'direction-update' else
+                'Operation payload JSON; routing and request key stay in CLI flags.'))
     command = sub.add_parser('request-status'); command.add_argument('--request-id', required=True)
     args = parser.parse_args(argv)
     connection = lanes.read_private_json(Path(args.connection))
