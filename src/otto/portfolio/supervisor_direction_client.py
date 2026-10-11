@@ -11,6 +11,7 @@ from herzchen.contracts import ResourceRef, TransactionContext, canonical_json
 from herzchen.content import ContentDocument, ContentRevision
 from herzchen.content.instructions import validate_instruction_content
 from .owner_readers import json_value
+from .manager_guide import resolve_required_instruction_adoption
 
 
 OPERATIONS = frozenset({'supervisor-direction-read', 'supervisor-direction-draft',
@@ -139,10 +140,11 @@ class SupervisorDirectionAuthoring:
         _, _, hold = app._manager_anchor(prior, manager, schedule='supervisor-directive-pending', purpose='supervisor directive')
         if hold is not None: return {**common, **hold, 'canonical_effect_recorded': False}
         resources = deepcopy(manager.payload.get('resource_adoptions', []))
-        bases = [r for r in resources if r['resource_name'] == 'BASE' and r['required']]
-        if len(bases) != 1: raise PermissionError('exactly one required manager BASE is needed')
-        base = bases[0]
-        before = json_value(owner.content.read(ResourceRef.from_dict(base['resource_ref'])))
+        try:
+            base, before, _ = resolve_required_instruction_adoption(
+                resources, state.get('guide_ref'), owner.content)
+        except (KeyError, TypeError, ValueError, PermissionError) as exc:
+            raise PermissionError('current manager guide adoption is not exact and valid') from exc
         body = deepcopy(before['content'])
         old = direction['assignment_adopted_ref']
         if body.get('supporting_refs', []).count(old) != 1:

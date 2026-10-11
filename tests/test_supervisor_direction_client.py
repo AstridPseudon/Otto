@@ -43,13 +43,17 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   self.pin=doc['record']['payload']['current_revision']
   surface=f.owner.direction_surface();bind=surface.initial_bind(subject,{**self.pin,'revision':None},logical_request_key='direction-bind')
   surface.update(subject,self.pin,expected_binding_ref=bind['binding_ref'],logical_request_key='initial-direction')
-  before=f.owner.content.read(ResourceRef.from_dict(guide));body=deepcopy(before['content']);body['name']='BASE';body['supporting_refs']=[self.pin]
+  self.manager_base_name='shared-database-read-index-adoption-20261011-v1-onboarding-BASE@rev-1'
+  before=f.owner.content.read(ResourceRef.from_dict(guide));body=deepcopy(before['content']);body['name']=self.manager_base_name;body['supporting_refs']=[self.pin]
   document=__import__('herzchen.content',fromlist=['ContentDocument']).ContentDocument.from_dict(f.owner.content.read(ResourceRef.from_dict({**guide,'revision':None}))['document'])
   rev=ContentRevision(document.ref,'rev-2',body,f.actor,parent_revision=guide['revision'])
   from herzchen.contracts import TransactionContext
   tx=TransactionContext(f.actor,'BASE-body',hashlib.sha256(b'BASE-body').hexdigest(),expected_revision=guide['revision'])
   f.owner.content.execute(f.owner.content.build_append_revision(tx,document,rev))
-  resources=[{'resource_ref':rev.ref.to_dict(),'resource_name':'BASE','content_digest':validate_instruction_content(body),'required':True}]
+  # A required literal BASE decoy must not override the exact trusted guide
+  # revision selected by the manager's current state.
+  resources=[{'resource_ref':rev.ref.to_dict(),'resource_name':self.manager_base_name,'content_digest':validate_instruction_content(body),'required':True},
+   {'resource_ref':guide,'resource_name':'BASE','content_digest':'decoy','required':True}]
   manager=f.owner.assignments.adopt_resources(manager.ref,resources=resources,expected_revision=manager.revision,expected_generation=1,logical_request_key='BASE-adopt',actor=f.actor)
   prepared=f.app.prepare_role(role='manager',project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),assignment_ref=manager.ref.to_dict(),generation=1,mandate_ref=mandate,context_refs=(rev.ref.to_dict(),mandate),request_key='settled-manager',instruction='Inspect task',model='gpt-test',reasoning='high',profile='workspace-write',native_session_id='manager-session')
   launched=f.app.start(schedule_id=prepared['schedule_id']);self.assertEqual(launched['outcome'],'succeeded',launched)

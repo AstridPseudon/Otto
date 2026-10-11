@@ -21,6 +21,7 @@ from .execution_operations import (
     validate_owner_timeout_seconds,
 )
 from .owner_readers import json_value, owner_ref, project_reader, task_reader
+from .manager_guide import resolve_required_instruction_adoption
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
 from .recovery_timing import stable_correlation_id, timing_from_receipt
@@ -250,11 +251,15 @@ class ExecutionApplication:
             return self.recover(schedule_id=schedule, execute=execute)
         _, _, held = self._manager_anchor(prior, current, schedule=schedule, purpose='supervisor directive')
         if held is not None: return held
-        bases = [r['resource_ref'] for r in current.payload.get('resource_adoptions', ())
-                 if r['required'] and r['resource_name'] == 'BASE']
-        if len(bases) != 1 or bases[0] != value['BASE_ref']:
-            raise OccurrencePreparationError('directive callback requires exact newly adopted BASE')
-        guide = bases[0]
+        content_port = getattr(self.portfolio.operations, 'content_port', None)
+        if content_port is None:
+            raise OccurrencePreparationError('directive callback cannot validate its adopted guide')
+        try:
+            _, _, _ = resolve_required_instruction_adoption(
+                current.payload.get('resource_adoptions', ()), value.get('BASE_ref'), content_port)
+            guide = ResourceRef.from_dict(value['BASE_ref']).to_dict()
+        except (KeyError, TypeError, ValueError, PermissionError) as exc:
+            raise OccurrencePreparationError('directive callback adopted guide is not exact and valid') from exc
         due = build_manager_callback_due(prior, schedule_id=schedule, request_key=schedule,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target['mandate_ref'],
             due_at=self._now(), timeout_seconds=prior.timeout_seconds, native_adapter=self.native_adapter_identity())
