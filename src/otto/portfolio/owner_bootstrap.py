@@ -684,6 +684,7 @@ class PortfolioOwnerBootstrap:
             port=self.graph.command_port,
             reader=self.graph.reader,
             binding=self.binding,
+            dependency_owner_actor=self.owner_actor,
             sheet_port=self.sheet.command_port,
             content_port=self.content.command_port,
             assignments_port=self.assignments.command_port,

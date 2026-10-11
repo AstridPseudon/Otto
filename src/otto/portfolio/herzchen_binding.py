@@ -193,6 +193,7 @@ class FiniteWorkOperations:
         create_open_port: Any = None,
         orchestration_port: Any = None,
         orchestration_portfolio: Any = None,
+        dependency_owner_actor: Any = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
         content_command_guard: Any = None,
         direction_context_reader: Any = None,
@@ -210,6 +211,7 @@ class FiniteWorkOperations:
         self.reader = _ScopedProjectReader(reader, project_read_grant, binding.authority)
         self.project_read_grant = project_read_grant
         self.binding = binding
+        self.dependency_owner_actor = dependency_owner_actor
         self.sheet_port = sheet_port
         self.content_port = content_port
         self.content_command_guard = content_command_guard
@@ -389,6 +391,20 @@ class FiniteWorkOperations:
         return metadata
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if operation in {"work.project.dependency.link", "work.project.dependency.remove", "work.project.dependencies"}:
+            from .dependencies import PortfolioDependencies
+            authenticated = self._actor(actor)
+            dependencies = PortfolioDependencies(self.port, self._owner_reader, actor=authenticated,
+                owner_actor=self.dependency_owner_actor,
+                portfolio_ref=_orchestration_portfolio_for(self))
+            try:
+                if operation == "work.project.dependencies":
+                    return {"outcome": "read", **dependencies.readiness(payload["project_ref"])}
+                return dependencies.change(payload["project_ref"], payload["dependency_ref"],
+                    request_id=request_id, remove=operation.endswith(".remove"))
+            except (ValueError, PermissionError) as error:
+                return {"outcome": "error", "error": {"code": type(error).__name__,
+                    "message": str(error), "operation": operation}, "replayed": False, "event_ids": []}
         if operation == "work.project.export":
             return self._export_project(payload, request_id=request_id)
         if operation == "work.project.import":
