@@ -277,6 +277,14 @@ def command_result_summary(value: Any) -> Any:
     for key in ("native_manager", "manager_assignment", "occurrence"):
         item = value.get(key)
         if isinstance(item, dict):
+            if key == "occurrence" and set(item) == {"schedule_id", "assignment_ref", "generation", "project_ref", "task_ref", "parent"}:
+                from .retained_projection import exact_occurrence_summary
+                occurrence = exact_occurrence_summary(item)
+                if occurrence is not None:
+                    summary[key] = occurrence
+                else:
+                    summary["occurrence_availability"] = "detail-required; exact handle cannot be partially projected"
+                continue
             summary[key] = {field: data for field in fields if field in item
                 and isinstance((data := item[field]), (str, bool, int, type(None)))
                 and (not isinstance(data, str) or len(data) <= 512)}

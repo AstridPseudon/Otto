@@ -49,6 +49,28 @@ def exact_ref(value: Any) -> dict[str, Any] | None:
     return {k: value.get(k) for k in ("authority", "kind", "id", "revision")}
 
 
+def exact_occurrence_summary(value: Any) -> dict[str, Any] | None:
+    """Preserve one complete handle, including parent:null; never clip its pins."""
+    fields = ("schedule_id", "assignment_ref", "generation", "project_ref", "task_ref", "parent")
+    if not isinstance(value, Mapping) or set(value) != set(fields):
+        return None
+    if (not isinstance(value["schedule_id"], str) or not 1 <= len(value["schedule_id"]) <= 512
+            or type(value["generation"]) is not int or value["generation"] < 1
+            or any(exact_ref(value[key]) is None or exact_ref(value[key]) != value[key]
+                   for key in ("assignment_ref", "project_ref", "task_ref"))
+            or value["parent"] is not None and not isinstance(value["parent"], Mapping)):
+        return None
+    # Parent custody/result-destination joins are immutable handle data, not
+    # prose. An over-bound/invalid handle requires original detail, never an
+    # incomplete handle that the strict canonical reader would reject.
+    try:
+        if len(json.dumps(value, ensure_ascii=False).encode()) > 16384:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return {key: value[key] for key in fields}
+
+
 def finite_summary(value: Any, *, depth: int = 0) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -69,7 +91,14 @@ def finite_summary(value: Any, *, depth: int = 0) -> dict[str, Any]:
     if depth < 4:
         for key in SLOTS:
             if isinstance(value.get(key), Mapping):
-                result[key] = finite_summary(value[key], depth=depth + 1)
+                if key == "occurrence" and set(value[key]) == {"schedule_id", "assignment_ref", "generation", "project_ref", "task_ref", "parent"}:
+                    handle = exact_occurrence_summary(value[key])
+                    if handle is not None:
+                        result[key] = handle
+                    else:
+                        result["occurrence_availability"] = "detail-required; exact handle cannot be partially projected"
+                else:
+                    result[key] = finite_summary(value[key], depth=depth + 1)
     if depth == 0:
         for key in ("stages", "pools_before"):
             items = value.get(key)

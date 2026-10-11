@@ -237,6 +237,13 @@ principal, exact logical request key and bounded focus. Use `worker-status` and
 `command-status` for the returned retained handles. A worker result is evidence
 for manager judgment, not automatic acceptance or task completion.
 
+Use a returned occurrence handle unchanged for `follow-occurrence --occurrence`.
+It has exactly six fields: schedule_id, assignment_ref, generation, project_ref,
+task_ref and parent. Keep `parent: null` for a top-level worker; a transport ID,
+schedule string or five-field summary is not that handle. If metadata explicitly
+requires detail, retrieve the full original occurrence instead of reconstructing
+or weakening its identity pins. The follow read does not start or replay work.
+
 When installed help exposes `worker-readiness`, use that one authenticated read
 for current owner-known worker slots and any explicitly named Due allowance
 pools. It returns exact task/assignment/generation/occurrence pins, observation
