@@ -977,6 +977,19 @@ class CanonicalRoleRuntime:
         return reconcile_completed_resume_capture(self, schedule_id=schedule_id,
             expected_unknown_sha256=expected_unknown_sha256, validate_only=validate_only)
 
+    def reconcile_missing_manager_capture(self, *, schedule_id: str,
+                                          expected_claim_sha256: str,
+                                          validate_only: bool = False) -> Mapping[str, Any]:
+        """Capture an already admitted terminal turn after an owner interruption.
+
+        This never sends native work. A claim without a result stays held unless
+        the exact retained admission, delivered brief and successful native
+        terminal record can all be verified under current owner custody.
+        """
+        from .manager_capture_reconciliation import reconcile_missing_manager_capture
+        return reconcile_missing_manager_capture(self, schedule_id=schedule_id,
+            expected_claim_sha256=expected_claim_sha256, validate_only=validate_only)
+
     def reconcile_fresh_manager_result(self, *, schedule_id: str,
                                        expected_unknown_sha256: str,
                                        validate_only: bool = False) -> Mapping[str, Any]:

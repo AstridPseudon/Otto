@@ -958,7 +958,9 @@ class IssueLoop:
         selected: dict[str, dict[str, Any]] = {}
         for raw_project in projects:
             project = _ref(raw_project, "project_ref")
-            reports = list((reports_by_project or {}).get(project["id"], self._issue_reports(project)))
+            reports = list(reports_by_project[project["id"]]
+                if reports_by_project is not None and project["id"] in reports_by_project
+                else self._issue_reports(project))
             existing_issues = self.derive_issues(reports)
             # A successful accepted check-in closes only the exact overdue
             # episode whose schedule/generation/slot (or one-shot deadline)

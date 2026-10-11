@@ -2206,6 +2206,23 @@ class Store:
             self._schedule_history_projection(tx)
             return event
 
+    def list_event_subjects(self, *, stream: str) -> Tuple[ResourceRef, ...]:
+        """Read exact stream subjects without fetching retained event bodies.
+
+        Order and historical revisions match list_events(stream=...). This
+        selects append metadata only; callers must still validate current
+        identity payloads and their authorized relationships.
+        """
+        if not isinstance(stream, str) or not stream.strip():
+            raise ValueError("event subject selection requires an exact stream")
+        with self._transaction_lock:
+            self._require_open()
+            rows = self._connection.execute(
+                "SELECT subject_authority, subject_kind, subject_id, subject_revision "
+                "FROM events WHERE store_authority = ? AND stream = ? ORDER BY sequence",
+                (self.authority, stream)).fetchall()
+            return tuple(ResourceRef(*row) for row in rows)
+
     def list_events(self, *, stream: Optional[str] = None,
                     subjects: Optional[Sequence[ResourceRef]] = None,
                     subject_kinds: Optional[Sequence[str]] = None,
@@ -2372,6 +2389,9 @@ class DomainHandler:
     def get_receipt(self, logical_request_key: str) -> Optional[CommandReceipt]:
         return self._owner.get_receipt(logical_request_key)
 
+    def list_event_subjects(self, *, stream: str) -> Tuple[ResourceRef, ...]:
+        return self._owner.list_event_subjects(stream=stream)
+
     def registered_domains(self) -> Tuple[DomainContribution, ...]:
         return self._owner.registered_domains()
 
@@ -2475,6 +2495,9 @@ class ConsumerStore:
 
     def get_receipt(self, logical_request_key: str) -> Optional[CommandReceipt]:
         return self.__owner.get_receipt(logical_request_key)
+
+    def list_event_subjects(self, *, stream: str) -> Tuple[ResourceRef, ...]:
+        return self.__owner.list_event_subjects(stream=stream)
 
     def list_events(self, *, stream: Optional[str] = None,
                     subjects: Optional[Sequence[ResourceRef]] = None,

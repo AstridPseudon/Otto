@@ -36,13 +36,20 @@ class OwnerIssueReaders:
 
     def current_manager(self, project: Mapping[str, Any]) -> Any:
         record = self.project(project)
-        view = self.operations.sheet_port.export(record.ref)
         candidates = []
-        for value in view["project"]["observed"].get("assignments", ()):
-            if value.get("payload", {}).get("role") == "manager":
-                assignment = self.operations.assignments_port.get(value["ref"])
-                if self.active(assignment):
-                    candidates.append(assignment)
+        inventory = getattr(self.operations.sheet_port, "assignment_inventory", None)
+        if callable(inventory):
+            selected = inventory(record.ref)
+            refs = selected.get("project_assignment_refs", selected["assignment_refs"])
+        else:  # Existing foreign port implementations retain their complete read.
+            view = self.operations.sheet_port.export(record.ref)
+            refs = [value["ref"] for value in view["project"]["observed"].get("assignments", ())]
+        for ref in refs:
+            assignment = self.operations.assignments_port.get(ref)
+            scope = _json_value(assignment.scope)
+            if (assignment.role == "manager" and self.active(assignment)
+                    and all(scope.get(k) == getattr(record.ref, k) for k in ("authority", "kind", "id"))):
+                candidates.append(assignment)
         if len(candidates) != 1:
             raise IssueLoopError("project must have exactly one current manager")
         return candidates[0]
@@ -148,8 +155,16 @@ class OwnerIssueReaders:
 
     def reports(self, project: Mapping[str, Any]) -> list[dict[str, Any]]:
         record = self.project(project)
-        view = self.operations.sheet_port.export(record.ref)
-        scopes = {record.ref.id, *(item["ref"]["id"] for item in view["tasks"])}
+        inventory = getattr(self.operations.sheet_port, "assignment_inventory", None)
+        if callable(inventory):
+            selected = inventory(record.ref)
+            scopes = {record.ref.id, *(ref["id"] for ref in selected["task_refs"])}
+            assignment_refs = selected["assignment_refs"]
+        else:
+            view = self.operations.sheet_port.export(record.ref)
+            scopes = {record.ref.id, *(item["ref"]["id"] for item in view["tasks"])}
+            assignment_refs = [assignment.get("ref") for row in (view["project"], *view["tasks"])
+                for assignment in row.get("observed", {}).get("assignments", ())]
         result = []
         seen = set()
         # Project/task assignment observations retain old manager identities.
@@ -163,9 +178,8 @@ class OwnerIssueReaders:
             if (isinstance(value, Mapping) and value.get("authority") == record.ref.authority
                     and value.get("kind") == "wrk.assignment" and isinstance(value.get("id"), str)):
                 assignments[value["id"]] = value
-        for row in (view["project"], *view["tasks"]):
-            for assignment in row.get("observed", {}).get("assignments", ()):
-                remember(assignment.get("ref"))
+        for ref in assignment_refs:
+            remember(ref)
         relation = record.payload.get("metadata", {}).get("otto_orchestrator", {})
         if isinstance(relation, Mapping):
             remember(relation.get("assignment_ref"))
@@ -174,13 +188,18 @@ class OwnerIssueReaders:
                 remember(ref)
             for name in ("from_assignment", "to_assignment"):
                 remember(event.effects.get(name))
-        events = (event for ident in sorted(assignments) for kind in ("report", "result")
-                  for event in owner_reader.list_events(stream=kind + ":" + ident))
-        for event in events:
-            if event.subject.kind not in {"wrk.report", "wrk.result"} or event.subject.id in seen:
+        subjects = getattr(owner_reader, "list_event_subjects", None)
+        def stream_subjects(stream):
+            if callable(subjects):
+                return subjects(stream=stream)
+            return (event.subject for event in owner_reader.list_events(stream=stream))
+        refs = (ref for ident in sorted(assignments) for kind in ("report", "result")
+                for ref in stream_subjects(kind + ":" + ident))
+        for ref in refs:
+            if ref.kind not in {"wrk.report", "wrk.result"} or ref.id in seen:
                 continue
-            seen.add(event.subject.id)
-            observation = owner_reader.get_record(event.subject)
+            seen.add(ref.id)
+            observation = owner_reader.get_record(ref)
             if observation is None:
                 continue
             payload = observation.payload

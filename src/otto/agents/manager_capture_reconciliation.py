@@ -23,6 +23,191 @@ def require(value, reason):
         raise OwnerRoleRuntimeError(reason)
 
 
+def reconcile_missing_manager_capture(runtime, *, schedule_id,
+                                      expected_claim_sha256, validate_only=False):
+    """Read the exact admitted native turn; never retry a claimed delivery.
+
+    The original transport exit is unavailable after owner loss. Successful
+    native terminal evidence is separate from that transport uncertainty and
+    from substantive task acceptance. The complete original claim is retained.
+    """
+    due = runtime.due_port.read_due(schedule_id) or {}
+    attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+    proof = attempt.get("missing_capture_reconciliation") or {}
+    retained_proof = proof.get("schema") == "otto.missing-manager-capture-reconciliation.v1"
+    if retained_proof:
+        require(proof.get("source_claim_sha256") == expected_claim_sha256
+                and proof.get("resolver") == runtime.actor
+                and digest(proof.get("source_claim")) == expected_claim_sha256,
+                "retained missing-capture reconciliation differs")
+        if attempt.get("state") == "result":
+            require(digest(attempt.get("result")) == proof.get("result_sha256"),
+                    "retained reconciled result changed")
+            return {"outcome": "reconciled", "replayed": True, "provider_called": False,
+                    "reconciliation": proof}
+        require({k: v for k, v in attempt.items() if k != "missing_capture_reconciliation"}
+                == proof["source_claim"], "pending reconciliation changed original claim")
+        attempt = proof["source_claim"]
+    require(due.get("role") == "manager" and attempt.get("state") == "claimed"
+            and attempt.get("result") is None and digest(attempt) == expected_claim_sha256
+            and attempt.get("logical_request_key") == due.get("in_flight_request"),
+            "not the exact unresolved manager claim")
+    authorization = attempt.get("delivery_authorization") or {}
+    admission = attempt.get("delivery_admission") or {}
+    session = attempt.get("physical_session_id")
+    turn = admission.get("observed_turn_id")
+    require(isinstance(session, str) and session and isinstance(turn, str) and turn
+            and admission.get("schema") == "otto.owner-host-delivery-admission.v1"
+            and admission.get("state") == "turn_started"
+            and admission.get("native_turn_started") is True
+            and admission.get("physical_session_id") == session
+            and authorization.get("physical_session_id") == session,
+            "exact owner-recorded native admission is required")
+    _, _, capture = runtime._binding(role="manager", project_ref=authorization["project_ref"],
+        task_ref=authorization["task_ref"], assignment_ref=authorization["assignment_ref"],
+        mandate_ref=due["target"]["mandate_ref"], schedule_id=schedule_id,
+        logical_request_key=attempt["logical_request_key"], expected_generation=due["generation"])
+    record = capture._record()
+    require(callable(capture.completed_scope_validator) and not capture.completed_scope_validator()
+            and not capture._scope_error(record, capture.assignment_ref, capture.generation,
+                                         attempt["logical_request_key"]),
+            "current exact manager custody is required")
+    expected = {"status": "authorized", "physical_session_id": session,
+        "logical_request_key": attempt["logical_request_key"], "project_ref": capture.project_ref,
+        "task_ref": capture.task_ref, "assignment_ref": capture.assignment_ref,
+        "generation": capture.generation, "role": "manager", "principal": capture.principal,
+        "lifecycle_owner": runtime.actor}
+    require(all(authorization.get(k) == v for k, v in expected.items())
+            and attempt.get("assignment_ref") == capture.assignment_ref
+            and attempt.get("generation") == capture.generation,
+            "retained claim and authorization differ")
+    reader = getattr(runtime.adapter, "trusted_thread_reader", None)
+    require(callable(reader), "trusted exact-session native reader is required")
+    thread = (reader(session) or {}).get("thread") or {}
+    require(thread.get("id") == session and isinstance(thread.get("path"), str),
+            "trusted native session metadata differs")
+    fd = os.open(thread["path"], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        require(stat.S_ISREG(metadata.st_mode), "native trace is not a regular file")
+        header = stream.readline(1024 * 1024 + 1)
+        require(header.endswith(b"\n") and len(header) <= 1024 * 1024,
+                "native session header exceeds bounded input")
+        start = max(len(header), metadata.st_size - 32 * 1024 * 1024)
+        stream.seek(start); tail = stream.read(32 * 1024 * 1024 + 1)
+    require(len(tail) <= 32 * 1024 * 1024 and tail.endswith(b"\n"),
+            "native terminal tail is unavailable or incomplete")
+    if start > len(header): tail = tail.split(b"\n", 1)[-1]
+    lines = [header.decode()] + [v.decode() for v in tail.splitlines() if v]
+    events = [json.loads(line) for line in lines]
+    require(events[0].get("type") == "session_meta"
+            and (events[0].get("payload", {}).get("id")
+                 or events[0].get("payload", {}).get("session_id")) == session,
+            "native file header identifies a different session")
+    active, starts, ends, user_texts = set(), [], [], []
+    for event in events:
+        payload = event.get("payload") or {}
+        if event.get("type") != "event_msg": continue
+        kind, ident = payload.get("type"), payload.get("turn_id")
+        if kind == "task_started":
+            active.add(ident)
+            if ident == turn: starts.append(payload)
+        elif kind in {"task_complete", "task_aborted"}:
+            active.discard(ident)
+            if ident == turn: ends.append(payload)
+        elif (ident == turn and kind == "item_completed"
+              and payload.get("item", {}).get("type") == "UserMessage"):
+            user_texts.append("\n".join(v.get("text", "")
+                for v in payload["item"].get("content", []) if v.get("type") in {"text", "Text"}))
+    require(not active and len(starts) == len(ends) == len(user_texts) == 1
+            and ends[0].get("type") == "task_complete" and ends[0].get("error") is None
+            and starts[0].get("started_at", -1) <= ends[0].get("completed_at", -1),
+            "exact admitted native turn is missing, repeated, aborted or still active")
+    observed = datetime.fromisoformat(admission["observed_at"].replace("Z", "+00:00"))
+    require(observed.tzinfo is not None
+            and abs(starts[0]["started_at"] - observed.timestamp()) <= 1,
+            "native start differs from retained owner admission")
+    text = user_texts[0]
+    blocks = re.findall(r'<otto-resource-brief sha256="([a-f0-9]{64})">\s*(.*?)\s*</otto-resource-brief>', text, re.S)
+    requests = re.findall(r'<otto-invocation-request[^>]*sha256="([a-f0-9]{64})">\s*(.*?)\s*</otto-invocation-request>', text, re.S)
+    require(len(blocks) == len(requests) == 1, "exact delivered brief and invocation are required")
+    brief, invocation = json.loads(blocks[0][1]), json.loads(requests[0][1])
+    launch = invocation.get("launch_context") or {}
+    # render_verified_invocation validates/renders request.prompt through _text,
+    # whose canonical model-visible form strips outer whitespace only.
+    prompt = (due["instruction"] + ("\n" + due["message"] if due.get("message") is not None else "")).strip()
+    require(digest(brief) == blocks[0][0] == authorization.get("brief_sha256")
+            and brief.get("instruction_contract") == capture.manager_command_contract
+            and digest(invocation) == requests[0][0]
+            and invocation.get("schema") == "otto.owner-invocation-request.v1"
+            and invocation.get("logical_request_key") == attempt["logical_request_key"]
+            and invocation.get("prompt") == prompt
+            and launch.get("assignment_ref") == capture.assignment_ref
+            and launch.get("generation") == capture.generation
+            and launch.get("principal") == capture.principal and launch.get("role") == "manager"
+            and launch.get("occurrence_ref") == {"schedule_id": schedule_id,
+                                                "logical_request_key": attempt["logical_request_key"]}
+            and (launch.get("native_session") or {}).get("adapter") == due["target"].get("native_adapter")
+            and (launch.get("native_session") or {}).get("fresh_binding") is (due.get("execution_mode") == "fresh_manager")
+            and (launch.get("native_session") or {}).get("id") == (None if due.get("execution_mode") == "fresh_manager" else session),
+            "delivered immutable brief, request or current mandate differs")
+    selected = [line for line, event in zip(lines, events)
+                if event.get("type") == "session_meta" or (event.get("payload") or {}).get("turn_id") == turn]
+    logical = capture.principal if isinstance(capture.principal, str) else capture.principal["id"]
+    host_request = HostRequest(HostOperation.RESUME, HostIdentity(logical, session),
+                              ResourceRef.from_dict(capture.task_ref), due["profile"])
+    context = _native_host_context(selected, request=host_request, session_id=session,
+        turn_id=turn, delivered_brief=brief, delivered_authorization=authorization)
+    parsed = runtime.native_result_verifier.observe_context(context, expected_session_id=session,
+        expected_turn_id=turn, expected_profile=due["profile"],
+        expected_read_targets=brief["instruction_contract"].get("read_targets"),
+        expected_read_scope=brief["instruction_contract"].get("read_scope"))
+    require(parsed["model"] == due["requested_model"] and parsed["reasoning"] == due["requested_reasoning"],
+            "actual native model or reasoning differs")
+    from .gateway import AttemptEnvelope
+    from otto.portfolio.resource_sync import brief_resource_evidence
+    resource = brief_resource_evidence({**brief, "brief_sha256": digest(brief)},
+                                      delivery_state="completed", native_identity=session)
+    result = AttemptEnvelope(attempt["logical_request_key"], logical, capture.project_ref,
+        capture.task_ref, capture.assignment_ref, capture.generation,
+        "invoke" if launch["native_session"].get("fresh_binding") else "resume",
+        due["profile"], due["requested_model"], due["requested_reasoning"], logical, session,
+        parsed["model"], parsed["reasoning"], "done", "succeeded",
+        request_fingerprint=attempt["request_fingerprint"], resource_evidence=resource).to_dict()
+    result.update(observed_turn_id=turn, observed_profile=parsed["observed_profile"],
+        observed_context_digest=parsed["context_digest"], context_digest_verified=True,
+        task_bound_evidence=parsed["task_bound_evidence"], worker_content=parsed["worker_content"],
+        raw_result={"transport_outcome": "unavailable_after_owner_interruption",
+            "original_transport_exit_status": None, "owner_delivery_authorization": authorization,
+            "work_envelope": {"exit_status": None, "host_evidence": {"otto_host_turn_context": context}}})
+    capture.validate_completed_manager_result(result)
+    proof = {"schema": "otto.missing-manager-capture-reconciliation.v1", "resolver": runtime.actor,
+        "effect": "trusted_admitted_terminal_capture_no_provider_replay",
+        "source_claim": deepcopy(attempt), "source_claim_sha256": expected_claim_sha256,
+        "result_sha256": digest(result), "physical_session_id": session, "observed_turn_id": turn,
+        "native_file_identity": [metadata.st_dev, metadata.st_ino],
+        "trace_sha256": hashlib.sha256("\n".join(selected).encode()).hexdigest(),
+        "original_transport_exit_status": None, "native_terminal_observed": True}
+    if validate_only:
+        return {"outcome": "qualified", "provider_called": False, "store_mutated": False,
+                "reconciliation": proof}
+    current = capture._attempt(capture._record())
+    if retained_proof:
+        require(current.get("missing_capture_reconciliation") == proof,
+                "pending native capture proof changed during read")
+        require(digest({k: v for k, v in current.items() if k != "missing_capture_reconciliation"})
+                == expected_claim_sha256, "original claim changed during trusted native read")
+    else:
+        require(digest(current) == expected_claim_sha256,
+                "original claim changed during trusted native read")
+    # Keep the claim and provenance in the same existing CAS-backed attempt.
+    if not retained_proof:
+        capture._save(capture._record(), {**attempt, "missing_capture_reconciliation": proof},
+                      "otto-missing-capture-proof:" + attempt["logical_request_key"] + ":" + expected_claim_sha256)
+    capture.record(result)
+    return {"outcome": "reconciled", "provider_called": False, "reconciliation": proof}
+
+
 def completed_resume_admission(attempt, lifecycle_owner):
     """Project a verified terminal reparse, never the missing live callback."""
     proof = attempt.get("delivery_admission_reconciliation") or {}

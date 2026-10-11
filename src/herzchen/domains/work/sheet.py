@@ -354,6 +354,28 @@ class _ProjectSheetEngine:
     view = export
     describe = export
 
+    def assignment_inventory(self, project: Any) -> Mapping[str, Any]:
+        """Select structural scope/assignment refs without observation bodies.
+
+        This is the same current, revision-independent relation used by the
+        sheet. It includes eventless and historical assignments; append streams
+        are not used as evidence of the current relationship.
+        """
+        record = self.graph.get(project)
+        if record.kind is not WorkKind.PROJECT:
+            raise SheetSelectionError("assignment inventory target must be a project")
+        tasks = self._ordered_project_tasks(record)
+        scopes = (record.ref,) + tuple(task.ref for task in tasks)
+        rows = self._related_rows((ASSIGNMENT_KIND,), "scope", scopes)
+        project_rows = self._related_rows((ASSIGNMENT_KIND,), "scope", (record.ref,))
+        return {"project_ref": _safe(record.ref),
+                "task_refs": tuple(_safe(task.ref) for task in tasks),
+                "assignment_refs": tuple(ResourceRef(row["authority"], row["kind"],
+                    row["id"], row["current_revision"]).to_dict() for row in rows),
+                "project_assignment_refs": tuple(ResourceRef(row["authority"], row["kind"],
+                    row["id"], row["current_revision"]).to_dict() for row in project_rows),
+                "read_only": True}
+
     # Direct structural commands are deliberately compiled through the same
     # validator/batch operation as a sheet edit.  This gives direct and sheet
     # callers identical protected-field and lifecycle semantics.
