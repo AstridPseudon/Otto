@@ -169,6 +169,64 @@ class HelpRoutingTests(unittest.TestCase):
         self.assertEqual(unknown["next_action"], constraint)
         self.assertFalse(unknown["retry"])
 
+    def test_new_reply_advances_from_unattempted_old_callback_without_replaying_it(self):
+        self.host._closing = True
+        first_issue = self.service(self.request())
+        first_response = self.service(self.reply(first_issue['issue_id']))
+        self.assertEqual(self.f.app.start(schedule_id=self.anchor)['outcome'], 'succeeded')
+        old = self.f.app.continue_manager_from_help(manager_schedule_id=self.anchor,
+            report_ref=first_response['report_ref'], execute=False)
+        old_due = self.f.app._read(old['schedule_id'])
+        old_binding = dict(old_due.target['native_binding'])
+        self.state['manager_continuation'] = {'schedule_id': old_due.schedule_id, 'outcome': 'partial'}
+        second_issue = self.service(self.request(request_key='second-help', issue_key='second-blocker'))
+        response = self.service(self.reply(second_issue['issue_id'], request_key='second-reply',
+            next_action='Use the adopted current scope; old request and failures remain history'))
+        calls = len(self.f.provider.calls)
+        result = self.service({'command':'manager-help-result','principal':'manager','generation':1,
+            'schedule_id':old_due.schedule_id,'report_ref':response['report_ref']})
+        self.assertEqual(result['outcome'], 'succeeded', result)
+        self.assertEqual(len(self.f.provider.calls), calls + 1)
+        stopped = self.f.app._read(old_due.schedule_id)
+        self.assertEqual(stopped.stop_state, 'stopped')
+        self.assertNotIn('gateway_attempt', stopped.host_evidence)
+        self.assertEqual(stopped.target['native_binding'], old_binding)
+        self.assertEqual(stopped.host_evidence['help_continuation'], old_due.host_evidence['help_continuation'])
+        self.assertEqual(stopped.host_evidence['help_supersession']['new_report_ref'], response['report_ref'])
+        current = self.state['manager_continuation']['schedule_id']
+        self.assertNotEqual(current, old_due.schedule_id)
+        self.assertEqual(self.f.app._read(current).target['native_id'], 'manager-session')
+        self.assertIn(response['report_ref']['id'], self.f.provider.calls[-1])
+        replay = self.service({'command':'manager-help-result','principal':'manager','generation':1,
+            'schedule_id':old_due.schedule_id,'report_ref':response['report_ref']})
+        self.assertEqual(len(self.f.provider.calls), calls + 1)
+
+    def test_prepared_old_callback_cannot_bypass_active_unknown_or_foreign_anchor(self):
+        self.host._closing = True
+        issue = self.service(self.request())
+        response = self.service(self.reply(issue['issue_id']))
+        self.assertEqual(self.f.app.start(schedule_id=self.anchor)['outcome'], 'succeeded')
+        old = self.f.app.continue_manager_from_help(manager_schedule_id=self.anchor,
+            report_ref=response['report_ref'], execute=False)
+        old_due = self.f.app._read(old['schedule_id'])
+        issue2 = self.service(self.request(request_key='second-help', issue_key='second-blocker'))
+        reply2 = self.service(self.reply(issue2['issue_id'], request_key='second-reply'))
+        anchor = self.f.app._read(self.anchor)
+        for mode in ('active', 'unknown', 'foreign'):
+            with self.subTest(mode=mode):
+                changed = anchor.to_dict()
+                if mode == 'active': changed.update(stop_state='active', in_flight_request='live')
+                elif mode == 'unknown': changed['completion_state']='unknown'
+                else: changed['target']['native_id'] = 'foreign-session'
+                changed['version'] = self.f.port.read_due(self.anchor)['version']
+                self.f.port.save_due(self.anchor, changed, expected_version=changed['version'], request_id='bad-anchor-'+mode)
+                with self.assertRaises(Exception):
+                    self.f.app.continue_manager_from_help(manager_schedule_id=old_due.schedule_id,
+                        report_ref=reply2['report_ref'], execute=False)
+                self.assertNotEqual(self.f.app._read(old_due.schedule_id).stop_state, 'stopped')
+                restored = anchor.to_dict(); restored['version']=self.f.port.read_due(self.anchor)['version']
+                self.f.port.save_due(self.anchor, restored, expected_version=restored['version'], request_id='restore-anchor-'+mode)
+
     def test_disabled_advice_has_no_reports_sends_or_allowance_effect(self):
         before = self.readers.reports(self.f.project.ref.to_dict())
         with self.assertRaisesRegex(IssueLoopError, "advisor_disabled"):

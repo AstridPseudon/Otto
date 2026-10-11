@@ -500,12 +500,19 @@ def compact_operation_status(
     project = _canonical_completion(canonical_project)
     scope = _status_projection(required_scope, reason="current required scope is not exposed")
     scoped_blockers = list(blockers) if isinstance(blockers, (list, tuple)) else []
+    failure = current.get("pre_effect_runtime_failure")
+    if isinstance(failure, Mapping) and not (current.get("host_evidence") or {}).get("gateway_attempt"):
+        scoped_blockers.append({"source": "prepared-runtime", "stage": failure.get("stage"),
+            "error": failure.get("error"), "effects_started": False, "provider_called": False})
     help_value = dict(pending_help) if isinstance(pending_help, Mapping) else {
         "state": "known", "status": "none", "destination": None
     }
     provenance = _status_projection(instruction_provenance, reason="instruction provenance is not exposed")
     remedy = dict(supported_next_remedy) if isinstance(supported_next_remedy, Mapping) else _next_supported_remedy(
         current, canonical_project=project, pending_help=help_value, blockers=scoped_blockers)
+    if isinstance(failure, Mapping) and not (current.get("host_evidence") or {}).get("gateway_attempt"):
+        remedy = {"supported": False, "operation": "owner-correct-prepared-binding", "command": None,
+            "reason": failure.get("next_action") or "Accountable owner must correct the exact prepared binding before admission."}
     return {
         "schema": "otto.operation-status.v1",
         "transport_completion": {"state": transport_state, "completed": transport_completed,

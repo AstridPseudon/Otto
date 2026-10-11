@@ -311,6 +311,21 @@ class Tests(unittest.TestCase):
         unknown = compact_operation_status()
         self.assertIsNone(unknown["canonical_project_completion"]["project_completion_recorded"])
 
+    def test_pre_effect_partial_reason_is_exposed_without_claiming_native_failure(self):
+        failure={'stage':'runtime','error':{'code':'OccurrencePreparationError','message':'prepared anchor differs'},
+            'next_action':'Correct exact prepared binding; no replay'}
+        value=compact_operation_status({'schedule_id':'callback','role':'manager','stop_state':'active',
+            'completion_state':'none','pre_effect_runtime_failure':failure})
+        self.assertTrue(value['blocked_operation'])
+        self.assertEqual(value['blockers'][0]['error'],failure['error'])
+        self.assertFalse(value['blockers'][0]['effects_started'])
+        self.assertEqual(value['supported_next_remedy']['operation'],'owner-correct-prepared-binding')
+        attempted=compact_operation_status({'schedule_id':'callback','role':'manager','stop_state':'active',
+            'completion_state':'unknown','pre_effect_runtime_failure':failure,
+            'host_evidence':{'gateway_attempt':{'state':'claimed'}}})
+        self.assertFalse(attempted['blocked_operation'])
+        self.assertNotEqual(attempted['supported_next_remedy']['operation'],'owner-correct-prepared-binding')
+
     def test_pending_manager_remedy_uses_transport_handle_never_schedule_id(self):
         operation = {"schedule_id": "manager-finish-callback-name", "role": "manager",
             "delivery_state": "returned", "completion_state": "none", "stop_state": "active"}

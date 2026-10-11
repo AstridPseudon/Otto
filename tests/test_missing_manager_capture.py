@@ -98,6 +98,115 @@ class MissingManagerCaptureTests(unittest.TestCase):
         self.assertFalse(retained_aborted_manager_capture(due, 'foreign'))
         self.assertEqual((root / 'submitted.jsonl').read_bytes(), before)
 
+    def test_aborted_manual_selector_allows_distinct_same_native_callback_start(self):
+        f, root, claim = self.claimed()
+        # Retain the original setup selector before the authoritative abort.
+        setup = {'schema':'otto.operating-setup.v1', 'mode':'manual',
+            'roles':{'manager':'fresh-manager'}, 'advisor_policy':{'mode':'disabled','reason':'No advisor'},
+            'acceptance_tasks':[]}
+        self.assertEqual(f.app.prepare_operating_setup(project_ref=f.project.ref.to_dict(),
+            setup=setup, request_key='abort-manual-setup')['outcome'], 'prepared')
+        trace = root/'native.jsonl'
+        rows = [json.loads(v) for v in trace.read_text().splitlines()]
+        for row in rows:
+            value=row.get('payload',{})
+            if value.get('type')=='task_complete' and value.get('turn_id')=='work-turn':
+                value.update(type='turn_aborted',reason='interrupted')
+        trace.write_text(''.join(json.dumps(v)+'\n' for v in rows))
+        f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
+            expected_claim_sha256=fixture.digest(claim))
+        self.assertEqual(f.app.recover(schedule_id='fresh-manager',execute=False)['outcome'],'failed')
+        due=f.app._read('fresh-manager')
+        from otto.portfolio.execution_operations import build_manager_callback_due
+        callback=build_manager_callback_due(due,schedule_id='new-authorized-response',
+            request_key='new-authorized-response',assignment_ref=due.assignment_ref,
+            guide_ref=next(r for r in due.context_refs if r!=due.target['mandate_ref']),
+            mandate_ref=due.target['mandate_ref'],due_at=due.due_at,
+            timeout_seconds=due.timeout_seconds,native_adapter=f.app.native_adapter_identity())
+        from otto.portfolio.execution_operations import prepare_current_assignment_occurrence
+        prepared = prepare_current_assignment_occurrence(due_port=f.port, assignments=f.app.assignments,
+            binding=f.app.binding,due=callback,assignment_ref=due.assignment_ref,
+            assignment_owner=f.app.manager_actor,operation='resume',lifecycle='callback',request_key='response-callback')
+        self.assertEqual(prepared['outcome'],'committed')
+        before=f.port.read_due('fresh-manager')
+        # The trusted fixture reader must expose the maintained finite deadline
+        # for a new real resume; the recovery-only reader above is read-only.
+        f.app.runtime.adapter.trusted_thread_reader = lambda session, timeout_seconds=None: {
+            'thread': {'id': session, 'path': str(root/'native.jsonl')}}
+        f.app.runtime.adapter.trusted_thread_reader.read_with_deadline = lambda session, deadline: {
+            'thread': {'id': session, 'path': str(root/'native.jsonl')}}
+        submitted=len((root/'submitted.jsonl').read_text().splitlines())
+        result=f.app.start(schedule_id=callback.schedule_id)
+        self.assertEqual(result['outcome'],'succeeded',result.get('result',{}).get('error'))
+        self.assertEqual(f.port.read_due('fresh-manager'),before)
+        self.assertEqual(len((root/'submitted.jsonl').read_text().splitlines()),submitted+1)
+        self.assertEqual(f.app.read_operating_setup(project_ref=f.project.ref.to_dict())['setup']['roles']['manager'], callback.schedule_id)
+        self.assertEqual(f.app.start(schedule_id=callback.schedule_id)['outcome'],'replayed')
+        self.assertEqual(len((root/'submitted.jsonl').read_text().splitlines()),submitted+1)
+
+    def test_abort_old_prepared_help_new_supervisor_reply_same_service_resume(self):
+        from types import SimpleNamespace
+        from pathlib import Path
+        from otto.portfolio.help_delivery import BoundHelpDelivery
+        from otto.portfolio.owner_issue_loop import OwnerIssueReaders
+        from otto.portfolio.manager_journey_service import install_manager_journey_service
+        from otto.portfolio.execution_host import ExecutionHost
+        f, root, claim = self.claimed()
+        setup={'schema':'otto.operating-setup.v1','mode':'manual','roles':{'manager':'fresh-manager'},
+            'advisor_policy':{'mode':'disabled','reason':'No advisor'},'acceptance_tasks':[]}
+        self.assertEqual(f.app.prepare_operating_setup(project_ref=f.project.ref.to_dict(),
+            setup=setup,request_key='joined-manual-setup')['outcome'],'prepared')
+        trace=root/'native.jsonl'
+        trace.write_text(trace.read_text().replace('task_complete','turn_aborted'))
+        f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
+            expected_claim_sha256=fixture.digest(claim))
+        self.assertEqual(f.app.recover(schedule_id='fresh-manager',execute=False)['outcome'],'failed')
+        original=f.port.read_due('fresh-manager'); due=f.app._read('fresh-manager')
+        supervisor,_,_=f.role_handles('orchestrator','root','root-session')
+        binding={'project_ref':f.project.ref.to_dict(),'assignment_ref':supervisor.ref.to_dict(),
+            'generation':1,'principal':'root','conversation_ref':{'host':'codex','native_id':'root-session'}}
+        readers=OwnerIssueReaders(f.owner.consumer_operations(),f.port)
+        delivery=BoundHelpDelivery(readers=readers,interim_supervision=binding)
+        portfolio=f.owner.manager_application(due_port=f.port,issue_delivery=delivery).portfolio
+        f.app.portfolio=f.app.runtime.portfolio=portfolio
+        state={'authority':f.actor.authority,'owner':'manager','manager':'manager',
+            'assignment_ref':due.assignment_ref,'manager_generation':1,'project_ref':f.project.ref.to_dict(),
+            'task_refs':{'T1':f.task.ref.to_dict()},'schedule_id':due.schedule_id,
+            'requested_model':'gpt-test','requested_reasoning':'high'}
+        server=SimpleNamespace(owner=f.owner,portfolio=portfolio,state=state,due_port=f.port,
+            _execution=lambda **_:f.app,_save_state=lambda:None,handle=lambda r:{'outcome':'unsupported'})
+        host=ExecutionHost(directory=root/'joined-ipc',handler=server.handle);server.execution_host=host;host._closing=True
+        service=install_manager_journey_service(server,run_path=str(root),workspace=str(root),
+            orchestrator_principal='root',help_reply_authorizer=lambda _:f.binding.authenticated_actor('root'))
+        def request(key):
+            return service({'command':'request-help','request_key':key,'issue_key':key,
+                'problem':'Retained manager aborted','impact':'Correction needs current response',
+                'evidence':[{'schedule_id':'fresh-manager'}],'requested_decision':'Confirm adopted scope',
+                'return_condition':'Current supervisor response retained'})
+        def reply(issue,key):
+            return service({'command':'respond-help','issue_id':issue['issue_id'],'request_key':key,
+                'authority_source':'Exact owner binding','response':'Continue current adopted scope',
+                'proposed_solution':'Same manager corrective work','next_action':'Retain original failures; one current correction'})
+        first=reply(request('old-issue'),'old-reply')
+        old=f.app.continue_manager_from_help(manager_schedule_id=due.schedule_id,
+            report_ref=first['report_ref'],execute=False)
+        state['manager_continuation']={'schedule_id':old['schedule_id'],'outcome':'partial'}
+        new=reply(request('new-issue'),'new-reply')
+        reader=lambda session:{'thread':{'id':session,'path':str(trace)}}
+        reader.read_with_deadline=lambda session,deadline:reader(session)
+        f.app.runtime.adapter.trusted_thread_reader=reader
+        count=len((root/'submitted.jsonl').read_text().splitlines())
+        result=service({'command':'manager-help-result','principal':'manager','generation':1,
+            'schedule_id':old['schedule_id'],'report_ref':new['report_ref']})
+        self.assertEqual(result['outcome'],'succeeded',result.get('result',{}).get('error'))
+        self.assertEqual(f.port.read_due('fresh-manager'),original)
+        self.assertEqual(f.app._read(old['schedule_id']).stop_state,'stopped')
+        self.assertEqual(len((root/'submitted.jsonl').read_text().splitlines()),count+1)
+        current=f.app._read(state['manager_continuation']['schedule_id'])
+        self.assertEqual(current.last_result['physical_session_id'],due.last_result['physical_session_id'])
+        self.assertIn(new['report_ref']['id'],current.message)
+        self.assertEqual(current.host_evidence['help_continuation']['report_ref'],new['report_ref'])
+
     def test_missing_foreign_changed_and_active_evidence_stays_held(self):
         for mode in ('claim_digest', 'missing_terminal', 'active_turn', 'wrong_model',
                      'changed_prompt', 'wrong_session', 'missing_admission', 'changed_assignment', 'abort_overlap'):

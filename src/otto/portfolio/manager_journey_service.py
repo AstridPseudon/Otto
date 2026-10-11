@@ -550,6 +550,9 @@ class ManagerJourneyService:
             result = app.recover(schedule_id=due.schedule_id, execute=True)
             def complete(result):
                 state["manager_continuation"]["outcome"] = result["outcome"]
+                state["manager_continuation"]["operational_disposition"] = {
+                    k: json_value(result[k]) for k in ("stage", "error", "reason", "next_action",
+                        "effects_started", "provider_called", "superseded_unattempted_schedule_id") if k in result}
                 self.server._save_state()
                 result = self._finalize_manager_completion(result, app=app)
                 return result
