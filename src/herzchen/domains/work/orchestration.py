@@ -742,6 +742,7 @@ class _OrchestrationEngine:
         projects: Sequence[Mapping[str, Any]],
         expected_default_revision: Optional[str] = None,
         preview: bool = False,
+        request_binding: Optional[str] = None,
     ) -> Mapping[str, Any]:
         """Attach selected existing projects to one portfolio orchestrator.
 
@@ -754,6 +755,9 @@ class _OrchestrationEngine:
         """
 
         actor_value = self._actor(actor)
+        if request_binding is not None and (not isinstance(request_binding, str)
+                or len(request_binding) != 64 or any(c not in "0123456789abcdef" for c in request_binding)):
+            raise WorkValidationError("request_binding must be an exact SHA256 input digest")
         request_key = _opaque(request_id, "request_id")
         portfolio = _ref(portfolio_ref, authority=self.authority, kind=PORTFOLIO_KIND, field="portfolio_ref")
         if not _same_identity(portfolio, self.portfolio_ref):
@@ -820,6 +824,8 @@ class _OrchestrationEngine:
             "expected_default_revision": expected_default_revision,
             "projects": request_projects,
         }
+        if request_binding is not None:
+            request_payload["request_binding"] = request_binding
         replay_envelope = self._envelope(
             "work.project.supervision.attach", _ref(projects[0].get("project_ref"), authority=self.authority, kind="work.project", field="projects[0].project_ref"),
             request_payload, request_key, actor_value,

@@ -19,6 +19,8 @@ Read the guide relevant to your work:
 
 - [Identity and directions](references/identity-and-directions.md)
 - [Orchestrator](references/orchestrator.md)
+- [Canonical queue](references/orchestrator.md#canonical-queue) for finite
+  owner enrollment/publication, shared root/continuation/observer reads and holds
 - [Orchestrator setup](orchestrator-setup/SKILL.md) for first-use enrollment and scoped client status
 - [Manager](references/manager.md)
 - [Worker](references/worker.md)

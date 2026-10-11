@@ -198,6 +198,7 @@ class FiniteWorkOperations:
         project_read_grant: Optional[ProjectReadGrant] = None,
         content_command_guard: Any = None,
         direction_context_reader: Any = None,
+        queue_binding: Any = None,
     ) -> None:
         if port is None or reader is None:
             raise ValueError("port and reader are required for the canonical binding")
@@ -217,6 +218,7 @@ class FiniteWorkOperations:
         self.content_port = content_port
         self.content_command_guard = content_command_guard
         self.direction_context_reader = direction_context_reader
+        self.queue_binding = queue_binding
         self.assignments_port = assignments_port
         if lifecycle_port is not None:
             _LIFECYCLE_PORTS[self] = lifecycle_port
@@ -557,6 +559,7 @@ class FiniteWorkOperations:
                 projects=projects,
                 expected_default_revision=payload.get("expected_default_revision"),
                 preview=payload.get("preview", False) is True,
+                request_binding=payload.get("request_binding"),
             )
         except Exception as exc:
             if type(exc).__name__ == "ReplayConflictError":

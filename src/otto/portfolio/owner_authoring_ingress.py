@@ -22,7 +22,8 @@ class OwnerAuthoringIngress:
     fields = frozenset({"command", "operation", "request_key", "edit", "project_ref",
                         "project_json", "session_id", "files", "document_changes",
                         "document_ref", "handle", "editor_buffer", "inactivity_seconds",
-                        "content", "expected_revision", "expected_binding_ref"})
+                        "content", "expected_revision", "expected_binding_ref", "order",
+                        "predecessor_ref", "rule", "consumer"})
 
     def __init__(self, *, actor: AuthenticatedActor, directory: str | Path,
                  owner_actor: AuthenticatedActor, max_bytes: int = 1048576) -> None:
@@ -33,7 +34,7 @@ class OwnerAuthoringIngress:
         self._lock = threading.Lock()
 
     def _checked(self, request: Any) -> tuple[dict[str, Any], bytes]:
-        if (not isinstance(request, Mapping) or request.get("command") not in {"project-authoring", "document-authoring", "owner-context"}
+        if (not isinstance(request, Mapping) or request.get("command") not in {"project-authoring", "document-authoring", "owner-context", "project-queue"}
                 or set(request) - self.fields):
             raise PermissionError("owner authoring grant accepts only finite authoring fields")
         raw = json.dumps(dict(request), ensure_ascii=False, sort_keys=True,

@@ -455,6 +455,16 @@ def add_manager_journey_parsers(commands: Any) -> None:
     control.add_argument("--schedule-id", help="current manager or retained worker schedule; cannot select another project's occurrence")
     control.add_argument("--request-key", help="required for stop")
     control.add_argument("--expected-version", type=int, help="exact Due version required for stop")
+    queue = commands.add_parser("project-queue", help="read one canonical queue or enroll an inert project after its exact tail",
+        description="Requires exact host owner authentication. Seed adopts the authorized existing enrolled order once. After preserves that prefix using the exact queue revision; enrollment and DAT publication have separate receipts. UNKNOWN requires exact transport reconciliation. Read joins current Work state for root, continuation and observer; activation stays separate.")
+    queue.add_argument("--operation", choices=("read", "seed", "after"), default="read")
+    queue.add_argument("--consumer", choices=("root", "continuation", "observer"), default=None)
+    queue.add_argument("--request-key")
+    queue.add_argument("--order", type=json.loads, help="exact order from queue read; seed uses authorized already-enrolled identities")
+    queue.add_argument("--expected-revision")
+    queue.add_argument("--predecessor-ref", type=json.loads)
+    queue.add_argument("--project-ref", type=json.loads, help="current pinned inert pending project")
+    queue.add_argument("--rule", choices=("continue", "pause"))
     author = commands.add_parser("project-authoring", help="create an inert pending sibling, open or check in project.json through the live owner",
         description="Requires installed host owner authentication. project.json is a semantic projection; generated session and revision bases remain in EDT. A conflict preserves local edits; activation is separate.")
     author.add_argument("--operation", choices=("create", "open", "check-in", "read", "import-folder", "export-folder", "release", "current-scope"), default="read")

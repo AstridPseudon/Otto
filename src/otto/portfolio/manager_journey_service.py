@@ -162,6 +162,12 @@ class ManagerJourneyService:
         assessment criteria or allowance.
         """
         from .local_assessment_policy import LocalAssessmentPolicy
+        # Validate the same single declaration used by worker admission before
+        # constructing a manager application/initializer, including callbacks
+        # and effective-context reads. Do not guess between legacy/current files.
+        if options.get("principal") == self.server.state.get("manager"):
+            from .run_config import run_config_path
+            run_config_path(self.run_path)
         selection = options.pop("selection", None)
         app = (self.adapter_selection.compose(selection, **{k: v for k, v in options.items() if k not in {"model", "reasoning"}})
                if selection is not None and self.adapter_selection is not None else self._host_execution(**options))
@@ -520,6 +526,8 @@ class ManagerJourneyService:
             return editor.dispatch(request, actor=self.authoring_authorizer(request))
         if command == "project-authoring":
             return self._project_authoring(request)
+        if command == "project-queue":
+            return self._project_queue(request)
         if command == "task-list-author":
             result = self.commands.author_tasks(request)
             self.server._save_state()
@@ -1089,6 +1097,28 @@ class ManagerJourneyService:
 
         return after_owner(startup, complete)
 
+    def _project_queue(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Exact owner input, on the same finite serialized authoring lane."""
+        if not callable(self.authoring_authorizer):
+            raise PermissionError("authenticated owner queue ingress is not installed")
+        actor = self.authoring_authorizer(request)
+        if actor != self.server.owner.owner_actor:
+            raise PermissionError("queue requires the authenticated service owner")
+        values = {k: v for k, v in request.items() if v is not None}
+        operation = values.get("operation", "read")
+        fields = {"read": {"command", "operation", "consumer"},
+                  "seed": {"command", "operation", "request_key", "order", "rule"},
+                  "after": {"command", "operation", "request_key", "order", "rule",
+                            "expected_revision", "predecessor_ref", "project_ref"}}
+        if operation not in fields or set(values) != fields[operation]:
+            raise ValueError("queue requires exactly its finite operation fields")
+        from .project_queue import ProjectQueue
+        queue = ProjectQueue(self.server.owner.consumer_operations())
+        if operation == "read":
+            return queue.read(actor=actor.actor, consumer=values["consumer"])
+        return queue.apply(actor=actor.actor, request_id=values["request_key"], operation=operation,
+            **{k: v for k, v in values.items() if k not in {"command", "operation", "request_key"}})
+
     def _project_authoring(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Finite sibling authoring on the existing owner lane; never dispatch."""
         if not callable(self.authoring_authorizer):
@@ -1352,7 +1382,15 @@ class ManagerJourneyService:
                 "provider_called": False, "effects_started": False, "retry": False,
                 "next_action": "Correct a new bounded intent with a distinct stable key. Pin the exact owned scope-manifest path and SHA instead of embedding a long file list; preserve this rejected receipt."}
         from .run_config import read_run_config
-        config = read_run_config(self.run_path)
+        try:
+            config = read_run_config(self.run_path)
+        except (ValueError, OSError) as exc:
+            # This exact read is before lookup/preparation/allowance effects.
+            # An arbitrary later exception must retain UNKNOWN semantics.
+            return {"outcome": "rejected", "error": {"code": "run_config_declaration",
+                "kind": "configuration", "message": str(exc)},
+                "provider_called": False, "effects_started": False, "retry": False,
+                "next_action": "Owner must reconcile the single adopted run declaration, preserving both original files and configuration semantics; then recover the identical request/key."}
         from .worker_occurrences import parent_for_caller, check_allowance
         from .occurrence_reads import lookup, handle, digest
         caller = _CALLER.get()

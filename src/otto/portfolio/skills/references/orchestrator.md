@@ -13,6 +13,59 @@ canonical queue. Registration, enrollment, queueing and activation are separate
 until the installed interface explicitly combines them; recover partial setup
 using the existing project.
 
+## Canonical queue
+
+Use the installed owner-authenticated `project-queue` command family. The host
+binds one portfolio, its current root and one current DAT document locator.
+Prefer the accepted locator through the owner's existing bootstrap `queue_ref`;
+otherwise the portfolio has one deterministic queue document. No local sequence
+or per-project transition document is an alternative authority.
+
+`project-queue --operation read --consumer root` reads the current queue revision,
+ordered project identities, continuation/pause rule and current Work lifecycle,
+readiness and acceptance. Continuation uses `--consumer continuation`; existing
+observers use `--consumer observer`. All three resolve that same locator on each
+read. Direction/BASE and reminder prompts carry the locator plus policy rather
+than a copied sequence or final project ID. Missing, inaccessible or conflicting
+data is a hold. A current read does not prove terminal acceptance or activation
+eligibility; use the existing final-disposition and setup readback separately.
+
+The exact owner grant is required even for reads. Native manager or worker
+credentials do not grant this host-owned operation. Request the bound owner
+route if unavailable; never open Store or borrow another role's client.
+
+For first adoption only, the owner seeds the authorized already-enrolled order
+with `--operation seed --request-key KEY --order JSON --rule continue|pause`.
+Seed cannot overwrite an existing queue. Order contains 1..32 distinct canonical
+Work project identities; the DAT body is bounded to 8192 bytes. Existing private
+DAT ownership, immutable revisions and CAS are reused. Actual transport limits
+still apply to the complete envelope.
+
+Queue-after uses `--operation after --request-key KEY --order JSON
+--expected-revision REV --predecessor-ref JSON --project-ref JSON --rule RULE`.
+Copy the exact prefix, revision and rule from read; the predecessor must be its
+tail, and the new project must be current, pinned, inert and pending. The owner
+validates the portfolio/root and distinct identities before enrollment. Preview
+of existing WRK enrollment validates assignment/default pins before effects.
+Already matching enrollment is reused; foreign enrollment is rejected.
+
+Enrollment and publication commit separately. `queued=true` requires canonical
+readback of both. A partial result retains child keys, receipts and exact input.
+First reconcile a lost/UNKNOWN transport reply with its original handle; do not
+resend an unknown effect. A committed publication is recovered by its immutable
+revision and current prefix readback without another write. After an explicitly
+reconciled absent publication, unchanged input/key reuses committed enrollment.
+Changed input conflicts with the retained enrollment/publication digest. A
+known stale CAS instead requires current queue/project readback and a new pinned
+publication request; successful enrollment remains. No automatic retry or
+activation occurs.
+
+Source guidance and fixtures do not install this capability or migrate live
+Direction/BASE, continuation bindings or hourly/six-hour observer prompts. Their
+owner must adopt the locator, update those existing consumers through authorized
+routes and verify an extension is observed without changing a second list. Keep
+historical transition revisions. Unmigrated required consumers remain incomplete.
+
 Before activating a successor, verify predecessor completion, the current plan,
 accepted overlap and installed code/resources. Prepare roles with their own
 bindings, relevant guides, selected pack and finite allowances; verify adoption.

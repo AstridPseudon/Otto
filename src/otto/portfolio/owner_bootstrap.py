@@ -592,6 +592,7 @@ class PortfolioOwnerBootstrap:
         "orchestration_port",
         "orchestration_portfolio",
         "project_read_grant",
+        "queue_binding",
     )
 
     def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
@@ -613,6 +614,7 @@ class PortfolioOwnerBootstrap:
         expected_main_principal: Optional[str] = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
         folder_transport_request_bytes: int = 16 * 1024,
+        queue_ref: Any = None,
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
@@ -671,6 +673,16 @@ class PortfolioOwnerBootstrap:
             orchestration_port = orchestration.command_port
         self.orchestration_port = orchestration_port
         self.orchestration_portfolio = portfolio_ref
+        self.queue_binding = None
+        if portfolio_ref is not None:
+            from .project_queue import queue_locator
+            from herzchen.contracts import ResourceRef
+            portfolio = ResourceRef.from_dict(_json_value(portfolio_ref))
+            root = ResourceRef.from_dict(_json_value(main_assignment_ref))
+            locator = queue_locator(portfolio) if queue_ref is None else ResourceRef.from_dict(_json_value(queue_ref))
+            if locator.authority != binding.authority or locator.kind != "dat.content.document" or locator.revision is not None:
+                raise ValueError("queue locator must be a current owned DAT document")
+            self.queue_binding = {"owner": authenticated, "portfolio": portfolio, "root": root, "locator": locator}
         bridge_type = _create_bridge_type()
         self.create_and_open_bridge = bridge_type(
             store,
@@ -702,6 +714,7 @@ class PortfolioOwnerBootstrap:
             orchestration_portfolio=self.orchestration_portfolio,
             project_read_grant=self.project_read_grant,
             direction_context_reader=self._direction_context_reader(),
+            queue_binding=self.queue_binding,
         )
 
     def _direction_context_reader(self) -> Any:

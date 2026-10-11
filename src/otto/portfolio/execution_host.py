@@ -142,6 +142,11 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
             "whoami", "effective-context", "direction-read", "direction-history"}
             and set(request) == {"command", "operation", "request_key"}
             else "held")
+    if (request.get("command") == "project-queue"
+            and request.get("operation", "read") in {"read", "seed", "after"}
+            and not set(request) - {"command", "operation", "request_key", "order", "rule",
+                                   "consumer", "expected_revision", "predecessor_ref", "project_ref"}):
+        return "admitted"  # Exact owner grant is still checked by the handler.
     # Setup inspection/preview are finite and inert; apply/update/prepare/activate stay held during
     # the admitted native wait and cannot acquire another execution effect.
     if (request.get("command") == "project-authoring"

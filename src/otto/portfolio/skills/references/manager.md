@@ -72,3 +72,33 @@ Follow the original retained handle in the same turn to a bounded deadline; a
 snapshot follow does not wait. Preserve exact transport timeout/UNKNOWN receipts
 and distinguish them from later canonical success. Keep status and audit packets
 compact: current custodian, action, immutable receipt refs and links to history.
+
+
+### Inspect one delivered response without repeating context reads
+
+For `read-help --delivery-id`, capture the complete JSON locally once, then
+print only `outcome`, `issue_id`, `delivery_id`, `report_ref`, `report_sha256`,
+`retained_report`, `supported_application`, `next_action`, `outer_command`,
+and `retry`. The full `caller_context` belongs to identity/context inspection;
+do not dump it repeatedly while looking for the delivered response. Use the
+exact installed interpreter/manager client from your introduction. Preserve
+that raw response for exact evidence; a truncated terminal print is not a
+missing canonical report. Apply the retained response with concrete evidence,
+then delegate authorized work and return retained handles.
+
+For example, after saving the exact JSON response to `help-response.json`
+inside your assigned workspace:
+
+```python
+import json
+from pathlib import Path
+response = json.loads(Path("help-response.json").read_text())
+fields = ("outcome", "issue_id", "delivery_id", "report_ref", "report_sha256",
+          "retained_report", "supported_application", "next_action",
+          "outer_command", "retry")
+print(json.dumps({key: response[key] for key in fields if key in response}, indent=2))
+```
+
+This projection does not send another request or change authority. For an
+UNKNOWN result, preserve its exact handle and follow command-status/recovery;
+never infer absence from a shortened print.
