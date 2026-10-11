@@ -9,7 +9,9 @@ Otto owns shared records and operations. Packs such as Megado define how work
 is planned and reviewed.
 
 Use your role introduction's exact installed entrypoint. Check its help and,
-where supported, `whoami` and `effective-context`. Use your own binding; never
+where supported, `whoami` and `effective-context`. A host that is a client of
+the one owner service answers `ottoctl service status`, `ottoctl whoami` and
+`ottoctl projects` through its own lane. Use your own binding; never
 borrow an identity or open the live database. If no binding was delivered,
 request it from the responsible owner.
 
@@ -25,6 +27,8 @@ Read the guide relevant to your work:
   history presets and the honest initial Usage surface
 - [Command details](../../../../docs/manager-journey-commands.md) for delegation,
   results, artifacts and closure
+- [Host onboarding](../../../../docs/host-onboarding.md): join the one owner
+  service with `ottoctl`, add a new agent CLI, register and activate a run
 - [Project onboarding](../../../../docs/project-onboarding.md) for the maintained
   title-plus-brief create/find/reopen entry and its inert effect boundaries
 
