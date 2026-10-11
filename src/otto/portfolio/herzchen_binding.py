@@ -1658,8 +1658,12 @@ class FiniteWorkOperations:
                     "error": {"code": code, "message": str(exc)},
                     "recovery": "Inspect retained receipts and resume the exact input and request key.",
                     "execution": False, "dispatch": False}
-            return {"outcome": "conflict" if code in {"ReplayConflictError", "VersionConflictError"} else "rejected",
-                    "error": {"code": code, "message": str(exc)}, "execution": False, "dispatch": False}
+            result = {"outcome": "conflict" if code in {"ReplayConflictError", "VersionConflictError"} else "rejected",
+                      "error": {"code": code, "message": str(exc)}, "execution": False, "dispatch": False}
+            preflight = getattr(exc, "preflight", None)
+            if isinstance(preflight, Mapping):
+                result["transport"] = _json_value(preflight)
+            return result
 
     def _project_authoring(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         if self.create_open_port is None:

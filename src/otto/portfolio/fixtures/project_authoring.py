@@ -270,6 +270,28 @@ class ProjectAuthoringProof(unittest.TestCase):
         finally:
             host.close()
 
+    def test_project_authoring_create_forwards_selected_template_parameters(self):
+        parser = argparse.ArgumentParser()
+        add_manager_journey_parsers(parser.add_subparsers(dest='command', required=True))
+        template = {
+            "kind": "work_template", "id": "fixture-template", "revision": "v1",
+            "parameters": {"type": "object", "properties": {"label": {"type": "string"}},
+                            "required": ["label"], "additionalProperties": False},
+            "seed": {},
+        }
+        request = vars(parser.parse_args([
+            "project-authoring", "--operation", "create", "--request-key", "templated-create",
+            "--edit", '{"title":"Templated sibling","outcome":"Selected route"}',
+            "--template", json.dumps(template), "--template-parameters", '{"label":"demo"}',
+        ]))
+        server = SimpleNamespace(owner=self.owner, portfolio=self.portfolio, state={}, due_port=None,
+                                 _execution=lambda **kw: None)
+        service = ManagerJourneyService(server=server, host=None, run_path=self.root, workspace=self.root,
+                                        authoring_authorizer=lambda req: self.owner.owner_actor)
+        result = service(request)
+        self.assertEqual(result['outcome'], 'created', result)
+        self.assertEqual(result['record']['payload']['metadata']['template'], template)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -460,6 +460,10 @@ def add_manager_journey_parsers(commands: Any) -> None:
     author.add_argument("--operation", choices=("create", "open", "check-in", "read", "import-folder", "export-folder", "release", "current-scope"), default="read")
     author.add_argument("--request-key")
     author.add_argument("--edit", type=json.loads)
+    author.add_argument("--template", type=json.loads,
+                        help="selected owner-adopted work template resource for create")
+    author.add_argument("--template-parameters", type=json.loads,
+                        help="JSON parameters for the selected template")
     author.add_argument("--project-ref", type=json.loads)
     author.add_argument("--project-json", type=json.loads)
     author.add_argument("--session-id")

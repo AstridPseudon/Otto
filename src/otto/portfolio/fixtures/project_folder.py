@@ -71,6 +71,24 @@ class ProjectFolderProof(ProjectAuthoringProof):
         self.restart()
         self.assertEqual(self.portfolio.export_folder(ref, actor='owner', request_id='export')['files'], exported['files'])
 
+    def test_large_folder_uses_bounded_child_requests_and_preserves_exact_bytes(self):
+        files = {f'docs/{index}.md': ('x' * 7000) for index in range(3)}
+        imported = self.import_files('large-import', files)
+        transport = imported['transport']
+        self.assertGreater(transport['measured_request_bytes'], transport['measured_request_limit'])
+        self.assertEqual(transport['composition'], 'bounded-child-requests')
+        self.assertEqual(transport['oversized_children'], [])
+        exported = self.portfolio.export_folder(imported['project_ref'], actor='owner', request_id='large-export')
+        self.assertEqual(exported['files'], files)
+
+    def test_single_document_over_live_request_bound_is_rejected_before_creation(self):
+        result = self.portfolio.import_folder(actor='owner', request_id='oversized-live',
+            project_json={'title': 'Files', 'outcome': 'Research'},
+            files={'docs/too-large.md': 'x' * 16300})
+        self.assertEqual(result['outcome'], 'rejected', result)
+        self.assertIn('measured live request limit', result['error']['message'])
+        self.assertEqual(result['transport']['oversized_children'], ['docs/too-large.md'])
+
     def test_opaque_document_revision_edit_restart_replay_and_stale_fence(self):
         from herzchen.content import ContentDocument, ContentRevision
         imported = self.import_files()

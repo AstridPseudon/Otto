@@ -1022,13 +1022,20 @@ class ManagerJourneyService:
         actor = self.authoring_authorizer(request)
         if actor != self.server.owner.owner_actor:
             raise PermissionError("project authoring requires the authenticated service owner")
-        allowed = {"command", "operation", "request_key", "edit", "project_ref", "project_json", "session_id", "files", "document_changes"}
+        allowed = {"command", "operation", "request_key", "edit", "template", "template_parameters",
+                   "project_ref", "project_json", "session_id", "files", "document_changes"}
         if set(request) - allowed:
             raise ValueError("project authoring cannot change the bound owner or choose an execution operation")
         values = {key: value for key, value in request.items() if value is not None}
         operation = values.get("operation", "read")
+        if operation == "create":
+            # The parser emits these optional fields as null, while direct
+            # callers may omit them. Normalize both forms before the exact
+            # operation-field check.
+            values.setdefault("template", None)
+            values.setdefault("template_parameters", None)
         common = {"command", "operation"}
-        fields = {"create": {"request_key", "edit"}, "open": {"request_key", "project_ref"},
+        fields = {"create": {"request_key", "edit", "template", "template_parameters"}, "open": {"request_key", "project_ref"},
                   "check-in": {"request_key", "project_ref", "project_json", "session_id"}, "read": {"project_ref"},
                   "import-folder": {"request_key", "project_json", "files"},
                   "export-folder": {"request_key", "project_ref"},
@@ -1055,7 +1062,9 @@ class ManagerJourneyService:
         if operation == "export-folder":
             return portfolio.export_folder(values["project_ref"], **options)
         if operation == "create":
-            return portfolio.create_pending(**options, edit=values["edit"], open_project=False, orchestrated=False)
+            return portfolio.create_pending(**options, edit=values["edit"],
+                template=values.get("template"), template_parameters=values.get("template_parameters"),
+                open_project=False, orchestrated=False)
         if operation == "open":
             return portfolio.checkout_project(values["project_ref"], **options)
         if operation == "check-in":

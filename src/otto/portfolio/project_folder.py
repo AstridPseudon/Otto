@@ -17,6 +17,17 @@ from herzchen.contracts import (ReferenceBinding, ResourceRef, TransactionContex
 MAX_FILES = 50
 MAX_FILE_BYTES = 1024 * 1024
 MAX_TREE_BYTES = 1024 * 1024
+# Observed live ingress bound for the maintained authoring route. This is
+# intentionally separate from the source/package validation limits above.
+MEASURED_LIVE_REQUEST_BYTES = 16 * 1024
+
+
+class FolderTransportError(ValueError):
+    """A pre-effect rejection with its measured transport evidence attached."""
+
+    def __init__(self, message: str, preflight: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.preflight = dict(preflight)
 
 
 def _identity(ref: ResourceRef) -> ResourceRef:
@@ -50,6 +61,46 @@ def validate_files(files: Mapping[str, str]) -> dict[str, str]:
     if total > MAX_TREE_BYTES:
         raise ValueError("document tree exceeds the byte bound")
     return dict(sorted(files.items()))
+
+
+def folder_transport_preflight(project_json: Mapping[str, Any], files: Mapping[str, str],
+                                request_id: str) -> dict[str, Any]:
+    """Measure supported JSON request shapes before the first effect.
+
+    The raw import endpoint accepts a whole folder for compatibility, while
+    the actual document effects are already committed one child at a time by
+    ``_folder_apply``. The aggregate request may exceed the observed ingress
+    bound, but every child request must fit it.
+    """
+    def size(value: Mapping[str, Any]) -> int:
+        return len(canonical_json(value).encode("utf-8"))
+
+    envelope = {"command": "project-authoring", "operation": "import-folder",
+                "request_key": request_id, "project_json": dict(project_json), "files": dict(files)}
+    children = []
+    for index, (path, text) in enumerate(sorted(files.items())):
+        child = {"operation": "dat.content.document.create",
+                 "request_key": f"{request_id}:document:{index}:create",
+                 "path": path, "content": text}
+        child_size = size(child)
+        children.append({"path": path, "bytes": child_size,
+                         "fits": child_size <= MEASURED_LIVE_REQUEST_BYTES})
+    oversized = [item["path"] for item in children if not item["fits"]]
+    envelope_size = size(envelope)
+    return {
+        "schema": "otto.folder-transport-preflight.v1",
+        "measurement": "canonical UTF-8 JSON request envelope",
+        "measured_request_bytes": envelope_size,
+        "measured_request_limit": MEASURED_LIVE_REQUEST_BYTES,
+        "aggregate_fits": envelope_size <= MEASURED_LIVE_REQUEST_BYTES,
+        "composition": "bounded-child-requests" if envelope_size > MEASURED_LIVE_REQUEST_BYTES else "single-envelope",
+        "children": children,
+        "source_limits": {"max_files": MAX_FILES, "max_file_bytes": MAX_FILE_BYTES,
+                           "max_tree_bytes": MAX_TREE_BYTES},
+        "recovery": {"request_key": request_id,
+                      "resume": "exact input and request key; inspect retained child receipts"},
+        "oversized_children": oversized,
+    }
 
 
 class ProjectFolderOwner:
@@ -162,6 +213,13 @@ class ProjectFolderOwner:
             raise ValueError('raw folder import requires title')
         edit = self.sheet.validate_edit(edit)
         edit.pop('tasks', None)
+        transport = folder_transport_preflight(edit, files, request_id)
+        if transport['oversized_children']:
+            paths = ', '.join(transport['oversized_children'])
+            raise FolderTransportError(
+                'document exceeds the measured live request limit of '
+                f"{MEASURED_LIVE_REQUEST_BYTES} bytes before creation: {paths}", transport
+            )
         digest = sha256(canonical_json({'project_json': edit, 'files': files}).encode()).hexdigest()
         created = self.sheet.create_pending(title=edit['title'], outcome=edit.get('outcome', ''),
             metadata={'raw_folder': {'input_sha256': digest, 'canonical_transfer': False}},
@@ -173,9 +231,11 @@ class ProjectFolderOwner:
                                        logical_request_key=request_id + ':sheet')
             ref = applied.receipt.result_ref
         changes = [{'operation': 'add', 'path': path, 'content': text} for path, text in files.items()]
-        return self._folder_apply(ref, {}, changes, actor, request_id,
+        result = self._folder_apply(ref, {}, changes, actor, request_id,
             intent={'schema': 'otto.raw-folder-import.v1', 'project_json': edit, 'files': files},
             complete=lambda: {'outcome': 'imported', 'project_ref': ref.to_dict()})
+        result['transport'] = transport
+        return result
 
     def finish_project_folder(self, *, project_ref, session_id, project_json, document_changes,
                               actor, request_id):
