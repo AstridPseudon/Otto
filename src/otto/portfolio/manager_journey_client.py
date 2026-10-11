@@ -22,7 +22,7 @@ def requires_native_caller(command: str) -> bool:
                        "report", "status", "review-input", "review-task", "finish-task", "finish-project",
                        "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
                        "worker-status", "manager-assessment", "manager-assessment-pool", "completion-gate",
-                       "complete-task", "manager-continue", "execution-control", "operating-setup"}
+                       "complete-task", "manager-continue", "execution-control", "operating-setup", "vision"}
 
 
 FINISH_PROJECT_EXAMPLE = (
@@ -455,6 +455,9 @@ def add_manager_journey_parsers(commands: Any) -> None:
     control.add_argument("--schedule-id", help="current manager or retained worker schedule; cannot select another project's occurrence")
     control.add_argument("--request-key", help="required for stop")
     control.add_argument("--expected-version", type=int, help="exact Due version required for stop")
+    vision = commands.add_parser("vision", help="read adopted Vision through the current project identity; owner authoring remains separate")
+    vision.add_argument("--operation", required=True, choices=("help", "read", "query", "context", "history"))
+    vision.add_argument("--arguments", type=json.loads, default={}, help="JSON object; scoped reads require exact current project_ref")
     queue = commands.add_parser("project-queue", help="read one canonical queue or enroll an inert project after its exact tail",
         description="Requires exact host owner authentication. Seed adopts the authorized existing enrolled order once. After preserves that prefix using the exact queue revision; enrollment and DAT publication have separate receipts. UNKNOWN requires exact transport reconciliation. Read joins current Work state for root, continuation and observer; activation stays separate.")
     queue.add_argument("--operation", choices=("read", "seed", "after"), default="read")

@@ -38,8 +38,10 @@ def _json(value: Any) -> Any:
 
 class DocumentEditorHost:
     def __init__(self, *, owner: Any, directory: str | Path, secret: bytes,
-                 clock: Any = time.time) -> None:
+                 clock: Any = time.time, vision_validator: Any = None,
+                 vision_operations: Any = None) -> None:
         self.actor, self.clock = owner.owner_actor, clock
+        self.vision_operations = vision_operations
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.writer_id = "otto.document-editor"
@@ -47,7 +49,8 @@ class DocumentEditorHost:
             self.directory / "writer-locks", authority=owner.store.authority,
             secret=secret, writer_identities=(self.writer_id,), clock=clock)
         self.sessions = AuthoringSessionService(owner.store, materializer=self._materialize)
-        self.authoring = DocumentAuthoringHandler(owner.store, authoring=self.sessions)
+        self.authoring = DocumentAuthoringHandler(owner.store, authoring=self.sessions,
+                                                 vision_validator=vision_validator)
         self.lifecycle = AuthoringLifecycle(self.sessions, writer_leases=self.leases,
                                            writer_identity=self.writer_id, clock=clock)
         from .manager_application import ManagerApplication
@@ -90,13 +93,18 @@ class DocumentEditorHost:
             "scope": ResourceRef.from_dict(value["scope"]),
             "target_scope": ResourceRef.from_dict(value["target_scope"])})
 
-    def _visible(self, project: ResourceRef, document: ResourceRef) -> None:
+    def _visible(self, project: ResourceRef | None, document: ResourceRef) -> None:
+        if project is None:
+            # This host is independently owner-authenticated. Standalone
+            # documents use current DAT access, never a fabricated project.
+            self.authoring.content.metadata(document, actor=self.actor)
+            return
         read = self.operations.document_reader.read_document(project, document, actor=self.actor)
         if read.get("outcome") != "read":
             raise PermissionError("editor document is outside the current project read grant")
 
     def _resume(self, request: Mapping[str, Any]) -> Any:
-        project = ResourceRef.from_dict(request["project_ref"])
+        project = ResourceRef.from_dict(request["project_ref"]) if "project_ref" in request else None
         document = ResourceRef.from_dict(request["document_ref"])
         self._visible(project, document)
         handle = self._handle(request["handle"])
@@ -120,18 +128,24 @@ class DocumentEditorHost:
     def dispatch(self, request: Mapping[str, Any], *, actor: Any) -> Mapping[str, Any]:
         if actor != self.actor:
             raise PermissionError("editor requires the independently authenticated owner")
+        if request.get("command") == "vision":
+            if self.vision_operations is None or not callable(getattr(self.vision_operations, "dispatch", None)):
+                raise PermissionError("Vision command surface is not installed on this owner host")
+            return self.vision_operations.dispatch(request)
         operation = request.get("operation")
         common = {"command", "operation", "request_key"}
-        session = {"project_ref", "document_ref", "handle"}
+        session = {"document_ref", "handle"}
         fields = {
-            "help": set(), "read": {"project_ref", "document_ref"},
-            "open": {"project_ref", "document_ref"}, "inventory": set(),
+            "help": set(), "read": {"document_ref"},
+            "open": {"document_ref"}, "inventory": set(),
             "recover": {"session_id"}, "discard-lost": {"session_id"},
             "resume": session, "status": session, "discard": session,
             "save": session | {"editor_buffer"},
             "finish": session, "idle-close": session,
         }
         allowed = common | fields.get(operation, {"unsupported"})
+        if operation in {"read", "open", "resume", "status", "discard", "save", "finish", "idle-close"}:
+            allowed.add("project_ref")
         if operation in {"open", "save", "resume"}:
             allowed.add("inactivity_seconds")
         if operation not in fields or set(request) - allowed or not (common | fields[operation]) <= set(request):
@@ -143,7 +157,8 @@ class DocumentEditorHost:
             return {"outcome": "help", "command": "document-authoring",
                 "transport": "exact owner-authoring grant through protected host input; caller IPC alone cannot grant authority",
                 "fields": {name: sorted(common | required) for name, required in fields.items()},
-                "optional_fields": {name: ["inactivity_seconds"] for name in ("open", "resume", "save")},
+                "optional_fields": {name: (["inactivity_seconds"] if name in {"open", "resume", "save"} else []) + ["project_ref"]
+                                    for name in ("read", "open", "resume", "status", "discard", "save", "finish", "idle-close")},
                 "default_inactivity_seconds": DEFAULT_IDLE_SECONDS,
                 "buffer_format": {"content": "the editor's current JSON content value"},
                 "handle": "retain the exact handle returned by open; never synthesize a token or actor",
@@ -153,6 +168,10 @@ class DocumentEditorHost:
                 "publication": "DAT revision/receipt only; direction, assignment and resource adoption remain separate owner operations",
                 "provider_called": False}
         if operation == "read":
+            if "project_ref" not in request:
+                document = ResourceRef.from_dict(request["document_ref"])
+                self._visible(None, document)
+                return dict(_json(self.authoring.read(document, self.actor)))
             return self.operations.document_reader.read_document(
                 request["project_ref"], request["document_ref"], actor=self.actor)
         if operation == "inventory":
@@ -169,9 +188,17 @@ class DocumentEditorHost:
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or threshold < 0:
             raise ValueError("inactivity_seconds must be finite and nonnegative")
         if operation == "open":
-            material = self.operations.open_edit(request["project_ref"], request["document_ref"], actor=self.actor, request_id=key)
+            if "project_ref" not in request:
+                document = ResourceRef.from_dict(request["document_ref"])
+                self._visible(None, document)
+                material = self.authoring.open_owned(document, self.actor, request_id=key)
+            else:
+                material = self.operations.open_edit(request["project_ref"], request["document_ref"], actor=self.actor, request_id=key)
             if isinstance(material, Mapping):
                 return material
+            if material.open_result.handle is None:
+                return {"outcome": material.open_result.status, "reason": material.open_result.error,
+                        "receipt": _json(material.refusal_receipt), "nonpublishing": True}
             with self._lock:
                 self._buffers[material.handle.session_id] = {"captured": False, "writing": False,
                     "published": False, "inactivity_seconds": threshold}
@@ -217,7 +244,7 @@ class DocumentEditorHost:
                     state.update(writing=False, captured=saved["outcome"] in {"autosaved", "unchanged"},
                         last_content_edit=saved.get("last_content_edit"),
                         inactivity_seconds=threshold, published=False,
-                        request={k: request[k] for k in ("project_ref", "document_ref", "handle")})
+                        request={k: request[k] for k in ("project_ref", "document_ref", "handle") if k in request})
                 return {**saved, "buffer_captured": state["captured"], "inactivity_seconds": threshold}
             finally:
                 with self._lock:

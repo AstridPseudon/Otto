@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "id": "vision",
+  "name": "Vision connected product intent",
+  "version": "1.0.0",
+  "documentation": {"kind": "skill", "path": "skill/SKILL.md"},
+  "resources": [
+    {"path": "schemas/vision-node.json", "kind": "vision_schema"},
+    {"path": "vocabulary.md", "kind": "vision_vocabulary"},
+    {"path": "presets.json", "kind": "vision_presets"},
+    {"path": "templates/product-area.md", "kind": "vision_template"},
+    {"path": "templates/repository-subsystem.md", "kind": "vision_template"},
+    {"path": "templates/cross-cutting-concept.md", "kind": "vision_template"},
+    {"path": "templates/design-decision.md", "kind": "vision_template"},
+    {"path": "skill/SKILL.md", "kind": "skill"},
+    {"path": "examples/frame.md", "kind": "vision_example"},
+    {"path": "role-guidance.md", "kind": "vision_role_guidance"}
+  ]
+}

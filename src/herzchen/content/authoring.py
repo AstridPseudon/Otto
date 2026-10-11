@@ -216,12 +216,15 @@ class _DocumentAuthoringHandlerEngine:
         authoring: Optional[AuthoringSessionService] = None,
         scope_resolver: Optional[Callable[..., ResourceRef]] = None,
         temporary_cleanup: Optional[Callable[..., Any]] = None,
+        vision_validator: Any = None,
     ) -> None:
         self.__writer = writer
         self.reader = writer.consumer()
         self.content = ContentCommandHandler(writer)
         self.scope_resolver = scope_resolver
         self.temporary_cleanup = temporary_cleanup
+        # Trusted owner composition supplies adopted resources, never the draft.
+        self.vision_validator = vision_validator
         self.authoring = authoring or AuthoringSessionService(
             writer,
             scope_resolver=self._resolve_scope_for_session,
@@ -373,7 +376,8 @@ class _DocumentAuthoringHandlerEngine:
     ) -> DocumentDraft:
         parsed = self.interpret(draft, target=target)
         target_ref = _target_ref(target) if target is not None else None
-        document = document or parsed.document or (self._read_document(target_ref) if target_ref is not None else None)
+        existing = self._read_document(target_ref) if target_ref is not None else None
+        document = existing or document or parsed.document
         errors: list[str] = []
         if document is None:
             errors.append("document is required for a new document")
@@ -391,6 +395,24 @@ class _DocumentAuthoringHandlerEngine:
                     errors.append("links: " + str(exc))
         if errors:
             raise SchemaValidationError(errors)
+        vision_content = isinstance(parsed.content, Mapping) and parsed.content.get("schema") == "vision.node.v1"
+        if document.role == "vision" or vision_content:
+            if document.role != "vision":
+                raise SchemaValidationError(("schema_invalid: Vision content requires canonical role vision",))
+            if parsed.document is not None and parsed.document != document:
+                raise SchemaValidationError(("schema_invalid: canonical Vision metadata cannot be changed by a draft",))
+            if self.vision_validator is None:
+                raise SchemaValidationError(("definition_unavailable: no adopted Vision definition is composed",))
+            current_ref = self._current_revision(target_ref) if existing is not None else None
+            if existing is not None and current_ref is None:
+                raise SchemaValidationError(("definition_unavailable: canonical Vision content has no exact revision",))
+            previous = self.content.read(current_ref).get("content") if current_ref is not None else None
+            from .vision import VisionValidationError
+            try:
+                normalized = self.vision_validator.validate(parsed.content, document.ref, previous=previous)
+            except VisionValidationError as exc:
+                raise SchemaValidationError(exc.errors) from exc
+            parsed = DocumentDraft(normalized, parsed.document, parsed.revision, parsed.links, parsed.summary)
         summary = parsed.summary
         if parsed.document is None and summary == self._summary(None, parsed.content):
             summary = self._summary(document, parsed.content)
@@ -432,6 +454,10 @@ class _DocumentAuthoringHandlerEngine:
         current = self._current_revision(target_ref) if document is not None else None
         if initial_content is None and current is not None:
             initial_content = self.content.read(current).get("content", {})
+            if document.role == "vision":
+                # The same EDT document.json envelope is round-trippable from
+                # its initial buffer, including on an unchanged check-in.
+                initial_content = DocumentDraft(initial_content).to_dict()
         if initial_content is None:
             initial_content = {}
         opened = self.authoring.open(
@@ -831,30 +857,33 @@ class _DocumentAuthoringHandlerEngine:
         current_revision = current.get("current_revision")
         current_revision_ref = current_revision if isinstance(current_revision, ResourceRef) else (ResourceRef.from_dict(current_revision) if current_revision else None)
         current_version = current.get("version")
-        revision_name = parsed.revision or ("rev-" + _digest(parsed.content)[:24])
+        revision_material = ({"content": parsed.content, "base_revision": handle.base_revision}
+                             if document.role == "vision" else parsed.content)
+        revision_name = parsed.revision or ("rev-" + _digest(revision_material)[:24])
         all_links = tuple(parsed.links)
         for link in all_links:
             validate_document_binding(document, link.document)
         values = {"target": target, "content": parsed.content, "revision": revision_name, "links": all_links, "scope": scope}
+        prior = self.__writer.get_receipt(request_id + ":document")
+        creating = (prior.operation == "dat.content.document.create") if prior is not None else current_revision_ref is None
         replay_revision = ContentRevision(
             document.ref, revision_name, parsed.content, actor,
-            parent_revision=handle.base_revision if current_revision_ref is not None else None,
-            initial=current_revision_ref is None,
+            parent_revision=handle.base_revision if not creating else None,
+            initial=creating,
         )
-        replay_operation = "dat.content.document.create" if current_revision_ref is None else "dat.content.revision.append"
+        replay_operation = "dat.content.document.create" if creating else "dat.content.revision.append"
         document_payload = {"document": document, "revision": replay_revision}
         context = self._context(
             actor,
             request_id + ":document",
             values,
-            expected_revision=(handle.base_revision if current_revision_ref is not None and handle is not None else None),
+            expected_revision=handle.base_revision if not creating else None,
             expected_version=None,
             operation=replay_operation,
             target=document.ref,
             payload=document_payload,
         )
         request_digest = context.request_digest
-        prior = self.__writer.get_receipt(request_id + ":document")
         if prior is not None:
             if prior.request_digest != request_digest:
                 raise ReplayConflictError("logical request key was reused with a changed request digest")
@@ -970,6 +999,7 @@ class _DocumentAuthoringHandlerEngine:
             capture=raw,
             apply=apply,
             pending=pending,
+            snapshot_digest=hashlib.sha256(raw).hexdigest(),
         )
         if not result_box:
             errors = ()

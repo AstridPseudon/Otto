@@ -508,6 +508,36 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "vision":
+            installation = getattr(self.server, "vision", None)
+            if installation is None:
+                raise PermissionError("current owner Vision composition is not installed")
+            context = _CALLER.get()
+            if context is None:
+                actor = self.authoring_authorizer(request)
+                return self.server.document_editor.dispatch(request, actor=actor)
+            self.authorize_caller(context, request)
+            from .herzchen_binding import ProjectReadGrant
+            from herzchen.content.model import DocumentAssociation
+            from herzchen.content.vision_queries import vision_attachment_key
+            from herzchen.contracts import ReferenceBinding
+            project = ResourceRef.from_dict(self.server.state["project_ref"])
+            actor = self.server.owner.binding.authenticated_actor(context["principal"])
+            grant = ProjectReadGrant(actor, (project.id,), "current-Vision-manager", "v1")
+            reader = self.server.owner.store.consumer()
+            def membership(project_ref, document_ref, invoking_actor):
+                if project_ref != project or invoking_actor != actor:
+                    return False
+                subject = ResourceRef(project.authority, project.kind, project.id)
+                document = ResourceRef(document_ref.authority, document_ref.kind, document_ref.id)
+                association = DocumentAssociation(subject, "project.documents", vision_attachment_key(document),
+                                                  ReferenceBinding(document, "current"))
+                row = reader.get_record(ResourceRef(project.authority, "document-association", association.identity))
+                if row is None or row.payload.get("active") is not True:
+                    return False
+                return DocumentAssociation.from_dict(row.payload["association"]) == association
+            return installation.agent_read(request, actor=actor, project_ref=project,
+                                           grant=grant, membership_reader=membership)
         if command in {"lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                        "start-retained-child", "parent-child-result"}:
             from .worker_occurrences import dispatch_occurrence

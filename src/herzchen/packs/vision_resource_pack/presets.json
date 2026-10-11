@@ -1,0 +1,22 @@
+{
+  "schema": "vision.presets.v1",
+  "host_contract": "vision-inline.v1",
+  "finite": true,
+  "presets": [
+    {"name": "outline", "view": "reading_parent_tree", "limit": 64},
+    {"name": "related", "view": "typed_relationships", "directions": ["in", "out", "both"], "limit": 64},
+    {"name": "by_repository", "view": "repository_applicability", "limit": 64},
+    {"name": "repositories_for", "view": "repositories_for_node", "limit": 64},
+    {"name": "shared_concepts", "view": "shared_concepts", "limit": 64},
+    {"name": "search", "view": "title_summary_search", "limit": 64},
+    {"name": "audit", "view": "structural_audit", "limit": 64}
+  ],
+  "bounds": {
+    "max_members": 128,
+    "max_nodes": 129,
+    "max_displayed_edges": 24,
+    "max_rendered_intent_bytes": 12288,
+    "max_json_bytes": 65536,
+    "max_query_response_bytes": 131072
+  }
+}

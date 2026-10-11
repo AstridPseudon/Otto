@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     help_parser = sub.add_parser("help", help="show the manager entry contract")
     _add_format(help_parser)
 
+    vision = sub.add_parser(
+        "vision",
+        help="run the finite Vision resource/authoring command envelope over injected host ports",
+        description="Dispatch one {command:vision, operation, arguments, request_key?} envelope through an injected authenticated Vision surface.",
+    )
+    vision.add_argument("--request-json", required=True, help="Vision command envelope as a JSON object")
+    _add_format(vision)
+
     create = sub.add_parser("create-pending", help="create an inert pending project (legacy command)")
     create.add_argument("--actor", required=True)
     create.add_argument("--request-id", required=True)
@@ -952,6 +960,7 @@ def main(
     direction_operations: Any = None,
     observability_views: Any = None,
     observability_grant: Any = None,
+    vision_operations: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1007,6 +1016,7 @@ def main(
                     "operating_brief": "resolve_assignment_attachments -> prepare_canonical_operating_brief",
                     "direction": "DirectionSurface read/effective-context/whoami/initial-bind/draft/update/history/overview",
                     "observability_views": "ObservabilityViews over the injected authenticated project-history reader",
+                    "vision": "python -m otto.portfolio.cli vision --request-json '{\"command\":\"vision\",\"operation\":\"help\",\"arguments\":{}}' (requires injected VisionCommandSurface)",
                 },
                 "integration_state": {
                     "assessment_coverage": "available only when the accepted OttoAssessment facade is injected",
@@ -1014,8 +1024,9 @@ def main(
                     "task_completion": "available only through an explicitly injected owner-bound OttoPortfolio and full current request pins",
                     "project_advisor_pair": "available only through an explicitly injected owner-bound OttoPortfolio and exact current manager pins",
                     "operating_brief": "available only through injected canonical owner readers; local staged bundles are never treated as adopted resources",
+                    "vision": "available only through an explicitly injected authenticated VisionCommandSurface; selected resources and operation pins are returned by the surface",
                 },
-                "cli_scope": "owner-backed reads, inert title+brief onboarding, guarded task completion, current manager/advisor assignment pairing, and execution help; no dispatch, launch, or scheduler command",
+                "cli_scope": "owner-backed reads, inert title+brief onboarding, finite authenticated Vision author/query/context/checkpoint operations, guarded task completion, and execution help; no provider launch or scheduler command",
                 "document_injection": "Supply the accepted ProjectDocumentOperations instance through cli.main(argv, document_operations=...).",
                 "assessment_injection": "Supply the accepted OttoAssessment facade through cli.main(argv, assessment=...).",
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
@@ -1139,6 +1150,8 @@ def main(
             )
         elif args.command == "direction":
             result = _direction_command(args, direction_operations)
+        elif args.command == "vision":
+            result = _vision_command(args, vision_operations)
         else:
             result = _document_command(args, document_operations or getattr(portfolio, "document_operations", None))
     except (ValueError, PortfolioError) as exc:
@@ -1240,6 +1253,18 @@ def _direction_command(args: argparse.Namespace, operations: Any) -> dict[str, A
             raise ValueError("subjects must be a JSON array")
         return operations.overview(subjects, actor=actor, limit=args.limit, cursor=args.cursor)
     return _request_error(f"unsupported direction command: {command}", code="unsupported_command")
+
+
+def _vision_command(args: argparse.Namespace, operations: Any) -> dict[str, Any]:
+    if operations is None or not callable(getattr(operations, "dispatch", None)):
+        return _surface_unavailable(
+            "vision.help.v1", "vision_operations_unavailable",
+            "Inject the authenticated VisionCommandSurface at cli.main(..., vision_operations=...).",
+        )
+    request = _parse_json(args.request_json, "request_json")
+    if not isinstance(request, Mapping):
+        raise ValueError("request_json must be a JSON object")
+    return operations.dispatch(request)
 
 
 def _document_command(args: argparse.Namespace, document_operations: Any) -> dict[str, Any]:

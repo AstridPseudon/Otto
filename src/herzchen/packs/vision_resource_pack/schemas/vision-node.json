@@ -1,0 +1,60 @@
+{
+  "schema": "vision.node.v1",
+  "host_contract": "vision-inline.v1",
+  "document_role": "vision",
+  "fields": [
+    "schema",
+    "definition",
+    "kind",
+    "title",
+    "summary",
+    "maturity",
+    "as_of",
+    "horizon",
+    "body_markdown",
+    "navigation_parent",
+    "applies_to",
+    "relationships",
+    "sources",
+    "work_refs",
+    "repository",
+    "members"
+  ],
+  "required": [
+    "schema",
+    "definition",
+    "kind",
+    "title",
+    "summary",
+    "as_of",
+    "body_markdown"
+  ],
+  "kinds": [
+    "product",
+    "area",
+    "repository",
+    "subsystem",
+    "concept",
+    "design-decision"
+  ],
+  "relations": [
+    "refines",
+    "contributes_to",
+    "depends_on",
+    "in_tension_with",
+    "supersedes"
+  ],
+  "maturities": [
+    "sketch",
+    "proposed",
+    "aligned",
+    "superseded"
+  ],
+  "max_content_bytes": 32768,
+  "max_members": 128,
+  "max_relationships": 32,
+  "max_applies_to": 16,
+  "max_sources": 16,
+  "max_work_refs": 8,
+  "unknown_fields": "reject"
+}
