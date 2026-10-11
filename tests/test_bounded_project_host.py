@@ -79,6 +79,7 @@ class NativeFixture(fixture.Provider):
 
 
 class BoundedProjectHostTests(unittest.TestCase):
+    manager_turn_limit = 2
     def setUp(self):
         self.f = f = fixture.ExecutionApplicationTests()
         f.setUp()
@@ -91,7 +92,8 @@ class BoundedProjectHostTests(unittest.TestCase):
             project_read_grant=ProjectReadGrant(f.actor, tuple(project.id for project in projects), "fixture", "v1"))
         self.native = NativeFixture()
         self.directory = self.root / "ipc"
-        self.host = ExecutionHost(directory=self.directory, handler=lambda request: None, bounded_transports=True)
+        self.host = ExecutionHost(directory=self.directory, handler=lambda request: None, bounded_transports=True,
+            manager_turn_limit=self.manager_turn_limit)
         self.services, self.apps, self.states = {}, {}, {}
         self.saves, self.owner_threads = [], []
         self.owner_targets = {}

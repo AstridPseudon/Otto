@@ -96,6 +96,8 @@ def _same_process_start_identity(value: Any, expected: Mapping[str, Any]) -> boo
 
 _DISPATCH_CONTEXT = threading.local()
 _COMMAND_TRANSPORT = ContextVar("otto_command_transport", default=None)
+_MANAGER_TURN_COMMANDS = frozenset({"start-manager", "manager-continue", "manager-worker-result",
+                                   "manager-help-result", "manager-task-settlement"})
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
                                  "effective-context", "whoami", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                                  "manager-assessment", "manager-assessment-pool",
@@ -176,7 +178,7 @@ class ExecutionHost:
                  socket_path: str | Path | None = None,
                  caller_binding_reader: Any = None, caller_context_resolver: Any = None,
                  caller_authorizer: Any = None, owner_file_compatibility: bool = False,
-                 bounded_transports: bool = False) -> None:
+                 bounded_transports: bool = False, manager_turn_limit: int = 2) -> None:
         self.directory = Path(directory)
         self.handler = handler
         if (caller_binding_reader is None) != (caller_context_resolver is None):
@@ -209,6 +211,9 @@ class ExecutionHost:
         self.failures: dict[str, dict[str, str]] = {}
         if type(bounded_transports) is not bool:
             raise TypeError("bounded_transports must be an explicit owner choice")
+        if type(manager_turn_limit) is not int or manager_turn_limit not in {2, 3}:
+            raise ValueError("qualified manager turn ceiling must be two or three")
+        self.manager_turn_limit = manager_turn_limit
         self.bounded_transports = bounded_transports
         self._owner_thread: int | None = None
         # These are continuations of retained requests, not durable new work.
@@ -311,9 +316,11 @@ class ExecutionHost:
         active_by_id = {**self._capacity_holds,
             **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
         active = list(active_by_id.values())
-        # Qualified initial limits are deliberately conjunctive: 2/2/3. One
+        # Adopted manager ceiling (two by default, three explicitly qualified),
+        # worker two and total three are conjunctive. One
         # total slot stays available to coordination when only workers run.
-        if len(active) >= 3 or sum(row["role"] == scope["role"] for row in active) >= 2:
+        if (len(active) >= 3 or sum(row["role"] == scope["role"] for row in active)
+                >= (self.manager_turn_limit if scope["role"] == "manager" else 2)):
             return False
         for row in active:
             if (row["assignment"] == scope["assignment"]
@@ -503,6 +510,13 @@ class ExecutionHost:
         operation = operation or (lambda: self.handler(request))
         if self.bounded_transports:
             return operation() if threading.get_ident() == self._owner_thread else self._owner_request(operation)
+        current = getattr(_DISPATCH_CONTEXT, "value", None)
+        if current is not None and current[0] is self and current[1] == threading.get_ident():
+            # A finite nested command is already on its serialized owner pump.
+            # Queuing it back to that same waiting pump would deadlock. Foreign
+            # readers still use the owner queue and cannot borrow this context.
+            with self._command_lock:
+                return operation()
         while True:
             with self._lock:
                 if self._external_waiting:
@@ -657,16 +671,24 @@ class ExecutionHost:
         return after_owner(result, lambda result: dict(result, caller_context=context,
                     target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean}))
 
-    def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None) -> Any:
+    def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None,
+                  _turn_admitted: bool = False) -> Any:
         try:
             if self.bounded_transports and threading.get_ident() != self._owner_thread:
                 return self._owner_request(lambda: self._dispatch(request, ingress=ingress))
+            # Admission happens before taking the shared Store command lock.
+            # A queued manager must not block another project's owner pump.
+            turn_admission = getattr(self, "turn_admission", None)
+            if (not self.bounded_transports and not _turn_admitted and callable(turn_admission)
+                    and request.get("command") in _MANAGER_TURN_COMMANDS):
+                with turn_admission():
+                    return self._dispatch(request, ingress=ingress, _turn_admitted=True)
             if self._closing and _starts_work(request):
                 return {"outcome": "held", "reason": "owner host is draining",
                         "provider_called": False, "effects_started": False, "retry": False}
             # The manager-only planning write uses the same custodian pump,
             # with socket peer authorization before its finite public effect.
-            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker"}:
+            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker", "project-documents"}:
                 def finite():
                     previous = getattr(_DISPATCH_CONTEXT, "value", None)
                     _DISPATCH_CONTEXT.value = (self, threading.get_ident(), False)
@@ -786,9 +808,15 @@ class ExecutionHost:
                 if not status:
                     # A compatible socket dispatch may own a native wait. Do
                     # not claim/block its child's file before its pump sees it.
-                    acquired = self._command_lock.acquire(blocking=False)
-                    if not acquired:
-                        continue
+                    # Turn admission can wait for a global slot; let it do so
+                    # before taking the shared Store lock so active projects
+                    # can keep pumping finite owner callbacks.
+                    queued_turn = (callable(getattr(self, "turn_admission", None))
+                                   and command in _MANAGER_TURN_COMMANDS)
+                    if not queued_turn:
+                        acquired = self._command_lock.acquire(blocking=False)
+                        if not acquired:
+                            continue
                     if self._closing and _starts_work(request):
                         continue
                 with self._lock:
@@ -928,7 +956,11 @@ class ExecutionHost:
             except queue.Empty:
                 return
             try:
-                result["value"] = self._owned(operation) if self.bounded_transports else operation()
+                if self.bounded_transports:
+                    result["value"] = self._owned(operation)
+                else:
+                    with self._command_lock:
+                        result["value"] = operation()
             except BaseException as exc:
                 result["error"] = exc
             finally:
@@ -938,10 +970,11 @@ class ExecutionHost:
     def external_call(operation: Callable[[], Any]) -> Any:
         """Yield only an admitted manager's transport wait, never owner custody.
 
-        The owner thread retains its command lock and executes finite nested
-        commands and native admission callbacks itself. The transport thread
-        cannot read/mutate the owner through an unwrapped callback. Other long
-        dispatches remain queued; result capture/settlement resumes on owner.
+        The owner thread executes finite nested commands and native admission
+        callbacks itself. A multi-project service may release the shared lock
+        during the wait and reacquire it for those callbacks. The transport
+        thread cannot mutate the owner through an unwrapped callback; result
+        capture and settlement resume on the owner.
         """
         context = getattr(_DISPATCH_CONTEXT, "value", None)
         if context is None or not context[2]:
@@ -961,6 +994,14 @@ class ExecutionHost:
 
         with host._lock:
             host._external_waiting += 1
+        # A one-owner service can admit multiple project manager turns while
+        # retaining a single Store write lock. Release only for the external
+        # provider wait; owner callbacks and retained commands reacquire it.
+        lock_state = None
+        if getattr(host, "release_command_lock_during_wait", False):
+            release_save = getattr(host._command_lock, "_release_save", None)
+            if callable(release_save):
+                lock_state = release_save()
         transport = threading.Thread(target=run, name="otto-manager-transport", daemon=False)
         try:
             transport.start()
@@ -981,6 +1022,8 @@ class ExecutionHost:
                     waiting.set()
             if transport.ident is not None:
                 transport.join()
+            if lock_state is not None:
+                host._command_lock._acquire_restore(lock_state)
         if "error" in result:
             raise result["error"]
         return result["value"]
@@ -1373,7 +1416,8 @@ class ExecutionHost:
                                 disposition: Callable[[], str], request_stop: Callable[[Any], None],
                                 max_restarts: int = 2, restart_delay: float = 0.25,
                                 max_restart_delay: float = 5.0,
-                                on_spawn: Callable[[Any], None] | None = None) -> Mapping[str, Any]:
+                                on_spawn: Callable[[Any], None] | None = None,
+                                resume: bool = False) -> Mapping[str, Any]:
         """Compose bounded supervision with an independently owned stdin FIFO.
 
         Trusted host composition supplies paths and effect reconciliation. The
@@ -1417,7 +1461,7 @@ class ExecutionHost:
         return ExecutionHost.supervise(argv=argv, receipt_path=receipt_path,
             source_identity=source_identity, reconcile=reconcile, disposition=disposition,
             request_stop=request_stop, max_restarts=max_restarts, restart_delay=restart_delay,
-            max_restart_delay=max_restart_delay, process_factory=spawn)
+            max_restart_delay=max_restart_delay, process_factory=spawn, resume=resume)
 
     @staticmethod
     def reconcile_trigger(*, attention: Any, executor: Any, schedule_id: str,

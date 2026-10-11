@@ -20,9 +20,11 @@ from urllib.parse import urlsplit, unquote
 from herzchen.authoring import DEFAULT_IDLE_SECONDS
 
 
+# Per-REQUEST bounds: a call scans/exports at most this many documents and
+# returns a continuation for the rest. A project itself is not limited.
 MAX_SEARCH_DOCUMENTS = 500
 MAX_BUNDLE_DOCUMENTS = 50
-MAX_DOCUMENT_TEXT_BYTES = 1_000_000
+MAX_DOCUMENT_TEXT_BYTES = 10 * 1024 * 1024  # one document's text, as project_folder.MAX_FILE_BYTES
 
 
 class DocumentNavigationError(ValueError):
@@ -211,8 +213,13 @@ class ProjectDocumentOperations:
         roles: Sequence[str] = (),
         task_refs: Optional[Sequence[Any]] = None,
         limit: int = 100,
+        cursor: int = 0,
     ) -> dict[str, Any]:
-        """Find visible documents by title, text, role, path key, or task name."""
+        """Find visible documents by title, text, role, path key, or task name.
+
+        One call scans at most MAX_SEARCH_DOCUMENTS documents (in document-id
+        order) starting at ``cursor``; ``next_cursor`` continues the scan.
+        """
         from herzchen.contracts import ResourceRef
 
         query = _text(query, "query").casefold()
@@ -242,18 +249,16 @@ class ProjectDocumentOperations:
                 # aliases are simply unavailable if the scoped sheet read is.
                 task_titles = {}
 
-        documents = listed.get("documents", ())
-        if len(documents) > MAX_SEARCH_DOCUMENTS:
-            return {
-                "outcome": "rejected",
-                "matches": [],
-                "error": {"code": "search_scope_limit_exceeded", "limit": MAX_SEARCH_DOCUMENTS},
-                "read_only": True,
-            }
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+            raise DocumentNavigationError("cursor must be a non-negative document offset")
+        documents = sorted(listed.get("documents", ()), key=lambda item: str((item.get("document_ref") or {}).get("id", "")))
+        window = documents[cursor:cursor + MAX_SEARCH_DOCUMENTS]
+        next_cursor = cursor + len(window) if cursor + len(window) < len(documents) else None
         matches = []
-        for item in documents:
+        for item in window:
             document_ref = item.get("document_ref")
-            read = self.document_reader.read_document(project, document_ref, actor=actor, roles=roles, task_refs=task_refs)
+            read = self.document_reader.read_document(project, document_ref, actor=actor, roles=roles, task_refs=task_refs,
+                                                      listed=listed)
             if read.get("outcome") != "read":
                 continue
             doc = item.get("document", {})
@@ -291,6 +296,8 @@ class ProjectDocumentOperations:
             "matches": matches[:limit],
             "count": min(len(matches), limit),
             "truncated": len(matches) > limit,
+            "scanned": len(window),
+            "next_cursor": next_cursor,
             "read_only": True,
             "dispatch": False,
             "launch": False,
@@ -992,14 +999,19 @@ class ProjectDocumentOperations:
         roles: Sequence[str] = (),
         task_refs: Optional[Sequence[Any]] = None,
     ) -> dict[str, Any]:
-        """Return a selected readable JSON bundle with canonical refs/hashes."""
+        """Return a selected readable JSON bundle with canonical refs/hashes.
+
+        One call exports at most MAX_BUNDLE_DOCUMENTS selected documents; a
+        caller with a larger selection pages it (see ``export_bundle_pages``).
+        """
         if isinstance(document_refs, (str, bytes)) or not isinstance(document_refs, Sequence):
             raise DocumentNavigationError("document_refs must be a sequence of ResourceRefs")
         if len(document_refs) > MAX_BUNDLE_DOCUMENTS:
             return {
                 "outcome": "rejected",
                 "files": [],
-                "error": {"code": "bundle_selection_limit_exceeded", "limit": MAX_BUNDLE_DOCUMENTS},
+                "error": {"code": "bundle_selection_limit_exceeded", "limit": MAX_BUNDLE_DOCUMENTS,
+                          "message": "page the selection; export_bundle_pages does this"},
                 "read_only": True,
             }
         project = _ref(project_ref, field="project_ref")
@@ -1031,7 +1043,8 @@ class ProjectDocumentOperations:
             if item is None:
                 exclusions["unavailable_selected_documents"].append({"document_ref": requested.to_dict(), "reason": "not_visible_in_project_scope"})
                 continue
-            read = self.document_reader.read_document(project, requested, actor=actor, roles=roles, task_refs=task_refs)
+            read = self.document_reader.read_document(project, requested, actor=actor, roles=roles, task_refs=task_refs,
+                                                      listed=listed)
             if read.get("outcome") != "read":
                 exclusions["unavailable_selected_documents"].append({"document_ref": requested.to_dict(), "reason": "unavailable"})
                 continue
@@ -1051,8 +1064,38 @@ class ProjectDocumentOperations:
         return {"outcome": "exported", **manifest, "bundle_sha256": bundle_hash, "read_only": True, "dispatch": False, "launch": False}
 
 
+def export_bundle_pages(operations: Any, project_ref: Any, document_refs: Sequence[Any], **options: Any) -> dict[str, Any]:
+    """Export any selection in MAX_BUNDLE_DOCUMENTS pages, merged into one bundle.
+
+    Each page is an ordinary export_bundle call. The merged manifest has the
+    same schema; its hash covers every page's files and exclusions.
+    """
+    refs = list(document_refs)
+    pages = [refs[index:index + MAX_BUNDLE_DOCUMENTS] for index in range(0, len(refs), MAX_BUNDLE_DOCUMENTS)] or [[]]
+    files: list[Any] = []
+    exclusions: dict[str, Any] = {}
+    project = None
+    for page in pages:
+        result = operations.export_bundle(project_ref, page, **options)
+        if result.get("outcome") != "exported":
+            return {**result, "pages_completed": pages.index(page)}
+        project = result["project_ref"]
+        files.extend(result["files"])
+        for key, value in result["exclusions"].items():
+            if isinstance(value, list):
+                exclusions.setdefault(key, []).extend(value)
+            else:
+                exclusions[key] = value
+    files.sort(key=lambda value: (value["paths"][0], value["document_ref"].get("id", "")))
+    manifest = {"schema": "otto.project-document-bundle.v1", "project_ref": project, "files": files,
+                "exclusions": exclusions}
+    return {"outcome": "exported", **manifest, "bundle_sha256": hashlib.sha256(_canonical_bytes(manifest)).hexdigest(),
+            "pages": len(pages), "read_only": True, "dispatch": False, "launch": False}
+
+
 __all__ = [
     "DocumentNavigationError",
+    "export_bundle_pages",
     "MAX_BUNDLE_DOCUMENTS",
     "MAX_DOCUMENT_TEXT_BYTES",
     "MAX_SEARCH_DOCUMENTS",

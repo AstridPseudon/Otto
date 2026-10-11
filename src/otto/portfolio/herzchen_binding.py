@@ -13,27 +13,28 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 from typing import Any, Mapping, Optional
+from weakref import WeakKeyDictionary
 
 from .resource_sync import ResourceSyncError, normalize_role_attachments, resolve_role_attachments, role_resource_pins
 
 
 # Keep the consumer facade's public instance shape stable while lifecycle
 # authority remains injected exclusively by the trusted owner bootstrap.
-_LIFECYCLE_PORTS: dict[int, Any] = {}
-_ORCHESTRATION_PORTS: dict[int, Any] = {}
-_ORCHESTRATION_PORTFOLIOS: dict[int, Any] = {}
+_LIFECYCLE_PORTS: WeakKeyDictionary = WeakKeyDictionary()
+_ORCHESTRATION_PORTS: WeakKeyDictionary = WeakKeyDictionary()
+_ORCHESTRATION_PORTFOLIOS: WeakKeyDictionary = WeakKeyDictionary()
 
 
 def _lifecycle_for(operations: Any) -> Any:
-    return _LIFECYCLE_PORTS.get(id(operations))
+    return _LIFECYCLE_PORTS.get(operations)
 
 
 def _orchestration_for(operations: Any) -> Any:
-    return _ORCHESTRATION_PORTS.get(id(operations))
+    return _ORCHESTRATION_PORTS.get(operations)
 
 
 def _orchestration_portfolio_for(operations: Any) -> Any:
-    return _ORCHESTRATION_PORTFOLIOS.get(id(operations))
+    return _ORCHESTRATION_PORTFOLIOS.get(operations)
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ class FiniteWorkOperations:
         create_open_port: Any = None,
         orchestration_port: Any = None,
         orchestration_portfolio: Any = None,
+        dependency_owner_actor: Any = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
         content_command_guard: Any = None,
         direction_context_reader: Any = None,
@@ -210,18 +212,19 @@ class FiniteWorkOperations:
         self.reader = _ScopedProjectReader(reader, project_read_grant, binding.authority)
         self.project_read_grant = project_read_grant
         self.binding = binding
+        self.dependency_owner_actor = dependency_owner_actor
         self.sheet_port = sheet_port
         self.content_port = content_port
         self.content_command_guard = content_command_guard
         self.direction_context_reader = direction_context_reader
         self.assignments_port = assignments_port
         if lifecycle_port is not None:
-            _LIFECYCLE_PORTS[id(self)] = lifecycle_port
+            _LIFECYCLE_PORTS[self] = lifecycle_port
         self.authoring_port = authoring_port
         self.create_open_port = create_open_port
         if orchestration_port is not None:
-            _ORCHESTRATION_PORTS[id(self)] = orchestration_port
-            _ORCHESTRATION_PORTFOLIOS[id(self)] = orchestration_portfolio
+            _ORCHESTRATION_PORTS[self] = orchestration_port
+            _ORCHESTRATION_PORTFOLIOS[self] = orchestration_portfolio
 
     def _actor(self, actor: str) -> Any:
         return self.binding.authenticated_actor(actor)
@@ -373,6 +376,20 @@ class FiniteWorkOperations:
         return metadata
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        if operation in {"work.project.dependency.link", "work.project.dependency.remove", "work.project.dependencies"}:
+            from .dependencies import PortfolioDependencies
+            authenticated = self._actor(actor)
+            dependencies = PortfolioDependencies(self.port, self._owner_reader, actor=authenticated,
+                owner_actor=self.dependency_owner_actor,
+                portfolio_ref=_orchestration_portfolio_for(self))
+            try:
+                if operation == "work.project.dependencies":
+                    return {"outcome": "read", **dependencies.readiness(payload["project_ref"])}
+                return dependencies.change(payload["project_ref"], payload["dependency_ref"],
+                    request_id=request_id, remove=operation.endswith(".remove"))
+            except (ValueError, PermissionError) as error:
+                return {"outcome": "error", "error": {"code": type(error).__name__,
+                    "message": str(error), "operation": operation}, "replayed": False, "event_ids": []}
         if operation == "work.project.export":
             return self._export_project(payload, request_id=request_id)
         if operation == "work.project.import":

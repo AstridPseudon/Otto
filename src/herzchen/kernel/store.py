@@ -1251,6 +1251,59 @@ class Store:
                 " AND ".join(clauses) + " ORDER BY id", args).fetchall()
             return tuple(ResourceRef(row[0], row[1], row[2], row[3]) for row in rows)
 
+    @staticmethod
+    def _structural_path(path: Any) -> str:
+        if (not isinstance(path, tuple) or not path or len(path) > 8
+                or not all(isinstance(part, str) and part and part.replace('_', '').isalnum() for part in path)):
+            raise ValueError("identity payload paths must be structural names")
+        return '$.' + '.'.join(path)
+
+    def project_identity_fields(self, *, kind: str, match_path: Tuple[str, ...], match_values: Sequence[str],
+                                fields: Mapping[str, Tuple[str, ...]],
+                                payload_matches: Optional[Mapping[Tuple[str, ...], str]] = None,
+                                payload_in: Optional[Mapping[Tuple[str, ...], Sequence[str]]] = None,
+                                ) -> Tuple[Mapping[str, Any], ...]:
+        """Named current fields of the identities whose ``match_path`` is one of ``match_values``.
+
+        A bounded projection for multi-project summaries: one read of the
+        current identities of one kind, never event history, returning only
+        the named fields plus ``ref`` and ``updated_at``. Paths are structural
+        names; every path and value is an SQL parameter.
+        """
+        values = tuple(match_values)
+        if (not isinstance(kind, str) or not kind.strip() or not isinstance(fields, Mapping) or not fields
+                or len(fields) > 32 or len(values) > 1000 or not all(isinstance(value, str) for value in values)):
+            raise ValueError("identity kind, string match values and named fields required")
+        if not values:
+            return ()
+        match = self._structural_path(match_path)
+        columns, args = [], []
+        for name, path in fields.items():
+            if not isinstance(name, str) or not name.replace('_', '').isalnum():
+                raise ValueError("projected field names must be identifiers")
+            columns.append("?, json_extract(payload_json, ?)")
+            args.extend([name, self._structural_path(path)])
+        clauses = ["authority = ?", "kind = ?", "json_extract(payload_json, ?) IN (" + ",".join("?" for _ in values) + ")"]
+        args.extend([self.authority, kind, match, *values])
+        for path, value in (payload_matches or {}).items():
+            if not isinstance(value, str):
+                raise ValueError("identity payload predicates require string values")
+            clauses.append("json_extract(payload_json, ?) = ?")
+            args.extend([self._structural_path(path), value])
+        for path, choices in (payload_in or {}).items():
+            choices = tuple(choices)
+            if not choices or not all(isinstance(choice, str) for choice in choices):
+                raise ValueError("identity payload choices require string values")
+            clauses.append("json_extract(payload_json, ?) IN (" + ",".join("?" for _ in choices) + ")")
+            args.extend([self._structural_path(path), *choices])
+        with self._transaction_lock:
+            self._require_open()
+            rows = self._connection.execute(
+                "SELECT authority, kind, id, current_revision, updated_at, json_object(" + ", ".join(columns) +
+                ") FROM identities WHERE " + " AND ".join(clauses) + " ORDER BY id", args).fetchall()
+        return tuple({**json.loads(row[5]), "ref": ResourceRef(row[0], row[1], row[2], row[3]).to_dict(),
+                      "updated_at": row[4]} for row in rows)
+
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.get_identity(ref)
 
@@ -2397,6 +2450,9 @@ class ConsumerStore:
 
     def find_identity_refs(self, *, kind: str, payload_matches: Mapping[Tuple[str, ...], str]) -> Tuple[ResourceRef, ...]:
         return self.__owner.find_identity_refs(kind=kind, payload_matches=payload_matches)
+
+    def project_identity_fields(self, **options: Any) -> Tuple[Mapping[str, Any], ...]:
+        return self.__owner.project_identity_fields(**options)
 
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_record(ref)

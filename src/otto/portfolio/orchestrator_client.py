@@ -285,7 +285,10 @@ def main(argv=None):
         command.add_argument('--request-key', required=operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start'})
         command.add_argument('--project-id')
         if operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start'}:
-            command.add_argument('--request', required=True)
+            command.add_argument('--request', required=True, help=(
+                'respond-help JSON contains only issue_id, authority_source, response, '
+                'proposed_solution and next_action; command and request_key are supplied by this client.'
+                if operation == 'respond-help' else 'Operation payload JSON; routing and request key stay in CLI flags.'))
     command = sub.add_parser('request-status'); command.add_argument('--request-id', required=True)
     args = parser.parse_args(argv)
     connection = lanes.read_private_json(Path(args.connection))
@@ -318,7 +321,11 @@ def main(argv=None):
                 request_key = args.request_key or ('read-' + lanes.new_token())
                 request = {'operation': args.operation, 'request_key': request_key}
                 if args.project_id is not None: request['project_id'] = args.project_id
-                if hasattr(args, 'request'): request['request'] = json.loads(args.request)
+                if hasattr(args, 'request'):
+                    request['request'] = json.loads(args.request)
+                    if args.operation == 'respond-help' and (not isinstance(request['request'], dict)
+                            or set(request['request']) != {'issue_id', 'authority_source', 'response', 'proposed_solution', 'next_action'}):
+                        parser.error('respond-help --request needs exactly issue_id, authority_source, response, proposed_solution, next_action. Put --request-key outside this JSON; omit command and request_key. No request was submitted.')
                 token = submit_exact(lane, request, namespace=locator['binding']['request_namespace'], request_key=request_key)
         result = lanes.wait(Path(lane), token, timeout_seconds=min(max(args.timeout_seconds,0),60))
     print(json.dumps(result, sort_keys=True, default=str))

@@ -134,8 +134,7 @@ class ProjectDocumentReader:
     def _resolve(self, value: Any, *, actor: Any, roles: Sequence[str], scopes: Sequence[Any]) -> Mapping[str, Any]:
         return _mapping(self.visibility_reader.resolve_reference(value, actor=actor, roles=tuple(roles), scopes=tuple(scopes)))
 
-    @staticmethod
-    def _membership_scopes(project_ref: Any, memberships: Sequence[Mapping[str, Any]]) -> list[Any]:
+    def _membership_scopes(self, project_ref: Any, memberships: Sequence[Mapping[str, Any]]) -> list[Any]:
         scopes = [_resource_ref(project_ref, field="project_ref")]
         for membership in memberships:
             try:
@@ -144,7 +143,34 @@ class ProjectDocumentReader:
                 continue
             if _identity(subject) not in {_identity(value) for value in scopes}:
                 scopes.append(subject)
+            if membership.get("namespace") == "portfolio.shared":
+                scope = self._shared_scope(project_ref, _mapping(membership.get("binding")).get("ref"))
+                if scope is not None and scope not in scopes:
+                    scopes.append(scope)
         return scopes
+
+    def _shared_scope(self, project_ref: Any, document_ref: Any) -> Any:
+        """Grant the portfolio scope only through this project's current supervision.
+
+        Association membership grants reading, never an EDT write capability.
+        The document remains scoped to its portfolio in DAT's visibility policy.
+        """
+        try:
+            project = _resource_ref(project_ref)
+            record = self.content_reader.reader.get_identity(
+                _resource_ref({"authority": project.authority, "kind": project.kind, "id": project.id}))
+            relation = (record.payload.get("metadata") or {}).get("otto_orchestrator") or {}
+            portfolio = _resource_ref(relation.get("portfolio_ref"))
+            requested = _resource_ref(document_ref)
+            head = self.content_reader.read(_resource_ref({
+                "authority": requested.authority, "kind": requested.kind, "id": requested.id}))
+            document = _mapping(head.get("document"))
+            scope = _resource_ref(document.get("authoring_scope"))
+            if portfolio.kind == "wrk.portfolio" and _identity(portfolio) == _identity(scope):
+                return portfolio
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+        return None
 
     def _association(self, association_ref: Any) -> Mapping[str, Any]:
         from herzchen.contracts import ResourceRef
@@ -163,11 +189,13 @@ class ProjectDocumentReader:
         return {"ref": ref, "payload": payload, "association": association}
 
     @staticmethod
-    def _subject_allowed(subject: Any, project_ref: Any, task_refs: set[tuple[str, str, str]]) -> bool:
+    def _subject_allowed(subject: Any, project_ref: Any, task_refs: set[tuple[str, str, str]], namespace: str = "") -> bool:
         try:
             ref = _resource_ref(subject, field="subject_ref")
         except ProjectDocumentError:
             return False
+        if namespace == "portfolio.shared":
+            return _identity(ref) == _identity(project_ref)
         return _identity(ref) == _identity(project_ref) or _identity(ref) in task_refs
 
     def list_documents(
@@ -226,16 +254,22 @@ class ProjectDocumentReader:
                 if association["payload"].get("active") is False:
                     continue
                 subject_value = assoc_data.get("subject")
-                if not self._subject_allowed(subject_value, project, task_identities):
+                if not self._subject_allowed(subject_value, project, task_identities, assoc_data.get("namespace", "")):
                     continue
                 binding_ref, binding_mode = self._binding(assoc_data.get("document", item.get("binding")))
                 if binding_mode == "current" and binding_ref.revision is not None:
                     continue
                 if binding_mode == "pinned" and binding_ref.revision is None:
                     continue
+                document_scopes = scopes
+                if assoc_data.get("namespace") == "portfolio.shared":
+                    shared_scope = self._shared_scope(project, binding_ref)
+                    if shared_scope is None:
+                        continue
+                    document_scopes = (*scopes, shared_scope)
                 resolved = self._resolve(
                     {"ref": binding_ref.to_dict(), "mode": binding_mode},
-                    actor=actor, roles=roles, scopes=scopes,
+                    actor=actor, roles=roles, scopes=document_scopes,
                 )
                 if resolved.get("foreign"):
                     # Owner-local content cannot authenticate or return a
@@ -260,7 +294,7 @@ class ProjectDocumentReader:
                 if not external:
                     # Resolve the actual current head independently of a
                     # membership's pinned historical version.
-                    current = self._resolve(base_ref, actor=actor, roles=roles, scopes=scopes)
+                    current = self._resolve(base_ref, actor=actor, roles=roles, scopes=document_scopes)
                     current_ref = _resource_ref(current.get("resolved"), field="current_revision")
                     target["current_revision_ref"] = current_ref.to_dict()
                     target["document"] = _json_value(_mapping(current.get("document")))
@@ -311,12 +345,14 @@ class ProjectDocumentReader:
         actor: Any,
         roles: Sequence[str],
         task_refs: Optional[Sequence[Any]],
+        listed: Optional[Mapping[str, Any]] = None,
     ) -> tuple[Any, Any, Mapping[str, Any]] | None:
         from herzchen.contracts import ResourceRef
 
         try:
             requested = _resource_ref(document_ref, field="document_ref")
-            listed = self.list_documents(project_ref, actor=actor, roles=roles, task_refs=task_refs)
+            if listed is None:
+                listed = self.list_documents(project_ref, actor=actor, roles=roles, task_refs=task_refs)
             if listed.get("outcome") != "listed":
                 return None
             item = next((item for item in listed["documents"] if _identity(_resource_ref(item["document_ref"])) == _identity(requested)), None)
@@ -334,9 +370,17 @@ class ProjectDocumentReader:
         actor: Any,
         roles: Sequence[str] = (),
         task_refs: Optional[Sequence[Any]] = None,
+        listed: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Read the current or exact pinned revision of a visible project doc."""
-        visible = self._visible_document(project_ref, document_ref, actor=actor, roles=roles, task_refs=task_refs)
+        """Read the current or exact pinned revision of a visible project doc.
+
+        ``listed`` is this reader's own list_documents result for the same
+        project, actor, roles and task_refs, when the caller reads many
+        documents from one listing (it is not re-derived per document). The
+        exact document is still resolved through the visibility owner.
+        """
+        visible = self._visible_document(project_ref, document_ref, actor=actor, roles=roles, task_refs=task_refs,
+                                         listed=listed)
         if visible is None:
             return _unavailable()
         requested, item, provenance = visible
@@ -395,8 +439,10 @@ class ProjectDocumentReader:
                 "error": {"code": "read_many_limit_exceeded", "message": f"at most {MAX_READ_MANY} document references may be read at once"},
             }
         items = []
+        listed = self.list_documents(project_ref, actor=actor, roles=roles, task_refs=task_refs)
         for index, ref in enumerate(document_refs):
-            result = self.read_document(project_ref, ref, actor=actor, roles=roles, task_refs=task_refs)
+            result = self.read_document(project_ref, ref, actor=actor, roles=roles, task_refs=task_refs,
+                                        listed=listed)
             items.append({"position": index, **result})
         return {"outcome": "read_many", "items": items, "count": len(items), "read_only": True, "dispatch": False, "launch": False}
 

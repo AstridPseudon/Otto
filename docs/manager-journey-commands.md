@@ -10,6 +10,10 @@ keeps the longer worker, assessment and closeout journey.
 
 ## Adding a new agent CLI adapter
 
+For the host-neutral checklist (adapter module, declared roles and
+capabilities, host admission, model profile, conformance tests) and joining
+the one owner service with `ottoctl`, see [host onboarding](host-onboarding.md).
+
 An adapter is a bounded owner-backed provider binding, not a parser-only
 integration or a generic promise that any CLI is supported. Keep the existing
 composition (`PortfolioOwnerBootstrap` → `ExecutionApplication` → `OttoGateway`
@@ -58,6 +62,10 @@ admission.
 Use the exact installed prefix emitted by the current role introduction. The installed host pins the interpreter and absolute client path. Copy that exact
 prefix into `PYTHON` and `CONTROL` below; placeholders are not runnable paths.
 Do not substitute another run's client or an implicit Python module invocation.
+On a host that is a client of the one owner service the prefix is `ottoctl`:
+the orchestrator uses `ottoctl manager --project <run> <command>` (relayed
+through its lane), and a launched manager uses `ottoctl manager <command>`
+over its own lanes.
 
 ```sh
 PYTHON="ABSOLUTE_INTERPRETER_FROM_CURRENT_INTRODUCTION"

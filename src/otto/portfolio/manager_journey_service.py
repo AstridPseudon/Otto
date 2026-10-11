@@ -19,6 +19,11 @@ from .owner_completion import after_owner
 
 _CALLER = ContextVar("otto_trusted_command_caller", default=None)
 
+def _run_config_name(run_path: Path) -> str:
+    from .run_config import run_config_path
+    return run_config_path(run_path).name
+
+
 def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: Mapping[str, Any],
                              principal: str, model: str, reasoning: str, focus: str,
                              workspace: Path, run_path: Path, adapter: Any, leaf: bool = False) -> tuple[str, dict, dict]:
@@ -51,14 +56,18 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
         "priorities": [{"id": task.lower(), "text": focus.strip(), "status": "pending"}],
         "continuation": {"next_action": focus.strip()},
         "links": [{"label": name, "path": str(run_path / name)}
-                  for name in ("agent_goal.md", "tasklist.md", "run.yaml", "owner-setup-guidance-20261005.md")]
+                  for name in ("agent_goal.md", "tasklist.md", _run_config_name(run_path), "owner-setup-guidance-20261005.md")]
                  + [{"label": "Megado skill", "path": str(workspace / "policy-staging/megado/skill/SKILL.md")},
                     {"label": "Otto skill index", "path": str(workspace / "src/otto/portfolio/skills/SKILL.md")},
                     {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")}],
         "revision": "ordinary-worker-v1"}
-    if getattr(adapter, "adapter_identity", None) == "otto.adapter.claude-code-2.1.293.leaf.v1":
+    # Any adapter may declare itself a finite leaf (Claude Code does); the
+    # identity check keeps the original Claude pin for retained policies.
+    if (getattr(adapter, "leaf_only", False) is True
+            or getattr(adapter, "adapter_identity", None) == "otto.adapter.claude-code-2.1.293.leaf.v1"):
         if operation != "implementation":
-            raise ValueError("selected Claude binding is a finite leaf; coordinating/manager operations are unqualified")
+            raise ValueError("selected adapter is a finite leaf (" + str(getattr(adapter, "adapter_identity", "unnamed"))
+                             + "); coordinating/manager operations are unqualified")
         contract["read_targets"] = [str(workspace)]
     if operation == "coordinating_implementation":
         contract["delegation"] = {"max_depth": 1, "result_consumption": "yield"}
@@ -1308,7 +1317,8 @@ class ManagerJourneyService:
                 "message": "worker focus must describe 1..4000 characters of current intent"},
                 "provider_called": False, "effects_started": False, "retry": False,
                 "next_action": "Correct a new bounded intent with a distinct stable key. Pin the exact owned scope-manifest path and SHA instead of embedding a long file list; preserve this rejected receipt."}
-        config = json.loads((self.run_path / "run.yaml").read_text())
+        from .run_config import read_run_config
+        config = read_run_config(self.run_path)
         from .worker_occurrences import parent_for_caller, check_allowance
         from .occurrence_reads import lookup, handle, digest
         caller = _CALLER.get()

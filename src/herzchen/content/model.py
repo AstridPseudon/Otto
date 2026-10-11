@@ -61,7 +61,7 @@ def document_path(value: Any) -> str:
 
 
 def _association_key(namespace: str, key: str) -> str:
-    return document_path(key) if namespace == PROJECT_FILES_NAMESPACE else _text(key, "key")
+    return document_path(key) if namespace in {PROJECT_FILES_NAMESPACE, "portfolio.shared"} else _text(key, "key")
 
 
 def _json_content(value: Any, field: str = "content") -> Any:

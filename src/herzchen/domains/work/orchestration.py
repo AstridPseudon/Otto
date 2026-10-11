@@ -568,6 +568,53 @@ class _OrchestrationEngine:
             receipt = self._writer.mutate(envelope, identity_payload=updated, event_type=TRANSFER_EVENT, result_ref=ResourceRef(self.authority, "work.project", project.id, "rev-" + str(record.version + 1)), before_refs=(record.ref, current.ref), after_refs=(target.ref,), effects={"from_assignment": current.ref.to_dict(), "to_assignment": target.ref.to_dict()}, stream="work:" + project.id, transaction=tx)
             return {"outcome": "transferred", "project_ref": ResourceRef(self.authority, "work.project", project.id, "rev-" + str(record.version + 1)).to_dict(), "project": updated, "supervision": relation, "receipt": receipt.to_dict(), "replayed": False, "event_ids": list(receipt.event_ids)}
 
+    def detach_existing_project(self, *, actor: Any, request_id: str, project_ref: Any,
+                                expected_project_version: int) -> Mapping[str, Any]:
+        """Remove supervision using the existing supervision-transfer receipt.
+
+        Detachment is a transfer to no supervisor, so it needs no new stored
+        kind, operation descriptor or event type. The owner composes document
+        unlinks in the same outer transaction.
+        """
+        actor_value = self._actor(actor, privileged=True)
+        project = _ref(project_ref, authority=self.authority, kind="work.project", field="project_ref")
+        key = _opaque(request_id, "request_id")
+        payload = {"action": "detach", "project_ref": project.to_dict(),
+                   "portfolio_ref": self.portfolio_ref.to_dict(),
+                   "expected_project_version": expected_project_version}
+        with self._writer.transaction() as tx:
+            envelope = self._envelope("work.project.supervision.transfer", project, payload, key,
+                                      actor_value, expected_version=expected_project_version)
+            prior = self._lookup_replay(envelope)
+            if prior is not None:
+                return {"outcome": "replayed", "project_ref": prior.result_ref.to_dict(),
+                        "receipt": prior.to_dict(), "replayed": True, "event_ids": list(prior.event_ids)}
+            record = self.batches.graph.get(project)
+            relation = record.payload.get("metadata", {}).get(SUPERVISION_KEY) or {}
+            if (record.version != expected_project_version
+                    or not _same_identity(ResourceRef.from_dict(relation.get("portfolio_ref", {})), self.portfolio_ref)):
+                raise WorkValidationError("project supervision or version is stale or foreign")
+            if not _same_identity(ResourceRef.from_dict(relation.get("project_ref", {})), project):
+                raise WorkValidationError("project supervision belongs to another project")
+            assignment = self._assignment(ResourceRef.from_dict(relation["assignment_ref"]),
+                expected_revision=None, expected_generation=relation["generation"], field="supervisor")
+            if actor_value.actor != self.default_actor.actor and assignment.principal != actor_value.actor:
+                raise WorkValidationError("only the project's orchestrator or owner may detach it")
+            manager_refs = self.reader.find_identity_refs(kind="wrk.assignment", payload_matches={
+                ("scope", "authority"): project.authority, ("scope", "kind"): project.kind,
+                ("scope", "id"): project.id, ("role",): "manager", ("status",): "in-flight"})
+            if manager_refs:
+                raise WorkValidationError("cannot detach while the project's manager is running")
+            updated = dict(record.payload)
+            updated["metadata"] = {k: v for k, v in record.payload.get("metadata", {}).items()
+                                   if k != SUPERVISION_KEY}
+            result_ref = ResourceRef(project.authority, project.kind, project.id, "rev-" + str(record.version + 1))
+            receipt = self._writer.mutate(envelope, identity_payload=updated, event_type=TRANSFER_EVENT,
+                result_ref=result_ref, before_refs=(record.ref,), effects={"action": "detach", "supervision": None},
+                stream="work:" + project.id, transaction=tx)
+            return {"outcome": "detached", "project_ref": result_ref.to_dict(), "supervision": None,
+                    "receipt": receipt.to_dict(), "replayed": False, "event_ids": list(receipt.event_ids)}
+
     def adopt_resources_with_supervision(
         self, *, actor: Any, request_id: str, assignment_ref: Any,
         expected_generation: int, resources: Sequence[Mapping[str, Any]],

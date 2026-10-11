@@ -174,7 +174,12 @@ from .project_folder import ProjectFolderOwner
 class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
     """Owner-only composition over the accepted ProjectSheet and EDT services."""
 
-    def __init__(self, store: Any, *, sheet: Any, authoring: Any, materializer: Any = None) -> None:
+    def __init__(self, store: Any, *, sheet: Any, authoring: Any, materializer: Any = None,
+                 folder_transport_request_bytes: int = 16 * 1024) -> None:
+        from .project_folder import MAX_OPERATION_BYTES, MEASURED_LIVE_REQUEST_BYTES
+        if type(folder_transport_request_bytes) is not int or not MEASURED_LIVE_REQUEST_BYTES <= folder_transport_request_bytes <= MAX_OPERATION_BYTES:
+            raise ValueError("qualified folder transport bound required")
+        self.folder_transport_request_bytes = folder_transport_request_bytes
         self.reader = store.consumer()
         self.authority = store.authority
         self.sheet = sheet
@@ -607,6 +612,7 @@ class PortfolioOwnerBootstrap:
         privileged_actor_ids: tuple[str, ...] = (),
         expected_main_principal: Optional[str] = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
+        folder_transport_request_bytes: int = 16 * 1024,
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
@@ -671,6 +677,7 @@ class PortfolioOwnerBootstrap:
             sheet=self.sheet,
             authoring=self.authoring,
             materializer=materializer,
+            folder_transport_request_bytes=folder_transport_request_bytes,
         )
 
     def consumer_operations(self) -> FiniteWorkOperations:
@@ -684,6 +691,7 @@ class PortfolioOwnerBootstrap:
             port=self.graph.command_port,
             reader=self.graph.reader,
             binding=self.binding,
+            dependency_owner_actor=self.owner_actor,
             sheet_port=self.sheet.command_port,
             content_port=self.content.command_port,
             assignments_port=self.assignments.command_port,

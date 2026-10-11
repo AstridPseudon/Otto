@@ -10,35 +10,54 @@ draft indefinitely. Do not demand a complete delivery contract to capture an ide
 Megado provides the method. Otto provides canonical projects, documents,
 assignments, results and reviews. In native mode the project sheet and its
 versioned documents are authoritative. A checkout is an editing surface, not a
-second project database. In file mode use the existing run layout in SKILL.md
-and report explicitly that the draft has not been registered or queued in Otto.
+second project database. If Otto is unavailable, keep planning in the same proper template package
+and report that it has not been registered or queued. Do not start a separate
+`.otto/runs` planning hierarchy.
 
 ## Find the actual tools first
 
-Read the installed Otto skill and your current role introduction. Use that
-role's exact installed entrypoint and its `--help`, `status`, identity and
-effective-context reads. Never substitute another project's controller path or
-another actor's credentials. The maintained [manager command guide](../../../../docs/manager-journey-commands.md)
-explains execution commands; its sample identities and paths are examples,
-not your binding.
+Read the installed Otto skill and its relevant role guide
+and your current role introduction. Use that role's exact installed entrypoint
+and its `--help`, `status`, identity and effective-context reads
+(`ottoctl manager --help`, `ottoctl whoami`). Never substitute another project's
+controller path or another actor's credentials. Sample identities and paths in
+command guides are examples, not your binding.
 
-Creation, document check-in, enrollment and queue edits need the host's supported
-owner authoring surface. A manager's execution client may not expose those
-operations. Inspect the current authoring help/schema before writing, use current
-revision refs and retain the returned handles. Do not invent a universal
-`create-project` or `queue-after` command: the combined onboarding flow is not
-yet delivered in this edition. If the caller lacks this surface, prepare the
-same draft bundle and send the exact requested authoring action to the authorized
-owner. Identify the missing binding; do not open the live database or copy a
-previous controller script as a new writer. Continue independent planning.
+Creation, document check-in, enrollment and queue edits are owner operations.
+In one Otto there is one running owner service; your host performs these as its
+OWN principal through its installed authoring route. New work starts with the
+existing title-and-brief onboarding create/find/reopen route and the proper
+blank/template project package, then supported document check-in and export.
+Use `ottoctl project register` and `sync-docs` for an existing external bundle
+that needs migration; they do not replace new-project onboarding. A manager's
+execution client does not expose owner authoring. If your host is not admitted
+yet, the operator admits it (`ottoctl service admit-host --host <kind>
+--client-home <your OTTO_HOME>`); until then keep planning in the same package or conversation
+and name the missing admission. Never open the store, start a second owner
+or copy a previous controller script as a new writer. Continue independent
+planning.
+
+## 0. Adopt work already in flight
+
+Use this before step 1 when boards, branches, open agent sessions or served trees
+already carry the work.
+
+1. Inventory existing trackers: boards, branches, open agent sessions, served trees.
+2. Record their exact source identities: commits, served tree, paused branches.
+3. After any interrupted or rejected tool call, verify the actual effect (for
+   example `git log`) instead of assuming it was undone.
+4. Freeze the old tracker as history; do not keep editing it.
+5. Carry every open item into the one tasklist with a `carried-from` note.
+6. Diff old to new: every old open item is carried, done (with evidence) or
+   dropped with a reason.
 
 ## 1. Explore and save a draft
 
 Start with a title, the user's brief and the relevant repository or repositories.
 Keep research, open questions and decisions with that same draft. Capture only
 what is known; a pending identity or a local draft does not start agents, create
-execution tasks or grant budgets. Use an existing blank project/template when
-the authoring surface exposes one. Retain the project identity after creation
+execution tasks or grant budgets. Use the existing blank project/template through the supported onboarding
+route; keep exploration and later delivery documents in that one package. Retain the project identity after creation
 and use it for later updates. If the creation outcome is uncertain, inspect the
 original operation before trying again.
 
@@ -55,16 +74,17 @@ not activate the project or silently expand it. For planning-only requests,
 return the plan, remaining questions and effort estimate here.
 
 Before delivery, bind the manager, workers, reviewers and any advisor/oracle;
-select the available CLI/model defaults and finite allowances. Include one final
-independent gpt-6-astra high review for new substantial delivery unless the user
-chooses otherwise. Bind its scope to the integrated outcome and exact acceptance
+select the available CLI/model bindings and finite allowances. Include one
+independent final_reviewer stage for new substantial delivery; the Codex
+default is gpt-6-astra high. Preserve any user-required Astra review regardless
+of the host and every existing adopted model/stage/budget. Bind its scope to the integrated outcome and exact acceptance
 criteria. This instruction proposes policy; the owner must adopt it through the
 normal configuration path before any invocation. Do not silently add it to an
 existing run or reset earlier use.
 
 ## 3. Register and queue pending work
 
-Validate the bundle using the actual authoring schema, check in its documents,
+Validate the existing project package using the actual authoring schema, check in its documents,
 and export/read back their exact content and refs. Reuse a partially registered
 project and finish only missing operations. Report registration separately from
 queueing and activation.
@@ -117,13 +137,13 @@ surface the blocker through the available owner channel and name the limitation.
 Continue independent ready work; do not wait for an hourly observer to discover
 a known actionable block.
 
-## 6. Final Astra review and corrections
+## 6. Configured final review and corrections
 
 Run the relevant integration checks and freeze the actual candidate. Assemble
 one bounded packet using [the review packet](../templates/review-packet.md):
 original goal, criteria, source identity, installed behavior where required,
 real results, prior findings, known limitations and deferred work. Request the
-adopted independent Astra High final review through the canonical review route;
+adopted independent final review through the canonical review route;
 verify actual model/reasoning and account for the invocation separately from
 advisory checks and oracle decisions.
 

@@ -1,0 +1,51 @@
+{
+  "mode": "planning_only",
+  "model_profile": "claude",
+  "roles": {
+    "coordinator": {
+      "model": "claude-haiku-5-5",
+      "reasoning": "medium"
+    },
+    "worker_normal": {
+      "model": "claude-haiku-5-5",
+      "reasoning": "high"
+    },
+    "worker_xhard": {
+      "model": "claude-sonnet-5-5",
+      "reasoning": "high"
+    },
+    "reviewer_normal": {
+      "model": "claude-sonnet-5-5",
+      "reasoning": "high"
+    },
+    "reviewer_xhard": {
+      "model": "claude-opus-5-5",
+      "reasoning": "high"
+    },
+    "oracle": {
+      "model": "claude-opus-5-5",
+      "reasoning": "high"
+    },
+    "final_reviewer": {
+      "model": "claude-opus-5-5",
+      "reasoning": "high"
+    }
+  },
+  "oracle": {
+    "max_calls": 3
+  },
+  "review_stages": [],
+  "assurance_selection": "Planning only: no active stages. Before new substantial delivery, explicitly adopt one final independent claude-opus-5-5 high review with max_calls 1, exact criteria and frozen candidate. Select intermediate reviews proportionately; existing instance policy and user overrides prevail.",
+  "scheduled_checks": [],
+  "project_advisor_policy": {
+    "resource": "protocols/project-advisor.json",
+    "adoption": "explicit_instance_adoption",
+    "active_by_default": false,
+    "scheduled_checks": []
+  },
+  "publication": {
+    "target": null,
+    "allowed_refs": [],
+    "source_upstream_write": false
+  }
+}

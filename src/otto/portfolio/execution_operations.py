@@ -987,7 +987,8 @@ def prepare_current_assignment_occurrence(
     if not isinstance(request_key, str) or not request_key.strip():
         raise OccurrencePreparationError("request_key is required")
     expected_mode = _MODES.get((operation, lifecycle))
-    if (operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) == "manager":
+    if ((operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) == "manager"
+            and (getattr(due, "target", None) or {}).get("preinitialization_recovery")):
         # This entrance is only the exact separately authorized delivery after
         # the retained guard-before-initializer disposition, never generic retry.
         proof = (getattr(due, "target", None) or {}).get("preinitialization_recovery") or {}
@@ -1027,6 +1028,21 @@ def prepare_current_assignment_occurrence(
         "orchestrator", "project_advisor"
     }:
         expected_mode = "fresh_bounded_role"
+    if ((operation, lifecycle) == ("invoke", "launch") and getattr(due, "role", None) == "manager"
+            and getattr(due, "execution_mode", None) == "fresh_manager"):
+        # A first-ever manager can use an inert initializer. Existing failed,
+        # stopped or unknown manager records require the exact recovery above;
+        # an explicit fresh flag is never a shortcut around their custody.
+        if not due.target.get("preinitialization_recovery"):
+            existing = due_port.list_due({"project_ref": due.project_ref})
+            for record in existing:
+                raw = record.to_dict() if hasattr(record, "to_dict") else record
+                ref = raw.get("assignment_ref") or {}
+                if (raw.get("schedule_id") != due.schedule_id and raw.get("role") == "manager"
+                        and raw.get("generation") == due.generation
+                        and all(ref.get(k) == assignment_ref.get(k) for k in ("authority", "kind", "id"))):
+                    raise OccurrencePreparationError("fresh manager already has retained native custody; recover the original")
+        expected_mode = "fresh_manager"
     if expected_mode is None:
         raise OccurrencePreparationError("unsupported operation/lifecycle pair")
     if getattr(due, "execution_mode", None) != expected_mode:

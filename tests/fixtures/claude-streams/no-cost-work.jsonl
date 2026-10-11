@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "sess-nocost", "model": "claude-haiku-5-5"}
+{"type": "user", "session_id": "sess-nocost", "uuid": "turn-nocost-work"}
+{"type": "assistant", "session_id": "sess-nocost", "message": {"content": [{"type": "text", "text": "DONE"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "duration_ms": 2310, "duration_api_ms": 2000, "num_turns": 1, "result": "DONE", "session_id": "sess-nocost", "usage": {"input_tokens": 9, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1000, "output_tokens": 50, "server_tool_use": {"web_search_requests": 0}, "service_tier": "standard"}, "modelUsage": {"claude-haiku-5-5": {"inputTokens": 9, "outputTokens": 50, "cacheReadInputTokens": 1000, "cacheCreationInputTokens": 100, "webSearchRequests": 0, "contextWindow": 200000}}, "permission_denials": [], "uuid": "result-turn-nocost-work"}

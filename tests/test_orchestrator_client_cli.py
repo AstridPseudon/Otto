@@ -95,6 +95,21 @@ class OrchestratorClientCliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertEqual(list(client_lanes.requests(self.client_lane)), [])
 
+    def test_help_response_rejects_native_envelope_before_lane_submission(self):
+        payload={'issue_id':'issue-1','authority_source':'current root',
+                 'response':'approved','proposed_solution':'bounded fix','next_action':'same manager'}
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.invoke('--binding',str(self.binding),'respond-help','--project-id','project-port',
+                '--request-key','reply-1','--request',json.dumps({**payload,'command':'respond-help','request_key':'reply-1'}))
+        self.assertEqual(raised.exception.code,2)
+        self.assertEqual(list(client_lanes.requests(self.client_lane)),[])
+        self.invoke('--binding',str(self.binding),'respond-help','--project-id','project-port',
+            '--request-key','reply-1','--request',json.dumps(payload),
+            waiter=lambda lane,token,**kw:{'outcome':'pending','request_id':token})
+        record=client_lanes.read_private_json(next(self.client_lane.glob('request-*.json')))
+        self.assertEqual(record['request'],payload)
+        self.assertEqual(record['request_key'],'reply-1')
+
     def test_unkeyed_reads_get_fresh_handles_and_status_reuses_exact_old_handle(self):
         observed = []
 

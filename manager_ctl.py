@@ -10,11 +10,52 @@ import subprocess
 import time
 import uuid
 
-IPC = Path(__file__).resolve().parent.parent / "controller" / "manager-ipc"
-SERVICE = Path("/tmp/otto-project-advisor-manager-ops.sock")
-OFFLINE_READER = Path(__file__).resolve().parent.parent / "controller" / "read_manager_status.py"
-STATUS_OWNER = Path(__file__).resolve().parent.parent / "controller" / "manager-status-owner.json"
-OWNER_PYTHON = Path("/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python")
+_RUN = Path(__file__).resolve().parent.parent
+# Defaults are the original Codex-run layout. A host selects its own port with
+# OTTO_MANAGER_CONFIG (a JSON object, e.g. host.json's "manager_port") and/or
+# the individual OTTO_MANAGER_* variables; a variable beats the file.
+DEFAULTS = {
+    "ipc_dir": str(_RUN / "controller" / "manager-ipc"),
+    "service_socket": "/tmp/otto-project-advisor-manager-ops.sock",
+    "offline_reader": str(_RUN / "controller" / "read_manager_status.py"),
+    "status_owner": str(_RUN / "controller" / "manager-status-owner.json"),
+    "owner_python": "/Users/hannahomalley/Documents/Codex/2026-09-27/ba/.otto/runs/otto-worker-project-readiness-20260927/work/o12/d97-successor-integration/env/bin/python",
+    "tasks": [f"PA0{i}" for i in range(1, 7)],
+}
+ENVIRONMENT = {"ipc_dir": "OTTO_MANAGER_IPC", "service_socket": "OTTO_MANAGER_SERVICE_SOCKET",
+               "offline_reader": "OTTO_MANAGER_OFFLINE_READER", "status_owner": "OTTO_MANAGER_STATUS_OWNER",
+               "owner_python": "OTTO_OWNER_PYTHON", "tasks": "OTTO_MANAGER_TASKS"}
+
+
+def load_port_config(environ=None) -> dict:
+    """Resolve the manager command port: env var > OTTO_MANAGER_CONFIG > default."""
+    environ = os.environ if environ is None else environ
+    config = dict(DEFAULTS)
+    source = environ.get("OTTO_MANAGER_CONFIG")
+    if source:
+        loaded = json.loads(Path(source).read_text())
+        loaded = loaded.get("manager_port", loaded) if isinstance(loaded, dict) else loaded
+        if not isinstance(loaded, dict) or set(loaded) - set(DEFAULTS):
+            raise RuntimeError("OTTO_MANAGER_CONFIG must be an object with keys " + ", ".join(sorted(DEFAULTS)))
+        config.update({key: value for key, value in loaded.items() if value is not None})
+    for key, name in ENVIRONMENT.items():
+        if environ.get(name):
+            config[key] = environ[name].split(",") if key == "tasks" else environ[name]
+    tasks = config["tasks"]
+    if (not isinstance(tasks, list) or not tasks or len(tasks) > 256
+            or any(not isinstance(task, str) or not task.strip() for task in tasks)):
+        raise RuntimeError("manager port tasks must be a nonempty list of task aliases")
+    config["tasks"] = [task.strip() for task in tasks]
+    return config
+
+
+PORT = load_port_config()
+IPC = Path(PORT["ipc_dir"])
+SERVICE = Path(PORT["service_socket"])
+OFFLINE_READER = Path(PORT["offline_reader"])
+STATUS_OWNER = Path(PORT["status_owner"])
+OWNER_PYTHON = Path(PORT["owner_python"])
+TASKS = list(PORT["tasks"])
 
 
 def call(payload: dict) -> dict:
@@ -70,7 +111,7 @@ def call(payload: dict) -> dict:
     raise TimeoutError("read-only status service did not respond within five seconds")
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", help="read current canonical project/task/assignment state")
@@ -90,14 +131,14 @@ def main() -> None:
     for name in ("report-task-ref", "execution-task-ref", "mandate-ref", "assignment-ref", "report-ref"):
         continuation.add_argument("--expected-" + name, type=json.loads)
     report = commands.add_parser("report", help="append a canonical manager progress report")
-    report.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    report.add_argument("--task", required=True, choices=TASKS)
     report.add_argument("--summary", required=True)
     report.add_argument("--next-action", required=True)
     report.add_argument("--request-key", required=True)
     report.add_argument("--continue-project", action="store_true",
                         help="persist a same-manager request; consume with manager-continue --report-key")
     task_state = commands.add_parser("task-state", help="update one canonical task lifecycle through the owner work port")
-    task_state.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    task_state.add_argument("--task", required=True, choices=TASKS)
     task_state.add_argument("--lifecycle", required=True, choices=["pending", "active", "paused", "withdrawn"])
     task_state.add_argument("--request-key", required=True)
     pair = commands.add_parser(
@@ -185,7 +226,7 @@ def main() -> None:
     advisor_correct.add_argument("--reason", required=True)
     advisor_correct.add_argument("--evidence", action="append", required=True)
     assessment = commands.add_parser("manager-assessment", help="record inspected assessment/acceptance through the current manager owner")
-    assessment.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    assessment.add_argument("--task", required=True, choices=TASKS)
     assessment.add_argument("--operation", required=True,
                             choices=["declare-scope", "freeze-input", "select-candidate", "assess", "accept", "close-finding", "coverage"])
     assessment.add_argument("--arguments", required=True, type=json.loads,
@@ -198,13 +239,13 @@ def main() -> None:
         "manager-assessment-pool",
         help="admit the bounded local assessment-accounting pool (never the advisor model pool)",
     )
-    assessment_pool.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    assessment_pool.add_argument("--task", required=True, choices=TASKS)
     assessment_pool.add_argument("--request-key", required=True)
     assessment_pool.add_argument("--expected-task-ref", required=True, type=json.loads)
     assessment_pool.add_argument("--expected-assignment-ref", required=True, type=json.loads)
     assessment_pool.add_argument("--expected-generation", required=True, type=int)
     gate = commands.add_parser("completion-gate", help="read provisional owner completion blockers; records no acceptance")
-    gate.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    gate.add_argument("--task", required=True, choices=TASKS)
     gate.add_argument("--candidate-ref", help="exact current candidate resource-ref JSON")
     gate.add_argument("--gate-ref", action="append", dest="gate_refs", default=[],
                       help="exact accepted assessment decision-ref JSON; repeat")
@@ -215,7 +256,7 @@ def main() -> None:
     complete = commands.add_parser(
         "complete-task", help="request guarded canonical task completion with exact evidence refs",
     )
-    complete.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    complete.add_argument("--task", required=True, choices=TASKS)
     complete.add_argument("--request-key", required=True)
     complete.add_argument("--disposition", required=True)
     complete.add_argument("--evidence-ref", action="append", dest="evidence_refs", required=True,
@@ -234,22 +275,22 @@ def main() -> None:
     commit.add_argument("--path", action="append", dest="paths", required=True,
                         help="worktree-relative path; repeat for multiple paths")
     assign = commands.add_parser("assign-worker", help="create one canonical worker assignment and adopted task guide")
-    assign.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    assign.add_argument("--task", required=True, choices=TASKS)
     assign.add_argument("--principal", required=True)
     assign.add_argument("--route", required=True, choices=["normal", "xhard"])
     assign.add_argument("--request-key", required=True)
     run = commands.add_parser("run-worker", help="assign, launch, and collect one canonical bounded worker")
-    run.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    run.add_argument("--task", required=True, choices=TASKS)
     run.add_argument("--principal", required=True)
     run.add_argument("--route", required=True, choices=["normal", "xhard"])
     run.add_argument("--request-key", required=True)
     run.add_argument("--focus", help="task-specific outcome or integration constraint to include in the worker brief")
     resume = commands.add_parser("resume-worker", help="resume and collect one inspected interrupted worker")
-    resume.add_argument("--task", required=True, choices=[f"PA0{i}" for i in range(1, 7)])
+    resume.add_argument("--task", required=True, choices=TASKS)
     resume.add_argument("--principal", required=True)
     resume.add_argument("--route", required=True, choices=["normal", "xhard"])
     resume.add_argument("--request-key", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     payload = vars(args)
     response = call(payload)
     print(json.dumps(response, indent=2, sort_keys=True))

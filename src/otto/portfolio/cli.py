@@ -1259,9 +1259,28 @@ def _document_command(args: argparse.Namespace, document_operations: Any) -> dic
     if command == "list":
         return reader.list_documents(project, actor=args.actor, roles=roles, task_refs=task_refs or None)
     if command == "search":
-        return document_operations.search_documents(
-            project, args.query, actor=args.actor, roles=roles, task_refs=task_refs or None, limit=args.limit,
-        )
+        # Each call scans one bounded window; page through the whole project.
+        cursor, combined = 0, None
+        while cursor is not None:
+            page = document_operations.search_documents(
+                project, args.query, actor=args.actor, roles=roles, task_refs=task_refs or None, limit=args.limit,
+                cursor=cursor,
+            )
+            if page.get("outcome") != "listed":
+                return page
+            if combined is None:
+                combined = dict(page)
+            else:
+                combined["matches"] = combined["matches"] + page["matches"]
+            cursor = page.get("next_cursor")
+        combined["matches"] = sorted(combined["matches"], key=lambda row: (
+            row["document_ref"].get("id", ""), row["revision_ref"].get("revision", "")))
+        combined["truncated"] = len(combined["matches"]) > args.limit
+        combined["matches"] = combined["matches"][:args.limit]
+        combined["count"] = len(combined["matches"])
+        combined.pop("next_cursor", None)
+        combined.pop("scanned", None)
+        return combined
     if command == "read":
         ref = _parse_ref(args.document_ref, "document_ref", pinned=True)
         return reader.read_document(project, ref, actor=args.actor, roles=roles, task_refs=task_refs or None)
@@ -1283,9 +1302,9 @@ def _document_command(args: argparse.Namespace, document_operations: Any) -> dic
         if not isinstance(refs, list):
             raise ValueError("document_refs must be a JSON array")
         refs = [_parse_ref(json.dumps(item), f"document_refs[{index}]") for index, item in enumerate(refs)]
-        return document_operations.export_bundle(
-            project, refs, actor=args.actor, roles=roles, task_refs=task_refs or None,
-        )
+        from .document_navigation import export_bundle_pages
+        return export_bundle_pages(document_operations, project, refs, actor=args.actor, roles=roles,
+                                   task_refs=task_refs or None)
     if command == "diff":
         document = _parse_ref(args.document_ref, "document_ref")
         older = _parse_ref(args.older_revision_ref, "older_revision_ref", pinned=True)

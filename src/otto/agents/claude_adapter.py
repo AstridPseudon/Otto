@@ -1,8 +1,12 @@
-"""Candidate Claude leaf binding for the existing owner/gateway/capture seams.
+"""Candidate Claude Code binding for the existing owner/gateway/capture seams.
 
-No manager, coordinator or provider-native child capability is inherited.
-The host must separately qualify and adopt exact launcher, scope and resource
-pins; a synthetic parser/process test does not enable installed execution.
+Roles are declared, never inferred: the default composition is the original
+worker leaf (Read/Write). A host may also declare the ``manager`` role, which
+admits the manager tool surface (Bash/Edit/Glob/Grep/Read/Write) under the
+same OS write fence, with child processes inheriting it. No coordinator or
+provider-native child capability is inherited by either role. The host must
+separately qualify and adopt exact launcher, scope and resource pins; a
+synthetic parser/process test does not enable installed execution.
 """
 from __future__ import annotations
 
@@ -14,12 +18,30 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from .claude_cli import (ClaudeBindingError, ClaudeCliTransport, LauncherPin,
-                         MacWriteScope, MAX_ARTIFACT, PARSER_SCHEMA, digest, file_digest, text)
+from .claude_cli import (ClaudeBindingError, ClaudeCliTransport, LauncherPin, MANAGER_TOOLS,
+                         MacWriteScope, MAX_ARTIFACT, PARSER_SCHEMA, WORKER_TOOLS, digest, file_digest, text)
 from .herzchen_adapter import HerzchenCodexAdapter, _context_digest
 
 IDENTITY = 'otto.adapter.claude-code-2.1.293.leaf.v1'
 FINAL_FORMAT = 'claude-code-2.1.293-native-result-v1'
+_WORKER_EFFECTS = frozenset({'read_delivered_context', 'read_linked_sources', 'file_write_in_workspace', 'return_result'})
+# Declared per-role profiles. The manager profile mirrors the owner's
+# workspace-write-manager contract: canonical manager commands are reached
+# through the installed client (Bash), never by the provider directly.
+ROLE_PROFILES: Mapping[str, Mapping[str, Any]] = {
+    'worker': {'tools': WORKER_TOOLS, 'effect_profile': 'workspace-write-worker',
+               'effects': _WORKER_EFFECTS, 'artifacts_required': True, 'max_turns': 8},
+    'manager': {'tools': MANAGER_TOOLS, 'effect_profile': 'workspace-write-manager',
+                'effects': _WORKER_EFFECTS | {'canonical_manager_commands'}, 'artifacts_required': False,
+                'max_turns': 200},
+}
+
+
+def _delivered_role(evidence: Mapping[str, Any]) -> str:
+    role = ((evidence.get('owner_delivery_authorization') or {}).get('role')) or 'worker'
+    if role not in ROLE_PROFILES:
+        raise ClaudeBindingError('Claude result carries an undeclared role')
+    return role
 
 
 def _artifact_path(workspace: str, path: str) -> Path:
@@ -85,13 +107,17 @@ def capture_artifacts(native: Mapping[str, Any], workspace: str) -> list[dict[st
 
 def native_context(native: Mapping[str, Any], *, brief: Mapping[str, Any], authorization: Mapping[str, Any],
                    prompt: str, workspace: str, model: str, reasoning: str) -> dict[str, Any]:
+    role = _delivered_role({'owner_delivery_authorization': authorization})
     result = native['result']
     body = result['result']
     session, turn = native['session_id'], native['turn_id']
     answer = {'text': body, 'format': FINAL_FORMAT, 'phase': 'final_answer',
               'text_sha256': hashlib.sha256(body.encode()).hexdigest(), 'utf8_bytes': len(body.encode()),
               'host_record': native['refs']['final_answer']}
-    output = {'final_answer': answer, 'artifacts': capture_artifacts(native, workspace)}
+    # A worker leaf must deliver a verified Write artifact. A manager's useful
+    # effects are owner records made through its commands, so none is captured.
+    output = {'final_answer': answer,
+              'artifacts': capture_artifacts(native, workspace) if ROLE_PROFILES[role]['artifacts_required'] else []}
     result_digest = digest(output)
     result_ref = 'claude-native-result:' + result['uuid']
     contract = brief['instruction_contract']
@@ -129,7 +155,8 @@ class ClaudeNativeResultVerifier:
 
     def capture_summary(self, evidence: Mapping[str, Any], *, result_ref: Mapping[str, Any]) -> Mapping[str, Any]:
         artifacts = evidence['operation_result']['output']['artifacts']
-        if not 1 <= len(artifacts) <= 16:
+        minimum = 1 if ROLE_PROFILES[_delivered_role(evidence)]['artifacts_required'] else 0
+        if not minimum <= len(artifacts) <= 16:
             raise ClaudeBindingError('bounded captured artifact inventory required')
         captured = []
         for index, artifact in enumerate(artifacts):
@@ -169,7 +196,7 @@ class ClaudeNativeResultVerifier:
                 or evidence.get('operation_result', {}).get('result_digest') != digest(output)
                 or evidence.get('operation_result', {}).get('result_ref') != evidence.get('result_ref')
                 or evidence.get('operation_result', {}).get('status') != 'completed'
-                or not output.get('artifacts')
+                or (ROLE_PROFILES[_delivered_role(evidence)]['artifacts_required'] and not output.get('artifacts'))
                 or (expected_read_targets is not None and evidence.get('read_targets') != expected_read_targets)):
             raise ClaudeBindingError('Claude native result/input/scope binding is invalid')
         body = text(answer.get('text'), 'conclusion').encode()
@@ -206,28 +233,62 @@ class ClaudeWorkerAdapter:
     owner_bound = True
     require_host_context = True
     adapter_identity = IDENTITY
+    # Worker invocations are finite leaves (no coordinating workers); the
+    # manager role is a separate declared capability, see ``roles``.
+    leaf_only = True
 
     def __init__(self, *, owner: str, source: str, worktree: str, launcher_pin: LauncherPin,
                  state_root: str, requested_model: str, requested_reasoning: str = 'high',
-                 transport: ClaudeCliTransport | None = None, authentication: str = 'existing-user'):
+                 transport: ClaudeCliTransport | None = None, authentication: str = 'existing-user',
+                 roles: tuple = ('worker',), manager_transport: ClaudeCliTransport | None = None,
+                 manager_write_roots: tuple = (), native_caller_socket: str | None = None,
+                 native_process_observer: Any = None, manager_timeout_seconds: float = 1800,
+                 manager_env: Mapping[str, str] | None = None):
         self.owner, self.source = text(owner, 'owner'), text(source, 'source')
         self.worktree = str(Path(worktree).resolve(strict=True))
         self.writable_roots = ()
         self.launcher_pin, self.launcher, self.state_root = launcher_pin, launcher_pin.realpath, state_root
         self.requested_model, self.requested_reasoning = requested_model, requested_reasoning
+        roles = tuple(roles)
+        if not roles or set(roles) - set(ROLE_PROFILES) or len(set(roles)) != len(roles):
+            raise ClaudeBindingError('declared Claude roles must be a subset of ' + ', '.join(sorted(ROLE_PROFILES)))
+        self.roles = roles
+        if native_caller_socket is not None and ('manager' not in roles or not callable(native_process_observer)):
+            raise ClaudeBindingError('a managed caller socket requires the manager role and its process observer')
+        self.native_caller_socket, self.native_process_observer = native_caller_socket, native_process_observer
         self.transport = transport or ClaudeCliTransport(launcher_pin, MacWriteScope(self.worktree, state_root, authentication=authentication),
             model=requested_model, reasoning=requested_reasoning, authentication=authentication)
+        self.manager_transport = None
+        if 'manager' in roles:
+            self.manager_transport = manager_transport or ClaudeCliTransport(launcher_pin,
+                MacWriteScope(self.worktree, state_root, authentication=authentication,
+                              allow_subprocesses=True, extra_write_roots=manager_write_roots),
+                model=requested_model, reasoning=requested_reasoning, authentication=authentication,
+                tools=MANAGER_TOOLS, max_turns=ROLE_PROFILES['manager']['max_turns'],
+                timeout_seconds=manager_timeout_seconds,
+                extra_env={**dict(manager_env or {}),
+                           **({} if native_caller_socket is None else {'OTTO_CALLER_SOCKET': native_caller_socket})})
+        self._role = None
         self._authorizer = self._verifier = self._completed_verifier = None
         self._thread_started_callback = self._turn_started_callback = None
         self._used = False
 
+    def _transport_for(self, role: str) -> ClaudeCliTransport:
+        if role not in self.roles:
+            raise ClaudeBindingError('Claude composition does not declare the ' + str(role) + ' role')
+        return self.manager_transport if role == 'manager' else self.transport
+
     def pins(self) -> Mapping[str, Any]:
-        return {'launcher': vars(self.launcher_pin), 'parser_schema': PARSER_SCHEMA,
+        role = self._role or 'worker'
+        value = {'launcher': vars(self.launcher_pin), 'parser_schema': PARSER_SCHEMA,
                 'parser_sha256': file_digest(Path(__file__).with_name('claude_cli.py')),
-                'binding_sha256': file_digest(Path(__file__)), 'scope': self.transport.scope.pin,
+                'binding_sha256': file_digest(Path(__file__)), 'scope': self._transport_for(role).scope.pin,
                 'model': self.requested_model, 'reasoning': self.requested_reasoning,
                 'authentication': self.transport.authentication, 'permission_mode': 'bypassPermissions',
-                'profile': 'workspace-write', 'role': 'worker-leaf'}
+                'profile': 'workspace-write', 'role': 'worker-leaf' if role == 'worker' else role}
+        if self.roles != ('worker',):
+            value.update(roles=list(self.roles), tools=list(ROLE_PROFILES[role]['tools']))
+        return value
 
     def capabilities(self) -> Mapping[str, Any]:
         pins = self.pins()
@@ -237,23 +298,31 @@ class ClaudeWorkerAdapter:
                 'snapshot_follow': cap('supported', 'existing retained owner snapshot reads'),
                 'native_streaming': cap('unsupported', 'no partial-token stream advertised'),
                 'attach': cap('unsupported', 'no native attach binding'),
-                'resume': cap('unsupported', 'exact initializer-to-work continuation is internal; no later resume qualification'),
+                'resume': (cap('unverified', 'declared manager continuation of the exact owner-bound session '
+                               '(--resume); synthetic conformance only')
+                           if 'manager' in self.roles else
+                           cap('unsupported', 'exact initializer-to-work continuation is internal; no later resume qualification')),
                 'cancel': cap('degraded', 'transport unwinding reaps its owned process group; owner stop is only a fence'),
                 'steering': cap('unsupported', 'stdin sealed for bounded leaf'),
                 'native_children': cap('unsupported', 'Agent/Bash/MCP/customizations disabled; child frames rejected'),
-                'manager': cap('unsupported', 'worker-leaf only'),
+                'manager': (cap('unverified', 'declared manager profile: Bash/Edit/Glob/Grep/Read/Write under the '
+                                'inherited OS write fence; synthetic conformance only, no installed journey')
+                            if 'manager' in self.roles else cap('unsupported', 'worker-leaf only')),
                 'coordinator': cap('unsupported', 'no delegated authority or native caller tools')}
 
     def validate_owner_host_composition(self, *, role: str, profile: str) -> None:
-        if role != 'worker' or profile != 'workspace-write':
-            raise ClaudeBindingError('Claude candidate supports only workspace-write worker leaves')
-        self.transport.preflight()
+        if role not in self.roles or profile != 'workspace-write':
+            raise ClaudeBindingError('Claude composition supports only workspace-write ' + '/'.join(self.roles)
+                                     + ' roles; ' + str(role) + ' is not declared')
+        self._transport_for(role).preflight()
 
     def bind_owner_authorization(self, authorizer, *, verifier=None, completed_verifier=None, role=None, profile=None):
-        if role != 'worker' or profile != 'workspace-write' or not callable(authorizer) or not callable(verifier):
-            raise ClaudeBindingError('exact owner-authorized leaf composition required')
+        if (role not in self.roles or profile != 'workspace-write'
+                or not callable(authorizer) or not callable(verifier)):
+            raise ClaudeBindingError('exact owner-authorized ' + '/'.join(self.roles) + ' composition required')
         bound = copy.copy(self)
         bound._authorizer, bound._verifier, bound._completed_verifier = authorizer, verifier, completed_verifier
+        bound._role = role
         bound._used = False
         return bound
 
@@ -267,22 +336,41 @@ class ClaudeWorkerAdapter:
         prior = self._turn_started_callback; self._turn_started_callback = callback; return prior
 
     def invoke(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._owner_turn(request, operation='invoke')
+
+    def resume(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Continue the exact owner-bound manager session (`--resume`), no initializer.
+
+        Only the declared manager role continues a session: the owner's
+        continuation (after a worker result, a report or help) authorizes the
+        same native session again before the new turn's input is delivered.
+        """
+        return self._owner_turn(request, operation='resume')
+
+    def _owner_turn(self, request: Mapping[str, Any], *, operation: str) -> Mapping[str, Any]:
         from otto.portfolio.execution_host import ExecutionHost
         from herzchen.adapters.host import _owner_delivery_appendix
-        typed, brief_digest, brief = HerzchenCodexAdapter._typed_request(self, 'invoke', request)
+        typed, brief_digest, brief = HerzchenCodexAdapter._typed_request(self, operation, request)
         contract = brief['instruction_contract']; authority = contract['authority']
+        role = self._role or 'worker'
+        profile = ROLE_PROFILES[role]
+        transport = self._transport_for(role)
+        existing = request.get('physical_session_id')
+        if operation == 'resume' and (role != 'manager' or not isinstance(existing, str) or not existing.strip()):
+            raise ClaudeBindingError('only the declared manager role continues an exact existing session')
         if (self._used or not callable(self._authorizer) or not callable(self._verifier)
-                or not callable(self._thread_started_callback) or not callable(self._turn_started_callback)
-                or request.get('physical_session_id') is not None or request.get('expected_role') != 'worker'
+                or not callable(self._thread_started_callback)
+                or not callable(self._turn_started_callback)
+                or (operation == 'invoke' and existing is not None) or request.get('expected_role') != role
                 or typed.requested_profile != 'workspace-write' or contract.get('delegation') is not None
                 or authority.get('gateway_claim_required') is not True
                 or authority.get('owner_write') is not False or authority.get('dispatch') is not False
-                or authority.get('effect_profile') != 'workspace-write-worker'
+                or authority.get('effect_profile') != profile['effect_profile']
                 or set(authority.get('workspace_roots', [])) != {self.worktree}
-                or set(authority.get('permitted_effects', [])) - {'read_delivered_context', 'read_linked_sources', 'file_write_in_workspace', 'return_result'}
+                or set(authority.get('permitted_effects', [])) - set(profile['effects'])
                 or request.get('requested_model', self.requested_model) != self.requested_model
                 or request.get('requested_reasoning', self.requested_reasoning) != self.requested_reasoning):
-            raise ClaudeBindingError('Claude leaf scope, owner binding or model selection mismatch')
+            raise ClaudeBindingError('Claude ' + role + ' scope, owner binding or model selection mismatch')
         self._used = True  # No unknown effect can be retried on this binding.
         session = None; admitted = False
         thread_capture = ExecutionHost.owner_callback(self._thread_started_callback)
@@ -296,18 +384,24 @@ class ClaudeWorkerAdapter:
         usage_callback = ExecutionHost.owner_callback(getattr(self, "_usage_callback", None))
         usage_options = {} if usage_callback is None else {"on_usage": usage_callback}
         try:
-            init = ExecutionHost.external_call(lambda: self.transport.run(
-                'Initialize this session only. Do not use tools or do task work. Return READY.',
-                initializer=True, on_init=on_thread, **usage_options))
-            session = init['session_id']
-            if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
-                raise ClaudeBindingError('inert native initializer was not exact READY')
+            if operation == 'resume':
+                # Owner-bound continuation: no new initializer. Bind the existing
+                # session to this occurrence's claim before authorization.
+                init = {}
+                on_thread(existing)
+            else:
+                init = ExecutionHost.external_call(lambda: transport.run(
+                    'Initialize this session only. Do not use tools or do task work. Return READY.',
+                    initializer=True, on_init=on_thread, **usage_options))
+                session = init['session_id']
+                if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
+                    raise ClaudeBindingError('inert native initializer was not exact READY')
             authorization = authorize(session, brief_digest)
             expected = {'status': 'authorized', 'physical_session_id': session,
                 'brief_sha256': brief_digest, 'logical_request_key': request['logical_request_key'],
                 'project_ref': request.get('expected_project_ref'), 'task_ref': typed.target.to_dict(),
                 'assignment_ref': request.get('expected_assignment_ref'), 'generation': request.get('expected_generation'),
-                'role': 'worker', 'principal': request.get('expected_principal'),
+                'role': role, 'principal': request.get('expected_principal'),
                 'lifecycle_owner': request.get('expected_lifecycle_owner')}
             if (not isinstance(authorization, Mapping) or any(v is None or authorization.get(k) != v for k,v in expected.items())
                     or type(authorization.get('owner_version')) is not int
@@ -320,7 +414,14 @@ class ClaudeWorkerAdapter:
                 if admitted: raise ClaudeBindingError('duplicate useful native admission')
                 on_turn(turn, datetime.now(timezone.utc).isoformat())
                 admitted = True
-            work = ExecutionHost.external_call(lambda: self.transport.run(prompt, session=session, on_input=input_started, **usage_options))
+            on_process = None
+            if role == 'manager' and self.native_caller_socket is not None:
+                # Register the owned native process so the managed caller
+                # socket can authenticate its descendants (kernel peer PID).
+                observer = ExecutionHost.owner_callback(self.native_process_observer)
+                on_process = lambda process: observer(process, dict(authorization))
+            work = ExecutionHost.external_call(lambda: transport.run(prompt, session=session,
+                on_input=input_started, on_process=on_process, **usage_options))
             if work['outcome'] == 'failed':
                 return {'outcome': 'failed', 'physical_session_id': session, 'observed_turn_id': work['turn_id'],
                         'delivery_state': 'failed', 'native_failure': work['result'], 'usage': work['usage'],

@@ -4,6 +4,7 @@ description: "Plan and deliver substantial work with explicit coordinator/oracle
 ---
 
 # Megado
+> <!-- otto-edition --> Edition: unstamped source checkout. Installed copies replace this line with the edition, resolved path and SKILL.md digest; `ottoctl skills which megado` prints them.
 
 > Local Herzchen/technical-delivery edition, derived from the complete pinned poms-skills Megado. This edition incorporates the adopted pragmatic review and model-routing changes; it is not claimed to be published upstream. Use it for file-based execution or through the native work adapter described below. Existing instance mandates always win.
 
@@ -17,17 +18,40 @@ Use [the project lifecycle](references/project-lifecycle.md) when creating,
 queueing, activating, managing or closing a project. It maps each phase to its
 saved outcome, responsible role and supported operation. Megado supplies the
 working method; Otto owns project identity, authoring, dispatch and accounting.
-Begin with the user's requested phase and reuse existing project state.
+Begin with the user's requested phase and reuse existing project state. For work
+already in flight, first [adopt it](references/project-lifecycle.md#0-adopt-work-already-in-flight).
 
-For a new substantial delivery, include a final independent **Astra High** review
-of the integrated outcome and its evidence. Declare that stage and its finite
+**Mode check first:** run your role introduction's entrypoint or `command -v ottoctl && ottoctl service status`. There is ONE Otto per machine: one running owner service holds its store, and every agent CLI host is a client of it with its own principal.
+- `outcome: running` with your host named (`as_host`): native (Otto) mode; the project lifecycle applies.
+- Otto is installed but your host is not admitted, or no service is running: ask the operator to admit your host (`ottoctl service admit-host`) or start the service (`ottoctl service run`). Continue planning in the existing project package or the conversation until the missing binding is supplied; do not create a parallel run directory. Never open the store, start a second owner or copy another host's controller.
+- Otto is not installed at all: say up front "file mode: Otto is not installed on this host, so this run will not be registered or queued in Otto" Reuse the proper blank/template project package for planning and keep its documents inside that package.
+
+**One project package from the start.** For new work use the installed title-and-brief onboarding route with the existing blank/template project; create or reopen that same package, edit its documents, check them in, and export/read back through supported operations. Keep planning, briefs, specs, reviews, decisions and status with that project. Runtime receipts and native logs stay in their established execution storage, referenced by the project. For an existing external run only, `ottoctl project register`, `sync-docs` and `import-history` are migration/synchronization tools; preserve its identity and history rather than creating a competing project.
+
+For a new substantial delivery, include a final independent review by the
+profile's **final_reviewer slot** (its model binding is in the run template for
+your host) of the integrated outcome and its evidence. Declare that stage and its finite
 allowance when preparing execution; the default is one review, with any needed
 repeat requiring an available explicitly adopted allowance. Planning-only work
 does not activate this stage. Existing projects retain their adopted policy and
 consumed budgets unless explicitly amended. User review overrides prevail.
 
+## Portfolios
+
+Use one orchestrator with a manager per project. Register related projects in
+that orchestrator's portfolio, and express contract-freeze milestones as
+project-to-gate dependencies (`ottoctl project depend --project B --on 'A#contracts-frozen'`).
+Keep contracts in shared portfolio documents (`ottoctl portfolio sync-docs --dir DIR`);
+repeat sync when projects join. Managers read them through `project-documents`.
+Use `ottoctl portfolio status --json` for the hourly check-in and its
+`needs_orchestrator` list. Keep per-project testing light, prove a live walking
+skeleton early, and reserve one final integration project for the complete path.
+The one owner service runs several projects' managers at once (by default three
+active turns; further turns queue and show in `ottoctl service status`).
+
 ## Choose the mode
 
+- **Setup (not activated):** configure roles, tasks, allowances and schedules, save the existing project package as pending in Otto, record `"mode": "setup_not_activated"`, and stop before any manager launch or dispatch; activation is a separate explicit go.
 - **Planning only:** inspect, explore and produce a concrete plan/tasklist with decisions, uncertainties, estimate and validation approach. Stop there. No execution tests, implementation worktree, deployment preparation, certification packet or independent contract review is required merely to plan.
 - **Delivery:** plan enough to execute, implement in isolated source custody, test and integrate, review under the policy below, then sync only as authorized. Read [execution mechanics](references/execution.md) before source mutation or executable certification.
 - **Unattended/cloud delivery:** also read [AgentBox handoff](references/agentbox.md) when a cloud handoff is actually needed. Do not load or perform cloud setup for ordinary planning.
@@ -38,7 +62,7 @@ For a plan-only source inspection, record the repository/ref and dirty state, us
 
 Preserve six concerns: enduring North Star; bounded goal/authority; sole adopted role/stage/budget configuration; plan; tasklist; actual status and history.
 
-For file-based work, use the invoking repository's `.otto/runs/<run-id>/` with `northstar.md`, `agent_goal.md`, `run.yaml`, `plan.md`, `tasklist.md`, `status.md`. Resume an existing matching run rather than initialise a competing one. Keep original architecture/code documents at their owning paths. Record any explicitly selected different control root once. Create briefs/results/evidence when work produces them, not as an empty folder hierarchy for planning.
+For new work, put `northstar.md`, `agent_goal.md`, `run.json`, `plan.md`, `tasklist.md` and `status.md` inside the same blank/template project package used by the supported create/open/check-in/export path. Its returned project reference and workspace locator identify it; do not invent a `.otto/runs` planning root or a second tasklist. Existing file-based runs may be reopened or migrated without losing their history. Keep original source documents at their owning paths and link them from the package. Create execution evidence only when work produces it.
 
 For native Otto/Herzchen, those same concerns are versioned work/documents/metadata and generated views. Use the supported tools and one project sheet; do not create a second authoritative filesystem tasklist or private pack database. Read [storage and host adapter guidance](references/native-work.md). Blank pending projects may be unfilled but must not dispatch until their actual assignment is meaningful and authorised.
 
@@ -63,6 +87,8 @@ Estimate the agreed scope in focused engineering days, name major uncertainty an
 
 ## Roles and model policy
 
+User vocabulary (manager, orchestrator, judge, advisor) maps to these slots in the [glossary](references/run-config.md).
+
 **Coordinator and oracle are separate responsibilities.** The coordinator runs the agreed process; the oracle owns consequential adjudication. “Host” names the session running the process, not automatic oracle authority. One agent may hold both responsibilities only when the run explicitly assigns both; do not silently transfer authority when delegating coordination. Role slots and model bindings are independent: Luna, Sol and Astra are default model bindings, not roles, and any binding may be replaced in run configuration without changing the responsibility contract.
 
 | Role | Responsibility | Boundary |
@@ -80,7 +106,7 @@ The coordinator may advance on required passing tests and an uncontested stage P
 
 XHARD means irreducible sustained subtle reasoning with plausible non-local mistakes that ordinary checks may miss and that the normal model cannot reliably handle from a precise brief. Decompose and diagnose brief/tool/environment failures first. Size, duration, importance or one failure is insufficient. The coordinator requests oracle judgment if escalation classification itself is unclear.
 
-**Declare the run once using [the run template](templates/run.yaml).** In file mode copy it to `$OTTO_DIR/run.yaml`; in native mode adopt the corresponding versioned configuration. Apply its default role slots and model bindings and select meaningful stage triggers, honoring the user's instructions, and link it from agent_goal.md. It is the single model/stage/budget declaration; do not duplicate divergent settings in prose. Read [configuration semantics](references/run-config.md) before creating or changing it. Preserve the keys `coordinator`, `worker_normal`, `worker_xhard`, `reviewer_normal`, `reviewer_xhard`, `oracle` and `final_reviewer`; each key names a responsibility slot whose model/reasoning binding can be replaced independently. The defaults for this edition are Luna medium for coordinator, Luna high for normal implementation, Luna Extra High for normal independent review, Sol high for XHARD implementation/review, and Astra high for consequential oracle or a selected holistic final reviewer. For new substantial delivery, explicitly select the final Astra High stage described above; select intermediate assessment scopes proportionately. Use these defaults when no override exists. Oracle budget defaults to three calls. Existing explicit run choices win; do not silently replace them with new defaults. No automatic switch of the current host model or running agents occurs by editing YAML.
+**Declare the run once using [the run template](templates/run.json)** (Codex profile, the default) or [the Claude Code template](templates/run.claude.json) on a Claude Code host; select by the host you run on. Save it as `run.json` in the existing project package and adopt the corresponding versioned configuration; an existing `run.yaml` with JSON content remains a supported legacy input. Apply its default role slots and model bindings and select meaningful stage triggers, honoring the user's instructions, and link it from agent_goal.md. It is the single model/stage/budget declaration; do not duplicate divergent settings in prose. Read [configuration semantics](references/run-config.md) before creating or changing it. Preserve the keys `coordinator`, `worker_normal`, `worker_xhard`, `reviewer_normal`, `reviewer_xhard`, `oracle` and `final_reviewer`; each key names a responsibility slot whose model/reasoning binding can be replaced independently. The defaults for this edition are Luna medium for coordinator, Luna high for normal implementation, Luna Extra High for normal independent review, Sol high for XHARD implementation/review, and Astra high for consequential oracle or a selected holistic final reviewer. For a new run explicitly using the Claude profile, its suggested bindings are: Haiku medium coordinator, Haiku high normal worker, Sonnet high XHARD worker and normal reviewer, Opus high XHARD reviewer, oracle and final reviewer. For new substantial delivery, explicitly bind the independent final_reviewer stage; Codex defaults to Astra High. Existing user-required Astra stages remain binding on every host. Select intermediate assessment scopes proportionately. Use these defaults when no override exists. Oracle budget defaults to three calls. Existing explicit run choices win; do not silently replace them with new defaults. No automatic switch of the current host model or running agents occurs by editing the run file.
 
 The oracle is invoked for a concrete initial direction decision when not already settled, consequential new evidence, contested findings, uncertain escalation or exceptions. Routine dispatch, passing tests and uncontested completion within the mandate do not require reassurance calls. An oracle call is a decision request, not a disguised extra review.
 
@@ -118,14 +144,14 @@ If there is neither a concrete decision nor new evidence, apply the existing rul
 **Oracle reply — four fields:**
 - Disposition: proceed / change approach / investigate / blocked.
 - Decision and reason: concise, grounded in the goal and evidence.
-- Next action: a concrete dispatch or bounded investigation; state affected scope. Every executable next action, including actions unrelated to a review correction, carries the outcome, acceptance evidence, dependency scope, and `normal`/`xhard` route to the corresponding `run.yaml` worker. An XHARD action includes its irreducible hard-question justification. “Investigate further” must name the uncertainty and evidence sought; unresolved difficulty is not an executable route.
+- Next action: a concrete dispatch or bounded investigation; state affected scope. Every executable next action, including actions unrelated to a review correction, carries the outcome, acceptance evidence, dependency scope, and `normal`/`xhard` route to the corresponding `run.json` worker. An XHARD action includes its irreducible hard-question justification. “Investigate further” must name the uncertainty and evidence sought; unresolved difficulty is not an executable route.
 - Return condition: name the material decision boundary that requires another judgment; otherwise continue the whole in-scope repair and verification loop. Do not make every local edit, read, or disposable fixture failure a return condition.
 
 A useful ruling settles a class of predictable in-scope corrections where possible, with one owner, completion evidence and meaningful stop conditions. Judge it by whether it unlocks delivery or reduces uncertainty, not how many new instructions it creates. Repeated narrowly permitted steps are a reason to revisit the mandate or approach, not automatically request a stronger model.
 
 The reply operates within user authorization; the oracle cannot grant missing deployment/scope authority. Pause only dependent work while a decision is unresolved. Continue independent work. Pause the whole run only if the uncertainty affects overall scope, authority or correctness. “Blocked” identifies the actual prerequisite, not mere discomfort.
 
-**Loop rule:** if the same decision returns twice without new evidence or action, do not reconsider it a third time. Diagnose the coordination failure: ambiguous brief, insufficient mandate, unsuitable worker, tool/environment problem or an approach that needs narrowing. Choose a concrete repair, bounded experiment, decomposition or justified escalation. Ten consecutive checks without substantive progress is a coordination alarm, not a target to wait for. Also detect churn across new decision IDs, package hashes and minor harness failures: these do not establish progress by themselves. When coordination dominates, consolidate the remaining repair under one owner and one completion condition using existing authority; do not commission another process review to permit that correction. Preserve prior rulings and review counts. Every oracle interaction should unlock action or reduce a named uncertainty, and these requests must not disguise extra independent review rounds. Each invoked oracle response consumes the separate run.yaml oracle budget, including diagnosis calls. If exhausted, pause affected decisions and request the needed user direction/budget change; do not self-adjudicate or rename calls. If the oracle requests a review, that review also consumes the applicable stage budget.
+**Loop rule:** if the same decision returns twice without new evidence or action, do not reconsider it a third time. Diagnose the coordination failure: ambiguous brief, insufficient mandate, unsuitable worker, tool/environment problem or an approach that needs narrowing. Choose a concrete repair, bounded experiment, decomposition or justified escalation. Ten consecutive checks without substantive progress is a coordination alarm, not a target to wait for. Also detect churn across new decision IDs, package hashes and minor harness failures: these do not establish progress by themselves. When coordination dominates, consolidate the remaining repair under one owner and one completion condition using existing authority; do not commission another process review to permit that correction. Preserve prior rulings and review counts. Every oracle interaction should unlock action or reduce a named uncertainty, and these requests must not disguise extra independent review rounds. Each invoked oracle response consumes the separate run.json oracle budget, including diagnosis calls. If exhausted, pause affected decisions and request the needed user direction/budget change; do not self-adjudicate or rename calls. If the oracle requests a review, that review also consumes the applicable stage budget.
 
 ## Delegation
 
@@ -234,7 +260,7 @@ Tasks name their outcome, real dependencies, affected scope, model/classificatio
 Every executable assignment, including a correction dispatched after review, carries
 the same compact contract: the concrete outcome, acceptance evidence, source and
 dependency scope, and a route of `normal` or `xhard`. The route resolves through
-`run.yaml` to `worker_normal` or `worker_xhard`; it is not a new role. An XHARD
+`run.json` to `worker_normal` or `worker_xhard`; it is not a new role. An XHARD
 assignment includes a brief justification naming the irreducible hard question and
 why a precise normal-worker brief is insufficient. The coordinator records these
 fields in the brief/receipt and dispatches to the corresponding configured worker.
@@ -248,9 +274,9 @@ For delivery, use [execution mechanics](references/execution.md), dispatch unblo
 
 ## Review policy — one source of truth
 
-Use [proportionate verification and review](references/pragmatic-review.md). The manager first asks what direct test, retained fixture, actual operation or installed use can establish the outcome, then which material uncertainty still needs an independent judgment. A gate is an acceptance boundary, not necessarily a model call.
+Use [proportionate verification and review](references/pragmatic-review.md); product acceptance is a separate evidence kind, not a review stage. The manager first asks what direct test, retained fixture, actual operation or installed use can establish the outcome, then which material uncertainty still needs an independent judgment. A gate is an acceptance boundary, not necessarily a model call.
 
-For a new run, select a policy from actual downside, blast radius, reversibility, testability and residual uncertainty. Low-risk testable work may have no model-review stages. A bounded local residual judgment can use one independent Luna Extra High review; a justified nonlocal XHARD question uses Sol High and can justify at most two selected calls. Astra High is for a consequential oracle or a selected whole-system/strategic scope, normally one call with at most one targeted repeat. These are starting guidelines, not a fixed stage tree or multiplied per-task budgets. User-required reviews, actual limits and already-adopted stages remain binding. For new substantial delivery, record the final Astra High stage in the execution configuration before activation; the planning template does not itself activate it.
+For a new run, select a policy from actual downside, blast radius, reversibility, testability and residual uncertainty. Low-risk testable work may have no model-review stages. A bounded local residual judgment can use one independent Luna Extra High review; a justified nonlocal XHARD question uses Sol High and can justify at most two selected calls. Astra High is for a consequential oracle or a selected whole-system/strategic scope, normally one call with at most one targeted repeat. These are starting guidelines, not a fixed stage tree or multiplied per-task budgets. User-required reviews, actual limits and already-adopted stages remain binding. For new substantial delivery, record the independent final_reviewer stage in the execution configuration before activation, honoring required Astra High stages and other explicit user choices; the planning template does not itself activate it.
 
 Normal independent review uses `reviewer_normal` (Luna Extra High); XHARD review uses `reviewer_xhard` (Sol High) in this profile; route metadata is independent of actual model identity. The final reviewer slot is used for a selected holistic judgment, not every code check. Oracle, review and any scheduled-advice calls remain separately accounted. Factual workers do not issue hidden approval verdicts.
 

@@ -343,9 +343,72 @@ def _state_for_usage(event: Mapping[str, Any], descriptor: Mapping[str, Any]) ->
     return ("zero" if all(value == 0 for value in metrics.values()) else "observed"), metrics, None
 
 
+MODEL_USAGE_SCHEMA = "otto.usage-model-usage.v1"
+# Claude result.modelUsage field names -> canonical additive metric fields.
+# Claude semantics: inputTokens is UNCACHED input; cache read/creation are
+# separate and additive (total input = sum of the three), unlike Codex where
+# cached input is a subset of input.
+CLAUDE_MODEL_USAGE_FIELDS = {
+    "inputTokens": "input_tokens",
+    "cacheReadInputTokens": "cached_input_tokens",
+    "cacheCreationInputTokens": "cache_creation_input_tokens",
+    "outputTokens": "output_tokens",
+}
+CLAUDE_MONEY_TOLERANCE = Decimal("0.000001")
+
+
+def _amount(raw: Any) -> Optional[Decimal]:
+    """Finite nonnegative decimal from a native money value, else None."""
+    if type(raw) not in (int, float, str):
+        return None
+    try:
+        amount = Decimal(str(raw))
+    except InvalidOperation:
+        return None
+    return amount if amount.is_finite() and amount >= 0 else None
+
+
+def claude_model_usage(event: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """Per-model facts from a Claude result event's ``modelUsage``.
+
+    Returns None when the event carries no modelUsage.  A present but malformed
+    modelUsage yields state ``invalid`` and no models, so callers fall back to
+    the top-level usage object rather than guessing.
+    """
+    if "modelUsage" not in event:
+        return None
+    raw = event["modelUsage"]
+    invalid = {"schema": MODEL_USAGE_SCHEMA, "state": "invalid", "models": []}
+    if not isinstance(raw, Mapping) or not raw:
+        return invalid
+    models = []
+    for name in sorted(raw):
+        entry = raw[name]
+        if not isinstance(name, str) or not name.strip() or not isinstance(entry, Mapping):
+            return invalid
+        metrics = {}
+        for native, canonical in CLAUDE_MODEL_USAGE_FIELDS.items():
+            value = entry.get(native)
+            if type(value) is not int or value < 0:
+                return invalid
+            metrics[canonical] = value
+        cost = _amount(entry["costUSD"]) if "costUSD" in entry else None
+        models.append({"model": name.strip(), "metrics": metrics,
+                       "cost": None if cost is None else format(cost, "f")})
+    return {"schema": MODEL_USAGE_SCHEMA, "state": "observed", "models": models}
+
+
+def sum_model_metrics(model_usage: Mapping[str, Any]) -> dict[str, int]:
+    totals = {field: 0 for field in CLAUDE_MODEL_USAGE_FIELDS.values()}
+    for item in model_usage.get("models", ()):
+        for field, value in item["metrics"].items():
+            totals[field] += value
+    return totals
+
 
 def _native_money(event: Mapping[str, Any], descriptor: Mapping[str, Any],
-                  provenance: Mapping[str, Any], *, qualified: bool) -> dict[str, Any]:
+                  provenance: Mapping[str, Any], *, qualified: bool,
+                  model_usage: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
     """Only the selected native schema can supply monetary observations.
 
     Claude result total_cost_usd is a client estimate of cumulative session
@@ -358,6 +421,9 @@ def _native_money(event: Mapping[str, Any], descriptor: Mapping[str, Any],
                "amount": None, "currency": None,
                "reason": "selected native schema did not report monetary usage",
                "capability": deepcopy(capability)}
+    if (descriptor["adapter_id"] == "claude-code" and qualified and model_usage
+            and model_usage.get("state") == "observed"):
+        return _invocation_money(event, descriptor, provenance, model_usage, missing)
     if descriptor["adapter_id"] != "claude-code" or "total_cost_usd" not in event:
         return missing
     raw = event["total_cost_usd"]
@@ -378,6 +444,43 @@ def _native_money(event: Mapping[str, Any], descriptor: Mapping[str, Any],
         return {**base, "status": "unavailable", "reason": "native amount must be a finite nonnegative decimal"}
     return {**base, "status": "zero" if amount == 0 else "usage_report_estimate",
             "amount": format(amount, "f"), "currency": "USD", "reason": None}
+
+
+def _invocation_money(event: Mapping[str, Any], descriptor: Mapping[str, Any],
+                      provenance: Mapping[str, Any], model_usage: Mapping[str, Any],
+                      missing: Mapping[str, Any]) -> dict[str, Any]:
+    """Claude's own cost for one ``claude -p`` invocation.
+
+    A result carrying ``modelUsage`` is the per-invocation aggregate of the
+    process (native subagents are folded into it and are not separately
+    recorded), so its cost is invocation-scoped and ``self`` population.  A
+    bare ``total_cost_usd`` without modelUsage keeps the conservative
+    cumulative reading in ``_native_money``.  Amounts are native-reported
+    numbers, never computed from a price table.
+    """
+    costs = [None if item["cost"] is None else Decimal(item["cost"]) for item in model_usage["models"]]
+    complete = all(cost is not None for cost in costs)
+    per_model_sum = sum(costs, Decimal("0")) if complete else None
+    field = "total_cost_usd"
+    source = {"kind": "native-reported", "field": field,
+              "native_schema": descriptor["native_schema"],
+              "provenance": deepcopy(dict(provenance))}
+    base = {**missing, "source": source, "provider": descriptor["provider"],
+            "metric_scope": "invocation", "population_scope": "self",
+            "descendants": "native subagents are included in this invocation's totals; no separate child span is recorded"}
+    if "total_cost_usd" in event:
+        total = _amount(event["total_cost_usd"])
+        if total is None:
+            return {**base, "status": "unavailable", "reason": "native amount must be a finite nonnegative decimal"}
+        if per_model_sum is not None and abs(per_model_sum - total) > CLAUDE_MONEY_TOLERANCE:
+            return {**base, "status": "unavailable", "reason": "per-model costUSD sum differs from total_cost_usd"}
+    elif per_model_sum is not None:
+        total, field = per_model_sum, "modelUsage.costUSD"
+        source["field"] = field
+    else:
+        return missing
+    return {**base, "status": "zero" if total == 0 else "usage_report_estimate",
+            "amount": format(total, "f"), "currency": "USD", "reason": None}
 
 
 def normalize_usage_event(
@@ -422,6 +525,22 @@ def normalize_usage_event(
                 {},
                 "numeric usage requires the exact selected adapter schema",
             )
+    model_usage = None
+    if adapter_id == "claude-code" and not (schema_mismatch or type_mismatch):
+        model_usage = claude_model_usage(event)
+        if model_usage is not None and model_usage["state"] == "observed" and state in {"observed", "zero"}:
+            summed = sum_model_metrics(model_usage)
+            # modelUsage is the full-invocation aggregate that pairs with the
+            # reported cost; keep the top-level object only as provenance.
+            if any(metrics.get(k, 0) != v for k, v in summed.items()):
+                model_usage["top_level_metrics"] = dict(metrics)
+                model_usage["reconciliation"] = "differs"
+            else:
+                model_usage["reconciliation"] = "equal"
+            metrics = summed
+            state = "zero" if all(v == 0 for v in metrics.values()) else "observed"
+        elif model_usage is not None and model_usage["state"] == "observed":
+            model_usage = None  # never let per-model numbers contradict an unqualified state
     session = session_id or event.get("session_id") or event.get("thread_id")
     turn = turn_id or event.get("turn_id") or event.get("uuid")
     span = None
@@ -475,8 +594,16 @@ def normalize_usage_event(
             "raw_payload": "retained by Evidence; this observation is a bounded summary",
         },
     }
+    if model_usage is not None:
+        result["model_usage"] = model_usage
+        models = [item["model"] for item in model_usage["models"]]
+        if model_usage["state"] == "observed":
+            # The real per-model ids supersede a transport alias; with several
+            # models there is no single span model (pricing is per model).
+            result["observed"]["model"] = models[0] if len(models) == 1 else None
     result["provider_reported_money"] = _native_money(event, descriptor, provenance,
-        qualified=schema_present and not schema_mismatch and not type_mismatch)
+        qualified=schema_present and not schema_mismatch and not type_mismatch,
+        model_usage=model_usage)
     return result
 
 
@@ -599,6 +726,6 @@ __all__ = [
     "CONTRACT_SCHEMA", "OBSERVATION_SCHEMA", "RATE_SCHEDULE_SCHEMA", "FIXTURE_SCHEMA",
     "SOURCE_COMMIT", "MODEL", "REASONING", "PROFILE", "METRIC_FIELDS", "CHARGEABLE_FIELDS",
     "OBSERVATION_STATES", "UsageContractError", "adapter_descriptors", "contract_definition",
-    "fixture_catalog", "normalize_usage_event", "physical_span_identity", "validate_rate_schedule",
+    "fixture_catalog", "normalize_usage_event", "claude_model_usage", "sum_model_metrics", "MODEL_USAGE_SCHEMA", "physical_span_identity", "validate_rate_schedule",
     "run_fixture_contract",
 ]

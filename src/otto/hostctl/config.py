@@ -1,0 +1,205 @@
+"""The one Otto installation on this machine, and the hosts that joined it.
+
+There is ONE Store (one authority) and one owner service principal. Each agent
+CLI host (Codex, Claude Code, ...) joins it as its own orchestrator principal
+with its own portfolio responsibility and adapter registry; hosts never get a
+second Store or borrow another host's principal.
+
+``installation.json`` (in ``OTTO_HOME``, default ``~/.otto``) records paths,
+names and pins only; it holds no secret. The Store itself may live elsewhere
+(for example where an existing owner created it); the installation points to it.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import pwd
+import socket
+from typing import Any, Mapping, Optional
+
+SCHEMA = "otto.installation.v1"
+CLIENT_SCHEMA = "otto.host-client.v1"
+HOST_KINDS = ("claude-code", "codex")
+# A client may point at a Store anywhere, but never keeps its OWN runtime
+# files (sockets, IPC, receipts) inside another host's receiving trees.
+FORBIDDEN_RUNTIME_PREFIXES = ("~/Documents/Codex", "~/.codex/owner-services", "/tmp/otto-", "/private/tmp/otto-")
+
+
+class HostConfigError(ValueError):
+    pass
+
+
+def otto_home(explicit: Optional[str] = None, *, environ: Optional[Mapping[str, str]] = None) -> Path:
+    """--home > OTTO_HOME > ~/.otto."""
+    env = os.environ if environ is None else environ
+    value = explicit or env.get("OTTO_HOME") or "~/.otto"
+    return Path(os.path.expanduser(value)).absolute()
+
+
+def host_kind(explicit: Optional[str] = None, *, environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    env = os.environ if environ is None else environ
+    value = explicit or env.get("OTTO_HOST_KIND")
+    if value is not None and value not in HOST_KINDS:
+        raise HostConfigError("unknown host kind " + repr(value) + "; known: " + ", ".join(HOST_KINDS))
+    return value
+
+
+def config_path(home: Path) -> Path:
+    return home / "installation.json"
+
+
+def forbidden_runtime(path: str | Path) -> bool:
+    text = os.path.realpath(os.path.expanduser(str(path)))
+    for prefix in FORBIDDEN_RUNTIME_PREFIXES:
+        if prefix.startswith("~"):
+            expanded = os.path.realpath(os.path.expanduser(prefix))
+            if text == expanded or text.startswith(expanded + "/"):
+                return True
+        elif text.startswith(prefix):
+            return True
+    return False
+
+
+def new_installation(home: Path, *, store_path: str, authority: str, owner_actor: str,
+                     credential_ref: str, python: str) -> dict[str, Any]:
+    for name, value in (("owner_actor", owner_actor), ("authority", authority), ("credential_ref", credential_ref)):
+        if not isinstance(value, str) or not value.strip() or value != value.strip() or "/" in value:
+            raise HostConfigError(name + " must be exact nonblank text without '/'")
+    if forbidden_runtime(home):
+        raise HostConfigError("refusing an Otto home inside another host's receiving tree: " + str(home))
+    account = pwd.getpwuid(os.geteuid())
+    return {
+        "schema": SCHEMA,
+        "home": str(home),
+        "machine": {"hostname": socket.gethostname(), "account": account.pw_name, "uid": os.geteuid()},
+        "store": {"path": str(Path(store_path).absolute()), "authority": authority},
+        "owner": {"actor": owner_actor, "credential_ref": credential_ref,
+                  "note": "The owner service principal holds the Store for every host. Hosts act as their own "
+                          "principals; none borrows another's."},
+        "hosts": {},
+        "python": python,
+    }
+
+
+def host_entry(kind: str, *, principal: str, launcher: Optional[str], qualified_versions: list[str],
+               model_profile: str, conversation: Optional[str] = None) -> dict[str, Any]:
+    if kind not in HOST_KINDS:
+        raise HostConfigError("host kind must be one of " + ", ".join(HOST_KINDS))
+    if not isinstance(principal, str) or not principal.strip() or "/" in principal:
+        raise HostConfigError("host principal must be exact nonblank text without '/'")
+    adapters: dict[str, Any] = {}
+    if kind == "claude-code":
+        adapters["claude-code"] = {
+            "launcher": launcher, "qualified_versions": qualified_versions,
+            "roles": ["worker", "manager"], "profiles": ["workspace-write"],
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "models": ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
+            "authentication": "existing-user",
+        }
+    elif kind == "codex":
+        adapters["codex"] = {"launcher": launcher, "roles": ["worker", "manager"],
+                             "profiles": ["read-only", "workspace-write"]}
+    # Without a native session id the orchestrator's conversation is its receipt
+    # mailbox: help is retained for inspection (`ottoctl help read`), not pushed.
+    return {"kind": kind, "principal": principal, "model_profile": model_profile, "adapters": adapters,
+            "conversation": conversation or (kind + ":receipt-mailbox:" + principal)}
+
+
+def load(home: Path) -> dict[str, Any]:
+    path = config_path(home)
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise HostConfigError("no Otto installation at " + str(home) + "; run `ottoctl install` "
+                              "(see `ottoctl install --help`)")
+    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
+        raise HostConfigError(str(path) + " is not an " + SCHEMA + " document")
+    for key in ("store", "owner", "hosts", "home"):
+        if key not in value:
+            raise HostConfigError(str(path) + " lacks " + key)
+    if Path(value["home"]) != home:
+        raise HostConfigError("installation belongs to " + value["home"] + ", not " + str(home))
+    if value.get("machine", {}).get("uid") != os.geteuid():
+        raise HostConfigError("installation belongs to another account")
+    return value
+
+
+def host(config: Mapping[str, Any], kind: Optional[str]) -> Mapping[str, Any]:
+    """The joined host this command acts for (explicit, OTTO_HOST_KIND, or the only one)."""
+    hosts = config.get("hosts") or {}
+    chosen = host_kind(kind)
+    if chosen is None:
+        if len(hosts) != 1:
+            raise HostConfigError("name the host (--host or OTTO_HOST_KIND); joined: " + (", ".join(hosts) or "none"))
+        chosen = next(iter(hosts))
+    if chosen not in hosts:
+        raise HostConfigError(chosen + " is not admitted to this Otto; the owner admits it with `ottoctl service admit-host --host " + chosen + "`")
+    return hosts[chosen]
+
+
+def write(home: Path, value: Mapping[str, Any], *, replace: bool = False) -> Path:
+    path = config_path(home)
+    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    temporary = path.with_name(".installation.json.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if not replace and path.exists():
+        os.unlink(temporary)
+        raise HostConfigError(str(path) + " already exists")
+    os.replace(temporary, path)
+    return path
+
+
+# -- host clients ---------------------------------------------------------------
+# A host's client home holds only client.json (which host principal, which
+# lane) and its lanes. It names no Store path: a client never opens the Store.
+
+def client_path(home: Path) -> Path:
+    return home / "client.json"
+
+
+def load_client(home: Path) -> dict[str, Any]:
+    path = client_path(home)
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise HostConfigError("no admitted host at " + str(home) + "; the owner admits a host with "
+                              "`ottoctl --home <service home> service admit-host --host <kind> --client-home "
+                              + str(home) + "`")
+    if not isinstance(value, dict) or value.get("schema") != CLIENT_SCHEMA or not isinstance(value.get("hosts"), dict):
+        raise HostConfigError(str(path) + " is not an " + CLIENT_SCHEMA + " document")
+    return value
+
+
+def client_host(client: Mapping[str, Any], kind: Optional[str]) -> Mapping[str, Any]:
+    hosts = client.get("hosts") or {}
+    chosen = host_kind(kind)
+    if chosen is None:
+        if len(hosts) != 1:
+            raise HostConfigError("name the host (--host or OTTO_HOST_KIND); admitted here: " + (", ".join(hosts) or "none"))
+        chosen = next(iter(hosts))
+    if chosen not in hosts:
+        raise HostConfigError(chosen + " is not admitted at this client home")
+    return dict(hosts[chosen], kind=chosen)
+
+
+def write_client(home: Path, kind: str, entry: Mapping[str, Any]) -> Path:
+    path = client_path(home)
+    try:
+        value = load_client(home)
+    except HostConfigError:
+        value = {"schema": CLIENT_SCHEMA, "hosts": {}}
+    value["hosts"][kind] = dict(entry)
+    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    temporary = path.with_name(".client.json.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    return path
