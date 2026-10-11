@@ -195,12 +195,34 @@ class ManagerJourneyCommands:
                 "readiness_granted": False, "assessment_authority_granted": False,
                 "next_action": "Inspect current task readiness and adopted scope before normal/XHARD run-worker. Missing acceptance scope, allowance or role-context adoption requires the existing owner setup path; task authoring grants none."}
 
+    def _review_criteria(self, task_ref: Mapping[str, Any], policy: LocalAssessmentPolicy) -> dict[str, Any]:
+        criteria = {criterion for task, criterion in policy.task_criterion_pairs
+                    if task.to_dict() == task_ref}
+        return {name: ref for name, ref in self.state["criterion_refs"].items()
+                if ResourceRef.from_dict(ref) in criteria}
+
+    @staticmethod
+    def _inspection_schema() -> dict[str, Any]:
+        return {"type": "object", "min_properties": 1,
+                "example": {"observed": "Your substantive inspection of the exact retained candidate"},
+                "authority": "input shape only; no verdict or review allowance"}
+
     def review_input(self, alias: str) -> Mapping[str, Any]:
         """Expose the exact retained worker observation, never an automatic PASS."""
         self._authorize()
+        if alias not in self.state["task_refs"]:
+            raise ValueError("unknown task alias; use a current configured task alias")
+        policy = self.policy or self.state["assessment_policy"]
+        if isinstance(policy, Mapping):
+            policy = LocalAssessmentPolicy.from_run_config(policy, state=self.state)
+        policy.validate_binding(ResourceRef.from_dict(self.state["project_ref"]),
+                                ResourceRef.from_dict(self.state["task_refs"][alias]),
+                                self.owner.graph.reader)
+        contract = {"criterion_aliases": self._review_criteria(self.state["task_refs"][alias], policy),
+                    "inspection_schema": self._inspection_schema()}
         worker = (self.state.get("workers") or {}).get(alias)
-        if alias not in self.state["task_refs"] or not isinstance(worker, Mapping) or self.due_port is None:
-            return {"outcome": "held", "provider_called": False,
+        if not isinstance(worker, Mapping) or self.due_port is None:
+            return {**contract, "outcome": "held", "provider_called": False,
                     "reason": "no retained worker handle for this task; admit actual candidate content through the owner"}
         due = self.due_port.read_due(worker["schedule_id"]) or {}
         result = ((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("result") or {}
@@ -218,7 +240,7 @@ class ManagerJourneyCommands:
         if (due.get("stop_state") != "completed" or due.get("completion_state") != "succeeded"
                 or due.get("in_flight_request") is not None or result.get("outcome") != "succeeded"
                 or result.get("context_digest_verified") is not True):
-            return {"outcome": "pending", "schedule_id": worker["schedule_id"], "provider_called": False,
+            return {**contract, "outcome": "pending", "schedule_id": worker["schedule_id"], "provider_called": False,
                     "retry_provider": False, "reason": "inspect or settle this exact worker occurrence before judging it"}
         observations = []
         for item in self.owner.assignments.command_port.list_observations(assignment.ref, kind="result"):
@@ -234,7 +256,7 @@ class ManagerJourneyCommands:
             raise ValueError("retained worker result does not identify one exact canonical observation")
         ref = observations[0].ref.to_dict()
         task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
-        return {"outcome": "read", "task_ref": task_ref, "task_outcome": task.payload.get("outcome"),
+        return {**contract, "outcome": "read", "task_ref": task_ref, "task_outcome": task.payload.get("outcome"),
                 "schedule_id": worker["schedule_id"], "candidate_ref": ref, "source_refs": [ref], "evidence_refs": [ref],
                 "worker_result_sha256": _digest(result), "observed_turn_id": result.get("observed_turn_id"),
                 "physical_session_id": result.get("physical_session_id"), "provider_called": False,
@@ -368,16 +390,17 @@ class ManagerJourneyCommands:
             existing_scope = commands.required_scope(require=False)
             candidate = commands._ref(request.get("candidate_ref"), "candidate_ref")
             sources = commands._refs(request.get("source_refs"), "source_refs")
-            criteria = [criterion for task, criterion in policy.task_criterion_pairs
-                        if task.to_dict() == manifest["task_ref"]]
             judgments = request.get("judgments")
-            aliases = {alias: ref for alias, ref in self.state["criterion_refs"].items()
-                       if ResourceRef.from_dict(ref) in criteria}
+            aliases = self._review_criteria(manifest["task_ref"], policy)
             if not isinstance(judgments, Mapping) or set(judgments) != set(aliases):
-                raise ValueError("supply explicit judgment for every configured task criterion")
+                raise ValueError("input schema rejected before review effects: supply explicit judgment for every "
+                    "configured task criterion; exact aliases: " + ", ".join(sorted(aliases)) +
+                    ". Read review-input --task " + alias + " for their pinned refs")
             inspection = request.get("inspection")
             if not isinstance(inspection, Mapping) or not inspection:
-                raise ValueError("inspection must contain substantive observed evidence")
+                raise ValueError('input schema rejected before review effects: inspection must be a nonempty JSON '
+                    'object containing substantive observed evidence, for example {"observed":"your inspection"}; '
+                    'a JSON string, array or empty object is not accepted')
             evidence = []
             for criterion_alias, judgment in judgments.items():
                 if (not isinstance(judgment, Mapping)

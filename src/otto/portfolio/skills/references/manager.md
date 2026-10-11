@@ -15,8 +15,15 @@ Inspect retained handles with `worker-status`, `command-status` or occurrence/re
 reads, and read actual artifacts. Yield when your active turn prevents delivery
 or finish settlement. A timeout is not permission to launch again.
 
-Use `review-input` for exact candidate/source refs, then the configured assessment
-and finish path. Decide reviewer proposals, add accepted corrections to normal
+Use `review-input` for exact candidate/source refs and every `criterion_aliases`
+entry. Supply those exact aliases as the `--judgments` keys; do not invent a key
+such as `acceptance`. Each judgment requires `verdict`, `rationale` and genuine
+`evidence_refs`. `--inspection` is a nonempty JSON object, for example
+`'{"observed":"Your substantive inspection of this retained candidate"}'`.
+It is not a JSON string. The schema read grants no verdict or additional review.
+Preserve an UNKNOWN outer receipt and reconcile its exact effect before correcting
+input; never resend its immutable handle merely because a schema error is visible.
+Then use the configured assessment and finish path. Decide reviewer proposals, add accepted corrections to normal
 planning and delegate them. Preserve original verdicts and consumed allowances.
 Worker success is not task acceptance.
 

@@ -288,6 +288,17 @@ def command_result_summary(value: Any) -> Any:
             if ref(review.get(key)): summary["review_input"][key] = ref(review[key])
         for key in ("source_refs", "evidence_refs"):
             if isinstance(review.get(key), list): summary["review_input"][key] = [ref(item) for item in review[key][:64] if ref(item)]
+    for original, target in ((value, summary), (review, summary.get("review_input"))):
+        if not isinstance(original, dict) or not isinstance(target, dict):
+            continue
+        aliases = original.get("criterion_aliases")
+        if isinstance(aliases, dict) and len(aliases) <= 256:
+            target["criterion_aliases"] = {name: ref(item) for name, item in aliases.items()
+                                         if isinstance(name, str) and len(name) <= 256 and ref(item)}
+        schema = original.get("inspection_schema")
+        if isinstance(schema, dict) and schema.get("type") == "object" and schema.get("min_properties") == 1:
+            target["inspection_schema"] = {"type": "object", "min_properties": 1,
+                                           "example": {"observed": "Your substantive candidate inspection"}}
     status = value.get("status")
     if not isinstance(status, dict):
         status = value.get("operation_status")
@@ -502,7 +513,7 @@ def add_manager_journey_parsers(commands: Any) -> None:
                        help="exact setup_ref from read, required for update and its preview")
     status = commands.add_parser("command-status", help="read one retained transport handle without another send")
     status.add_argument("--request-id", required=True)
-    inputs = commands.add_parser("review-input", help="read exact retained worker candidate/evidence refs without judging or sending work")
+    inputs = commands.add_parser("review-input", help="read exact worker refs, configured criterion aliases and inspection-object shape without judging or sending work")
     inputs.add_argument("--task", required=True)
     review = commands.add_parser("review-task", help="record explicit criterion judgment and guarded task finish")
     review.add_argument("--task", required=True)
@@ -512,7 +523,8 @@ def add_manager_journey_parsers(commands: Any) -> None:
                         help="one pinned object per flag; repeat this flag for additional sources")
     review.add_argument("--judgments", required=True, type=json.loads,
                         help="criterion alias -> verdict, rationale, evidence_refs; rationale is nonblank text without slash/backslash; put paths in inspection; include actual candidate in evidence_refs")
-    review.add_argument("--inspection", required=True, type=json.loads, help="substantive observations, not an automatic verdict")
+    review.add_argument("--inspection", required=True, type=json.loads,
+                        help='nonempty JSON object of substantive observations, for example {"observed":"your inspection"}; not a JSON string or automatic verdict')
     review.add_argument("--review-only", action="store_false", dest="finish",
                         help="retain judgment without requesting task completion")
     finish = commands.add_parser("finish-task", help="finish a retained accepted review; never invoke the provider")
