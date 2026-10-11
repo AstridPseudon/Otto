@@ -20,6 +20,7 @@ from pathlib import Path
 import shutil
 import stat
 import sqlite3
+import time
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 from herzchen.contracts import (
@@ -1376,70 +1377,250 @@ def backup_closed_owner(custody, target, *, progress=None):
     return _file_digest(target)
 
 
-def storage_diagnostics_closed_owner(custody, *, group_limit=32, progress=None):
-    """Bounded aggregate storage accounting; no payload values or JSON hydration.
+def _storage_diagnostics_closed_owner_impl(custody, *, group_limit=32, progress=None,
+                                          deadline_seconds=2.0, max_vm_steps=500_000,
+                                          max_rows_per_table=100_000, max_tables=64,
+                                          max_allocation_rows=100_000):
+    """Run bounded, read-only numeric storage accounting.
 
-    Trusted maintenance only. Custody settles SQLite sidecars before inspection;
-    these queries never modify records or reclaim pages. dbstat allocation is
-    logical SQLite page ownership, not unique physical CoW block allocation.
+    Queries stream scalar values without GROUP BY/ORDER BY sorters. A shared
+    SQLite VM-step/deadline budget plus row/table/allocation caps makes partial
+    output explicit rather than turning an interrupted scan into a full scan.
+    Payload values and JSON are never returned or hydrated. dbstat allocation
+    is logical SQLite page ownership, not unique physical CoW allocation.
     """
     if not isinstance(custody, ClosedOwnerCustody):
         raise TypeError("diagnostics require Recovery closed-owner custody")
     custody.require_active()
     if type(group_limit) is not int or not 1 <= group_limit <= 64:
         raise ValueError("diagnostic group limit must be 1..64")
+    if (type(deadline_seconds) not in (int, float) or not 0 < deadline_seconds <= 30
+            or type(max_vm_steps) is not int or not 1 <= max_vm_steps <= 10_000_000
+            or type(max_rows_per_table) is not int or not 1 <= max_rows_per_table <= 1_000_000
+            or type(max_tables) is not int or not 1 <= max_tables <= 128
+            or type(max_allocation_rows) is not int or not 1 <= max_allocation_rows <= 1_000_000):
+        raise ValueError("invalid diagnostic work limit")
     conn = custody.connection
-    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-    pages = conn.execute("PRAGMA page_count").fetchone()[0]
-    free_pages = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    started = time.monotonic()
+    deadline = started + float(deadline_seconds)
+    vm_steps = 0
+    budget_reason = None
+
+    def progress_handler():
+        nonlocal vm_steps, budget_reason
+        vm_steps += 1000
+        if vm_steps >= max_vm_steps:
+            budget_reason = "sqlite_vm_step_limit"
+            return 1
+        if time.monotonic() >= deadline:
+            budget_reason = "deadline_exceeded"
+            return 1
+        return 0
+
+    conn.set_progress_handler(progress_handler, 1000)
+    def bounded_rows(sql, params=(), row_limit=None, consume=None):
+        """Consume rows incrementally; retain them only for small metadata queries."""
+        values, count = [], 0
+        cursor = None
+        try:
+            cursor = conn.execute(sql, params)
+            while row_limit is None or count < row_limit:
+                if time.monotonic() >= deadline:
+                    return values, count, False, "deadline_exceeded"
+                if vm_steps >= max_vm_steps:
+                    return values, count, False, "sqlite_vm_step_limit"
+                row = cursor.fetchone()
+                if row is None:
+                    return values, count, True, None
+                count += 1
+                if consume is None:
+                    values.append(row)
+                else:
+                    consume(row)
+            return values, count, False, "row_limit"
+        except sqlite3.OperationalError as error:
+            if "interrupted" in str(error).lower():
+                return values, count, False, budget_reason or "diagnostic_interrupted"
+            raise
+        finally:
+            if cursor is not None:
+                cursor.close()
+
+    def scalar(sql):
+        if time.monotonic() >= deadline:
+            nonlocal_budget[0] = "deadline_exceeded"
+            return None
+        if vm_steps >= max_vm_steps:
+            nonlocal_budget[0] = "sqlite_vm_step_limit"
+            return None
+        try:
+            row = conn.execute(sql).fetchone()
+        except sqlite3.OperationalError as error:
+            if "interrupted" in str(error).lower():
+                return None
+            raise
+        return None if row is None else row[0]
+
+    nonlocal_budget = [None]
+    page_size = scalar("PRAGMA page_size")
+    pages = scalar("PRAGMA page_count")
+    free_pages = scalar("PRAGMA freelist_count")
+    if page_size is None or pages is None or free_pages is None:
+        conn.set_progress_handler(None, 0)
+        return {"schema": "fnd.closed-owner-storage-diagnostics.v1",
+                "schema_revision": custody.schema_revision, "source": str(custody.path),
+                "page_state": "unavailable", "tables": [], "payload_groups": {},
+                "page_allocation": {"state": "unavailable", "reason": budget_reason or nonlocal_budget[0] or "work_limit"},
+                "payload_content_returned": False, "records_modified": False,
+                "physical_unique_CoW_bytes": "unavailable", "work": {
+                    "state": "partial", "reason": budget_reason or nonlocal_budget[0] or "work_limit", "sqlite_vm_steps": vm_steps}}
     if progress:
         progress({"phase":"pages", "source_bytes":_regular_file_stat(custody.path).st_size,
                   "page_size":page_size,"page_count":pages,"freelist_pages":free_pages,
                   "freelist_bytes":free_pages*page_size})
-    tables = tuple(row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"))
+    table_rows, table_count, table_list_complete, table_list_reason = bounded_rows(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT ?",
+        (max_tables + 1,), max_tables + 1)
+    tables = tuple(row[0] for row in table_rows[:max_tables])
+    if not table_list_complete or table_count > max_tables:
+        table_list_complete = False
+        table_list_reason = table_list_reason or "table_limit"
     def quoted(name):
         return '"' + name.replace('"', '""') + '"'
     sizes = []
+    stages = {"pages": {"state": "complete"}, "tables": {"state": "complete"}}
+    if not table_list_complete:
+        stages["tables"] = {"state": "partial", "reason": table_list_reason}
     for table in tables:
+        if time.monotonic() >= deadline or vm_steps >= max_vm_steps:
+            stages["tables"] = {"state": "partial", "reason": budget_reason or
+                                ("deadline_exceeded" if time.monotonic() >= deadline else "sqlite_vm_step_limit")}
+            break
         columns = tuple(row[1] for row in conn.execute("PRAGMA table_info(" + quoted(table) + ")"))
         large = tuple(name for name in columns if name.endswith("_json"))
-        expressions = ["count(*)"]
-        for name in large:
-            expr = "length(CAST(" + quoted(name) + " AS BLOB))"
-            expressions += ["coalesce(sum(" + expr + "),0)", "coalesce(max(" + expr + "),0)",
-                            "coalesce(sum(" + expr + ">=1048576),0)"]
-        row = conn.execute("SELECT " + ",".join(expressions) + " FROM " + quoted(table)).fetchone()
-        sizes.append({"table": table, "rows": row[0], "json_columns": [
-            {"column": name, "bytes": row[1+3*i], "max_bytes": row[2+3*i],
-             "rows_at_least_1MiB": row[3+3*i]} for i, name in enumerate(large)]})
+        selected = ["length(CAST(" + quoted(name) + " AS BLOB))" for name in large]
+        query = "SELECT " + (",".join(selected) if selected else "1") + " FROM " + quoted(table)
+        aggregates = [{"column": name, "bytes": 0, "max_bytes": 0, "rows_at_least_1MiB": 0}
+                      for name in large]
+        def accumulate_table_row(row):
+            for index, value in enumerate(row if large else ()):
+                size = int(value or 0)
+                aggregates[index]["bytes"] += size
+                aggregates[index]["max_bytes"] = max(aggregates[index]["max_bytes"], size)
+                aggregates[index]["rows_at_least_1MiB"] += int(size >= 1048576)
+        _, scanned_rows, complete, reason = bounded_rows(query, row_limit=max_rows_per_table,
+                                                          consume=accumulate_table_row)
+        sizes.append({"table": table, "rows": scanned_rows if complete else None,
+                      "rows_scanned": scanned_rows, "json_columns": aggregates,
+                      "complete": complete, "reason": reason})
         if progress:
             progress({"phase":"table", **sizes[-1]})
+        if not complete:
+            stages["tables"] = {"state": "partial", "reason": reason, "table": table}
+            if reason != "row_limit":
+                break
     groups = {}
+    stages["payload_groups"] = {"state": "complete"}
     for table, label, payload in (("identities", "kind", "payload_json"), ("events", "event_type", "effects_json")):
-        count = conn.execute("SELECT count(DISTINCT " + label + ") FROM " + table).fetchone()[0]
-        rows = conn.execute("SELECT " + label + ",count(*),sum(length(CAST(" + payload +
-            " AS BLOB))),max(length(CAST(" + payload + " AS BLOB))) FROM " + table +
-            " GROUP BY " + label + " ORDER BY 3 DESC," + label + " LIMIT ?", (group_limit,))
-        groups[table] = {"total_groups": count, "truncated": count > group_limit, "groups": [
-            {"kind": row[0], "rows": row[1], "payload_bytes": row[2], "max_payload_bytes": row[3]} for row in rows]}
-    try:
-        objects = [{"name": r[0], "pages": r[1], "allocated_bytes": r[2],
-                    "payload_bytes": r[3], "unused_bytes": r[4]} for r in conn.execute(
-            "SELECT name,count(*),sum(pgsize),sum(payload),sum(unused) FROM dbstat GROUP BY name ORDER BY 3 DESC LIMIT 65")]
-        allocation = {"state": "available", "objects": objects[:64], "truncated":len(objects)>64}
-    except sqlite3.OperationalError as error:
-        allocation = {"state": "unavailable", "reason": str(error)}
+        observed = {}
+        def accumulate_group(row):
+            name, payload_bytes = row
+            if name not in observed:
+                if len(observed) >= group_limit:
+                    nonlocal_over[0] = True
+                    raise StopIteration
+                observed[name] = {"rows": 0, "payload_bytes": 0, "max_payload_bytes": 0}
+            item = observed[name]
+            size = int(payload_bytes or 0)
+            item["rows"] += 1
+            item["payload_bytes"] += size
+            item["max_payload_bytes"] = max(item["max_payload_bytes"], size)
+        nonlocal_over = [False]
+        try:
+            _, scanned_group_rows, complete, reason = bounded_rows(
+            "SELECT " + label + ",length(CAST(" + payload + " AS BLOB)) FROM " + table,
+            row_limit=max_rows_per_table, consume=accumulate_group)
+        except StopIteration:
+            complete, reason = False, "group_limit"
+        over_group_limit = nonlocal_over[0]
+        groups[table] = {"total_groups": None if not complete or over_group_limit else len(observed),
+                         "truncated": not complete or over_group_limit,
+                         "complete": complete and not over_group_limit,
+                         "reason": "group_limit" if over_group_limit else reason,
+                         "groups": [{"kind": name, **item} for name, item in observed.items()]}
+        if not complete:
+            stages["payload_groups"] = {"state": "partial", "reason": reason, "table": table}
+            if reason != "row_limit":
+                break
+        if over_group_limit:
+            stages["payload_groups"] = {"state": "partial", "reason": "group_limit", "table": table}
+            break
+    allocation = {"state": "unavailable", "reason": "not_run_after_work_limit"}
+    if time.monotonic() < deadline and vm_steps < max_vm_steps:
+        try:
+            objects = {}
+            def accumulate_allocation(row):
+                name, size, payload_bytes, unused = row
+                if name not in objects and len(objects) >= 64:
+                    raise StopIteration
+                item = objects.setdefault(name, {"pages": 0, "allocated_bytes": 0,
+                                                 "payload_bytes": 0, "unused_bytes": 0})
+                item["pages"] += 1
+                item["allocated_bytes"] += int(size)
+                item["payload_bytes"] += int(payload_bytes)
+                item["unused_bytes"] += int(unused)
+            try:
+                _, allocation_rows, complete, reason = bounded_rows(
+                    "SELECT name,pgsize,payload,unused FROM dbstat", row_limit=max_allocation_rows,
+                    consume=accumulate_allocation)
+            except StopIteration:
+                complete, reason = False, "allocation_object_limit"
+            allocation = {"state": "available" if complete else "partial",
+                          "reason": reason, "objects": [{"name": name, **item}
+                              for name, item in list(objects.items())[:64]],
+                          "truncated": not complete}
+            stages["allocation"] = {"state": allocation["state"], "reason": reason,
+                                     "pages_scanned": allocation_rows}
+        except sqlite3.OperationalError as error:
+            allocation = {"state": "unavailable", "reason": str(error)}
+            stages["allocation"] = {"state": "unavailable", "reason": str(error)}
+    else:
+        stages["allocation"] = {"state": "unavailable", "reason": budget_reason or "work_limit"}
+    conn.set_progress_handler(None, 0)
     if progress:
         progress({"phase":"allocation", **allocation})
     state = _regular_file_stat(custody.path)
     return {"schema": "fnd.closed-owner-storage-diagnostics.v1", "schema_revision": custody.schema_revision,
-            "source": str(custody.path), "source_bytes": state.st_size,
+            "source": str(custody.path), "source_bytes": state.st_size, "page_state": "available",
             "file_allocated_bytes": state.st_blocks * 512, "page_size": page_size,
             "page_count": pages, "freelist_pages": free_pages, "freelist_bytes": free_pages * page_size,
-            "tables": sizes, "payload_groups": groups, "page_allocation": allocation,
+            "tables": sizes, "payload_groups": groups, "page_allocation": allocation, "stages": stages,
+            "work": {"state": "complete" if all(v.get("state") == "complete" for v in stages.values()) else "partial",
+                     "reason": budget_reason, "sqlite_vm_steps": vm_steps,
+                     "elapsed_seconds": round(time.monotonic() - started, 6)},
+            "limits": {"deadline_seconds": float(deadline_seconds), "sqlite_vm_steps": max_vm_steps,
+                       "rows_per_table": max_rows_per_table, "tables": max_tables,
+                       "payload_groups": group_limit, "allocation_rows": max_allocation_rows,
+                       "allocation_objects": 64},
             "payload_content_returned": False, "records_modified": False,
             "physical_unique_CoW_bytes": "unavailable", "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0]}
+
+
+def storage_diagnostics_closed_owner(custody, *, group_limit=32, progress=None,
+                                     deadline_seconds=2.0, max_vm_steps=500_000,
+                                     max_rows_per_table=100_000, max_tables=64,
+                                     max_allocation_rows=100_000):
+    """Public diagnostic entrypoint; always remove the connection-local VM guard."""
+    conn = custody.connection if isinstance(custody, ClosedOwnerCustody) else None
+    try:
+        return _storage_diagnostics_closed_owner_impl(
+            custody, group_limit=group_limit, progress=progress,
+            deadline_seconds=deadline_seconds, max_vm_steps=max_vm_steps,
+            max_rows_per_table=max_rows_per_table, max_tables=max_tables,
+            max_allocation_rows=max_allocation_rows)
+    finally:
+        if conn is not None:
+            conn.set_progress_handler(None, 0)
 
 
 def _clonefile(source, target):

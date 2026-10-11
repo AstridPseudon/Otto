@@ -1,8 +1,12 @@
 """Closed-owner diagnostics and copy-on-write migration qualification."""
 import json
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 import test_events_history as fixture
-from herzchen.kernel.recovery import closed_owner_custody, storage_diagnostics_closed_owner
+from herzchen.kernel.recovery import (ClosedOwnerCustody, closed_owner_custody,
+    storage_diagnostics_closed_owner)
 
 class MaintenanceTests(unittest.TestCase):
     setUp = fixture.HistoryTests.setUp
@@ -30,6 +34,61 @@ class MaintenanceTests(unittest.TestCase):
         with closed_owner_custody(legacy, authority='owner', expected_domains=self.domains) as custody:
             with self.assertRaises(ValueError):
                 storage_diagnostics_closed_owner(custody, group_limit=100000)
+
+
+class BoundedDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'diagnostic.sqlite'
+        self.conn = sqlite3.connect(self.path)
+        self.conn.executescript('''
+            CREATE TABLE identities(kind TEXT, payload_json TEXT);
+            CREATE TABLE events(event_type TEXT, effects_json TEXT);
+        ''')
+        payload = '{"large":"' + ('x' * (256 * 1024)) + '"}'
+        self.conn.executemany('INSERT INTO identities VALUES (?,?)', [('thing', payload)] * 8)
+        self.conn.executemany('INSERT INTO events VALUES (?,?)', [('event', payload)] * 16)
+        self.conn.commit()
+        self.custody = object.__new__(ClosedOwnerCustody)
+        self.custody.path = self.path
+        self.custody.connection = self.conn
+        self.custody.schema_revision = 'test'
+        self.custody._active = True
+        self.addCleanup(self.conn.close)
+
+    def test_large_payloads_stream_without_sorters_or_mutation(self):
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        before = self.conn.total_changes
+        report = storage_diagnostics_closed_owner(self.custody)
+        self.assertEqual(self.conn.total_changes, before)
+        self.assertFalse(report['payload_content_returned'])
+        self.assertFalse(report['records_modified'])
+        self.assertNotIn('x' * 100, json.dumps(report))
+        self.assertEqual(report['payload_groups']['events']['groups'][0]['payload_bytes'],
+                         16 * len('{"large":"' + ('x' * (256 * 1024)) + '"}'))
+        self.assertFalse(any('GROUP BY' in sql.upper() or 'ORDER BY' in sql.upper()
+                             for sql in statements))
+        plans = self.conn.execute('EXPLAIN QUERY PLAN SELECT event_type,length(CAST(effects_json AS BLOB)) FROM events').fetchall()
+        self.assertFalse(any('TEMP B-TREE' in row[-1].upper() for row in plans))
+
+    def test_row_and_vm_limits_return_honest_partial_results(self):
+        before = self.conn.total_changes
+        report = storage_diagnostics_closed_owner(self.custody, max_rows_per_table=3)
+        self.assertFalse(report['records_modified'])
+        self.assertEqual(self.conn.total_changes, before)
+        events = next(row for row in report['tables'] if row['table'] == 'events')
+        self.assertIsNone(events['rows'])
+        self.assertEqual(events['rows_scanned'], 3)
+        self.assertFalse(events['complete'])
+        self.assertEqual(events['reason'], 'row_limit')
+        self.assertEqual(report['page_state'], 'available')
+
+        vm_limited = storage_diagnostics_closed_owner(self.custody, max_vm_steps=1)
+        self.assertEqual(vm_limited['work']['state'], 'partial')
+        self.assertEqual(vm_limited['work']['reason'], 'sqlite_vm_step_limit')
+        self.assertFalse(vm_limited['records_modified'])
 
 
 class CloneMigrationTests(unittest.TestCase):
