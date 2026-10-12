@@ -260,8 +260,16 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             "goal": {"ref": project["ref"], "title": project["payload"].get("title"),
                      "outcome": project["payload"].get("outcome")},
             "current_task": None if task is None else {"ref": task["ref"],
-                "title": task["payload"].get("title"), "outcome": task["payload"].get("outcome"),
-                "acceptance": task["payload"].get("acceptance", [])},
+                "title": task["payload"].get("title"), "lifecycle": task["payload"].get("lifecycle"),
+                "outcome": task["payload"].get("outcome"),
+                "acceptance": task["payload"].get("acceptance", []),
+                "execution_anchor": True,
+                "actionability": ("not-actionable" if task["payload"].get("lifecycle") == "completed"
+                                  else "requires-current-task-read" if canonical["role"] == "manager"
+                                  else "current-lifecycle" if task["payload"].get("lifecycle") in {"pending", "active"}
+                                  else "unknown"),
+                "actionability_source": ("current_task.lifecycle" if task["payload"].get("lifecycle") is not None
+                                         else "current_task.lifecycle unavailable")},
             "mandate_ref": snapshot["mandate_ref"], "mandate": brief["mandate"],
             "user_constraints": brief["user_constraints"], "operational_constraints": brief["operational_constraints"],
             "links": brief["links"], "base_resource": canonical["base_resource"]["ref"],

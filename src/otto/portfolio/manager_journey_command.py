@@ -16,6 +16,11 @@ def _digest(value: Any) -> str:
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def _same_identity(left: Any, right: Any) -> bool:
+    return (isinstance(left, Mapping) and isinstance(right, Mapping)
+            and all(left.get(key) == right.get(key) for key in ("authority", "kind", "id")))
+
+
 class ReviewInputSchemaError(ValueError):
     """Only the explicit pre-journal input validation boundary uses this type."""
     def __init__(self, field: str, message: str, *, allowed_values=None):
@@ -61,7 +66,7 @@ class ManagerJourneyCommands:
         reports = port.list_observations(assignment, kind="report")
         prior = next((report.value for report in reports
                       if report.value.get("logical_request_key") == identity), None)
-        if prior is None and adopted_history and value is None and stage in {"review", "intent"}:
+        if prior is None and adopted_history and value is None and stage in {"review", "intent", "finish-intent"}:
             # A resource adoption revises the assignment, while an accepted
             # review remains pinned to the original generation. Resolve only
             # this exact immutable journal ID through authenticated adoption
@@ -312,6 +317,19 @@ class ManagerJourneyCommands:
         self._authorize()
         if alias not in self.state["task_refs"]:
             raise ValueError("unknown task alias; use a current configured task alias")
+        task_ref = self.state["task_refs"][alias]
+        task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
+        if task is None or task.ref.to_dict() != task_ref:
+            return self._completed_review_read(alias, task_ref, task,
+                reason="current task completion read is unavailable at its exact retained revision")
+        lifecycle = task.payload.get("lifecycle")
+        if getattr(task, "lifecycle", None) is not None:
+            lifecycle = getattr(task.lifecycle, "value", task.lifecycle)
+        if lifecycle == "completed":
+            # Completion is the authoritative historical anchor.  Do not
+            # require a current policy map or worker pointer just to present
+            # a committed completion, and never call it unjudged.
+            return self._completed_review_read(alias, task_ref, task)
         policy = self._review_policy(alias)
         contract = {"assessment_policy_selection": self._review_policy_pin(alias, policy),
                     "criterion_aliases": self._review_criteria(self.state["task_refs"][alias], policy),
@@ -361,6 +379,127 @@ class ManagerJourneyCommands:
                 "physical_session_id": result.get("physical_session_id"), "provider_called": False,
                 "acceptance": "unjudged retained worker result; inspect actual artifact paths/content and criterion before review-task",
                 "next_action": "Use these exact refs for review-task after substantive inspection. Instruction GUIDE/MANDATE refs are context, not delivered artifact candidates. Preserve completed tasks, decisions and budget use; this read does not authorize another review or worker replay."}
+
+    def _completed_review_read(self, alias: str, task_ref: Mapping[str, Any], task: Any,
+                               reason: str | None = None) -> Mapping[str, Any]:
+        """Present one exact retained completion without reopening assessment."""
+        schemas = {"inspection_schema": self._inspection_schema(),
+                   "judgment_schema": self._judgment_schema()}
+        completion = task.payload.get("completion") if task is not None else None
+        task_lifecycle = task.payload.get("lifecycle") if task is not None else None
+        if getattr(task, "lifecycle", None) is not None:
+            task_lifecycle = getattr(task.lifecycle, "value", task.lifecycle)
+        base = {"outcome": "held" if reason else "read", "task": alias,
+                "task_ref": task_ref, "task_lifecycle": task_lifecycle,
+                "review_eligible": False, "provider_called": False,
+                "assessment_policy_selection_availability": "unknown",
+                "criterion_aliases_availability": "unknown", "criterion_aliases": {}, **schemas}
+        if reason or not isinstance(completion, Mapping):
+            return {**base, "completion": {"state": "unknown", "availability": "unknown"},
+                    "reason": reason or "completed task has no retained completion mapping",
+                    "next_action": "Preserve the historical task and reconcile its exact owner completion record."}
+        try:
+            current_task = ResourceRef.from_dict(task_ref)
+            current_project = ResourceRef.from_dict(self.state["project_ref"])
+            historical_task = ResourceRef.from_dict(completion["task_ref"])
+            historical_project = ResourceRef.from_dict(completion["project_ref"])
+            if ((historical_task.authority, historical_task.kind, historical_task.id)
+                    != (current_task.authority, current_task.kind, current_task.id)):
+                raise ValueError("completion task identity differs from the current task")
+            if ((historical_project.authority, historical_project.kind, historical_project.id)
+                    != (current_project.authority, current_project.kind, current_project.id)):
+                raise ValueError("completion project identity differs from the current project")
+            if (historical_task.kind != "work.task" or historical_project.kind != "work.project"
+                    or not historical_task.revision or not historical_project.revision
+                    or completion.get("task_revision") != historical_task.revision
+                    or completion.get("project_revision") != historical_project.revision):
+                raise ValueError("completion internal revision pins differ from their historical refs")
+            if (completion.get("manager") != self.state["manager"]
+                    or completion.get("generation") != self.state["manager_generation"]
+                    or completion.get("disposition") not in {"accept", "accepted", "accepted-for-task", "approved", "complete", "completed", "verified"}):
+                raise ValueError("completion manager epoch or accepted disposition differs")
+            assignment_ref = completion.get("assignment_ref")
+            if not isinstance(assignment_ref, Mapping):
+                raise ValueError("completion assignment pin is unavailable")
+            assignment = ResourceRef.from_dict(assignment_ref)
+            current_assignment = ResourceRef.from_dict(self.state["assignment_ref"])
+            if (assignment.kind != "wrk.assignment" or assignment.revision is None
+                    or assignment.authority != current_assignment.authority
+                    or (assignment.authority, assignment.kind, assignment.id) !=
+                       (current_assignment.authority, current_assignment.kind, current_assignment.id)):
+                raise ValueError("completion assignment pin is not exact current-owner history")
+            key = completion.get("logical_request_key")
+            receipt = self.owner.graph.reader.get_receipt(key) if isinstance(key, str) and key else None
+            if (receipt is None or getattr(getattr(receipt, "status", None), "value", None) != "committed"
+                    or receipt.operation != "work.revise" or receipt.target != historical_task
+                    or receipt.result_ref != current_task):
+                raise ValueError("completion lacks exact committed predecessor/current work.revise receipt")
+            candidate = ResourceRef.from_dict(completion["candidate_ref"])
+            if (candidate.kind not in {"wrk.result", "wrk.report", "dat.content.document"}
+                    or candidate.revision is None or candidate.authority != current_project.authority):
+                raise ValueError("completion candidate is not an exact supported current-owner pin")
+            evidence_raw = completion.get("evidence_refs", ())
+            gates_raw = completion.get("gate_refs", ())
+            if (not isinstance(evidence_raw, (list, tuple)) or len(evidence_raw) > 256
+                    or not isinstance(gates_raw, (list, tuple)) or len(gates_raw) > 256):
+                raise ValueError("completion evidence or gate pins exceed the bounded read")
+            evidence = [ResourceRef.from_dict(value) for value in evidence_raw]
+            gates = [ResourceRef.from_dict(value) for value in gates_raw]
+            if (any(ref.revision is None for ref in (*evidence, *gates))
+                    or any(ref.authority != current_project.authority for ref in (*evidence, *gates))):
+                raise ValueError("completion evidence and gates require exact current-owner revisions")
+            optional_refs = {}
+            for name in ("result_ref", "attempt_ref"):
+                value = completion.get(name)
+                if value is not None:
+                    ref = ResourceRef.from_dict(value)
+                    if ref.revision is None or ref.authority != current_project.authority:
+                        raise ValueError("completion %s requires an exact current-owner revision" % name)
+                    optional_refs[name] = ref.to_dict()
+                else:
+                    optional_refs[name] = None
+            hashes = completion.get("evidence_hashes")
+            if not isinstance(hashes, Mapping) or len(hashes) > 256:
+                raise ValueError("completion evidence hashes are unavailable or exceed the bounded read")
+            for hash_key, value in hashes.items():
+                if (not isinstance(hash_key, str) or len(hash_key) > 512
+                        or not isinstance(value, str) or len(value) != 64):
+                    raise ValueError("completion evidence hash entry is malformed")
+
+            candidate_record = None
+            bounded_reader = getattr(self.owner.graph.reader, "get_identity_bounded", None)
+            if callable(bounded_reader):
+                bounded = bounded_reader(candidate, max_record_bytes=8192)
+                if isinstance(bounded, Mapping) and bounded.get("state") == "available":
+                    candidate_record = bounded.get("record")
+                    if candidate_record is not None and candidate_record.ref != candidate:
+                        raise ValueError("bounded completion candidate revision differs")
+            if candidate_record is not None and candidate.kind in {"wrk.result", "wrk.report"}:
+                value = candidate_record.payload.get("value") if isinstance(candidate_record.payload, Mapping) else None
+                # Worker result custody is distinct from the accepting manager.
+                # The committed completion receipt binds the exact candidate.
+                if isinstance(value, Mapping) and (not _same_identity(value.get("task_ref"), historical_task.to_dict())
+                        or not _same_identity(value.get("project_ref"), historical_project.to_dict())):
+                    raise ValueError("completion candidate provenance does not match the retained task")
+            receipt_view = {"status": receipt.status.value, "operation": receipt.operation,
+                            "target": receipt.target.to_dict(), "result_ref": receipt.result_ref.to_dict()}
+            detail = {"state": "recorded", "candidate_ref": candidate.to_dict(),
+                      "result_ref": optional_refs["result_ref"], "attempt_ref": optional_refs["attempt_ref"],
+                      "assignment_ref": assignment.to_dict(), "project_ref": historical_project.to_dict(),
+                      "task_ref": historical_task.to_dict(), "current_task_ref": current_task.to_dict(),
+                      "evidence_refs": [ref.to_dict() for ref in evidence],
+                      "gate_refs": [ref.to_dict() for ref in gates], "evidence_hashes": dict(hashes),
+                      "completion_receipt": receipt_view,
+                      "historical_acceptance_verification": "unknown",
+                      "completion_sha256": _digest(completion)}
+            return {**base, "completion": detail, "candidate_ref": candidate.to_dict(),
+                    "source_refs": [candidate.to_dict()], "evidence_refs": [ref.to_dict() for ref in evidence],
+                    "acceptance": "recorded completion; historical acceptance verification is unknown without an exact scope read",
+                    "next_action": "Preserve this completed task. Inspect bounded bindings if needed; review-task is not eligible for a new judgment."}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return {**base, "outcome": "held", "completion": {"state": "unknown", "availability": "unknown"},
+                    "reason": "completed task completion provenance is malformed or unavailable",
+                    "next_action": "Preserve the historical task and reconcile its exact owner completion record."}
 
     def _instruction_document(self, ref: ResourceRef) -> bool:
         if ref.kind != "dat.content.document":
@@ -468,14 +607,30 @@ class ManagerJourneyCommands:
         alias = request.get("task")
         if alias not in self.state["task_refs"]:
             raise ValueError("unknown task alias")
-        prior = self._journal(key, "intent")
-        reviewed = self._journal(key, "review")
+        current_task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][alias]))
+        current_lifecycle = (current_task.payload.get("lifecycle") if current_task is not None else None)
+        if getattr(current_task, "lifecycle", None) is not None:
+            current_lifecycle = getattr(current_task.lifecycle, "value", current_task.lifecycle)
+        if current_lifecycle == "completed":
+            # Read-only replay lookup is allowed for the exact previously
+            # accepted key.  A new key must refuse before any journal,
+            # assessment, reservation or provider effect can begin.
+            replay_prior = self._journal(key, "intent", adopted_history=True)
+            replay_review = self._journal(key, "review", adopted_history=True)
+            if not (isinstance(replay_prior, Mapping)
+                    and isinstance(replay_review, Mapping)
+                    and replay_review.get("outcome") == "accepted"):
+                raise PermissionError("completed task is not review-eligible; use a separately authorized corrective task")
+        prior = (replay_prior if current_lifecycle == "completed" else
+                 self._journal(key, "intent"))
+        reviewed = (replay_review if current_lifecycle == "completed" else
+                    self._journal(key, "review"))
         # A completed same-key review replay has no new assessment admission;
         # its original task revision remains immutable after completion.
         completed_task_ref = None
         if prior is not None and prior.get("task_ref") != self.state["task_refs"][alias]:
             finish_request = {"task": alias, "request_key": key + ":finish", "review_key": key}
-            finish_prior = self._journal(key + ":finish", "finish-intent")
+            finish_prior = self._journal(key + ":finish", "finish-intent", adopted_history=True)
             if reviewed is None or reviewed.get("outcome") != "accepted" or finish_prior != finish_request:
                 raise PermissionError("changed task revision requires exact committed completion replay")
             self._completed_finish(finish_request, finish_prior, prior, reviewed)
@@ -606,7 +761,7 @@ class ManagerJourneyCommands:
             raise ValueError("unsupported task finish fields")
         if request.get("command", "finish-task") != "finish-task":
             raise ValueError("task finish command discriminator differs")
-        prior = self._journal(key, "finish-intent")
+        prior = self._journal(key, "finish-intent", adopted_history=True)
         semantic = {k: v for k, v in request.items() if k != "command"}
         if prior is not None:
             if prior.get("command", "finish-task") != "finish-task":
@@ -634,14 +789,7 @@ class ManagerJourneyCommands:
             # exact already-committed completion may cross that revision fence.
             # The owner completion API still verifies the original replay
             # digest; no new completion or native settlement is attempted.
-            self._completed_finish(request, prior, manifest, reviewed)
-            return self.portfolio.complete_task(completion_project, manifest["task_ref"],
-                self.state["assignment_ref"], actor=self.state["manager"], request_id="journey:" + key,
-                expected_generation=self.state["manager_generation"],
-                expected_project_revision=completion_project["revision"],
-                expected_task_revision=manifest["task_ref"]["revision"], disposition="accepted",
-                evidence_refs=reviewed["evidence_refs"], evidence_hashes=reviewed["evidence_hashes"],
-                gate_refs=reviewed["gate_refs"], candidate_ref=reviewed["candidate_ref"])
+            return self._completed_finish(request, prior, manifest, reviewed)
         self._journal(key, "finish-intent", dict(request))
         settlement = self._native_settlement(reviewed)
         if settlement is not None:
@@ -809,29 +957,50 @@ class ManagerJourneyCommands:
         return target.to_dict()
 
     def _completed_finish(self, request: Mapping[str, Any], prior: Any,
-                          manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> None:
-        """Require exact canonical proof before replaying a completed task finish."""
+                          manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Verify the exact committed completion before a read-only replay."""
         current = ResourceRef.from_dict(self.state["task_refs"][request["task"]])
         original = ResourceRef.from_dict(manifest["task_ref"])
         record = self.owner.graph.reader.get_identity(current)
         key = "journey:" + request["request_key"]
         receipt = self.owner.graph.reader.get_receipt(key)
         completion = {} if record is None else record.payload.get("completion", {})
-        completion_project = self._completion_project(request, manifest, reviewed)
+        if not isinstance(completion, Mapping):
+            raise PermissionError("accepted review task or manager generation changed")
+        try:
+            historical_task = ResourceRef.from_dict(completion.get("task_ref"))
+            historical_project = ResourceRef.from_dict(completion.get("project_ref"))
+            completion_assignment = ResourceRef.from_dict(completion.get("assignment_ref"))
+            current_assignment = ResourceRef.from_dict(self.state["assignment_ref"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PermissionError("accepted review task or manager generation changed") from exc
         expected = {"logical_request_key": key, "manager": self.state["manager"],
-                    "assignment_ref": self.state["assignment_ref"], "generation": self.state["manager_generation"],
-                    "task_ref": manifest["task_ref"], "task_revision": original.revision,
-                    "project_ref": completion_project, "project_revision": completion_project["revision"],
+                    "assignment_ref": completion_assignment.to_dict(),
+                    "generation": completion.get("generation"),
+                    "task_ref": historical_task.to_dict(), "task_revision": historical_task.revision,
+                    "project_ref": historical_project.to_dict(), "project_revision": historical_project.revision,
                     "disposition": "accepted", "candidate_ref": reviewed["candidate_ref"],
                     "evidence_refs": reviewed["evidence_refs"], "evidence_hashes": reviewed["evidence_hashes"],
                     "gate_refs": reviewed["gate_refs"]}
         if (prior != dict(request) or record is None or record.ref != current
                 or (current.authority, current.kind, current.id) != (original.authority, original.kind, original.id)
-                or record.payload.get("lifecycle") != "completed" or not isinstance(completion, Mapping)
+                or historical_task != original
+                or (historical_project.authority, historical_project.kind, historical_project.id) !=
+                   (ResourceRef.from_dict(self.state["project_ref"]).authority,
+                    ResourceRef.from_dict(self.state["project_ref"]).kind,
+                    ResourceRef.from_dict(self.state["project_ref"]).id)
+                or (completion_assignment.authority, completion_assignment.kind, completion_assignment.id) !=
+                   (current_assignment.authority, current_assignment.kind, current_assignment.id)
+                or completion.get("generation") != self.state["manager_generation"]
+                or completion.get("generation") != manifest.get("generation")
+                or record.payload.get("lifecycle") != "completed"
                 or any(completion.get(field) != value for field, value in expected.items())
                 or receipt is None or receipt.status.value != "committed" or receipt.operation != "work.revise"
-                or receipt.target != original or receipt.result_ref != current):
+                or receipt.target != historical_task or receipt.result_ref != current):
             raise PermissionError("accepted review task or manager generation changed")
+        return {"outcome": "replayed", "replayed": True, "task_ref": current.to_dict(),
+                "assignment_ref": completion_assignment.to_dict(), "generation": completion.get("generation"),
+                "completion": dict(completion), "receipt": receipt.to_dict()}
 
     def settle_completion_intents(self) -> list[Mapping[str, Any]]:
         """Fulfill already accepted explicit finishes after native owner settlement."""

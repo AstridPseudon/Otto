@@ -240,7 +240,7 @@ def command_result_summary(value: Any) -> Any:
               "physical_session_id", "context_digest_verified", "request_key", "delivery_state",
               "model", "reasoning", "native_session_id", "retained_handle", "response_path",
               "version", "in_flight_request", "stop_state", "completion_state", "role", "status", "manager",
-              "project_completion_recorded", "settlement_pending", "canonical_lifecycle", "blocked_operation",
+              "project_completion_recorded", "settlement_pending", "canonical_lifecycle", "task_lifecycle", "review_eligible", "blocked_operation",
               "issue_id", "state", "delivery_id", "disposition", "request_id", "awaiting")
     summary = {key: item for key in fields if key in value
                and isinstance((item := value[key]), (str, bool, int, type(None)))
@@ -266,7 +266,7 @@ def command_result_summary(value: Any) -> Any:
         return {key: item[key] for key in keys if isinstance(item.get(key), str) and len(item[key]) <= 256}
     if ref(value.get("project_ref")):
         summary["project_ref"] = ref(value["project_ref"])
-    for key in ("report_ref", "applied_response_ref", "assignment_ref", "task_ref"):
+    for key in ("report_ref", "applied_response_ref", "assignment_ref", "task_ref", "candidate_ref"):
         if ref(value.get(key)):
             summary[key] = ref(value[key])
     for key in ("task_refs", "criteria"):

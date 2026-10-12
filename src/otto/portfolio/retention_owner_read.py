@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
+from herzchen.command_ports import CommandTransportClosed, WriterAuthorityDenied, owner_local_engine
 from herzchen.contracts import ResourceRef
 
 
@@ -473,9 +474,15 @@ class RetentionOwnerRead:
                     "reason": "fixed Usage project is not completed with current reconciled lifecycle control"}
         if not isinstance(request_key, str) or not request_key.strip() or len(request_key) > 256:
             raise ValueError("reclaim preview requires a stable request key")
-        result = self.evidence_handler.reclaim_preview(project.ref, actor=actor,
-            logical_request_key="retention-read:" + request_key, cutoff=cutoff,
-            cursor=cursor, limit=limit)
+        binding = self._install_dependency_resolver(root=root, actor=actor)
+        try:
+            result = self.evidence_handler.reclaim_preview(project.ref, actor=actor,
+                logical_request_key="retention-read:" + request_key, cutoff=cutoff,
+                cursor=cursor, limit=limit)
+        finally:
+            if binding is not None:
+                engine, prior = binding
+                engine._resolve_dependencies = prior
         items = []
         invalid_items = 0
         result_items = result.get("items", ())
@@ -562,6 +569,292 @@ class RetentionOwnerRead:
                 "managed_bytes_removed": result.get("managed_bytes_removed", 0),
                 "writes": 1 if result.get("outcome") == "previewed" else 0,
                 "writes_meaning": "canonical selection receipt; replay returns the existing receipt"}
+
+    def _install_dependency_resolver(self, *, root: Any, actor: Any):
+        """Bind one preview to the authenticated owner read composition.
+
+        Evidence already has a private bounded resolver hook.  The public
+        facade cannot serialize a Python callback, so install it transiently
+        on the owner-local engine for this authenticated preview only.  A
+        consumer or foreign process therefore remains fail-closed.
+        """
+        try:
+            engine = owner_local_engine(self.evidence_handler)
+        except (AttributeError, CommandTransportClosed, WriterAuthorityDenied):
+            return None
+        prior = getattr(engine, "_resolve_dependencies", None)
+        engine._resolve_dependencies = lambda exact, project: self._resolve_dependencies(
+            exact, project, root=root, actor=actor)
+        return engine, prior
+
+    def _resolve_dependencies(self, exact: Any, project: Any, *, root: Any, actor: Any) -> Mapping[str, Any]:
+        """Resolve only the exact retained item's linked dependency graph.
+
+        This is deliberately a finite join: target Evidence.status, the fixed
+        project, one origin task/attempt, and the bounded survivor refs named
+        by that task.  Missing, stale, foreign, malformed, or oversize records
+        remain unknown; no global history or payload scan is attempted.
+        """
+        try:
+            owner, project_record = self._project_context(root=root, actor=actor)
+            expected_project = project_record.ref
+            requested_project = project if isinstance(project, ResourceRef) else ResourceRef.from_dict(project)
+            if requested_project != expected_project and not _same_ref_identity(requested_project, expected_project.to_dict()):
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            evidence = self.evidence_handler.status(exact, actor=actor)
+            manifest = evidence.get("manifest") if isinstance(evidence, Mapping) else None
+            if not isinstance(manifest, Mapping):
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            origin = manifest.get("origin")
+            if not isinstance(origin, Mapping) or not _same_ref_identity(origin.get("project_ref"), expected_project.to_dict()):
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            task = _dependency_ref(origin.get("task_ref"), expected_project.authority, "work.task")
+            attempt = _dependency_ref(origin.get("attempt_ref"), expected_project.authority, "work.attempt")
+            if task is None and attempt is None:
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            # An attempt without its exact originating task is not enough to
+            # establish ownership.  Never dereference a missing task while
+            # trying to explain an attempt-only origin.
+            if attempt is not None and task is None:
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            current_project = project_record.payload
+            project_hold = _dependency_state(current_project, require_terminal=True)
+            if project_hold is not None:
+                return {"complete": True, "holds": (project_hold,)} if project_hold == "in-flight-recovery" else {"complete": False, "holds": (project_hold,)}
+            refs = [ref for ref in (task, attempt) if ref is not None]
+            fields = _dependency_fields()
+            task_rows = owner.store.consumer().project_identity_fields_for_refs(
+                refs, fields=fields, max_projection_bytes=_MAX_PROJECTED_BYTES, max_refs=8)
+            by_requested = {tuple(row.get("requested_ref", {}).get(key) for key in ("authority", "kind", "id", "revision")): row
+                            for row in task_rows if isinstance(row, Mapping)}
+            survivor_refs = []
+            for ref in refs:
+                row = by_requested.get((ref.authority, ref.kind, ref.id, ref.revision))
+                if not isinstance(row, Mapping) or row.get("state") != "available":
+                    return {"complete": False, "holds": ("dependency-unknown",)}
+                projected = row.get("fields")
+                if not isinstance(projected, Mapping):
+                    return {"complete": False, "holds": ("dependency-unknown",)}
+                if not _same_ref_identity(projected.get("project_ref"), expected_project.to_dict()):
+                    return {"complete": False, "holds": ("dependency-unknown",)}
+                linked_task = _dependency_ref(projected.get("task_ref"), expected_project.authority, "work.task")
+                if ref.kind == "work.attempt" and linked_task is not None and not _same_ref_identity(linked_task.to_dict(), task.to_dict()):
+                    return {"complete": False, "holds": ("dependency-unknown",)}
+                state = _dependency_state(projected, require_terminal=True)
+                if state is not None:
+                    return {"complete": True, "holds": (state,)} if state == "in-flight-recovery" else {"complete": False, "holds": (state,)}
+                # A completed task must carry the manager's canonical result
+                # candidate.  result_ref and attempt_ref remain nullable
+                # optional fields, while candidate_ref is the producer proof.
+                if ref.kind == "work.task":
+                    candidate = _dependency_ref(projected.get("completion_candidate_ref"), expected_project.authority, "wrk.result")
+                    assignment = _dependency_ref(projected.get("completion_assignment_ref"), expected_project.authority, "wrk.assignment")
+                    completion_project = _dependency_ref(projected.get("completion_project_ref"), expected_project.authority, "work.project")
+                    completion_task = _dependency_ref(projected.get("completion_task_ref"), expected_project.authority, "work.task")
+                    if (candidate is None or assignment is None or completion_project is None
+                            or completion_task is None
+                            or not _same_ref_identity(completion_project.to_dict(), expected_project.to_dict())
+                            or not _same_ref_identity(completion_task.to_dict(), task.to_dict())):
+                        return {"complete": False, "holds": ("dependency-unknown",)}
+                row_refs = _survivor_refs(projected, row.get("present"), expected_project.authority)
+                if row_refs is None:
+                    return {"complete": False, "holds": ("dependency-unknown",)}
+                survivor_refs.extend(row_refs)
+            unique_survivors = []
+            seen = set()
+            for ref in survivor_refs:
+                key = (ref.authority, ref.kind, ref.id, ref.revision)
+                if key not in seen:
+                    seen.add(key)
+                    unique_survivors.append(ref)
+            if not unique_survivors:
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            survivor_rows = owner.store.consumer().project_identity_fields_for_refs(
+                unique_survivors, fields=fields, max_projection_bytes=_MAX_PROJECTED_BYTES, max_refs=_MAX_TASKS)
+            if len(survivor_rows) != len(unique_survivors):
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            candidate_refs = {tuple(ref.to_dict().get(key) for key in ("authority", "kind", "id", "revision"))
+                              for ref in survivor_refs if ref.kind == "wrk.result"}
+            if not candidate_refs:
+                return {"complete": False, "holds": ("dependency-unknown",)}
+            for row in survivor_rows:
+                if row.get("state") != "available" or not isinstance(row.get("fields"), Mapping):
+                    return {"complete": False, "holds": ("dependency-unknown",)}
+                requested = row.get("requested_ref") or {}
+                fields = row["fields"]
+                if requested.get("kind") == "wrk.result":
+                    if not _canonical_candidate_provenance(fields, row.get("present"), expected_project, task):
+                        return {"complete": False, "holds": ("dependency-unknown",)}
+                    state = _dependency_state(fields, require_terminal=False)
+                    # Canonical owner observations have no lifecycle column;
+                    # their exact assignment/project/task provenance is the
+                    # terminal proof.  Explicit bad states remain held.
+                    if state == "dependency-unknown" and not any(
+                            fields.get(name) is not None for name in _DEPENDENCY_STATE_FIELDS):
+                        state = None
+                elif requested.get("kind") == "dat.content.document":
+                    if not _evidence_origin_matches(self.evidence_handler, row.get("requested_ref"),
+                                                    expected_project, task, actor):
+                        return {"complete": False, "holds": ("dependency-unknown",)}
+                    state = None
+                else:
+                    state = _dependency_state(fields, require_terminal=False)
+                if state is not None:
+                    return {"complete": True, "holds": (state,)} if state == "in-flight-recovery" else {"complete": False, "holds": (state,)}
+            return {"complete": True, "holds": (), "linked_refs_read": len(refs) + len(unique_survivors)}
+        except (KeyError, TypeError, ValueError, PermissionError):
+            return {"complete": False, "holds": ("dependency-unknown",)}
+
+def _dependency_fields() -> Mapping[str, tuple[str, ...]]:
+    return {
+        "project_ref": ("project_ref",), "task_ref": ("task_ref",),
+        "lifecycle": ("lifecycle",), "status": ("status",), "state": ("state",),
+        "outcome": ("outcome",), "completion_state": ("completion_state",),
+        "stop_state": ("stop_state",), "in_flight": ("in_flight",),
+        "pending_recovery": ("pending_recovery",),
+        "record_type": ("record_type",), "observation_kind": ("observation_kind",),
+        "assignment_ref": ("assignment",), "value_project_ref": ("value", "project_ref"),
+        "value_task_ref": ("value", "task_ref"), "value_assignment_ref": ("value", "assignment_ref"),
+        "completion_candidate_ref": ("completion", "candidate_ref"),
+        "completion_assignment_ref": ("completion", "assignment_ref"),
+        "completion_project_ref": ("completion", "project_ref"),
+        "completion_task_ref": ("completion", "task_ref"),
+        "completion_result_ref": ("completion", "result_ref"),
+        "completion_evidence_refs": ("completion", "evidence_refs"),
+        "completion_gate_refs": ("completion", "gate_refs"),
+        "completion_source_refs": ("completion", "source_refs"),
+        "effect_result_ref": ("effect_packet", "result_ref"),
+        "effect_evidence_refs": ("effect_packet", "evidence_refs"),
+        "effect_gate_refs": ("effect_packet", "gate_refs"),
+        "effect_source_refs": ("effect_packet", "source_refs"),
+        "settlement_result_ref": ("settlement", "result_ref"),
+        "settlement_evidence_refs": ("settlement", "evidence_refs"),
+        "settlement_gate_refs": ("settlement", "gate_refs"),
+        "settlement_source_refs": ("settlement", "source_refs"),
+    }
+
+
+def _dependency_ref(value: Any, authority: str, kind: str) -> ResourceRef | None:
+    ref = _safe_ref(value, authority)
+    if ref is None or ref.get("kind") != kind:
+        return None
+    try:
+        return ResourceRef.from_dict(ref)
+    except (TypeError, ValueError):
+        return None
+
+
+_DEPENDENCY_STATE_FIELDS = ("lifecycle", "status", "state", "outcome", "completion_state", "stop_state")
+
+
+def _dependency_state(fields: Mapping[str, Any], *, require_terminal: bool) -> str | None:
+    if not isinstance(fields, Mapping):
+        return "dependency-unknown"
+    if fields.get("in_flight") is True or fields.get("pending_recovery") is True:
+        return "in-flight-recovery"
+    active = {"active", "assigned", "in-flight", "in_progress", "pending", "queued", "running", "started"}
+    terminal = {"completed", "succeeded", "settled", "accepted", "released", "done", "purged"}
+    unknown = {"unknown", "failed", "failure", "error", "rejected", "aborted", "cancelled", "canceled", "ambiguous", "incomplete"}
+    values = [fields.get(name) for name in _DEPENDENCY_STATE_FIELDS]
+    text = {value for value in values if isinstance(value, str)}
+    if text & active:
+        return "in-flight-recovery"
+    if text & unknown:
+        return "dependency-unknown"
+    # ``require_terminal=False`` only relaxes the caller's need to explain
+    # an otherwise terminal row; it never turns an unrecognised state into a
+    # successful dependency proof.
+    if not text.intersection(terminal):
+        return "dependency-unknown"
+    return None
+
+
+_LINKED_SINGLE_FIELDS = (
+    "completion_candidate_ref", "completion_result_ref", "completion_attempt_ref",
+    "effect_candidate_ref", "effect_result_ref", "effect_attempt_ref",
+    "settlement_candidate_ref", "settlement_result_ref", "settlement_attempt_ref",
+)
+_LINKED_LIST_FIELDS = (
+    "completion_evidence_refs", "completion_gate_refs", "completion_source_refs",
+    "effect_evidence_refs", "effect_gate_refs", "effect_source_refs",
+    "settlement_evidence_refs", "settlement_gate_refs", "settlement_source_refs",
+)
+
+
+def _survivor_refs(fields: Mapping[str, Any], present: Mapping[str, Any] | None,
+                   authority: str) -> list[ResourceRef] | None:
+    """Collect named links strictly; malformed links poison the join."""
+    if not isinstance(fields, Mapping) or not isinstance(present, Mapping):
+        return None
+    result = []
+    for name in _LINKED_SINGLE_FIELDS:
+        if present.get(name) not in (True, 1):
+            continue
+        value = fields.get(name)
+        # Completion result/attempt are intentionally nullable optional pins.
+        if value is None and name in {"completion_result_ref", "completion_attempt_ref"}:
+            continue
+        ref = _safe_ref(value, authority)
+        if ref is None:
+            return None
+        try:
+            parsed = ResourceRef.from_dict(ref)
+        except (TypeError, ValueError):
+            return None
+        if parsed.kind not in {"work.project", "work.task", "work.attempt"}:
+            result.append(parsed)
+    for name in _LINKED_LIST_FIELDS:
+        if present.get(name) not in (True, 1):
+            continue
+        values = fields.get(name)
+        if not isinstance(values, (list, tuple)) or len(values) > _TASK_LIMIT:
+            return None
+        for value in values:
+            ref = _safe_ref(value, authority)
+            if ref is None:
+                return None
+            try:
+                parsed = ResourceRef.from_dict(ref)
+            except (TypeError, ValueError):
+                return None
+            if parsed.kind not in {"work.project", "work.task", "work.attempt"}:
+                result.append(parsed)
+    return result
+
+
+def _canonical_candidate_provenance(fields: Mapping[str, Any], present: Mapping[str, Any] | None,
+                                    project: ResourceRef, task: ResourceRef) -> bool:
+    if not isinstance(present, Mapping):
+        return False
+    if (fields.get("record_type") != "work.observation"
+            or fields.get("observation_kind") != "result"):
+        return False
+    assignment = _safe_ref(fields.get("assignment_ref"), project.authority)
+    value_assignment = _safe_ref(fields.get("value_assignment_ref"), project.authority)
+    value_project = _safe_ref(fields.get("value_project_ref"), project.authority)
+    value_task = _safe_ref(fields.get("value_task_ref"), project.authority)
+    return (assignment is not None and assignment.get("kind") == "wrk.assignment"
+            and value_assignment is not None and value_assignment.get("kind") == "wrk.assignment"
+            and _same_ref_identity(assignment, value_assignment)
+            and value_project is not None and value_project.get("kind") == "work.project"
+            and _same_ref_identity(value_project, project.to_dict())
+            and value_task is not None and value_task.get("kind") == "work.task"
+            and _same_ref_identity(value_task, task.to_dict()))
+
+
+def _evidence_origin_matches(handler: Any, ref: Mapping[str, Any] | None,
+                             project: ResourceRef, task: ResourceRef, actor: Any) -> bool:
+    try:
+        if not isinstance(ref, Mapping) or ref.get("kind") != "dat.content.document":
+            return False
+        status = handler.status(ResourceRef.from_dict(ref), actor=actor)
+        manifest = status.get("manifest") if isinstance(status, Mapping) else None
+        origin = manifest.get("origin") if isinstance(manifest, Mapping) else None
+        return (isinstance(origin, Mapping)
+                and _same_ref_identity(origin.get("project_ref"), project.to_dict())
+                and _same_ref_identity(origin.get("task_ref"), task.to_dict()))
+    except (KeyError, TypeError, ValueError, PermissionError):
+        return False
 
 
 def _bounded_label(value: Any) -> str | None:

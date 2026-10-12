@@ -897,6 +897,23 @@ class ExecutionApplication:
         if any(item.get("resource_ref") == before_ref for item in assignment.payload.get("resource_adoptions", ())):
             raise OccurrencePreparationError("adopted execution mandate requires explicit resource adoption")
         content = {**before, "assignment_ref": due.assignment_ref}
+        if due.role == "manager" and (due.host_evidence or {}).get("supervisor_directive_ref"):
+            # Only this newly prepared, authenticated purpose receives new text.
+            # The old admitted mandate and its exact authority contract stay history.
+            guide_ref = next((ref for ref in due.context_refs if ref != before_ref), None)
+            _, guide, _ = resolve_required_instruction_adoption(
+                assignment.payload['resource_adoptions'], guide_ref,
+                self.portfolio.operations.content_port)
+            purpose = guide['content'].get('current_purpose')
+            if not isinstance(purpose, Mapping) or purpose.get('schema') != 'otto.current-supervisor-purpose.v1':
+                raise OccurrencePreparationError('directive guide has no exact current purpose')
+            report = self.portfolio.operations._owner_reader.get_record(
+                ResourceRef.from_dict(due.host_evidence['supervisor_directive_ref']))
+            if report is None or report.payload['value'].get('direction_ref') != purpose.get('direction_ref'):
+                raise OccurrencePreparationError('directive mandate purpose differs from application receipt')
+            from .supervisor_direction_client import current_purpose_content
+            content = current_purpose_content(content, direction_ref=purpose['direction_ref'],
+                instructions=purpose['instructions'], inherited_ref=before_ref)
         key = due.invocation_identity + ":mandate-adoption:" + _digest(due.assignment_ref)
         created = self.portfolio.create_document(target["project_ref"], actor=self.actor,
             request_id=key, document_id="role-adoption-mandate-" + _digest(key)[:24],
@@ -1894,9 +1911,9 @@ class ExecutionApplication:
             native_adapter=self.native_adapter_identity())
         self._verify_native_binding(current, due.target["native_id"], manager_schedule_id)
         due = replace(due,
-            instruction=("Inspect the committed project task completions and their authentic candidate/evidence bindings, "
-                "then advance ready unfinished tasks through ordinary delegation and review, or carry out guarded project closeout when eligible. "
-                "Recorded task completion does not establish authentic artifact acceptance or project completion. "
+            instruction=("Treat the completed-task records below as historical execution anchors; validate their retained completion bindings through the exact review-input read without opening a new review. "
+                "Advance only genuinely unfinished tasks through ordinary delegation and review, or carry out guarded project closeout when eligible. "
+                "The inherited execution anchor is not actionable work; configured final handoff remains a separate owner decision. "
                 "This invocation already delivers the observed finishes; do not redispatch it or await your own settlement. "
                 "Preserve prior decisions, completed tasks, budgets and uncertain effects; do not replay workers."),
             message="Observed owner task-settlement context:\n" + json.dumps(evidence, sort_keys=True, separators=(",", ":")),

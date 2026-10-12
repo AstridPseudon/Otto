@@ -116,9 +116,11 @@ def compact_read_response(value: Mapping[str, Any], *, operation: str) -> dict[s
             "project_ref", "response_ref", "state"), "retained_report")
     for name in ("assessment_policy_selection", "assessment_policy_selection_availability",
                  "criterion_aliases", "criterion_aliases_availability", "inspection_schema", "judgment_schema", "occurrence", "candidate_ref",
-                 "task_ref", "schedule_id", "source_refs", "evidence_refs", "worker_result_sha256"):
+                 "task_ref", "task_lifecycle", "review_eligible", "completion", "schedule_id", "source_refs", "evidence_refs", "worker_result_sha256"):
         if name in summary:
             selected[name] = summary[name]
+    if "completion" in value:
+        selected["completion"] = finite(value["completion"], "response.completion")
     outer = value.get("outer_command")
     detail = fields(outer, ("transport", "request_id", "retained", "retention"), "outer_command")
     request_id = detail.get("request_id")

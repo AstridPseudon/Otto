@@ -149,6 +149,50 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   self.assertEqual(len(self.f.provider.calls),calls+1)
   again=self.f.app.start(schedule_id=result['continuation']['schedule_id']);self.assertEqual(again['outcome'],'replayed');self.assertEqual(len(self.f.provider.calls),calls+1)
 
+ def test_new_purpose_renders_BASE_and_mandate_without_changing_authority_or_history(self):
+  f=self.f
+  old_base=deepcopy(f.owner.content.read(ResourceRef.from_dict(self.state['guide_ref'])))
+  old_mandate=deepcopy(f.owner.content.read(ResourceRef.from_dict(self.state['mandate_ref'])))
+  old_anchor=deepcopy(self.anchor)
+  intent=self.draft_and_intent()
+  result=self.call('supervisor-direction-adopt-and-continue',intent,'purpose-text')
+  base=f.owner.content.read(ResourceRef.from_dict(result['BASE_ref']))['content']
+  due=f.port.read_due(result['continuation']['schedule_id'])
+  mandate=f.owner.content.read(ResourceRef.from_dict(due['target']['mandate_ref']))['content']
+  self.assertIn('Updated project direction',base['instructions'])
+  self.assertEqual(base['current_purpose']['direction_ref'],intent['document_ref'])
+  self.assertEqual(base['current_purpose']['historical_context_ref'],old_base['identity'].to_dict())
+  self.assertFalse(base['current_purpose']['historical_context_actionable'])
+  self.assertIn('Updated project direction',mandate['brief']['mandate'])
+  self.assertIn('completed tasks are historical',mandate['brief']['mandate'])
+  self.assertEqual(mandate['instruction_contract'],old_mandate['content']['instruction_contract'])
+  self.assertEqual(due['target']['task_ref'],old_anchor['target']['task_ref'])
+  self.assertEqual(f.port.read_due(old_anchor['schedule_id']),old_anchor)
+  self.assertEqual(f.owner.content.read(ResourceRef.from_dict(old_base['identity'].to_dict())),old_base)
+  self.assertEqual(f.owner.content.read(old_mandate['identity']),old_mandate)
+  counts=f.store.consumer().snapshot_counts()
+  self.assertEqual(self.call('supervisor-direction-adopt-and-continue',intent,'purpose-text')['outcome'],'replayed')
+  self.assertEqual(f.store.consumer().snapshot_counts(),counts)
+
+ def test_current_purpose_replaces_old_action_fields_but_preserves_authority_constraints(self):
+  from otto.portfolio.supervisor_direction_client import current_purpose_content
+  content={'brief':{'role':'manager','mandate':'OLD O02 action',
+   'priorities':[{'id':'old','text':'Review old completed task','status':'pending'}],
+   'continuation':{'next_action':'Retry historical review'},
+   'user_constraints':['Original scope'], 'operational_constraints':['Preserve budgets']},
+   'instruction_contract':{'authority':{'owner_actor':'manager'},'task_ref':self.anchor['target']['task_ref']}}
+  before=deepcopy(content)
+  result=current_purpose_content(content,direction_ref=self.pin,
+   instructions='Read completed truth and hand off final',inherited_ref=self.state['mandate_ref'])
+  self.assertEqual(content,before)
+  self.assertEqual(result['instruction_contract'],before['instruction_contract'])
+  self.assertEqual(result['brief']['user_constraints'],before['brief']['user_constraints'])
+  self.assertEqual(result['brief']['operational_constraints'],before['brief']['operational_constraints'])
+  self.assertNotIn('OLD O02',result['brief']['mandate'])
+  self.assertNotIn('Review old',str(result['brief']['priorities']))
+  self.assertNotIn('Retry historical',str(result['brief']['continuation']))
+  self.assertEqual(result['current_purpose']['historical_context_ref'],self.state['mandate_ref'])
+
  def test_current_owner_root_client_composes_supervisor_facade(self):
   from tempfile import TemporaryDirectory
   from otto.portfolio.root_direction_client import install_owner_root_client

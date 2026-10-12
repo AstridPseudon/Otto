@@ -14,6 +14,44 @@ from .owner_readers import json_value
 from .manager_guide import resolve_required_instruction_adoption
 
 
+def current_purpose_content(content, *, direction_ref, instructions, inherited_ref):
+    """Render a prospective purpose while retaining immutable context history.
+
+    Authority, workspace and selected-source fields remain unchanged. Historical
+    stage prose is linked by its exact document pin, never parsed into new work.
+    """
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise ValueError('current supervisor purpose requires instruction text')
+    pin = ResourceRef.from_dict(direction_ref)
+    prior = ResourceRef.from_dict(inherited_ref)
+    if not pin.revision or not prior.revision or pin.authority != prior.authority:
+        raise ValueError('current purpose requires exact owner-local context pins')
+    body = deepcopy(content)
+    summary = ('Current action from the exact adopted supervisor direction:\n' + instructions
+        + '\nUse exact current task lifecycle and completion records to select actionable work. '
+          'An inherited execution task is a transport and authority anchor; completed tasks are historical, '
+          'not pending work. Preserve their accepted judgments and use ordinary final handoff when eligible. '
+          'Prior stage instructions are retained non-actionable history at the linked context revision. '
+          'Existing authority, workspace, model and operation limits remain in force.')
+    body['current_purpose'] = {'schema': 'otto.current-supervisor-purpose.v1',
+        'direction_ref': pin.to_dict(), 'instructions': instructions,
+        'instructions_sha256': hashlib.sha256(instructions.encode()).hexdigest(),
+        'historical_context_ref': prior.to_dict(), 'historical_context_actionable': False}
+    if body.get('schema') == 'herzchen.instructions.v1':
+        body['instructions'] = summary
+        body['bundle_digest'] = hashlib.sha256(summary.encode()).hexdigest()
+    else:
+        brief = body.get('brief')
+        if not isinstance(brief, Mapping):
+            raise ValueError('current purpose mandate requires its existing brief')
+        body['brief'] = {**brief, 'mandate': summary,
+            'priorities': [{'id': 'current-supervisor-purpose', 'text': instructions, 'status': 'current'}],
+            'continuation': {'source': 'exact adopted supervisor direction',
+                'direction_ref': pin.to_dict(),
+                'next_action': 'Read exact current task completion and lifecycle; follow this purpose only for unfinished work or final handoff.'}}
+    return body
+
+
 OPERATIONS = frozenset({'supervisor-direction-read', 'supervisor-direction-draft',
                         'supervisor-direction-adopt-and-continue'})
 
@@ -152,7 +190,10 @@ class SupervisorDirectionAuthoring:
         pin = ResourceRef.from_dict(payload['document_ref'])
         if (pin.authority, pin.kind, pin.id) != tuple(direction['latest_ref'][k] for k in ('authority','kind','id')) or not pin.revision:
             raise PermissionError('directive draft belongs to another bound document')
-        validate_instruction_content(json_value(owner.content.read(pin))['content'])
+        direction_content = json_value(owner.content.read(pin))['content']
+        validate_instruction_content(direction_content)
+        body = current_purpose_content(body, direction_ref=pin.to_dict(),
+            instructions=direction_content['instructions'], inherited_ref=base['resource_ref'])
         body['supporting_refs'] = [pin.to_dict() if r == old else r for r in body['supporting_refs']]
         # All canonical effects, including Due preparation, share one owner transaction.
         staged_state = deepcopy(state)
