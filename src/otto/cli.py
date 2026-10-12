@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
             "This is a gateway diagnostic surface, not a scheduler or native role launcher. "
             "Unsupported/unavailable effects are returned as JSON and use a non-zero exit status. "
             "Portfolio intake and current-work help: python -m otto.portfolio.cli help. "
+            "Project onboarding: otto/portfolio/skills/project-onboarding.md. "
             "Maintained recovery workflow: otto/portfolio/skills/recovery/SKILL.md."
         ),
     )

@@ -89,7 +89,10 @@ def compose_worker_operation(*, config: Mapping[str, Any], task: str, task_ref: 
                   for name in ("agent_goal.md", "tasklist.md", _run_config_name(run_path), "owner-setup-guidance-20261005.md")]
                  + [{"label": "Megado skill", "path": str(workspace / "policy-staging/megado/skill/SKILL.md")},
                     {"label": "Otto skill index", "path": str(workspace / "src/otto/portfolio/skills/SKILL.md")},
-                    {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")}],
+                    {"label": "Otto project onboarding guide", "path": str(workspace / "src/otto/portfolio/skills/project-onboarding.md")},
+                    {"label": "Otto recovery skill", "path": str(workspace / "src/otto/portfolio/skills/recovery/SKILL.md")},
+                    {"label": "Otto manager guidance", "path": str(workspace / "src/otto/portfolio/skills/references/manager.md")},
+                    {"label": "Otto identity and directions", "path": str(workspace / "src/otto/portfolio/skills/references/identity-and-directions.md")}],
         "revision": "ordinary-worker-v1"}
     # Any adapter may declare itself a finite leaf (Claude Code does); the
     # identity check keeps the original Claude pin for retained policies.

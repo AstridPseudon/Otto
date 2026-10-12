@@ -9,6 +9,12 @@ Read actual model/profile selection separately. External-owner authority is not
 native identity. Read-only external-root leaves may lack a managed socket: use
 delivered owner-bound context and report native reads unavailable.
 
+For the cold onboarding route, start with installed help and the exact
+`tool_entrypoint` in the current role introduction. Read the current setup
+before relying on a manager, root, continuation or observer destination. The
+onboarding guide is [here](../project-onboarding.md); it links recovery, setup
+and closeout without requiring private controller paths.
+
 ## Changing instructions
 
 Latest text, scope adoption and assignment adoption can differ:

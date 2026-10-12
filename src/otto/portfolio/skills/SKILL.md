@@ -69,3 +69,16 @@ Tasks/reviews, Blockers, Usage, Recovery, and selected bounded detail. Every
 view is read-only and retains authorized project/date scope, coverage, lag,
 snapshot, and keyset continuation. A view never executes recovery, repair,
 backfill, or historical mutation advice.
+
+## Project onboarding
+
+Read the current [project onboarding guide](project-onboarding.md). An issued
+finite onboarding client uses `python -m otto.portfolio.onboarding_bound_cli`
+with its exact private host-issued descriptor. It never selects an actor or
+opens Store. The generic portfolio CLI requires host-injected capabilities;
+its help alone does not authenticate a caller. Production protected
+owner-authoring remains its separately admitted root route. Managers use their
+own delivered manager client and request owner authoring when needed; never
+borrow a root descriptor. Installation and discovery do not adopt resources.
+The current role's canonical BASE, selected pack and effective-context readback
+are required before treating new guidance as delivered.
