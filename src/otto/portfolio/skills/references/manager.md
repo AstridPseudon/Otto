@@ -160,3 +160,10 @@ print(json.dumps({key: response[key] for key in fields if key in response}, inde
 This projection does not send another request or change authority. For an
 UNKNOWN result, preserve its exact handle and follow command-status/recovery;
 never infer absence from a shortened print.
+
+For a separately authorized local correction, `review-input` reports the exact
+owner-issued task supplement and policy digest. The global setup/task policy
+remains in effect. A supplement supplies no new worker or provider authority.
+Use a distinct correction judgment key after inspecting the genuine supplement;
+an old review key cannot move its debit to a new pool. Exhaustion never falls
+back to MAIN. Retain any original partial/UNKNOWN receipt unchanged.

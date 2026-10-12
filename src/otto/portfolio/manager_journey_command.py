@@ -215,18 +215,84 @@ class ManagerJourneyCommands:
                 "example": {"observed": "Your substantive inspection of the exact retained candidate"},
                 "authority": "input shape only; no verdict or review allowance"}
 
+    def _review_policy(self, alias: str, *, validate_current: bool = True,
+                       completed_task_ref: Mapping[str, Any] | None = None) -> LocalAssessmentPolicy:
+        """Use an owner-issued task supplement without changing setup/base authority."""
+        configured = self.policy or self.state["assessment_policy"]
+        policy_state = self.state
+        if completed_task_ref is not None:
+            # Only review_task supplies this after _completed_finish proves the
+            # exact committed predecessor. It is never a new assessment pin.
+            policy_state = {**self.state, "task_refs": {**self.state["task_refs"], alias: completed_task_ref}}
+        supplements = self.state.get("task_assessment_supplements", {})
+        if not isinstance(supplements, Mapping) or len(supplements) > 64:
+            raise PermissionError("trusted task assessment supplements are malformed")
+        supplemental = supplements.get(alias)
+        if supplemental is not None:
+            if not isinstance(supplemental, Mapping) or set(supplemental) != {"policy", "binding"}:
+                raise PermissionError("task assessment supplement requires exact policy/binding")
+            base_policy = (LocalAssessmentPolicy.from_run_config(configured, state=policy_state)
+                           if isinstance(configured, Mapping) else configured)
+            configured = supplemental["policy"]
+            policy = LocalAssessmentPolicy.from_run_config(configured, state=policy_state)
+            binding = supplemental["binding"]
+            current = self.owner.assignments.command_port.get(ResourceRef.from_dict(self.state["assignment_ref"]))
+            from .operating_setup import authenticated_adoption_ancestor
+            project = ResourceRef.from_dict(self.state["project_ref"])
+            task = ResourceRef.from_dict(policy_state["task_refs"][alias])
+            if (not isinstance(binding, Mapping)
+                    or binding.get("project_ref") != project.to_dict()
+                    or binding.get("task_ref") != task.to_dict()
+                    or binding.get("generation") != current.generation
+                    or binding.get("principal") != current.principal
+                    or not isinstance(binding.get("assignment_ref"), Mapping)
+                    or not authenticated_adoption_ancestor({"ref": current.ref.to_dict(),
+                        "principal": current.principal, "role": current.role,
+                        "generation": current.generation, "payload": current.payload},
+                        binding["assignment_ref"], self.owner.graph.reader)
+                    or any(member != task for member, _ in policy.task_criterion_pairs)
+                    or set(policy.task_criterion_pairs) != {pair for pair in base_policy.task_criterion_pairs if pair[0] == task}
+                    or binding.get("pool_ref") != policy.pool_ref.to_dict()
+                    or binding.get("criterion_refs") != [criterion.to_dict() for _, criterion in policy.task_criterion_pairs]):
+                raise PermissionError("task assessment supplement binding is stale or foreign")
+            allocation_key = binding.get("allocation_key")
+            receipt = self.owner.graph.reader.get_receipt(allocation_key) if isinstance(allocation_key, str) else None
+            if (receipt is None or receipt.status.value != "committed"
+                    or receipt.target.authority != policy.pool_ref.authority
+                    or receipt.target.kind != policy.pool_ref.kind or receipt.target.id != policy.pool_ref.id):
+                raise PermissionError("task assessment supplement lacks exact committed owner allocation")
+            pool = self.owner.graph.reader.get_identity_bounded(policy.pool_ref, max_record_bytes=8192)["record"]
+            if (pool is None or pool.payload.get("capacity_units") != policy.capacity_units
+                    or pool.payload.get("cumulative_allowance_units") != policy.cumulative_allowance_units):
+                raise PermissionError("task assessment supplement pool metadata differs")
+        else:
+            policy = (LocalAssessmentPolicy.from_run_config(configured, state=policy_state)
+                      if isinstance(configured, Mapping) else configured)
+        if validate_current:
+            policy.validate_binding(ResourceRef.from_dict(self.state["project_ref"]),
+                                    ResourceRef.from_dict(self.state["task_refs"][alias]), self.owner.graph.reader)
+        return policy
+
+    def _review_policy_pin(self, alias: str, policy: LocalAssessmentPolicy) -> Mapping[str, Any]:
+        supplement = self.state.get("task_assessment_supplements", {}).get(alias)
+        value = {"pool_ref": policy.pool_ref.to_dict(), "project_ref": policy.scope_project_ref.to_dict(),
+                 "task_criterion_pairs": [{"task_ref": task.to_dict(), "criterion_ref": criterion.to_dict()}
+                    for task, criterion in policy.task_criterion_pairs],
+                 "purpose": policy.purpose, "local_only": policy.local_only,
+                 "capacity_units": policy.capacity_units,
+                 "cumulative_allowance_units": policy.cumulative_allowance_units,
+                 "allocation_key": supplement["binding"]["allocation_key"] if supplement else None,
+                 "source": "owner-issued-task-supplement" if supplement else "trusted-global-policy"}
+        return {**value, "canonical_json_sha256": _digest(value)}
+
     def review_input(self, alias: str) -> Mapping[str, Any]:
         """Expose the exact retained worker observation, never an automatic PASS."""
         self._authorize()
         if alias not in self.state["task_refs"]:
             raise ValueError("unknown task alias; use a current configured task alias")
-        policy = self.policy or self.state["assessment_policy"]
-        if isinstance(policy, Mapping):
-            policy = LocalAssessmentPolicy.from_run_config(policy, state=self.state)
-        policy.validate_binding(ResourceRef.from_dict(self.state["project_ref"]),
-                                ResourceRef.from_dict(self.state["task_refs"][alias]),
-                                self.owner.graph.reader)
-        contract = {"criterion_aliases": self._review_criteria(self.state["task_refs"][alias], policy),
+        policy = self._review_policy(alias)
+        contract = {"assessment_policy_selection": self._review_policy_pin(alias, policy),
+                    "criterion_aliases": self._review_criteria(self.state["task_refs"][alias], policy),
                     "inspection_schema": self._inspection_schema()}
         worker = (self.state.get("workers") or {}).get(alias)
         if not isinstance(worker, Mapping) or self.due_port is None:
@@ -377,20 +443,33 @@ class ManagerJourneyCommands:
         alias = request.get("task")
         if alias not in self.state["task_refs"]:
             raise ValueError("unknown task alias")
+        prior = self._journal(key, "intent")
+        reviewed = self._journal(key, "review")
+        # A completed same-key review replay has no new assessment admission;
+        # its original task revision remains immutable after completion.
+        completed_task_ref = None
+        if prior is not None and prior.get("task_ref") != self.state["task_refs"][alias]:
+            finish_request = {"task": alias, "request_key": key + ":finish", "review_key": key}
+            finish_prior = self._journal(key + ":finish", "finish-intent")
+            if reviewed is None or reviewed.get("outcome") != "accepted" or finish_prior != finish_request:
+                raise PermissionError("changed task revision requires exact committed completion replay")
+            self._completed_finish(finish_request, finish_prior, prior, reviewed)
+            completed_task_ref = prior["task_ref"]
+        policy = self._review_policy(alias, validate_current=reviewed is None, completed_task_ref=completed_task_ref)
+        policy_pin = self._review_policy_pin(alias, policy)
         manifest = {"request": dict(request), "task_ref": self.state["task_refs"][alias],
                     "project_ref": self.state["project_ref"],
                     "assignment_ref": self.state["assignment_ref"],
-                    "generation": self.state["manager_generation"]}
-        prior = self._journal(key, "intent")
+                    "generation": self.state["manager_generation"], "assessment_policy_selection": policy_pin}
         if prior is not None:
             if prior["request"] != dict(request):
                 raise ValueError("ordinary request key was reused with changed input")
+            prior_policy = prior.get("assessment_policy_selection")
+            if (prior_policy is not None and prior_policy != policy_pin
+                    or prior_policy is None and policy_pin["source"] == "owner-issued-task-supplement"):
+                raise PermissionError("original review key policy differs or has unknown provenance; use a distinct authorized correction judgment")
             manifest = prior
-        reviewed = self._journal(key, "review")
         if reviewed is None:
-            policy = self.policy or self.state["assessment_policy"]
-            if isinstance(policy, Mapping):
-                policy = LocalAssessmentPolicy.from_run_config(policy, state=self.state)
             commands = self.owner.manager_assessment(project_ref=manifest["project_ref"],
                 task_ref=manifest["task_ref"], manager_assignment_ref=manifest["assignment_ref"],
                 manager_actor=self.state["manager"], manager_generation=manifest["generation"],

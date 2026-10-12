@@ -321,6 +321,11 @@ def command_result_summary(value: Any) -> Any:
                 target["criterion_aliases_availability"] = "invalid mapping; inspect retained full response"
         elif aliases is not None:
             target["criterion_aliases_availability"] = "over-bound mapping; inspect retained full response"
+        selection = original.get("assessment_policy_selection")
+        if isinstance(selection, dict) and len(json.dumps(selection, sort_keys=True).encode()) <= 16384:
+            target["assessment_policy_selection"] = selection
+        elif selection is not None:
+            target["assessment_policy_selection_availability"] = "detail-required; policy selection exceeds finite metadata bound"
         schema = original.get("inspection_schema")
         if isinstance(schema, dict) and schema.get("type") == "object" and schema.get("min_properties") == 1:
             target["inspection_schema"] = {"type": "object", "min_properties": 1,
