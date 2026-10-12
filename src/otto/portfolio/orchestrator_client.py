@@ -295,11 +295,12 @@ class OrchestratorLanePump:
                 continue
             request = lanes.read_private_json(path)
             lanes.mark_pending(lane, token, 'processing', retry=False)
-            def publish(value, lane=lane, token=token):
+            def publish(value, lane=lane, token=token, operation=request.get('operation'),
+                        request_key=request.get('request_key')):
                 if not isinstance(value, Mapping):
                     raise TypeError('finite client handler must return a retained result or handle')
                 result = {**json_value(value), 'request_id': token, 'terminal': True}
-                lanes.respond(lane, token, result)
+                lanes.respond(lane, token, result, operation=operation, request_key=request_key)
                 return result
             def failed(error, lane=lane, token=token):
                 result = {'outcome': 'error', 'request_id': token, 'terminal': True,
