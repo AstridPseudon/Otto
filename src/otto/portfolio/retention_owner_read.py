@@ -174,11 +174,13 @@ class RetentionOwnerRead:
         truncated = bool(project_task_refs_available and len(task_refs) > _MAX_TASKS)
         if truncated:
             held += len(task_refs) - _MAX_TASKS
+        membership_refs = []
+        unversioned_membership = False
+        mixed_membership_revisions = False
         for raw_ref in (task_refs[:_MAX_TASKS] if project_task_refs_available else ()):
             task_ref = _safe_ref(raw_ref)
             if (task_ref is None or task_ref.get("authority") != project_record.ref.authority
-                    or task_ref.get("kind") != "work.task"
-                    or not isinstance(task_ref.get("revision"), str) or not task_ref.get("revision")):
+                    or task_ref.get("kind") != "work.task"):
                 held += 1
                 invalid_refs += 1
                 continue
@@ -187,7 +189,30 @@ class RetentionOwnerRead:
                 invalid_refs += 1
                 continue
             selected_ids.add(task_ref["id"])
-            valid_refs.append(ResourceRef.from_dict(task_ref))
+            membership_refs.append(task_ref)
+            revision = task_ref.get("revision")
+            if isinstance(revision, str) and revision:
+                valid_refs.append(ResourceRef.from_dict(task_ref))
+            elif revision is None:
+                unversioned_membership = True
+            else:
+                held += 1
+                invalid_refs += 1
+        if unversioned_membership and valid_refs:
+            mixed_membership_revisions = True
+        pin_source = "project-membership-revisions"
+        if unversioned_membership or mixed_membership_revisions:
+            close_pins = _completed_close_task_pins(project, project_record.ref, membership_refs)
+            if close_pins is None or mixed_membership_revisions or invalid_refs:
+                held += len(membership_refs)
+                invalid_refs += len(membership_refs)
+                valid_refs = []
+                rows.extend({"task_ref": ref, "lifecycle": None, "state": "close-pinset-mismatch",
+                             "survivor_facets": {"state": "unavailable", "reason": "close-pinset-mismatch"}}
+                            for ref in membership_refs)
+            else:
+                valid_refs = [ResourceRef.from_dict(ref) for ref in close_pins]
+                pin_source = "completed-close-request-exact-identity-set"
         projected = consumer.project_identity_fields_for_refs(valid_refs, fields=_TASK_FIELDS,
             max_projection_bytes=_MAX_PROJECTED_BYTES, max_refs=_MAX_TASKS)
         for result in projected:
@@ -249,7 +274,8 @@ class RetentionOwnerRead:
                 "task_inventory": {"state": "complete" if task_inventory_complete else "partial-or-unknown",
                     "selected_count": len(rows), "declared_count": declared_task_count,
                     "limit": _MAX_TASKS, "held": held,
-                    "read_mode": "exact-primary-key-projection", "identities_examined": len(valid_refs),
+                    "read_mode": "exact-primary-key-projection", "pin_source": pin_source,
+                    "identities_examined": len(valid_refs),
                     "projected_bytes": sum(item.get("projected_bytes", 0) for item in projected),
                     "truncated": truncated},
                 "assignment_refs": unique_assignments,
@@ -732,6 +758,40 @@ def _close_request_projection(value: Any, authority: str) -> Mapping[str, Any]:
             if type(value.get("generation")) is int else None}
 
 
+def _completed_close_task_pins(project: Mapping[str, Any], project_ref: ResourceRef,
+                               memberships: list[Mapping[str, Any]]) -> list[Mapping[str, Any]] | None:
+    """Use close-request revisions only when they pin this exact completed task set."""
+    lifecycle_control = project.get("lifecycle_control")
+    close_request = (lifecycle_control.get("close_request")
+                     if isinstance(lifecycle_control, Mapping) else None)
+    if project.get("lifecycle") != "completed" or not isinstance(close_request, Mapping):
+        return None
+    close_project = _safe_ref(close_request.get("project_ref"), project_ref.authority)
+    close_manager = _safe_ref(close_request.get("manager_assignment"), project_ref.authority)
+    close_report = _safe_ref(close_request.get("report_ref"), project_ref.authority)
+    generation = close_request.get("generation")
+    if (not _same_ref_identity(close_project, project_ref.to_dict())
+            or close_manager is None or close_manager.get("kind") != "wrk.assignment"
+            or not isinstance(close_manager.get("revision"), str) or not close_manager["revision"]
+            or close_report is None or close_report.get("kind") != "wrk.report"
+            or type(generation) is not int or generation < 1):
+        return None
+    pinned = _bounded_refs_projection(close_request.get("task_refs"), _MAX_TASKS,
+                                      project_ref.authority)
+    close_refs = pinned.get("refs")
+    if (pinned.get("state") != "available" or not isinstance(close_refs, list)
+            or len(close_refs) != len(memberships)):
+        return None
+    if any(ref.get("kind") != "work.task" or not isinstance(ref.get("revision"), str)
+           or not ref["revision"] for ref in close_refs):
+        return None
+    membership_ids = {(ref["authority"], ref["kind"], ref["id"]) for ref in memberships}
+    close_ids = {(ref["authority"], ref["kind"], ref["id"]) for ref in close_refs}
+    if len(close_ids) != len(close_refs) or close_ids != membership_ids:
+        return None
+    return close_refs
+
+
 def _terminal_evidence_projection(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         return {"state": "unavailable", "statuses": {}}
@@ -773,7 +833,8 @@ def _reconciliation_projection(value: Any, project_ref: ResourceRef) -> Mapping[
     coverage_matches = (coverage["state"] == "available"
         and coverage_fields.get("authority") == project_ref.authority
         and coverage_fields.get("project_id") == project_ref.id
-        and coverage_fields.get("source") == "complete public Due list"
+        and coverage_fields.get("source") in {"complete public Due list",
+                                                "complete project-scoped public Due list"}
         and type(coverage_fields.get("record_count")) is int and coverage_fields["record_count"] >= 0)
     shared_count_matches = (shared["state"] == "available" and shared["count"] is not None
         and not ownership_unknown and shared["count"] == coverage_fields.get("record_count"))

@@ -142,20 +142,24 @@ class RetentionOwnerReadTests(unittest.TestCase):
             current_project.ref.id, "rev-" + str(current_project.version + 1))
         join = dict(metadata["otto_orchestrator"], project_ref=next_project_ref.to_dict())
         metadata["otto_orchestrator"] = join
+        unversioned_membership = {"authority": task_ref.authority, "kind": task_ref.kind,
+                                  "id": task_ref.id, "revision": None}
+        shared_records = [{"schedule_id": f"shared-kept-{index}", "status": "preserved",
+                           "record_ref": evidence.to_dict()} for index in range(24)]
+        close_report = ResourceRef(self.store.authority, "wrk.report", "close-report", "rev-1")
         current_payload = dict(current_project.payload, metadata=metadata,
-            tasks=[next_task_ref.to_dict()], lifecycle="completed",
+            tasks=[unversioned_membership], lifecycle="completed",
             lifecycle_control={"close_request": {"project_ref": next_project_ref.to_dict(),
                 "manager_assignment": root.ref.to_dict(), "task_refs": [next_task_ref.to_dict()],
-                "report_ref": result.to_dict(), "receipt": result.to_dict(), "generation": root.generation},
+                "report_ref": close_report.to_dict(), "receipt": result.to_dict(), "generation": root.generation},
                 "terminal_evidence": {name: {"status": "verified"} for name in
                     ("acceptance", "publication", "remote", "runtime")},
                 "reconciliation": {"status": "reconciled", "mode": "no-owned-schedule",
                     "survivor_refs": [result.to_dict()], "observation": {"mode": "no-owned-schedule",
                         "pm_owned_schedule_ids": [], "unknown_ownership": False,
                         "coverage": {"authority": self.store.authority, "project_id": project.ref.id,
-                            "source": "complete public Due list", "record_count": 1},
-                        "shared_records": [{"schedule_id": "shared-kept", "status": "preserved",
-                            "record_ref": evidence.to_dict()}]}}})
+                            "source": "complete project-scoped public Due list", "record_count": 24},
+                        "shared_records": shared_records}}})
         self.store.revise_identity(current_project.ref, current_payload, revision=next_project_ref.revision,
             expected_revision=current_project.ref.revision, expected_version=current_project.version)
         unrelated = ResourceRef(self.store.authority, "work.task", "000-unrelated-large", "rev-1")
@@ -168,13 +172,18 @@ class RetentionOwnerReadTests(unittest.TestCase):
                                                           root=root, actor=self.actor)
         self.assertEqual(result_view["task_inventory"]["state"], "complete")
         self.assertEqual(result_view["task_inventory"]["read_mode"], "exact-primary-key-projection")
+        self.assertEqual(result_view["task_inventory"]["pin_source"],
+                         "completed-close-request-exact-identity-set")
+        self.assertEqual(result_view["task_inventory"]["identities_examined"], 1)
         self.assertNotIn("state", result_view["tasks"][0])
         groups = result_view["tasks"][0]["survivor_facets"]["groups"]
         self.assertEqual(groups["completion"]["fields"]["candidate_ref"]["ref"], candidate.to_dict())
         self.assertEqual(groups["completion"]["fields"]["evidence_refs"]["refs"], [evidence.to_dict()])
         self.assertEqual(groups["effect"]["fields"]["result_ref"]["ref"], result.to_dict())
         self.assertEqual(groups["settlement"]["fields"]["gate_refs"]["refs"], [gate.to_dict()])
-        self.assertEqual(result_view["reconciliation"]["observation"]["shared_records"]["records"][0]["status"], "preserved")
+        self.assertEqual(result_view["reconciliation"]["observation"]["shared_records"]["count"], 24)
+        self.assertEqual(result_view["reconciliation"]["observation"]["coverage"]["fields"]["source"],
+                         "complete project-scoped public Due list")
         self.assertEqual(result_view["lifecycle_control"]["close_request"]["state"], "available")
         self.assertEqual(result_view["lifecycle_control"]["terminal_evidence"]["state"], "available")
         self.assertTrue(result_view["complete"])
@@ -199,6 +208,63 @@ class RetentionOwnerReadTests(unittest.TestCase):
         self.assertEqual(result_view["task_inventory"]["state"], "partial-or-unknown")
         self.assertFalse(result_view["complete"])
         self.assertEqual(result_view["task_inventory"]["held"], 2)
+
+    def test_completed_close_pins_require_exact_unversioned_membership_and_current_revisions(self):
+        root, _subject, _pin, project = self.setup_portfolio()
+        membership = project.payload["tasks"][0]
+        member = {"authority": membership["authority"], "kind": membership["kind"],
+                  "id": membership["id"], "revision": None}
+        current_task = self.store.get_identity_ref(ResourceRef(member["authority"], member["kind"], member["id"]))
+        self.assertIsNotNone(current_task)
+        extra = ResourceRef(self.store.authority, "work.task", "extra-task", "rev-1")
+        foreign = ResourceRef("foreign-authority", "work.task", member["id"], current_task.revision)
+        cases = [
+            ("missing", [], "close-pinset-mismatch"),
+            ("extra", [current_task.to_dict(), extra.to_dict()], "close-pinset-mismatch"),
+            ("foreign", [foreign.to_dict()], "close-pinset-mismatch"),
+            ("duplicate", [current_task.to_dict(), current_task.to_dict()], "close-pinset-mismatch"),
+            ("foreign-project", [current_task.to_dict()], "close-pinset-mismatch"),
+            ("stale", [ResourceRef(current_task.authority, current_task.kind,
+                                    current_task.id, "rev-0").to_dict()], "stale"),
+        ]
+        service = SimpleNamespace(server=SimpleNamespace(owner=self.owner,
+            state={"orchestrator_assignment_ref": root.ref.to_dict()}))
+        for label, close_pins, expected_task_state in cases:
+            with self.subTest(case=label):
+                current_project_ref = self.store.get_identity_ref(ResourceRef(
+                    project.ref.authority, project.ref.kind, project.ref.id))
+                current_project = self.owner.graph.get(current_project_ref)
+                next_project_ref = ResourceRef(current_project.ref.authority, current_project.ref.kind,
+                    current_project.ref.id, "rev-" + str(current_project.version + 1))
+                metadata = dict(current_project.payload.get("metadata", {}))
+                join = dict(metadata["otto_orchestrator"], project_ref=next_project_ref.to_dict())
+                metadata["otto_orchestrator"] = join
+                close_project_ref = (ResourceRef(self.store.authority, "work.project", "foreign-project", "rev-1")
+                                     if label == "foreign-project" else next_project_ref)
+                close_request = {"project_ref": close_project_ref.to_dict(),
+                    "manager_assignment": root.ref.to_dict(), "task_refs": close_pins,
+                    "report_ref": ResourceRef(self.store.authority, "wrk.report", "close-report", "rev-1").to_dict(),
+                    "generation": root.generation}
+                payload = dict(current_project.payload, metadata=metadata, lifecycle="completed",
+                    tasks=[member], lifecycle_control={"close_request": close_request,
+                        "reconciliation": {"status": "reconciled", "mode": "no-owned-schedule",
+                            "survivor_refs": [], "observation": {"mode": "no-owned-schedule",
+                                "pm_owned_schedule_ids": [], "unknown_ownership": False,
+                                "coverage": {"authority": self.store.authority, "project_id": project.ref.id,
+                                    "source": "complete project-scoped public Due list", "record_count": 0},
+                                "shared_records": []}}})
+                self.store.revise_identity(current_project.ref, payload, revision=next_project_ref.revision,
+                    expected_revision=current_project.ref.revision, expected_version=current_project.version)
+                with patch("otto.portfolio.retention_owner_read.USAGE_PROJECT_ID", project.ref.id):
+                    view = RetentionOwnerRead(service).call({"handle": {"view": "lifecycle"}},
+                                                          root=root, actor=self.actor)
+                self.assertFalse(view["complete"])
+                if expected_task_state == "stale":
+                    self.assertEqual(view["task_inventory"]["identities_examined"], 1)
+                    self.assertEqual(view["tasks"][0]["state"], "stale")
+                else:
+                    self.assertEqual(view["task_inventory"]["identities_examined"], 0)
+                    self.assertEqual(view["tasks"][0]["state"], expected_task_state)
 
     def test_storage_returns_only_injected_partial_receipt_and_preview_unavailable_without_handler(self):
         root, _subject, _pin, project = self.setup_portfolio()
