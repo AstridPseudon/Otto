@@ -792,9 +792,15 @@ class ManagerJourneyService:
             return after_owner(result, lambda result: self._finalize_manager_completion(result, app=app))
         if command in {"review-task", "finish-task", "finish-project"}:
             operation = getattr(self.commands, command.replace("-", "_"))
-            result = (operation(request, orchestrator_principal=self.orchestrator_principal,
+            from .manager_journey_command import ReviewInputSchemaError
+            try:
+                result = (operation(request, orchestrator_principal=self.orchestrator_principal,
                                 observe_schedules=self.observe_schedules)
                       if command == "finish-project" else operation(request))
+            except ReviewInputSchemaError as exc:
+                # This dedicated exception is raised only before the first
+                # review journal write. Later arbitrary failures remain UNKNOWN.
+                return exc.refusal
             self._refresh_refs()
             if command == "finish-task":
                 result = self._annotate_current_turn_return(result, request)

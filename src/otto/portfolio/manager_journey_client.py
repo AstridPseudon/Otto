@@ -311,6 +311,17 @@ def command_result_summary(value: Any) -> Any:
     for original, target in ((value, summary), (review, summary.get("review_input"))):
         if not isinstance(original, dict) or not isinstance(target, dict):
             continue
+        from .retained_projection import exact_occurrence_summary
+        occurrence = original.get("occurrence")
+        if occurrence is not None:
+            projected = exact_occurrence_summary(occurrence)
+            if projected is not None:
+                target["occurrence"] = projected
+            else:
+                target["occurrence_availability"] = "detail-required; exact handle cannot be partially projected"
+        judgment = original.get("judgment_schema")
+        if isinstance(judgment, dict) and len(json.dumps(judgment).encode()) <= 4096:
+            target["judgment_schema"] = judgment
         aliases = original.get("criterion_aliases")
         if isinstance(aliases, dict) and len(aliases) <= 256:
             mapped = {name: ref(item) for name, item in aliases.items()
@@ -561,7 +572,7 @@ def add_manager_journey_parsers(commands: Any) -> None:
     review.add_argument("--source-ref", action="append", dest="source_refs", required=True, type=_review_ref,
                         help="one pinned object per flag; repeat this flag for additional sources")
     review.add_argument("--judgments", required=True, type=json.loads,
-                        help="criterion alias -> verdict, rationale, evidence_refs; rationale is nonblank text without slash/backslash; put paths in inspection; include actual candidate in evidence_refs")
+                        help="every criterion alias -> exact {verdict,rationale,evidence_refs}; verdict is PASS, REWORK or UNKNOWN (not ACCEPT); rationale is a nonblank identifier without slash/backslash/NUL; put substantive prose and paths in inspection; include actual candidate in evidence_refs")
     review.add_argument("--inspection", required=True, type=json.loads,
                         help='nonempty JSON object of substantive observations, for example {"observed":"your inspection"}; not a JSON string or automatic verdict')
     review.add_argument("--review-only", action="store_false", dest="finish",

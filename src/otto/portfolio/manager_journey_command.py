@@ -16,6 +16,17 @@ def _digest(value: Any) -> str:
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+class ReviewInputSchemaError(ValueError):
+    """Only the explicit pre-journal input validation boundary uses this type."""
+    def __init__(self, field: str, message: str, *, allowed_values=None):
+        super().__init__(message)
+        self.refusal = {"outcome": "rejected", "effects_started": False,
+            "provider_called": False, "retry_provider": False,
+            "error": {"kind": "input", "code": "review_input_schema", "field": field,
+                "message": message, "allowed_values": allowed_values},
+            "next_action": "Correct this input using review-input; preserve the original request receipt. No review journal or assessment reservation was started."}
+
+
 class ManagerJourneyCommands:
     """Trusted service composition; transport input cannot select an actor or pool."""
 
@@ -215,6 +226,17 @@ class ManagerJourneyCommands:
                 "example": {"observed": "Your substantive inspection of the exact retained candidate"},
                 "authority": "input shape only; no verdict or review allowance"}
 
+    @staticmethod
+    def _judgment_schema() -> dict[str, Any]:
+        return {"type": "object", "keys": "every configured criterion alias exactly once",
+                "required_fields": ["verdict", "rationale", "evidence_refs"],
+                "verdict_enum": ["PASS", "REWORK", "UNKNOWN"],
+                "rationale": "nonblank assessment identifier without slash, backslash or NUL; substantive prose belongs in inspection",
+                "example": {"CRITERION_ALIAS": {"verdict": "PASS", "rationale": "inspected-candidate",
+                    "evidence_refs": [{"authority": "OWN_AUTHORITY", "kind": "wrk.result",
+                        "id": "EXACT_CANDIDATE_ID", "revision": "EXACT_REVISION"}]}},
+                "authority": "input shape only; PASS requires your independent favorable inspection"}
+
     def _review_policy(self, alias: str, *, validate_current: bool = True,
                        completed_task_ref: Mapping[str, Any] | None = None) -> LocalAssessmentPolicy:
         """Use an owner-issued task supplement without changing setup/base authority."""
@@ -293,7 +315,7 @@ class ManagerJourneyCommands:
         policy = self._review_policy(alias)
         contract = {"assessment_policy_selection": self._review_policy_pin(alias, policy),
                     "criterion_aliases": self._review_criteria(self.state["task_refs"][alias], policy),
-                    "inspection_schema": self._inspection_schema()}
+                    "inspection_schema": self._inspection_schema(), "judgment_schema": self._judgment_schema()}
         worker = (self.state.get("workers") or {}).get(alias)
         if not isinstance(worker, Mapping) or self.due_port is None:
             return {**contract, "outcome": "held", "provider_called": False,
@@ -316,6 +338,8 @@ class ManagerJourneyCommands:
                 or result.get("context_digest_verified") is not True):
             return {**contract, "outcome": "pending", "schedule_id": worker["schedule_id"], "provider_called": False,
                     "retry_provider": False, "reason": "inspect or settle this exact worker occurrence before judging it"}
+        from .occurrence_reads import handle
+        occurrence = handle(due)
         observations = []
         for item in self.owner.assignments.command_port.list_observations(assignment.ref, kind="result"):
             value = json_value(item.value)
@@ -331,6 +355,7 @@ class ManagerJourneyCommands:
         ref = observations[0].ref.to_dict()
         task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
         return {**contract, "outcome": "read", "task_ref": task_ref, "task_outcome": task.payload.get("outcome"),
+                "occurrence": occurrence,
                 "schedule_id": worker["schedule_id"], "candidate_ref": ref, "source_refs": [ref], "evidence_refs": [ref],
                 "worker_result_sha256": _digest(result), "observed_turn_id": result.get("observed_turn_id"),
                 "physical_session_id": result.get("physical_session_id"), "provider_called": False,
@@ -480,12 +505,12 @@ class ManagerJourneyCommands:
             judgments = request.get("judgments")
             aliases = self._review_criteria(manifest["task_ref"], policy)
             if not isinstance(judgments, Mapping) or set(judgments) != set(aliases):
-                raise ValueError("input schema rejected before review effects: supply explicit judgment for every "
+                raise ReviewInputSchemaError("judgments", "input schema rejected before review effects: supply explicit judgment for every "
                     "configured task criterion; exact aliases: " + ", ".join(sorted(aliases)) +
                     ". Read review-input --task " + alias + " for their pinned refs")
             inspection = request.get("inspection")
             if not isinstance(inspection, Mapping) or not inspection:
-                raise ValueError('input schema rejected before review effects: inspection must be a nonempty JSON '
+                raise ReviewInputSchemaError("inspection", 'input schema rejected before review effects: inspection must be a nonempty JSON '
                     'object containing substantive observed evidence, for example {"observed":"your inspection"}; '
                     'a JSON string, array or empty object is not accepted')
             evidence = []
@@ -494,7 +519,9 @@ class ManagerJourneyCommands:
                         or set(judgment) != {"verdict", "rationale", "evidence_refs"}
                         or judgment["verdict"] not in {"PASS", "REWORK", "UNKNOWN"}
                         or not isinstance(judgment["rationale"], str) or not judgment["rationale"].strip()):
-                    raise ValueError("each criterion requires verdict, rationale and genuine evidence_refs")
+                    raise ReviewInputSchemaError("judgments." + criterion_alias,
+                        "each criterion requires exactly verdict, rationale and evidence_refs; verdict must be PASS, REWORK or UNKNOWN",
+                        allowed_values=["PASS", "REWORK", "UNKNOWN"])
                 evidence.extend(commands._refs(judgment["evidence_refs"], "evidence_refs"))
             evidence = list(dict.fromkeys(evidence))
             if self._instruction_document(candidate) or candidate not in evidence:
@@ -503,7 +530,7 @@ class ManagerJourneyCommands:
                     "Use review-input --task to discover retained worker refs, then inspect the artifact and exact task outcome.")
             for judgment in judgments.values():
                 if any(char in judgment["rationale"] for char in ("/", "\\", "\x00")):
-                    raise ValueError("rationale is an assessment identifier: use nonblank text without slash, backslash or NUL; "
+                    raise ReviewInputSchemaError("judgments.rationale", "rationale is an assessment identifier: use nonblank text without slash, backslash or NUL; "
                                      "put paths and substantive inspection prose in inspection")
             hashes = {}
             for ref in evidence:

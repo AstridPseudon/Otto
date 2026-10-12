@@ -115,7 +115,7 @@ def compact_read_response(value: Mapping[str, Any], *, operation: str) -> dict[s
             "recorded_at", "actor", "authority_source", "response", "proposed_solution", "next_action",
             "project_ref", "response_ref", "state"), "retained_report")
     for name in ("assessment_policy_selection", "assessment_policy_selection_availability",
-                 "criterion_aliases", "criterion_aliases_availability", "inspection_schema", "candidate_ref",
+                 "criterion_aliases", "criterion_aliases_availability", "inspection_schema", "judgment_schema", "occurrence", "candidate_ref",
                  "task_ref", "schedule_id", "source_refs", "evidence_refs", "worker_result_sha256"):
         if name in summary:
             selected[name] = summary[name]

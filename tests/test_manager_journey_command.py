@@ -41,6 +41,57 @@ class ManagerJourneyCommandTests(unittest.TestCase):
                     "rationale": "The retained evidence satisfies the declared criterion" if verdict == "PASS" else "The retained check is incomplete",
                     "evidence_refs": [candidate]}}}
 
+    def test_review_input_exposes_exact_occurrence_and_complete_judgment_schema(self):
+        from otto.portfolio.occurrence_reads import exact_due, handle
+        from otto.portfolio.manager_journey_client import command_result_summary
+        f=self.application
+        worker=f.app.assign_and_start(**f.request())
+        self.assertEqual(worker['outcome'],'succeeded')
+        due=f.port.read_due(worker['schedule_id'])
+        self.fixture.state['workers']={'PA01':{'schedule_id':worker['schedule_id'],
+            'assignment_ref':due['assignment_ref'],'generation':due['generation'],'principal':due['recipient']}}
+        self.commands.due_port=f.port
+        read=self.commands.review_input('PA01')
+        self.assertEqual(read['occurrence'],handle(due))
+        self.assertIn('parent',read['occurrence'])
+        self.assertEqual(command_result_summary(read)['occurrence'],handle(due))
+        self.assertEqual(exact_due(f.port,read['occurrence']),due)
+        self.assertEqual(read['judgment_schema']['verdict_enum'],['PASS','REWORK','UNKNOWN'])
+        for change in ({'parent':'foreign'}, {'generation':2}, {'principal':'worker'}):
+            with self.subTest(change=change),self.assertRaises((ValueError,PermissionError)):
+                exact_due(f.port,{**read['occurrence'],**change})
+        missing=dict(read['occurrence']);missing.pop('parent')
+        with self.assertRaises(ValueError):exact_due(f.port,missing)
+
+    def test_explicit_judgment_schema_refuses_before_journal_or_assessment_effect(self):
+        from unittest.mock import patch
+        from otto.portfolio.manager_journey_command import ReviewInputSchemaError
+        for changes in ({'verdict':'ACCEPT'},{'rationale':'inspection/path'}, {'rationale':'inspection\\path'}, {'rationale':'bad\x00id'}):
+            with self.subTest(changes=changes):
+                request=self.request(key='schema-refusal')
+                request['judgments']['C01'].update(changes)
+                before=self.application.store.consumer().snapshot_counts()
+                with patch.object(self.commands,'_journal',wraps=self.commands._journal) as journal, patch.object(type(self.application.owner),'create_manager_assessment_pool') as pool:
+                    with self.assertRaises(ReviewInputSchemaError) as error:self.commands.review_task(request)
+                    self.assertFalse(error.exception.refusal['effects_started'])
+                    self.assertEqual(error.exception.refusal['error']['code'],'review_input_schema')
+                    self.assertFalse(any(len(call.args)>2 for call in journal.call_args_list))
+                    pool.assert_not_called()
+                self.assertEqual(before,self.application.store.consumer().snapshot_counts())
+        from types import SimpleNamespace
+        from otto.portfolio.manager_journey_service import ManagerJourneyService
+        service=SimpleNamespace(commands=self.commands)
+        invalid=self.request(key='service-explicit-schema-refusal')
+        invalid['judgments']['C01']['verdict']='ACCEPT'
+        before=self.application.store.consumer().snapshot_counts()
+        refusal=ManagerJourneyService.__call__(service,invalid)
+        self.assertEqual(refusal['outcome'],'rejected')
+        self.assertFalse(refusal['effects_started'])
+        self.assertEqual(before,self.application.store.consumer().snapshot_counts())
+        corrected=self.request(key='corrected-schema')
+        self.assertEqual(self.commands.review_task(corrected)['outcome'],'accepted')
+        self.assertEqual(self.application.provider.calls,[])
+
     def test_author_tasks_accepts_current_work_task_scope_and_keeps_project_scope_fence(self):
         f = self.application
         task = ResourceRef.from_dict(self.fixture.state["task_refs"]["PA01"])

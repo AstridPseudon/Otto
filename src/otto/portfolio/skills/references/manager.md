@@ -167,3 +167,5 @@ remains in effect. A supplement supplies no new worker or provider authority.
 Use a distinct correction judgment key after inspecting the genuine supplement;
 an old review key cannot move its debit to a new pool. Exhaustion never falls
 back to MAIN. Retain any original partial/UNKNOWN receipt unchanged.
+
+For an independent judgment, use `review-input --task <alias>` once. It returns the exact six-field occurrence (including `parent: null` where applicable), candidate and criterion refs, and judgment schema. Pass the returned occurrence unchanged to `read-result` or `read-artifact`; do not reconstruct it from a schedule ID or principal. Verdicts are `PASS`, `REWORK`, or `UNKNOWN`; `ACCEPT` is not a verdict. Rationale is a nonblank identifier without slash, backslash or NUL; put observed facts and paths in the nonempty inspection object. An explicit `review_input_schema` refusal has `effects_started: false` at the pre-journal validation boundary. Preserve its outer receipt; arbitrary later failures still require exact effect reconciliation.
