@@ -408,6 +408,13 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
             # succeed, so a held apply retains the previous comparison point.
             registration = {**registration, 'custom': {**registration['custom'],
                 'otto_portfolio_setup': item.get('old_setup', {})}}
+            # Per-file baselines of an existing registration advance only with
+            # the document revision, in sync_documents' check-in; registering
+            # new hashes here would leave stored text behind its baseline.
+            held_hashes = dict(((current.payload.get('custom') or {}).get('otto_host_registration') or {})
+                               .get('raw_sha256') or {})
+            registration['custom'] = {**registration['custom'], 'otto_host_registration': {
+                **registration['custom']['otto_host_registration'], 'raw_sha256': held_hashes}}
         receipt = register(session, registration, key=key)
         item["record"] = _resolve_project(session, item["run_id"])
         planned_row = next(row for row in planned if row["project"] == letter)
