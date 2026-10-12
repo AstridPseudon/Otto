@@ -123,11 +123,9 @@ class RetentionOwnerReadTests(unittest.TestCase):
         result = ResourceRef(result_doc.ref.authority, result_doc.ref.kind, result_doc.ref.id, "rev-1")
         evidence = ResourceRef(evidence_doc.ref.authority, evidence_doc.ref.kind, evidence_doc.ref.id, "rev-1")
         gate = ResourceRef(gate_doc.ref.authority, gate_doc.ref.kind, gate_doc.ref.id, "rev-1")
-        payload["completion"] = {"candidate_ref": candidate.to_dict(), "result_ref": result.to_dict(),
+        payload["completion"] = {"candidate_ref": candidate.to_dict(), "result_ref": None,
             "evidence_refs": [evidence.to_dict()], "gate_refs": [gate.to_dict()],
-            "assignment_ref": root.ref.to_dict()}
-        payload["effect_packet"] = {"result_ref": result.to_dict(), "evidence_refs": [evidence.to_dict()]}
-        payload["settlement"] = {"result_ref": result.to_dict(), "gate_refs": [gate.to_dict()]}
+            "attempt_ref": None, "assignment_ref": root.ref.to_dict()}
         payload["unrelated_large_notes"] = "x" * 20000
         next_task_ref = ResourceRef(task.ref.authority, task.ref.kind, task.ref.id,
                                     "rev-" + str(task.version + 1))
@@ -178,9 +176,12 @@ class RetentionOwnerReadTests(unittest.TestCase):
         self.assertNotIn("state", result_view["tasks"][0])
         groups = result_view["tasks"][0]["survivor_facets"]["groups"]
         self.assertEqual(groups["completion"]["fields"]["candidate_ref"]["ref"], candidate.to_dict())
+        self.assertTrue(groups["completion"]["complete"])
+        self.assertEqual(groups["completion"]["fields"]["result_ref"]["state"], "unavailable")
+        self.assertEqual(groups["completion"]["fields"]["attempt_ref"]["state"], "unavailable")
         self.assertEqual(groups["completion"]["fields"]["evidence_refs"]["refs"], [evidence.to_dict()])
-        self.assertEqual(groups["effect"]["fields"]["result_ref"]["ref"], result.to_dict())
-        self.assertEqual(groups["settlement"]["fields"]["gate_refs"]["refs"], [gate.to_dict()])
+        self.assertEqual(groups["effect"]["state"], "unavailable")
+        self.assertEqual(groups["settlement"]["state"], "unavailable")
         self.assertEqual(result_view["reconciliation"]["observation"]["shared_records"]["count"], 24)
         self.assertEqual(result_view["reconciliation"]["observation"]["coverage"]["fields"]["source"],
                          "complete project-scoped public Due list")

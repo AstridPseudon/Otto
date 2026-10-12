@@ -746,13 +746,47 @@ class OperatingSetupTests(unittest.TestCase):
         state["assessment_policy"] = original_policy
         aliases = {"D01": "C01", "D02": "C02", "D03": "C03"}
         for task_alias, criterion_alias in aliases.items():
-            candidate = fixture.source(task_alias)
+            proof_evidence = None
+            if task_alias == "D01":
+                # Exercise the canonical mixed WRK+DAT evidence shape. The
+                # generic assessment DAT verifier reports WRK evidence as
+                # unknown, while the completion producer still pins a digest
+                # for each exact evidence revision.
+                result = f.owner.assignments.command_port.append_result(
+                    ResourceRef.from_dict(state["assignment_ref"]),
+                    {"outcome": "succeeded", "task_ref": state["task_refs"][task_alias],
+                     "context_digest_verified": True},
+                    expected_generation=state["manager_generation"],
+                    logical_request_key="historical-wrk-evidence-" + task_alias, actor=f.actor)
+                candidate = result.ref.to_dict()
+                proof_evidence = fixture.source(task_alias + "-dat-proof")
+            else:
+                candidate = fixture.source(task_alias)
             reviewed = fixture.commands.review_task({"command": "review-task", "task": task_alias,
                 "request_key": "historical-review-" + task_alias, "candidate_ref": candidate,
                 "source_refs": [candidate], "inspection": {"observed": "Reviewed the exact task evidence"},
+                "finish": task_alias != "D01",
                 "judgments": {criterion_alias: {"verdict": "PASS", "rationale": "Evidence satisfies the criterion",
-                    "evidence_refs": [candidate]}}})
+                    "evidence_refs": [candidate] + ([proof_evidence] if proof_evidence else [])}}})
+            if task_alias == "D01":
+                # Exercise the canonical completion producer directly: the
+                # ordinary manager finish wrapper correctly holds WRK result
+                # candidates until native settlement is bound.
+                completion = f.owner.assignments.command_port.complete(
+                    ResourceRef.from_dict(state["task_refs"][task_alias]),
+                    project=ResourceRef.from_dict(state["project_ref"]),
+                    assignment=ResourceRef.from_dict(state["assignment_ref"]),
+                    expected_generation=state["manager_generation"],
+                    expected_project_revision=state["project_ref"]["revision"],
+                    expected_task_revision=state["task_refs"][task_alias]["revision"],
+                    disposition="accepted", evidence_refs=reviewed["evidence_refs"],
+                    evidence_hashes=reviewed["evidence_hashes"], gate_refs=reviewed["gate_refs"],
+                    candidate_ref=reviewed["candidate_ref"],
+                    logical_request_key="historical-review-D01:finish", actor=f.actor)
+                reviewed = {**reviewed, "completion": completion}
             self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
+            if task_alias == "D01":
+                self.assertEqual(reviewed["completion"]["completion"]["assessment_gate_check"]["evidence_verification"], "unknown")
             state["task_refs"][task_alias] = reviewed["completion"]["task_ref"]
 
         # Preserve the admitted D01-D05 rev-1 setup pins before current heads move.
@@ -788,6 +822,27 @@ class OperatingSetupTests(unittest.TestCase):
         self.assertEqual(f.owner.graph.reader.snapshot_counts(), counts)
         self.assertEqual(f.provider.calls, [])
 
+        # Completion records the exact project head used at completion. A
+        # later project revision is valid history when that stored ref and
+        # project_revision agree; it must not be compared to the new head.
+        prior_project_ref = dict(state["project_ref"])
+        current_project = graph.get(ResourceRef.from_dict(prior_project_ref))
+        next_project_ref = ResourceRef(current_project.ref.authority, current_project.ref.kind,
+            current_project.ref.id, "rev-" + str(current_project.version + 1))
+        f.store.revise_identity(current_project.ref, dict(current_project.payload),
+            revision=next_project_ref.revision, expected_revision=current_project.ref.revision,
+            expected_version=current_project.version)
+        state["project_ref"] = next_project_ref.to_dict()
+        policy = LocalAssessmentPolicy.from_run_config(current_policy, state=state)
+        runtime = f.owner.role_runtime(due_port=f.port, adapter=f.app.runtime.adapter,
+            assessment_policy=policy)
+        after_project_revision = runtime.acceptance_readiness(state["project_ref"],
+            {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                "generation": state["manager_generation"]}, configured)
+        self.assertEqual(after_project_revision["completed_task_readbacks"], ready["completed_task_readbacks"])
+        self.assertEqual(after_project_revision["required_scopes"], ready["required_scopes"])
+        self.assertEqual(f.provider.calls, [])
+
         stale = list(configured)
         stale[1] = {**stale[1], "revision": "rev-999"}
         with self.assertRaisesRegex(PermissionError, "predecessor"):
@@ -803,27 +858,54 @@ class OperatingSetupTests(unittest.TestCase):
                     "generation": state["manager_generation"]}, missing)
         reader = f.owner.graph.reader
         original_get_identity = reader.get_identity
-        def corrupt_gate(ref):
+        def corrupt_completion(ref, corruption):
             identity = original_get_identity(ref)
             if identity is not None and identity.ref.id == ResourceRef.from_dict(original["D03"]).id:
                 completion = identity.payload["completion"]
-                gate = completion["assessment_gate_check"]
-                payload = {**identity.payload, "completion": {**completion,
-                    "assessment_gate_check": {**gate, "accepted_decision_refs": []}}}
+                payload_completion = dict(completion)
+                if corruption == "gate":
+                    gate = completion["assessment_gate_check"]
+                    payload_completion["assessment_gate_check"] = {**gate, "accepted_decision_refs": []}
+                elif corruption == "foreign-project":
+                    payload_completion["project_ref"] = {**completion["project_ref"], "id": "other-project"}
+                elif corruption == "stale-project-revision":
+                    payload_completion["project_revision"] = "rev-999"
+                elif corruption == "evidence-hash":
+                    first_hash = next(iter(completion["evidence_hashes"]))
+                    payload_completion["evidence_hashes"] = {**completion["evidence_hashes"],
+                        first_hash: "0" * 64}
+                elif corruption == "foreign-evidence":
+                    evidence_refs = list(completion["evidence_refs"])
+                    evidence_refs[0] = {**evidence_refs[0], "authority": "foreign-authority"}
+                    payload_completion["evidence_refs"] = evidence_refs
+                elif corruption == "stale-evidence":
+                    evidence_refs = list(completion["evidence_refs"])
+                    evidence_refs[0] = {**evidence_refs[0], "revision": "rev-999"}
+                    payload_completion["evidence_refs"] = evidence_refs
+                payload = {**identity.payload, "completion": payload_completion}
                 return replace(identity, payload=payload)
             return identity
         class CorruptReader:
+            def __init__(self, corruption):
+                self.corruption = corruption
             def __getattr__(self, name):
                 return getattr(reader, name)
-            get_identity = staticmethod(corrupt_gate)
-        object.__setattr__(f.owner.graph, "reader", CorruptReader())
-        try:
-            with self.assertRaisesRegex(PermissionError, "accepted gate proof"):
-                runtime.acceptance_readiness(state["project_ref"],
-                    {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
-                        "generation": state["manager_generation"]}, configured)
-        finally:
-            object.__setattr__(f.owner.graph, "reader", reader)
+            def get_identity(self, ref):
+                return corrupt_completion(ref, self.corruption)
+        for corruption, message in (("gate", "accepted gate proof"),
+                                    ("foreign-project", "canonical accepted completion proof"),
+                                    ("stale-project-revision", "canonical accepted completion proof"),
+                                    ("evidence-hash", "evidence hash"),
+                                    ("foreign-evidence", "evidence hash"),
+                                    ("stale-evidence", "evidence hashes do not cover")):
+            object.__setattr__(f.owner.graph, "reader", CorruptReader(corruption))
+            try:
+                with self.assertRaisesRegex(PermissionError, message):
+                    runtime.acceptance_readiness(state["project_ref"],
+                        {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                            "generation": state["manager_generation"]}, configured)
+            finally:
+                object.__setattr__(f.owner.graph, "reader", reader)
 
     def test_manual_manager_sync_failure_surfaces_finite_readiness_blockers(self):
         f = self.f

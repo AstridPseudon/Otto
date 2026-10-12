@@ -669,7 +669,14 @@ def _task_survivor_facets(payload: Mapping[str, Any], authority: str) -> Mapping
                 fields[name] = {"state": "unavailable", "ref": None}
                 continue
             present += 1
-            ref = _safe_ref(payload.get(key), authority)
+            raw_ref = payload.get(key)
+            # The canonical work-completion producer explicitly stores result
+            # and attempt as nullable optional fields. Null means no survivor
+            # was supplied, not a malformed or foreign pin.
+            if raw_ref is None and prefix == "completion" and name in {"result_ref", "attempt_ref"}:
+                fields[name] = {"state": "unavailable", "ref": None}
+                continue
+            ref = _safe_ref(raw_ref, authority)
             if ref is None:
                 fields[name] = {"state": "invalid", "ref": None}
                 invalid += 1
@@ -689,9 +696,12 @@ def _task_survivor_facets(payload: Mapping[str, Any], authority: str) -> Mapping
             if projected["state"] not in {"available"}:
                 invalid += 1
         state = "unavailable" if present == 0 else "partial" if invalid else "available"
-        required = ("candidate_ref", "result_ref", "evidence_refs", "gate_refs", "assignment_ref")
+        required = ("candidate_ref", "evidence_refs", "gate_refs", "assignment_ref")
         required_available = all(fields[name]["state"] == "available" for name in required)
-        groups[prefix] = {"state": state, "complete": required_available and invalid == 0,
+        # Only canonical completion can establish task completion survivor
+        # coverage. effect_packet and settlement are optional alternate facets.
+        groups[prefix] = {"state": state,
+                          "complete": prefix == "completion" and required_available and invalid == 0,
                           "fields": fields, "refs": _dedupe_refs(refs)}
         all_refs.extend(refs)
     return {"state": "available" if any(group["state"] == "available" for group in groups.values())

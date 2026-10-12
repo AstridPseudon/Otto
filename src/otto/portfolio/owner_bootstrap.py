@@ -1095,8 +1095,17 @@ class PortfolioOwnerBootstrap:
             def verify_completed_history(configured_task: Mapping[str, Any], current: Any) -> None:
                 """Verify canonical accepted completion without consulting the new-review policy."""
                 completion = current.payload.get("completion")
+                try:
+                    completion_project = ResourceRef.from_dict(completion.get("project_ref"))
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    completion_project = None
                 if (current.payload.get("lifecycle") != "completed" or not isinstance(completion, Mapping)
-                        or completion.get("project_ref") != project.to_dict()
+                        or completion_project is None
+                        or (completion_project.authority, completion_project.kind, completion_project.id)
+                        != (project.authority, project.kind, project.id)
+                        or completion_project.revision != completion.get("project_revision")
+                        or not isinstance(completion.get("project_revision"), str)
+                        or not completion.get("project_revision")
                         or completion.get("manager") != manager["principal"]
                         or completion.get("disposition") not in {
                             "accept", "accepted", "accepted-for-task", "approved", "complete", "completed", "verified"}):
@@ -1131,6 +1140,49 @@ class PortfolioOwnerBootstrap:
                 candidate_identity = self.graph.reader.get_identity(candidate)
                 if candidate_identity is None or candidate_identity.ref != candidate:
                     raise PermissionError("historical setup completion evidence is stale")
+                # The ordinary completion producer stores exact hashes for all
+                # review evidence. The generic assessment verifier only
+                # verifies DAT documents, so its aggregate may honestly be
+                # unknown when a WRK result/report is also evidence. Verify the
+                # immutable producer hashes directly instead of treating that
+                # DAT-only coverage flag as canonical task acceptance.
+                from .manager_journey_command import _digest
+                if (not isinstance(hashes, Mapping) or not hashes
+                        or len(evidence) > 64 or not evidence
+                        or any(not ref.revision for ref in evidence)
+                        or len({(ref.authority, ref.kind, ref.id, ref.revision) for ref in evidence}) != len(evidence)):
+                    raise PermissionError("historical setup completion evidence hashes are invalid")
+                expected_hash_keys = {f"{ref.kind}:{ref.id}:{ref.revision}" for ref in evidence}
+                if set(hashes) != expected_hash_keys:
+                    raise PermissionError("historical setup completion evidence hashes do not cover exact evidence pins")
+                for evidence_ref in evidence:
+                    claimed_digest = hashes.get(f"{evidence_ref.kind}:{evidence_ref.id}:{evidence_ref.revision}")
+                    if (not isinstance(claimed_digest, str) or len(claimed_digest) != 64
+                            or any(character not in "0123456789abcdef" for character in claimed_digest)):
+                        raise PermissionError("historical setup completion evidence digest is malformed")
+                    if evidence_ref.kind == "dat.content.document":
+                        retained = self.content.read(evidence_ref)
+                        from herzchen.content.model import revision_identity
+                        storage_ref = revision_identity(
+                            ResourceRef(evidence_ref.authority, evidence_ref.kind, evidence_ref.id),
+                            evidence_ref.revision)
+                        actual_digest = (_digest(retained["content"])
+                            if retained.get("identity") == evidence_ref
+                            and retained.get("storage_identity") == storage_ref
+                            and "content" in retained else None)
+                    elif evidence_ref.kind in {"wrk.result", "wrk.report"}:
+                        retained = self.graph.reader.get_identity(evidence_ref)
+                        value = None if retained is None or retained.ref != evidence_ref else retained.payload.get("value")
+                        actual_digest = _digest(value) if isinstance(value, Mapping) else None
+                    else:
+                        retained = self.graph.reader.get_identity(evidence_ref)
+                        stored_digest = (retained.payload.get("content_digest")
+                            if retained is not None and retained.ref == evidence_ref else None)
+                        actual_digest = (stored_digest if isinstance(stored_digest, str)
+                            and len(stored_digest) == 64
+                            and all(character in "0123456789abcdef" for character in stored_digest) else None)
+                    if actual_digest != claimed_digest:
+                        raise PermissionError("historical setup completion evidence hash does not match retained content")
                 gate = completion.get("assessment_gate_check")
                 if (not isinstance(gate, Mapping) or gate.get("required") is not True
                         or gate.get("blockers") != []
@@ -1140,7 +1192,7 @@ class PortfolioOwnerBootstrap:
                 state = self.assignments.completion_blockers(current.ref, candidate=candidate, gate_refs=gates,
                     actor=actor, completion_evidence_refs=evidence, completion_evidence_hashes=hashes)
                 if (state.get("required") is not True or state.get("blockers")
-                        or state.get("evidence_verification") != "verified"
+                        or state.get("evidence_verification") not in {"verified", "unknown"}
                         or state.get("candidate_ref") != candidate.to_dict()
                         or not state.get("accepted_decision_refs")
                         or state.get("accepted_decision_refs") != [ref.to_dict() for ref in gates]):
