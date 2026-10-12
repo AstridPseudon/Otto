@@ -181,7 +181,11 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         service.start_heartbeat()
         initial = json.loads(status_path(service.home).read_text())
         projection_at = initial["projection_at"]
-        service._remember_and_publish({**initial, "manager_turn_active": True}, service._heartbeat_paths)
+        service._remember_and_publish({**initial, "manager_turn_active": True,
+            "manager_turns": {"active": 1, "active_projects": ["fixture-project"]},
+            "native_capacity": {"active_or_uncertain": 1, "holds": ["unknown-worker-hold"]},
+            "in_flight": {"lane_requests": [{"token": "retained"}], "relays": []},
+            "store_open_count": 1}, service._heartbeat_paths)
         entered, release = threading.Event(), threading.Event()
         captured = {}
 
@@ -231,6 +235,15 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         self.assertEqual(closed["closure_provenance"], "host-and-store-released")
         self.assertEqual(closed["projection_at"], projection_at)
         self.assertTrue(closed["closed_at"])
+        self.assertEqual(closed["store_open_count"], 0)
+        self.assertIs(closed["store_closed"], True)
+        self.assertEqual(closed["post_projection_liveness"], "unobserved_after_host_and_store_release")
+        self.assertEqual(closed["last_projection"]["native_capacity"]["holds"], ["unknown-worker-hold"])
+        self.assertEqual(closed["last_projection"]["manager_turns"]["active"], 1)
+        self.assertEqual(closed["last_projection"]["in_flight"]["lane_requests"][0]["token"], "retained")
+        self.assertNotIn("native_capacity", closed)
+        self.assertNotIn("manager_turn_active", closed)
+        self.assertNotIn("in_flight", closed)
         self.assertFalse(service._heartbeat_thread.is_alive())
 
 

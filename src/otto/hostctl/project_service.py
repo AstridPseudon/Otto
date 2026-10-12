@@ -211,6 +211,22 @@ class ProjectOwnerService(OwnerService):
                 self._heartbeat_paths = (status_path(self.home),)
             else:
                 value = copy.deepcopy(dict(self._heartbeat_snapshot))
+            if self._draining:
+                # These values describe the last owner projection.  Once the
+                # queue and Store are released, retain the evidence without
+                # presenting native/manager activity as freshly observed.
+                last_projection = {
+                    key: copy.deepcopy(value[key]) for key in (
+                        'projection_at', 'manager_turns', 'manager_turn_active',
+                        'native_capacity', 'in_flight', 'attached_projects', 'store_open_count')
+                    if key in value
+                }
+                value['last_projection'] = last_projection
+                for key in ('manager_turns', 'manager_turn_active', 'native_capacity', 'in_flight'):
+                    value.pop(key, None)
+                value['store_open_count'] = 0
+                value['store_closed'] = True
+                value['post_projection_liveness'] = 'unobserved_after_host_and_store_release'
             value['state'] = 'closed'
             value['outcome'] = 'closed'
             value['shutdown_phase'] = 'closed'
