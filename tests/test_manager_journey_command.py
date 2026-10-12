@@ -41,6 +41,55 @@ class ManagerJourneyCommandTests(unittest.TestCase):
                     "rationale": "The retained evidence satisfies the declared criterion" if verdict == "PASS" else "The retained check is incomplete",
                     "evidence_refs": [candidate]}}}
 
+    def test_author_tasks_accepts_current_work_task_scope_and_keeps_project_scope_fence(self):
+        f = self.application
+        task = ResourceRef.from_dict(self.fixture.state["task_refs"]["PA01"])
+
+        def report_for(scope, suffix):
+            assignment = f.owner.assignments.command_port.assign(scope, role="executor", principal="worker",
+                manager=self.fixture.state["manager"], session="authoring-" + suffix, pins=[],
+                logical_request_key="authoring-assignment-" + suffix, actor=f.actor)
+            report = f.owner.assignments.command_port.append_report(assignment.ref,
+                {"schema": "fixture.authoring-review.v1", "suffix": suffix},
+                expected_generation=assignment.generation, logical_request_key="authoring-report-" + suffix,
+                actor=f.actor)
+            return report
+
+        def request(report, suffix):
+            return {"command": "author-tasks", "request_key": "author-task-plan-" + suffix,
+                "base_revision": self.fixture.state["project_ref"]["revision"], "review_ref": report.ref.to_dict(),
+                "dispositions": [{"finding_id": "finding-" + suffix, "decision": "defer",
+                    "reason": "Keep this evidence for the next review", "revisit": "After the exact owner check"}],
+                "tasks": []}
+
+        task_scoped = report_for(task, "current-task")
+        authored = self.commands.author_tasks(request(task_scoped, "current-task"))
+        self.assertEqual(authored["outcome"], "authored", authored)
+        self.assertFalse(authored["provider_called"])
+        self.assertFalse(authored["dispatch"])
+
+        # Existing same-project project-scope evidence remains a supported
+        # authoring input; the namespace repair does not narrow that route.
+        project_report = report_for(f.project.ref, "same-project")
+        self.assertEqual(self.commands.author_tasks(request(project_report, "same-project"))["outcome"], "authored")
+
+        other = f.owner.graph.create_project(title="Foreign project", logical_request_key="authoring-foreign-project")
+        foreign_task = f.owner.graph.create_task(other.ref, title="Foreign task", logical_request_key="authoring-foreign-task")
+        foreign_report = report_for(foreign_task.ref, "foreign-task")
+        with self.assertRaisesRegex(PermissionError, "another project"):
+            self.commands.author_tasks(request(foreign_report, "foreign-task"))
+
+        missing_ref = ResourceRef(task.authority, "work.task", "missing-authoring-task", "rev-1")
+        missing_report = report_for(missing_ref, "missing-task")
+        with self.assertRaisesRegex(PermissionError, "missing or stale"):
+            self.commands.author_tasks(request(missing_report, "missing-task"))
+
+        stale_report = report_for(task, "stale-task")
+        f.owner.graph.revise(task, title="Changed task head", base_revision=task.revision,
+            logical_request_key="authoring-stale-task", actor=f.actor)
+        with self.assertRaisesRegex(PermissionError, "missing or stale"):
+            self.commands.author_tasks(request(stale_report, "stale-task"))
+
     def test_one_operation_accepts_source_and_completes_replay_without_provider(self):
         request = self.request()
         first = self.commands.review_task(request)

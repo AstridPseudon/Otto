@@ -169,7 +169,14 @@ class ExecutionApplication:
             request_key="manual-manager-selector:" + _digest([project, due.assignment_ref,
                 due.generation, schedule_id, expected]))
         if result["outcome"] not in {"updated", "replayed"}:
-            raise OccurrencePreparationError("manual selector update did not qualify")
+            readiness = result.get("readiness")
+            blockers = readiness.get("blockers") if isinstance(readiness, Mapping) else None
+            first = blockers[0] if isinstance(blockers, list) and blockers else None
+            return {"outcome": "partial", "stage": "readiness", "readiness": readiness,
+                "error": json_value(first) if isinstance(first, Mapping) else {
+                    "code": str(result.get("outcome") or "unknown"),
+                    "message": "manual selector update did not qualify"},
+                "provider_called": False}
         return result
 
     def activate_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
@@ -1158,7 +1165,32 @@ class ExecutionApplication:
         try:
             due = self._resources(due)
             if due.role == "manager":
-                self.synchronize_manual_manager_occurrence(schedule_id=due.schedule_id)
+                try:
+                    synchronization = self.synchronize_manual_manager_occurrence(schedule_id=due.schedule_id)
+                except Exception as exc:
+                    blocker = {"role": "manager", "code": type(exc).__name__, "message": str(exc)}
+                    return {"outcome": "partial", "stage": "manager-synchronization",
+                        "schedule_id": schedule_id, "assignment_ref": due.assignment_ref,
+                        "generation": due.generation, "readiness": {"ready": False, "blockers": [blocker]},
+                        "error": blocker, "provider_called": False, "effects_started": False,
+                        "next_action": "resolve the reported manager readiness blocker before starting this occurrence"}
+                if not isinstance(synchronization, Mapping):
+                    synchronization = {"outcome": "unknown", "reason": "manager synchronization returned no bounded status"}
+                if synchronization.get("outcome") not in {
+                        "synchronized", "already-current", "not-applicable", "updated", "prepared", "replayed"}:
+                    reported = ((synchronization.get("readiness") or {}).get("blockers")
+                                if isinstance(synchronization.get("readiness"), Mapping) else None)
+                    blockers = list(reported) if isinstance(reported, list) and reported else [{
+                        "role": "manager", "code": str(synchronization.get("outcome") or "unknown"),
+                        "message": str(synchronization.get("reason") or synchronization.get("error") or
+                            "manager synchronization did not qualify")[:512]}]
+                    return {"outcome": "partial", "stage": "manager-synchronization",
+                        "schedule_id": schedule_id, "assignment_ref": due.assignment_ref,
+                        "generation": due.generation, "synchronization": json_value(synchronization),
+                        "readiness": {"ready": False, "blockers": blockers},
+                        "error": json_value(synchronization.get("error") or blockers[0]),
+                        "provider_called": False, "effects_started": False,
+                        "next_action": "resolve the reported manager readiness blocker before starting this occurrence"}
             kwargs = self._kwargs(due)
             result = self.runtime.invoke_role(role=due.role, mode="direct", **kwargs)
         except Exception as exc:

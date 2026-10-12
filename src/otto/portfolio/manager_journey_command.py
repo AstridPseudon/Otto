@@ -123,8 +123,10 @@ class ManagerJourneyCommands:
         assignment = self.owner.assignments.command_port.get(record.payload["assignment"])
         project = ResourceRef.from_dict(self.state["project_ref"])
         scope = assignment.scope
-        if scope.kind == "wrk.task":
-            task = self.owner.graph.reader.get_identity(scope)
+        if scope.kind == "work.task":
+            task = self.owner.graph.reader.get_identity(ResourceRef(scope.authority, scope.kind, scope.id))
+            if task is None or task.ref != scope:
+                raise PermissionError("review evidence task scope is missing or stale")
             scope = ResourceRef.from_dict(task.payload["project_ref"])
         if (scope.authority, scope.kind, scope.id) != (project.authority, project.kind, project.id):
             raise PermissionError("review evidence belongs to another project")

@@ -1069,36 +1069,107 @@ class PortfolioOwnerBootstrap:
             if assessment_policy is None:
                 raise PermissionError("operating setup requires the owner-bound assessment policy and existing allowance")
             from herzchen.contracts import ResourceRef
+            if not isinstance(tasks, (list, tuple)) or not tasks or len(tasks) > 64:
+                raise PermissionError("setup acceptance tasks must be a bounded nonempty reference list")
+            policy_tasks = {task.id for task, _ in assessment_policy.task_criterion_pairs}
+            configured_refs = [ResourceRef.from_dict(value) for value in tasks]
+            configured_ids = [ref.id for ref in configured_refs]
+            project = ResourceRef.from_dict(project_ref)
+            if (any(ref.kind != "work.task" or ref.authority != project.authority or not ref.revision
+                    for ref in configured_refs)
+                    or len(configured_ids) != len(set(configured_ids))
+                    or not policy_tasks.issubset(set(configured_ids))):
+                raise PermissionError("setup must retain every task in the owner assessment policy exactly once")
             scopes, completed_readbacks = [], []
+            assignment = ResourceRef.from_dict(manager["assignment_ref"])
+            if type(manager.get("generation")) is not int or manager["generation"] < 1:
+                raise PermissionError("setup manager generation is invalid")
+            actor = self.binding.authenticated_actor(manager["principal"])
+            current_manager = self.assignments.command_port.get(assignment)
+            if (current_manager.ref != assignment or current_manager.generation != manager["generation"]
+                    or current_manager.role != "manager" or current_manager.principal != actor.actor
+                    or (current_manager.scope.authority, current_manager.scope.kind, current_manager.scope.id)
+                    != (project.authority, project.kind, project.id)):
+                raise PermissionError("setup manager assignment is stale or outside the project")
+
+            def verify_completed_history(configured_task: Mapping[str, Any], current: Any) -> None:
+                """Verify canonical accepted completion without consulting the new-review policy."""
+                completion = current.payload.get("completion")
+                if (current.payload.get("lifecycle") != "completed" or not isinstance(completion, Mapping)
+                        or completion.get("project_ref") != project.to_dict()
+                        or completion.get("manager") != manager["principal"]
+                        or completion.get("disposition") not in {
+                            "accept", "accepted", "accepted-for-task", "approved", "complete", "completed", "verified"}):
+                    raise PermissionError("historical setup task lacks canonical accepted completion proof")
+                predecessor = ResourceRef.from_dict(completion.get("task_ref"))
+                configured_ref = ResourceRef.from_dict(configured_task)
+                if predecessor != configured_ref and configured_ref != current.ref:
+                    raise PermissionError("historical setup task lacks exact committed completion predecessor")
+                key = completion.get("logical_request_key")
+                receipt = self.graph.reader.get_receipt(key) if isinstance(key, str) and key else None
+                if (receipt is None or receipt.status.value != "committed"
+                        or receipt.operation != "work.revise" or receipt.target != predecessor
+                        or receipt.result_ref != current.ref):
+                    raise PermissionError("historical setup task lacks exact committed completion predecessor")
+                assignment_ref = ResourceRef.from_dict(completion.get("assignment_ref"))
+                if (assignment_ref.kind != "wrk.assignment" or assignment_ref.authority != project.authority
+                        or type(completion.get("generation")) is not int or completion["generation"] < 1):
+                    raise PermissionError("historical setup completion has invalid manager assignment pins")
+                completed_assignment = self.assignments.command_port.get(assignment_ref)
+                if (completed_assignment.role != "manager" or completed_assignment.principal != manager["principal"]
+                        or (completed_assignment.scope.authority, completed_assignment.scope.kind, completed_assignment.scope.id)
+                        != (project.authority, project.kind, project.id)):
+                    raise PermissionError("historical setup completion belongs to another manager or project")
+                candidate = ResourceRef.from_dict(completion.get("candidate_ref"))
+                gates = [ResourceRef.from_dict(value) for value in completion.get("gate_refs", ())]
+                evidence = [ResourceRef.from_dict(value) for value in completion.get("evidence_refs", ())]
+                hashes = completion.get("evidence_hashes")
+                if (candidate.authority != project.authority or not candidate.revision
+                        or not gates or len(gates) > 64 or not evidence or len(evidence) > 64
+                        or not isinstance(hashes, Mapping) or not hashes):
+                    raise PermissionError("historical setup completion evidence pins are incomplete")
+                candidate_identity = self.graph.reader.get_identity(candidate)
+                if candidate_identity is None or candidate_identity.ref != candidate:
+                    raise PermissionError("historical setup completion evidence is stale")
+                gate = completion.get("assessment_gate_check")
+                if (not isinstance(gate, Mapping) or gate.get("required") is not True
+                        or gate.get("blockers") != []
+                        or gate.get("candidate_ref") != candidate.to_dict()
+                        or gate.get("accepted_decision_refs") != [ref.to_dict() for ref in gates]):
+                    raise PermissionError("historical setup completion does not retain its accepted gate proof")
+                state = self.assignments.completion_blockers(current.ref, candidate=candidate, gate_refs=gates,
+                    actor=actor, completion_evidence_refs=evidence, completion_evidence_hashes=hashes)
+                if (state.get("required") is not True or state.get("blockers")
+                        or state.get("evidence_verification") != "verified"
+                        or state.get("candidate_ref") != candidate.to_dict()
+                        or not state.get("accepted_decision_refs")
+                        or state.get("accepted_decision_refs") != [ref.to_dict() for ref in gates]):
+                    raise PermissionError("historical setup completion failed canonical gate/evidence verification")
+
             for configured_task in tasks:
-                task = configured_task
                 ref = ResourceRef.from_dict(configured_task)
                 current = self.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
-                if current is not None and current.ref.to_dict() != configured_task:
+                if current is None:
+                    raise PermissionError("setup acceptance task is missing")
+                if current.ref.to_dict() != configured_task:
                     # Immutable setup selects the completion input revision.
                     # Only that exact committed transition can supply a current
                     # read; assessment/result mutation capabilities stay strict.
-                    completion = current.payload.get("completion") or {}
-                    key = completion.get("logical_request_key")
-                    receipt = self.graph.reader.get_receipt(key) if isinstance(key, str) else None
-                    if (current.payload.get("lifecycle") != "completed"
-                            or completion.get("task_ref") != configured_task
-                            or receipt is None or receipt.status.value != "committed"
-                            or receipt.operation != "work.revise" or receipt.target != ref
-                            or receipt.result_ref != current.ref):
-                        raise PermissionError("setup acceptance task lacks exact committed completion predecessor")
-                    task = current.ref.to_dict()
+                    verify_completed_history(configured_task, current)
                     completed_readbacks.append({"configured_task_ref": configured_task,
-                        "current_task_ref": task, "completion_request_key": key})
+                        "current_task_ref": current.ref.to_dict(),
+                        "completion_request_key": current.payload["completion"]["logical_request_key"]})
+                if ref.id not in policy_tasks:
+                    if current.ref.to_dict() == configured_task:
+                        verify_completed_history(configured_task, current)
+                    continue
+                task = current.ref.to_dict()
                 commands = self.manager_assessment(project_ref=project_ref, task_ref=task,
                     manager_assignment_ref=manager["assignment_ref"], manager_actor=manager["principal"],
                     manager_generation=manager["generation"], assessment_policy=assessment_policy)
                 scopes.append(commands.execute({"operation": "resolve-required-scope", "arguments": {},
                     "expected_task_ref": task, "expected_assignment_ref": manager["assignment_ref"],
                     "expected_generation": manager["generation"]}))
-            expected = {task.to_dict()["id"] for task, _ in assessment_policy.task_criterion_pairs}
-            if {task["id"] for task in tasks} != expected:
-                raise PermissionError("operating setup must resolve every task in the owner assessment policy")
             return {"required_scopes": scopes, "completed_task_readbacks": completed_readbacks, "allowance_created": False}
 
         from herzchen.kernel import LimitService

@@ -715,6 +715,142 @@ class OperatingSetupTests(unittest.TestCase):
                  "generation": adopted.generation}, configured_tasks)
         self.assertEqual(f.provider.calls, [])
 
+    def test_setup_acceptance_keeps_verified_completed_history_out_of_new_review_policy(self):
+        fixture = journey_fixture.ManagerJourneyCommandTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        f = fixture.application
+        state = fixture.fixture.state
+        graph = f.owner.graph
+        original = {
+            "D01": state["task_refs"]["PA01"],
+            "D04": state["task_refs"]["PA06"],
+        }
+        state["task_refs"].update(D01=original["D01"], D04=original["D04"])
+        for alias in ("D02", "D03", "D05"):
+            task = graph.create_task(f.project.ref, title=alias, logical_request_key="history-task-" + alias)
+            state["task_refs"][alias] = task.ref.to_dict()
+            original[alias] = task.ref.to_dict()
+        criterion_scope = AssessmentModule(f.store, actor=f.actor).declare_scope(
+            "five-original-criteria", parent_obligation=f.project.ref, protocol="five-original-criteria",
+            criteria=[{"id": value} for value in ("C01", "C02", "C03", "C04", "C05", "C09")],
+            logical_request_key="five-original-criteria")
+        criteria = {ref.id: ref.to_dict() for ref in criterion_scope.criterion_refs}
+        state["criterion_refs"].update(criteria)
+        # The original five task policies consumed their own local review pool;
+        # current readiness now uses only the pending D04/D05 pair.
+        original_policy = {"kind": "owner_local_bookkeeping", "purpose": "original five task reviews",
+            "local_only": True, "pool_id": "historical-five-review", "capacity_units": 1,
+            "cumulative_allowance_units": 3,
+            "task_criterion_pairs": ["D01/C01", "D02/C02", "D03/C03", "D04/C04", "D05/C05"]}
+        state["assessment_policy"] = original_policy
+        aliases = {"D01": "C01", "D02": "C02", "D03": "C03"}
+        for task_alias, criterion_alias in aliases.items():
+            candidate = fixture.source(task_alias)
+            reviewed = fixture.commands.review_task({"command": "review-task", "task": task_alias,
+                "request_key": "historical-review-" + task_alias, "candidate_ref": candidate,
+                "source_refs": [candidate], "inspection": {"observed": "Reviewed the exact task evidence"},
+                "judgments": {criterion_alias: {"verdict": "PASS", "rationale": "Evidence satisfies the criterion",
+                    "evidence_refs": [candidate]}}})
+            self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
+            state["task_refs"][task_alias] = reviewed["completion"]["task_ref"]
+
+        # Preserve the admitted D01-D05 rev-1 setup pins before current heads move.
+        configured = [original[key] for key in ("D01", "D02", "D03", "D04", "D05")]
+        current_policy = {"kind": "owner_local_bookkeeping", "purpose": "current D04/D05 readiness",
+            "local_only": True, "pool_id": "current-two-review", "capacity_units": 1,
+            "cumulative_allowance_units": 2, "task_criterion_pairs": ["D04/C04", "D05/C05"]}
+        state["assessment_policy"] = current_policy
+        policy = LocalAssessmentPolicy.from_run_config(current_policy, state=state)
+        from herzchen.kernel import LimitService
+        # Declare only the two current policy scopes; the old scopes remain
+        # canonical history and are not reopened under the new policy.
+        for alias, criterion in (("D04", "C04"), ("D05", "C05")):
+            AssessmentModule(f.store, actor=f.actor).declare_scope("pending-" + alias,
+                parent_obligation=ResourceRef.from_dict(state["task_refs"][alias]), protocol="current-policy",
+                criteria=[ResourceRef.from_dict(criteria[criterion])], designated_approver="manager",
+                policy={"required_for_completion": True}, logical_request_key="pending-scope-" + alias)
+        f.owner.create_manager_assessment_pool(project_ref=state["project_ref"],
+            task_ref=state["task_refs"]["D04"], manager_assignment_ref=state["assignment_ref"],
+            manager_actor=state["manager"], manager_generation=state["manager_generation"],
+            logical_request_key="current-two-review-pool", assessment_policy=policy)
+        runtime = f.owner.role_runtime(due_port=f.port, adapter=f.app.runtime.adapter, assessment_policy=policy)
+        pool = LimitService(f.store).get_pool(policy.pool_ref)
+        counts = f.owner.graph.reader.snapshot_counts()
+        ready = runtime.acceptance_readiness(state["project_ref"],
+            {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                "generation": state["manager_generation"]}, configured)
+        self.assertEqual(len(ready["required_scopes"]), 2)
+        self.assertEqual([row["configured_task_ref"] for row in ready["completed_task_readbacks"]],
+            configured[:3])
+        self.assertFalse(ready["allowance_created"])
+        self.assertEqual(LimitService(f.store).get_pool(policy.pool_ref), pool)
+        self.assertEqual(f.owner.graph.reader.snapshot_counts(), counts)
+        self.assertEqual(f.provider.calls, [])
+
+        stale = list(configured)
+        stale[1] = {**stale[1], "revision": "rev-999"}
+        with self.assertRaisesRegex(PermissionError, "predecessor"):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                    "generation": state["manager_generation"]}, stale)
+        missing = list(configured)
+        pending = graph.create_task(f.project.ref, title="uncompleted extra", logical_request_key="uncompleted-extra")
+        missing[2] = pending.ref.to_dict()
+        with self.assertRaisesRegex(PermissionError, "canonical accepted completion"):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                    "generation": state["manager_generation"]}, missing)
+        reader = f.owner.graph.reader
+        original_get_identity = reader.get_identity
+        def corrupt_gate(ref):
+            identity = original_get_identity(ref)
+            if identity is not None and identity.ref.id == ResourceRef.from_dict(original["D03"]).id:
+                completion = identity.payload["completion"]
+                gate = completion["assessment_gate_check"]
+                payload = {**identity.payload, "completion": {**completion,
+                    "assessment_gate_check": {**gate, "accepted_decision_refs": []}}}
+                return replace(identity, payload=payload)
+            return identity
+        class CorruptReader:
+            def __getattr__(self, name):
+                return getattr(reader, name)
+            get_identity = staticmethod(corrupt_gate)
+        object.__setattr__(f.owner.graph, "reader", CorruptReader())
+        try:
+            with self.assertRaisesRegex(PermissionError, "accepted gate proof"):
+                runtime.acceptance_readiness(state["project_ref"],
+                    {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                        "generation": state["manager_generation"]}, configured)
+        finally:
+            object.__setattr__(f.owner.graph, "reader", reader)
+
+    def test_manual_manager_sync_failure_surfaces_finite_readiness_blockers(self):
+        f = self.f
+        _manager, schedule = self.role("manager")
+        app = f.app
+        original = app.synchronize_manual_manager_occurrence
+        try:
+            blocker = {"role": "manager", "code": "OccurrencePreparationError", "message": "retained selector is foreign"}
+            app.synchronize_manual_manager_occurrence = lambda **_kwargs: {
+                "outcome": "partial", "readiness": {"ready": False, "blockers": [blocker]}}
+            partial = app.start(schedule_id=schedule)
+            self.assertEqual(partial["stage"], "manager-synchronization")
+            self.assertEqual(partial["readiness"]["blockers"], [blocker])
+            self.assertFalse(partial["provider_called"])
+            self.assertIn("reported manager readiness blocker", partial["next_action"])
+
+            def fail(**_kwargs):
+                raise PermissionError("current manual selector lacks its exact predecessor")
+            app.synchronize_manual_manager_occurrence = fail
+            raised = app.start(schedule_id=schedule)
+            self.assertEqual(raised["readiness"]["blockers"], [{"role": "manager",
+                "code": "PermissionError", "message": "current manual selector lacks its exact predecessor"}])
+            self.assertFalse(raised["provider_called"])
+            self.assertEqual(f.provider.calls, [])
+        finally:
+            app.synchronize_manual_manager_occurrence = original
+
     def test_missing_execution_contract_rejects_before_initialization_and_valid_request_recovers(self):
         f = self.f
         manager, valid_schedule = self.role("manager")
