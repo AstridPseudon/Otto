@@ -86,10 +86,12 @@ def read_status(path: Path) -> dict[str, Any]:
         age = None
     fresh = age is not None and age <= 3 * float(value.get("heartbeat_seconds") or 1) + 2
     running = value.get("state") == "serving" and alive and fresh
+    draining = value.get("state") == "draining" and alive and fresh
     busy = bool(value.get("manager_turn_active") or (value.get("in_flight") or {}).get("lane_requests")
                 or (value.get("in_flight") or {}).get("relays"))
-    return {**value, "outcome": "running" if running else ("closed" if value.get("state") == "closed" else "stale"),
-            "busy": busy if running else False, "heartbeat_age_seconds": None if age is None else round(age, 2),
+    outcome = "running" if running else "draining" if draining else "closed" if value.get("state") == "closed" else "stale"
+    return {**value, "outcome": outcome,
+            "busy": busy if running or draining else False, "heartbeat_age_seconds": None if age is None else round(age, 2),
             "holder_alive": alive, "provider_called": False}
 
 

@@ -523,6 +523,45 @@ class ManagerJourneyService:
         finally:
             _CALLER.reset(token)
 
+    def _annotate_current_turn_return(self, result: Mapping[str, Any], request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Explain the safe next step only for this caller's exact active occurrence."""
+        caller = _CALLER.get()
+        state = self.server.state
+        task = request.get("task", next(iter(state.get("task_refs", {})), None))
+        if (not isinstance(result, Mapping) or result.get("outcome") != "pending"
+                or not isinstance(task, str) or task not in state.get("task_refs", {})
+                or caller is None or caller.get("role") != "manager"
+                or caller.get("principal") != state.get("manager")
+                or caller.get("assignment_ref") != state.get("assignment_ref")
+                or caller.get("generation") != state.get("manager_generation")
+                or caller.get("project_ref") != state.get("project_ref")
+                or caller.get("task_ref") != state["task_refs"][task]):
+            return result
+        schedule_ids = result.get("settlement_schedule_ids")
+        if not isinstance(schedule_ids, list) or len(schedule_ids) != 1 or not isinstance(schedule_ids[0], str):
+            return result
+        schedule_id = schedule_ids[0]
+        occurrence = caller.get("occurrence_ref")
+        if not isinstance(occurrence, Mapping) or occurrence.get("schedule_id") != schedule_id:
+            return result
+        try:
+            due = self.server.due_port.read_due(schedule_id)
+        except (KeyError, LookupError, OSError, PermissionError, RuntimeError, ValueError):
+            return result
+        target = due.get("target") or {} if isinstance(due, Mapping) else {}
+        if (not isinstance(due, Mapping) or due.get("role") != "manager"
+                or due.get("recipient") != state.get("manager")
+                or due.get("assignment_ref") != state.get("assignment_ref")
+                or due.get("generation") != state.get("manager_generation")
+                or due.get("stop_state") != "active" or not due.get("in_flight_request")
+                or due.get("completion_state") not in (None, "none")
+                or target.get("project_ref") != state.get("project_ref")
+                or target.get("task_ref") != state["task_refs"][task]):
+            return result
+        return {**dict(result), "waiting_for_current_turn_return": True,
+                "next_action": ("Return from this current native manager turn now. The owner will settle this exact "
+                    "manager occurrence after the turn returns. Do not poll, retry, self-follow, or issue manager-continue.")}
+
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
         if command == "vision":
@@ -757,6 +796,8 @@ class ManagerJourneyService:
                                 observe_schedules=self.observe_schedules)
                       if command == "finish-project" else operation(request))
             self._refresh_refs()
+            if command == "finish-task":
+                result = self._annotate_current_turn_return(result, request)
             if command != "finish-project" and (result.get("outcome") in {"completed", "replayed"}
                     or (result.get("completion") or {}).get("outcome") in {"completed", "replayed"}):
                 state = self.server.state

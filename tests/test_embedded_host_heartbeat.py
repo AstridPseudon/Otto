@@ -176,6 +176,63 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'unavailable')
         self.assertEqual(len(list(lanes.requests(owner_lane(service.home)))), 0)
 
+    def test_two_phase_shutdown_keeps_admitted_capture_live_until_host_and_store_release(self):
+        service, host = self.make_service()
+        service.start_heartbeat()
+        initial = json.loads(status_path(service.home).read_text())
+        projection_at = initial["projection_at"]
+        service._remember_and_publish({**initial, "manager_turn_active": True}, service._heartbeat_paths)
+        entered, release = threading.Event(), threading.Event()
+        captured = {}
+
+        def admitted_capture():
+            entered.set()
+            self.assertTrue(release.wait(3))
+            captured.update({"whoami": "current-owner", "report": "retained-read", "finish": "pending"})
+            return captured
+
+        capture_done, capture_result = host.enqueue(admitted_capture)
+        self.assertTrue(entered.wait(2))
+        service.begin_draining()
+        draining = json.loads(status_path(service.home).read_text())
+        self.assertEqual(draining["state"], "draining")
+        self.assertEqual(draining["shutdown_phase"], "draining")
+        status = read_status(status_path(service.home))
+        self.assertEqual(status["outcome"], "draining")
+        self.assertTrue(status["busy"])
+
+        # Simulate an owner projection racing with the draining publication;
+        # it must keep the immutable basis and phase while heartbeat continues.
+        service._remember_and_publish({**draining, "projection_at": "late-owner-projection"},
+                                      service._heartbeat_paths)
+        reread = json.loads(status_path(service.home).read_text())
+        self.assertEqual(reread["projection_at"], projection_at)
+        self.assertEqual(reread["state"], "draining")
+        self.assertEqual(reread["shutdown_phase"], "draining")
+
+        release.set()
+        self.assertTrue(capture_done.wait(2))
+        if "error" in capture_result:
+            raise capture_result["error"]
+        self.assertEqual(capture_result["value"], {"whoami": "current-owner", "report": "retained-read", "finish": "pending"})
+        host.close()  # Synthetic serialized host release, after the admitted capture settled.
+        store_released = threading.Event()  # Synthetic Store release; no Store is opened by this fixture.
+        store_released.set()
+        self.assertTrue(store_released.is_set())
+
+        def forbidden_dead_queue_read(*args, **kwargs):
+            raise AssertionError("finalization must not read the released owner queue")
+
+        service.shared_host._status_read = forbidden_dead_queue_read
+        service.finalize_closed()
+        closed = json.loads(status_path(service.home).read_text())
+        self.assertEqual(closed["state"], "closed")
+        self.assertEqual(closed["shutdown_phase"], "closed")
+        self.assertEqual(closed["closure_provenance"], "host-and-store-released")
+        self.assertEqual(closed["projection_at"], projection_at)
+        self.assertTrue(closed["closed_at"])
+        self.assertFalse(service._heartbeat_thread.is_alive())
+
 
 if __name__ == '__main__':
     unittest.main()

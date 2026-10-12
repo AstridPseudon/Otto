@@ -48,6 +48,8 @@ class ProjectOwnerService(OwnerService):
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_starting = False
         self._closed = False
+        self._draining = False
+        self._finalized = False
         self._heartbeat_snapshot: Mapping[str, Any] | None = None
         self._heartbeat_paths: tuple[Path, ...] = ()
         self._heartbeat_interval = float(self.heartbeat_seconds)
@@ -118,11 +120,12 @@ class ProjectOwnerService(OwnerService):
         return stop_marker(self.home).exists()
 
     def close(self) -> None:
-        # A pulse may already have copied a serving snapshot.  Stop and join
-        # it before publishing closed, otherwise a late serving pulse could
-        # overwrite the final state.  The wrapper normally calls this while
-        # the shared host is still alive, so the final snapshot is serialized
-        # through that host too.
+        """Compatibility close for standalone/preflight service callers.
+
+        The embedded-host wrapper uses begin_draining(), closes the host and
+        Store, then calls finalize_closed(); this method preserves the older
+        service-only close behavior for callers that own no such teardown.
+        """
         with self._heartbeat_lock:
             thread = self._heartbeat_thread
             started = thread is not None or self._heartbeat_starting
@@ -133,17 +136,93 @@ class ProjectOwnerService(OwnerService):
 
         if not started:
             self._publish(state='closed')  # preflight has no heartbeat/owner queue
+            with self._heartbeat_lock:
+                self._finalized = True
             return
 
         try:
             self.shared_host._status_read(
                 {'command': 'host-client-heartbeat-close'},
                 lambda: self._publish(state='closed'))
+            with self._heartbeat_lock:
+                self._finalized = True
         except (OSError, RuntimeError):
             # If the actual shared owner is already dead, leave its last
             # serving projection for read_status() to reject by PID/freshness.
             # Do not manufacture a closed claim from a dead owner.
             return
+
+    def begin_draining(self) -> None:
+        """Publish a draining phase while keeping the cached heartbeat alive.
+
+        This must run before the wrapper closes the shared host.  It never
+        reads the owner queue: the last immutable projection remains the
+        status basis while admitted work is allowed to finish.
+        """
+        with self._heartbeat_lock:
+            if self._closed:
+                raise RuntimeError('embedded owner service is closed')
+            if self._draining:
+                return
+            cached = self._heartbeat_snapshot
+            if cached is None:
+                if self._heartbeat_starting or self._heartbeat_thread is not None:
+                    raise RuntimeError('embedded owner has no cached serving projection to drain')
+                # Preserve the preflight path: no heartbeat or owner queue was
+                # ever started, so a local projection is still safe here.
+                value = self._status()
+                value['projection_at'] = self._now_status_time()
+                self._heartbeat_paths = self._status_paths()
+            else:
+                value = copy.deepcopy(dict(cached))
+            value['state'] = 'draining'
+            value['outcome'] = 'draining'
+            value['shutdown_phase'] = 'draining'
+            value['draining_at'] = self._now_status_time()
+            self._draining = True
+            self._heartbeat_snapshot = MappingProxyType(copy.deepcopy(value))
+            paths = self._heartbeat_paths or (status_path(self.home),)
+            self._heartbeat_paths = tuple(paths)
+            self._write_status(self._heartbeat_paths, value)
+
+    def finalize_closed(self) -> None:
+        """Publish CLOSED from the cached projection after host and Store close.
+
+        The caller contract is the wrapper sequence: begin_draining();
+        shared_host.close(); store.close(); finalize_closed().  In particular,
+        this method never asks a released owner queue for a fresh projection.
+        """
+        with self._heartbeat_lock:
+            if self._closed:
+                return
+            thread = self._heartbeat_thread
+            self._closed = True
+            self._stopping.set()
+        if thread is not None and thread.is_alive():
+            thread.join()
+        with self._heartbeat_lock:
+            if self._heartbeat_snapshot is None:
+                # Standalone/preflight shutdown retains the legacy local
+                # projection path; a started host must have a cached snapshot.
+                if self._heartbeat_starting or thread is not None:
+                    raise RuntimeError('cannot close an embedded owner without its cached projection')
+                value = self._status(state='closed')
+                value['projection_at'] = self._now_status_time()
+                self._heartbeat_paths = (status_path(self.home),)
+            else:
+                value = copy.deepcopy(dict(self._heartbeat_snapshot))
+            value['state'] = 'closed'
+            value['outcome'] = 'closed'
+            value['shutdown_phase'] = 'closed'
+            value['closed_at'] = self._now_status_time()
+            value['closure_provenance'] = ('host-and-store-released' if self._draining
+                                           else 'standalone-service-close')
+            value['heartbeat_at'] = value['closed_at']
+            self._heartbeat_snapshot = MappingProxyType(copy.deepcopy(value))
+            paths = self._heartbeat_paths or (status_path(self.home),)
+            self._heartbeat_paths = tuple(paths)
+            self._write_status(self._heartbeat_paths, value)
+            self._finalized = True
 
     @staticmethod
     def _now_status_time() -> str:
@@ -168,8 +247,17 @@ class ProjectOwnerService(OwnerService):
         # heartbeat_at.
         snapshot = copy.deepcopy(dict(value))
         with self._heartbeat_lock:
+            if self._finalized:
+                return
             if self._closed and snapshot.get('state') != 'closed':
                 return
+            current = self._heartbeat_snapshot
+            if self._draining and current is not None:
+                snapshot['state'] = 'draining'
+                snapshot['outcome'] = 'draining'
+                snapshot['shutdown_phase'] = 'draining'
+                snapshot['draining_at'] = current.get('draining_at')
+                snapshot['projection_at'] = current.get('projection_at')
             self._heartbeat_snapshot = MappingProxyType(snapshot)
             self._heartbeat_paths = tuple(paths)
             self._write_status(self._heartbeat_paths, snapshot)

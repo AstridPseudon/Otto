@@ -814,6 +814,57 @@ class TaskSettlementDrainBoundaryTests(unittest.TestCase):
                 instruction="original-instruction", target={"native_id": "same-native-session"}))
         return service, app, state, saved, prepared, submitted
 
+    def test_finish_pending_return_annotation_requires_exact_current_manager_occurrence(self):
+        from otto.portfolio.manager_journey_service import _CALLER
+        service, *_ = self.fixture()
+        state = service.server.state
+        project = {"authority": "owner", "kind": "work.project", "id": "fixture-project", "revision": "rev-1"}
+        task = {"authority": "owner", "kind": "work.task", "id": "fixture-task", "revision": "task-rev-1"}
+        state.update(project_ref=project, task_refs={"J01": task})
+        due = {"role": "manager", "recipient": "same-manager", "target": {"project_ref": project,
+                "task_ref": task}, "assignment_ref": state["assignment_ref"], "generation": 1,
+               "stop_state": "active", "in_flight_request": "current-turn-key"}
+        service.server.due_port.read_due = lambda schedule: due if schedule == "original-anchor" else None
+        pending = {"outcome": "pending", "completion_intent": "finish-intent",
+                   "settlement_schedule_ids": ["original-anchor"], "provider_called": False}
+        caller = {"role": "manager", "principal": "same-manager", "assignment_ref": state["assignment_ref"],
+                  "generation": 1, "project_ref": project, "task_ref": task,
+                  "occurrence_ref": {"schedule_id": "original-anchor"}}
+        token = _CALLER.set(caller)
+        try:
+            annotated = service._annotate_current_turn_return(pending, {"task": "J01"})
+            self.assertEqual(annotated["outcome"], "pending")
+            self.assertTrue(annotated["waiting_for_current_turn_return"])
+            self.assertIn("Return from this current native manager turn now", annotated["next_action"])
+            self.assertNotIn("manager-continue", annotated["next_action"].split("Do not poll", 1)[0])
+            self.assertEqual(annotated["completion_intent"], "finish-intent")
+            self.assertFalse(annotated["provider_called"])
+
+            for changed, result in (
+                ({**caller, "principal": "foreign"}, pending),
+                ({**caller, "generation": 2}, pending),
+                ({**caller, "task_ref": {**task, "revision": "stale"}}, pending),
+            ):
+                other = _CALLER.set(changed)
+                try:
+                    self.assertEqual(service._annotate_current_turn_return(result, {"task": "J01"}), result)
+                finally:
+                    _CALLER.reset(other)
+
+            for schedule_ids in ([], ["other"], ["original-anchor", "other"]):
+                self.assertEqual(service._annotate_current_turn_return(
+                    {**pending, "settlement_schedule_ids": schedule_ids}, {"task": "J01"}),
+                    {**pending, "settlement_schedule_ids": schedule_ids})
+            other = _CALLER.set({**caller, "occurrence_ref": {"schedule_id": "other"}})
+            try:
+                self.assertEqual(service._annotate_current_turn_return(pending, {"task": "J01"}), pending)
+            finally:
+                _CALLER.reset(other)
+            due["completion_state"] = "unknown"
+            self.assertEqual(service._annotate_current_turn_return(pending, {"task": "J01"}), pending)
+        finally:
+            _CALLER.reset(token)
+
     def test_drain_after_preparation_preserves_exact_callback_and_completion(self):
         service, app, state, saved, prepared, submitted = self.fixture(
             error="execution host is draining; no new worker may be admitted")
