@@ -249,8 +249,16 @@ for current owner-known worker slots and any explicitly named Due allowance
 pools. It returns exact task/assignment/generation/occurrence pins, observation
 time and coverage. It does not enumerate other projects, hidden coordinator
 children or all historical workers. Missing/over-bound metadata remains unknown;
-a generic `host_state: unknown` alone is not an identity hold. Current admission
-revalidates actual custody and capacity.
+a generic `host_state: unknown` alone is not an identity hold. Its
+`dispatch:false` means this read launched nothing and is not an admission denial.
+Pending, unassigned, not-evaluated task defaults and empty blocker lists also do
+not decide admission or require a separate preassignment/activation step. For an
+existing dependency-ready task, call `run-worker` once with the original stable
+key, configured route and existing budget. The canonical owner operation assigns
+and checks admission; preserve its exact returned hold if a real guard fails.
+After launch, follow the retained handle and return the delegate's evidence and
+unresolved holds through the manager path. Current admission revalidates actual
+custody and capacity.
 
 `ordinary_normal_allowance` is explicitly undeclared by this reader. Do not call
 it unlimited or zero, infer a NORMAL allocation from assessment bookkeeping, or

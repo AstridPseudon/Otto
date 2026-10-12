@@ -102,8 +102,12 @@ ROLE_OPERATING_CONTRACTS = {
         "and return condition; an actual candidate defect remains an ordinary REWORK finding. "
         "Reconcile reviewer correction proposals against current evidence: accept, merge, defer with a revisit "
         "condition, or reject with a reason. Use task-list-author for pending canonical tasks and alias readback, "
-        "then existing normal/XHARD run-worker only after current scope/readiness is satisfied. Task authoring "
-        "grants no acceptance, execution or additional allowance; retain completed findings and prior debits."
+        "then existing normal/XHARD run-worker for a dependency-ready task. Pending, unassigned, not-evaluated, "
+        "empty blocker defaults, and metadata-only dispatch:false are not admission decisions or a separate "
+        "preassignment requirement. Call run-worker once with the original stable key and existing budget; the "
+        "canonical owner operation performs assignment and admission checks. Preserve the exact returned hold "
+        "if a real dependency, scope, custody, configuration or allowance guard fails; do not widen authority. "
+        "Task authoring grants no acceptance, execution or additional allowance; retain completed findings and prior debits."
         + _ADAPTER_ROLE_BASE_GUIDANCE
     ),
     "worker": (
@@ -141,7 +145,7 @@ ROLE_CONTEXT_GUIDANCE = {
         "help": "Advance ready work. Before returning blocked on owner action, submit canonical request-help to the adopted project supervisor with exact task/handles, impact, needed action and resume condition; retain the issue and delivery receipt. Final text or a local file is not submission. On tool failure preserve its exact handle and use the supplied supported fallback once; never claim delivery without confirmation. Operational blockers do not wait for an hourly summary. Apply an authenticated reply, then continue the same manager. Use request-advice for project judgment.",
         "context": "Refresh the current project, task, assignment, generation, mandate, adopted resources and conversation before acting.",
         "delegation": "run-worker prepares a child; its focus is 1..4000 characters. For long exact file boundaries, retain an owned scope manifest and pin its exact path and SHA in the concise focus. A typed input rejection with effects_started=false permits a corrected distinct intent; an UNKNOWN transport result still requires exact reconciliation, never blind replay.",
-        "planning": "Reviewer reports propose correction tasks with independent normal/XHARD rationale. The manager records accept/merge/defer/reject and uses task-list-author with the pinned report/result, current project revision, typed pending tasks and exact request key. Reuse the key/input after partial progress. Missing scope/adoption/allowance requires existing owner setup before dispatch; never reopen completed work merely to file advice.",
+        "planning": "Reviewer reports propose correction tasks with independent normal/XHARD rationale. The manager records accept/merge/defer/reject and uses task-list-author with the pinned report/result, current project revision, typed pending tasks and exact request key. Reuse the key/input after partial progress. Pending/unassigned/not-evaluated task defaults, empty blocker lists, and metadata-only dispatch:false do not themselves hold admission or require preassignment. Call run-worker once for an existing dependency-ready task; its canonical owner checks decide. Preserve any exact returned dependency/scope/adoption/custody/configuration/allowance hold, and never widen allowance or reopen completed work merely to file advice.",
         "installed_evidence": "For criteria that explicitly require installed behavior, verify the current adopted source/runtime and preflight evidence before review or finish. If only host adoption, measurement, or setup is missing, request operational help with the evidence and return condition; an actual candidate defect remains an ordinary REWORK finding.",
         "continuation": "Resolve an applied response with resolve-help; the retained same-manager continuation is the next action.",
         "recovery": "Read the exact delivery before retrying; unknown sends, missing destinations and replaced roles remain held until reconciled.",

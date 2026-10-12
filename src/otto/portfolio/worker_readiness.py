@@ -79,7 +79,7 @@ def read_worker_readiness(service, request, *, context=None):
         row["same_task_succeeded_predicate"] = succeeded
         row["custody_release"] = "not evaluated by this metadata read"
         row["native_liveness"] = "not established by this metadata read"
-        row["state_semantics"] = "Due stop/completion metadata only; generic host_state unknown is not itself a native identity hold. Admission revalidates current custody/capacity."
+        row["state_semantics"] = "Due stop/completion metadata only; dispatch:false means this read launched nothing and is not an admission denial. Pending/unassigned/not-evaluated defaults and empty blocker lists are not admission verdicts. Generic host_state unknown is not itself a native identity hold. The canonical run-worker operation revalidates current task, custody, configuration and capacity."
         active += int(uncertain)
         allowance = due.get("allowance_ref")
         if allowance is not None:

@@ -15,7 +15,18 @@ Delegate with `run-worker`: current task, configured normal/XHARD route, stable
 key and bounded focus. Give workers source/write scope, acceptance evidence and
 reporting instructions. Explain XHARD using the pack's criteria.
 Identity/context `read_only` or `dispatch:false` describes that read's effects.
-It does not deny the separately authenticated `run-worker` preparation route.
+It does not deny the separately authenticated `run-worker` route. Likewise,
+task-sheet defaults such as `pending`, `unassigned`, `not-evaluated`,
+`blockers: []`, or `dispatch:false` are not an admission decision. For an
+existing genuinely dependency-ready task, call `run-worker` once with its
+current configured route, original stable key, and existing budget. The
+canonical owner operation performs assignment and admission checks; no separate
+preassignment or activation step is needed. If that operation returns a hold,
+retain its exact reason and follow it. Explicit dependency, scope, custody,
+configuration, or allowance failures remain holds; never widen authority or
+infer an unlisted allowance. After a successful launch, follow the retained
+worker handle, consume its result through the manager path, and return the
+delegate's evidence and any unresolved hold to the current manager turn.
 Submit the first worker before `review-input`; review needs its retained candidate.
 The owner validates the task, adopted policy and applicable explicit allowance,
 then starts the retained child. Do not infer an ordinary NORMAL numerical pool
@@ -98,9 +109,11 @@ does not assert improved server query time or a sent notification.
 When installed help exposes `worker-readiness`, read it once for exact current
 owner-known task slots and explicitly named Due pools. Its observation time and
 coverage distinguish available, missing and over-bound metadata. It does not
-recover work or prove an exhaustive portfolio roster; generic `host_state:
-unknown` alone is not a native identity hold. Preserve actual UNKNOWN custody
-and let canonical admission revalidate current task/identity/capacity. An
+recover work, decide admission, or prove an exhaustive portfolio roster. Its
+`dispatch:false` reports that this metadata read launched nothing; it does not
+deny a later authenticated `run-worker` request. Generic `host_state: unknown`
+alone is not a native identity hold. Preserve actual UNKNOWN custody and let
+canonical admission revalidate current task/identity/capacity. An
 undeclared NORMAL allowance is neither unlimited nor zero. Assessment units do
 not grant worker authority. Named pool metadata is not a numerical balance:
 held/used/remaining are explicitly unavailable in this finite reader. Terminal

@@ -469,8 +469,8 @@ def add_manager_journey_parsers(commands: Any) -> None:
     compact.add_argument("--read", required=True, choices=READS)
     compact.add_argument("--task", default=argparse.SUPPRESS, help="required only for review-input")
     compact.add_argument("--delivery-id", default=argparse.SUPPRESS, help="required only for exact read-help; no broad issue scan")
-    commands.add_parser("worker-readiness", help="bounded current owner-known worker slots and explicitly named Due pools; no dispatch or allowance grant",
-        description="Reads current metadata for this manager's own retained slots only. Missing/oversize/foreign pins remain unavailable, not zero. Named Due pools are observed accounting, never a promise that ordinary run-worker enforces a NORMAL pool or an assessment-budget grant.")
+    commands.add_parser("worker-readiness", help="bounded worker metadata read; no launch or admission verdict",
+        description="Reads current metadata for this manager's own retained slots only. dispatch:false means this read launched nothing; it does not deny a separate authenticated run-worker request. Pending/unassigned/not-evaluated defaults and empty blocker lists are not admission verdicts. Missing/oversize/foreign pins remain unavailable, not zero. Named Due pools are observed accounting, never a promise that ordinary run-worker enforces a NORMAL pool or an assessment-budget grant.")
     add_help_parsers(commands)
     lookup = commands.add_parser("lookup-occurrence", help="pure exact historical scope/key read after a lost launch reply")
     lookup.add_argument("--scope", required=True, type=json.loads)
