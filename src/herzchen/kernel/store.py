@@ -1304,6 +1304,116 @@ class Store:
         return tuple({**json.loads(row[5]), "ref": ResourceRef(row[0], row[1], row[2], row[3]).to_dict(),
                       "updated_at": row[4]} for row in rows)
 
+    def project_identity_fields_for_refs(self, refs: Sequence[ResourceRef], *,
+                                         fields: Mapping[str, Tuple[str, ...]],
+                                         max_projection_bytes: int = 32768,
+                                         max_refs: int = 100) -> Tuple[Mapping[str, Any], ...]:
+        """Project named fields from an exact, finite set of identity keys.
+
+        Unlike ``project_identity_fields``, this method chooses identities by
+        their primary keys before evaluating any JSON path. It is intended for
+        bounded joins from already trusted canonical refs, so unrelated large
+        legacy payloads cannot poison the read. A requested revision is an
+        exact pin: stale pins return a ``stale`` state without projecting the
+        newer payload. Only named fields are returned; full payloads are never
+        hydrated into Python.
+        """
+        values = tuple(refs)
+        if (not isinstance(refs, (list, tuple)) or type(max_refs) is not int
+                or not 1 <= max_refs <= 100 or len(values) > max_refs
+                or type(max_projection_bytes) is not int
+                or not 1 <= max_projection_bytes <= 262144
+                or not isinstance(fields, Mapping) or not fields or len(fields) > 32):
+            raise ValueError("bounded exact refs and named fields required")
+        if not all(isinstance(ref, ResourceRef) for ref in values):
+            raise ValueError("identity projections require ResourceRef keys")
+        if any(ref.authority != self.authority for ref in values):
+            raise ValueError("identity projection ref authority does not belong to this store")
+        if len({(ref.authority, ref.kind, ref.id) for ref in values}) != len(values):
+            raise ValueError("identity projection refs must be unique")
+        normalized_fields = []
+        for name, path in fields.items():
+            if (not isinstance(name, str) or not name.replace("_", "").isalnum()
+                    or not isinstance(path, tuple)):
+                raise ValueError("projected field names and paths must be structural")
+            normalized_fields.append((name, self._structural_path(path)))
+        if not values:
+            return ()
+        requested = ", ".join("(?, ?, ?, ?, ?)" for _ in values)
+        projected_fields = ", ".join("?, json_extract(s.payload_json, ?)" for _name, _path in normalized_fields)
+        present_fields = ", ".join("?, json_type(s.payload_json, ?) IS NOT NULL" for _name, _path in normalized_fields)
+        value_size_terms = " + ".join(
+            "coalesce(length(CAST(json_extract(s.payload_json, ?) AS BLOB)), 0)"
+            for _name, _path in normalized_fields)
+        projection_expr = ("json_object('fields', json_object(" + projected_fields
+                           + "), 'present', json_object(" + present_fields + "))")
+        args: list[Any] = []
+        for ordinal, ref in enumerate(values):
+            args.extend((ordinal, ref.authority, ref.kind, ref.id, ref.revision))
+        # Check selected value sizes before constructing the JSON envelope. The
+        # exact final envelope is still measured below to include JSON overhead.
+        args.extend(path for _name, path in normalized_fields)
+        args.append(max_projection_bytes)
+        args.extend(arg for name, path in normalized_fields for arg in (name, path))
+        args.extend(arg for name, path in normalized_fields for arg in (name, path))
+        args.append(max_projection_bytes)
+        with self._transaction_lock:
+            self._require_open()
+            rows = self._connection.execute(
+                "WITH requested(ord, authority, kind, id, requested_revision) AS MATERIALIZED (VALUES " + requested + "), "
+                "selected AS MATERIALIZED (SELECT r.ord, r.requested_revision, i.current_revision, i.updated_at, "
+                "i.payload_json FROM requested r LEFT JOIN identities i "
+                "ON i.authority=r.authority AND i.kind=r.kind AND i.id=r.id), "
+                "projected AS MATERIALIZED (SELECT s.ord, s.requested_revision, s.current_revision, s.updated_at, "
+                "s.payload_json, CASE WHEN " + value_size_terms + " <= ? THEN " + projection_expr
+                + " END AS projection FROM selected s) "
+                "SELECT ord, requested_revision, current_revision, updated_at, "
+                "CASE WHEN current_revision IS NULL THEN 1 ELSE 0 END, "
+                "length(CAST(projection AS BLOB)), "
+                "CASE WHEN length(CAST(projection AS BLOB)) <= ? THEN projection END "
+                "FROM projected ORDER BY ord",
+                args,
+            ).fetchall()
+        projected = []
+        total_bytes = 0
+        for row in rows:
+            ordinal, requested_revision, current_revision, updated_at, missing, projected_bytes, raw_projection = row
+            ref = values[ordinal]
+            current_ref = (None if missing else
+                           ResourceRef(ref.authority, ref.kind, ref.id, current_revision).to_dict())
+            if missing:
+                projected.append({"state": "missing", "requested_ref": ref.to_dict(),
+                                  "ref": None, "fields": {}, "projected_bytes": 0})
+                continue
+            if requested_revision is not None and requested_revision != current_revision:
+                projected.append({"state": "stale", "requested_ref": ref.to_dict(),
+                                  "ref": current_ref, "fields": {}, "projected_bytes": 0})
+                continue
+            if raw_projection is None:
+                projected.append({"state": "oversize", "requested_ref": ref.to_dict(),
+                                  "ref": current_ref, "fields": {}, "present": {},
+                                  "projected_bytes": projected_bytes})
+                continue
+            try:
+                envelope = json.loads(raw_projection)
+            except (TypeError, ValueError):
+                projected.append({"state": "invalid-projection", "requested_ref": ref.to_dict(),
+                                  "ref": current_ref, "fields": {}, "present": {},
+                                  "projected_bytes": projected_bytes})
+                continue
+            total_bytes += projected_bytes
+            if total_bytes > max_projection_bytes:
+                projected.append({"state": "oversize", "requested_ref": ref.to_dict(),
+                                  "ref": current_ref, "fields": {}, "present": {},
+                                  "projected_bytes": projected_bytes})
+                continue
+            projected.append({"state": "available", "requested_ref": ref.to_dict(),
+                              "ref": current_ref, "updated_at": updated_at,
+                              "fields": {name: envelope["fields"].get(name)
+                                         for name, present in envelope["present"].items() if present},
+                              "present": envelope["present"], "projected_bytes": projected_bytes})
+        return tuple(projected)
+
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.get_identity(ref)
 
@@ -2483,6 +2593,9 @@ class ConsumerStore:
 
     def project_identity_fields(self, **options: Any) -> Tuple[Mapping[str, Any], ...]:
         return self.__owner.project_identity_fields(**options)
+
+    def project_identity_fields_for_refs(self, refs: Sequence[ResourceRef], **options: Any) -> Tuple[Mapping[str, Any], ...]:
+        return self.__owner.project_identity_fields_for_refs(refs, **options)
 
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_record(ref)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from herzchen.contracts import ReplayConflictError, ResourceRef
 from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
+from herzchen.kernel.store import Store
 from otto.portfolio.execution_host import _nested_capability
 from otto.portfolio.manager_journey_service import ManagerJourneyService
 from otto.portfolio.retention_owner_read import RetentionOwnerRead
@@ -49,8 +50,14 @@ class RetentionOwnerReadTests(unittest.TestCase):
         owner = PortfolioOwnerBootstrap(self.store, binding=self.binding, owner_actor="owner",
             portfolio_ref=portfolio, main_assignment_ref=root.ref)
         project = owner.graph.create_project(title="Queued selected", logical_request_key="queued-selected")
-        owner.graph.create_task(project.ref, title="Bounded structural row", logical_request_key="retention-task")
+        task = owner.graph.create_task(project.ref, title="Bounded structural row", logical_request_key="retention-task")
         project = owner.graph.get(project.ref)
+        project_ref = ResourceRef(project.ref.authority, project.ref.kind, project.ref.id,
+                                  "rev-" + str(project.version + 1))
+        project_payload = dict(project.payload, tasks=[task.ref.to_dict()])
+        self.store.revise_identity(project.ref, project_payload, revision=project_ref.revision,
+            expected_revision=project.ref.revision, expected_version=project.version)
+        project = owner.graph.get(project_ref)
         owner.consumer_operations().execute("work.orchestrator.projects.attach", {
             "target_assignment_ref": root.ref.to_dict(), "target_assignment_revision": root.revision,
             "target_assignment_generation": root.generation,
@@ -102,6 +109,96 @@ class RetentionOwnerReadTests(unittest.TestCase):
                 **root.ref.to_dict(), "id": "stale-root"}
             with self.assertRaises(PermissionError):
                 capability.call(request, root=root, actor=self.actor)
+
+    def test_lifecycle_projects_only_exact_task_pins_and_retains_completion_survivors(self):
+        root, _subject, _pin, project = self.setup_portfolio()
+        task_ref = ResourceRef.from_dict(project.payload["tasks"][0])
+        task = self.owner.graph.get(task_ref)
+        payload = dict(task.payload)
+        candidate_doc = self.create_document("retention-candidate", _subject)
+        result_doc = self.create_document("retention-result", _subject)
+        evidence_doc = self.create_document("retention-evidence", _subject)
+        gate_doc = self.create_document("retention-gate", _subject)
+        candidate = ResourceRef(candidate_doc.ref.authority, candidate_doc.ref.kind, candidate_doc.ref.id, "rev-1")
+        result = ResourceRef(result_doc.ref.authority, result_doc.ref.kind, result_doc.ref.id, "rev-1")
+        evidence = ResourceRef(evidence_doc.ref.authority, evidence_doc.ref.kind, evidence_doc.ref.id, "rev-1")
+        gate = ResourceRef(gate_doc.ref.authority, gate_doc.ref.kind, gate_doc.ref.id, "rev-1")
+        payload["completion"] = {"candidate_ref": candidate.to_dict(), "result_ref": result.to_dict(),
+            "evidence_refs": [evidence.to_dict()], "gate_refs": [gate.to_dict()],
+            "assignment_ref": root.ref.to_dict()}
+        payload["effect_packet"] = {"result_ref": result.to_dict(), "evidence_refs": [evidence.to_dict()]}
+        payload["settlement"] = {"result_ref": result.to_dict(), "gate_refs": [gate.to_dict()]}
+        payload["unrelated_large_notes"] = "x" * 20000
+        next_task_ref = ResourceRef(task.ref.authority, task.ref.kind, task.ref.id,
+                                    "rev-" + str(task.version + 1))
+        self.store.revise_identity(task.ref, payload, revision=next_task_ref.revision,
+            expected_revision=task.ref.revision, expected_version=task.version)
+
+        # Keep the project-declared exact task pin current and provide complete
+        # structural reconciliation evidence without reading global history.
+        current_project = self.owner.graph.get(project.ref)
+        metadata = dict(current_project.payload.get("metadata", {}))
+        next_project_ref = ResourceRef(current_project.ref.authority, current_project.ref.kind,
+            current_project.ref.id, "rev-" + str(current_project.version + 1))
+        join = dict(metadata["otto_orchestrator"], project_ref=next_project_ref.to_dict())
+        metadata["otto_orchestrator"] = join
+        current_payload = dict(current_project.payload, metadata=metadata,
+            tasks=[next_task_ref.to_dict()], lifecycle="completed",
+            lifecycle_control={"close_request": {"project_ref": next_project_ref.to_dict(),
+                "manager_assignment": root.ref.to_dict(), "task_refs": [next_task_ref.to_dict()],
+                "report_ref": result.to_dict(), "receipt": result.to_dict(), "generation": root.generation},
+                "terminal_evidence": {name: {"status": "verified"} for name in
+                    ("acceptance", "publication", "remote", "runtime")},
+                "reconciliation": {"status": "reconciled", "mode": "no-owned-schedule",
+                    "survivor_refs": [result.to_dict()], "observation": {"mode": "no-owned-schedule",
+                        "pm_owned_schedule_ids": [], "unknown_ownership": False,
+                        "coverage": {"authority": self.store.authority, "project_id": project.ref.id,
+                            "source": "complete public Due list", "record_count": 1},
+                        "shared_records": [{"schedule_id": "shared-kept", "status": "preserved",
+                            "record_ref": evidence.to_dict()}]}}})
+        self.store.revise_identity(current_project.ref, current_payload, revision=next_project_ref.revision,
+            expected_revision=current_project.ref.revision, expected_version=current_project.version)
+        unrelated = ResourceRef(self.store.authority, "work.task", "000-unrelated-large", "rev-1")
+        self.store.put_identity(unrelated, {"project_ref": project.ref.to_dict(),
+            "unrelated_large_notes": "z" * 50000})
+        service = SimpleNamespace(server=SimpleNamespace(owner=self.owner,
+            state={"orchestrator_assignment_ref": root.ref.to_dict()}))
+        with patch("otto.portfolio.retention_owner_read.USAGE_PROJECT_ID", project.ref.id):
+            result_view = RetentionOwnerRead(service).call({"handle": {"view": "lifecycle"}},
+                                                          root=root, actor=self.actor)
+        self.assertEqual(result_view["task_inventory"]["state"], "complete")
+        self.assertEqual(result_view["task_inventory"]["read_mode"], "exact-primary-key-projection")
+        self.assertNotIn("state", result_view["tasks"][0])
+        groups = result_view["tasks"][0]["survivor_facets"]["groups"]
+        self.assertEqual(groups["completion"]["fields"]["candidate_ref"]["ref"], candidate.to_dict())
+        self.assertEqual(groups["completion"]["fields"]["evidence_refs"]["refs"], [evidence.to_dict()])
+        self.assertEqual(groups["effect"]["fields"]["result_ref"]["ref"], result.to_dict())
+        self.assertEqual(groups["settlement"]["fields"]["gate_refs"]["refs"], [gate.to_dict()])
+        self.assertEqual(result_view["reconciliation"]["observation"]["shared_records"]["records"][0]["status"], "preserved")
+        self.assertEqual(result_view["lifecycle_control"]["close_request"]["state"], "available")
+        self.assertEqual(result_view["lifecycle_control"]["terminal_evidence"]["state"], "available")
+        self.assertTrue(result_view["complete"])
+
+    def test_lifecycle_marks_stale_or_foreign_task_pins_partial(self):
+        root, _subject, _pin, project = self.setup_portfolio()
+        current = self.owner.graph.get(project.ref)
+        bad = ResourceRef(self.store.authority, "work.task", "missing-task", "rev-1")
+        foreign = ResourceRef("foreign-authority", "work.task", "foreign-task", "rev-1")
+        next_ref = ResourceRef(current.ref.authority, current.ref.kind, current.ref.id,
+                               "rev-" + str(current.version + 1))
+        metadata = dict(current.payload["metadata"])
+        metadata["otto_orchestrator"] = dict(metadata["otto_orchestrator"], project_ref=next_ref.to_dict())
+        updated = dict(current.payload, metadata=metadata, tasks=[bad.to_dict(), foreign.to_dict()])
+        self.store.revise_identity(current.ref, updated, revision=next_ref.revision,
+            expected_revision=current.ref.revision, expected_version=current.version)
+        service = SimpleNamespace(server=SimpleNamespace(owner=self.owner,
+            state={"orchestrator_assignment_ref": root.ref.to_dict()}))
+        with patch("otto.portfolio.retention_owner_read.USAGE_PROJECT_ID", project.ref.id):
+            result_view = RetentionOwnerRead(service).call({"handle": {"view": "lifecycle"}},
+                                                          root=root, actor=self.actor)
+        self.assertEqual(result_view["task_inventory"]["state"], "partial-or-unknown")
+        self.assertFalse(result_view["complete"])
+        self.assertEqual(result_view["task_inventory"]["held"], 2)
 
     def test_storage_returns_only_injected_partial_receipt_and_preview_unavailable_without_handler(self):
         root, _subject, _pin, project = self.setup_portfolio()
@@ -155,6 +252,31 @@ class RetentionOwnerReadTests(unittest.TestCase):
         self.assertEqual(held["outcome"], "unavailable")
         self.assertEqual(held["deletion_count"], 0)
 
+    def test_empty_nonterminal_evidence_page_stays_incomplete(self):
+        root, _subject, _pin, project = self.setup_portfolio()
+        project = self.complete_project_for_preview(project)
+        service = SimpleNamespace(server=SimpleNamespace(owner=self.owner,
+            state={"orchestrator_assignment_ref": root.ref.to_dict()}))
+        selection_ref = ResourceRef(self.store.authority, "dat.content.document", "empty-preview", "rev-1")
+        class EmptyPageHandler:
+            def reclaim_preview(self, project_ref, **kwargs):
+                return {"outcome": "previewed", "items": [], "next_cursor": "phase-links",
+                    "selection_ref": selection_ref, "selection": {
+                        "selection_digest": "a" * 64, "project_ref": project_ref.to_dict()},
+                    "io_work": {"identities_examined": 2}, "managed_bytes_removed": 0}
+        capability = RetentionOwnerRead(service, evidence_handler=EmptyPageHandler())
+        handle = {"view": "reclaim-preview", "cutoff": "9999-01-01T00:00:00Z",
+                  "cursor": "", "limit": 10}
+        with patch("otto.portfolio.retention_owner_read.USAGE_PROJECT_ID", project.ref.id):
+            page = capability.call({"request_key": "empty-page", "handle": handle},
+                                   root=root, actor=self.actor)
+        self.assertEqual(page["items"], [])
+        self.assertEqual(page["next_cursor"], "phase-links")
+        self.assertFalse(page["complete"])
+        self.assertEqual(page["page_state"], "bounded-page")
+        self.assertEqual(page["coverage_state"], "continuation-available")
+        self.assertEqual(page["page_summary"]["item_count"], 0)
+
     def test_real_evidence_preview_is_fixed_bounded_and_replay_fenced(self):
         try:
             from tests.test_evidence_reclaim import _current_pack
@@ -188,6 +310,13 @@ class RetentionOwnerReadTests(unittest.TestCase):
             self.assertEqual(first["deletion_count"], 0)
             self.assertEqual(first["managed_bytes_removed"], 0)
             self.assertEqual(first["items"][0]["hold"], "dependency-unknown")
+            self.assertEqual(first["items"][0]["material_class"], "managed-evidence")
+            self.assertEqual(first["items"][0]["current_head"], status["current_head"].to_dict())
+            self.assertEqual(first["items"][0]["byte_digest"], status["manifest"]["byte_digest"])
+            self.assertEqual(first["items"][0]["provenance"]["project_ref"], project.ref.to_dict())
+            self.assertIn("identities_examined", first["page_summary"]["io_work"])
+            self.assertGreater(first["page_summary"]["held_bytes"], 0)
+            self.assertIsNotNone(first["next_cursor"])
             self.assertTrue(managed_path.is_file())
             lifecycle = capability.call({"request_key": "lifecycle-after-preview",
                 "handle": {"view": "lifecycle"}}, root=root, actor=self.actor)
@@ -195,6 +324,41 @@ class RetentionOwnerReadTests(unittest.TestCase):
             with self.assertRaises(ReplayConflictError):
                 capability.call({**request, "handle": {**handle, "cutoff": "9998-01-01T00:00:00Z"}},
                                  root=root, actor=self.actor)
+
+
+class ExactIdentityProjectionTests(unittest.TestCase):
+    def test_projection_is_exact_pinned_and_bounded_without_global_payload_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store.create(Path(directory) / "projection.sqlite", authority="projection-test")
+            self.addCleanup(store.close)
+            project_ref = ResourceRef("projection-test", "work.project", "project", "rev-1")
+            selected = ResourceRef("projection-test", "work.task", "selected", "rev-1")
+            unrelated = ResourceRef("projection-test", "work.task", "000-unrelated-oversize", "rev-1")
+            store.put_identity(project_ref, {"lifecycle": "completed"})
+            store.put_identity(selected, {"project_ref": project_ref.to_dict(),
+                "completion": {"candidate_ref": ResourceRef("projection-test", "dat.candidate", "c", "rev-1").to_dict()},
+                "notes": "x" * 20000})
+            store.put_identity(unrelated, {"project_ref": project_ref.to_dict(), "notes": "z" * 50000})
+            projection = store.consumer().project_identity_fields_for_refs([selected], fields={
+                "project_ref": ("project_ref",), "candidate": ("completion", "candidate_ref"),
+                "notes": ("notes",), "missing": ("missing_field",)}, max_projection_bytes=32768)
+            self.assertEqual(len(projection), 1)
+            self.assertEqual(projection[0]["state"], "available")
+            self.assertEqual(projection[0]["fields"]["project_ref"], project_ref.to_dict())
+            self.assertEqual(projection[0]["fields"]["candidate"]["id"], "c")
+            self.assertEqual(projection[0]["present"]["missing"], 0)
+            self.assertLessEqual(projection[0]["projected_bytes"], 32768)
+            stale = store.consumer().project_identity_fields_for_refs([
+                ResourceRef(selected.authority, selected.kind, selected.id, "rev-0")],
+                fields={"project_ref": ("project_ref",)})
+            self.assertEqual(stale[0]["state"], "stale")
+            oversize = store.consumer().project_identity_fields_for_refs([selected],
+                fields={"notes": ("notes",)}, max_projection_bytes=128)
+            self.assertEqual(oversize[0]["state"], "oversize")
+            with self.assertRaises(ValueError):
+                store.consumer().project_identity_fields_for_refs([
+                    ResourceRef("foreign", "work.task", "task", "rev-1")],
+                    fields={"project_ref": ("project_ref",)})
 
 
 if __name__ == "__main__":
