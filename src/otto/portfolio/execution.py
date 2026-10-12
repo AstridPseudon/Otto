@@ -56,10 +56,12 @@ class ExecutionApplication:
     def __init__(self, *, portfolio: Any, assignments: Any, due_port: Any,
                  binding: Any, actor: str, runtime: Any,
                  manager_actor: str | None = None,
+                 reviewed_activation: Any = None,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.portfolio, self.assignments, self.due_port = portfolio, assignments, due_port
         self.binding, self.actor, self.runtime, self.clock = binding, actor, runtime, clock
         self.manager_actor = actor if manager_actor is None else _text(manager_actor, "manager_actor")
+        self.reviewed_activation = reviewed_activation
         self.binding.authenticated_actor(self.manager_actor)
 
     def _now(self) -> str:
@@ -107,6 +109,18 @@ class ExecutionApplication:
             role="operating_setup", content=config)
         return {"outcome": "prepared", "setup_ref": self._document_revision(document, "operating setup"),
                 "readiness": decision, "provider_called": False}
+
+    def read_reviewed_activation(self, **request: Any) -> dict[str, Any]:
+        """Read D04 applicability through the owner-bound composition."""
+        if self.reviewed_activation is None:
+            raise OccurrencePreparationError("reviewed activation is not bound")
+        return self.reviewed_activation.read(**request)
+
+    def activate_reviewed_plan(self, **request: Any) -> dict[str, Any]:
+        """Activate only after the reviewed-plan gate; dispatch remains separate."""
+        if self.reviewed_activation is None:
+            raise OccurrencePreparationError("reviewed activation is not bound")
+        return self.reviewed_activation.activate(**request)
 
     def read_operating_setup(self, *, project_ref: Mapping[str, Any]) -> dict[str, Any]:
         """Read draft/ready/active separately from administrative lifecycle."""

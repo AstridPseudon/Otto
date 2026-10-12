@@ -593,6 +593,7 @@ class PortfolioOwnerBootstrap:
         "orchestration_portfolio",
         "project_read_grant",
         "queue_binding",
+        "reviewed_policy",
     )
 
     def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
@@ -615,6 +616,7 @@ class PortfolioOwnerBootstrap:
         project_read_grant: Optional[ProjectReadGrant] = None,
         folder_transport_request_bytes: int = 16 * 1024,
         queue_ref: Any = None,
+        reviewed_policy: Mapping[str, Any] | None = None,
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
@@ -638,6 +640,7 @@ class PortfolioOwnerBootstrap:
             raise ValueError("project read grant must bind the authenticated owner principal")
 
         self.store = store
+        self.reviewed_policy = reviewed_policy
         self.binding = binding
         self.owner_actor = authenticated
         self.project_read_grant = project_read_grant
@@ -994,16 +997,28 @@ class PortfolioOwnerBootstrap:
 
     def execution_application(self, *, due_port: Any, adapter: Any, clock: Any = None,
                               manager_actor: str | None = None, assessment_policy: Any = None,
-                              issue_delivery: Any = None, native_result_verifier: Any = None, native_bodies: Any = None) -> Any:
+                              issue_delivery: Any = None, native_result_verifier: Any = None, native_bodies: Any = None,
+                              reviewed_policy: Mapping[str, Any] | None = None) -> Any:
         """Issue maintained execution commands over the existing finite ports."""
         from .execution import ExecutionApplication
         runtime = self.role_runtime(due_port=due_port, adapter=adapter,
                                     assessment_policy=assessment_policy, issue_delivery=issue_delivery, native_result_verifier=native_result_verifier, native_bodies=native_bodies)
         kwargs = {} if clock is None else {"clock": clock}
-        return ExecutionApplication(portfolio=runtime.portfolio,
+        activation = self.reviewed_plan_activation(owner_policy=reviewed_policy)
+        app = ExecutionApplication(portfolio=runtime.portfolio,
             assignments=self.assignments.command_port, due_port=due_port,
             binding=self.binding, actor=self.owner_actor.actor, runtime=runtime,
-            manager_actor=manager_actor, **kwargs)
+            manager_actor=manager_actor, reviewed_activation=activation, **kwargs)
+        activation.setup_application = app
+        return app
+
+    def reviewed_plan_activation(self, *, setup_application: Any = None,
+                                 owner_policy: Mapping[str, Any] | None = None) -> Any:
+        """Return the owner-bound reviewed-plan activation composition."""
+        from .reviewed_activation import ReviewedPlanActivation
+        selected = self.reviewed_policy if owner_policy is None else owner_policy
+        return ReviewedPlanActivation(self, setup_application=setup_application,
+                                      owner_policy=selected)
 
     def shared_attention_port(self, *, due_port: Any) -> Any:
         """Issue durable scheduled notifications through the existing DAT owner."""
