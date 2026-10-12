@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from herzchen.command_ports import CommandTransportClosed, WriterAuthorityDenied, owner_local_engine
-from herzchen.contracts import ResourceRef
+from herzchen.contracts import ResourceRef, canonical_json
 
 
 USAGE_PROJECT_ID = "project-0414b14adc7aa1b935e1dc773660"
@@ -19,6 +19,13 @@ _TASK_LIMIT = 100
 _MAX_CURSOR = 512
 _MAX_PROJECTED_BYTES = 65536
 _MAX_TASKS = 100
+_MAX_STATUS_BYTES = 65536
+_KNOWN_EVIDENCE_STATUS_REFERENCE = {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "kind": "dat.content.document",
+    "id": "evidence-a074c4b017c3e761737cb5f5d1f4",
+    "revision": "rev-1",
+}
 
 _PROJECT_FIELDS = {
     "lifecycle": ("lifecycle",),
@@ -102,11 +109,94 @@ class RetentionOwnerRead:
                         "currentness": "not-revalidated", "provider_called": False, "writes": 0,
                         "reason": "fixed Usage project is not completed with current reconciled lifecycle control"}
             return self._storage()
+        if view == "evidence-status":
+            if set(handle) != {"view", "reference"}:
+                raise ValueError("evidence status requires the exact retained reference")
+            return self._evidence_status(handle, root=root, actor=actor)
         if view == "reclaim-preview":
             if set(handle) != {"view", "cutoff", "cursor", "limit"}:
                 raise ValueError("reclaim preview requires explicit cutoff, cursor and limit")
             return self._preview(handle, root=root, actor=actor, request_key=request.get("request_key"))
         raise ValueError("unsupported retention view")
+
+    def _evidence_status(self, handle: Mapping[str, Any], *, root: Any, actor: Any) -> Mapping[str, Any]:
+        """Read one owner-proven Evidence pin through the existing handler.
+
+        The fixed reference is deliberately bound to the retained selection
+        diagnosis. This route projects metadata only; it does not expose a
+        payload, dependency decision, eligibility claim, or mutation hook.
+        """
+        owner, project = self._project_context(root=root, actor=actor)
+        if actor != owner.owner_actor:
+            raise PermissionError("evidence status requires the authenticated service owner")
+        if not _has_current_reconciliation(project.payload):
+            return {"outcome": "held", "view": "evidence-status", "complete": False,
+                    "provider_called": False, "writes": 0,
+                    "reason": "fixed Usage project is not completed with current reconciled lifecycle control"}
+        reference = handle.get("reference")
+        if not isinstance(reference, Mapping) or dict(reference) != _KNOWN_EVIDENCE_STATUS_REFERENCE:
+            raise PermissionError("evidence status reference is not the retained authorized pin")
+        if self.evidence_handler is None or not callable(getattr(self.evidence_handler, "status", None)):
+            return {"outcome": "unavailable", "view": "evidence-status", "complete": False,
+                    "provider_called": False, "writes": 0,
+                    "reason": "existing Evidence status handler is not injected"}
+        requested = ResourceRef.from_dict(reference)
+        status = self.evidence_handler.status(requested, actor=actor)
+        if not isinstance(status, Mapping):
+            raise ValueError("Evidence status returned an invalid bounded record")
+        if len(canonical_json(status).encode()) > _MAX_STATUS_BYTES:
+            raise ValueError("Evidence status exceeds its bounded metadata limit")
+        returned_value = status.get("reference")
+        returned = _safe_ref(returned_value.to_dict() if hasattr(returned_value, "to_dict") else returned_value)
+        if returned != reference:
+            raise PermissionError("Evidence status returned a different revision")
+        if status.get("representation") != "managed":
+            raise PermissionError("retained Evidence pin is not a managed representation")
+        document = status.get("document")
+        if not isinstance(document, Mapping) or document.get("role") != "evidence":
+            raise PermissionError("retained pin is not an Evidence document")
+        manifest = status.get("manifest")
+        if not isinstance(manifest, Mapping) or manifest.get("record_type") != "dat.evidence.manifest":
+            raise PermissionError("retained Evidence pin lacks the managed evidence manifest")
+        origin = manifest.get("origin")
+        if not isinstance(origin, Mapping) or not _same_ref_identity(origin.get("project_ref"), project.ref.to_dict()):
+            raise PermissionError("retained Evidence pin has foreign project provenance")
+        storage = manifest.get("storage")
+        if not isinstance(storage, Mapping) or storage.get("kind") != "managed-file":
+            raise PermissionError("retained Evidence pin has no managed-file representation")
+        byte_length = status.get("byte_length", manifest.get("byte_length"))
+        byte_digest = manifest.get("byte_digest", status.get("content_digest"))
+        if type(byte_length) is not int or byte_length < 0:
+            raise ValueError("Evidence status has invalid byte length")
+        if (not isinstance(byte_digest, str) or len(byte_digest) != 64
+                or any(c not in "0123456789abcdef" for c in byte_digest.lower())):
+            raise ValueError("Evidence status has invalid byte digest")
+        io_work = _bounded_io_work(status.get("io_work"))
+        if (io_work is None or any(io_work.get(name) != 0 for name in
+                ("payload_bytes_read", "payload_bytes_parsed", "payload_bytes_hashed"))):
+            raise PermissionError("Evidence status lacks a zero-payload metadata observation")
+        provenance = {name: _safe_ref(origin.get(name)) for name in ("project_ref", "task_ref", "attempt_ref")}
+        provenance = {name: value for name, value in provenance.items() if value is not None}
+        if not _same_ref_identity(provenance.get("project_ref"), project.ref.to_dict()):
+            raise PermissionError("Evidence status provenance is not bound to the fixed Usage project")
+        current_head_value = status.get("current_head")
+        current_head = _safe_ref(current_head_value.to_dict() if hasattr(current_head_value, "to_dict") else current_head_value)
+        if (current_head is None or not current_head.get("revision")
+                or not _same_ref_identity(current_head, reference)):
+            raise PermissionError("Evidence status has no current head")
+        if status.get("payload_verification") != "not-revalidated":
+            raise ValueError("Evidence status lacks explicit payload verification state")
+        return {"outcome": "read", "view": "evidence-status", "complete": True,
+                "reference": reference, "current_head": current_head,
+                "representation": "managed", "evidence_role": "evidence",
+                "availability": _bounded_label(status.get("availability")),
+                "verification": _bounded_label(status.get("verification")),
+                "payload_verification": "not-revalidated",
+                "byte_length": byte_length, "byte_digest": byte_digest,
+                "format": _bounded_label(manifest.get("format", status.get("format"))),
+                "provenance": provenance, "io_work": io_work,
+                "dependency_evaluation": "not-performed",
+                "eligibility": "not-evaluated", "provider_called": False, "writes": 0}
 
     def _fixed_project(self) -> tuple[Any, Any]:
         owner = self.service.server.owner
