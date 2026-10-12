@@ -183,7 +183,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
 
     def verify_completed_delivery(self, logical_request_key: str, physical_session_id: str,
                                   brief_sha256: str, authorization: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Verify an admitted manager result after its authorized state effects.
+        """Verify an admitted result under its unchanged completion capability.
 
         Admission still uses verify_delivery's full snapshot fence. A manager
         explicitly permitted to issue canonical commands may advance project/
@@ -207,7 +207,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
                 or authorization.get("physical_session_id") != physical_session_id
                 or admission.get("native_turn_started") is not True
                 or admission.get("physical_session_id") != physical_session_id):
-            raise OwnerRoleRuntimeError("completed manager result differs from the exact admitted native claim")
+            raise OwnerRoleRuntimeError("completed role result differs from the exact admitted native claim")
         return deepcopy(dict(authorization))
 
     def validate_completed_manager_result(self, value: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -828,6 +828,22 @@ class CanonicalRoleRuntime:
 
             capture.current_brief_reader = current_brief_digest
             current_brief_digest()  # Reject invalid launch/resume contracts before any provider claim/delivery.
+            if role == "worker":
+                strict_scope = capture.scope_validator
+                def completed_worker_scope():
+                    failure = strict_scope()
+                    if failure:
+                        return failure
+                    try:
+                        current_setup = read_setup(self.operations, project_ref)
+                        if current_setup != setup:
+                            self._verify_completed_worker_selector(setup, current_setup, project_ref)
+                    except Exception as exc:
+                        return str(exc)
+                    return None
+                # The adapter verifies the original native context before this
+                # callback. Admission still uses the full current-brief guard.
+                capture.completed_scope_validator = completed_worker_scope
             from otto.portfolio.execution_host import ExecutionHost
             def authorize(session_id, brief_sha256):
                 host = ExecutionHost.current_bounded()
@@ -885,11 +901,69 @@ class CanonicalRoleRuntime:
                 operation_result = evidence.get("operation_result") if isinstance(evidence, Mapping) else None
                 output = operation_result.get("output") if isinstance(operation_result, Mapping) else None
                 if isinstance(output, Mapping) and "final_answer" in output:
+                    resource = envelope.get("resource_evidence") or {}
+                    brief = resource.get("brief") or {}
+                    support = _completed_worker_support_refs(envelope, self.native_result_verifier,
+                        (capture._attempt(capture._record()) or {}).get("delivery_authorization"))
+                    def completed_brief_digest():
+                        prepared = prepare_canonical_assignment_role_brief(
+                            role=role, project_ref=project_ref, task_ref=task_ref,
+                            assignment_ref=assignment_ref, mandate_ref=mandate_ref,
+                            expected_generation=expected_generation,
+                            project_reader=self._project_reader(project_ref),
+                            task_reader=self._task_reader(project_ref, task_ref),
+                            assignment_reader=self._assignment_reader(assignment_ref),
+                            mandate_reader=self._mandate_reader(project_ref, mandate_ref),
+                            resource_reader=self.operations.content_port,
+                            direction_context_reader=getattr(self.operations, "direction_context_reader", None),
+                            lifecycle=lifecycle, as_of=as_of, required_resource_names=required_resource_names,
+                            operating_context_reader=lambda: brief.get("context", {}).get("operating_setup"),
+                            completed_support_refs=support,
+                            include_role_context="introduction" in brief.get("operating_core", {}))
+                        return _canonical_operation_evidence(prepared, owner=logical_agent_id,
+                            task_ref=task_ref)["brief_sha256"]
+                    # Only after the exact native result was CAS recorded:
+                    # publication reconstructs its admitted packet, as recovery
+                    # already does. This cannot authorize a new delivery.
+                    capture.current_brief_reader = completed_brief_digest
                     published = capture.publish_analytical_result(envelope, result_owner)
                     result = {**result, "published_analytical_result": published}
             return result
         from otto.portfolio.owner_completion import after_owner
         return after_owner(result, complete)
+
+    def _verify_completed_worker_selector(self, original, current, project_ref):
+        """Only a verified same-manager manual continuation may differ."""
+        from otto.attention import DueRecord
+        from otto.portfolio.operating_setup import verify_role_conversation
+        if not isinstance(original, Mapping) or not isinstance(current, Mapping):
+            raise OwnerRoleRuntimeError("completed worker operating setup changed beyond its manager selector")
+        before, after = deepcopy(dict(original)), deepcopy(dict(current))
+        old_schedule = before.get("roles", {}).pop("manager", None)
+        new_schedule = after.get("roles", {}).pop("manager", None)
+        if (before != after or original.get("mode") != "manual"
+                or not isinstance(old_schedule, str) or not isinstance(new_schedule, str)):
+            raise OwnerRoleRuntimeError("completed worker operating setup changed beyond its manager selector")
+        old = DueRecord.from_dict(self.due_port.read_due(old_schedule))
+        new = DueRecord.from_dict(self.due_port.read_due(new_schedule))
+        identity = lambda ref: tuple(ref.get(k) for k in ("authority", "kind", "id"))
+        if (old.role != "manager" or new.role != "manager" or old.recipient != new.recipient
+                or identity(old.assignment_ref) != identity(new.assignment_ref) or old.generation != new.generation
+                or any(d.project_ref != project_ref["id"] or d.lifecycle_owner != self.actor
+                    or d.manager_ref != self.actor or identity(d.target["project_ref"]) != identity(project_ref)
+                    for d in (old, new))):
+            raise OwnerRoleRuntimeError("completed worker manager selector is foreign")
+        assignment = self._assignment_reader(new.assignment_ref)(
+            {k: new.assignment_ref[k] for k in ("authority", "kind", "id")})
+        if (assignment.get("role") != "manager" or assignment.get("generation") != new.generation
+                or assignment.get("principal") != new.target.get("principal")
+                or old.target.get("principal") != new.target.get("principal")):
+            raise OwnerRoleRuntimeError("completed worker manager selector has changed authority")
+        history = getattr(self.operations, "_owner_reader", None)
+        sessions = [verify_role_conversation(due=d, assignment=assignment, project_ref=project_ref,
+            due_port=self.due_port, actor=self.actor, assignment_history_reader=history)[0] for d in (old, new)]
+        if sessions[0] != sessions[1]:
+            raise OwnerRoleRuntimeError("completed worker manager selector changed native identity")
 
     def invoke_manager(self, **kwargs: Any) -> Any:
         """Legacy owner route; not the post-bind authorization contract."""
