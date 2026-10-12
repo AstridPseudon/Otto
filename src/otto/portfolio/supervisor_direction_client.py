@@ -136,7 +136,7 @@ class SupervisorDirectionAuthoring:
         app = service._execution(principal=manager.principal, model=state['requested_model'],
             reasoning=state['requested_reasoning'], evidence_id='supervisor-directive')
         prior = app._read(payload['expected_schedule_id'])
-        app._current(prior.assignment_ref, prior.generation)
+        app._manager_adoption_anchor(prior)
         _, _, hold = app._manager_anchor(prior, manager, schedule='supervisor-directive-pending', purpose='supervisor directive')
         if hold is not None: return {**common, **hold, 'canonical_effect_recorded': False}
         resources = deepcopy(manager.payload.get('resource_adoptions', []))

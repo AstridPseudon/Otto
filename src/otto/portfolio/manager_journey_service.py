@@ -308,6 +308,14 @@ class ManagerJourneyService:
                     or evidence.get("schema") != "otto.role-result.v1"
                     or not evidence.get("result_digest")):
                 raise PermissionError("stale manager effects require exact reconciliation")
+            from otto.attention import DueRecord
+            app = self._execution(principal=state['manager'], model=state['requested_model'],
+                reasoning=state['requested_reasoning'], evidence_id='adopted-manager-read-anchor')
+            adopted = app._manager_adoption_anchor(DueRecord.from_dict(due))
+            from .operating_setup import authenticated_adoption_ancestor
+            if adopted.ref.to_dict() != state['assignment_ref'] and not authenticated_adoption_ancestor({'ref':adopted.ref.to_dict(),'principal':adopted.principal,'role':adopted.role,'generation':adopted.generation,'payload':adopted.payload},state['assignment_ref'],getattr(app.portfolio.operations,'_owner_reader',None)):
+                raise PermissionError('historical manager adoption differs from current state')
+            return schedule
         raise PermissionError("no current owner-issued manager occurrence")
 
     @staticmethod
@@ -1437,7 +1445,23 @@ class ManagerJourneyService:
         if refresh:
             self._refresh_refs()
         if review_task is not None:
-            settled = {**settled, "review_input": self.commands.review_input(review_task)}
+            # Host-only compositions may deliberately omit the optional
+            # assessment policy. Keep the successful captured result and
+            # continue to the same-manager callback; configured policy
+            # failures still flow through review_input() unchanged.
+            if self.commands.policy is None and "assessment_policy" not in self.server.state:
+                review_input = {
+                    "outcome": "unavailable", "provider_called": False,
+                    "effects_started": False, "retry": False,
+                    "assessment_policy_selection": {
+                        "state": "unavailable",
+                        "reason": "owner assessment policy is unavailable",
+                    },
+                    "reason": "optional review projection is unavailable without an owner assessment policy",
+                }
+            else:
+                review_input = self.commands.review_input(review_task)
+            settled = {**settled, "review_input": review_input}
         return settled
 
     def _with_task_settlement_notification(self, result: Mapping[str, Any], app: Any) -> Mapping[str, Any]:

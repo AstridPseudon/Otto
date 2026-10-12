@@ -66,6 +66,52 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   self.client=ScopedOrchestratorClient(owner=f.owner,binding=self.binding,handlers={op:facade for op in OPERATIONS})
  def call(self,operation,payload=None,key='read'):
   return self.client.call({'operation':operation,'project_id':self.f.project.id,'request_key':key,'request':payload})
+ def test_two_resource_adopted_settled_heads_keep_continuation_precedence(self):
+  # The bootstrap and later callback both retain their original assignment pin.
+  # A resource refresh must qualify the actual callback head, not select the
+  # bootstrap merely because it appears last in the read loop.
+  f=self.f;old=f.owner.assignments.get(self.state['assignment_ref'])
+  later=f.app.prepare_role(role='manager',project_ref=f.project.ref.to_dict(),task_ref=f.task.ref.to_dict(),
+   assignment_ref=old.ref.to_dict(),generation=old.generation,mandate_ref=self.state['mandate_ref'],
+   request_key='later-settled-manager',instruction='Inspect the later callback',model='gpt-test',reasoning='high',
+   profile='workspace-write',native_session_id='manager-session')
+  self.assertEqual(f.app.start(schedule_id=later['schedule_id'])['outcome'],'succeeded')
+  later_before=deepcopy(f.port.read_due(later['schedule_id']));bootstrap_before=deepcopy(self.anchor)
+  self.state['manager_continuation']={'schedule_id':later['schedule_id'],'outcome':'succeeded',
+   'requested_continuation':{'settled_schedule_id':self.anchor['schedule_id']}}
+  old=f.owner.assignments.get(self.state['assignment_ref'])
+  current=f.owner.assignments.adopt_resources(old.ref,resources=old.payload['resource_adoptions'],
+   expected_revision=old.revision,expected_generation=old.generation,logical_request_key='two-head-resource-refresh',actor=f.owner.owner_actor)
+  self.state['assignment_ref']=current.ref.to_dict()
+  self.assertEqual(self.service._current_manager_schedule(),later['schedule_id'])
+  intent=self.draft_and_intent();self.assertEqual(intent['expected_schedule_id'],later['schedule_id'])
+  calls=len(f.provider.calls);result=self.call('supervisor-direction-adopt-and-continue',intent,'two-head-new-purpose')
+  self.assertEqual(result['anchor_schedule_id'],later['schedule_id'])
+  self.assertEqual(result['delivery'],'prepared-not-started');self.assertEqual(len(f.provider.calls),calls)
+  self.assertEqual(f.port.read_due(later['schedule_id']),later_before)
+  self.assertEqual(f.port.read_due(self.anchor['schedule_id']),bootstrap_before)
+  counts=f.store.consumer().snapshot_counts()
+  self.assertEqual(self.call('supervisor-direction-adopt-and-continue',intent,'two-head-new-purpose')['outcome'],'replayed')
+  self.assertEqual(f.store.consumer().snapshot_counts(),counts)
+  # Exact CAS still refuses a genuinely different pointer.
+  from otto.portfolio.manager_journey_service import advance_manager_head
+  changed=deepcopy(self.state);changed['manager_continuation']['schedule_id']='other-head'
+  self.assertFalse(advance_manager_head(changed,expected=later['schedule_id'],
+   due=f.app._read(result['continuation']['schedule_id']),settled_anchor=later['schedule_id']))
+
+ def test_stale_uncertain_continuation_does_not_fall_back_to_bootstrap(self):
+  state=deepcopy(self.state);state['manager_continuation']={'schedule_id':'unknown-callback'}
+  unknown=deepcopy(self.anchor);unknown.update(schedule_id='unknown-callback',completion_state='unknown',stop_state='active')
+  state['assignment_ref']={**state['assignment_ref'],'revision':'later-resource-ref'}
+  reads=[]
+  def read(schedule):
+   reads.append(schedule);return unknown if schedule=='unknown-callback'else self.anchor
+  server=SimpleNamespace(state=state,due_port=SimpleNamespace(read_due=read))
+  service=SimpleNamespace(server=server,_execution=lambda **kw:self.fail('uncertain callback cannot qualify ancestry'))
+  with self.assertRaisesRegex(PermissionError,'stale manager effects'):
+   ManagerJourneyService._current_manager_schedule(service)
+  self.assertEqual(reads,['unknown-callback'])
+
  def test_exact_guide_resolver_uses_real_disposable_content_reader(self):
   manager=self.f.owner.assignments.get(ResourceRef.from_dict(self.state['assignment_ref']))
   row,observed,digest=resolve_required_instruction_adoption(

@@ -1392,6 +1392,8 @@ class ExecutionHost:
             raise ValueError("source/runtime identity is required")
         path = Path(receipt_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        from otto.hostctl.supervision import require_unsuperseded_preparation, claim_supervision_launch
+        require_unsuperseded_preparation(path)
         policy = {"argv": argv, "source_identity": identity,
                   "max_restarts": max_restarts, "restart_delay": restart_delay,
                   "max_restart_delay": max_restart_delay}
@@ -1494,6 +1496,8 @@ class ExecutionHost:
             current = state()
             if current != "active":
                 return outcome(current)
+            if not claim_supervision_launch(path,index=index,policy_sha256=policy_sha256):
+                return outcome('unknown',retry=False,reason='retained launch claim lacks a terminal exit; reconcile original custody')
             started_at = datetime.now(timezone.utc).isoformat()
             started = time.monotonic()
             try:

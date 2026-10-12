@@ -238,6 +238,7 @@ class ExecutionApplication:
     def continue_manager_from_directive(self, *, manager_schedule_id: str,
             report_ref: Mapping[str, Any], supervisor_ref: Mapping[str, Any], execute: bool = False):
         """A supervisor-authored application receipt, never a manager/help report."""
+        from .operating_setup import authenticated_adoption_ancestor
         prior = self._read(manager_schedule_id)
         current = self._manager_adoption_anchor(prior)
         supervisor = self.assignments.get(ResourceRef.from_dict(supervisor_ref))
@@ -255,14 +256,14 @@ class ExecutionApplication:
                 or relation.get('assignment_ref') != dict(supervisor_ref)
                 or relation.get('generation') != supervisor.generation
                 or value.get('manager_assignment_ref') != current.ref.to_dict()
-                or value.get('before_manager_ref') != prior.assignment_ref
+                or (value.get('before_manager_ref') != prior.assignment_ref and not authenticated_adoption_ancestor({'ref':current.ref.to_dict(),'principal':current.principal,'role':current.role,'generation':current.generation,'payload':current.payload}, value.get('before_manager_ref'), reader))
                 or value.get('manager_generation') != current.generation
                 or value.get('anchor_schedule_id') != prior.schedule_id
                 or value.get('anchor_sha256') != _digest(prior.to_dict())):
             raise OccurrencePreparationError('directive requires exact supervised canonical application receipt')
         receipt = reader.get_receipt(value['adoption_key'])
         if (receipt is None or receipt.operation != 'work.assignment.adopt-resources'
-                or receipt.target.to_dict() != prior.assignment_ref or receipt.result_ref != current.ref):
+                or receipt.target.to_dict() != value.get('before_manager_ref') or receipt.result_ref != current.ref):
             raise OccurrencePreparationError('directive manager revision has no exact adoption receipt')
         schedule = value['continuation_schedule_id']
         existing = self.due_port.read_due(schedule)
