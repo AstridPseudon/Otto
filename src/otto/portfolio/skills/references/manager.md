@@ -75,10 +75,20 @@ explicit and non-retroactive; disabling/removing Evidence stops new admission
 without deleting documents, bytes, citations, pending recovery or decisions.
 Do not make workers prepare per-command manifests or treat a preview as purge.
 
+Distinguish source defects the worker can fix within its authorized scope from
+owner-only installation, runtime adoption or live-evidence blockers. Keep genuine
+source defects as REWORK with their exact evidence. When only an owner action is
+missing, preserve the unmet criterion, original judgments and consumed budgets;
+submit canonical `request-help` with the exact task, candidate/source pins,
+observed installed state, needed action and resume condition. Apply the
+authenticated reply in the same manager and verify the required behavior before
+acceptance. Independently authorized source implementation can proceed when its
+actual task dependencies permit; installation is not a blanket prerequisite.
+
 Use configured `request-help` for operational blockers and `request-advice` for
 judgment. Include impact, evidence, needed action and resume condition. Verify
 delivery; report unavailable routing and use the available owner channel.
-Continue independent ready work.
+Continue independent ready work. If none remains after the supported bounded follow of original retained handles, retain the exact blocker/dependency, responsible owner and resume condition, then return this turn so native capacity can settle. Resume the same assignment/task through its maintained route when that condition is met; inspect original handles, and do not park a sleeping native process, poll indefinitely, replay work or invent lifecycle statuses.
 
 Before returning blocked on owner action, submit canonical `request-help` to
 your adopted project supervisor and retain its issue and delivery receipt.

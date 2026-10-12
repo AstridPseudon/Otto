@@ -20,7 +20,7 @@ def _existing_private_directory(path):
 
 
 def load_retained_root_lane(*, clients, controller, owner, main_state,
-                            project_ids, handler):
+                            project_ids, handler, retain_stale_policy=False):
     """Load one retained locator; never issue, move or republish requests.
 
     The original policy is independently checked against the canonical owner.
@@ -40,7 +40,10 @@ def load_retained_root_lane(*, clients, controller, owner, main_state,
     _existing_private_directory(lane)
     binding = locator['binding']
     expected = main_state['root_help_binding']
-    if (binding.get('assignment_ref') != main_state['orchestrator_assignment_ref']
+    actual_assignment=binding.get('assignment_ref')or{}
+    expected_assignment=main_state['orchestrator_assignment_ref']
+    same_assignment=all(actual_assignment.get(k)==expected_assignment.get(k) for k in ('authority','kind','id'))
+    if ((actual_assignment!=expected_assignment and not (retain_stale_policy is True and same_assignment))
             or binding.get('generation') != expected['generation']
             or binding.get('conversation_ref') != expected['conversation_ref']
             or binding.get('principal') != owner.owner_actor.actor
@@ -51,7 +54,28 @@ def load_retained_root_lane(*, clients, controller, owner, main_state,
         raise PermissionError('retained root lane collides with an already selected client')
     client = ScopedOrchestratorClient(owner=owner, binding=binding,
         handlers={operation: handler for operation in binding['operations']})
-    client.current()
+    if actual_assignment==expected_assignment:
+        client.current()
+    else:
+        # A sealed Native5 packet may advance the same root revision. Retain
+        # the original authenticated policy for exact request-status/error
+        # publication; ScopedOrchestratorClient.call still refuses every stale
+        # operation before invoking any handler. No scope or authority refresh.
+        current=owner.assignments.get(ResourceRef.from_dict(expected_assignment))
+        if (current.ref.to_dict()!=expected_assignment or current.generation!=binding['generation']
+                or current.principal!=binding['principal'] or current.role!='orchestrator'
+                or current.scope.to_dict()!=binding['portfolio_ref']
+                or current.session!=binding['conversation_ref']
+                or str(getattr(current.status,'value',current.status)) in {'cancelled','retired'}):
+            raise PermissionError('retained stale policy has foreign current responsibility')
+        expected_policy={k:v for k,v in binding.items() if k not in {'policy_ref','supervision_adopted'}}
+        policy=owner.store.consumer().get_record(ResourceRef.from_dict(binding['policy_ref']))
+        if policy is None or policy.payload.get('value')!=expected_policy or expected_policy.get('state')!='assigned':
+            raise PermissionError('original retained policy is missing or changed')
+        if any(isinstance(row.value,dict) and row.value.get('schema')=='otto.orchestrator-client-policy.v1'
+               and row.value.get('state')=='revoked' and row.value.get('policy_ref')==binding['policy_ref']
+               for row in owner.assignments.list_observations(current.ref,kind='report')):
+            raise PermissionError('original retained root policy is revoked')
     policy = owner.store.consumer().get_record(ResourceRef.from_dict(binding['policy_ref']))
     if policy.ref.to_dict() != binding['policy_ref']:
         raise PermissionError('retained root policy revision differs from the canonical pin')

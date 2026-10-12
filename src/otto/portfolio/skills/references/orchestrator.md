@@ -134,7 +134,12 @@ inspection is not a writer-release receipt; reconcile the exact failed occurrenc
 before any supported continuation.
 
 Resolve blockers within your mandate with one accountable owner. Preserve
-judgments and debits when authorizing separate corrections. Act on ready handoffs;
+judgments and debits when authorizing separate corrections. Own concrete
+installation and live-evidence handoffs reported through the existing help route;
+return an authenticated response and verify its application by the same manager.
+Preserve the original task/candidate and do not route an owner-only action back
+as repeated worker source rework. Source tests alone do not prove installation
+or live behavior. Act on ready handoffs;
 hourly oversight is a fallback. Verify resolution and resumption, not just message
 delivery. Use recovery for unknown effects.
 

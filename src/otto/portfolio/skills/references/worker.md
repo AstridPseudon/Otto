@@ -35,6 +35,14 @@ within finite limits. Keep parent/project/task associations and consume retained
 results. Give children bounded contributions. Leaves execute their own brief;
 a skill grants neither delegation permission nor extra capacity.
 
+Fix source defects within your authorized scope and return their verification.
+For an owner-only installation or live-evidence blocker, return the exact task,
+candidate/source pins, observed state, needed action and resume condition through
+your retained manager result/reporting route. Continue independently authorized
+source work when its actual dependencies permit; installation is not a blanket
+prerequisite. The manager owns operational help and preserves the original
+judgments and budgets.
+
 Raise blockers through your delivered reporting/help route with impact, evidence
 and the needed owner action. Do not assume manager-only commands are available.
 Verify delivery where possible. Preserve unknown handles and use recovery;
