@@ -17,7 +17,7 @@ def fact(adapter='codex-direct', *, pos=1, turn='turn', project='project', gener
         stream.feed(json.dumps(e))
     association = {'assignment_ref': ref('wrk.assignment', 'historical'), 'generation': generation,
         'principal': 'old-worker', 'agent': 'old-agent', 'project_ref': ref('work.project', project),
-        'task_ref': ref('work.task', 'task')}
+        'task_ref': ref('work.task', 'task'), 'role': 'worker'}
     return {'schema': FACT_SCHEMA, 'ref': ref('wrk.report', str(pos)), 'observation': stream.observations[0],
         'association': association, 'append_position': pos, 'recorded_at': '2026-10-08T00:00:00Z',
         'first_qualified_recorded_at': '2026-10-05T23:59:00Z', 'first_qualified_provenance': {'parser': 'fixed-v1'},
@@ -145,7 +145,7 @@ class AccountingTests(unittest.TestCase):
         b['association']['assignment_ref'] = ref('wrk.assignment','secret-agent')
         shared = self.query([a,b], projects=('project','secret-project'))
         self.assertEqual(shared['metrics']['input_tokens'],10)
-        self.assertEqual(shared['groups'], {'project': [], 'task': [], 'agent': []})
+        self.assertEqual(shared['groups'], {'project': [], 'task': [], 'role': [], 'agent': []})
         denied = self.query([a,b])
         self.assertEqual(denied['spans'],[]); self.assertIsNone(denied['metrics'])
         self.assertNotIn('secret',json.dumps(denied)); self.assertEqual(denied['coverage']['limited'],1)

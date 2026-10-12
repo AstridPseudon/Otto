@@ -296,7 +296,8 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
             raise WorkValidationError("retained source task differs from historical phase")
         association = {"assignment_ref": target.to_dict(), "generation": admitted["generation"],
             "principal": admitted.get("principal"), "agent": admitted.get("agent"),
-            "project_ref": project, "task_ref": task, "logical_request_key": original.get("logical_request_key"),
+            "project_ref": project, "task_ref": task, "role": admitted.get("role"),
+            "logical_request_key": original.get("logical_request_key"),
             "parent": original.get("parent")}
         observation["association"] = association
         observation["provenance"]["retained_source"] = source

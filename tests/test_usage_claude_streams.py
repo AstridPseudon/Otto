@@ -170,8 +170,37 @@ class ClaudeAccountingTests(unittest.TestCase):
         self.assertEqual(haiku["metrics"]["cached_input_tokens"], 13024 + 14234 + 5000 + 1000)
         self.assertEqual(haiku["roles"], ["manager", "worker"])
         self.assertEqual(Decimal(haiku["provider_reported"]["amount"]), Decimal("0.0016895") + Decimal("0.0021") + Decimal("0.0019"))
-        # per task / agent / project alternates still carry the same tokens
+        # Per role and model include initializer overhead; per task explicitly
+        # excludes that project-only phase instead of silently attributing it.
+        by_role = {g["identity"]: g for g in result["groups"]["role"]}
+        self.assertEqual(set(by_role), {"manager", "worker"})
+        self.assertEqual(sum(g["metrics"]["output_tokens"] for g in by_role.values()), result["metrics"]["output_tokens"])
+        self.assertEqual(Decimal(by_role["manager"]["provider_reported"]["amount"]), Decimal("0.0037895"))
+        self.assertEqual(Decimal(by_role["worker"]["provider_reported"]["amount"]), Decimal("0.0476"))
+        self.assertEqual(by_role["worker"]["provider_reported"]["missing_spans"], 1)
+        by_task = result["groups"]["task"][0]
+        self.assertEqual(Decimal(by_task["provider_reported"]["amount"]), Decimal("0.0497"))
+        self.assertEqual(by_task["provider_reported"]["missing_spans"], 1)
+        self.assertEqual(by_task["metrics"]["output_tokens"], result["metrics"]["output_tokens"] - 6)
+        # Per project remains an alternate view of the same physical spans.
         self.assertEqual(sum(g["metrics"]["output_tokens"] for g in result["groups"]["project"]), result["metrics"]["output_tokens"])
+
+    def test_partial_then_complete_duplicate_counts_the_claude_span_once(self):
+        stream = UsageStream("claude-code", phase="work")
+        native = events("haiku-work")
+        for event in native[:-1]:
+            stream.feed(json.dumps(event))
+        partial = deepcopy(native[-1]); partial["usage_complete"] = False
+        stream.feed(json.dumps(partial))
+        stream.feed(json.dumps(native[-1]))
+        stream.feed(json.dumps(native[-1]))
+        self.assertEqual([o["usage"]["state"] for o in stream.observations], ["partial", "observed"])
+        partial_fact = fact(stream.observations[0], 1)
+        partial_fact["first_qualified_recorded_at"] = None
+        complete_fact = fact(stream.observations[1], 2)
+        result = account([partial_fact, complete_fact])
+        self.assertEqual(result["metrics"], stream.observations[1]["usage"]["metrics"])
+        self.assertEqual(result["provider_reported"]["span_count"], 1)
 
     def test_estimates_stay_unavailable_without_adopted_price_for_claude_models(self):
         spans = account(self.facts())["spans"]

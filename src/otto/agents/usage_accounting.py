@@ -384,6 +384,37 @@ def qualified_observation(value: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _group_bucket(identity: Any) -> dict[str, Any]:
+    return {"identity": identity, "metrics": {}, "span_count": 0,
+        "provider_reported": {"amount": None, "currency": None,
+            "reported_spans": 0, "missing_spans": 0, "unavailable_spans": 0}}
+
+
+def _fold_group_money(bucket: dict[str, Any], money: Any) -> None:
+    """Fold only qualified provider money; missing/unavailable never become zero."""
+    reported = bucket["provider_reported"]
+    if not isinstance(money, Mapping) or money.get("status") == "missing":
+        reported["missing_spans"] += 1
+        return
+    if money.get("status") not in {"zero", "usage_report_estimate", "billed"}:
+        reported["unavailable_spans"] += 1
+        return
+    amount = _money_decimal(money.get("amount"), "amount")
+    currency = money.get("currency")
+    if amount is None or not isinstance(currency, str):
+        reported["unavailable_spans"] += 1
+        return
+    if reported["reported_spans"] == 0:
+        reported["amount"], reported["currency"] = _money_text(amount), currency
+    elif reported["currency"] == currency and reported["amount"] is not None:
+        reported["amount"] = _money_text(Decimal(reported["amount"]) + amount)
+    else:
+        # Cross-currency/provider-conflicted groups remain explicit and unsummed.
+        reported["amount"], reported["currency"] = None, None
+        reported["conflicted"] = True
+    reported["reported_spans"] += 1
+
+
 def _fold_model_group(bucket_map: dict, row: Mapping[str, Any], metrics: Mapping[str, int]) -> None:
     """Alternate per-model view; Claude per-model facts, else the span's one model."""
     usage = row.get("model_usage") if isinstance(row.get("model_usage"), Mapping) else {}
@@ -395,8 +426,7 @@ def _fold_model_group(bucket_map: dict, row: Mapping[str, Any], metrics: Mapping
         reported = money.get("amount") if money.get("status") in {"zero", "usage_report_estimate", "billed"} else None
         parts = [(model, metrics, reported)] if model else []
     for model, part_metrics, cost in parts:
-        bucket = bucket_map.setdefault(model, {"identity": model, "metrics": {}, "span_count": 0,
-            "provider_reported": {"amount": None, "currency": None, "reported_spans": 0}, "roles": []})
+        bucket = bucket_map.setdefault(model, {**_group_bucket(model), "roles": []})
         bucket["span_count"] += 1
         for association in row.get("associations", ()):
             role = association.get("role") if isinstance(association, Mapping) else None
@@ -404,11 +434,8 @@ def _fold_model_group(bucket_map: dict, row: Mapping[str, Any], metrics: Mapping
                 bucket["roles"] = sorted(bucket["roles"] + [role])
         for field, amount in part_metrics.items():
             bucket["metrics"][field] = bucket["metrics"].get(field, 0) + amount
-        if cost is not None:
-            reported = bucket["provider_reported"]
-            reported["amount"] = _money_text(Decimal(reported["amount"] or "0") + Decimal(str(cost)))
-            reported["currency"] = "USD"
-            reported["reported_spans"] += 1
+        _fold_group_money(bucket, {"status": "usage_report_estimate", "amount": cost, "currency": "USD"}
+                          if cost is not None else {"status": "missing"})
 
 
 def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
@@ -448,7 +475,7 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
         instant(item["first_qualified_recorded_at"])
         spans[item["observation"]["identity"]["span_id"]].append(item)
     rows, excluded, limited = [], [], 0
-    totals = {}; groups = {name: {} for name in ("project", "task", "agent")}
+    totals = {}; groups = {name: {} for name in ("project", "task", "role", "agent")}
     by_model: dict = {}
     missing = sum(1 for f in facts if f.get("append_position", as_of + 1) <= as_of
         and ref_key(f.get("association", {}).get("project_ref")) in allowed
@@ -510,6 +537,10 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
         associations = [i.get("association", {}) for i in values]
         agents = {(ref_key(a.get("assignment_ref")), a.get("generation"), json.dumps(a.get("principal"), sort_keys=True)) for a in associations}
         tasks = {ref_key(a.get("task_ref")) for a in associations}; tasks.discard(None)
+        roles = {a.get("role").strip() for a in associations
+                 if isinstance(a.get("role"), str) and a.get("role").strip()}
+        role_proven = bool(associations) and len(roles) == 1 and all(
+            isinstance(a.get("role"), str) and a.get("role").strip() for a in associations)
         historical = all(ref_key(a.get("assignment_ref")) and type(a.get("generation")) is int
             and a["generation"] > 0 and a.get("principal") for a in associations)
         if not historical:
@@ -558,6 +589,7 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
             "metrics": None if reason else metrics, "state": reason or ("shared-unallocated" if shared else "measured"),
             "attribution": {"project": "shared" if shared else "proven",
                 "task": "shared" if len(tasks) > 1 else ("proven" if tasks and all(a.get("task_ref") for a in associations) else "unknown"),
+                "role": "shared" if shared or len(roles) > 1 else ("proven" if role_proven else "unknown"),
                 "agent": "shared" if len(agents) > 1 else ("proven" if historical else "unknown")},
             "associations": associations, "observed": {k: v[0] if len(v) == 1 else None for k, v in observed.items()},
             "model_tier_coverage": "conflict" if any(len(v) > 1 for v in observed.values()) else (
@@ -574,6 +606,7 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
         for field, amount in metrics.items(): totals[field] = totals.get(field, 0) + amount
         group_keys = {"project": None if shared else next(iter(projects)),
             "task": next(iter(tasks)) if not shared and len(tasks) == 1 and all(a.get("task_ref") for a in associations) else None,
+            "role": next(iter(roles)) if not shared and role_proven else None,
             "agent": next(iter(agents)) if not shared and len(agents) == 1 else None}
         for name, key in group_keys.items():
             if key is None:
@@ -581,9 +614,10 @@ def account_usage(facts: Sequence[Mapping[str, Any]], *, as_of: int,
                     "reason": "shared-unallocated" if shared or name == "task" and len(tasks) > 1 or name == "agent" and len(agents) > 1 else "initializer-or-attribution-unknown"})
                 continue
             encoded = repr(key)
-            bucket = groups[name].setdefault(encoded, {"identity": key, "metrics": {}, "span_count": 0})
+            bucket = groups[name].setdefault(encoded, _group_bucket(key))
             bucket["span_count"] += 1
             for field, amount in metrics.items(): bucket["metrics"][field] = bucket["metrics"].get(field, 0) + amount
+            _fold_group_money(bucket, provider_money)
         _fold_model_group(by_model, row, metrics)
     pricing_rows = [r.get("price_estimate") for r in rows if isinstance(r.get("price_estimate"), Mapping)]
     priced = [r for r in pricing_rows if r.get("status") == "estimated"]

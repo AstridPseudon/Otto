@@ -100,6 +100,28 @@ class LateUsageTests(unittest.TestCase):
                 with self.assertRaises(ReplayConflictError):
                     self.append(adapter, source={**self.source, 'sha256': '0'*64})
 
+    def test_claude_model_usage_late_append_is_exact_once_and_keeps_role_and_cost(self):
+        from tests.test_usage_claude_streams import events
+        self.original('claude-code')
+        event = deepcopy(events('haiku-work')[-1]); event['session_id'] = 'session'
+        source = self.bodies.retain(json.dumps(event), project_ref=self.project.ref,
+            task_ref=self.task.ref.to_dict(), attempt_ref=self.old.ref.to_dict())
+        # Evidence source is captured under the original current attempt; the
+        # late append below then proves attribution survives reassignment.
+        self.replace()
+        before = self.store.consumer().snapshot_counts()['events']
+        retained = self.append('claude-code', source=source)
+        duplicate = self.append('claude-code', source=source)
+        self.assertEqual(retained, duplicate)
+        self.assertEqual(self.store.consumer().snapshot_counts()['events'], before + 1)
+        self.assertEqual(retained['association']['role'], 'worker')
+        result = account_usage([retained], as_of=retained['append_position'],
+            authorized_projects=[self.project.ref.to_dict()], complete=True)
+        self.assertEqual(result['metrics'], retained['observation']['usage']['metrics'])
+        self.assertEqual(result['groups']['role'][0]['identity'], 'worker')
+        self.assertEqual(result['groups']['role'][0]['provider_reported']['amount'], '0.0021')
+        self.assertEqual(result['by_model'][0]['identity'], 'claude-haiku-5-5')
+
     def tearDownFixture(self):
         self.doCleanups()
 

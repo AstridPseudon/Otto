@@ -106,6 +106,7 @@ class UsageCaptureTests(unittest.TestCase):
                 self.assertEqual(len(retained), 1)
                 self.assertEqual(retained[0]['identity']['turn_id'], 'turn')
                 self.assertEqual(retained[0]['association']['generation'], 2)
+                self.assertEqual(retained[0]['association']['role'], 'worker')
                 self.assertEqual(retained[0]['association']['parent']['generation'], 3)
                 self.assertEqual(retained[0]['association']['task_ref']['id'], 'task')
                 self.assertEqual(retained[0]['capability']['live'], 'unverified' if adapter == 'claude-code' else 'supported')

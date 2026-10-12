@@ -670,7 +670,8 @@ class OwnerDueRecordAttemptCapture:
                 "schedule_id": self.schedule_id, "project_ref": self.project_ref,
                 "task_ref": None if item.get("phase") == "initializer" else self.task_ref,
                 "assignment_ref": self.assignment_ref, "generation": self.generation,
-                "principal": self.principal, "parent": (record.target or {}).get("parent")}
+                "principal": self.principal, "role": self.role,
+                "parent": (record.target or {}).get("parent")}
             item["association"] = association
             retainer = getattr(self, "native_bodies", None)
             if native_source is not None and retainer is not None:
