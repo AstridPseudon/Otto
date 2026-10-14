@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 
-from otto.portfolio.recovery_timing import ReceiptTiming, timing_from_receipt
+from herzchen.adapters.recovery_timing import ReceiptTiming, timing_from_receipt
 
 
 ROOT = Path(__file__).parents[1]

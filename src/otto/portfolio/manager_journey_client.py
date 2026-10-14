@@ -9,7 +9,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Mapping
 
-from .recovery_timing import stable_correlation_id, timing_from_receipt
+from herzchen.adapters.recovery_timing import stable_correlation_id, timing_from_receipt
 
 def requires_native_caller(command: str) -> bool:
     """Finite native commands route by current authenticated occurrence.

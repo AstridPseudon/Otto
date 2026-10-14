@@ -16,7 +16,7 @@ from .gateway import (
     error,
 )
 from .codex_cli import CodexCliAdapter, CodexCliAdapterError, LaunchUncertainError, normalize_codex_jsonl
-from .usage_contract import (
+from herzchen.usage.contract import (
     CHARGEABLE_FIELDS,
     CONTRACT_SCHEMA as USAGE_CONTRACT_SCHEMA,
     OBSERVATION_SCHEMA as USAGE_OBSERVATION_SCHEMA,
@@ -29,7 +29,7 @@ from .usage_contract import (
     run_fixture_contract,
     validate_rate_schedule,
 )
-from .usage_accounting import (
+from herzchen.usage.accounting import (
     FACT_SCHEMA as USAGE_FACT_SCHEMA,
     MONEY_SCHEMA as USAGE_MONEY_SCHEMA,
     PRICE_SCHEMA as USAGE_PRICE_SCHEMA,

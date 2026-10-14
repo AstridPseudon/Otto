@@ -63,7 +63,7 @@ class RetainedNativeTests(unittest.TestCase):
         self.assertEqual(self.bodies.pack_due(packed), packed)
 
     def test_usage_source_is_retained_before_return_and_metadata_is_reference_only(self):
-        from otto.agents.usage_capture import UsageStream
+        from herzchen.usage.capture import UsageStream
         from tests.test_usage_capture import native
         capture, port = owner_capture()
         capture.native_bodies = self.bodies

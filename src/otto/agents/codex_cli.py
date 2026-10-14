@@ -19,7 +19,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 
-from .usage_capture import UsageStream
+from herzchen.usage.capture import UsageStream
 
 RUNNER_ID = "codex-cli"
 

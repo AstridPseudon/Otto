@@ -486,7 +486,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             projection = summary_capture(evidence, result_ref=saved["result_ref"])
             summary["usage"] = projection["usage"]
             captured_artifacts = projection["artifacts"]
-        from .usage_capture import compact_usage_capture
+        from herzchen.usage.capture import compact_usage_capture
         if value.get("usage_capture") is not None:
             summary["usage_capture"] = compact_usage_capture(value["usage_capture"])
         record = self._record()

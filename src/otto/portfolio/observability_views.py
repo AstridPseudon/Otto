@@ -183,7 +183,7 @@ def _usage_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _fold_retained_usage(rows, result, *, complete=False):
     """Connect bounded admitted Events metadata to the existing pure fold."""
-    from otto.agents.usage_accounting import account_usage, FACT_SCHEMA
+    from herzchen.usage.accounting import account_usage, FACT_SCHEMA
     facts={}
     for row in rows:
         fact=_mapping(_mapping(_mapping(row.get('summary')).get('after')).get('fields')).get('usage_fact')

@@ -24,7 +24,7 @@ from .owner_readers import json_value, owner_ref, project_reader, task_reader
 from .manager_guide import resolve_required_instruction_adoption
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
-from .recovery_timing import stable_correlation_id, timing_from_receipt
+from herzchen.adapters.recovery_timing import stable_correlation_id, timing_from_receipt
 from .owner_completion import after_owner, collect_owner
 
 _UNSPECIFIED_SESSION = object()
@@ -1370,7 +1370,7 @@ class ExecutionApplication:
         compact = {name: result.get(name) for name in (
             "outcome", "delivery_state", "physical_session_id", "observed_turn_id",
             "observed_model", "observed_reasoning", "observed_profile")}
-        from otto.agents.usage_capture import compact_usage_capture
+        from herzchen.usage.capture import compact_usage_capture
         compact["usage"] = compact_usage_capture(result.get("usage_capture"))
         completed = replace(due, stop_state="completed", completion_state="succeeded",
             in_flight_request=None, delivery_state="returned", last_completed_request=due.in_flight_request,
