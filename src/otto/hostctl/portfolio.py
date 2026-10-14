@@ -48,6 +48,11 @@ def prepare_portfolio_request(args: argparse.Namespace) -> None:
         parser().parse_args(args.portfolio_args)
     if not args.portfolio_args or args.portfolio_args[0] not in {
             "status", "documents", "sync-docs", "apply", "gate", "prerequisite"}:
+        if args.portfolio_args:
+            # Validate every forwarded command here, so --help and usage errors are answered by
+            # the client and never parsed inside the shared owner.
+            from otto.portfolio.cli import build_parser as portfolio_cli_parser
+            portfolio_cli_parser().parse_args(args.portfolio_args)
         return
     options = parser().parse_args(args.portfolio_args)
     args.portfolio = options.portfolio

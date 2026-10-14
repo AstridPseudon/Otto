@@ -300,9 +300,13 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
     entry = host_config.host(config, getattr(args, "host", None)) if config.get("hosts") else None
     project_ids = tuple(_flag_values(args.portfolio_args, "--project-ref"))
     with HostSession(config, host=entry, project_ids=project_ids) as session:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio)
+        except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
+            return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code,
+                    "message": (out.getvalue() + err.getvalue()).strip()}, "provider_called": False}
         text = out.getvalue()
     try:
         value = json.loads(text)
