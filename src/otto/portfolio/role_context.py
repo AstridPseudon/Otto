@@ -221,6 +221,40 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
     }
 
 
+def same_supervisor_authority_binding(declared: Any, current: Any) -> bool:
+    """Compare informational pins against an already authenticated supervisor.
+
+    Project/task changes and resource adoption advance ResourceRef revisions.
+    Those revisions remain provenance; current authorization still comes from
+    the owner delivery reader's exact current assignment, scope and session.
+    This comparison grants no authority and never authenticates stale bindings.
+    """
+    keys = {"project_ref", "assignment_ref", "generation", "principal", "conversation_ref"}
+    if not isinstance(declared, Mapping) or not isinstance(current, Mapping):
+        return False
+    if set(declared) != keys or set(current) != keys:
+        return False
+    for name, kind in (("project_ref", "work.project"), ("assignment_ref", "wrk.assignment")):
+        try:
+            before, after = ResourceRef.from_dict(declared[name]), ResourceRef.from_dict(current[name])
+        except (TypeError, ValueError, KeyError):
+            return False
+        if (before.kind != kind or after.kind != kind or not before.revision or not after.revision
+                or (before.authority, before.kind, before.id) != (after.authority, after.kind, after.id)):
+            return False
+    generation = declared["generation"]
+    if type(generation) is not int or generation < 1 or type(current["generation"]) is not int:
+        return False
+    if not isinstance(declared["principal"], str) or not declared["principal"].strip():
+        return False
+    conversation = declared["conversation_ref"]
+    if (not isinstance(conversation, Mapping) or not isinstance(conversation.get("host"), str)
+            or not conversation["host"].strip() or not isinstance(conversation.get("native_id"), str)
+            or not conversation["native_id"].strip()):
+        return False
+    return all(declared[name] == current[name] for name in ("generation", "principal", "conversation_ref"))
+
+
 def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from .operating_brief import ROLE_CONTEXT_GUIDANCE, ROLE_OPERATING_CONTRACTS
     render = canonical["render"]
@@ -294,7 +328,7 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             raise RoleContextError("standard manager guide must be an exact adopted supporting source")
         supervisor = operational_supervisor
         declared = config.get("operational_supervisor")
-        if declared is not None and declared != supervisor:
+        if declared is not None and not same_supervisor_authority_binding(declared, supervisor):
             raise RoleContextError("selected supervisor differs from current authenticated project supervision")
         if (config.get("manager_context_required") is True or enrolled) and (standard_guide is None or supervisor is None):
             raise RoleContextError("manager launch requires its adopted standard guide and current supervisor")
@@ -311,6 +345,8 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
             "generation": snapshot["generation"], "operational_supervisor": supervisor,
             "supervisor_source": None if configuration is None else configuration["ref"],
+            "declared_supervisor": declared,
+            "supervisor_binding_comparison": "authority-identity-generation-principal-conversation",
             "standard_manager_guide": standard_guide,
             "base_resource": canonical["base_resource"]["ref"],
             "project_and_custom_context_refs": result["supporting_refs"],

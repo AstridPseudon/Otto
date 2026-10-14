@@ -206,6 +206,10 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
         if not isinstance(proof, Mapping) or proof_digest != proof_pin["due_sha256"]:
             raise OperatingSetupError("retained native binding occurrence changed")
         conversation_due = DueRecord.from_dict(proof)
+        if (role == 'manager' and (conversation_due.host_evidence or {}).get('worker_custody_release', {}).get('schema') == 'otto.worker-initializer-custody-disposition.v1'):
+            from w0_initialized_manager_custody import conversation_proof
+            return conversation_proof(due=due, original=conversation_due, assignment=assignment,
+                due_port=due_port, actor=actor, reader=assignment_history_reader)
         prior_ref = conversation_due.assignment_ref
         current_ref = due.assignment_ref
         proof_attempt = (conversation_due.host_evidence or {}).get("gateway_attempt") or {}

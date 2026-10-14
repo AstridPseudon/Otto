@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any
 
 from herzchen.contracts import ResourceRef
@@ -18,11 +19,23 @@ def parser() -> argparse.ArgumentParser:
     documents = commands.add_parser("documents", help="read shared portfolio documents")
     documents.add_argument("--operation", dest="document_operation", choices=("list", "read"), default="list")
     documents.add_argument("--path")
+    documents.add_argument("--include-retired", action="store_true", help="read a retired path without restoring it")
+    documents.add_argument("--revision", help="read a specific retained DAT revision")
+    documents.add_argument("--root", help="select a registered file-mode root")
+    documents.add_argument("--root-namespace", help="select an explicit registered root namespace")
+    retire = commands.add_parser("retire", help="retire one shared path while preserving its DAT history")
+    retire.add_argument("path")
+    retire.add_argument("--root", help="select a registered file-mode root")
+    retire.add_argument("--root-namespace", help="select an explicit registered root namespace")
     sync = commands.add_parser("sync-docs", help="sync UTF-8 portfolio files without overwriting Otto edits")
     sync.add_argument("--dir", required=True)
+    sync.add_argument("--root-namespace", help="sync into an explicit root namespace; omitted retains generic scope")
     apply = commands.add_parser("apply", help="register and reconcile a file-mode portfolio root")
     apply.add_argument("--root", required=True)
+    apply.add_argument("--root-namespace", help="stable explicit namespace for roots that may move")
     apply.add_argument("--dry-run", action="store_true")
+    apply.add_argument("--json", action="store_true", help="emit the structured result")
+    apply.add_argument("--detail", action="store_true", help="include per-project and gate details")
     apply.add_argument("--import-history")
     gate = commands.add_parser("gate", help="record evidence for a declared milestone")
     gate_sub = gate.add_subparsers(dest="gate_operation", required=True)
@@ -38,7 +51,7 @@ def parser() -> argparse.ArgumentParser:
     prerequisite_complete.add_argument("--id", required=True)
     prerequisite_complete.add_argument("--evidence", required=True)
     prerequisite_complete.add_argument("--portfolio", help="owner: select an admitted portfolio by id")
-    for command in (status, documents, sync, apply, gate, prerequisite):
+    for command in (status, documents, retire, sync, apply, gate, prerequisite):
         command.add_argument("--portfolio", help="owner: select an admitted portfolio by id")
     return result
 
@@ -47,16 +60,24 @@ def prepare_portfolio_request(args: argparse.Namespace) -> None:
     if args.portfolio_args in (["--help"], ["-h"]):
         parser().parse_args(args.portfolio_args)
     if not args.portfolio_args or args.portfolio_args[0] not in {
-            "status", "documents", "sync-docs", "apply", "gate", "prerequisite"}:
+            "status", "documents", "retire", "sync-docs", "apply", "gate", "prerequisite"}:
         return
     options = parser().parse_args(args.portfolio_args)
     args.portfolio = options.portfolio
+    if options.operation in {"documents", "retire"} and options.root:
+        # The owner service may have a different working directory from this
+        # client. Carry the same canonical root used by apply's file ingestion.
+        args.portfolio_document_root = str(Path(options.root).resolve())
     if options.operation == "sync-docs":
         from otto.portfolio.shared_documents import read_document_directory
         args.portfolio_bundle = read_document_directory(options.dir)
+        if options.root_namespace is not None:
+            from otto.portfolio.shared_documents import document_namespace
+            args.portfolio_bundle["root_namespace"] = document_namespace(root_namespace=options.root_namespace)
     elif options.operation == "apply":
         from .portfolio_apply import read_portfolio_root
-        args.portfolio_bundle = read_portfolio_root(options.root, history_directory=options.import_history)
+        args.portfolio_bundle = read_portfolio_root(options.root, history_directory=options.import_history,
+                                                   root_namespace=options.root_namespace)
 
 
 def _scope(session: HostSession, args: argparse.Namespace) -> ResourceRef:
@@ -110,11 +131,18 @@ def portfolio_command(args: argparse.Namespace) -> dict:
             from otto.portfolio.status import portfolio_status
             return portfolio_status(session, portfolio, service_status=getattr(args, "service_status", None),
                                     owner_authorized=getattr(args, "owner_authorized", False))
-        from otto.portfolio.shared_documents import portfolio_documents, sync_portfolio_documents
-        if getattr(args, "owner_authorized", False) and options.operation in {"documents", "sync-docs"}:
+        from otto.portfolio.shared_documents import (document_namespace, portfolio_documents,
+                                                   retire_portfolio_document, sync_portfolio_documents)
+        if getattr(args, "owner_authorized", False) and options.operation in {"documents", "retire", "sync-docs"}:
             session.host = None
-        if options.operation == "documents":
-            return portfolio_documents(session, portfolio, operation=options.document_operation, path=options.path)
+        if options.operation in {"documents", "retire"}:
+            root = (getattr(args, "portfolio_document_root", None) or str(Path(options.root).resolve())) if options.root else None
+            namespace = document_namespace(root=root, root_namespace=options.root_namespace)
+            if options.operation == "retire":
+                return retire_portfolio_document(session, portfolio, options.path, root_namespace=namespace)
+            return portfolio_documents(session, portfolio, operation=options.document_operation, path=options.path,
+                                       root_namespace=namespace, include_retired=options.include_retired,
+                                       revision=options.revision)
         if options.operation == "apply":
             from .portfolio_apply import apply_portfolio
             return apply_portfolio(session, portfolio, getattr(args, "portfolio_bundle", None),

@@ -935,7 +935,7 @@ def validate_execution_configuration(
 class DueRecordPort(Protocol):
     """Finite trusted-host persistence boundary; no Store-shaped methods."""
 
-    def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]: ...
+    def read_due(self, schedule_id: str, *, hydrate_native: bool = True) -> Optional[Mapping[str, JSONValue]]: ...
 
     def save_due(self, schedule_id: str, record: Mapping[str, JSONValue], *, request_id: str, expected_version: int) -> Mapping[str, JSONValue]: ...
 
@@ -992,7 +992,9 @@ class InMemoryDueRecordPort:
         self._records: dict[str, dict[str, JSONValue]] = {}
         self._requests: dict[str, tuple[str, dict[str, JSONValue]]] = {}
 
-    def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
+    def read_due(self, schedule_id: str, *, hydrate_native: bool = True) -> Optional[Mapping[str, JSONValue]]:
+        if type(hydrate_native) is not bool:
+            raise ValueError("native hydration selector must be boolean")
         value = self._records.get(schedule_id)
         return None if value is None else _json_copy(value, "record")
 
@@ -1117,14 +1119,18 @@ class _DueRecordOwnerEngine:
 
         return ResourceRef(authority, "otto.due-record", schedule_id, revision)
 
-    def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
+    def read_due(self, schedule_id: str, *, hydrate_native: bool = True) -> Optional[Mapping[str, JSONValue]]:
         _required_text(schedule_id, "schedule_id")
+        if type(hydrate_native) is not bool:
+            raise ValueError("native hydration selector must be boolean")
         identity = self._writer.get_identity(self._ref(self._writer.authority, schedule_id))
         if identity is None:
             return None
         value = _json_copy(identity.payload, "due record")
         value["version"] = int(identity.version)
-        return self._native_bodies.unpack_due(value) if self._native_bodies is not None else value
+        if not hydrate_native and self._native_bodies is not None:
+            self._native_bodies.validate_due_metadata(value)
+        return self._native_bodies.unpack_due(value) if hydrate_native and self._native_bodies is not None else value
 
     def _read_due_summary(self, schedule_id):
         identity = self._writer.get_identity(self._ref(self._writer.authority, schedule_id))
@@ -1500,8 +1506,10 @@ class StoreDueRecordPort:
     def __dir__(self) -> list[str]:
         return ["read_due", "save_due", "list_due", "reconcile_assignment_resources", "transport"]
 
-    def read_due(self, schedule_id: str) -> Optional[Mapping[str, JSONValue]]:
-        value = self._client.call("read_due", schedule_id)
+    def read_due(self, schedule_id: str, *, hydrate_native: bool = True) -> Optional[Mapping[str, JSONValue]]:
+        if type(hydrate_native) is not bool:
+            raise ValueError("native hydration selector must be boolean")
+        value = self._client.call("read_due", schedule_id) if hydrate_native else self._client.call("read_due", schedule_id, hydrate_native=False)
         return None if value is None else dict(_json_copy(value, "due record"))
 
     def list_due(self, scope: Optional[Mapping[str, JSONValue]] = None) -> Sequence[Mapping[str, JSONValue]]:

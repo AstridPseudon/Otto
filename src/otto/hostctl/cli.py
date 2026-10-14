@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--bundle", help="run directory (default: the registered source bundle)")
     sync.add_argument("--check", action="store_true", help="report drift only; record nothing")
 
+    release = project_sub.add_parser("release-checkout", help="release this host's exact project checkout, preserving files/history; no activation")
+    release.add_argument("--project", required=True)
+    release.add_argument("--session-id", required=True, help="exact session returned by onboarding/open")
+    release.add_argument("--request-key", required=True, help="stable logical request key")
+
     setup = sub.add_parser("operating-setup", help="read a project's operating setup readiness (pure read)")
     setup.add_argument("--project", required=True)
     setup.add_argument("--operation", choices=("read", "preview", "apply"), default="read",
@@ -135,7 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
     admit.add_argument("--conversation", help="the orchestrator's native session id (default: a receipt mailbox)")
     service_sub.add_parser("status", help="is the owner busy? holder, generation, heartbeat, attached project, "
                            "manager turn and in-flight requests (reads the published status only)")
-    service_sub.add_parser("stop", help="OPERATOR: ask the service to drain and close (writes its stop marker)")
+    stop = service_sub.add_parser("stop", help="OPERATOR: ask the service to drain and close (writes its stop marker)")
+    stop.add_argument("--reason", help="optional reason for closing, published in the service status closure block")
+    stop.add_argument("--expected-return", help="optional expected return time or condition, published in status")
     request_status = sub.add_parser("request-status", help="read the service's response to one retained lane request")
     request_status.add_argument("--request-id", required=True)
     manager = sub.add_parser("manager", help="the manager command port (the orchestrator's owner-custody commands are "
@@ -161,8 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
     which = skills_sub.add_parser("which", help="resolve a skill link chain, edition and drift")
     which.add_argument("name_or_path", help="a skill name under ~/.claude/skills, or a path")
     install = skills_sub.add_parser("install", help="install a stamped skill edition and optionally link it")
-    install.add_argument("--source", required=True, help="skill source directory (contains SKILL.md)")
-    install.add_argument("--name", required=True)
+    install_source = install.add_mutually_exclusive_group(required=True)
+    install_source.add_argument("--source", help="generic skill source directory (contains SKILL.md)")
+    install_source.add_argument("--source-root", help="Otto checkout root for self-contained export mode")
+    install.add_argument("--otto-self-contained", action="store_true",
+                         help="package Otto's maintained skill and local reference closure")
+    install.add_argument("--name", help="required for generic --source installs; Otto mode uses 'otto'")
     install.add_argument("--edition", required=True)
     install.add_argument("--commit", help="source commit identity")
     install.add_argument("--link", action="append", default=[], help="symlink path to point at the edition")
@@ -288,7 +299,7 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
     """Otto's portfolio CLI with this owner's ports injected (one entry, no second CLI)."""
     from .portfolio import portfolio_command
     if args.portfolio_args and args.portfolio_args[0] in {
-            "status", "documents", "sync-docs", "apply", "gate", "prerequisite"}:
+            "status", "documents", "retire", "sync-docs", "apply", "gate", "prerequisite"}:
         return portfolio_command(args)
     import contextlib, io
     from otto.portfolio import cli as portfolio_cli
@@ -432,12 +443,13 @@ def cmd_activate(args: argparse.Namespace) -> Any:
                         manager_principal=args.manager_principal or run_id + "-manager", worktree=worktree,
                         tool_entrypoint=str(home / "bin" / "ottoctl"))
         available = set((entry.get("adapters") or {}).keys())
-        unsupported = sorted({binding.get("adapter") for binding in
-                              computed["configuration"].get("roles", {}).values()
-                              if binding.get("adapter") not in available})
+        # Activation prepares only the manager. Optional worker/reviewer/
+        # advisor slots retain their declarations and are fenced at their own
+        # actual admission, rather than blocking unrelated manager preparation.
+        unsupported = sorted({computed["manager"]["binding"].get("adapter")} - available)
         if unsupported:
             return {"outcome": "error", "error": {"code": "role_adapter_unavailable",
-                    "message": "activation requires trusted adapter factories for: " + ", ".join(unsupported),
+                    "message": "activation manager requires trusted adapter factory for: " + ", ".join(unsupported),
                     "adapters": unsupported}, "dispatch": False, "provider_called": False,
                     "readiness": readiness}
         receipt = materialize(session, record, computed)
@@ -448,6 +460,20 @@ def cmd_activate(args: argparse.Namespace) -> Any:
             "operating_setup": setup, "started": False,
             "next_action": "`ottoctl manager --project " + run_id + " start-manager "
                            "--schedule-id <operating_setup.setup.roles.manager>`"}
+
+
+def cmd_release_checkout(args: argparse.Namespace) -> Any:
+    """Own-host finite EDT release; no native-manager identity or takeover."""
+    config = host_config.load(_home(args))
+    host = _host_opt(args, config)
+    if host is None:
+        raise PermissionError("checkout release requires an admitted host")
+    with HostSession(config, host=host) as session:
+        record = _resolve_project(session, args.project)
+    with HostSession(config, host=host, project_ids=(record.ref.id,)) as session:
+        result = session.portfolio.release_project(record.ref.to_dict(),
+            session_id=args.session_id, actor=session.host_principal(), request_id=args.request_key)
+    return {**result, "provider_called": False}
 
 
 def cmd_sync_docs(args: argparse.Namespace) -> Any:
@@ -688,12 +714,22 @@ def cmd_skills_which(args: argparse.Namespace) -> Any:
 
 
 def cmd_skills_install(args: argparse.Namespace) -> Any:
-    from .skills import install_skill_tree, link_skill
+    from .skills import install_otto_skill_tree, install_skill_tree, link_skill
     home = _home(args)
-    manifest = install_skill_tree(args.source, str(home / "skills"), name=args.name, edition=args.edition,
-                                  source_commit=args.commit)
+    if args.otto_self_contained:
+        if not args.source_root or args.source or args.name:
+            raise ValueError("--otto-self-contained requires --source-root and does not accept --source or --name")
+        name = "otto"
+        manifest = install_otto_skill_tree(args.source_root, str(home / "skills"), edition=args.edition,
+                                           source_commit=args.commit)
+    else:
+        if not args.source or args.source_root or not args.name:
+            raise ValueError("generic skills install requires --source and --name")
+        name = args.name
+        manifest = install_skill_tree(args.source, str(home / "skills"), name=name, edition=args.edition,
+                                      source_commit=args.commit)
     links = [link_skill(link, manifest["path"]) for link in args.link]
-    _receipt(home, "skills-" + args.name + "-" + args.edition, {"manifest": manifest, "links": links})
+    _receipt(home, "skills-" + name + "-" + args.edition, {"manifest": manifest, "links": links})
     return {"outcome": "installed", "manifest": manifest, "links": links}
 
 
@@ -731,13 +767,15 @@ def cmd_service_admit(args: argparse.Namespace) -> Any:
 
 def cmd_service_status(args: argparse.Namespace) -> Any:
     """Is the owner busy? Read the status the service publishes (no Store access)."""
-    from .service import read_status, status_path
+    from .service import read_status, status_path, with_lane_advice
     home = _home(args)
     if host_config.client_path(home).exists():
         entry = host_config.client_host(host_config.load_client(home), getattr(args, "host", None))
-        return {**read_status(Path(entry["status"])), "as_host": entry["kind"], "principal": entry["principal"]}
+        status = with_lane_advice(read_status(Path(entry["status"])), lane="client",
+                                  owner_actor=entry.get("owner_actor"))
+        return {**status, "as_host": entry["kind"], "principal": entry["principal"]}
     host_config.load(home)
-    return read_status(status_path(home))
+    return with_lane_advice(read_status(status_path(home)), lane="owner", service_home=home)
 
 
 def cmd_service_stop(args: argparse.Namespace) -> Any:
@@ -745,10 +783,17 @@ def cmd_service_stop(args: argparse.Namespace) -> Any:
     home = _home(args)
     host_config.load(home)
     path = stop_marker(home)
-    path.write_text("stop requested\n")
+    closure = {key: value.strip() for key, value in (("reason", getattr(args, "reason", None)),
+                                                       ("expected_return", getattr(args, "expected_return", None)))
+               if isinstance(value, str) and value.strip()}
+    from datetime import datetime, timezone
+    path.write_text(json.dumps({"requested_at": datetime.now(timezone.utc).isoformat(), **closure}, sort_keys=True) + "\n")
     os.chmod(path, 0o600)
-    return {"outcome": "stop_requested", "stop_marker": str(path),
-            "next_action": "the service drains admitted work and closes; check `ottoctl service status`"}
+    result = {"outcome": "stop_requested", "stop_marker": str(path),
+              "next_action": "the service drains admitted work and closes; check `ottoctl service status`"}
+    if closure:
+        result["closure"] = closure
+    return result
 
 
 def cmd_request_status(args: argparse.Namespace) -> Any:
@@ -764,17 +809,22 @@ def _client_entry(args: argparse.Namespace) -> Mapping[str, Any]:
     return host_config.client_host(host_config.load_client(home), getattr(args, "host", None))
 
 
-def _await(lane: Path, request: Mapping[str, Any], wait_seconds: float) -> Any:
+def _await(lane: Path, request: Mapping[str, Any], wait_seconds: float,
+           owner_actor: Optional[str] = None) -> Any:
     from . import lanes
-    from .service import read_status
+    from .service import read_status, with_lane_advice
     status = read_status(lane / lanes.STATUS_FILE) if lane.name != "owner-lane" else read_status(
         lane.parent / "run" / "service.json")
     if status["outcome"] != "running":
+        lane_kind = "owner" if lane.name == "owner-lane" else "client"
+        advice = with_lane_advice(status, lane=lane_kind,
+                                  owner_actor=owner_actor or (status.get("holder") or {}).get("owner_actor"),
+                                  service_home=lane.parent if lane_kind == "owner" else None)
         return {"outcome": "unavailable", "provider_called": False,
                 "error": {"code": "owner_service_not_running", "message": "no running owner service answers this lane "
                           "(status: " + status["outcome"] + ")"},
                 "service_status": {k: status.get(k) for k in ("outcome", "generation", "heartbeat_at", "holder")},
-                "next_action": "the operator starts it: `ottoctl --home <service home> service run`"}
+                "next_action": advice.get("next_action", "check `ottoctl service status`")}
     token = lanes.submit(lane, request)
     return lanes.wait(lane, token, timeout_seconds=wait_seconds)
 
@@ -801,7 +851,8 @@ def client_request(args: argparse.Namespace, key: tuple) -> Any:
         owner_portfolio = getattr(args, "portfolio", None)
     owner_request = bool(owner_portfolio and host_config.config_path(_home(args)).exists()
                          and not getattr(args, "host", None))
-    lane = owner_lane(_home(args)) if owner_request else Path(_client_entry(args)["lane"])
+    client = None if owner_request else _client_entry(args)
+    lane = owner_lane(_home(args)) if owner_request else Path(client["lane"])
     command, sub = key
     body = _lane_args(args)
     if key in {("project", "register"), ("project", "import-history")}:
@@ -815,12 +866,13 @@ def client_request(args: argparse.Namespace, key: tuple) -> Any:
     request = {"schema": "otto.host-lane-request.v1", "command": command, "sub": sub, "args": body}
     if owner_request:
         request = {"command": "portfolio-operation", "args": request}
-    result = _await(lane, request, args.wait_seconds)
+    result = _await(lane, request, args.wait_seconds, owner_actor=client.get("owner_actor") if client else None)
     if key == ("project", "sync-docs") and isinstance(result, Mapping) and result.get("outcome") == "needs_bundle":
         if not result.get("source_bundle"):
             raise LookupError("no registered source bundle; pass --bundle")
         body.update(_read_client_bundle(result["source_bundle"]))
-        result = _await(lane, {**request, "args": body}, args.wait_seconds)
+        result = _await(lane, {**request, "args": body}, args.wait_seconds,
+                        owner_actor=client.get("owner_actor") if client else None)
     return result
 
 
@@ -863,6 +915,7 @@ HOST_OPERATIONS = {
     ("projects", None): cmd_projects,
     ("project", "register"): cmd_register, ("project", "status"): cmd_project_status,
     ("project", "sync-docs"): cmd_sync_docs, ("project", "activate"): cmd_activate,
+    ("project", "release-checkout"): cmd_release_checkout,
     ("project", "import-history"): cmd_import_history,
     ("project", "depend"): cmd_project_portfolio,
     ("project", "dependencies"): cmd_project_portfolio,
@@ -931,7 +984,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json_out({"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
                         "provider_called": False}))
         return EXIT_ERROR
-    print(json_out(result))
+    if key == ("portfolio", None) and args.portfolio_args and args.portfolio_args[0] == "apply":
+        from .portfolio import parser as portfolio_parser
+        from .portfolio_apply import render_apply_summary
+        apply_options = portfolio_parser().parse_args(args.portfolio_args)
+        if (not apply_options.json and isinstance(result, Mapping)
+                and result.get("outcome") in {"plan", "applied", "in_sync"}):
+            print(render_apply_summary(result, detail=apply_options.detail))
+        else:
+            print(json_out(result))
+    else:
+        print(json_out(result))
     outcome = result.get("outcome") if isinstance(result, Mapping) else None
     return EXIT_UNAVAILABLE if outcome == "unavailable" else EXIT_ERROR if outcome in {"error", "blocked"} else EXIT_OK
 

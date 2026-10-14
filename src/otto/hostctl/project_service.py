@@ -24,7 +24,8 @@ from . import lanes
 
 class ProjectOwnerService(OwnerService):
     def __init__(self, config: Mapping[str, Any], *, router: Any,
-                 protected_relay: Callable[..., Any] | None = None) -> None:
+                 protected_relay: Callable[..., Any] | None = None,
+                 startup_report_reader: Callable[[], Mapping[str, Any]] | None = None) -> None:
         host = router.host
         if not host.bounded_transports or router.store is None:
             raise ValueError('existing bounded project owner required')
@@ -34,6 +35,9 @@ class ProjectOwnerService(OwnerService):
         super().__init__(config, max_active_manager_turns=limit)
         self.router, self.shared_host, self.store = router, host, router.store
         self.protected_relay = protected_relay
+        # Set by the shared composition to return the owner's already-scoped
+        # view of startup qualifications and held capacity effects.
+        self.startup_report_reader = startup_report_reader
         self.started_at = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
         runtime_dirs(self.config)
         self.generation = self._next_generation()
@@ -68,10 +72,16 @@ class ProjectOwnerService(OwnerService):
 
     def poll(self) -> None:
         def finite():
-            self._poll(owner_lane(self.home), 'owner', self._owner_command)
-            for kind, lane in self._host_lanes().items():
-                self._poll(lane, kind, self._host_command)
-            self._poll_relays()
+            if getattr(self.shared_host, 'dispatch_held', False):
+                # Keep the authenticated local owner read lane available while
+                # retaining every queued mutation and all host/relay requests.
+                self._poll(owner_lane(self.home), 'owner', self._owner_command,
+                           allowed_commands={'status'})
+            else:
+                self._poll(owner_lane(self.home), 'owner', self._owner_command)
+                for kind, lane in self._host_lanes().items():
+                    self._poll(lane, kind, self._host_command)
+                self._poll_relays()
             if time.monotonic() - self._last_status >= self.heartbeat_seconds:
                 self._publish(); self._last_status = time.monotonic()
         self.shared_host._status_read({'command': 'host-client-poll'}, finite)
@@ -118,6 +128,37 @@ class ProjectOwnerService(OwnerService):
 
     def stop_requested(self) -> bool:
         return stop_marker(self.home).exists()
+
+    def _owner_command(self, who: str, request: Mapping[str, Any], token: str, lane: Path) -> Any:
+        # This is the existing owner-lane status operation. It remains local
+        # owner-authenticated and does not borrow any manager caller identity.
+        if request.get('command') == 'status' and getattr(self.shared_host, 'dispatch_held', False):
+            value = self._status()
+            value['dispatch'] = 'held'
+            value['startup'] = self._inert_startup_report()
+            return value
+        return super()._owner_command(who, request, token, lane)
+
+    def _inert_startup_report(self) -> dict[str, Any]:
+        """Return public startup facts plus only the owner-scoped qualification view."""
+        source = getattr(self.shared_host, '_startup_report', None)
+        source = source if isinstance(source, Mapping) else {}
+        report = {key: copy.deepcopy(source[key]) for key in (
+            'source_commit', 'manifest_sha256', 'pid', 'dispatch',
+            'admission_report', 'phase_timings', 'business_reconciliation', 'composition_source_next_append') if key in source}
+        scoped = self.startup_report_reader() if callable(self.startup_report_reader) else {}
+        if not isinstance(scoped, Mapping):
+            raise TypeError('owner startup report reader must return a mapping')
+        for key in ('current_context_qualified', 'context_qualifications',
+                    'held_capacity_effects', 'qualification_scope', 'source_next_append'):
+            if key in scoped:
+                report[key] = copy.deepcopy(scoped[key])
+        # Never expose foreign schedule identifiers just because the owner
+        # status lane has broader filesystem custody than a project caller.
+        report['held_capacity_count'] = len(getattr(self.shared_host, '_capacity_holds', {}))
+        report['dispatch'] = 'held'
+        report['provider_called'] = False
+        return report
 
     def close(self) -> None:
         """Compatibility close for standalone/preflight service callers.

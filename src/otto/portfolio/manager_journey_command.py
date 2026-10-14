@@ -59,6 +59,9 @@ class ManagerJourneyCommands:
         return self.owner.binding.authenticated_actor(self.state["manager"])
 
     def _journal(self, key: str, stage: str, value: Any = None, *, adopted_history: bool = False) -> Any:
+        if value is None and stage in {"review", "intent", "finish-intent"}:
+            from completion_intent_selection import read_journal
+            return read_journal(self, key, stage, adopted_history=adopted_history)
         actor = self._authorize()
         port = self.owner.assignments.command_port
         assignment = ResourceRef.from_dict(self.state["assignment_ref"])
@@ -74,23 +77,7 @@ class ManagerJourneyCommands:
             record_id = "report-" + hashlib.sha256((assignment.id + ":" + identity).encode()).hexdigest()[:28]
             record = self.owner.graph.reader.get_identity(ResourceRef(assignment.authority, "wrk.report", record_id))
             current = port.get(assignment)
-            ancestors = {assignment}
-            events = {event.subject: event for event in self.owner.graph.reader.list_events(stream="assignment:" + assignment.id)
-                      if event.event_type == "work.assignment.resources-adopted"}
-            cursor = assignment
-            while cursor in events:
-                event = events[cursor]; payload = event.effects.get("result_payload", {})
-                base = payload.get("resource_adoption_base_ref")
-                if (not isinstance(base, Mapping) or payload.get("generation") != current.generation
-                        or payload.get("principal") != current.principal or payload.get("role") != "manager"
-                        or payload.get("scope") != current.scope.to_dict()
-                        or payload.get("manager") != current.payload.get("manager")
-                        or event.actor.actor != (current.payload.get("manager") or current.principal)):
-                    break
-                cursor = ResourceRef.from_dict(base)
-                if (cursor.authority, cursor.kind, cursor.id) != (assignment.authority, assignment.kind, assignment.id) or cursor in ancestors:
-                    break
-                ancestors.add(cursor)
+            ancestors = self._adopted_assignment_refs(assignment)
             if (record is not None and record.payload.get("generation") == current.generation
                     and record.payload.get("observation_kind") == "report"
                     and ResourceRef.from_dict(record.payload["assignment"]) in ancestors):
@@ -108,6 +95,33 @@ class ManagerJourneyCommands:
             expected_generation=self.state["manager_generation"],
             logical_request_key=identity, actor=actor)
         return value
+
+    def _adopted_assignment_refs(self, assignment: ResourceRef) -> tuple[ResourceRef, ...]:
+        """Exact same-generation resource-adoption lineage, never reassignment."""
+        current = self.owner.assignments.command_port.get(assignment)
+        refs = [assignment]
+        events = {event.subject: event for event in self.owner.graph.reader.list_events(stream="assignment:" + assignment.id)
+                  if event.event_type == "work.assignment.resources-adopted"}
+        cursor = assignment
+        while cursor in events:
+            if len(refs) >= 32:
+                raise PermissionError("completion adoption lineage exceeds finite bound")
+            event = events[cursor]
+            payload = event.effects.get("result_payload", {})
+            base = payload.get("resource_adoption_base_ref")
+            if (not isinstance(base, Mapping) or payload.get("generation") != current.generation
+                    or payload.get("principal") != current.principal or payload.get("role") != "manager"
+                    or payload.get("scope") != current.scope.to_dict()
+                    or payload.get("manager") != current.payload.get("manager")
+                    or event.actor.actor != (current.payload.get("manager") or current.principal)):
+                break
+            predecessor = ResourceRef.from_dict(base)
+            if (predecessor.authority, predecessor.kind, predecessor.id) != (assignment.authority, assignment.kind, assignment.id) or predecessor in refs:
+                break
+            refs.append(predecessor)
+            cursor = predecessor
+        return tuple(refs)
+
 
     def _key(self, request: Mapping[str, Any]) -> str:
         key = request.get("request_key")
@@ -629,11 +643,7 @@ class ManagerJourneyCommands:
         # its original task revision remains immutable after completion.
         completed_task_ref = None
         if prior is not None and prior.get("task_ref") != self.state["task_refs"][alias]:
-            finish_request = {"task": alias, "request_key": key + ":finish", "review_key": key}
-            finish_prior = self._journal(key + ":finish", "finish-intent", adopted_history=True)
-            if reviewed is None or reviewed.get("outcome") != "accepted" or finish_prior != finish_request:
-                raise PermissionError("changed task revision requires exact committed completion replay")
-            self._completed_finish(finish_request, finish_prior, prior, reviewed)
+            self._committed_finish_for_review(alias, key, prior, reviewed)
             completed_task_ref = prior["task_ref"]
         policy = self._review_policy(alias, validate_current=reviewed is None, completed_task_ref=completed_task_ref)
         policy_pin = self._review_policy_pin(alias, policy)
@@ -748,8 +758,12 @@ class ManagerJourneyCommands:
                 "evidence_refs": [ref.to_dict() for ref in evidence], "evidence_hashes": hashes,
                 "provider_called": False, "accounting": "owner_local_bookkeeping"})
         if reviewed["outcome"] == "accepted" and request.get("finish", True):
-            return {**reviewed, "completion": self.finish_task({"task": alias,
-                "request_key": key + ":finish", "review_key": key})}
+            completion = self.finish_task({"task": alias, "request_key": key + ":finish", "review_key": key})
+            response = {**reviewed, "completion": completion}
+            if completion.get("outcome") == "pending":
+                response["next_action"] = ("Await owner settlement of existing completion intent "
+                    + completion["completion_intent"] + "; do not create another finish-task key. Replay only the exact original request.")
+            return response
         return {**reviewed, "task_completion_recorded": False,
                 "next_action": "inspect or correct the evidence and submit new explicit judgment" if reviewed["outcome"] != "accepted"
                 else "finish-task with this review_key"}
@@ -782,6 +796,32 @@ class ManagerJourneyCommands:
         if (manifest["generation"] != self.state["manager_generation"]
                 or any(manifest["assignment_ref"].get(k) != self.state["assignment_ref"].get(k) for k in ("authority", "kind", "id"))):
             raise PermissionError("accepted review task or manager generation changed")
+        if prior is None:
+            current_task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][request["task"]]))
+            if current_task is not None and current_task.payload.get("lifecycle") == "completed":
+                committed = self._committed_finish_for_review(request["task"], request["review_key"], manifest, reviewed)
+                raise PermissionError("review already has a completion intent; replay exact request_key " + committed["committed_request_key"])
+            # One review owns one completion intent. A new correlation key
+            # cannot create a second intent while the original awaits native
+            # settlement, including after a same-generation resource adoption.
+            from completion_intent_selection import selected_reports
+            records, _selection = selected_reports(self, aliases=(request["task"],), review_key=request["review_key"])
+            for record in records:
+                value = record.payload.get("value")
+                if not isinstance(value, Mapping):
+                    continue
+                existing = value.get("content")
+                if (value.get("schema") != "otto.manager-journey.v1"
+                        or not isinstance(existing, Mapping)
+                        or existing.get("review_key") != request["review_key"]
+                        or not value.get("logical_request_key", "").endswith(":finish-intent")):
+                    continue
+                existing_key = self._key(existing)
+                if (existing.get("task") != request["task"]
+                        or value["logical_request_key"] != "journey:" + existing_key + ":finish-intent"
+                        or self._journal(existing_key, "finish-intent", adopted_history=True) != existing):
+                    raise PermissionError("existing completion intent provenance differs")
+                raise PermissionError("review already has a completion intent; replay exact request_key " + existing_key)
         completion_project = self._completion_project(request, manifest, reviewed)
         if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
             # Completion itself advances the task revision. A later worker
@@ -789,7 +829,7 @@ class ManagerJourneyCommands:
             # exact already-committed completion may cross that revision fence.
             # The owner completion API still verifies the original replay
             # digest; no new completion or native settlement is attempted.
-            return self._completed_finish(request, prior, manifest, reviewed)
+            return self._committed_finish_for_review(request["task"], request["review_key"], manifest, reviewed)
         self._journal(key, "finish-intent", dict(request))
         settlement = self._native_settlement(reviewed)
         if settlement is not None:
@@ -955,6 +995,31 @@ class ManagerJourneyCommands:
             if retain:
                 self._journal(key, refresh_stage or "finish-project-pin", proof)
         return target.to_dict()
+
+    def _committed_finish_for_review(self, alias: str, review_key: str,
+                                    manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Prove the one canonical completion for this exact accepted review.
+
+        Historical sibling intents may refer to that same completion, but they
+        do not gain a new receipt, journal entry, assessment or debit.
+        """
+        record = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][alias]))
+        completion = {} if record is None else record.payload.get("completion", {})
+        logical_key = completion.get("logical_request_key") if isinstance(completion, Mapping) else None
+        if not isinstance(logical_key, str) or not logical_key.startswith("journey:"):
+            raise PermissionError("changed task revision requires exact committed completion replay")
+        finish_key = logical_key[len("journey:"):]
+        self._key({"request_key": finish_key})
+        intent = self._journal(finish_key, "finish-intent", adopted_history=True)
+        expected = {"task": alias, "request_key": finish_key, "review_key": review_key}
+        if (not isinstance(reviewed, Mapping) or reviewed.get("outcome") != "accepted"
+                or not isinstance(intent, Mapping)
+                or intent.get("command", "finish-task") != "finish-task"
+                or {k: v for k, v in intent.items() if k != "command"} != expected):
+            raise PermissionError("changed task revision requires exact committed completion replay")
+        verified = self._completed_finish(dict(intent), intent, manifest, reviewed)
+        return {**verified, "committed_request_key": finish_key}
+
 
     def _completed_finish(self, request: Mapping[str, Any], prior: Any,
                           manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> Mapping[str, Any]:

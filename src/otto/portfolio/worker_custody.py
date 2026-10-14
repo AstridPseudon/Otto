@@ -42,7 +42,7 @@ def _initializer_diagnostics(stderr):
     return None
 
 
-def _terminal(envelope, receipt, *, session, principal, operation, status, code, initializer_diagnostics=False):
+def _terminal(envelope, receipt, *, session, principal, operation, status, code, initializer_diagnostics=False, diagnostic_classifier=None):
     _require(envelope.get("fnd_receipt") == receipt and receipt.get("identity") == {
         "logical_agent_id": principal, "physical_session_id": session}, "native receipt identity differs")
     _require(all(envelope.get(k) == v for k, v in {
@@ -50,7 +50,7 @@ def _terminal(envelope, receipt, *, session, principal, operation, status, code,
         "transport_operation": operation, "status": status, "exit_status": code,
         "runner": "codex-cli", "result_ref": None,
         "timeout": None, "cancel": None}.items()), "native terminal envelope differs")
-    _require(envelope.get('stderr')=='' or initializer_diagnostics and _initializer_diagnostics(envelope.get('stderr')) is not None,
+    _require(envelope.get('stderr')=='' or initializer_diagnostics and (diagnostic_classifier or _initializer_diagnostics)(envelope.get('stderr')) is not None,
         'native diagnostics are fatal, ambiguous or outside exact classified skill-loader scope')
     _require(receipt.get("operation") == operation and receipt.get("outcome") == status
         and receipt.get("process_id") == envelope.get("process_id")
@@ -72,8 +72,10 @@ def _native_terminal_trace(execution, session, initial_turn, work_turn, *, model
     thread = (reader(session) or {}).get("thread") or {}
     _require(thread.get("id") == session and isinstance(thread.get("path"), str),
              "trusted native session metadata differs")
-    raw = Path(thread["path"]).read_bytes()
-    _require(len(raw) <= 2 * 1024 * 1024, "native retirement trace exceeds the bounded limit")
+    path=Path(thread["path"])
+    _require(path.stat().st_size<=2*1024*1024,"native retirement trace exceeds the bounded limit")
+    with path.open("rb")as stream:raw=stream.read(2*1024*1024+1)
+    _require(len(raw)<=2*1024*1024,"native retirement trace grew past the bounded limit")
     try:
         records = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except ValueError as exc:
@@ -131,6 +133,9 @@ def _native_terminal_trace(execution, session, initial_turn, work_turn, *, model
 def inspect_capacity_failed_worker(execution, *, schedule_id: str, _initializer_only=False, _due=None) -> dict[str, Any]:
     """Qualify trusted retained owner/native bytes; never infer success or retry."""
     due = _due or execution._read(schedule_id)
+    if _initializer_only and due.role == 'manager':
+        from w0_initialized_manager_custody import inspect
+        return inspect(execution, due=due)
     _require(execution.actor == due.lifecycle_owner == due.owner == due.manager_ref,
              "only the occurrence lifecycle owner may release custody")
     assignment = execution._current(due.assignment_ref, due.generation)
@@ -308,9 +313,22 @@ def retained_capacity_release(execution, due, *, _initializer_only=False):
     _require(marker.get("schema") == schema and due.stop_state == "stopped"
         and due.completion_state == "unknown" and due.in_flight_request is None
         and execution.actor == due.lifecycle_owner, "worker has no owner-reconciled custody release")
-    execution._current(due.assignment_ref, due.generation)
-    rows = execution.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref), kind="report")
-    report = next((r for r in rows if r.ref.to_dict() == marker.get("disposition_ref")), None)
+    if _initializer_only and due.role=='manager':
+        execution._manager_adoption_anchor(due) # authenticated consecutive same-generation resource history
+    else:
+        execution._current(due.assignment_ref, due.generation)
+    if _initializer_only and due.role=='manager':
+        # A legitimate later resource adoption must not hide the authentic
+        # disposition attached to the retained historical assignment revision.
+        from types import SimpleNamespace
+        record=execution.portfolio.operations._owner_reader.get_record(ResourceRef.from_dict(marker['disposition_ref']))
+        _require(record is not None and record.payload.get('record_type')=='work.observation'
+            and record.payload.get('observation_kind')=='report' and record.payload.get('assignment')==due.assignment_ref
+            and record.payload.get('generation')==due.generation,'exact historical initialized-manager disposition missing')
+        report=SimpleNamespace(ref=record.ref,value=record.payload['value'])
+    else:
+        rows = execution.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref), kind="report")
+        report = next((r for r in rows if r.ref.to_dict() == marker.get("disposition_ref")), None)
     _require(report is not None, "canonical worker custody disposition is missing")
     body = report.value
     scope = body.get("scope") or {}
@@ -329,6 +347,9 @@ def retained_capacity_release(execution, due, *, _initializer_only=False):
             and body.get('initializer_replay_allowed')is False and body.get('initializer_provider_occurred')is True
             and any(e.operation=='work.report.append' and e.actor==execution.binding.authenticated_actor(execution.actor)
                 for e in reader.list_events(subjects=(report.ref,))), 'initializer recovery lacks authenticated owner disposition')
+        if due.role=='manager':
+            from w0_initialized_retained_success import qualifies
+            if qualifies(execution,due,body):return body
         _require(inspect_capacity_failed_worker(execution,schedule_id=due.schedule_id,_initializer_only=True,_due=before)==scope,
             'retained initializer-only qualification changed')
     raw = before_host["gateway_attempt"]["result"]["raw_result"]
@@ -374,6 +395,7 @@ PREINITIALIZATION_SCHEMA = 'otto.role-preinitialization-custody-disposition.v1'
 DRAIN_PREINITIALIZATION_SCHEMA = 'otto.worker-drain-preinitialization-custody-disposition.v1'
 DRAIN_PREINITIALIZATION_ERROR = {'code':'adapter_error','message':'execution host is draining; no new child may be admitted','operation':'invoke'}
 PREINITIALIZATION_ERROR = {'code':'adapter_error','message':'owner workspace contract is unsupported before initialization','operation':'invoke'}
+HOST_EVIDENCE_PREINITIALIZATION_ERROR = {'code':'adapter_error','message':'owner-authorized delivery requires host-owned task evidence','operation':'invoke'}
 
 def inspect_preinitialization_role(execution, *, schedule_id, _due=None, _drain_worker=False):
     due=_due or execution._read(schedule_id)
@@ -394,12 +416,20 @@ def inspect_preinitialization_role(execution, *, schedule_id, _due=None, _drain_
     from otto.agents.herzchen_adapter import HerzchenCodexAdapter
     import inspect
     adapter=execution.runtime.adapter
+    historical_wrapper=False
+    if _due is not None and result.get('error')==HOST_EVIDENCE_PREINITIALIZATION_ERROR:
+        from w0_selected_context_adapter import qualifies_retained_preinitialization_adapter
+        historical_wrapper=qualifies_retained_preinitialization_adapter(adapter,due)
     _require(isinstance(adapter,HerzchenCodexAdapter)
-        and type(adapter)._invoke_owner_authorized is HerzchenCodexAdapter._invoke_owner_authorized,
+        and (type(adapter)._invoke_owner_authorized is HerzchenCodexAdapter._invoke_owner_authorized or historical_wrapper),
         'only the maintained exact Codex preinitialization guard qualifies')
     role = 'worker' if _drain_worker else 'manager'
     mode = 'fresh_bounded_worker' if _drain_worker else 'fresh_manager'
     expected_error = DRAIN_PREINITIALIZATION_ERROR if _drain_worker else PREINITIALIZATION_ERROR
+    if not _drain_worker and result.get('error') == HOST_EVIDENCE_PREINITIALIZATION_ERROR:
+        # Exact first guard in the same maintained invoke method, before typed
+        # request construction, host construction or inert native initialization.
+        expected_error = HOST_EVIDENCE_PREINITIALIZATION_ERROR
     if _drain_worker:
         from .execution_host import ExecutionHost
         _require(type(adapter).owner_transport_only is True, 'maintained transport-only Codex adapter required')
@@ -442,6 +472,7 @@ def inspect_preinitialization_role(execution, *, schedule_id, _due=None, _drain_
         'project_ref':due.target['project_ref'],'task_ref':due.target['task_ref'],'principal':due.recipient,
         'guard_sha256':hashlib.sha256(inspect.getsource(guard).encode()).hexdigest(),
         **({'allowance_ref':due.allowance_ref,'role':'worker','model':due.requested_model,'reasoning':due.requested_reasoning,'profile':due.profile} if _drain_worker else {}),
+        **({'host_evidence_guard_before_typed_request':True} if expected_error == HOST_EVIDENCE_PREINITIALIZATION_ERROR else {}),
         'initializer_occurred':False,'native_effect_occurred':False}
 
 def retained_preinitialization_release(execution,due):

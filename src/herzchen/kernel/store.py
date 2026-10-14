@@ -13,6 +13,8 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
+import sys
 import threading
 import time
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple, Union
@@ -51,6 +53,15 @@ class StoreError(RuntimeError):
 
 class StoreAdmissionError(StoreError):
     """The database is not an admitted FND-03 composition."""
+
+
+class AdmissionStopped(StoreAdmissionError):
+    """Cooperative cancellation of admission, before a writer is returned."""
+
+
+# Change whenever the admitted invariants in _verify change.
+ADMISSION_CHECK_REVISION = "fnd.clean-close-check.2"
+_CLEAN_CLOSE_SCHEMA = "fnd.clean-close-admission.v1"
 
 
 class MigrationRequiredError(StoreAdmissionError):
@@ -756,6 +767,9 @@ class Store:
         self._history_projection = None
         self._history_projection_limit = 100
         self._read_only = False
+        self._admission_mode = "full"
+        self._admission_data_version = None
+        self.admission_report = {"mode": "full", "path": "create", "fallback_reason": None}
 
     @classmethod
     def create(cls, path: Union[os.PathLike, str], *, authority: str = "neutral-store") -> "Store":
@@ -763,6 +777,7 @@ class Store:
         lock_fd = cls._acquire_lock(path_text)
         connection: Optional[sqlite3.Connection] = None
         try:
+            cls._consume_clean_close(path_text)
             connection = cls._connect(path_text)
             if cls._user_tables(connection):
                 raise StoreExistsError("database already contains a user composition")
@@ -797,9 +812,11 @@ class Store:
             raise
 
     @classmethod
-    def open(cls, path, *, authority="neutral-store", expected_domains=(), expected_domain_digest=None):
+    def open(cls, path, *, authority="neutral-store", expected_domains=(), expected_domain_digest=None,
+             admission="full", should_stop=None):
         return cls._open(path, authority=authority, expected_domains=expected_domains,
-                         expected_domain_digest=expected_domain_digest)
+                         expected_domain_digest=expected_domain_digest, admission=admission,
+                         should_stop=should_stop)
 
     @classmethod
     def _open(
@@ -810,7 +827,13 @@ class Store:
         expected_domains: Sequence[DomainContribution] = (),
         expected_domain_digest: Optional[str] = None,
         _migration_id: Optional[str] = None,
+        admission: str = "full",
+        should_stop=None,
     ) -> "Store":
+        if admission not in {"full", "clean-close"}:
+            raise ValueError("admission must be full or clean-close")
+        if should_stop is not None and not callable(should_stop):
+            raise TypeError("should_stop must be callable")
         path_text = os.fspath(path)
         if path_text == ":memory:":
             raise StoreAdmissionError("ordinary open requires a durable database path")
@@ -818,30 +841,229 @@ class Store:
             raise StoreAdmissionError("database does not exist; use create for first admission")
         lock_fd = cls._acquire_lock(path_text)
         connection: Optional[sqlite3.Connection] = None
+        report = {"mode": admission, "path": "full", "fallback_reason": None,
+                  "structural_s": 0.0, "fk_check_s": 0.0, "count_s": 0.0}
+        started = time.monotonic()
+        interrupted = False
+        last_poll = float("-inf")
+        def poll_stop(force=False):
+            nonlocal interrupted, last_poll
+            now = time.monotonic()
+            if should_stop is not None and (force or now - last_poll >= 0.25):
+                last_poll = now
+                if should_stop():
+                    interrupted = True
+                    raise AdmissionStopped("Store admission stopped before writable admission")
+        def progress():
+            try:
+                poll_stop()
+                return 0
+            except AdmissionStopped:
+                return 1
         try:
+            poll_stop(True)
+            candidate, reason, stamp = (cls._clean_close_candidate(path_text, authority)
+                                        if admission == "clean-close" else (None, None, None))
+            if admission == "full":
+                cls._consume_clean_close(path_text)
+            report["fallback_reason"] = reason
             connection = cls._connect(path_text)
-            domains = cls._verify(connection, authority, expected_domains, expected_domain_digest)
+            if should_stop is not None:
+                connection.set_progress_handler(progress, 1000)
+            if admission == "clean-close":
+                # Reserve SQLite's writer lock before trusting the pre-connect
+                # file stamp. No raw database fd is opened/closed while SQLite
+                # owns its POSIX locks (closing one would drop those locks).
+                connection.execute("BEGIN IMMEDIATE")
+                if candidate is not None and cls._file_stamp(path_text) != stamp:
+                    candidate, report["fallback_reason"] = None, "file-changed-before-admission"
+                if candidate is not None and _migration_id is not None:
+                    candidate, report["fallback_reason"] = None, "migration-request"
+                if candidate is not None:
+                    meta = dict(connection.execute("SELECT key,value FROM store_metadata"))
+                    if meta.get("migration_progress"):
+                        try:
+                            installed_migration = cls._installed_migration(meta, path_text)
+                        except (KeyError, TypeError, ValueError):
+                            installed_migration = False  # Full verification owns malformed metadata refusal.
+                        if not installed_migration:
+                            candidate, report["fallback_reason"] = None, "migration-progress"
+                    if candidate is not None and meta.get("source_next_append") != candidate["source_next_append"]:
+                        candidate, report["fallback_reason"] = None, "append-marker-mismatch"
+            poll_stop(True)
+            domains = cls._verify(connection, authority, expected_domains, expected_domain_digest,
+                                  _skip_foreign_key_check=candidate is not None,
+                                  _admission_timings=report)
+            if candidate is not None and cls._file_stamp(path_text) != stamp:
+                # Raw external writes do not respect SQLite locks. Changed
+                # metadata is a fallback, never evidence of a clean file.
+                report["fallback_reason"] = "file-changed-during-admission"
+                domains = cls._verify(connection, authority, expected_domains, expected_domain_digest,
+                                      _admission_timings=report)
+                candidate = None
             metadata = dict(connection.execute("SELECT key,value FROM store_metadata"))
             progress = metadata.get("migration_progress")
-            switch_receipt = json.loads(metadata.get("migration_switch_receipt", "null"))
-            phase = json.loads(progress)["phase"] if progress else None
-            valid_receipt = (isinstance(switch_receipt, Mapping) and
-                switch_receipt.get("schema") == "fnd.events-migration.v1" and
-                switch_receipt.get("migration_id") == metadata.get("migration_id") and
-                switch_receipt.get("successor_revision") == SCHEMA_REVISION and
-                switch_receipt.get("successor_fingerprint") == SCHEMA_FINGERPRINT)
-            installed = valid_receipt and (phase == "installed" or
-                (phase == "verified" and os.path.abspath(path_text) == switch_receipt.get("source")))
+            installed = cls._installed_migration(metadata, path_text)
             if progress and not installed and _migration_id != metadata.get("migration_id"):
                 raise MigrationRequiredError("migration candidate is not an installed writable owner")
             if _migration_id is not None and _migration_id != metadata.get("migration_id"):
                 raise StoreAdmissionError("migration candidate identity mismatch")
-            return cls(connection, lock_fd, path_text, authority, domains, _owner_token=_OWNER_CONSTRUCTION_TOKEN)
-        except BaseException:
-            if connection is not None:
-                connection.close()
-            cls._release_lock(lock_fd)
+            poll_stop(True)
+            # Invalidate durably BEFORE returning any writable capability.
+            cls._consume_clean_close(path_text)
+            baseline = connection.execute("PRAGMA data_version").fetchone()[0]
+            if admission == "clean-close":
+                connection.execute("COMMIT")
+            connection.set_progress_handler(None, 0)
+            owner = cls(connection, lock_fd, path_text, authority, domains, _owner_token=_OWNER_CONSTRUCTION_TOKEN)
+            owner._admission_mode, owner._admission_data_version = admission, baseline
+            report["path"] = "clean-close" if candidate is not None else "full"
+            report["source_next_append"] = owner.source_next_append
+            report["total_s"] = time.monotonic() - started
+            owner.admission_report = report
+            return owner
+        except BaseException as error:
+            try:
+                if connection is not None:
+                    connection.set_progress_handler(None, 0)
+                    connection.close()
+            finally:
+                cls._release_lock(lock_fd)
+            if interrupted and isinstance(error, sqlite3.Error):
+                raise AdmissionStopped("Store admission stopped during verification") from error
             raise
+
+    @staticmethod
+    def _installed_migration(metadata, path):
+        """The ordinary writable-admission terminal migration predicate.
+
+        Completed migration metadata remains durable provenance. Its presence
+        alone does not mean migration is in progress. Both admission modes use
+        this identical receipt check; nonterminal candidates still require full
+        verification and their explicitly authorized migration identity.
+        """
+        switch_receipt = json.loads(metadata.get("migration_switch_receipt", "null"))
+        progress = metadata.get("migration_progress")
+        phase = json.loads(progress)["phase"] if progress else None
+        valid_receipt = (isinstance(switch_receipt, Mapping) and
+            switch_receipt.get("schema") == "fnd.events-migration.v1" and
+            switch_receipt.get("migration_id") == metadata.get("migration_id") and
+            switch_receipt.get("successor_revision") == SCHEMA_REVISION and
+            switch_receipt.get("successor_fingerprint") == SCHEMA_FINGERPRINT)
+        return valid_receipt and (phase == "installed" or
+            (phase == "verified" and os.path.abspath(path) == switch_receipt.get("source")))
+
+    @staticmethod
+    def _fsync_parent(path):
+        fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    @classmethod
+    def _consume_clean_close(cls, path):
+        if path == ":memory:":
+            return
+        try:
+            os.unlink(path + ".fnd-clean-close")
+        except FileNotFoundError:
+            return
+        cls._fsync_parent(path)
+
+    @staticmethod
+    def _file_stamp(path):
+        info = os.stat(path)
+        return {"realpath": os.path.realpath(path), "st_dev": info.st_dev, "st_ino": info.st_ino,
+                "st_size": info.st_size, "st_mtime_ns": info.st_mtime_ns, "st_ctime_ns": info.st_ctime_ns}
+
+    @classmethod
+    def _closed_file_identity(cls, path):
+        # Called only before SQLite connects or after it has closed completely.
+        if os.path.islink(path):
+            raise StoreAdmissionError("clean-close path is a symlink")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            before = os.fstat(fd)
+            page1 = os.read(fd, 65536)
+            after = os.fstat(fd)
+            if (any(getattr(before, field) != getattr(after, field) for field in
+                    ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
+                    or not stat.S_ISREG(before.st_mode)):
+                raise StoreAdmissionError("database changed during closed-file inspection")
+        finally:
+            os.close(fd)
+        stamp = cls._file_stamp(path)
+        if (stamp["st_dev"], stamp["st_ino"], stamp["st_size"], stamp["st_mtime_ns"], stamp["st_ctime_ns"]) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise StoreAdmissionError("database changed after closed-file inspection")
+        if len(page1) < 100 or page1[:16] != b"SQLite format 3\x00":
+            raise StoreAdmissionError("invalid SQLite header")
+        page_size = int.from_bytes(page1[16:18], "big")
+        page_size = 65536 if page_size == 1 else page_size
+        if page_size < 512 or page_size > 65536 or page_size & (page_size - 1):
+            raise StoreAdmissionError("invalid SQLite page size")
+        if page1[18:20] != b"\x01\x01":
+            raise StoreAdmissionError("clean-close requires rollback journal format")
+        if int.from_bytes(page1[28:32], "big") * page_size != stamp["st_size"]:
+            raise StoreAdmissionError("SQLite header page count differs from file size")
+        if any(os.path.lexists(path + suffix) for suffix in ("-journal", "-wal", "-shm")):
+            raise StoreAdmissionError("SQLite journal sidecar present")
+        return {**stamp, "page1_sha256": hashlib.sha256(page1[:page_size]).hexdigest()}
+
+    @classmethod
+    def _clean_close_candidate(cls, path, authority):
+        try:
+            fd = os.open(path + ".fnd-clean-close", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            return None, "record-missing", None
+        except OSError:
+            return None, "record-unavailable", None
+        try:
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno()); raw = stream.read(16385)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or len(raw) > 16384):
+                return None, "record-shape", None
+            record = json.loads(raw)
+            required = {"schema", "admission_check_revision", "schema_fingerprint", "authority", "source_next_append",
+                        "realpath", "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "page1_sha256"}
+            if not isinstance(record, dict) or set(record) != required:
+                return None, "record-shape", None
+            if record["schema"] != _CLEAN_CLOSE_SCHEMA or record["admission_check_revision"] != ADMISSION_CHECK_REVISION:
+                return None, "check-revision", None
+            if record["schema_fingerprint"] != SCHEMA_FINGERPRINT or record["authority"] != authority:
+                return None, "authority-or-schema", None
+            identity = cls._closed_file_identity(path)
+            if any(record[key] != value for key, value in identity.items()):
+                return None, "file-identity", None
+            return record, None, {key: value for key, value in identity.items() if key != "page1_sha256"}
+        except (OSError, ValueError, TypeError, StoreAdmissionError):
+            return None, "record-or-file-invalid", None
+
+    def _write_clean_close(self, source_next_append, expected_stamp):
+        identity = self._closed_file_identity(self.path)
+        if any(identity[key] != value for key, value in expected_stamp.items()):
+            raise StoreAdmissionError("file changed between SQLite close and seal")
+        record = {"schema": _CLEAN_CLOSE_SCHEMA, "admission_check_revision": ADMISSION_CHECK_REVISION,
+                  "schema_fingerprint": SCHEMA_FINGERPRINT, "authority": self.authority,
+                  "source_next_append": source_next_append, **identity}
+        path = self.path + ".fnd-clean-close"
+        temporary = path + ".tmp-" + secrets.token_hex(8)
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write((canonical_json(record) + "\n").encode()); stream.flush(); os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            try:
+                self._fsync_parent(self.path)
+            except BaseException:
+                try: os.unlink(path)
+                except OSError: pass
+                raise
+        finally:
+            try: os.unlink(temporary)
+            except FileNotFoundError: pass
 
     @classmethod
     def open_readonly(cls, path, *, authority="neutral-store", expected_domains=(), expected_domain_digest=None):
@@ -931,7 +1153,9 @@ class Store:
         expected_domains: Sequence[DomainContribution] = (),
         expected_domain_digest: Optional[str] = None,
         *, schema_revision: str = SCHEMA_REVISION,
+        _skip_foreign_key_check: bool = False, _admission_timings=None,
     ) -> Dict[str, DomainContribution]:
+        structural_started = time.monotonic()
         actual = cls._user_tables(connection)
         if schema_revision not in SUPPORTED_SCHEMAS:
             raise SchemaMismatchError("unsupported FND composition revision")
@@ -947,8 +1171,13 @@ class Store:
             raise CompositionMismatchError("stored composition declaration does not match")
         if not verify_physical_schema(connection, schema_revision):
             raise SchemaMismatchError("physical FND tables, constraints or indexes do not match")
-        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        if _admission_timings is not None:
+            _admission_timings["structural_s"] += time.monotonic() - structural_started
+        fk_started = time.monotonic()
+        if not _skip_foreign_key_check and connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise StoreAdmissionError("FND foreign-key relations are invalid")
+        if _admission_timings is not None:
+            _admission_timings["fk_check_s"] += time.monotonic() - fk_started
         if schema_revision == SCHEMA_REVISION:
             try:
                 next_append = int(rows["source_next_append"])
@@ -965,7 +1194,10 @@ class Store:
                 if checkpoint < 0 or legacy < 0:
                     raise ValueError("negative source/projection boundary")
                 if not progress or progress["phase"] in {"verified", "installed"}:
+                    count_started = time.monotonic()
                     count, maximum = connection.execute("SELECT count(*),coalesce(max(append_position),0) FROM events").fetchone()
+                    if _admission_timings is not None:
+                        _admission_timings["count_s"] += time.monotonic() - count_started
                     if count != maximum or next_append != maximum + 1 or not (0 <= checkpoint <= maximum and 0 <= legacy <= maximum):
                         raise ValueError("source append boundary mismatch")
                 if generation < 1 or next_append < 1:
@@ -1059,18 +1291,74 @@ class Store:
         """Compatibility spelling for the supplied transaction port."""
         return self.transaction()
 
-    def close(self) -> None:
+    @property
+    def source_next_append(self):
+        """Read-only owner telemetry; no history hydration or canonical write."""
+        row = self._connection.execute("SELECT value FROM store_metadata WHERE key='source_next_append'").fetchone()
+        if row is None:
+            return None  # Legacy schema has no append-boundary field.
+        try:
+            value = int(row[0])
+        except (ValueError, TypeError) as error:
+            raise StoreAdmissionError("invalid source append telemetry") from error
+        if value < 1:
+            raise StoreAdmissionError("invalid source append telemetry")
+        return value
+
+    def close(self, *, seal=False) -> None:
+        if type(seal) is not bool:
+            raise TypeError("seal must be boolean")
         if self._closed:
             return
-        active = getattr(self._local, "transaction", None)
-        if active is not None and active._active:
-            active._rollback()
-        try:
-            self._connection.close()
-        finally:
-            self._release_lock(self._lock_fd)
-            self._lock_fd = None
-            self._closed = True
+        with self._transaction_lock:
+            if self._closed:
+                return
+            active = getattr(self._local, "transaction", None)
+            eligible, source_next_append, close_stamp = False, None, None
+            reason = "not-requested"
+            if seal:
+                try:
+                    if self._admission_mode != "clean-close" or self._read_only or self.path == ":memory:":
+                        raise StoreAdmissionError("not a clean-close admitted writer")
+                    if self._connection.in_transaction or active is not None and active._active:
+                        raise StoreAdmissionError("transaction active at close")
+                    # Prevent a foreign writer between the data_version check
+                    # and SQLite close. The post-close stamp is compared with
+                    # this locked stamp, so the lock-release/sidecar-write gap
+                    # cannot bless a newly committed foreign change.
+                    self._connection.execute("BEGIN IMMEDIATE")
+                    if self._connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                        raise StoreAdmissionError("foreign-key enforcement disabled")
+                    if self._connection.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
+                        raise StoreAdmissionError("journal mode is not delete")
+                    if self._connection.execute("PRAGMA data_version").fetchone()[0] != self._admission_data_version:
+                        raise StoreAdmissionError("foreign connection committed during session")
+                    source_next_append = self._connection.execute("SELECT value FROM store_metadata WHERE key='source_next_append'").fetchone()[0]
+                    close_stamp = self._file_stamp(self.path)
+                    eligible, reason = True, None
+                except (sqlite3.Error, StoreAdmissionError) as error:
+                    reason = str(error)
+            if active is not None and active._active:
+                active._rollback()
+            try:
+                self._connection.close()
+                if eligible:
+                    try:
+                        self._write_clean_close(source_next_append, close_stamp)
+                        self.admission_report["seal"] = "written"
+                        self.admission_report["sealed_source_next_append"] = int(source_next_append)
+                        print("clean-close-record: written", file=sys.stderr, flush=True)
+                    except (OSError, ValueError, sqlite3.Error, StoreAdmissionError) as error:
+                        reason = type(error).__name__ + ": " + str(error)
+                        self._consume_clean_close(self.path)
+            finally:
+                self._release_lock(self._lock_fd)
+                self._lock_fd = None
+                self._closed = True
+                if seal and self.admission_report.get("seal") != "written":
+                    self.admission_report["seal"] = "not-written"
+                    self.admission_report["seal_reason"] = reason or "connection close failed"
+                    print("clean-close-record: not-written: " + self.admission_report["seal_reason"], file=sys.stderr, flush=True)
 
     def __enter__(self) -> "Store":
         self._require_open()

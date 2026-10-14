@@ -436,6 +436,11 @@ def _review_ref(value: str) -> Any:
 
 def add_help_parsers(commands: Any) -> list[Any]:
     """Shared help operations; the owning surface supplies scope and actor."""
+    def evidence_array(text):
+        value = json.loads(text)
+        if not isinstance(value, list):
+            raise argparse.ArgumentTypeError('--evidence requires a JSON array; no request was submitted. Correct the array shape before sending.')
+        return value
     parsers = []
     for name, purpose, recipient in (
         ("request-help", "operational blockage", "the current orchestrator/help destination"),
@@ -452,7 +457,8 @@ def add_help_parsers(commands: Any) -> list[Any]:
         request.add_argument("--issue-key", required=True)
         for field in ("problem", "impact", "requested-decision", "return-condition"):
             request.add_argument("--" + field, required=True)
-        request.add_argument("--evidence", required=True, type=json.loads)
+        request.add_argument("--evidence", required=True, type=evidence_array,
+                             help='JSON array of evidence objects; no request is submitted unless the value is an array')
     read = commands.add_parser("read-help", help="read help/advice disposition and exact delivery receipts without dispatch",
         description="Read the exact issue, recipient, destination and delivery receipt. A missing destination or unknown send is unresolved; this command does not resend or create a replacement role.")
     read.add_argument("--delivery-id", help="reconcile one retained delivery without resend")
@@ -466,11 +472,6 @@ def add_help_parsers(commands: Any) -> list[Any]:
         description="Record what the manager actually applied and the next action. Refresh current assignment/generation/conversation after role replacement; a retained or unknown delivery must be reconciled before continuation.")
     resolve.add_argument("--request-key", required=True)
     resolve.add_argument("--issue-id", required=True)
-    def evidence_array(text):
-        value = json.loads(text)
-        if not isinstance(value, list):
-            raise argparse.ArgumentTypeError('--evidence requires a JSON array, for example [{"kind":"response_application","report_ref":{"authority":"OWNER","kind":"wrk.report","id":"REPORT","revision":"rev-1"}}]. No request was submitted; correct the array shape before sending.')
-        return value
     resolve.add_argument("--evidence", required=True, type=evidence_array,
                          help='JSON array of applied-response evidence, e.g. [{"kind":"response_application","report_ref":{"authority":"OWNER","kind":"wrk.report","id":"REPORT","revision":"rev-1"}}]; use exact retained refs')
     resolve.add_argument("--next-action", required=True)
@@ -563,8 +564,9 @@ def add_manager_journey_parsers(commands: Any) -> None:
                        help="exact setup_ref from read, required for update and its preview")
     status = commands.add_parser("command-status", help="read one retained transport handle without another send")
     status.add_argument("--request-id", required=True)
-    inputs = commands.add_parser("review-input", help="read exact worker refs, configured criterion aliases and inspection-object shape without judging or sending work")
-    inputs.add_argument("--task", required=True)
+    inputs = commands.add_parser("review-input", help="read exact worker refs, configured task aliases, criterion aliases and inspection-object shape without judging or sending work",
+        description="--task accepts the configured task alias from task-list. Canonical task-… IDs shown in status are not accepted here.")
+    inputs.add_argument("--task", required=True, help="configured task alias from task-list; canonical task IDs from status are not accepted")
     review = commands.add_parser("review-task", help="record explicit criterion judgment and guarded task finish")
     review.add_argument("--task", required=True)
     review.add_argument("--request-key", required=True)

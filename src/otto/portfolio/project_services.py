@@ -74,8 +74,10 @@ class ProjectServices:
         if current != service._fixed_project_binding:
             raise PermissionError("project service binding changed; recompose at a closed owner boundary")
 
-    def _due(self, schedule_id: str) -> tuple[Any, Mapping[str, Any]]:
-        raw = self.due_port.read_due(schedule_id)
+    def _due(self, schedule_id: str, *, hydrate_native: bool = True) -> tuple[Any, Mapping[str, Any]]:
+        if type(hydrate_native) is not bool:
+            raise ValueError("native hydration selector must be boolean")
+        raw = self.due_port.read_due(schedule_id) if hydrate_native else self.due_port.read_due(schedule_id, hydrate_native=False)
         if not isinstance(raw, Mapping) or not isinstance(raw.get("target"), Mapping):
             raise PermissionError("retained occurrence is unavailable")
         service = self._project(raw["target"]["project_ref"])
@@ -158,6 +160,59 @@ class ProjectServices:
             rows.append({"schedule_id": schedule, "outcome": result["outcome"]})
         return {"outcome": "reconciled", "occurrences": rows,
                 "capacity_holds": list(self.host._capacity_holds), "provider_called": False}
+
+    def install_inert(self, *, checkpoint=None) -> Mapping[str, Any]:
+        """Restore physical custody through reads only, without recovery/replay.
+
+        The global dispatch fence is independent of these conservative scopes.
+        Exact retained release proofs still apply: a historical UNKNOWN with an
+        authentic release is not resurrected as a current uncertain execution.
+        """
+        if self.host._threads:
+            raise RuntimeError("inert installation requires closed owner custody")
+        if checkpoint is not None and not callable(checkpoint):
+            raise TypeError("checkpoint must be callable")
+        schedules = set()
+        for service in self.services.values():
+            schedules.update(service._known_schedule_ids(service.server.state))
+        files = list(self.host.directory.glob("request-*.json"))
+        if len(files) > 128:
+            raise ValueError("retained command set exceeds finite bound")
+        for path in files:
+            with path.open("rb") as stream:
+                raw = stream.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024:
+                raise ValueError("retained request exceeds transport bound")
+            request = json.loads(raw)
+            if request.get("command") in self._retained:
+                schedules.add(request["schedule_id"])
+        if len(schedules) > 128:
+            raise ValueError("known occurrence set exceeds finite bound")
+        from otto.attention import DueRecord
+        rows = []
+        for schedule in sorted(schedules):
+            if checkpoint is not None:
+                checkpoint("availability-hold-read")
+            service, raw = self._due(schedule, hydrate_native=False)
+            due = DueRecord.from_dict(raw)
+            attempt = (due.host_evidence or {}).get("gateway_attempt")
+            if attempt and not (due.stop_state == "completed" and due.completion_state == "succeeded"):
+                app = service._execution(principal=due.recipient, model=due.requested_model,
+                    reasoning=due.requested_reasoning, evidence_id="startup-hold-" + schedule,
+                    selection=(due.target.get("launch_request") or {}).get("selection"))
+                # Disposition proofs depend on original full authenticated
+                # bodies. No application.recover, Due save, or task settlement.
+                due = app._read(schedule)
+                self.host.restore_execution(app, due)
+            rows.append({"schedule_id": schedule,
+                "capacity_held": schedule in self.host._capacity_holds,
+                "stop_state": due.stop_state, "completion_state": due.completion_state})
+        self.host.handler = self
+        self.host.caller_context_resolver = self.caller_context
+        self.host.caller_authorizer = self.authorize_caller
+        return {"outcome": "inert-availability-only", "occurrences": rows,
+            "capacity_holds": sorted(self.host._capacity_holds), "provider_called": False,
+            "business_reconciliation": "held", "records_modified": False}
 
     def install(self) -> Mapping[str, Any]:
         result = self.reconcile_startup()

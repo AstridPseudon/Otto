@@ -170,7 +170,14 @@ class ExecutionApplication:
         attempt = (prior.host_evidence or {}).get("gateway_attempt")
         from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
         aborted = retained_aborted_manager_capture(prior, self.actor)
-        if attempt is not None and (prior.stop_state != "completed"
+        prompt_disposition = False
+        if (prior.host_evidence or {}).get("manager_prompt_bound_custody_release"):
+            from manual_selector_proposal import proposal
+            qualified = proposal(self, schedule_id=schedule_id)
+            if qualified["original_due_sha256"] != _digest(prior.to_dict()):
+                raise OccurrencePreparationError("manual selector original disposition changed")
+            prompt_disposition = True
+        if attempt is not None and not prompt_disposition and (prior.stop_state != "completed"
                 or (prior.completion_state != "succeeded" and not aborted) or prior.in_flight_request is not None):
             raise OccurrencePreparationError("manual selector predecessor effects require reconciliation")
         # compose_setup validates the new complete canonical readiness tuple
@@ -271,7 +278,7 @@ class ExecutionApplication:
             if (existing.get('host_evidence') or {}).get('supervisor_directive_ref') != dict(report_ref):
                 raise OccurrencePreparationError('directive continuation key changed')
             return self.recover(schedule_id=schedule, execute=execute)
-        _, _, held = self._manager_anchor(prior, current, schedule=schedule, purpose='supervisor directive')
+        callback_anchor, _, held = self._manager_anchor(prior, current, schedule=schedule, purpose='supervisor directive')
         if held is not None: return held
         content_port = getattr(self.portfolio.operations, 'content_port', None)
         if content_port is None:
@@ -282,7 +289,7 @@ class ExecutionApplication:
             guide = ResourceRef.from_dict(value['BASE_ref']).to_dict()
         except (KeyError, TypeError, ValueError, PermissionError) as exc:
             raise OccurrencePreparationError('directive callback adopted guide is not exact and valid') from exc
-        due = build_manager_callback_due(prior, schedule_id=schedule, request_key=schedule,
+        due = build_manager_callback_due(callback_anchor, schedule_id=schedule, request_key=schedule,
             assignment_ref=current.ref.to_dict(), guide_ref=guide, mandate_ref=prior.target['mandate_ref'],
             due_at=self._now(), timeout_seconds=prior.timeout_seconds, native_adapter=self.native_adapter_identity())
         due = replace(due, instruction='Read and acknowledge the exact adopted supervisor directive before continuing your existing manager objective. Preserve any active worker on its retained contract; this invocation grants no new worker allowance.',
@@ -388,6 +395,21 @@ class ExecutionApplication:
             self.portfolio.operations.content_port, exact_direction_inputs=required_inputs)
         pins = [source["ref"] for source in sources]
         configuration = selected_configuration(sources)
+        allowance_ref = None
+        allocations = {} if configuration is None else configuration['content'].get('new_finite_allocations', {})
+        if allocations:
+            # A current adopted owner configuration can bind finite worker
+            # allowance. Request JSON cannot select a pool or mint capacity.
+            declared = configuration['content'].get('roles', {})
+            matches = [route for route in ('normal', 'xhard')
+                       if declared.get('worker_' + route, {}).get('model') == model
+                       and declared.get('worker_' + route, {}).get('reasoning') == reasoning]
+            if len(matches) != 1:
+                raise OccurrencePreparationError('finite worker model/effort lacks one adopted route')
+            allowance_ref = allocations.get('worker-' + matches[0])
+            if (not isinstance(allowance_ref, Mapping) or allowance_ref.get('authority') != project['authority']
+                    or allowance_ref.get('kind') != 'limit' or not allowance_ref.get('id', '').startswith(project['id'] + '-')):
+                raise OccurrencePreparationError('finite worker allowance is outside its adopted project scope')
         selection = {field: {"source": "explicit_override", "selected_configuration_ref":
             None if configuration is None else configuration["ref"]} for field in ("model", "reasoning")}
         if parent is not None:
@@ -406,7 +428,8 @@ class ExecutionApplication:
         semantic = _digest([project, task, principal, instructions, instruction_contract,
                             brief, model, reasoning, profile, timeout_seconds] + ([pins] if pins else [])
                             + ([parent] if parent is not None else [])
-                            + ([launch_request] if launch_request is not None else []))
+                            + ([launch_request] if launch_request is not None else [])
+                            + ([allowance_ref] if allowance_ref is not None else []))
         existing = self.due_port.read_due(schedule)
         if existing is not None:
             if (existing.get("invocation_identity") != request_key + ":" + semantic
@@ -478,7 +501,8 @@ class ExecutionApplication:
                 target=target, role="worker", purpose="delegated-worker", lifecycle_owner=self.actor,
                 execution_mode="fresh_bounded_worker", requested_model=model,
                 requested_reasoning=reasoning, context_refs=(guide_ref, mandate_ref, *pins),
-                result_owner=self.actor, timeout_seconds=timeout_seconds)
+                result_owner=self.actor, timeout_seconds=timeout_seconds,
+                allowance_ref=None if allowance_ref is None else dict(allowance_ref))
             prepared = prepare_current_assignment_occurrence(due_port=self.due_port,
                 assignments=self.assignments, binding=self.binding, due=due,
                 assignment_ref=assignment.ref.to_dict(), assignment_owner=self.manager_actor,
@@ -821,8 +845,11 @@ class ExecutionApplication:
             timeout_seconds=prior.timeout_seconds)
         return self.start(schedule_id=prepared["schedule_id"]) if execute and prepared["outcome"] in {"committed", "prepared"} else prepared
 
-    def _read(self, schedule_id: str) -> DueRecord:
-        value = self.due_port.read_due(_text(schedule_id, "schedule_id"))
+    def _read(self, schedule_id: str, *, hydrate_native: bool = True) -> DueRecord:
+        if type(hydrate_native) is not bool:
+            raise ValueError("native hydration selector must be boolean")
+        selected = _text(schedule_id, "schedule_id")
+        value = self.due_port.read_due(selected) if hydrate_native else self.due_port.read_due(selected, hydrate_native=False)
         if value is None:
             raise OccurrencePreparationError("execution occurrence is unavailable")
         due = DueRecord.from_dict(value)
@@ -905,15 +932,16 @@ class ExecutionApplication:
                 assignment.payload['resource_adoptions'], guide_ref,
                 self.portfolio.operations.content_port)
             purpose = guide['content'].get('current_purpose')
-            if not isinstance(purpose, Mapping) or purpose.get('schema') != 'otto.current-supervisor-purpose.v1':
+            if not isinstance(purpose, Mapping) or purpose.get('schema') not in {'otto.current-supervisor-purpose.v1', 'otto.current-supervisor-purpose.v2'}:
                 raise OccurrencePreparationError('directive guide has no exact current purpose')
             report = self.portfolio.operations._owner_reader.get_record(
                 ResourceRef.from_dict(due.host_evidence['supervisor_directive_ref']))
             if report is None or report.payload['value'].get('direction_ref') != purpose.get('direction_ref'):
                 raise OccurrencePreparationError('directive mandate purpose differs from application receipt')
-            from .supervisor_direction_client import current_purpose_content
+            from .supervisor_direction_client import current_purpose_content, resolve_purpose_instructions
+            purpose_instructions = resolve_purpose_instructions(purpose, self.portfolio.operations.content_port)
             content = current_purpose_content(content, direction_ref=purpose['direction_ref'],
-                instructions=purpose['instructions'], inherited_ref=before_ref)
+                instructions=purpose_instructions, inherited_ref=before_ref)
         key = due.invocation_identity + ":mandate-adoption:" + _digest(due.assignment_ref)
         created = self.portfolio.create_document(target["project_ref"], actor=self.actor,
             request_id=key, document_id="role-adoption-mandate-" + _digest(key)[:24],
@@ -1692,6 +1720,15 @@ class ExecutionApplication:
             # No stale prepared binding is refreshed or used to launch.
             prior = anchor
             manager_schedule_id = anchor.schedule_id
+        if (prior.host_evidence or {}).get("manager_prompt_bound_custody_release"):
+            # The refused prompt did not spawn or deliver a new turn. Only its
+            # authenticated disposition and independently settled original
+            # native anchor may supply a NEW supervisor continuation.
+            from prompt_bound_manager_custody import retained, settled_anchor
+            retained(self, prior)
+            anchor = settled_anchor(self, prior)
+            self._verify_native_binding(current, (anchor.last_result or {})["physical_session_id"], anchor.schedule_id)
+            prior = anchor
         failed_terminal = accept_aborted and retained_aborted_manager_capture(prior, self.actor)
         if (prior.completion_state == "unknown" or
                 (((prior.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}).get("outcome") == "unknown"

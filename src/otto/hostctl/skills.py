@@ -12,11 +12,13 @@ import glob
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional
 
 MARKER = "> <!-- otto-edition -->"
@@ -24,6 +26,19 @@ MANIFEST_SCHEMA = "otto.skill-installation.v1"
 _MAX_HOPS = 40
 _IGNORED_NAMES = {".DS_Store"}
 _IGNORED_DIRS = {"__pycache__"}
+_OTTO_SKILL_REL = "src/otto/portfolio/skills"
+_OTTO_SUPPORT_FILES = {
+    "OTTO-ONE.md": "support/OTTO-ONE.md",
+    "docs/host-onboarding.md": "support/docs/host-onboarding.md",
+    "docs/manager-journey-commands.md": "support/docs/manager-journey-commands.md",
+    "docs/megado-from-any-host.md": "support/docs/megado-from-any-host.md",
+    "docs/operating-setup-and-help.md": "support/docs/operating-setup-and-help.md",
+    "docs/project-onboarding.md": "support/docs/project-onboarding.md",
+    "src/herzchen/packs/evidence_resource_pack/skill/SKILL.md":
+        "support/evidence-resource/SKILL.md",
+}
+_MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
+_URL_SCHEMES = ("http:", "https:", "mailto:", "data:")
 _STAMP_RE = re.compile(
     r"^> <!-- otto-edition --> Edition: (\S+) (\S+) · installed (\S+) · path (.+) · "
     r"source SKILL\.md sha256 ([0-9a-f]{64})\s*$"
@@ -186,6 +201,9 @@ def install_skill_tree(
     edition: str,
     source_commit: Optional[str] = None,
     installed_at: Optional[str] = None,
+    source_dir_label: Optional[str] = None,
+    source_skill_sha256: Optional[str] = None,
+    materialized_skill_sha256: Optional[str] = None,
 ) -> dict:
     """Copy and stamp a skill tree into dest_root/edition/name and write its manifest.
 
@@ -204,6 +222,7 @@ def install_skill_tree(
 
     with open(skill_md_src, "rb") as fh:
         source_sha = _sha256_bytes(fh.read())
+    source_sha = source_skill_sha256 or source_sha
     source_files = _iter_tree(source)
 
     dest_root_abs = os.path.realpath(os.fspath(dest_root))
@@ -249,13 +268,15 @@ def install_skill_tree(
         "schema": MANIFEST_SCHEMA,
         "name": name,
         "edition": edition,
-        "source_dir": source,
+        "source_dir": source_dir_label or source,
         "source_commit": source_commit,
         "installed_at": installed_at,
         "path": resolved,
         "source_skill_sha256": source_sha,
         "files": {rel: _sha256_bytes(data) for rel, data in sorted(payload.items())},
     }
+    if materialized_skill_sha256 is not None:
+        manifest["materialized_skill_sha256"] = materialized_skill_sha256
 
     os.makedirs(edition_dir, exist_ok=True)
     staging = tempfile.mkdtemp(dir=edition_dir, prefix=f".{name}.tmp-")
@@ -278,6 +299,130 @@ def install_skill_tree(
     result = dict(manifest)
     result["replayed"] = False
     return result
+
+
+def _otto_link_token(raw: str) -> tuple[str, str]:
+    """Split a Markdown destination from an optional title, preserving its suffix."""
+    value = raw.strip()
+    if value.startswith("<") and ">" in value:
+        end = value.index(">") + 1
+        return value[1:end - 1], value[end:]
+    match = re.match(r"(\S+)(.*)", value, flags=re.DOTALL)
+    return (match.group(1), match.group(2)) if match else ("", "")
+
+
+def _safe_otto_source_path(root: Path, relative: str) -> Path:
+    candidate = root
+    for component in relative.split("/"):
+        candidate = candidate / component
+        if candidate.is_symlink():
+            raise SkillInstallError(f"symlink not allowed in Otto skill export source: {relative}")
+    resolved = candidate.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise SkillInstallError(f"Otto skill export source escapes checkout: {relative}") from exc
+    return resolved
+
+
+def _rewrite_otto_links(text: str, *, source_file, output_rel: str, source_root,
+                        path_map: Dict[str, str]) -> str:
+    def replace(match):
+        target, title = _otto_link_token(match.group(1))
+        if not target or target.startswith(("#", "/") + _URL_SCHEMES):
+            return match.group(0)
+        boundaries = [index for index in (target.find("#"), target.find("?")) if index >= 0]
+        cut = min(boundaries) if boundaries else len(target)
+        path_part, suffix = target[:cut], target[cut:]
+        source_target = (source_file.parent / path_part).resolve()
+        try:
+            source_rel = source_target.relative_to(source_root).as_posix()
+        except ValueError as exc:
+            raise SkillInstallError(f"Otto skill reference escapes source root: {target}") from exc
+        mapped = path_map.get(source_rel)
+        if mapped is None or not source_target.is_file():
+            raise SkillInstallError(f"Otto skill reference is outside the packaged closure: {target}")
+        rewritten = posixpath.relpath(mapped, posixpath.dirname(output_rel) or ".")
+        rewritten += suffix
+        start = match.start(1) - match.start(0)
+        end = match.end(1) - match.start(0)
+        return match.group(0)[:start] + rewritten + title + match.group(0)[end:]
+
+    return _MARKDOWN_LINK_RE.sub(replace, text)
+
+
+def install_otto_skill_tree(
+    source_root,
+    dest_root,
+    *,
+    edition: str,
+    source_commit: Optional[str] = None,
+    installed_at: Optional[str] = None,
+) -> dict:
+    """Install Otto's skill index plus its small, self-contained reference closure.
+
+    The generic installer remains the only writer of edition stamps/manifests;
+    this adapter stages the maintained skill directory and seven explicitly
+    required support files, rewriting their local Markdown links into the edition.
+    """
+    _check_component(edition, "edition")
+    root = os.path.realpath(os.fspath(source_root))
+    root_path = Path(root)
+    skill_source_path = _safe_otto_source_path(root_path, _OTTO_SKILL_REL)
+    skill_source = str(skill_source_path)
+    if not skill_source_path.is_dir():
+        raise SkillInstallError(f"Otto source root has no maintained skill tree: {root}")
+    _assert_no_symlinks(skill_source)
+    source_files = _iter_tree(skill_source)
+    path_map = {
+        os.path.relpath(path, root).replace(os.sep, "/"): rel
+        for rel, path in source_files
+    }
+    support_sources = {}
+    for source_rel, output_rel in _OTTO_SUPPORT_FILES.items():
+        try:
+            path = _safe_otto_source_path(root_path, source_rel)
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            raise SkillInstallError(f"required Otto skill support file is missing or unsafe: {source_rel}") from exc
+        if not path.is_file():
+            raise SkillInstallError(f"required Otto skill support file is missing or unsafe: {source_rel}")
+        resolved = str(path)
+        try:
+            rel = os.path.relpath(resolved, root).replace(os.sep, "/")
+        except ValueError as exc:
+            raise SkillInstallError(f"Otto support file escapes source root: {source_rel}") from exc
+        if rel.startswith("../"):
+            raise SkillInstallError(f"Otto support file escapes source root: {source_rel}")
+        support_sources[source_rel] = (resolved, output_rel)
+        path_map[source_rel] = output_rel
+
+    with tempfile.TemporaryDirectory(prefix="otto-skill-export-") as temporary:
+        staged = os.path.join(temporary, "otto")
+        shutil.copytree(skill_source, staged, symlinks=False)
+        for source_rel, (source_path, output_rel) in support_sources.items():
+            target = os.path.join(staged, *output_rel.split("/"))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(source_path, target)
+
+        markdown_sources = [(rel, path, os.path.join(staged, *rel.split("/")))
+                            for rel, path in source_files if rel.endswith(".md")]
+        markdown_sources.extend(
+            (output_rel, source_path, os.path.join(staged, *output_rel.split("/")))
+            for source_path, output_rel in support_sources.values() if output_rel.endswith(".md"))
+        for output_rel, source_path, target in markdown_sources:
+            with open(source_path, "r", encoding="utf-8") as stream:
+                original = stream.read()
+            rewritten = _rewrite_otto_links(original, source_file=Path(source_path),
+                output_rel=output_rel, source_root=Path(root), path_map=path_map)
+            if rewritten != original:
+                with open(target, "w", encoding="utf-8", newline="") as stream:
+                    stream.write(rewritten)
+        materialized_skill_sha = _sha256_bytes(Path(staged, "SKILL.md").read_bytes())
+        source_skill_sha = _sha256_bytes(Path(skill_source, "SKILL.md").read_bytes())
+        return install_skill_tree(staged, dest_root, name="otto", edition=edition,
+            source_commit=source_commit, installed_at=installed_at,
+            source_dir_label=skill_source, source_skill_sha256=source_skill_sha,
+            materialized_skill_sha256=materialized_skill_sha)
 
 
 def link_skill(link_path, target_dir) -> dict:

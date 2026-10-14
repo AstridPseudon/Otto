@@ -33,8 +33,8 @@ def current_purpose_content(content, *, direction_ref, instructions, inherited_r
           'not pending work. Preserve their accepted judgments and use ordinary final handoff when eligible. '
           'Prior stage instructions are retained non-actionable history at the linked context revision. '
           'Existing authority, workspace, model and operation limits remain in force.')
-    body['current_purpose'] = {'schema': 'otto.current-supervisor-purpose.v1',
-        'direction_ref': pin.to_dict(), 'instructions': instructions,
+    body['current_purpose'] = {'schema': 'otto.current-supervisor-purpose.v2',
+        'direction_ref': pin.to_dict(),
         'instructions_sha256': hashlib.sha256(instructions.encode()).hexdigest(),
         'historical_context_ref': prior.to_dict(), 'historical_context_actionable': False}
     if body.get('schema') == 'herzchen.instructions.v1':
@@ -50,6 +50,31 @@ def current_purpose_content(content, *, direction_ref, instructions, inherited_r
                 'direction_ref': pin.to_dict(),
                 'next_action': 'Read exact current task completion and lifecycle; follow this purpose only for unfinished work or final handoff.'}}
     return body
+
+
+def resolve_purpose_instructions(purpose, content_port):
+    """v1 full text remains compatible; v2 resolves only the exact direction pin."""
+    if not isinstance(purpose, Mapping):
+        raise PermissionError('current purpose is missing')
+    if purpose.get('schema') == 'otto.current-supervisor-purpose.v1':
+        instructions = purpose['instructions']
+    elif purpose.get('schema') == 'otto.current-supervisor-purpose.v2':
+        pin = ResourceRef.from_dict(purpose['direction_ref'])
+        if not pin.revision:
+            raise PermissionError('v2 purpose requires an exact direction revision')
+        observed = json_value(content_port.read(pin))
+        if observed.get('identity') != pin.to_dict() or observed.get('revision') != pin.revision:
+            raise PermissionError('v2 purpose direction revision is unavailable or differs')
+        content = observed.get('content')
+        validate_instruction_content(content)
+        instructions = content['instructions']
+        if hashlib.sha256(instructions.encode()).hexdigest() != purpose.get('instructions_sha256'):
+            raise PermissionError('v2 purpose direction instructions digest differs')
+    else:
+        raise PermissionError('unsupported current purpose schema')
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise PermissionError('current purpose instructions are missing')
+    return instructions
 
 
 OPERATIONS = frozenset({'supervisor-direction-read', 'supervisor-direction-draft',
@@ -123,6 +148,9 @@ class SupervisorDirectionAuthoring:
                         settled_anchor=value['anchor_schedule_id']):
                     raise PermissionError('manager head changed during replay projection')
                 self._bootstrap_projection(staged, manager, due, value['BASE_ref'])
+                if value.get('W0_first_binding'):
+                    staged['role_configuration_ref']=value['role_configuration_ref']
+                    staged['W0_first_direction_application']={'report_ref':retained.ref.to_dict(),'role_configuration_ref':value['role_configuration_ref'],'prior_configuration_ref':value['prior_configuration_ref']}
                 state.update(staged)
                 service.server._save_state()
             return {**value, 'outcome': 'replayed', 'report_ref': retained.ref.to_dict(),
@@ -147,6 +175,10 @@ class SupervisorDirectionAuthoring:
             if payload: raise ValueError('supervisor-direction-read takes no payload')
             return {**common, 'outcome': 'read', 'direction': direction,
                     'manager_schedule_id': service._current_manager_schedule(), 'read_only': True}
+        if direction.get('state')=='unbound' and operation=='supervisor-direction-adopt-and-continue':
+            from w0_initial_manager_direction import apply as apply_first_W0_direction,migration as W0_migration
+            if state['project_ref']['id']==W0_migration.PROJECT:
+                return apply_first_W0_direction(self,request,root,manager,direction,common)
         if direction.get('state') != 'effective':
             return {**common, 'outcome': 'held', 'canonical_effect_recorded': False,
                     'reason': 'first binding or incomplete manager direction requires affected-role qualification',

@@ -336,7 +336,9 @@ def main(argv=None):
     for operation in sorted(OPERATIONS):
         command = sub.add_parser(operation)
         command.add_argument('--request-key', required=operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'} | (SUPERVISOR_DIRECTION_OPERATIONS - {'supervisor-direction-read'}))
-        command.add_argument('--project-id')
+        project_scope_required = operation not in ({'status', 'whoami', 'portfolio'} | ROOT_DIRECTION_OPERATIONS)
+        command.add_argument('--project-id', required=project_scope_required,
+                             help='required envelope scope for this project operation; omission is rejected locally before submission')
         if operation in {'respond-help', 'delivery-ack', 'project-authoring', 'manager-start', 'direction-draft', 'direction-update'} | (SUPERVISOR_DIRECTION_OPERATIONS - {'supervisor-direction-read'}):
             command.add_argument('--request', required=True, help=(
                 'respond-help JSON contains only issue_id, authority_source, response, '

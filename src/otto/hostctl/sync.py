@@ -98,9 +98,13 @@ def sync_documents(session: Any, record: Any, bundle_source: Any, *, apply: bool
     actor = session.host["principal"] if session.host else session.actor.actor
     opened = session.portfolio.checkout_project(record.ref.to_dict(), actor=actor, request_id=key + ":open")
     if opened.get("outcome") not in {"opened", "replayed"}:
+        error = opened.get("error")
+        message = error.get("message") if isinstance(error, Mapping) else error
         return {**result, "outcome": "held", "request_key": key,
-                "reason": "checkout unavailable: " + str((opened.get("error") or {}).get("message") or opened.get("outcome")),
-                "next_action": "release the open checkout of this project (project-authoring release) and repeat"}
+                "reason": "checkout unavailable: " + str(message or opened.get("outcome")),
+                "next_action": "preserve the draft, then release your exact checkout with "
+                    "ottoctl project release-checkout --project PROJECT --session-id SESSION --request-key KEY; "
+                    "never release another actor's checkout"}
     project_json = copy.deepcopy(opened["project_json"])
     custom = dict(project_json.get("custom") or {})
     mirror = dict(custom.get("otto_host_registration") or registration)

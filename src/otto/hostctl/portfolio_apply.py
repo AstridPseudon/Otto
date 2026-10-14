@@ -12,12 +12,82 @@ from herzchen.contracts import ResourceRef
 SETUP_SCHEMA = "otto.portfolio-setup.v1"
 
 
-def read_portfolio_root(directory: str, *, history_directory: str | None = None) -> dict[str, Any]:
+def render_apply_summary(result: Mapping[str, Any], *, detail: bool = False) -> str:
+    """Render the portfolio apply receipt for a human at the terminal."""
+    outcome = str(result.get("outcome", "unknown"))
+    project_rows = list(result.get("projects") or ())
+    project_sync = {row.get("project"): row for row in result.get("project_sync") or ()}
+    groups = {"new": [], "drift": [], "in_sync": []}
+    declared_drift = {row.get("project") for row in result.get("drift") or ()}
+    for row in project_rows:
+        project = str(row.get("project", "?"))
+        sync = project_sync.get(row.get("project"), {})
+        project_outcome = row.get("outcome")
+        if project_outcome in {"would_register", "created", "registered"}:
+            groups["new"].append(project)
+        elif project in declared_drift or project_outcome in {"otto_edit_preserved"} or sync.get("outcome") not in (None, "in_sync", "synced"):
+            groups["drift"].append(project)
+        elif project_outcome == "already_registered" and sync.get("outcome") in (None, "in_sync", "synced"):
+            groups["in_sync"].append(project)
+        elif project_outcome in {"in_sync"}:
+            groups["in_sync"].append(project)
+    if result.get("conflicts"):
+        groups["drift"].extend(str(x).split(":", 1)[0] for x in result["conflicts"]
+                                if str(x).split(":", 1)[0] not in groups["drift"])
+    gates = list(result.get("gates") or ())
+    gate_create = sum(row.get("outcome") in {"would_create", "created"} for row in gates)
+    gate_present = sum(row.get("outcome") == "present" for row in gates)
+    dependencies = list(result.get("dependencies") or ())
+    dep_pending = sum(row.get("outcome") in {"would_link", "linked"} for row in dependencies)
+    dep_present = sum(row.get("outcome") == "present" for row in dependencies)
+    shared = result.get("shared_documents") or {}
+    shared_outcome = shared.get("outcome", "not recorded")
+    document_counts: dict[str, int] = {}
+    for row in shared.get("documents") or ():
+        state = row.get("state", "unknown")
+        document_counts[state] = document_counts.get(state, 0) + 1
+    if document_counts:
+        labels = {"removed_from_run_dir": "removed from run dir"}
+        order = {state: index for index, state in enumerate(
+            ("changed", "added", "unchanged", "removed_from_run_dir", "otto_newer", "conflict"))}
+        counts = ", ".join(f"{count} {labels.get(state, state.replace('_', ' '))}"
+                            for state, count in sorted(document_counts.items(),
+                                                       key=lambda item: (order.get(item[0], 99), item[0])))
+        shared_state = ("plan (no writes): " if shared_outcome == "plan" else "") + counts
+    elif shared_outcome == "synced":
+        shared_state = "recorded"
+    elif shared_outcome == "in_sync":
+        shared_state = "in sync"
+    else:
+        shared_state = str(shared_outcome)
+    line = (f"Portfolio {outcome}: projects new {len(groups['new'])} "
+            f"[{', '.join(groups['new']) or 'none'}], drift {len(groups['drift'])} "
+            f"[{', '.join(groups['drift']) or 'none'}], in sync {len(groups['in_sync'])} "
+            f"[{', '.join(groups['in_sync']) or 'none'}]; gates create {gate_create}, present {gate_present}; "
+            f"dependencies pending {dep_pending}, present {dep_present}; shared docs {shared_state}; "
+            "dispatch none")
+    if not detail:
+        return line
+    details = []
+    for row in project_rows:
+        sync = project_sync.get(row.get("project"), {})
+        details.append(f"  project {row.get('project')}: {row.get('outcome')}"
+                       + (f", documents {sync.get('outcome')}" if sync else ""))
+    for row in gates:
+        details.append(f"  gate {row.get('project')}#{row.get('gate')}: {row.get('outcome')}")
+    for row in dependencies:
+        details.append(f"  dependency {row.get('project')} on {row.get('on')}#{row.get('gate')}: {row.get('outcome')}")
+    return "\n".join([line, *details])
+
+
+def read_portfolio_root(directory: str, *, history_directory: str | None = None,
+                        root_namespace: str | None = None) -> dict[str, Any]:
     """Read client-owned text files before sending them to the owner service."""
-    from otto.portfolio.shared_documents import read_document_directory
+    from otto.portfolio.shared_documents import document_namespace, read_document_directory
     from .bundle import read_bundle
     root = Path(directory).resolve()
     shared = read_document_directory(root, exclude_prefixes=("projects/",))
+    shared["root_namespace"] = document_namespace(root=str(root), root_namespace=root_namespace)
     try:
         setup = json.loads(shared["files"]["portfolio-setup.json"])
     except (KeyError, ValueError, TypeError) as exc:
@@ -305,7 +375,9 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
     from .cli import _resolve_project
     from .register import import_history as register_history, plan, register
     from .portfolio import dependency_service
-    from otto.portfolio.shared_documents import sync_portfolio_documents
+    from otto.portfolio.shared_documents import _authorized, _manifest, document_namespace, sync_portfolio_documents
+    _authorized(session, portfolio_ref)
+    namespace = document_namespace(root_namespace=payload["shared_bundle"].get("root_namespace"))
     setup = payload["setup"]
     _setup_rows(setup)  # Validate before any durable operation.
     projects = list(setup.get("projects") or ())
@@ -354,6 +426,26 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
     for pid in declared:
         visit(pid)
     index = _project_index(session, list(data_rows.values()))
+    # A new namespace must not replace an existing apply's comparison baseline
+    # with empty history. Legacy applies used the generic (None) scope. Hold
+    # adoption even for equal bytes: identity, revisions, links, and tombstones
+    # need an explicit owner migration rather than new document creation.
+    prior_scopes = {item["old_setup"].get("root_namespace") for item in index.values()
+                    if item["old_setup"].get("manifest_schema") == SETUP_SCHEMA
+                    and item["old_setup"].get("portfolio_id") == str(portfolio_ref.id)}
+    adoption = []
+    for previous in sorted(prior_scopes, key=lambda value: value or ""):
+        if previous == namespace:
+            continue
+        prior_manifest = _manifest(session.owner, portfolio_ref, root_namespace=previous)
+        paths = sorted(set(prior_manifest.get("files") or {}) | set(prior_manifest.get("retired") or ()))
+        if paths:
+            adoption.append({"source_namespace": previous, "target_namespace": namespace, "paths": paths})
+    if adoption:
+        return {"outcome": "held", "reason": "shared document namespace adoption requires explicit owner migration preserving DAT history and sync baselines",
+                "portfolio_ref": portfolio_ref.to_dict(), "namespace_adoption": adoption,
+                "conflicts": sorted({"shared:" + path for row in adoption for path in row["paths"]}),
+                "writes": False, "provider_called": False}
     from otto.agents.host_profiles import profile as model_profile
     profile = model_profile(session.host["model_profile"])
     planned, registrations = [], {}
@@ -364,6 +456,7 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
                         worktree=_worktree(bundle), tool_entrypoint=str(Path(session.config["home"]) / "bin" / "ottoctl"))
         computed["custom"]["otto_portfolio_setup"] = {"project_id": letter,
             "portfolio_id": str(portfolio_ref.id), "manifest_schema": setup.get("schema"),
+            **({"root_namespace": namespace} if namespace is not None else {}),
             "gates": [g for g in gates if g['project'] == letter],
             "dependencies": [{"on": dep.get("on"), "gate": dep.get("gate")}
                              for dep in dependencies if dep.get('project') == letter]}
@@ -408,6 +501,13 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
             # succeed, so a held apply retains the previous comparison point.
             registration = {**registration, 'custom': {**registration['custom'],
                 'otto_portfolio_setup': item.get('old_setup', {})}}
+            # Per-file baselines of an existing registration advance only with
+            # the document revision, in sync_documents' check-in; registering
+            # new hashes here would leave stored text behind its baseline.
+            held_hashes = dict(((current.payload.get('custom') or {}).get('otto_host_registration') or {})
+                               .get('raw_sha256') or {})
+            registration['custom'] = {**registration['custom'], 'otto_host_registration': {
+                **registration['custom']['otto_host_registration'], 'raw_sha256': held_hashes}}
         receipt = register(session, registration, key=key)
         item["record"] = _resolve_project(session, item["run_id"])
         planned_row = next(row for row in planned if row["project"] == letter)

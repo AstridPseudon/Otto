@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import stat
 import tempfile
 import threading
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -253,6 +254,8 @@ class SerializedCommandClient:
         if transport.owner_pid == os.getpid():
             service = _OWNER_SERVICES.get(transport.session_id)
             owner_endpoints = service.owner_endpoints if service is not None else ()
+            if service is not None and service.closed.is_set():
+                raise CommandTransportClosed("owner command service is closed")
             if service is not None and operation in owner_endpoints and operation not in _FORBIDDEN and not operation.startswith("_"):
                 endpoint = getattr(service.facade, operation)
                 if callable(endpoint):
@@ -330,11 +333,28 @@ class _OwnerService:
     def __init__(self, facade: Any, transport: SerializedFacadeTransport, *, socket_enabled: bool = True) -> None:
         self.facade, self.transport, self.closed, self.audit = facade, transport, threading.Event(), []
         self.owner_endpoints = tuple(getattr(facade, "endpoints", transport.endpoints))
+        directory_info = os.lstat(os.path.dirname(transport.socket_path))
+        self.directory_identity = (directory_info.st_dev, directory_info.st_ino)
+        self.socket_identity = None
         self.socket = None
         if socket_enabled:
             self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.socket.bind(transport.socket_path); os.chmod(transport.socket_path, 0o600); self.socket.listen(16)
-            self.socket.settimeout(0.2)
+            try:
+                self.socket.bind(transport.socket_path)
+                socket_info = os.lstat(transport.socket_path)
+                self.socket_identity = (socket_info.st_dev, socket_info.st_ino)
+                os.chmod(transport.socket_path, 0o600); self.socket.listen(16)
+                self.socket.settimeout(0.2)
+            except BaseException:
+                self.socket.close()
+                if self.socket_identity is not None:
+                    try:
+                        info = os.lstat(transport.socket_path)
+                        if (info.st_dev, info.st_ino) == self.socket_identity:
+                            os.unlink(transport.socket_path)
+                    except OSError:
+                        pass
+                raise
         self.thread: Optional[threading.Thread] = None
 
     def activate(self) -> None:
@@ -399,9 +419,23 @@ class _OwnerService:
         if self.socket is not None:
             self.socket.close()
         if self.thread is not None and self.thread is not threading.current_thread(): self.thread.join(timeout=1.0)
-        if self.socket is not None:
-            try: os.unlink(self.transport.socket_path); os.rmdir(os.path.dirname(self.transport.socket_path))
-            except OSError: pass
+        # Only this service's newly created directory is disposable. Never
+        # recurse, scan old transports, or unlink a path replaced by another owner.
+        directory = os.path.dirname(self.transport.socket_path)
+        try:
+            info = os.lstat(directory)
+            if (not stat.S_ISDIR(info.st_mode)
+                    or (info.st_dev, info.st_ino) != self.directory_identity):
+                return
+            if self.socket_identity is not None:
+                socket_info = os.lstat(self.transport.socket_path)
+                if (not stat.S_ISSOCK(socket_info.st_mode)
+                        or (socket_info.st_dev, socket_info.st_ino) != self.socket_identity):
+                    return
+                os.unlink(self.transport.socket_path)
+            os.rmdir(directory)  # Also removes the empty lazy/in-process directory.
+        except OSError:
+            pass  # Foreign contents or an already closed path are preserved.
 
 
 _OWNER_SERVICES: Dict[str, _OwnerService] = {}
@@ -421,7 +455,17 @@ def _start_service(value: Any, domain_id: str, facade_name: str, endpoints: Sequ
     # while allowing same-process owner calls to use the exact same finite
     # facade and authority checks through SerializedCommandClient.call().
     socket_enabled = os.environ.get("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK") != "1"
-    _OWNER_SERVICES[session_id] = _OwnerService(value, transport, socket_enabled=socket_enabled)
+    directory_info = os.lstat(directory)
+    try:
+        _OWNER_SERVICES[session_id] = _OwnerService(value, transport, socket_enabled=socket_enabled)
+    except BaseException:
+        try:
+            info = os.lstat(directory)
+            if (info.st_dev, info.st_ino) == (directory_info.st_dev, directory_info.st_ino):
+                os.rmdir(directory)  # Empty newly owned directory only.
+        except OSError:
+            pass
+        raise
     return transport
 
 

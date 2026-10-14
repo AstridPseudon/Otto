@@ -95,6 +95,7 @@ def _same_process_start_identity(value: Any, expected: Mapping[str, Any]) -> boo
 
 
 _DISPATCH_CONTEXT = threading.local()
+_INERT_STATUS_CONTEXT = threading.local()
 _COMMAND_TRANSPORT = ContextVar("otto_command_transport", default=None)
 _ACTIVE_EXECUTION = ContextVar("otto_active_execution", default=None)
 _MANAGER_TURN_COMMANDS = frozenset({"start-manager", "manager-continue", "manager-worker-result",
@@ -179,6 +180,10 @@ def _nested_capability(request: Mapping[str, Any]) -> str:
     return "held"
 
 
+class ExecutionAdmissionHeld(RuntimeError):
+    """Dispatch is held for an explicitly inert owner service."""
+
+
 class ExecutionHost:
     """One owner-process command service, retained to admitted work completion.
 
@@ -220,6 +225,9 @@ class ExecutionHost:
         self._external_waiting = 0
         self._active_files: set[str] = set()
         self._closing = False
+        self._dispatch_held = False
+        self._startup_report: dict[str, Any] | None = None
+        self.startup_report_reader: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
         self._owns_owner_file = False
         self._threads: list[threading.Thread] = []
         self.failures: dict[str, dict[str, str]] = {}
@@ -235,6 +243,17 @@ class ExecutionHost:
         self._capacity_holds: dict[str, dict[str, Any]] = {}
         self._last_project: str | None = None
         self._project_order: list[str] = []
+
+    @property
+    def dispatch_held(self) -> bool:
+        return self._dispatch_held
+
+    def hold_admission(self, startup_report: Mapping[str, Any] | None = None) -> None:
+        """Fence all new execution before the host starts serving requests."""
+        if self._threads:
+            raise RuntimeError("dispatch hold must be installed before host start")
+        self._dispatch_held = True
+        self._startup_report = None if startup_report is None else dict(startup_report)
 
     @staticmethod
     def current_bounded() -> Any:
@@ -299,6 +318,20 @@ class ExecutionHost:
                 released = True
             except (ValueError, KeyError, TypeError, OSError):
                 pass  # Missing/stale terminal proof keeps the conservative hold.
+        if not released and (due.host_evidence or {}).get("claude_invalid_initializer_custody_release"):
+            from claude_invalid_initializer_custody import retained as retained_invalid_initializer
+            try:
+                retained_invalid_initializer(app, due)
+                released = True
+            except (ValueError, KeyError, TypeError, OSError, PermissionError):
+                pass  # An unqualified historical initializer keeps exact custody.
+        if not released and (due.host_evidence or {}).get("manager_prompt_bound_custody_release"):
+            from prompt_bound_manager_custody import retained as retained_prompt_refusal
+            try:
+                retained_prompt_refusal(app, due)
+                released = True
+            except (ValueError, KeyError, TypeError, OSError, PermissionError):
+                pass  # Exact source/authorization/prior-settlement mismatch holds.
         if not released and due.stop_state == "stopped":
             from .worker_custody import retained_stopped_writer_conflict_release
             try:
@@ -312,6 +345,8 @@ class ExecutionHost:
             self._capacity_holds.pop(due.schedule_id, None)
 
     def admit_execution(self, app: Any, due: Any, operation: Callable[[], Any]) -> OwnerCompletion:
+        if self._dispatch_held:
+            raise ExecutionAdmissionHeld("dispatch is held during inert startup")
         if not self.bounded_transports or self.current_bounded() is not self:
             raise RuntimeError("bounded execution requires its serialized owner")
         if not getattr(app.runtime.adapter, "owner_transport_only", False):
@@ -351,6 +386,8 @@ class ExecutionHost:
 
     def bind_native_session(self, schedule_id: str, session: str) -> None:
         """Fence even a provider returning a reused identity before delivery."""
+        if self._dispatch_held:
+            raise ExecutionAdmissionHeld("dispatch is held during inert startup")
         job = self._executions.get(schedule_id)
         if job is None or not job["running"]:
             raise RuntimeError("native identity has no admitted owner occurrence")
@@ -361,7 +398,7 @@ class ExecutionHost:
         job["scope"]["session"] = session
 
     def _start_ready_executions(self) -> None:
-        if self._closing:
+        if self._dispatch_held or self._closing:
             return
         while not self._closing:
             ready = [value for value in self._executions.values()
@@ -415,6 +452,8 @@ class ExecutionHost:
         host = ExecutionHost.current_bounded()
         if host is None:
             return operation()
+        if host._dispatch_held:
+            raise ExecutionAdmissionHeld("dispatch is held during inert startup")
         result = OwnerCompletion()
         with host._lock:
             host._external_waiting += 1
@@ -688,9 +727,10 @@ class ExecutionHost:
                 raise PermissionError("command has no caller-aware owner authorization")
             if authorizer(context, clean) is False:
                 raise PermissionError("owner command authorization rejected this caller")
-            recovered = self._retain_socket_admission(clean, binding, context)
-            if recovered is not None:
-                return recovered
+            if not getattr(_INERT_STATUS_CONTEXT, "value", False):
+                recovered = self._retain_socket_admission(clean, binding, context)
+                if recovered is not None:
+                    return recovered
         except Exception as exc:
             return {"outcome": "error", "error": type(exc).__name__, "message": str(exc),
                     "provider_called": False, "effects_started": False,
@@ -700,11 +740,60 @@ class ExecutionHost:
         return after_owner(result, lambda result: dict(result, caller_context=context,
                     target_context={key: clean[key] for key in ("principal", "assignment_ref", "project_ref", "task_ref") if key in clean}))
 
+    def _authorize_inert_request(self, request: Mapping[str, Any], ingress: Any) -> None:
+        """Check caller authority without retaining or dispatching the request."""
+        from .identity_context import HostCallerBinding, check_caller_claims
+        if self.caller_binding_reader is None or (self.owner_file_compatibility
+                and getattr(ingress, "transport", None) == "file-ipc"):
+            raise PermissionError("inert dispatch requires an authenticated host ingress")
+        binding = self.caller_binding_reader(ingress)
+        if not isinstance(binding, HostCallerBinding):
+            raise PermissionError("host ingress has no trusted caller binding")
+        context = self.caller_context_resolver(binding)
+        clean = check_caller_claims(context, request)
+        authorizer = self.caller_authorizer or getattr(self.handler, "authorize_caller", None)
+        if not callable(authorizer) or authorizer(context, clean) is False:
+            raise PermissionError("owner command authorization rejected this caller")
+
     def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None,
                   _turn_admitted: bool = False) -> Any:
         try:
             if self.bounded_transports and threading.get_ident() != self._owner_thread:
                 return self._owner_request(lambda: self._dispatch(request, ingress=ingress))
+            if self._dispatch_held:
+                command = request.get("command")
+                if command != "status":
+                    try:
+                        self._authorize_inert_request(request, ingress)
+                    except Exception as exc:
+                        return {"outcome": "error", "error": type(exc).__name__, "message": str(exc),
+                                "provider_called": False, "effects_started": False}
+                    return {"outcome": "held", "reason": "dispatch is held during inert startup",
+                            "dispatch": "held", "provider_called": False,
+                            "effects_started": False, "retry": False}
+                def inert_read():
+                    previous_inert = getattr(_INERT_STATUS_CONTEXT, "value", False)
+                    _INERT_STATUS_CONTEXT.value = True
+                    try:
+                        result = self._call_bound(request, ingress)
+                    finally:
+                        _INERT_STATUS_CONTEXT.value = previous_inert
+                    def include_startup(value):
+                        if isinstance(value, Mapping) and isinstance(value.get("caller_context"), Mapping):
+                            caller = value["caller_context"]
+                            report = None
+                            if callable(self.startup_report_reader):
+                                report = dict(self.startup_report_reader(caller))
+                            elif isinstance(self._startup_report, Mapping):
+                                report = {key: self._startup_report[key] for key in
+                                    ("source_commit", "manifest_sha256", "pid", "dispatch",
+                                     "admission_report", "phase_timings", "provider_called", "composition_source_next_append")
+                                    if key in self._startup_report}
+                            return {**value, "startup": report,
+                                    "dispatch": "held", "provider_called": False}
+                        return value
+                    return after_owner(result, include_startup)
+                return self._status_read(request, inert_read)
             # Admission happens before taking the shared Store command lock.
             # A queued manager must not block another project's owner pump.
             turn_admission = getattr(self, "turn_admission", None)
@@ -811,6 +900,8 @@ class ExecutionHost:
             try:
                 request = json.loads(path.read_text())
                 command = request.get("command")
+                if self._dispatch_held and command != "status":
+                    continue
                 if (command == "status") != status:
                     continue
                 # The pump also sees its own outer request. It already owns
@@ -940,7 +1031,8 @@ class ExecutionHost:
             if self.bounded_transports and not status:
                 with self._command_lock:
                     self._owned(self._pump_owner_calls)
-                    self._serve_files(False)
+                    if not self._dispatch_held:
+                        self._serve_files(False)
                     self._owned(self._pump_owner_calls)
                     self._owned(self._start_ready_executions)
             else:
@@ -949,12 +1041,13 @@ class ExecutionHost:
         if not status:
             if self.bounded_transports:
                 # Admission to this queue is closed before its final drain.
-                # Already admitted status/capture callbacks must all resolve.
+                # Authenticated reads already admitted must still resolve.
                 while not self._owner_calls.empty():
                     self._owned(self._pump_owner_calls)
-            # One bounded final snapshot drains queued finite owner commands.
-            # Provider-bearing requests remain durable for owner review/restart.
-            self._serve_files(False, allowed=_REENTRANT_COMMANDS)
+            # An inert owner preserves all queued business requests for a later
+            # explicit operator decision; shutdown never turns into a replay.
+            if not self._dispatch_held:
+                self._serve_files(False, allowed=_REENTRANT_COMMANDS)
 
     @staticmethod
     def owner_callback(callback: Callable[..., Any] | None) -> Callable[..., Any] | None:
@@ -1064,6 +1157,10 @@ class ExecutionHost:
         an arbitrary child thread. Restart consumes the same prepared occurrence
         through its canonical attempt fence rather than resending its provider.
         """
+        if self._dispatch_held and request.get("command") not in {"status", "whoami", "effective-context"}:
+            return {"outcome": "held", "reason": "dispatch is held during inert startup",
+                    "dispatch": "held", "provider_called": False, "effects_started": False,
+                    "retry": False}
         context = getattr(_DISPATCH_CONTEXT, "value", None)
         if context is None or context[0] is not self or context[1] != threading.get_ident():
             raise RuntimeError("worker submission requires its serialized command owner")
@@ -1257,6 +1354,8 @@ class ExecutionHost:
     def retain(self, *, name: str, operation: Callable[[], Any],
                _admitted_execution: Any = None) -> threading.Thread:
         """Admit a child before starting it; close retains its full lifetime."""
+        if self._dispatch_held:
+            raise ExecutionAdmissionHeld("dispatch is held during inert startup")
         def run() -> None:
             try:
                 operation()
@@ -1490,7 +1589,40 @@ class ExecutionHost:
             current = state()
             if current != "active":
                 return outcome(current)
-            decision = json_value(reconcile(exits[-1] if exits else None))
+            refusal_path = path.with_name(path.name + f".reconcile-refusal-{index}.json")
+            if refusal_path.exists():
+                # A prelaunch failure cannot become an unbounded launchd retry
+                # with no child exits charged. Retain its original policy/index.
+                import stat
+                try:
+                    fd = os.open(refusal_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "rb") as stream:
+                        info = os.fstat(stream.fileno()); raw = stream.read(32769)
+                    refusal = json.loads(raw)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or stat.S_IMODE(info.st_mode) != 0o600 or len(raw) > 32768
+                            or not isinstance(refusal, Mapping)
+                            or refusal.get("schema") != "otto.owner-reconciliation-refusal.v1"
+                            or refusal.get("policy_sha256") != policy_sha256
+                            or refusal.get("index") != index
+                            or refusal.get("source_identity") != identity):
+                        raise ValueError("retained reconciliation refusal differs")
+                except (OSError, ValueError, TypeError) as error:
+                    return outcome("unknown", retry=False, reason="unverified retained reconciliation refusal",
+                                   error={"code": type(error).__name__})
+                return outcome("held", retry=False, reconciliation=refusal)
+            try:
+                decision = json_value(reconcile(exits[-1] if exits else None))
+            except Exception as error:
+                refusal = {"schema": "otto.owner-reconciliation-refusal.v1",
+                    "policy_sha256": policy_sha256, "index": index, "source_identity": identity,
+                    "ready": False, "provider_replayed": False,
+                    "error": {"code": type(error).__name__, "message": str(error)[:4096]}}
+                raw = (json.dumps(refusal, sort_keys=True) + "\n").encode()
+                fd = os.open(refusal_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+                return outcome("held", retry=False, reconciliation=refusal)
             if not isinstance(decision, Mapping) or decision.get("ready") is not True:
                 return outcome("held", reconciliation=decision)
             current = state()

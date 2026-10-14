@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 def _digest(value: Mapping[str, Any]) -> str:
@@ -15,9 +15,12 @@ def _digest(value: Mapping[str, Any]) -> str:
                                     ensure_ascii=False).encode()).hexdigest()
 
 
-def _private_create(path: Path, value: Mapping[str, Any]) -> None:
+def _private_create(path: Path, value: Mapping[str, Any], *, before_write: Callable[[Path, bytes], None] | None = None,
+                    after_write: Callable[[Path], None] | None = None) -> None:
     """Publish an immutable prepared receipt, never a replaceable policy."""
     data = (json.dumps(value, sort_keys=True) + '\n').encode()
+    if before_write is not None:
+        before_write(Path(path), data)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     except FileExistsError:
@@ -26,11 +29,45 @@ def _private_create(path: Path, value: Mapping[str, Any]) -> None:
         return
     with os.fdopen(fd, 'wb') as stream:
         stream.write(data); stream.flush(); os.fsync(stream.fileno())
+    dfd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    if after_write is not None:
+        after_write(Path(path))
+
+
+def _pinned_maintenance_receipt(selection: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read one exact owner-retained authority/proof document, never Store."""
+    if (not isinstance(selection, Mapping) or set(selection) != {'path','sha256'}
+            or not isinstance(selection['path'], str) or not Path(selection['path']).is_absolute()
+            or not isinstance(selection['sha256'], str) or len(selection['sha256']) != 64):
+        raise PermissionError('exact absolute maintenance receipt path/hash required')
+    path = Path(selection['path'])
+    if path.is_symlink() or not path.is_file():
+        raise PermissionError('maintenance receipt must be an owner-retained regular file')
+    with path.open('rb') as stream:
+        raw = stream.read(262145)
+    if len(raw) > 262144 or hashlib.sha256(raw).hexdigest() != selection['sha256']:
+        raise PermissionError('maintenance receipt changed or exceeds bounded proof scope')
+    value = json.loads(raw)
+    if not isinstance(value, Mapping):
+        raise PermissionError('maintenance receipt must be a mapping')
+    return value
 
 
 def prepare_planned_maintenance(*, old_path: Path, expected_policy_sha256: str,
         expected_exits: Mapping[str, str], new_path: Path, source_identity: Mapping[str, Any],
-        request_key: str, custody: Mapping[str, Any]) -> Mapping[str, Any]:
+        request_key: str, custody: Mapping[str, Any],
+        owner_argv: list[str] | tuple[str, ...] | None = None,
+        explicit_stop_custody: Mapping[str, Any] | None = None,
+        startup_refusal_custody: Mapping[str, Any] | None = None,
+        task_enable_authorization: Mapping[str, Any] | None = None,
+        context_qualification: Mapping[str, Any] | None = None,
+        write: bool = True,
+        before_write: Callable[[Path, bytes], None] | None = None,
+        after_write: Callable[[Path], None] | None = None) -> Mapping[str, Any]:
     """One owner-authorized source cutover after an exact ordinary closure.
 
     No process or Store is opened here. The installer supplies fresh, verified
@@ -43,9 +80,59 @@ def prepare_planned_maintenance(*, old_path: Path, expected_policy_sha256: str,
     if (old_path == new_path or old_path.parent != new_path.parent or old_path.is_symlink()
             or new_path.is_symlink() or not request_key or len(request_key) > 200):
         raise PermissionError('exact same-home maintenance lineage/key required')
-    if (custody.get('ordinary_exit_status') != 0 or custody.get('store_closed') is not True
+    stop1 = (isinstance(explicit_stop_custody, Mapping)
+        and explicit_stop_custody.get('schema') == 'otto.explicit-stop-physical-custody.v1'
+        and explicit_stop_custody.get('actual_exit_returncode') == 1
+        and explicit_stop_custody.get('actual_exit_outcome') == 'stopped'
+        and explicit_stop_custody.get('explicit_marker_exception_after_close') is True
+        and explicit_stop_custody.get('closure_provenance') == 'host-and-store-released'
+        and explicit_stop_custody.get('ordinary_exit_status_not_rewritten') is True
+        and explicit_stop_custody.get('owner_alive') is False
+        and explicit_stop_custody.get('supervisor_alive') is False
+        and explicit_stop_custody.get('owner_lock_free') is True
+        and explicit_stop_custody.get('job_print_returncode') == 113
+        and explicit_stop_custody.get('store_opened') is False
+        and explicit_stop_custody.get('provider_called') is False
+        and isinstance(explicit_stop_custody.get('evidence_sha256'), str)
+        and len(explicit_stop_custody['evidence_sha256']) == 64
+        and isinstance(explicit_stop_custody.get('exit_receipt_sha256'), str)
+        and len(explicit_stop_custody['exit_receipt_sha256']) == 64
+        and isinstance(explicit_stop_custody.get('policy_exit_sha256'), str)
+        and len(explicit_stop_custody['policy_exit_sha256']) == 64)
+    if type(write) is not bool:
+        raise TypeError('maintenance publication selector must be boolean')
+    refused78 = (isinstance(startup_refusal_custody, Mapping)
+        and startup_refusal_custody.get('schema') == 'otto.pre-admission-refusal-custody.v1'
+        and startup_refusal_custody.get('actual_exit_returncode') == 78
+        and startup_refusal_custody.get('actual_exit_outcome') == 'held'
+        and startup_refusal_custody.get('native_admission_started') is False
+        and startup_refusal_custody.get('canonical_effects') == 'preserved-not-inferred'
+        and startup_refusal_custody.get('error') == {'code':'RoleContextError','message':'selected supervisor differs from current authenticated project supervision'}
+        and startup_refusal_custody.get('owner_alive') is False
+        and startup_refusal_custody.get('supervisor_alive') is False
+        and startup_refusal_custody.get('owner_lock_free') is True
+        and startup_refusal_custody.get('job_print_returncode') == 113
+        and startup_refusal_custody.get('stop_marker_present') is True
+        and all(isinstance(startup_refusal_custody.get(key),str) and len(startup_refusal_custody[key])==64
+                for key in ('refusal_sha256','exit_receipt_sha256','policy_exit_sha256','failed_policy_sha256')))
+    enable_authorization = _pinned_maintenance_receipt(task_enable_authorization) if task_enable_authorization is not None else None
+    enable_qualification = _pinned_maintenance_receipt(context_qualification) if context_qualification is not None else None
+    if (enable_authorization is None) != (enable_qualification is None):
+        raise PermissionError('task enablement requires both exact authorization and qualification receipts')
+    preserved_holds = sorted(custody.get('holds', [])) if isinstance(custody.get('holds'), list) else None
+    enable_custody = (enable_authorization is not None
+        and custody.get('ordinary_exit_status') == 0
+        and custody.get('physical_active_native') == 0
+        and preserved_holds is not None
+        and custody.get('native_active_or_uncertain') == len(preserved_holds)
+        and enable_qualification.get('preserved_capacity_hold_schedule_ids') == preserved_holds)
+    status_ok = (type(custody.get('ordinary_exit_status')) is int
+        and (custody.get('ordinary_exit_status') == 0 or
+             (custody.get('ordinary_exit_status') == 1 and stop1) or
+             (custody.get('ordinary_exit_status') == 78 and refused78)))
+    if (not status_ok or custody.get('store_closed') is not True
             or custody.get('owner_alive') is not False or custody.get('supervisor_alive') is not False
-            or custody.get('native_active_or_uncertain') != 0 or custody.get('holds') != []
+            or (not enable_custody and (custody.get('native_active_or_uncertain') != 0 or custody.get('holds') != []))
             or custody.get('in_flight') != []):
         raise PermissionError('planned maintenance requires verified closed, effect-free custody')
     raw = old_path.read_bytes()
@@ -56,6 +143,33 @@ def prepare_planned_maintenance(*, old_path: Path, expected_policy_sha256: str,
     policy = {k: old[k] for k in keys}
     if old.get('schema') != 'otto.owner-host-supervision.v2' or old.get('policy_sha256') != _digest(policy):
         raise PermissionError('prior supervision policy is not exact v2')
+    requested_argv = list(old['argv']) if owner_argv is None else list(owner_argv)
+    removing_hold = (owner_argv is not None and old['argv'].count('--hold-dispatch') == 1
+        and requested_argv == [arg for arg in old['argv'] if arg != '--hold-dispatch'])
+    if (not requested_argv or any(not isinstance(arg, str) or not arg for arg in requested_argv)
+            or (owner_argv is not None and requested_argv != list(old['argv']) + ['--hold-dispatch'] and not removing_hold)):
+        raise PermissionError('planned maintenance may only append or explicitly qualify removal of the exact --hold-dispatch owner flag')
+    if removing_hold:
+        if (not enable_custody or stop1 or refused78
+            or enable_authorization.get('schema') != 'otto.human-authorized-task-resume-delivery.v1'
+            or enable_authorization.get('business_task_execution_authorized_after_qualification') is not True
+            or any(enable_authorization.get(key) is not False for key in
+                ('reminders_recreation_authorized','budget_resets_authorized','UNKNOWN_replay_or_bypass_authorized'))
+            or enable_qualification.get('schema') != 'otto.nonheld-context-qualification.v1'
+            or enable_qualification.get('outcome') != 'qualified'
+            or enable_qualification.get('prior_policy_file_sha256') != expected_policy_sha256
+            or enable_qualification.get('source_identity_sha256') != _digest(source_identity)
+            or enable_qualification.get('authorization_receipt_sha256') != task_enable_authorization['sha256']
+            or enable_qualification.get('baseline_manifest_sha256') != old['source_identity'].get('manifest_sha256')
+            or enable_authorization.get('baseline_manifest') != enable_qualification.get('baseline_manifest_sha256')
+            or any(enable_qualification.get(key) is not False for key in
+                ('native_admission_started','provider_called','host_threads_started'))):
+            raise PermissionError('task enablement lacks exact human authority/current nonheld context qualification')
+    elif enable_authorization is not None:
+        raise PermissionError('task enablement receipts apply only to exact held-flag removal')
+    if refused78 and '--hold-dispatch' not in requested_argv:
+        raise PermissionError('pre-admission refusal repair must preserve held dispatch')
+    policy['argv'] = requested_argv
     paths = sorted(old_path.parent.glob(old_path.name + '.exit-*.json'))
     measured = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     if measured != dict(expected_exits) or not paths:
@@ -67,7 +181,19 @@ def prepare_planned_maintenance(*, old_path: Path, expected_policy_sha256: str,
            or type(e.get('exit_status')) is not int for i, e in enumerate(exits)):
         raise PermissionError('uncertain, foreign or noncontiguous prior exit tail')
     if exits[-1]['exit_status'] != 0:
-        raise PermissionError('maintenance cannot reinterpret a failed/UNKNOWN exit as an ordinary stop')
+        final_path = next((p for p in paths if json.loads(p.read_text()).get('index') == exits[-1]['index']), None)
+        final_is_qualified_stop = (stop1 and exits[-1]['exit_status'] == 1
+            and exits[-1].get('pid') == explicit_stop_custody.get('owner_pid')
+            and final_path is not None
+            and measured.get(final_path.name) == explicit_stop_custody.get('policy_exit_sha256')
+            and all(e.get('exit_status') == 0 for e in exits[:-1]))
+        final_is_qualified_refusal = (refused78 and len(exits)==1 and exits[-1]['index']==0
+            and exits[-1]['exit_status']==78 and exits[-1].get('pid')==startup_refusal_custody.get('owner_pid')
+            and exits[-1].get('source_identity')==startup_refusal_custody.get('failed_source_identity')
+            and old['policy_sha256']==startup_refusal_custody.get('failed_policy_sha256')
+            and final_path is not None and measured.get(final_path.name)==startup_refusal_custody.get('policy_exit_sha256'))
+        if not final_is_qualified_stop and not final_is_qualified_refusal:
+            raise PermissionError('maintenance cannot reinterpret a failed/UNKNOWN exit as an ordinary stop')
     consumed = max(0, len(exits) - 1)
     if consumed > old['max_restarts']:
         raise PermissionError('prior automatic restart allowance exhausted')
@@ -79,17 +205,28 @@ def prepare_planned_maintenance(*, old_path: Path, expected_policy_sha256: str,
         'prior_policy': str(old_path), 'prior_policy_sha256': expected_policy_sha256,
         'prior_exits': measured, 'successor_policy': str(new_path),
         'successor_policy_sha256': _digest(successor), 'source_identity': dict(source_identity),
+        'owner_argv_change': {'before': list(old['argv']), 'after': requested_argv,
+            'hold_dispatch_added': requested_argv == list(old['argv']) + ['--hold-dispatch'],
+            **({'hold_dispatch_removed':True} if removing_hold else {})},
         'automatic_restart_budget': {'original_max': old.get('planned_maintenance', {}).get(
             'automatic_restart_budget', {}).get('original_max', old['max_restarts']),
             'previously_consumed': old.get('planned_maintenance', {}).get(
                 'automatic_restart_budget', {}).get('previously_consumed', 0) + consumed,
             'remaining': successor['max_restarts']}, 'custody': dict(custody),
+        'explicit_stop_custody': dict(explicit_stop_custody) if stop1 else None,
+        **({'startup_refusal_custody':dict(startup_refusal_custody)} if refused78 else {}),
+        **({'task_enable_authorization':dict(task_enable_authorization),'context_qualification':dict(context_qualification)} if removing_hold else {}),
         'provider_called': False, 'store_opened': False}
-    # One successor per prior ledger; replay of the exact preparation is safe
-    # even if the process stopped between publishing this record and its seed.
-    _private_create(old_path.with_name(old_path.name + '.maintenance.json'), transition)
-    _private_create(new_path, {'schema': 'otto.owner-host-supervision.v2', **successor,
-        'policy_sha256': _digest(successor), 'planned_maintenance': transition})
+    successor_document = {'schema':'otto.owner-host-supervision.v2',**successor,
+        'policy_sha256':_digest(successor),'planned_maintenance':transition}
+    if not write:
+        # Read-only exact derivation for a deleted-but-authenticated historical
+        # policy. This is not a statement about current physical custody.
+        return {'transition':transition,'policy':successor_document}
+    _private_create(old_path.with_name(old_path.name + '.maintenance.json'), transition,
+                    before_write=before_write, after_write=after_write)
+    _private_create(new_path, successor_document,
+                    before_write=before_write, after_write=after_write)
     return transition
 
 
@@ -155,7 +292,7 @@ def launchd_definition(config: Mapping[str, Any], *, label: str) -> bytes:
     # ledger owns the finite child restarts; explicit pause, stop and exhausted
     # policies exit successfully and cannot reset that count.
     return plistlib.dumps({'Label': label, 'ProgramArguments': argv,
-        'WorkingDirectory': selected['cwd'], 'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False},
+        'WorkingDirectory': selected['cwd'], 'ProcessType': 'Interactive', 'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False},
         'StandardOutPath': selected['stdout'], 'StandardErrorPath': selected['stderr'],
         'EnvironmentVariables': {'PYTHONDONTWRITEBYTECODE': '1'}}, sort_keys=True)
 

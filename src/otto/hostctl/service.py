@@ -54,6 +54,39 @@ def stop_marker(home: Path) -> Path:
     return Path(home) / "run" / "service-stop"
 
 
+def _requested_closure(home: Path) -> Optional[dict[str, str]]:
+    """Read the operator's optional explanation for closing the service."""
+    try:
+        value = lanes.read_private_json(stop_marker(home))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    closure = {key: value[key] for key in ("reason", "expected_return")
+               if isinstance(value.get(key), str) and value[key].strip()}
+    return closure or None
+
+
+def with_lane_advice(status: Mapping[str, Any], *, lane: str, owner_actor: Optional[str] = None,
+                     service_home: Optional[Path] = None) -> dict[str, Any]:
+    """Add safe next-step advice for the owner or an admitted client lane."""
+    result = dict(status)
+    actor = owner_actor or (status.get("holder") or {}).get("owner_actor") or "owner"
+    outcome = status.get("outcome")
+    if lane == "client":
+        result["owner_actor"] = actor
+        if outcome in {"closed", "draining", "stale", "not_running", "unavailable"}:
+            result["next_action"] = ("the owner service is owned by " + actor + "; wait and check `ottoctl service status`; "
+                                     "do not start or restart the service from this client lane")
+    elif lane == "owner":
+        if outcome == "draining":
+            result["next_action"] = "wait for the owner service to finish draining; check `ottoctl service status`"
+        elif outcome in {"closed", "stale", "not_running"}:
+            home = str(service_home or "<service home>")
+            result["next_action"] = "the owner starts the one service: `ottoctl --home " + home + " service run`"
+    return result
+
+
 def status_path(home: Path) -> Path:
     return Path(home) / "run" / "service.json"
 
@@ -214,29 +247,46 @@ class OwnerService:
         return {kind: Path(entry["lane"]) for kind, entry in (self.config.get("hosts") or {}).items()
                 if entry.get("lane")}
 
-    def _poll(self, lane: Path, who: str, handler: Callable[..., Any]) -> None:
+    def _poll(self, lane: Path, who: str, handler: Callable[..., Any], *,
+              allowed_commands: Optional[set[str]] = None) -> None:
         for token, path in list(lanes.requests(lane)):
             if token in self.in_flight or token in self.relays:
                 continue
+            request = None
+            if allowed_commands is not None:
+                try:
+                    request = lanes.read_private_json(path)
+                except (OSError, ValueError):
+                    # In a read-only poll, even malformed retained work stays
+                    # untouched for its ordinary owner-side recovery path.
+                    continue
+                if not isinstance(request, Mapping) or request.get("command") not in allowed_commands:
+                    continue
             pending = None
             try:
                 pending = lanes.read_private_json(lane / ("pending-" + token + ".json"))
             except (OSError, ValueError):
                 pending = None
             if pending and pending.get("manager_token") and pending.get("ipc"):
+                if allowed_commands is not None:
+                    continue
                 # Retained relay from a previous service run: resume, never resend.
                 self.relays[token] = {"lane": lane, "ipc": Path(pending["ipc"]),
                                       "manager_token": pending["manager_token"], "who": who,
                                       "command": pending.get("command")}
                 continue
-            try:
-                request = lanes.read_private_json(path)
-            except ValueError:
-                # A writer that does not link its request into place may still
-                # be writing: retry on the next poll, answer only if it stays bad.
-                if time.time() - path.stat().st_mtime < 10:
-                    continue
-                request = None
+            if allowed_commands is None:
+                try:
+                    request = lanes.read_private_json(path)
+                except ValueError:
+                    # A writer that does not link its request into place may still
+                    # be writing: retry on the next poll, answer only if it stays bad.
+                    if time.time() - path.stat().st_mtime < 10:
+                        continue
+                    request = None
+            # A held owner may answer a narrow read lane while retaining every
+            # other request byte-for-byte. Filter before claiming it, creating
+            # a pending receipt, or invoking any handler.
             self.in_flight[token] = {"lane": who, "since": _now()}
             prior_project = getattr(self._dispatch_context, "project_id", None)
             args = (request or {}).get("args") or {}
@@ -354,6 +404,7 @@ class OwnerService:
         lanes.private_dir(client_home)
         lanes.private_dir(Path(entry["lane"]))
         host_config.write_client(client_home, kind, {"principal": entry["principal"], "lane": entry["lane"],
+                                                     "owner_actor": self.config["owner"]["actor"],
                                                      "status": str(Path(entry["lane"]) / lanes.STATUS_FILE)})
         self._publish()
         return {"outcome": outcome, "host": entry, "client_home": str(client_home), "provider_called": False,
@@ -586,7 +637,7 @@ class OwnerService:
         return rows
 
     # -- status -------------------------------------------------------------------------
-    def _status(self, state: str = "serving") -> dict[str, Any]:
+    def _status(self, state: str = "serving", closure: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
         projects = self._attached_projects()
         with self.lock:
             journeys = dict(self.journeys)
@@ -596,7 +647,7 @@ class OwnerService:
             manager_turns = {"active": len(self._turn_active), "active_projects": sorted(self._turn_active),
                 "queued": sum(self._turn_queued.values()), "queued_by_project": dict(self._turn_queued),
                 "limit": self.max_active_manager_turns}
-        return {"schema": STATUS_SCHEMA, "state": state, "outcome": "serving" if state == "serving" else state,
+        value = {"schema": STATUS_SCHEMA, "state": state, "outcome": "serving" if state == "serving" else state,
                 "holder": {"pid": os.getpid(), "owner_actor": self.config["owner"]["actor"],
                            "started_at": self.started_at},
                 "generation": self.generation, "heartbeat_at": _now(), "heartbeat_seconds": self.heartbeat_seconds,
@@ -610,9 +661,12 @@ class OwnerService:
                                          for t, v in list(self.relays.items())],
                               "manager_lane_queued": lane_queued},
                 "last_completed": self.last_completed, "requests_served": self.served, "provider_called": False}
+        if closure:
+            value["closure"] = dict(closure)
+        return value
 
     def _publish(self, state: str = "serving") -> None:
-        value = self._status(state)
+        value = self._status(state, closure=_requested_closure(self.home))
         lanes.atomic_json(status_path(self.home), value)
         for lane in self._host_lanes().values():
             if lane.is_dir():

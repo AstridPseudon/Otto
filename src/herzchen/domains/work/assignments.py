@@ -33,6 +33,18 @@ REPORT_KIND = "wrk.report"
 DISPATCH_KIND = "wrk.dispatch"
 
 
+def observation_reference(authority: str, assignment_id: str, kind: str, logical_request_key: str) -> ResourceRef:
+    """The append producer's stable locator; this function grants no read."""
+    if kind not in {"result", "report"}:
+        raise WorkValidationError("observation kind must be result or report")
+    authority = _opaque(authority, "authority")
+    assignment_id = _opaque(assignment_id, "assignment_id")
+    logical_request_key = _opaque(logical_request_key, "logical_request_key")
+    identity_kind = RESULT_KIND if kind == "result" else REPORT_KIND
+    ident = identity_kind.split(".")[-1] + "-" + hashlib.sha256((assignment_id + ":" + logical_request_key).encode()).hexdigest()[:28]
+    return ResourceRef(authority, identity_kind, ident)
+
+
 def contribution() -> DomainContribution:
     ports = (
         ("work.assignment.create", ASSIGNMENT_KIND, "work.assignment.created"),
@@ -792,8 +804,15 @@ class _ResponsibilityAssignmentsEngine:
             self.__writer.mutate(envelope, event_type="work.assignment.dispatched", result_ref=ResourceRef(ref.authority, ref.kind, ref.id, "rev-1"), after_refs=pins + (assignment.ref,), effects={"assignment": assignment.ref, "generation": assignment.generation, "pinned_inputs": pins, "action": action_value}, stream="dispatch:" + assignment.id, transaction=tx)
         return DispatchRecord(ref, assignment.ref, assignment.generation, pins, "dispatched", action_value)
 
-    def list_observations(self, target: Any, *, kind: Optional[str] = None) -> Tuple[ObservationRecord, ...]:
+    def list_observations(self, target: Any, *, kind: Optional[str] = None,
+                          logical_request_keys: Optional[Sequence[str]] = None) -> Tuple[ObservationRecord, ...]:
         assignment = self.get(target)
+        if logical_request_keys is not None:
+            if (not isinstance(logical_request_keys, (tuple, list))
+                    or not 1 <= len(logical_request_keys) <= 64
+                    or len(set(logical_request_keys)) != len(logical_request_keys)):
+                raise WorkValidationError("observation selection requires one to 64 distinct exact logical keys")
+            logical_request_keys = tuple(_opaque(key, "logical_request_key") for key in logical_request_keys)
         # Append operations already retain exact assignment streams. Read only
         # their subject locators, never all projects' potentially large values.
         # Existing UNIQUE(store_authority, stream, sequence) bounds this lookup;
@@ -803,10 +822,17 @@ class _ResponsibilityAssignmentsEngine:
         for observation_kind in kinds:
             if observation_kind not in {"result", "report"}:
                 continue
+            selected = ""
+            args = [self.__writer.authority, observation_kind + ":" + assignment.id]
+            if logical_request_keys is not None:
+                locators = [observation_reference(self.__writer.authority, assignment.id, observation_kind, key).id
+                            for key in logical_request_keys]
+                selected = " AND subject_id IN (" + ",".join("?" for _ in locators) + ")"
+                args.extend(locators)
             rows.extend(self.__writer.connection.execute(
                 "SELECT subject_authority, subject_kind, subject_id, subject_revision "
-                "FROM events WHERE store_authority = ? AND stream = ? ORDER BY sequence",
-                (self.__writer.authority, observation_kind + ":" + assignment.id)).fetchall())
+                "FROM events WHERE store_authority = ? AND stream = ?" + selected + " ORDER BY sequence",
+                tuple(args)).fetchall())
         result = []
         seen = set()
         for row in sorted(rows, key=lambda value: value["subject_id"]):
@@ -826,9 +852,7 @@ class _ResponsibilityAssignmentsEngine:
         assignment = self.get(target)
         self._fence(assignment, expected_generation)
         key = self._request_key(logical_request_key)
-        identity_kind = RESULT_KIND if kind == "result" else REPORT_KIND
-        ident = identity_kind.split(".")[-1] + "-" + hashlib.sha256((assignment.id + ":" + key).encode()).hexdigest()[:28]
-        ref = ResourceRef(self.__writer.authority, identity_kind, ident)
+        ref = observation_reference(self.__writer.authority, assignment.id, kind, key)
         payload = {"record_type": "work.observation", "observation_kind": kind, "assignment": assignment.ref, "generation": assignment.generation, "value": value}
         with self.__writer.transaction() as tx:
             envelope = self._envelope("work." + kind + ".append", ref, payload, key, actor, expected_version=0)

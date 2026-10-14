@@ -43,7 +43,7 @@ class RetainedNativeBodies:
             "origin": {"project_ref": project_ref, **({"task_ref": task_ref} if task_ref else {}),
                 **({"attempt_ref": attempt_ref} if attempt_ref else {})}}
 
-    def resolve(self, carrier: Mapping[str, Any], *, expected_origin: Any = None) -> Any:
+    def _carrier_metadata(self, carrier: Mapping[str, Any], *, expected_origin: Any = None) -> Any:
         if carrier.get("schema") != SCHEMA or type(carrier.get("utf8_bytes")) is not int or not 0 <= carrier["utf8_bytes"] <= MAX_BODY_BYTES:
             raise ValueError("invalid retained native body carrier")
         ref = carrier.get("ref") or {}
@@ -56,6 +56,10 @@ class RetainedNativeBodies:
         manifest = status.get("manifest") or {}
         if manifest.get("origin") != origin or manifest.get("provenance", {}).get("producer") != SCHEMA:
             raise ValueError("native carrier does not match owner-issued retained evidence")
+        return ref, status
+
+    def resolve(self, carrier: Mapping[str, Any], *, expected_origin: Any = None) -> Any:
+        ref, _status = self._carrier_metadata(carrier, expected_origin=expected_origin)
         chunks = []
         offset = 0
         while offset < carrier["utf8_bytes"]:
@@ -135,3 +139,30 @@ class RetainedNativeBodies:
                 return [walk(item, depth + 1) for item in value]
             return value
         return walk(record)
+
+    def validate_due_metadata(self, record: Mapping[str, Any]) -> None:
+        """Authenticate immutable carrier metadata without reading its bytes.
+
+        This is not body verification. Normal resolve/unpack still validates
+        the actual bytes before any caller consumes a native body.
+        """
+        origin = self._origin(record)
+        def walk(value: Any, depth: int = 0) -> None:
+            if depth > 64:
+                raise ValueError("retained native envelope nesting exceeds bounds")
+            if isinstance(value, Mapping):
+                if value.get("schema") == SCHEMA:
+                    if value.get("inline_replacement") is True:
+                        _ref, status = self._carrier_metadata(value, expected_origin=origin)
+                        manifest = status.get("manifest") or {}
+                        if (manifest.get("byte_digest") != value.get("sha256")
+                                or manifest.get("byte_length") != value.get("utf8_bytes")
+                                or status.get("availability") in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}):
+                            raise ValueError("retained native carrier metadata is unavailable or differs")
+                    return
+                for item in value.values():
+                    walk(item, depth + 1)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item, depth + 1)
+        walk(record)
