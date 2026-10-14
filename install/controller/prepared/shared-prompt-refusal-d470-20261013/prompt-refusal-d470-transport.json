@@ -1,0 +1,66 @@
+{
+  "assignment_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "id": "assignment-75f5d309013dbde5281773606431",
+    "kind": "wrk.assignment",
+    "revision": "rev-31"
+  },
+  "context_digest_verified": false,
+  "fingerprint": "d4312777729809456d8498a800532e2b44a89b3fbf92d1b92713671775bb6f9d",
+  "generation": 1,
+  "initialization_envelope": null,
+  "initialization_receipt": null,
+  "original_artifact_sha256": "3a45fd75d7360e8a4bc9457c3320aa640b84499f2270d7c3b8899f757aaae264",
+  "owner_delivery_authorization": {
+    "assignment_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "assignment-75f5d309013dbde5281773606431",
+      "kind": "wrk.assignment",
+      "revision": "rev-31"
+    },
+    "brief_sha256": "8ba521730720f19b1343088860c261c36a9b65376c97cf3205cea9992f1f5eaa",
+    "generation": 1,
+    "lifecycle_owner": "otto-operating-setup-owner",
+    "logical_request_key": "manager-directive-43c88c1bbb8d48b76dc70da76325",
+    "owner_version": 5,
+    "physical_session_id": "01a12866-8bf8-7c70-a35e-e8b8257d51c2",
+    "principal": "otto-astrid-port-manager-1",
+    "project_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "project-b813b18d65ad1cdb6e694c80fd5e",
+      "kind": "work.project",
+      "revision": "rev-7"
+    },
+    "role": "manager",
+    "status": "authorized",
+    "task_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "task-2185e570fdfb9844f210688556a0",
+      "kind": "work.task",
+      "revision": "rev-1"
+    }
+  },
+  "request_id": "d47041da0f07b41e646410c692d0aa55",
+  "schedule_id": "manager-directive-43c88c1bbb8d48b76dc70da76325",
+  "schema": "otto.original-prompt-refusal-transport-extraction.v1",
+  "stderr": "prompt_size_limit_exceeded: characters=1008901, utf8_bytes=1010001, limit=1000000; no process started",
+  "transport_error": {
+    "code": "authorized_result_unverified",
+    "message": "initialization succeeded, but host resume returned failed without a verified resumed turn; task delivery remains unverified"
+  },
+  "usage_capture": {
+    "initializer": null,
+    "schema": "otto.usage-capture.phases.v1",
+    "work": null
+  },
+  "work_envelope": {
+    "delivery_state": "not_started",
+    "exit_status": null,
+    "input_packet_digest": "1ad7af263fd35651ccaa00db9577d72bcbc1c9165a928b9cc8797105087d6c82",
+    "process_id": null,
+    "reconciliation": "prompt_size_limit_exceeded: characters=1008901, utf8_bytes=1010001, limit=1000000; no process started",
+    "status": "failed",
+    "stdout": "",
+    "unsupported_error": "prompt_size_limit_exceeded"
+  }
+}

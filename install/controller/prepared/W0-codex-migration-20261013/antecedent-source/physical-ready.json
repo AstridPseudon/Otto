@@ -1,0 +1,143 @@
+{
+  "schema": "otto.W0.physical-fresh-READY.v1",
+  "observed_at": "2026-10-12T23:37:37.646696+00:00",
+  "service": {
+    "attached_project": null,
+    "attached_projects": [
+      {
+        "manager": "otto-onboarding-manager-1",
+        "project_id": "project-de46d9be34be4cd8805397a2e542",
+        "run_id": "otto-project-onboarding-20261010"
+      },
+      {
+        "manager": "otto-vision-manager-1",
+        "project_id": "project-c663a8f77dbc9a9b891f748be3a5",
+        "run_id": "otto-vision-20261011"
+      },
+      {
+        "manager": "otto-astrid-port-manager-1",
+        "project_id": "project-b813b18d65ad1cdb6e694c80fd5e",
+        "run_id": "otto-astrid-union-port-20261011"
+      },
+      {
+        "manager": "otto-retention-manager-1",
+        "project_id": "project-2f609a3df3034860aef6e03424b2",
+        "run_id": "otto-retention-cleanup-20261011"
+      },
+      {
+        "manager": "otto-claude-validation-manager-1",
+        "project_id": "project-65e3f08dd7a49f8ceca748ee6857",
+        "run_id": "otto-claude-code-validation-20261011"
+      },
+      {
+        "manager": "otto-work-model-W0-host-ergonomics-manager",
+        "project_id": "project-68aca4e5bce229bddab0b89a6b52",
+        "run_id": "run"
+      }
+    ],
+    "execution_changing_boundary": {
+      "capacity_hold_schedule_ids": [],
+      "eligible": false,
+      "provider_called": false,
+      "queued_schedule_ids": [],
+      "running_schedule_ids": [
+        "manager-help-callback-f33ecfe770bb13db179671cfd2d4"
+      ],
+      "schema": "otto.execution-changing-boundary.v1"
+    },
+    "generation": 153,
+    "heartbeat_at": "2026-10-12T23:37:36.951752+00:00",
+    "heartbeat_seconds": 1.0,
+    "holder": {
+      "owner_actor": "otto-operating-setup-owner",
+      "pid": 28545,
+      "started_at": "2026-10-12T23:30:19.471570+00:00"
+    },
+    "hosts": [
+      "claude-code",
+      "codex"
+    ],
+    "in_flight": {
+      "lane_requests": [],
+      "manager_lane_queued": {},
+      "relays": []
+    },
+    "last_completed": null,
+    "manager_turn_active": true,
+    "manager_turns": {
+      "active": 1,
+      "active_projects": [
+        "project-b813b18d65ad1cdb6e694c80fd5e"
+      ],
+      "limit": 3
+    },
+    "native_capacity": {
+      "active_or_uncertain": 1,
+      "holds": [],
+      "manager_limit": 3,
+      "total_limit": 3,
+      "worker_limit": 2
+    },
+    "notification_mode": "receipt-inspection",
+    "outcome": "serving",
+    "projection_at": "2026-10-12T23:37:36.951994+00:00",
+    "projects": [
+      {
+        "manager": "otto-onboarding-manager-1",
+        "project_id": "project-de46d9be34be4cd8805397a2e542",
+        "run_id": "otto-project-onboarding-20261010"
+      },
+      {
+        "manager": "otto-vision-manager-1",
+        "project_id": "project-c663a8f77dbc9a9b891f748be3a5",
+        "run_id": "otto-vision-20261011"
+      },
+      {
+        "manager": "otto-astrid-port-manager-1",
+        "project_id": "project-b813b18d65ad1cdb6e694c80fd5e",
+        "run_id": "otto-astrid-union-port-20261011"
+      },
+      {
+        "manager": "otto-retention-manager-1",
+        "project_id": "project-2f609a3df3034860aef6e03424b2",
+        "run_id": "otto-retention-cleanup-20261011"
+      },
+      {
+        "manager": "otto-claude-validation-manager-1",
+        "project_id": "project-65e3f08dd7a49f8ceca748ee6857",
+        "run_id": "otto-claude-code-validation-20261011"
+      },
+      {
+        "manager": "otto-work-model-W0-host-ergonomics-manager",
+        "project_id": "project-68aca4e5bce229bddab0b89a6b52",
+        "run_id": "run"
+      }
+    ],
+    "provider_called": false,
+    "requests_served": 0,
+    "schema": "otto.owner-service-status.v1",
+    "shared_project_owner": true,
+    "state": "serving",
+    "store": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "domain_descriptor_digest": "e86780ac1ac175bcc0b255dc4988e55f880e267ce30a83f811c5a7432eaebb5a"
+    },
+    "store_open_count": 1
+  },
+  "owner_launch_selected": {
+    "pid": 28545,
+    "monitor_pid": 26570,
+    "manifest_sha256": "27827e024af455106064812ebc6b50b3ca0e5c47adfb228742b3610510341aa6",
+    "source_commit": "f67745a857d00ed27bef285596cc80842c7c209b",
+    "exit_receipt": "/Users/hannahomalley/.codex/owner-services/otto-onboarding-20261010/shared-owner-exit-W0-existing-view-f677-current-maintenance-v7.json",
+    "supervision_path": "/Users/hannahomalley/.codex/owner-services/otto-onboarding-20261010/shared-owner-supervision-W0-existing-view-f677-current-maintenance-v7.json"
+  },
+  "runtime_files_all_match": true,
+  "runtime_file_count": 280,
+  "entrypoints_all_match": true,
+  "entrypoint_count": 13,
+  "W0_original_schedule": "role-2129ac8a3003148081cb18db51fe",
+  "single_bootstrap": true,
+  "manager_start_by_root": false,
+  "provider_replayed": false
+}

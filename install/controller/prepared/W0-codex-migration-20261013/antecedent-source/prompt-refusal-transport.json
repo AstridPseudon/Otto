@@ -1,0 +1,87 @@
+{
+  "schema": "otto.bounded-original-prompt-refusal-inspection.v1",
+  "at": "2026-10-13T00:27:12.202568+00:00",
+  "retained_detail_path": "/Users/hannahomalley/.codex/owner-services/otto-onboarding-20261010/clients/assignment-a0f7fc93473452b1f7505a66d5f8/retained/manager-start-e3d6f4bc9a339dec1e70b41fa9f29064.detail.json",
+  "retained_detail_sha256": "55217d99e43ce08e2bfbd0f7a691f3e9a57d5b0299101e577ca7a6a326f67a0a",
+  "request_id": "e3d6f4bc9a339dec1e70b41fa9f29064",
+  "schedule_id": "manager-directive-9765b8478ad0f1cb773de3247e25",
+  "due_version": 7,
+  "assignment_ref": {
+    "authority": "otto-project-operating-setup-20261005-owner-v1",
+    "id": "assignment-75f5d309013dbde5281773606431",
+    "kind": "wrk.assignment",
+    "revision": "rev-27"
+  },
+  "generation": 1,
+  "original_outcome": "unknown",
+  "request_fingerprint": "7ef20e868704d51b2e90fa79f23bc75f080bbcf41835278497ceaaa64420961d",
+  "logical_request_key": "manager-directive-9765b8478ad0f1cb773de3247e25",
+  "physical_session_id": "01a12866-8bf8-7c70-a35e-e8b8257d51c2",
+  "native_session_id": "01a12866-8bf8-7c70-a35e-e8b8257d51c2",
+  "observed_turn_id": null,
+  "context_digest_verified": false,
+  "transport_error": {
+    "code": "authorized_result_unverified",
+    "message": "initialization succeeded, but host resume returned failed without a verified resumed turn; task delivery remains unverified"
+  },
+  "work_envelope": {
+    "status": "failed",
+    "process_id": null,
+    "exit_status": null,
+    "transport_operation": "resume",
+    "delivery_state": "not_started",
+    "started_at": "2026-10-13T00:22:20.397582+00:00",
+    "ended_at": "2026-10-13T00:22:48.572968+00:00",
+    "input_packet_digest": "1ad7af263fd35651ccaa00db9577d72bcbc1c9165a928b9cc8797105087d6c82",
+    "physical_session_id": "01a12866-8bf8-7c70-a35e-e8b8257d51c2",
+    "unsupported_error": "prompt_size_limit_exceeded",
+    "reconciliation": "prompt_size_limit_exceeded: characters=1008512, utf8_bytes=1009680, limit=1000000; no process started",
+    "runner": "codex-cli",
+    "launcher": "/Users/hannahomalley/.codex/packages/app-server-daemon/releases/0.161.0-aarch64-apple-darwin/bin/codex",
+    "source": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-astrid-union-port-20261011",
+    "requested_model": "gpt-6-luna",
+    "requested_reasoning": "xhigh",
+    "requested_profile": "workspace-write"
+  },
+  "stdout_utf8_bytes": 0,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr": "prompt_size_limit_exceeded: characters=1008512, utf8_bytes=1009680, limit=1000000; no process started",
+  "owner_delivery_authorization": {
+    "assignment_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "assignment-75f5d309013dbde5281773606431",
+      "kind": "wrk.assignment",
+      "revision": "rev-27"
+    },
+    "brief_sha256": "0c4a06e3fbf62ae0bb75ab1da9870c33b1a7a888cf42de8c407f13646ca8d26c",
+    "generation": 1,
+    "lifecycle_owner": "otto-operating-setup-owner",
+    "logical_request_key": "manager-directive-9765b8478ad0f1cb773de3247e25",
+    "owner_version": 5,
+    "physical_session_id": "01a12866-8bf8-7c70-a35e-e8b8257d51c2",
+    "principal": "otto-astrid-port-manager-1",
+    "project_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "project-b813b18d65ad1cdb6e694c80fd5e",
+      "kind": "work.project",
+      "revision": "rev-7"
+    },
+    "role": "manager",
+    "status": "authorized",
+    "task_ref": {
+      "authority": "otto-project-operating-setup-20261005-owner-v1",
+      "id": "task-2185e570fdfb9844f210688556a0",
+      "kind": "work.task",
+      "revision": "rev-1"
+    }
+  },
+  "owner_delivery_authorization_sha256": "7688b7591c5d38c885cc908049b93f480f97c128795637e1e2f7c508822dc010",
+  "source_guard": {
+    "path": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-project-onboarding-20261010/controller/runtime-source/herzchen/adapters/host.py",
+    "sha256": "5b64eed50c0004bfb2061bc8b98c2966d0505334b2217129ce7247b4ed4edf69",
+    "rule": "complete prompt character/UTF8 bound checked before trace-reader subprocesses/source checks/provider launch; HostOutcome FAILED, delivery not_started"
+  },
+  "interpretation": "source-backed pre-spawn refusal, original UNKNOWN retained; no retry or new native invocation; no product context inspected",
+  "provider_called_by_inspection": false,
+  "store_opened_by_inspection": false
+}
