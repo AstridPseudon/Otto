@@ -305,6 +305,12 @@ class OwnerService:
             except Exception as exc:  # report, never crash the owner
                 result = {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
                           "provider_called": False}
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:  # a request's SystemExit (e.g. argparse) must not close the shared owner
+                result = {"outcome": "error", "error": {"code": type(exc).__name__,
+                          "message": "the request exited (%s); usage is answered client-side" % (exc,)},
+                          "provider_called": False}
             finally:
                 self._dispatch_context.project_id = prior_project
                 entry = self.in_flight.pop(token, {})

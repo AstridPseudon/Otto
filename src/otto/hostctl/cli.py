@@ -6,6 +6,9 @@ host's lane (its client home, ``OTTO_HOME``, default ~/.otto) and prints the
 service's JSON response. A client never opens the Store and never reads
 another host's folders; "is the owner busy?" is ``ottoctl service status``.
 
+Local, no service: ``heavy [--purpose T] [--max-minutes N] [--no-wait] -- CMD`` runs CMD under
+the machine's one heavy-job lease (renders, journeys, full test suites); ``heavy status``.
+
 Operator commands (run against the service home): ``install`` (attach or
 create the Store, before the service runs), ``service run``, ``service
 admit-host`` (admits a host as its own principal) and ``service stop``.
@@ -308,9 +311,13 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
     entry = host_config.host(config, getattr(args, "host", None)) if config.get("hosts") else None
     project_ids = tuple(_flag_values(args.portfolio_args, "--project-ref"))
     with HostSession(config, host=entry, project_ids=project_ids) as session:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio)
+        except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
+            return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code,
+                    "message": (out.getvalue() + err.getvalue()).strip()}, "provider_called": False}
         text = out.getvalue()
     try:
         value = json.loads(text)
@@ -954,6 +961,10 @@ def _split_passthrough(argv: list) -> tuple:
 
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["heavy"]:
+        # The machine's one heavy-job lease: it runs a command and returns its exit code (not a JSON request).
+        from .heavy import main as heavy_main
+        return heavy_main(argv[1:])
     head, rest = _split_passthrough(argv)
     args = build_parser().parse_args(head)
     if rest is not None:
