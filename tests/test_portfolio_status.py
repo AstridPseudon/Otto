@@ -53,6 +53,18 @@ class PortfolioStatusTests(unittest.TestCase):
         return self.owner.assignments.assign(self.projects[1].ref, role="manager", principal="manager",
                                               logical_request_key="manager")
 
+    def foreign_project(self):
+        """Re-point one attached project at a manager the host orchestrator does not hold."""
+        assignment = self.owner.assignments.assign(self.projects[2].ref, role="manager", principal="other-manager",
+                                                   logical_request_key="foreign-manager")
+        current = self.owner.graph.get(self.projects[2].ref)
+        next_ref = ResourceRef(current.ref.authority, current.ref.kind, current.ref.id,
+                               "rev-" + str(current.version + 1))
+        metadata = dict(current.payload.get("metadata", {}))
+        metadata["otto_orchestrator"] = dict(metadata["otto_orchestrator"], assignment_ref=assignment.ref.to_dict())
+        self.store.revise_identity(current.ref, dict(current.payload, metadata=metadata), revision=next_ref.revision,
+            expected_revision=current.ref.revision, expected_version=current.version)
+
     def due(self, **kwargs):
         record = DueRecord(schedule_id="manager-due", recipient="manager", instruction="coordinate",
             profile="manager", anchor="2026-10-11T10:00:00+00:00", last_covered_slot=0,
@@ -141,9 +153,29 @@ class PortfolioStatusTests(unittest.TestCase):
 
     def test_owner_status_does_not_borrow_host_principal(self):
         self.session.host["principal"] = "stale-host-principal"
-        with self.assertRaises(PermissionError):
-            self.status()
-        self.assertEqual(self.status(owner_authorized=True)["totals"]["projects"], 3)
+        self.assertFalse(any(row["supervised"] for row in self.status()["projects"]))
+        owned = self.status(owner_authorized=True)
+        self.assertEqual(owned["totals"]["projects"], 3)
+        self.assertTrue(all(row["supervised"] for row in owned["projects"]))
+
+    def test_status_lists_foreign_project_without_error(self):
+        self.foreign_project()
+        rows = {row["project_ref"]["id"]: row for row in self.status()["projects"]}
+        self.assertEqual(set(rows), {project.id for project in self.projects})
+        self.assertTrue(rows[self.projects[0].id]["supervised"])
+        self.assertFalse(rows[self.projects[2].id]["supervised"])
+
+    def test_status_never_writes(self):
+        self.foreign_project()
+        gate = self.owner.graph.create_gate(self.projects[0].ref, logical_request_key="gate")
+        self.deps.change(self.projects[1], gate, request_id="link")
+        stored = self.owner.graph.get(self.projects[1].ref).payload.get("readiness")
+        before = self.store.consumer().snapshot_counts()
+        with patch.object(type(self.owner.graph), "set_readiness", side_effect=AssertionError("status wrote readiness")):
+            result = self.status()
+        self.assertEqual(result["totals"]["readiness"], {"ready": 2, "blocked": 1})
+        self.assertEqual(self.store.consumer().snapshot_counts(), before)
+        self.assertEqual(self.owner.graph.get(self.projects[1].ref).payload.get("readiness"), stored)
 
     def test_concurrent_status_does_not_attribute_other_project_turn(self):
         self.manager()

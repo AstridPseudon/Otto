@@ -183,6 +183,7 @@ def portfolio_status(session: Any, portfolio_ref: Any = None, *,
     for record in records:
         pid = record.ref.id
         readiness = dependencies.readiness(record.ref, observe=False, cache=cache)
+        supervised = dependencies.supervises(record.ref, cache=cache)
         project_dues = grouped["dues"][pid]
         manager = _manager(grouped["assignments"][pid], project_dues, service, pid, now)
         issue_reports = [{"ref": row["ref"], "value": {key: value for key, value in row.items()
@@ -225,7 +226,7 @@ def portfolio_status(session: Any, portfolio_ref: Any = None, *,
         stamps = [record.updated_at] + [row["updated_at"] for name in grouped for row in grouped[name][pid]]
         override = readiness.get("override")
         row = {"project_ref": record.ref.to_dict(), "title": record.payload.get("title"),
-               "lifecycle": record.payload.get("lifecycle"), "readiness": readiness,
+               "lifecycle": record.payload.get("lifecycle"), "supervised": supervised, "readiness": readiness,
                "manager": manager, "task_counts": dict(Counter(item["lifecycle"] for item in grouped["tasks"][pid])),
                "open_help_requests": issues, "allowances": list(pools.values()),
                "last_activity_at": max(stamps), "readiness_override": override}

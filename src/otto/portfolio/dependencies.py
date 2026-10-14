@@ -51,8 +51,8 @@ class PortfolioDependencies:
             cache[key] = result
         return result
 
-    def authorize(self, project: Any, cache: Optional[dict] = None) -> Any:
-        project = self._current(project, cache)
+    def _in_portfolio(self, value: Any, cache: Optional[dict] = None) -> tuple[Any, Mapping[str, Any], Any]:
+        project = self._current(value, cache)
         if project.ref.kind != "work.project":
             raise WorkValidationError("dependency_scope_mismatch: dependent must be a project")
         relation = supervision(project)
@@ -61,6 +61,15 @@ class PortfolioDependencies:
                 or not same(relation.get("project_ref"), project)
                 or (self.portfolio_ref is not None and not same(portfolio, self.portfolio_ref))):
             raise WorkValidationError("dependency_scope_mismatch: project is outside this portfolio")
+        return project, relation, portfolio
+
+    def scope(self, project: Any, cache: Optional[dict] = None) -> Any:
+        """Read scope: the project belongs to this portfolio. Reads need no supervision."""
+        return self._in_portfolio(project, cache)[0]
+
+    def authorize(self, project: Any, cache: Optional[dict] = None) -> Any:
+        """Write scope: the portfolio scope, and supervision by the current orchestrator or owner."""
+        project, relation, portfolio = self._in_portfolio(project, cache)
         if self.owner_actor is not None and self.actor == self.owner_actor:
             return project
         assignment = self._current(relation.get("assignment_ref"), cache)
@@ -72,6 +81,14 @@ class PortfolioDependencies:
                 or assignment.payload.get("generation") != relation.get("generation")):
             raise PermissionError("only the portfolio orchestrator or owner may change project dependencies")
         return project
+
+    def supervises(self, project: Any, cache: Optional[dict] = None) -> bool:
+        """Whether this actor may change the project's dependencies. Never raises for a read."""
+        try:
+            self.authorize(project, cache)
+        except (PermissionError, WorkValidationError, AttributeError, TypeError, ValueError, KeyError):
+            return False
+        return True
 
     def resolve_prerequisite(self, project_ref: Any, gate_id_or_alias: Optional[str] = None) -> Any:
         project = self._current(project_ref)
@@ -139,7 +156,8 @@ class PortfolioDependencies:
 
     def readiness(self, project: Any, *, observe: bool = True, cache: Optional[dict] = None) -> dict:
         cache = {} if cache is None else cache
-        project = self.authorize(project, cache)
+        # Only an observation writes, so only it needs supervision.
+        project = self.authorize(project, cache) if observe else self.scope(project, cache)
         dependencies = []
         for value in project.payload.get("dependencies", ()):
             ref = identity(value)
