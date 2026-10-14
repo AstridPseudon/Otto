@@ -240,7 +240,12 @@ class ExecutionHost:
         self._owner_thread: int | None = None
         # These are continuations of retained requests, not durable new work.
         self._executions: dict[str, dict[str, Any]] = {}
+        # _capacity_holds is the custody fence: it lists every hold until an
+        # exact disposition releases it. _capacity_freed names the holds whose
+        # process group is provably gone; they keep the fence, not a slot.
         self._capacity_holds: dict[str, dict[str, Any]] = {}
+        self._capacity_freed: set[str] = set()
+        self._process_groups = self._load_process_groups()
         self._last_project: str | None = None
         self._project_order: list[str] = []
 
@@ -341,8 +346,108 @@ class ExecutionHost:
                 pass  # Any changed/ambiguous terminal proof keeps custody.
         if attempt and not released:
             self._capacity_holds[due.schedule_id] = self._execution_scope(app, due)
+            self._reconcile_hold(due.schedule_id)
         else:
             self._capacity_holds.pop(due.schedule_id, None)
+            self._forget_process_group(due.schedule_id)
+
+    _PROCESS_GROUPS = "capacity-process-groups.json"
+
+    def _load_process_groups(self) -> dict[str, dict[str, Any]]:
+        try:
+            value = json.loads((self.directory / self._PROCESS_GROUPS).read_text())
+        except (OSError, ValueError):
+            return {}  # No readable record is no proof: the hold keeps its slot.
+        if not isinstance(value, dict):
+            return {}
+        return {key: row for key, row in value.items() if isinstance(row, dict)}
+
+    def _save_process_groups(self) -> None:
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _atomic_json(self.directory / self._PROCESS_GROUPS, self._process_groups)
+
+    def _forget_process_group(self, schedule_id: str) -> None:
+        self._capacity_freed.discard(schedule_id)
+        if self._process_groups.pop(schedule_id, None) is not None:
+            self._save_process_groups()
+
+    def record_process_group(self, schedule_id: str, pid: int) -> None:
+        """Pin a live native process group (pgid plus start time) to its occurrence.
+
+        The pin lets a later restart prove the group gone. It never releases
+        custody: only the existing exact dispositions do that.
+        """
+        if schedule_id not in self._capacity_holds and not (self._executions.get(schedule_id) or {}).get("running"):
+            raise RuntimeError("process group has no running or held occurrence")
+        try:
+            birth = list(_process_start_identity(pid)["birth"])
+            pgid = os.getpgid(pid)
+        except OSError as error:
+            raise PermissionError("process is not live; nothing to pin") from error
+        self._process_groups[schedule_id] = {"pid": pid, "pgid": pgid, "birth": birth}
+        self._capacity_freed.discard(schedule_id)
+        self._save_process_groups()
+
+    @staticmethod
+    def _group_state(record: Mapping[str, Any]) -> str:
+        """gone | alive | reused | unproven. Only gone may free capacity.
+
+        Gone needs both an empty process group and an absent pid. A pid that is
+        live with another start time is reused, a pgid that still has members is
+        alive, and anything unreadable is unproven; each of those stays held.
+        """
+        pid, pgid, birth = record.get("pid"), record.get("pgid"), record.get("birth")
+        if (type(pid) is not int or type(pgid) is not int or pid <= 0 or pgid <= 0
+                or not isinstance(birth, list) or not birth or any(type(v) is not int for v in birth)):
+            return "unproven"
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return "alive"
+        except OSError:
+            return "unproven"
+        else:
+            return "alive"
+        try:
+            live = _process_start_identity(pid)
+        except (FileNotFoundError, ProcessLookupError):
+            return "gone"
+        except PermissionError:
+            # The native reader also reports an exiting process this way.
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return "gone"
+            except PermissionError:
+                return "alive"
+            return "alive"
+        except (OSError, ValueError, IndexError):
+            return "unproven"
+        return "alive" if list(live["birth"]) == birth else "reused"
+
+    def _reconcile_hold(self, schedule_id: str) -> bool:
+        record = self._process_groups.get(schedule_id)
+        if record is None or self._group_state(record) != "gone":
+            return False
+        self._capacity_freed.add(schedule_id)
+        return True
+
+    def reconcile_dead_holds(self) -> list[str]:
+        """Stop charging capacity for holds whose process group is provably gone.
+
+        Process exit does not prove absence of a provider effect, so the hold
+        stays in the custody fence (_capacity_holds) and keeps blocking
+        activation and supervised restart.
+        """
+        return [key for key in list(self._capacity_holds)
+                if key not in self._capacity_freed and self._reconcile_hold(key)]
+
+    def capacity_holds(self) -> dict[str, dict[str, Any]]:
+        """The holds that still cost a slot: the fence minus provably dead groups."""
+        return {key: scope for key, scope in self._capacity_holds.items()
+                if key not in self._capacity_freed}
 
     def admit_execution(self, app: Any, due: Any, operation: Callable[[], Any]) -> OwnerCompletion:
         if self._dispatch_held:
@@ -421,6 +526,7 @@ class ExecutionHost:
                 job["completion"].resolve(error=error)
                 continue
             job["running"] = True
+            self._forget_process_group(job["scope"]["schedule_id"])  # a new attempt owns its own group
             self._last_project = job["scope"]["project"]
             schedule = job["scope"]["schedule_id"]
 
