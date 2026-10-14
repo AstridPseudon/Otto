@@ -6,6 +6,9 @@ host's lane (its client home, ``OTTO_HOME``, default ~/.otto) and prints the
 service's JSON response. A client never opens the Store and never reads
 another host's folders; "is the owner busy?" is ``ottoctl service status``.
 
+Local, no service: ``heavy [--purpose T] [--max-minutes N] [--no-wait] -- CMD`` runs CMD under
+the machine's one heavy-job lease (renders, journeys, full test suites); ``heavy status``.
+
 Operator commands (run against the service home): ``install`` (attach or
 create the Store, before the service runs), ``service run``, ``service
 admit-host`` (admits a host as its own principal) and ``service stop``.
@@ -901,6 +904,10 @@ def _split_passthrough(argv: list) -> tuple:
 
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["heavy"]:
+        # The machine's one heavy-job lease: it runs a command and returns its exit code (not a JSON request).
+        from .heavy import main as heavy_main
+        return heavy_main(argv[1:])
     head, rest = _split_passthrough(argv)
     args = build_parser().parse_args(head)
     if rest is not None:
