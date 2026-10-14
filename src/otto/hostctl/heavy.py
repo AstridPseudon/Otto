@@ -1,23 +1,32 @@
-"""ottoctl heavy: one heavy job at a time on this machine.
+"""ottoctl heavy: many agents share the machine's heavy capacity, and nothing a job started outlives it.
 
-Renders, real-film journeys and full test suites take the machine's single heavy lease:
+Heavy jobs (frame captures, renders, real-film journeys, full test suites) take slots from the
+machine's capacity; light work (edits, checks, show) takes none:
 
-    ottoctl heavy [--purpose TEXT] [--max-minutes N] [--no-wait] -- CMD [ARGS...]
+    ottoctl heavy [--weight N] [--purpose TEXT] [--max-minutes N] [--no-wait] -- CMD [ARGS...]
     ottoctl heavy status
 
-The lease is an exclusive ``flock`` on ``<dir>/heavy.lock`` (``$OTTO_HEAVY_DIR``, default
-``~/.local/state/otto``) plus ``<dir>/heavy.json`` naming the holder. The kernel releases the lock
-when the holder dies, so a lease can't go stale.
+**Capacity** is a number of slots: ``$OTTO_HEAVY_CAPACITY``, else ``<dir>/capacity``, else one slot
+per 2 GB of physical memory (4 on an 8 GB Mac). A job takes ``--weight`` slots (default 1). A guide
+for this machine: a frame or visualize call 1, a real-film journey or full test suite 2, a
+full-film render 3. Jobs run concurrently while slots remain. Arrivals queue in order, so a big job
+isn't starved by a stream of small ones. While the OS reports **critical** memory pressure, a new
+job waits for a running one to finish instead of piling on (it never waits on an otherwise idle
+machine).
 
-CMD runs in its own session with ``OTTO_HEAVY_LEASE=<id>`` in its environment. When it ends, fails,
-is interrupted or runs out of time, everything still carrying the lease is stopped: its process
-group, and any process that left the group (``setsid``, a detached browser) but still carries the
-lease id in its environment. Nothing else is ever signalled. A lease whose holder died leaves its
-id in heavy.json; the next lease stops that id's leftovers before it starts.
+**State:** ``$OTTO_HEAVY_DIR``, default ``~/.local/state/otto``. Each slot is an ``flock`` on
+``slots/<i>.lock``, so the kernel frees it when its holder dies. Each lease names itself in
+``holders/<id>.json``.
 
-Exit codes: CMD's own; 75 busy (with --no-wait); 124 time ran out; 130/143 interrupted.
-Every lease appends one JSON line (who, what, how long, machine state before and after, reaped
-leftovers) to ``<dir>/heavy.log``.
+**Cleanup:** CMD runs in its own session with ``OTTO_HEAVY_LEASE=<id>`` in its environment. When it
+ends, fails, is interrupted or runs out of time, the lease stops its process group and every process
+still carrying that id: ones that left the group (``setsid``, a detached browser) and paused ones,
+with TERM + CONT, a grace period, then KILL. Nothing without the id is ever signalled. A lease whose
+holder died is cleaned up by the next lease to start.
+
+Exit codes: CMD's own; 75 no capacity (with --no-wait); 124 time ran out; 130/143 interrupted.
+Every lease appends one JSON line to ``<dir>/heavy.log``: who, what, weight, waited, ran, and the
+machine state (load, swap, memory pressure, free disk) before and after.
 """
 from __future__ import annotations
 
@@ -38,19 +47,52 @@ import uuid
 LEASE_ENV = "OTTO_HEAVY_LEASE"
 EXIT_BUSY, EXIT_TIMEOUT = 75, 124
 GRACE_SECONDS = 5.0
-LOG_KEEP_LINES = 500
+POLL_SECONDS = 1.0
+LOG_KEEP_LINES = 2000
+PRESSURE_CRITICAL = 4  # kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical
 
 
 def state_dir() -> Path:
     path = Path(os.environ.get("OTTO_HEAVY_DIR") or Path.home() / ".local" / "state" / "otto")
-    path.mkdir(parents=True, exist_ok=True)
+    for sub in ("slots", "holders"):
+        (path / sub).mkdir(parents=True, exist_ok=True)
     return path
 
 
+def capacity(directory: Path) -> int:
+    configured = os.environ.get("OTTO_HEAVY_CAPACITY")
+    if not configured and (directory / "capacity").exists():
+        configured = (directory / "capacity").read_text().strip()
+    if configured:
+        return max(1, int(configured))
+    try:
+        if platform.system() == "Darwin":
+            mem = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True,
+                                     timeout=5).stdout)
+        else:
+            mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return max(1, mem // (2 * 1024 ** 3))
+    except Exception:  # noqa: BLE001
+        return 2
+
+
+def memory_pressure() -> int | None:
+    if platform.system() != "Darwin":
+        return None
+    try:
+        return int(subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+                                  capture_output=True, text=True, timeout=5).stdout)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def machine_state() -> dict:
-    """Load, swap and free disk, recorded beside every heavy job's timing."""
+    """Load, swap, memory pressure and free disk, recorded beside every heavy job's timing."""
     state: dict = {"load_1m": round(os.getloadavg()[0], 2),
                    "free_disk_gb": round(shutil.disk_usage("/").free / 1e9, 1)}
+    pressure = memory_pressure()
+    if pressure is not None:
+        state["memory_pressure"] = {1: "normal", 2: "warn", 4: "critical"}.get(pressure, str(pressure))
     try:
         if platform.system() == "Darwin":
             out = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5).stdout
@@ -77,13 +119,8 @@ def tagged_pids(lease_id: str) -> list[int] | None:
                                  timeout=15).stdout
         except (OSError, subprocess.SubprocessError):
             return None
-        pids = []
-        for line in out.splitlines():
-            if marker in line:
-                pid = int(line.split(None, 1)[0])
-                if pid != me:
-                    pids.append(pid)
-        return pids
+        return [int(line.split(None, 1)[0]) for line in out.splitlines()
+                if marker in line and int(line.split(None, 1)[0]) != me]
     pids = []
     try:
         entries = os.listdir("/proc")
@@ -109,11 +146,20 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def stop_lease(lease_id: str, pgid: int | None) -> dict:
     """Stop the lease's group and every process still carrying its id: TERM (+CONT), grace, KILL."""
     def targets() -> set[int]:
-        found = set(tagged_pids(lease_id) or [])
-        return {pid for pid in found if _alive(pid)}
+        return {pid for pid in (tagged_pids(lease_id) or []) if _alive(pid)}
 
     def signal_all(sig: int) -> None:
         if pgid:
@@ -127,10 +173,10 @@ def stop_lease(lease_id: str, pgid: int | None) -> dict:
             except (ProcessLookupError, PermissionError):
                 pass
 
+    sweep = "complete" if tagged_pids(lease_id) is not None else "unavailable"
     before = targets()
-    group_alive = bool(pgid) and _group_alive(pgid)
-    if not before and not group_alive:
-        return {"reaped": [], "sweep": "complete" if tagged_pids(lease_id) is not None else "unavailable"}
+    if not before and not (pgid and _group_alive(pgid)):
+        return {"reaped": [], "sweep": sweep}
     signal_all(signal.SIGTERM)
     signal_all(signal.SIGCONT)  # a stopped process only acts on TERM once continued
     deadline = time.monotonic() + GRACE_SECONDS
@@ -140,92 +186,142 @@ def stop_lease(lease_id: str, pgid: int | None) -> dict:
     if killed or (pgid and _group_alive(pgid)):
         signal_all(signal.SIGKILL)
         time.sleep(0.2)
-    return {"reaped": sorted(before), "needed_kill": killed,
-            "remaining": sorted(targets()), "sweep": "complete" if tagged_pids(lease_id) is not None else "unavailable"}
+    return {"reaped": sorted(before), "needed_kill": killed, "remaining": sorted(targets()), "sweep": sweep}
 
 
-def _group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+def _holders(directory: Path) -> list[dict]:
+    out = []
+    for path in sorted((directory / "holders").glob("*.json")):
+        try:
+            out.append(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            continue
+    return out
 
 
-def _read_holder(directory: Path) -> dict | None:
-    try:
-        return json.loads((directory / "heavy.json").read_text())
-    except (OSError, ValueError):
-        return None
+def _reap_dead_holders(directory: Path) -> list[dict]:
+    """Leases whose holder process died: stop what they left behind and drop their record."""
+    cleaned = []
+    for holder in _holders(directory):
+        if holder.get("holder_pid") and not _alive(int(holder["holder_pid"])):
+            result = stop_lease(holder["lease_id"], holder.get("pgid"))
+            (directory / "holders" / f"{holder['lease_id']}.json").unlink(missing_ok=True)
+            cleaned.append({"owner": holder.get("owner"), "purpose": holder.get("purpose"), **result})
+    return cleaned
+
+
+def _try_slots(directory: Path, cap: int, weight: int) -> list | None:
+    """Take `weight` free slots now, or none (all-or-nothing)."""
+    taken = []
+    for index in range(cap):
+        handle = open(directory / "slots" / f"{index}.lock", "a+")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise
+            continue
+        taken.append(handle)
+        if len(taken) == weight:
+            return taken
+    for handle in taken:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+    return None
 
 
 def _append_log(directory: Path, record: dict) -> None:
     path = directory / "heavy.log"
-    lines = path.read_text().splitlines() if path.exists() else []
-    lines.append(json.dumps(record, sort_keys=True))
-    path.write_text("\n".join(lines[-LOG_KEEP_LINES:]) + "\n")
+    with open(directory / "log.lock", "a+") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        lines = path.read_text().splitlines() if path.exists() else []
+        lines.append(json.dumps(record, sort_keys=True))
+        path.write_text("\n".join(lines[-LOG_KEEP_LINES:]) + "\n")
 
 
 def status() -> dict:
     directory = state_dir()
-    with open(directory / "heavy.lock", "a+") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise
-            return {"lease": "held", "holder": _read_holder(directory), "machine": machine_state()}
-        fcntl.flock(lock, fcntl.LOCK_UN)
-    return {"lease": "free", "machine": machine_state()}
+    cap = capacity(directory)
+    holders = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
+    used = sum(int(h.get("weight", 1)) for h in holders)
+    return {"capacity": cap, "used": used, "free": max(0, cap - used),
+            "holders": [{k: h.get(k) for k in ("owner", "purpose", "weight", "started_at", "expires_at")}
+                        for h in holders],
+            "machine": machine_state()}
 
 
-def run(command: list[str], *, purpose: str, max_minutes: float, wait: bool, owner: str) -> int:
+def _describe(holders: list[dict]) -> str:
+    return "; ".join(f"{h.get('owner', '?')}: {h.get('purpose', '?')} (weight {h.get('weight', 1)}, since "
+                     f"{h.get('started_at', '?')})" for h in holders) or "nobody (memory pressure)"
+
+
+def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wait: bool, owner: str) -> int:
     if os.environ.get(LEASE_ENV):
-        # Already inside a heavy job (e.g. a journey that renders): it holds the lease; run straight through.
+        # Already inside a heavy job (e.g. a journey that renders frames): it holds slots; run straight through.
         return subprocess.call(command)
     directory = state_dir()
-    lock = open(directory / "heavy.lock", "a+")
+    cap = capacity(directory)
+    weight = max(1, min(weight, cap))
+    inherited = _reap_dead_holders(directory)
+    for item in inherited:
+        if item.get("reaped"):
+            print(f"heavy: stopped {len(item['reaped'])} leftovers of {item.get('owner')}'s dead lease "
+                  f"({item.get('purpose')})", file=sys.stderr)
+
+    # Queue in arrival order: whoever holds queue.lock is next and waits for its slots.
+    queued_at = time.time()
+    queue = open(directory / "queue.lock", "a+")
     announced = False
     while True:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(queue, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
         except OSError as exc:
             if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
                 raise
-            holder = _read_holder(directory) or {}
             if not wait:
-                print(f"heavy: busy, held by {holder.get('owner', '?')} for {holder.get('purpose', '?')} "
-                      f"since {holder.get('started_at', '?')}", file=sys.stderr)
+                print(f"heavy: no capacity now; running: {_describe(_holders(directory))}", file=sys.stderr)
                 return EXIT_BUSY
             if not announced:
-                print(f"heavy: waiting for the lease held by {holder.get('owner', '?')} "
-                      f"({holder.get('purpose', '?')}, since {holder.get('started_at', '?')})", file=sys.stderr)
+                print("heavy: queued behind another job waiting for capacity", file=sys.stderr)
                 announced = True
-            time.sleep(2)
-
-    # A previous holder that died keeps its id here: stop its leftovers before we start.
-    previous = _read_holder(directory)
-    inherited = None
-    if previous and previous.get("lease_id"):
-        inherited = stop_lease(previous["lease_id"], previous.get("pgid"))
-        if inherited.get("reaped"):
-            print(f"heavy: stopped {len(inherited['reaped'])} leftovers of {previous.get('owner')}'s "
-                  f"lease ({previous.get('purpose')})", file=sys.stderr)
+            time.sleep(POLL_SECONDS)
+    slots = None
+    try:
+        announced = False
+        while True:
+            running = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
+            pressured = memory_pressure() == PRESSURE_CRITICAL and running
+            slots = None if pressured else _try_slots(directory, cap, weight)
+            if slots:
+                break
+            if not wait:
+                print(f"heavy: no capacity now ({cap} slots; running: {_describe(running)})", file=sys.stderr)
+                return EXIT_BUSY
+            if not announced:
+                reason = "memory pressure is critical" if pressured else f"all {cap} slots in use"
+                print(f"heavy: waiting for {weight} slot(s), {reason}; running: {_describe(running)}", file=sys.stderr)
+                announced = True
+            _reap_dead_holders(directory)
+            time.sleep(POLL_SECONDS)
+    finally:
+        fcntl.flock(queue, fcntl.LOCK_UN)
+        queue.close()
 
     lease_id = uuid.uuid4().hex[:12]
     started = time.time()
     before = machine_state()
     env = dict(os.environ, **{LEASE_ENV: lease_id})
     child = subprocess.Popen(command, env=env, start_new_session=True)
-    record = {"lease_id": lease_id, "owner": owner, "purpose": purpose, "pid": child.pid, "pgid": child.pid,
-              "holder_pid": os.getpid(), "command": command,
+    record = {"lease_id": lease_id, "owner": owner, "purpose": purpose, "weight": weight, "capacity": cap,
+              "pid": child.pid, "pgid": child.pid, "holder_pid": os.getpid(), "command": command,
+              "waited_seconds": round(started - queued_at, 1),
               "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
               "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started + max_minutes * 60)),
               "machine_before": before}
-    (directory / "heavy.json").write_text(json.dumps(record, indent=1))
+    holder_file = directory / "holders" / f"{lease_id}.json"
+    holder_file.write_text(json.dumps(record, indent=1))
 
     outcome, code = "exited", None
     stop_signal: list[int] = []
@@ -260,10 +356,10 @@ def run(command: list[str], *, purpose: str, max_minutes: float, wait: bool, own
         _append_log(directory, {**record, "outcome": outcome, "exit_code": code,
                                 "seconds": round(time.time() - started, 1), "machine_after": machine_state(),
                                 "leftovers": sweep, "inherited_leftovers": inherited})
-        (directory / "heavy.json").write_text(json.dumps({**record, "lease_id": None, "released_at":
-                                                          time.strftime("%Y-%m-%dT%H:%M:%S")}, indent=1))
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock.close()
+        holder_file.unlink(missing_ok=True)
+        for handle in slots or []:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
     return code if code is not None else 1
 
 
@@ -273,15 +369,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(status(), indent=1))
         return 0
     if "--" not in argv:
-        print("usage: ottoctl heavy [--purpose TEXT] [--max-minutes N] [--no-wait] -- CMD [ARGS...]\n"
+        print("usage: ottoctl heavy [--weight N] [--purpose TEXT] [--max-minutes N] [--no-wait] -- CMD [ARGS...]\n"
               "       ottoctl heavy status", file=sys.stderr)
         return 2
     split = argv.index("--")
     parser = argparse.ArgumentParser(prog="ottoctl heavy", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--weight", type=int, default=1,
+                        help="slots this job takes (frame 1, journey or test suite 2, full render 3)")
     parser.add_argument("--purpose", help="what this heavy job is for (shown to whoever waits)")
     parser.add_argument("--max-minutes", type=float, default=60.0, help="stop everything after this long (default 60)")
-    parser.add_argument("--no-wait", action="store_true", help="exit 75 instead of waiting when the lease is held")
+    parser.add_argument("--no-wait", action="store_true", help="exit 75 instead of waiting when there's no capacity")
     parser.add_argument("--owner", default=os.environ.get("OTTO_HEAVY_OWNER")
                         or f"{os.environ.get('USER', '?')} pid {os.getppid()} in {os.getcwd()}",
                         help="who holds the lease (default $OTTO_HEAVY_OWNER, or the caller's pid and directory)")
@@ -289,8 +387,8 @@ def main(argv: list[str] | None = None) -> int:
     command = argv[split + 1:]
     if not command:
         parser.error("no command after --")
-    return run(command, purpose=args.purpose or " ".join(command)[:120], max_minutes=args.max_minutes,
-               wait=not args.no_wait, owner=args.owner)
+    return run(command, weight=args.weight, purpose=args.purpose or " ".join(command)[:120],
+               max_minutes=args.max_minutes, wait=not args.no_wait, owner=args.owner)
 
 
 if __name__ == "__main__":

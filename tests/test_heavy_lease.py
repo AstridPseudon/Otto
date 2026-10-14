@@ -1,4 +1,4 @@
-"""ottoctl heavy: one heavy job at a time, and nothing it started outlives it (real processes)."""
+"""ottoctl heavy: many agents share the machine's capacity, and nothing a job started outlives it (real processes)."""
 from __future__ import annotations
 
 import json
@@ -15,8 +15,9 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 
 
-def heavy(tmp_path: Path, *args: str, wait: bool = True, **kw) -> subprocess.Popen:
-    env = dict(os.environ, OTTO_HEAVY_DIR=str(tmp_path / "state"), PYTHONPATH=str(SRC))
+def heavy(tmp_path: Path, *args: str, capacity: int = 1, **kw) -> subprocess.Popen:
+    env = dict(os.environ, OTTO_HEAVY_DIR=str(tmp_path / "state"), PYTHONPATH=str(SRC),
+               OTTO_HEAVY_CAPACITY=str(capacity))
     env.pop("OTTO_HEAVY_LEASE", None)
     env.update(kw.pop("env", {}))
     return subprocess.Popen([sys.executable, "-m", "otto.hostctl.heavy", *args], env=env,
@@ -69,14 +70,14 @@ def test_runs_the_command_returns_its_exit_code_and_logs_machine_state(tmp_path)
     proc = heavy(tmp_path, "--purpose", "unit", "--", *py("import sys; sys.exit(3)"))
     out, err = proc.communicate(timeout=30)
     assert proc.returncode == 3, err
-    status = heavy(tmp_path, "status")
-    assert json.loads(status.communicate(timeout=30)[0])["lease"] == "free"
+    status = json.loads(heavy(tmp_path, "status").communicate(timeout=30)[0])
+    assert status["used"] == 0 and status["holders"] == [] and status["capacity"] == 1
     record = json.loads((tmp_path / "state" / "heavy.log").read_text().splitlines()[-1])
     assert record["purpose"] == "unit" and record["exit_code"] == 3 and record["outcome"] == "exited"
     assert {"load_1m", "free_disk_gb"} <= set(record["machine_before"]) and "machine_after" in record
 
 
-def test_a_second_lease_waits_for_the_first_and_says_who_holds_it(tmp_path):
+def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path):
     marks = tmp_path / "marks"
     first = heavy(tmp_path, "--purpose", "render A", "--",
                   *py(f"import time; open({str(marks)!r},'a').write('A+%f\\n' % time.time()); time.sleep(2); "
@@ -89,10 +90,10 @@ def test_a_second_lease_waits_for_the_first_and_says_who_holds_it(tmp_path):
     times = dict(line.split("+") if "+" in line else (line.split("-")[0] + "-", line.split("-")[1])
                  for line in marks.read_text().splitlines())
     assert float(times["B"]) >= float(times["A-"]), "the second lease started before the first ended"
-    assert "waiting for the lease held by" in err2 and "render A" in err2
+    assert "waiting for 1 slot(s)" in err2 and "render A" in err2
 
 
-def test_no_wait_returns_busy_and_names_the_holder(tmp_path):
+def test_no_wait_returns_busy_and_names_what_is_running(tmp_path):
     first = heavy(tmp_path, "--purpose", "render A", "--", *py("import time; time.sleep(3)"))
     time.sleep(0.7)
     busy = heavy(tmp_path, "--no-wait", "--", *py("pass"))
@@ -135,7 +136,7 @@ def test_leftovers_of_a_holder_that_died_are_stopped_by_the_next_lease(tmp_path)
     deadline = time.monotonic() + 15
     while not pidfile.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
-    job = json.loads((tmp_path / "state" / "heavy.json").read_text())
+    job = json.loads(next((tmp_path / "state" / "holders").glob("*.json")).read_text())
     holder.send_signal(signal.SIGKILL)  # the holder dies; its job and grandchild keep running
     holder.wait(timeout=30)  # (not communicate: the surviving job still holds the pipes open)
     holder.stdout.close(); holder.stderr.close()
@@ -165,3 +166,49 @@ def test_a_heavy_call_inside_a_heavy_job_runs_straight_through(tmp_path):
     proc = heavy(tmp_path, "--", *inner)
     out, err = proc.communicate(timeout=60)
     assert proc.returncode == 0 and "inner ran" in out, err
+
+
+def _span(marks: Path, name: str) -> tuple[float, float]:
+    lines = dict(line.split("=") for line in marks.read_text().splitlines())
+    return float(lines[name + "+"]), float(lines[name + "-"])
+
+
+def _job(marks: Path, name: str, seconds: float) -> list[str]:
+    return py(f"import time; open({str(marks)!r},'a').write('{name}+=%f\\n' % time.time()); time.sleep({seconds}); "
+              f"open({str(marks)!r},'a').write('{name}-=%f\\n' % time.time())")
+
+
+def test_jobs_run_at_the_same_time_while_capacity_remains(tmp_path):
+    marks = tmp_path / "marks"
+    a = heavy(tmp_path, "--purpose", "frames A", "--", *_job(marks, "A", 2), capacity=3)
+    b = heavy(tmp_path, "--purpose", "frames B", "--", *_job(marks, "B", 2), capacity=3)
+    c = heavy(tmp_path, "--purpose", "frames C", "--", *_job(marks, "C", 2), capacity=3)
+    for proc in (a, b, c):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    spans = [_span(marks, n) for n in "ABC"]
+    assert max(s for s, _ in spans) < min(e for _, e in spans), "the three jobs did not overlap"
+
+
+def test_a_heavier_job_waits_for_enough_slots_and_is_not_starved(tmp_path):
+    marks = tmp_path / "marks"
+    first = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small1", 2), capacity=2)
+    time.sleep(0.6)
+    big = heavy(tmp_path, "--weight", "2", "--purpose", "full render", "--", *_job(marks, "big", 0.5), capacity=2)
+    time.sleep(0.6)
+    later = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small2", 0.2), capacity=2)
+    for proc in (first, big, later):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    s1, e1 = _span(marks, "small1"); sb, eb = _span(marks, "big"); s2, _ = _span(marks, "small2")
+    assert sb >= e1, "the 2-slot job started while a slot was taken"
+    assert s2 >= sb, "a later small job jumped the queue ahead of the waiting big job"
+
+
+def test_status_shows_capacity_and_what_is_running(tmp_path):
+    job = heavy(tmp_path, "--weight", "2", "--purpose", "journey X", "--", *py("import time; time.sleep(2)"), capacity=4)
+    time.sleep(0.8)
+    status = json.loads(heavy(tmp_path, "status", capacity=4).communicate(timeout=30)[0])
+    job.communicate(timeout=30)
+    assert status["capacity"] == 4 and status["used"] == 2 and status["free"] == 2
+    assert status["holders"][0]["purpose"] == "journey X"
