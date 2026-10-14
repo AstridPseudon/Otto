@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from otto.agents.usage_contract import (
+from herzchen.usage.contract import (
     CHARGEABLE_FIELDS,
     SOURCE_COMMIT,
     UsageContractError,

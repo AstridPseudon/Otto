@@ -2,7 +2,7 @@
 import hashlib,json,unittest
 from unittest.mock import patch
 from test_project_history import ProjectHistoryTests as _ReaderFixture
-from test_events_history import HistoryTests as _HistoryFixture
+from herzchen.kernel.tests.test_events_history import HistoryTests as _HistoryFixture
 from herzchen.kernel import ProjectHistoryGrant
 from herzchen.kernel.project_history import CursorError,ProjectionMaintenanceError,ProjectHistoryProjection
 from herzchen.contracts import ResourceRef

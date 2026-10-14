@@ -3,8 +3,8 @@ from copy import deepcopy
 import json
 import unittest
 
-from otto.agents.usage_accounting import account_usage, FACT_SCHEMA
-from otto.agents.usage_capture import UsageStream, digest
+from herzchen.usage.accounting import account_usage, FACT_SCHEMA
+from herzchen.usage.capture import UsageStream, digest
 from tests.test_usage_capture import native
 
 

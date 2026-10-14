@@ -154,9 +154,9 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
                       phase, session_id, turn_id, authorizing_assignment_ref,
                       authorizing_generation, logical_request_key, actor,
                       supersedes_ref=None):
-    from otto.agents.usage_capture import UsageStream, CAPTURE_SCHEMA
-    from otto.agents.usage_contract import ADAPTER_DESCRIPTORS
-    from otto.agents.usage_accounting import instant, qualified_observation
+    from herzchen.usage.capture import UsageStream, CAPTURE_SCHEMA
+    from herzchen.usage.contract import ADAPTER_DESCRIPTORS
+    from herzchen.usage.accounting import instant, qualified_observation
 
     if bodies is None or actor is None or actor != engine.default_actor or actor.authority != writer.authority:
         raise PermissionError("late usage requires explicit owner-issued source capability")
@@ -246,7 +246,7 @@ def append_late_usage(engine, writer, bodies, target, source_ref, source, *, ada
         metric_scope = native_event.get("usage_scope", native_event.get("metric_scope", "turn"))
         if metric_scope == "cumulative":
             # Retain the snapshot, never derive additive deltas.
-            from otto.agents.usage_capture import digest
+            from herzchen.usage.capture import digest
             identity = {**observation["identity"], "metric_scope": "cumulative"}
             identity["span_id"] = "usage-span-" + digest({k: v for k, v in identity.items() if k != "span_id"})
             observation["identity"] = identity

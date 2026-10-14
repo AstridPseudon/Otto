@@ -549,7 +549,7 @@ class OwnerDueRecordAttemptCapture:
             "request_fingerprint": request_fingerprint,
             "assignment_ref": _json_value(assignment_ref), "generation": generation,
         }
-        from otto.portfolio.recovery_timing import ReceiptTiming
+        from herzchen.adapters.recovery_timing import ReceiptTiming
         phase_timing = ReceiptTiming(logical_request_key)
         phase_timing.observe("queued").observe("processing")
         phase_timing.absent("native", reason="native_observation_not_retained")
@@ -582,7 +582,7 @@ class OwnerDueRecordAttemptCapture:
             if current is not None and current.get("state") == "result" and current.get("result") == value:
                 return value
             raise ValueError("attempt result has no matching CAS-backed claim")
-        from otto.portfolio.recovery_timing import timing_from_receipt
+        from herzchen.adapters.recovery_timing import timing_from_receipt
         timing = timing_from_receipt(
             {**value, "phase_timing": current.get("phase_timing"),
              "correlation_id": current.get("correlation_id", value.get("logical_request_key"))},
@@ -638,8 +638,8 @@ class OwnerDueRecordAttemptCapture:
         A known CAS rejection may reread/merge. An uncertain save is propagated
         to the telemetry boundary, without retry or replacement effect.
         """
-        from .usage_capture import MAX_OBSERVATIONS, digest
-        from .usage_contract import OBSERVATION_SCHEMA
+        from herzchen.usage.capture import MAX_OBSERVATIONS, digest
+        from herzchen.usage.contract import OBSERVATION_SCHEMA
         item = dict(_json_value(observation))
         native_source = item.pop("native_source", None)
         if item.get("schema") != OBSERVATION_SCHEMA or len(json.dumps(item).encode()) > 16384:
@@ -892,7 +892,7 @@ class DueRecordAttemptCapture:
             "request_fingerprint": request_fingerprint,
             "owner_version": record.version,
         }
-        from otto.portfolio.recovery_timing import ReceiptTiming
+        from herzchen.adapters.recovery_timing import ReceiptTiming
         phase_timing = ReceiptTiming(logical_request_key)
         phase_timing.observe("queued").observe("processing")
         phase_timing.absent("native", reason="native_observation_not_retained")
@@ -918,7 +918,7 @@ class DueRecordAttemptCapture:
             raise ValueError("attempt result has no matching persisted claim")
         if current.get("logical_request_key") != value.get("logical_request_key") or current.get("request_fingerprint") != value.get("request_fingerprint"):
             raise ValueError("attempt result does not match the persisted claim")
-        from otto.portfolio.recovery_timing import timing_from_receipt
+        from herzchen.adapters.recovery_timing import timing_from_receipt
         timing = timing_from_receipt(
             {**value, "phase_timing": current.get("phase_timing"),
              "correlation_id": current.get("correlation_id", value.get("logical_request_key"))},
@@ -1740,7 +1740,7 @@ class OttoGateway:
         usage_setter = getattr(self.adapter, "set_usage_callback", None)
         usage_recorder = getattr(self.attempt_capture, "record_usage_observation", None)
         if owner_bound and key and callable(usage_setter) and callable(usage_recorder):
-            from .usage_capture import optional_emit
+            from herzchen.usage.capture import optional_emit
             prior_usage = usage_setter(None)
             def on_usage(observation):
                 captured = usage_recorder(key, observation)

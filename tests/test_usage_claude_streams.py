@@ -5,9 +5,9 @@ import json
 import pathlib
 import unittest
 
-from otto.agents.usage_accounting import FACT_SCHEMA, account_usage, estimate_span_cost, qualified_observation
-from otto.agents.usage_capture import UsageStream
-from otto.agents.usage_contract import RATE_SCHEDULE
+from herzchen.usage.accounting import FACT_SCHEMA, account_usage, estimate_span_cost, qualified_observation
+from herzchen.usage.capture import UsageStream
+from herzchen.usage.contract import RATE_SCHEDULE
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "claude-streams"
 FIELDS = {"input_tokens": "input_tokens", "cache_creation_input_tokens": "cache_creation_input_tokens",

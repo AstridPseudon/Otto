@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Any, Callable, Mapping, Optional
 
-from .usage_contract import ADAPTER_DESCRIPTORS, normalize_usage_event
+from .contract import ADAPTER_DESCRIPTORS, normalize_usage_event
 
 MAX_LINE_BYTES = 256 * 1024
 MAX_CAPTURE_BYTES = 2 * 1024 * 1024

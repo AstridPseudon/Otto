@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from otto.agents.usage_capture import UsageStream, MAX_LINE_BYTES, MAX_OBSERVATIONS
+from herzchen.usage.capture import UsageStream, MAX_LINE_BYTES, MAX_OBSERVATIONS
 from otto.agents.codex_cli import normalize_codex_jsonl, CodexCliAdapter
 from otto.agents.gateway import OwnerDueRecordAttemptCapture
 from otto.attention import DueRecord, InMemoryDueRecordPort, StateConflictError
@@ -29,7 +29,7 @@ def native(adapter, usage=None, turn='turn', phase='work'):
 
 class NativeMoneyTests(unittest.TestCase):
     def test_native_money_zero_missing_invalid_scope_and_untrusted_billing(self):
-        from otto.agents.usage_contract import normalize_usage_event, ADAPTER_DESCRIPTORS
+        from herzchen.usage.contract import normalize_usage_event, ADAPTER_DESCRIPTORS
         for adapter in ('codex-direct','codex-host','claude-code'):
             for value,expected in ((0,'zero'),(1.25,'usage_report_estimate'),(None,'unavailable'),(True,'unavailable'),(-1,'unavailable'),('bad','unavailable')):
                 with self.subTest(adapter=adapter,value=value):
@@ -299,7 +299,7 @@ class TrustedTurnTests(unittest.TestCase):
 
 class OptionalProjectionTests(unittest.TestCase):
     def test_malformed_parser_and_projection_cannot_escape_telemetry_boundary(self):
-        from otto.agents.usage_capture import compact_usage_capture
+        from herzchen.usage.capture import compact_usage_capture
         stream = UsageStream('codex-direct')
         stream.feed('[' * 3000 + '0' + ']' * 3000)
         self.assertEqual(stream.invalid_lines, 1)

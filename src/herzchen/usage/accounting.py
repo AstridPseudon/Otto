@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
-from .usage_contract import (
+from .contract import (
     ADAPTER_DESCRIPTORS,
     CHARGEABLE_FIELDS,
     OBSERVATION_SCHEMA,
@@ -356,7 +356,7 @@ def qualified_observation(value: Mapping[str, Any]) -> dict[str, Any]:
         session_id=identity.get("session_id"), turn_id=identity.get("turn_id"),
         invocation_id=identity.get("invocation_id"))
     if scope == "cumulative":
-        from .usage_capture import digest
+        from .capture import digest
         expected = {**expected, "metric_scope": scope}
         expected["span_id"] = "usage-span-" + digest({k: v for k, v in expected.items() if k != "span_id"})
     environment = {k: adapter[k] for k in ("provider", "environment", "namespace")}

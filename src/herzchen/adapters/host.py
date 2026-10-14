@@ -26,8 +26,8 @@ from pathlib import Path
 
 from herzchen.contracts.model import HostOperation, HostOutcome, HostPort, HostReceipt, HostRequest, ContractError
 from .receipt import AdapterReceiptEnvelope
-from otto.portfolio.recovery_timing import timing_from_receipt
-from otto.agents.usage_capture import UsageStream
+from herzchen.adapters.recovery_timing import timing_from_receipt
+from herzchen.usage.capture import UsageStream
 
 RUNNER_ID = "codex-cli"
 MAX_SUBMISSION_SIZE = 1_000_000

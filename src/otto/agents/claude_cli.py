@@ -245,7 +245,7 @@ class ClaudeStream:
                  on_usage: Callable[..., Any] | None = None, phase: str = "work"):
         self.prompt, self.cwd, self.model, self.tools = prompt, cwd, model, tools
         self.session, self.on_init, self.on_input = session, on_init, on_input
-        from .usage_capture import UsageStream
+        from herzchen.usage.capture import UsageStream
         self.usage_stream = UsageStream("claude-code", phase=phase, session_id=session,
             requested_model=model, on_usage=on_usage)
         self.init = self.input = self.result = None

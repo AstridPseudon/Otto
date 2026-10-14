@@ -11,8 +11,8 @@ from herzchen.domains.work.assignments import ResponsibilityAssignments, StaleAs
 from herzchen.domains.work.model import WorkValidationError
 from herzchen.kernel.project_history import ProjectHistoryGrant, ProjectHistoryReader
 from otto.agents.retained_native import RetainedNativeBodies
-from otto.agents.usage_capture import UsageStream
-from otto.agents.usage_accounting import account_usage
+from herzchen.usage.capture import UsageStream
+from herzchen.usage.accounting import account_usage
 from otto.attention import due_record_contribution, issue_store_due_record_port
 from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
 from otto.portfolio.herzchen_binding import HerzchenBindingConfig, ProjectReadGrant
