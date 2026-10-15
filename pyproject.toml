@@ -19,3 +19,7 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "*" = ["*.md", "*.json"]
+
+[tool.pytest.ini_options]
+# Workers run tests without an env prefix (their Bash allowlist refuses one): `python3.11 -m pytest <file>` from the repo root.
+pythonpath = ["src", "tests"]
