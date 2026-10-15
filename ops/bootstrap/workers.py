@@ -116,23 +116,27 @@ def cmd_spend(args):
     rows, total = [], 0.0
     names = sorted(os.listdir(args.runs)) if os.path.isdir(args.runs) else []
     for name in names:
-        path = os.path.join(args.runs, name, "worker.json")
-        if not os.path.isfile(path):
-            continue
-        if os.path.getsize(path) == 0:
-            rows.append((name, None, "no output yet"))
-            continue
-        try:
-            with open(path) as f:
-                result = json.load(f)
-        except (ValueError, OSError):
-            rows.append((name, None, "output not readable"))
-            continue
-        cost = result.get("total_cost_usd") if isinstance(result, dict) else None
-        if isinstance(cost, (int, float)):
-            total += cost
-        state = "error" if isinstance(result, dict) and result.get("is_error") else "ok"
-        rows.append((name, cost, state))
+        # worker.json is the first run; worker.N.json are resumes of the same session.
+        folder = os.path.join(args.runs, name)
+        outputs = sorted(f for f in (os.listdir(folder) if os.path.isdir(folder) else [])
+                         if f == "worker.json" or (f.startswith("worker.") and f.endswith(".json")))
+        for out in outputs:
+            label = name if out == "worker.json" else f"{name}+{out[7:-5]}"
+            path = os.path.join(folder, out)
+            if os.path.getsize(path) == 0:
+                rows.append((label, None, "no output (running or stopped)"))
+                continue
+            try:
+                with open(path) as f:
+                    result = json.load(f)
+            except (ValueError, OSError):
+                rows.append((label, None, "output not readable"))
+                continue
+            cost = result.get("total_cost_usd") if isinstance(result, dict) else None
+            if isinstance(cost, (int, float)):
+                total += cost
+            state = "error" if isinstance(result, dict) and result.get("is_error") else "ok"
+            rows.append((label, cost, state))
     if not rows:
         print("  (no runs recorded)")
     for name, cost, state in rows:

@@ -1,7 +1,9 @@
 #!/bin/bash
 # Start one worker: `claude -p` in the task's lab, detached, with a budget cap and a
 # wall-clock limit. The run is recorded in $OPS_DIR/workers.json.
-#   run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N]
+#   run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]
+# --resume continues a stopped worker's session in the same lab, with FILE as its next prompt;
+# its output goes to worker.N.json beside the first run's, so spend sums over all of them.
 # The route picks the model and the budget per focused day: normal is claude-haiku-5-5
 # at $5 a day; xhard is claude-sonnet-5-5 at $20 a day. The wall-clock limit is 3 hours
 # a focused day. claude has no timeout flag, so a watchdog stops the worker's process
@@ -16,17 +18,21 @@ ALLOWED_TOOLS='Read Edit Write Glob Grep Bash(git:*) Bash(bash:*) Bash(/opt/home
 # Workers start clean: none of the operator's skills, slash commands or MCP connectors.
 ISOLATION=(--disable-slash-commands --strict-mcp-config --mcp-config '{"mcpServers":{}}')
 
-valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N]"
+valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]"
 TASK="$1"
 shift
 ROUTE=normal
 DAYS=1
 WALL_OVERRIDE=""
+RESUME=""
+MESSAGE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --route) ROUTE="${2:-}"; shift 2 ;;
     --days) DAYS="${2:-}"; shift 2 ;;
     --wall-seconds) WALL_OVERRIDE="${2:-}"; shift 2 ;;
+    --resume) RESUME="${2:-}"; shift 2 ;;
+    --message) MESSAGE="${2:-}"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -50,19 +56,27 @@ LAB="$LABS_DIR/$TASK"
 [ -f "$LAB/.brief.md" ] || die "no brief at $LAB/.brief.md"
 "$PY" -I "$HERE/workers.py" check --file "$WORKERS_JSON" --task "$TASK" || exit 1
 
-SESSION="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 RUN="$RUNS_DIR/$TASK"
 mkdir -p "$RUN"
-cp "$LAB/.brief.md" "$RUN/brief.md"
+if [ -n "$RESUME" ]; then
+  [ -f "$MESSAGE" ] || die "--resume needs --message FILE"
+  SESSION="$RESUME"; SESSION_ARG=(--resume "$SESSION"); PROMPT="$(cd "$(dirname "$MESSAGE")" && pwd)/$(basename "$MESSAGE")"
+  N=1; while [ -e "$RUN/worker.$N.json" ]; do N=$((N + 1)); done
+  OUT="$RUN/worker.$N.json"; ERR="$RUN/worker.$N.err"
+else
+  SESSION="$(uuidgen | tr '[:upper:]' '[:lower:]')"; SESSION_ARG=(--session-id "$SESSION"); PROMPT="$LAB/.brief.md"
+  OUT="$RUN/worker.json"; ERR="$RUN/worker.err"
+  cp "$LAB/.brief.md" "$RUN/brief.md"
+fi
 read -r STARTED DEADLINE <<< "$("$PY" -I "$HERE/workers.py" times "$WALL")"
 
 # set -m gives the worker its own process group, so the watchdog can stop all of it.
 set -m
 ( cd "$LAB" && exec nohup env OTTO_WORKER_DEADLINE="$DEADLINE" claude -p \
-    --model "$MODEL" --effort high --session-id "$SESSION" \
+    --model "$MODEL" --effort high "${SESSION_ARG[@]}" \
     --max-budget-usd "$BUDGET" --permission-mode acceptEdits \
     --allowedTools "$ALLOWED_TOOLS" "${ISOLATION[@]}" --output-format json \
-    < .brief.md > "$RUN/worker.json" 2> "$RUN/worker.err" ) &
+    < "$PROMPT" > "$OUT" 2> "$ERR" ) &
 PID=$!
 set +m
 
@@ -86,4 +100,4 @@ nohup bash -c '
 
 echo "started $TASK: pid $PID, $MODEL, budget \$$BUDGET, wall-clock $WALL s"
 echo "session $SESSION; deadline $DEADLINE"
-echo "output: $RUN/worker.json (errors: $RUN/worker.err)"
+echo "output: $OUT (errors: $ERR)"
