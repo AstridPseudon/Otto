@@ -135,7 +135,7 @@ ADAPTER_DESCRIPTORS = {
         fields={name: name for name in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")},
         mechanical="supported", live="supported",
         routes={"invoke": "supported", "resume": "supported", "attach": "unsupported", "native_children": "unsupported"},
-        source_paths=["src/otto/agents/codex_cli.py", "src/otto/agents/gateway.py", "src/otto/agents/owner_runtime.py"],
+        source_paths=["src/herzchen/fleet/hosts/codex.py", "src/otto/agents/gateway.py", "src/otto/agents/owner_runtime.py"],
         reason="direct Codex JSONL and owner admission/assignment/occurrence path are existing supported seams",
     ),
     "codex-host": _descriptor(

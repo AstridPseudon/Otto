@@ -2,10 +2,11 @@
 
 A profile is a *default*, never authority: explicit overrides and adopted
 project/role configuration still win (see ``TrustedAdapterSelection``). The
-``codex`` profile reproduces the previously hardcoded edition defaults, so a
-caller that selects nothing keeps the exact Codex behaviour. A new agent CLI
-adds one profile here plus its adapter registration; nothing else needs a
-model name.
+models a host serves are Otto's policy and live here, in ``PROFILES``; the
+product-neutral fleet in ``herzchen.fleet.hosts`` only validates the host kind
+and carries the ``ModelPlan`` this module supplies. A new agent CLI is one
+``HostKind`` implementation plus one entry here; no other module lists a model
+name. A host kind nobody implements is refused, never given Codex.
 """
 from __future__ import annotations
 
@@ -13,11 +14,17 @@ import copy
 import os
 from typing import Any, Mapping, Optional
 
-SLOTS = ("coordinator", "worker_normal", "worker_xhard", "reviewer_normal",
-         "reviewer_xhard", "oracle", "final_reviewer")
+from herzchen.fleet.hosts import REGISTRY, ModelBinding, ModelPlan, UnknownHostKind  # noqa: F401  (UnknownHostKind re-exported)
 
+SLOTS = ("coordinator", "worker_normal", "worker_xhard", "reviewer_normal", "reviewer_xhard", "oracle", "final_reviewer")
+
+# The unchanged Codex edition default, used only when nothing at all names a profile or a host
+# (pinned by test_host_neutral_defaults). Any host that IS named must be a known one.
+_UNSELECTED_HOST_KIND = "codex"
+
+# Unchanged edition defaults (policy-staging/megado/skill/templates/run.json).
+# Claude mirrors the same seven slots with its own model family.
 PROFILES: Mapping[str, Mapping[str, Any]] = {
-    # Unchanged edition defaults (policy-staging/megado/skill/templates/run.json).
     "codex": {
         "adapter": "codex",
         "host_kinds": ("codex",),
@@ -31,9 +38,6 @@ PROFILES: Mapping[str, Mapping[str, Any]] = {
             "final_reviewer": {"model": "gpt-6-astra", "reasoning": "high"},
         },
     },
-    # Claude Code host: economical Haiku, Sonnet for XHARD/independent
-    # review, Opus for consequential judgment. Efforts are the values the
-    # Claude CLI accepts (low, medium, high, xhigh, max).
     "claude": {
         "adapter": "claude-code",
         "host_kinds": ("claude-code",),
@@ -49,20 +53,34 @@ PROFILES: Mapping[str, Mapping[str, Any]] = {
     },
 }
 
-DEFAULT_PROFILE = "codex"
-
 
 def profile_for_host(host_kind: Optional[str]) -> str:
-    """Map a host kind (``codex``, ``claude-code``) to its default profile."""
-    for name, profile in PROFILES.items():
-        if host_kind in profile["host_kinds"]:
+    """Map a host kind (``codex``, ``claude-code``) to its default profile; unknown kinds are refused.
+
+    The fleet registry must implement the kind first (it raises ``UnknownHostKind`` for anything
+    it does not, including ``None`` and ``""``); only then is Otto's own table consulted.
+    """
+    REGISTRY.get(host_kind)
+    for name, entry in PROFILES.items():
+        if host_kind in entry["host_kinds"]:
             return name
-    return DEFAULT_PROFILE
+    raise UnknownHostKind(f"no model profile for host kind {host_kind!r}")
+
+
+def model_plan(name: str) -> ModelPlan:
+    """The fleet ``ModelPlan`` for a profile: the worker_normal and worker_xhard bindings."""
+    roles = PROFILES[name]["roles"]
+    return ModelPlan(ModelBinding(**roles["worker_normal"]), ModelBinding(**roles["worker_xhard"]))
+
+
+def serving_host(host_kind: Optional[str]) -> Any:
+    """The fleet host for a kind, serving this profile's model plan (a copy; the registry is untouched)."""
+    return REGISTRY.get(host_kind).serving(model_plan(profile_for_host(host_kind)))
 
 
 def resolve_profile_name(explicit: Optional[str] = None, *, host_kind: Optional[str] = None,
                          environ: Optional[Mapping[str, str]] = None) -> str:
-    """explicit argument -> OTTO_MODEL_PROFILE -> host kind -> codex (legacy)."""
+    """explicit argument -> OTTO_MODEL_PROFILE -> host kind (must be known) -> the unchanged Codex default."""
     env = os.environ if environ is None else environ
     for candidate in (explicit, env.get("OTTO_MODEL_PROFILE")):
         if candidate:
@@ -70,7 +88,7 @@ def resolve_profile_name(explicit: Optional[str] = None, *, host_kind: Optional[
                 raise ValueError("unknown model profile %r; known: %s" % (candidate, ", ".join(sorted(PROFILES))))
             return candidate
     kind = host_kind or env.get("OTTO_HOST_KIND")
-    return profile_for_host(kind) if kind else DEFAULT_PROFILE
+    return profile_for_host(kind or _UNSELECTED_HOST_KIND)
 
 
 def profile(name: str) -> dict[str, Any]:
