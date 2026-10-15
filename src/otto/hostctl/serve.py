@@ -81,6 +81,7 @@ class HostOwnerService:
         self.session, self.config = session, session.config
         self.owner, self.due_port, self.binding, self.store = (session.owner, session.due_port,
                                                                session.binding, session.store)
+        self.native_bodies = session.native_bodies
         self.home = Path(self.config["home"])
         registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         self.run_id = registration.get("run_id") or record.ref.id
