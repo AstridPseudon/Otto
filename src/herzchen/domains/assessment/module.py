@@ -95,19 +95,20 @@ def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
                 "representation": "managed", "content_digest": metadata["content_digest"],
                 "byte_digest": manifest["byte_digest"], "byte_length": manifest["byte_length"],
                 "availability": metadata["availability"], "verification": "manifest-verified"}
-            result = {"state": "unknown", "reason": "managed_payload_not_fully_verified",
-                "manifest_state": "verified", "manifest_digest": metadata["content_digest"],
+            result = {"manifest_state": "verified", "manifest_digest": metadata["content_digest"],
                 "representation": "managed-bytes.v1", "ref": ref.to_dict(), "consumer_reference": reference}
-            if payload_resolver is not None:
-                observed = payload_resolver.resolve(ref, actor=actor, scopes=scoped,
-                    verify_full=True, max_bytes=0)
-                result["io_work"] = observed.get("io_work")
-                if observed.get("verification") == "full-verified" and observed.get("actual_digest") == manifest["byte_digest"]:
-                    result.update(state="verified", reason="managed_payload_full_verification",
-                        digest=manifest["byte_digest"], algorithm="sha256", verification_scope="full-payload")
-                elif observed.get("availability") == "corrupt":
-                    result.update(state="mismatch", reason="managed_payload_mismatch")
-            return result
+            if payload_resolver is None:
+                return {**result, "state": "unknown", "reason": "payload_resolver_unavailable"}
+            observed = payload_resolver.resolve(ref, actor=actor, scopes=scoped,
+                verify_full=True, max_bytes=0)
+            result["io_work"] = observed.get("io_work")
+            if observed.get("verification") == "full-verified" and observed.get("actual_digest") == manifest["byte_digest"]:
+                return {**result, "state": "verified", "reason": "managed_payload_full_verification",
+                    "digest": manifest["byte_digest"], "algorithm": "sha256", "verification_scope": "full-payload"}
+            if observed.get("availability") == "corrupt" or (
+                    observed.get("verification") == "full-verified" and observed.get("actual_digest") != manifest["byte_digest"]):
+                return {**result, "state": "mismatch", "reason": "managed_payload_mismatch"}
+            return {**result, "state": "unknown", "reason": "managed_payload_not_fully_verified"}
         resolved = ContextPacketService(store).resolve_reference(ref, actor=actor, scopes=scoped)
         if resolved.get("foreign") or resolved.get("resolved") != ref:
             return {"state": "unknown", "reason": "evidence_ref_unresolved"}
@@ -240,7 +241,7 @@ def contribution() -> DomainContribution:
 class _AssessmentModuleEngine:
     """One shared assessment surface for Megado and creative protocols."""
 
-    def __init__(self, store: Store, *, actor: Optional[AuthenticatedActor] = None) -> None:
+    def __init__(self, store: Store, *, actor: Optional[AuthenticatedActor] = None, payload_resolver: Any = None) -> None:
         if not isinstance(store, Store):
             raise TypeError("store must be the supplied FND Store")
         try:
@@ -250,6 +251,7 @@ class _AssessmentModuleEngine:
         self.reader = self.__writer.consumer()
         self.default_actor = actor
         self._evidence_store = store
+        self._payload_resolver = payload_resolver
         self.limits = LimitService(store)
         self.operations = OperationManager(store)
 
@@ -259,6 +261,20 @@ class _AssessmentModuleEngine:
         raw_project = payload.get("project_ref") or payload.get("parent") if isinstance(payload, Mapping) else None
         project = _ref(raw_project, "evidence project") if raw_project is not None else None
         return (parent,) if project is None else (parent, project)
+
+    def _verified_evidence(self, refs: Sequence[ResourceRef], actor: AuthenticatedActor, parent: ResourceRef, *,
+                           resolver: Any = None) -> tuple:
+        """Return verified DAT digest rows; any unverified DAT ref refuses the write."""
+        rows = []
+        for ref in refs:
+            if ref.kind != "dat.content.document":
+                continue
+            verified = verify_dat_evidence(self._evidence_store, ref, actor=actor, scopes=self._evidence_scopes(parent),
+                payload_resolver=resolver if resolver is not None else getattr(self, "_payload_resolver", None))
+            if verified.get("state") != "verified":
+                raise AssessmentStateError(f"evidence {ref.id} is not verified: {verified.get('state')} ({verified.get('reason')})")
+            rows.append(verified)
+        return tuple(rows)
 
     def register(self) -> DomainContribution:
         descriptor = contribution()
@@ -464,6 +480,7 @@ class _AssessmentModuleEngine:
         guidance: Optional[Mapping[str, Any]] = None,
         protocol_result: Optional[Mapping[str, Any]] = None,
         findings: Sequence[Mapping[str, Any]] = (),
+        evidence_refs: Sequence[Any] = (),
         limit_pool: Any,
         declared_units: int = 1,
         actual_units: Optional[int] = None,
@@ -497,7 +514,14 @@ class _AssessmentModuleEngine:
         invocation_ref = ResourceRef(self.__writer.authority, INVOCATION_KIND, request_key)
         body_for_digest = {"scope": scope_record.ref, "candidate": candidate_ref, "criterion": criterion_ref, "input": packet.ref, "verdict": selected_verdict.value, "guidance": dict(guidance or {}), "protocol_result": dict(protocol_result or {}), "findings": [_safe(item) for item in findings], "pool": pool_ref, "declared_units": declared_units, "actual_units": actual_units, "route": route, "role": role, "operation_payload": dict(operation_payload or {})}
         selected_actor = self._actor(actor)
+        evidence = tuple(self._current_ref(_ref(value, "evidence"), "evidence") for value in evidence_refs)
+        evidence_digests = self._verified_evidence(evidence, selected_actor, parent_ref) if selected_verdict is Verdict.PASS else ()
+        if evidence:
+            body_for_digest["evidence_refs"] = [_safe(item) for item in evidence]
         parent_payload = {"record_type": RESULT_KIND, "schema_revision": SCHEMA_REVISION, "scope_ref": scope_record.ref, "parent_obligation_ref": parent_ref, "criterion_ref": criterion_ref, "candidate_ref": candidate_ref, "input_packet_ref": packet.ref, "verdict": selected_verdict.value, "guidance": _safe(dict(guidance or {})), "protocol_result": _safe(dict(protocol_result or {})), "route": route, "role": role, "invocation_ref": invocation_ref, "reservation_ref": reservation_ref, "finding_refs": (), "correction_refs": (), "accepted": False}
+        if evidence:
+            parent_payload["evidence_refs"] = evidence
+            parent_payload["evidence_digests"] = evidence_digests
         with self.__writer.transaction() as tx:
             envelope = self._envelope("assessment.run", result_ref, body_for_digest, request_key, selected_actor, expected_version=0)
             prior = self.__writer.get_receipt(request_key)
@@ -948,12 +972,18 @@ class _AssessmentModuleEngine:
         key = self._key(logical_request_key, "accept")
         decision_ref = ResourceRef(self.__writer.authority, DECISION_KIND, key)
         evidence = tuple(self._current_ref(_ref(value, "evidence"), "evidence") for value in evidence_refs)
-        evidence_digests = []
-        for evidence_ref in evidence:
-            verified = verify_dat_evidence(self._evidence_store, evidence_ref, actor=selected_actor,
-                                           scopes=self._evidence_scopes(current.parent_obligation_ref))
-            if verified.get("state") == "verified":
-                evidence_digests.append(verified)
+        evidence_digests = list(self._verified_evidence(evidence, selected_actor, current.parent_obligation_ref))
+        for row in current.payload.get("evidence_digests") or ():
+            bound_ref = self._payload_ref(row["ref"])
+            checked = verify_dat_evidence(self._evidence_store, bound_ref, actor=selected_actor,
+                                          scopes=self._evidence_scopes(current.parent_obligation_ref),
+                                          payload_resolver=getattr(self, "_payload_resolver", None))
+            if checked.get("state") != "verified" or checked.get("digest") != row.get("digest"):
+                raise AssessmentStateError("result evidence changed since it was verified")
+            if bound_ref not in evidence:
+                evidence = evidence + (bound_ref,)
+            if all(item.get("ref") != bound_ref.to_dict() for item in evidence_digests):
+                evidence_digests.append(checked)
         payload = {"record_type": DECISION_KIND, "schema_revision": SCHEMA_REVISION, "parent_obligation_ref": current.parent_obligation_ref, "result_ref": current.ref, "candidate_ref": current.candidate_ref, "criterion_ref": current.criterion_ref, "author": approver, "authority": approval_authority, "rationale": _opaque(rationale, "rationale"), "disposition": decision_value.value, "evidence_refs": evidence, "evidence_digests": tuple(evidence_digests), "review_evidence": review_refs, "return_condition": return_condition}
         with self.__writer.transaction() as tx:
             receipt = self.__writer.mutate(self._envelope("assessment.accept", decision_ref, payload, key, selected_actor, expected_version=0), event_type="assessment.accepted", before_refs=(current.ref, current.parent_obligation_ref, current.candidate_ref, current.criterion_ref), effects={"accepted": decision_value in (Disposition.ACCEPT, Disposition.ACCEPT_WITH_RISK), "candidate_ref": current.candidate_ref, "criterion_ref": current.criterion_ref, "authority": approval_authority}, stream=ASSESSMENT_STREAM, transaction=tx)
@@ -990,7 +1020,10 @@ class _AssessmentModuleEngine:
         key = self._key(logical_request_key, "no-review-accept")
         decision_ref = ResourceRef(self.__writer.authority, DECISION_KIND, key)
         evidence = tuple(self._current_ref(_ref(value, "evidence"), "evidence") for value in evidence_refs)
-        payload = {"record_type": DECISION_KIND, "schema_revision": SCHEMA_REVISION, "parent_obligation_ref": scope_record.parent_obligation_ref, "result_ref": None, "candidate_ref": candidate_ref, "criterion_ref": criterion_ref, "author": approver, "authority": approval_authority, "rationale": _opaque(rationale, "rationale"), "disposition": Disposition.ACCEPT.value, "evidence_refs": evidence, "review_evidence": (), "return_condition": return_condition, "no_review": True}
+        evidence_digests = self._verified_evidence(evidence, selected_actor, scope_record.parent_obligation_ref)
+        if not evidence_digests:
+            raise AssessmentAuthorityError("no-review acceptance requires verified evidence")
+        payload = {"record_type": DECISION_KIND, "schema_revision": SCHEMA_REVISION, "parent_obligation_ref": scope_record.parent_obligation_ref, "result_ref": None, "candidate_ref": candidate_ref, "criterion_ref": criterion_ref, "author": approver, "authority": approval_authority, "rationale": _opaque(rationale, "rationale"), "disposition": Disposition.ACCEPT.value, "evidence_refs": evidence, "evidence_digests": evidence_digests, "review_evidence": (), "return_condition": return_condition, "no_review": True}
         with self.__writer.transaction() as tx:
             receipt = self.__writer.mutate(self._envelope("assessment.accept", decision_ref, payload, key, selected_actor, expected_version=0), event_type="assessment.accepted", before_refs=(scope_record.parent_obligation_ref, candidate_ref, criterion_ref), effects={"accepted": True, "no_review": True, "candidate_ref": candidate_ref, "criterion_ref": criterion_ref}, stream=ASSESSMENT_STREAM, transaction=tx)
         return self.get_decision(receipt.result_ref or decision_ref)
@@ -1053,6 +1086,7 @@ class _AssessmentModuleEngine:
         evidence_store: Any = None,
         completion_evidence_refs: Sequence[Any] = (),
         completion_evidence_hashes: Any = (),
+        payload_resolver: Any = None,
     ) -> Mapping[str, Any]:
         """Explain the finite required-scope predicate used by work completion.
 
@@ -1193,7 +1227,8 @@ class _AssessmentModuleEngine:
                         evidence_states.append("unknown")
                         continue
                     verified = verify_dat_evidence(evidence_store, evidence, actor=actor,
-                                                   scopes=self._evidence_scopes(current_parent))
+                                                   scopes=self._evidence_scopes(current_parent),
+                                                   payload_resolver=payload_resolver if payload_resolver is not None else getattr(self, "_payload_resolver", None))
                     state = str(verified.get("state", "unknown"))
                     if state == "verified" and verified.get("digest") != pin.get("digest"):
                         state = "mismatch"
@@ -1208,6 +1243,8 @@ class _AssessmentModuleEngine:
                     evidence_states.append(state)
                     if state == "mismatch":
                         block("completion_evidence_mismatch", "verified DAT evidence digest does not match", scope, criterion)
+                    elif state != "verified":
+                        block("completion_evidence_unverified", "pinned DAT evidence can no longer be verified", scope, criterion)
                 accepted.append(decision.ref)
             cap = scope.policy.get("max_rounds")
             consumed = scope.policy.get("rounds_consumed")
@@ -1492,13 +1529,13 @@ def required_completion_blockers(
     reader: Any, parent_obligation: Any, *, candidate: Any = None,
     gate_refs: Sequence[Any] = (), actor: Optional[AuthenticatedActor] = None,
     evidence_store: Any = None, completion_evidence_refs: Sequence[Any] = (),
-    completion_evidence_hashes: Any = (),
+    completion_evidence_hashes: Any = (), payload_resolver: Any = None,
 ) -> Mapping[str, Any]:
     """Read the one assessment completion predicate through a transaction-bound reader."""
     return _CompletionReadView(reader).completion_blockers(
         parent_obligation, candidate=candidate, gate_refs=gate_refs, actor=actor,
         evidence_store=evidence_store, completion_evidence_refs=completion_evidence_refs,
-        completion_evidence_hashes=completion_evidence_hashes,
+        completion_evidence_hashes=completion_evidence_hashes, payload_resolver=payload_resolver,
     )
 
 

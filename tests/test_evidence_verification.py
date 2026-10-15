@@ -53,8 +53,13 @@ class EvidenceVerificationTests(unittest.TestCase):
         self.pool = LimitService(self.store).create_pool(
             ResourceRef("owner", "limit", "evidence-pool"), capacity_units=10, cumulative_allowance_units=10,
             logical_request_key="evidence-pool", actor=self.actor)
-        # Admitted identity used as the assessed candidate.
-        self.candidate = self.attempt
+        # Dedicated admitted candidate, created with a concrete revision so that
+        # completion_blockers sees a pinned, current candidate reference.
+        candidate_ref = ResourceRef("owner", "work.attempt", "candidate", "rev-1")
+        self.store.put_identity(candidate_ref, {"record_type": "work.attempt", "project_ref": self.project,
+                                                "task_ref": self.task}, version=0)
+        self.candidate = self.store.get_identity(candidate_ref).ref
+        self.assertIsNotNone(self.candidate.revision)
 
     def _module(self, *, resolver=True):
         if resolver:
@@ -172,10 +177,25 @@ class EvidenceVerificationTests(unittest.TestCase):
                 criterion=scope_b.criterion_refs[0], rationale="tampered runner evidence",
                 evidence_refs=[bad["revision_ref"]], logical_request_key="astra0-tamper-no-review")
 
-        blockers = assessment.completion_blockers(task_b, candidate=self.store.get_identity(self.candidate).ref,
+        blockers = assessment.completion_blockers(task_b, candidate=self.candidate,
             gate_refs=[], actor=self.actor, evidence_store=self.store, payload_resolver=self.handler)
         self.assertTrue(blockers["required"])
-        self.assertTrue(blockers["blockers"])
+        codes = [item["code"] for item in blockers["blockers"]]
+        # The candidate is pinned and current, so the block must come from the evidence gate.
+        self.assertNotIn("completion_candidate_stale", codes)
+        self.assertTrue({"criterion_uncovered", "pass_not_accepted"} & set(codes), codes)
+
+    def test_result_binds_the_evidence_it_was_verified_against(self):
+        runner = self._runner(RUNNER_BYTES, "runner-1")
+        assessment = self._module()
+        scope, packet = self._declare(assessment, "bind-scope")
+        result = self._assess(assessment, scope, packet, "bind-assess", evidence=[runner["revision_ref"]])
+        # Tamper with the bytes after the PASS result bound their digest.
+        self._flip_first_byte(runner)
+        with self.assertRaises(AssessmentStateError):
+            assessment.accept(result.ref, rationale="tampered after assess", evidence_refs=[],
+                              logical_request_key="bind-accept")
+        self.assertEqual(assessment.list_decisions(parent_obligation=self.task), ())
 
     def test_tamper_after_accept_blocks_completion(self):
         runner = self._runner(RUNNER_BYTES, "runner-1")
