@@ -110,6 +110,7 @@ def exercise_advisor_lifecycle(
         # Explicit inert resource join. Production allowance reserve is still
         # reached with the real exhausted owner pool and authentic owner actor.
         app = SimpleNamespace(actor=actor, binding=SimpleNamespace(authenticated_actor=authenticate),
+            runtime=SimpleNamespace(adapter=SimpleNamespace()),
             _read=lambda key: DueRecord.from_dict(memory.read_due(key)),
             _resources=lambda due: due, start=provider_start)
         execution = AdvisorExecution(execution=app, ports=ports, allowance=allowance,
