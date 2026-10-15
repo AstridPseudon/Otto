@@ -10,6 +10,7 @@ import stat
 
 from herzchen.contracts import HostIdentity, HostOperation, HostRequest, ResourceRef
 from herzchen.adapters.host import _native_host_context
+from otto.agents.evidence_refs import compact_raw_result
 from otto.portfolio.owner_readers import OwnerRoleRuntimeError, json_value
 
 
@@ -196,9 +197,10 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
         result.update(observed_turn_id=turn, observed_profile=parsed["observed_profile"],
             observed_context_digest=parsed["context_digest"], context_digest_verified=True,
             task_bound_evidence=parsed["task_bound_evidence"], worker_content=parsed["worker_content"],
-            raw_result={"transport_outcome": "unavailable_after_owner_interruption",
+            raw_result=compact_raw_result({"transport_outcome": "unavailable_after_owner_interruption",
                 "original_transport_exit_status": None, "owner_delivery_authorization": authorization,
-                "work_envelope": {"exit_status": None, "host_evidence": {"otto_host_turn_context": context}}})
+                "work_envelope": {"exit_status": None, "host_evidence": {"otto_host_turn_context": context}}},
+                parsed["task_bound_evidence"]))
         capture.validate_completed_manager_result(result)
     proof = {"schema": "otto.missing-manager-capture-reconciliation.v1", "resolver": runtime.actor,
         "effect": "trusted_admitted_terminal_capture_no_provider_replay",
@@ -418,6 +420,7 @@ def reconcile_completed_resume_capture(runtime, *, schedule_id,
         worker_content=parsed["worker_content"])
     # Keep every original failed receipt/transport byte; add only trusted reparse.
     replacement["raw_result"]["work_envelope"]["host_evidence"] = {"otto_host_turn_context": context}
+    replacement["raw_result"] = compact_raw_result(replacement["raw_result"], parsed["task_bound_evidence"])
     proof = {"schema": "otto.completed-resume-capture-reconciliation.v1", "resolver": runtime.actor,
         "effect": "trusted_completed_resume_no_provider_replay", "source_unknown": deepcopy(prior),
         "source_unknown_sha256": digest(prior), "replacement_sha256": digest(replacement),

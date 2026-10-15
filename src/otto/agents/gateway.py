@@ -11,6 +11,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Optional, Protocol
 
+from otto.agents.evidence_refs import compact_raw_result
 from otto.portfolio.resource_sync import DELIVERY_STATES, ResourceSyncError, validate_resource_evidence
 
 OPERATIONS = ("invoke", "resume", "send", "inspect", "cancel", "wait")
@@ -1286,6 +1287,11 @@ class OttoGateway:
                                "observed_profile", "worker_content", "error", "usage_capture"):
                 if field_name in result:
                     envelope_value[field_name] = _json_value(result[field_name])
+        # The top-level task_bound_evidence is the single stored copy; transport copies become references.
+        for field_name in ("raw_result", "transport_result"):
+            if isinstance(envelope_value.get(field_name), Mapping):
+                envelope_value[field_name] = compact_raw_result(envelope_value[field_name],
+                                                                envelope_value.get("task_bound_evidence"))
         if self.attempt_capture is not None:
             self.attempt_capture.record(envelope_value)
         if isinstance(result, Mapping):

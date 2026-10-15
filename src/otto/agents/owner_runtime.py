@@ -12,6 +12,7 @@ import hashlib
 import json
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from .evidence_refs import expand_evidence_references
 from .gateway import HerzchenAttemptCapture, OwnerDueRecordAttemptCapture, OttoGateway
 from .orchestrator_route import OrchestratorRouteError, invoke_canonical_assignment
 from otto.portfolio.owner_readers import (
@@ -41,7 +42,7 @@ def _completed_worker_support_refs(result, verifier, authorization):
             or authorization.get("brief_sha256") != digest
             or evidence.get("owner_delivery_authorization") != authorization):
         raise OwnerRoleRuntimeError("completed worker retained authorization differs")
-    work = (result.get("raw_result") or {}).get("work_envelope")
+    work = expand_evidence_references(result.get("raw_result") or {}, evidence).get("work_envelope")
     if not isinstance(work, Mapping) or work.get("exit_status") is None or not isinstance(work.get("host_evidence", {}).get("otto_host_turn_context"), Mapping):
         # Other retained provider schemas keep the original current-brief path.
         return ()
@@ -226,7 +227,7 @@ class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
             raise OwnerRoleRuntimeError("completed manager result changed the admitted brief or current mandate contract")
         self.verify_completed_delivery(value.get("logical_request_key"), value.get("physical_session_id"),
                                        resource["brief_sha256"], authorization)
-        raw = value.get("raw_result") or {}
+        raw = expand_evidence_references(value.get("raw_result") or {}, value.get("task_bound_evidence"))
         context = (raw.get("work_envelope") or {}).get("host_evidence", {}).get("otto_host_turn_context")
         parsed = self.native_result_verifier.observe_context(context,
             expected_session_id=value.get("physical_session_id"), expected_turn_id=value.get("observed_turn_id"),
@@ -1157,7 +1158,7 @@ class CanonicalRoleRuntime:
                 or contract != capture.manager_command_contract
                 or prior["resource_evidence"]["brief_sha256"] != digest(brief)):
             raise OwnerRoleRuntimeError("retained native authorization or current manager contract differs")
-        retained = prior["raw_result"]
+        retained = expand_evidence_references(prior["raw_result"], prior.get("task_bound_evidence"))
         if (retained.get("verification_failures") or retained.get("work_receipt", {}).get("outcome") != "succeeded"
                 or retained.get("work_receipt", {}).get("operation") != "resume"
                 or retained.get("initialization_envelope", {}).get("host_evidence", {}).get("invocation_turn_verified") is not True):
