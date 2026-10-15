@@ -184,11 +184,18 @@ def _job(marks: Path, name: str, seconds: float) -> list[str]:
               f"open({str(marks)!r},'a').write('{name}-=%f\\n' % time.time())")
 
 
+def _together(marks: Path, name: str, n: int) -> list[str]:
+    # Start, then stay until N jobs have started (they can only all start if they run at once).
+    return py(f"import time; open({str(marks)!r},'a').write('{name}+=%f\\n' % time.time())\n"
+              f"while open({str(marks)!r}).read().count('+=') < {n}: time.sleep(0.05)\n"
+              f"open({str(marks)!r},'a').write('{name}-=%f\\n' % time.time())")
+
+
 def test_jobs_run_at_the_same_time_while_capacity_remains(tmp_path):
     marks = tmp_path / "marks"
-    a = heavy(tmp_path, "--purpose", "frames A", "--", *_job(marks, "A", 2), capacity=3)
-    b = heavy(tmp_path, "--purpose", "frames B", "--", *_job(marks, "B", 2), capacity=3)
-    c = heavy(tmp_path, "--purpose", "frames C", "--", *_job(marks, "C", 2), capacity=3)
+    a = heavy(tmp_path, "--purpose", "frames A", "--", *_together(marks, "A", 3), capacity=3)
+    b = heavy(tmp_path, "--purpose", "frames B", "--", *_together(marks, "B", 3), capacity=3)
+    c = heavy(tmp_path, "--purpose", "frames C", "--", *_together(marks, "C", 3), capacity=3)
     for proc in (a, b, c):
         proc.communicate(timeout=60)
         assert proc.returncode == 0
