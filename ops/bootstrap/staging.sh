@@ -109,7 +109,7 @@ wait_ready() {
 up() {
   guard_root
   if [ -z "${OTTO_STAGING_ENTRY:-}" ]; then
-    die "up refused: $PROD_ENTRY hard-codes the live owner paths (a controller under ~/Documents/Codex, ~/.codex, ~/.otto and the live Store) and cannot be rooted at $STAGE_ROOT yet. Nothing was started."
+    die "up refused: $PROD_ENTRY now takes its locations from OTTO_* variables, but install/controller/operating_service.py (WORK, NATIVE_EVIDENCE_ROOT, LAUNCHER, EVIDENCE_SOURCE_STATE) and native_caller_address.py (the caller socket) still hard-code the live paths, and no staged controller state exists. Starting would touch the live owner. Nothing was started."
   fi
   local entry="$OTTO_STAGING_ENTRY" pid start before
   [ -f "$entry" ] || die "up: no entry point at $entry"
@@ -122,6 +122,9 @@ up() {
   cd "$TREE"
   set -m
   env OTTO_STAGING_ROOT="$STAGE_ROOT" OTTO_STAGING_STORE="$STORE" OTTO_STAGING_SOCKET="$SOCK" \
+    OTTO_CONTROLLER_DIR="$TREE/install/controller" OTTO_PRIVATE_DIR="$STAGE_ROOT/private" \
+    OTTO_VISION_CONTROLLER_DIR="$STAGE_ROOT/controllers/vision" OTTO_ASTRID_CONTROLLER_DIR="$STAGE_ROOT/controllers/astrid" \
+    OTTO_HOST_HOME="$STAGE_ROOT/host-home" \
     "$PY" "$entry" </dev/null >>"$LOG" 2>&1 &
   pid=$!
   set +m
