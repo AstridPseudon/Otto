@@ -18,7 +18,7 @@ class SerializedHost:
     """Disposable owner queue: every canonical operation has one thread."""
 
     bounded_transports = True
-    capacity = SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1))
+    capacity = SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=0))
 
     def capacity_holds(self):
         return dict(self._capacity_holds)

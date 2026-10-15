@@ -9,13 +9,13 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import sys
 import tempfile
-import time
 from types import SimpleNamespace
 import unittest
 
+from herzchen.fleet.capacity import CapacityPolicy
 from herzchen.kernel import Store
+from otto.agents.owner_runtime import _pin_process_group
 from otto.portfolio.execution_host import ExecutionHost
 from otto.portfolio.owner_completion import OwnerCompletion
 
@@ -119,6 +119,18 @@ class PoolBehavior:
                          ["manager-0", "manager-1"], "managers get a slot with every worker turn taken")
         self.assertEqual(self.turns.waiting(), ["manager-2", "worker-6", "worker-7"])
 
+    def test_worker_floor_caps_managers(self):
+        for index in range(10):
+            self.turns.submit("manager-%d" % index, "manager")
+        self.turns.pump()
+        self.assertEqual(len(self.turns.running()), 6, "managers stop at turn + reserve - worker floor")
+        for index in range(2):
+            self.turns.submit("worker-%d" % index, "worker")
+        self.turns.pump()
+        self.assertEqual([name for name in self.turns.running() if name.startswith("worker")],
+                         ["worker-0", "worker-1"], "the worker floor is still open to workers")
+        self.assertEqual(len(self.turns.running()), 8)
+
     def test_checks_run_while_turns_full(self):
         self.fill_turns()
         self.assertEqual(len(self.turns.running()), 8)
@@ -206,39 +218,6 @@ class PoolBehavior:
         self.assertEqual(self.host.capacity_holds(), {}, "restart reconciles holds whose group is gone")
         self.assertIn(name, self.host._capacity_holds)
 
-    def test_pin_native_process_records_the_group(self):
-        name = "pinned"
-        session = "native-session-1"
-        self.host._capacity_holds.clear()
-        self.turns.submit(name, "worker")
-        self.turns.pump()
-        self.assertEqual(self.turns.running(), [name])
-        self.host._owned(lambda: self.host.bind_native_session(name, session))
-        self.host.pin_native_process(name, session)
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "--resume", session],
-                                 start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.spawned.append(child)
-        deadline = time.monotonic() + 10
-        while name not in self.host._process_groups and time.monotonic() < deadline:
-            self.host._owned(self.host._pin_native_groups)
-            time.sleep(0.05)
-        self.assertEqual(self.host._process_groups[name]["pgid"], child.pid)
-
-    def test_pin_never_takes_a_shared_group(self):
-        name = "shared-group"
-        self.turns.submit(name, "worker")
-        self.turns.pump()
-        session = "native-session-2"
-        self.host._owned(lambda: self.host.bind_native_session(name, session))
-        self.host.pin_native_process(name, session)
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "--resume", session],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # our own group
-        self.addCleanup(lambda: (child.kill(), child.wait()))
-        for _ in range(5):
-            self.host._owned(self.host._pin_native_groups)
-            time.sleep(0.05)
-        self.assertNotIn(name, self.host._process_groups, "only a group the native process leads is pinned")
-
 
 class MemoryPoolTests(PoolBehavior, unittest.TestCase):
     def make_host(self, directory):
@@ -265,31 +244,77 @@ class StorePoolTests(PoolBehavior, unittest.TestCase):
         self.fill_turns(workers=2, managers=0)
         again = ExecutionHost(directory=self.root / "ipc", handler=lambda request: None,
                               bounded_transports=True, capacity_store=self.store)
+        self.assertEqual(again.capacity.snapshot()["turns"]["reserved"], 2, "the Store names both turns")
         # Nothing restored them as holds, so the old life's reservations are orphans.
         again.reconcile_dead_holds()
         self.assertEqual(again.capacity.snapshot()["pool"]["held_units"], 0)
+        self.assertEqual(list((self.root / "ipc").glob("capacity-reservations.json")), [],
+                         "the Store, not an index file, carries the reservations")
+
+    def test_live_heavy_lease_survives_restart(self):
+        pool = self.host.capacity
+        lease = pool.queue_heavy("render", 2, pid=os.getpid())
+        self.assertTrue(pool.claim_heavy(lease))
+        again = ExecutionHost(directory=self.root / "ipc", handler=lambda request: None,
+                              bounded_transports=True, capacity_store=self.store)
+        self.assertEqual(again.capacity.snapshot()["heavy"]["used"], 2, "the restarted pool adopts the lease")
+        self.assertEqual(again.reconcile_dead_holds(), [])
+        self.assertEqual(again.capacity.snapshot()["heavy"]["used"], 2, "a live owner keeps its lease")
+
+    def test_dead_heavy_lease_is_released_after_restart(self):
+        dying = self.group()
+        lease = self.host.capacity.queue_heavy("doomed", 3, pid=dying.pid)
+        self.assertTrue(self.host.capacity.claim_heavy(lease))
+        os.killpg(dying.pid, signal.SIGKILL)
+        dying.wait()
+        again = ExecutionHost(directory=self.root / "ipc", handler=lambda request: None,
+                              bounded_transports=True, capacity_store=self.store)
+        self.assertEqual(again.capacity.snapshot()["heavy"]["used"], 3, "adopted before the sweep")
+        again.reconcile_dead_holds()
+        self.assertEqual(again.capacity.snapshot()["heavy"]["used"], 0)
+        self.assertEqual(again.capacity.snapshot()["pool"]["held_units"], 0)
 
 
-class OwnerWiringTests(unittest.TestCase):
-    def test_binding_a_native_session_pins_its_process(self):
-        from unittest.mock import patch
-        from tests import test_bounded_project_host as fixture
-        journey = fixture.BoundedProjectHostTests()
-        journey.setUp()
-        self.addCleanup(journey.doCleanups)
-        calls, original = [], ExecutionHost.pin_native_process
+class CapacityPolicyTests(unittest.TestCase):
+    def test_default_tiers(self):
+        policy = CapacityPolicy()
+        self.assertEqual((policy.total_units, policy.worker_units, policy.manager_units), (11, 6, 6))
 
-        def spy(host, schedule_id, session):
-            calls.append((schedule_id, session))
-            return original(host, schedule_id, session)
+    def test_manager_admission_stops_at_its_units(self):
+        policy = CapacityPolicy()
+        self.assertTrue(policy.admits_turn("manager", 0, 5))
+        self.assertFalse(policy.admits_turn("manager", 0, 6), "managers never pass turn + reserve - floor")
+        self.assertFalse(policy.admits_turn("manager", 6, 2), "the whole pool is full for managers too")
+        self.assertTrue(policy.admits_turn("manager", 5, 2), "a manager fills the last shared unit")
 
-        with patch.object(ExecutionHost, "pin_native_process", spy):
-            start = journey.send("A", {"command": "start-manager"})
-            journey.wait(lambda: journey.native.has_started("manager-A"))
-            journey.native.release("manager-A")
-            self.assertEqual(journey.response(start)["outcome"], "succeeded")
-        self.assertEqual([schedule for schedule, _ in calls], [journey.states["A"]["schedule_id"]])
-        self.assertTrue(calls[0][1])
+    def test_worker_admission_respects_the_floor(self):
+        policy = CapacityPolicy()
+        self.assertTrue(policy.admits_turn("worker", 5, 0))
+        self.assertFalse(policy.admits_turn("worker", 6, 0))
+        self.assertTrue(policy.admits_turn("worker", 1, 6), "managers beyond the reserve leave the floor open")
+        self.assertFalse(policy.admits_turn("worker", 2, 6), "the floor is worker-only: 2 + 4 + 1 > 6")
+        self.assertTrue(policy.admits_turn("worker", 0, 2), "the reserve alone costs workers nothing")
+
+    def test_role_other_than_manager_counts_as_worker(self):
+        policy = CapacityPolicy()
+        self.assertEqual(policy.admits_turn("reviewer", 5, 0), policy.admits_turn("worker", 5, 0))
+        self.assertEqual(policy.admits_turn("reviewer", 2, 6), policy.admits_turn("worker", 2, 6))
+
+    def test_zero_reserve_and_zero_floor_are_valid(self):
+        policy = CapacityPolicy(turn_units=4, manager_reserve=0, heavy_headroom=1, worker_floor=0)
+        self.assertEqual(policy.manager_units, 4)
+        self.assertTrue(policy.admits_turn("worker", 3, 0))
+        self.assertFalse(policy.admits_turn("worker", 3, 1))
+
+    def test_worker_floor_cannot_exceed_turn_units(self):
+        with self.assertRaises(ValueError):
+            CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=3)
+
+    def test_invalid_units_are_rejected(self):
+        for bad in ({"turn_units": 0}, {"heavy_headroom": 0}, {"manager_reserve": -1},
+                    {"worker_floor": -1}, {"turn_units": True}, {"worker_floor": 1.0}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                CapacityPolicy(**bad)
 
 
 class ManagerCapIsGone(unittest.TestCase):
@@ -297,6 +322,81 @@ class ManagerCapIsGone(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TypeError):
                 ExecutionHost(directory=directory, handler=lambda request: None, manager_turn_limit=3)
+
+
+class ProcessGroupPinTests(unittest.TestCase):
+    """The owner observer pins the native process group to its running occurrence."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="otto-pin-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.host = ExecutionHost(directory=self.root / "ipc", handler=lambda request: None,
+                                  bounded_transports=True)
+        self.turns = Turns(self.host, self.root)
+        self.spawned = []
+        self.addCleanup(PoolBehavior.reap_all, self)
+
+    def group(self):
+        process = spawn_group()
+        self.spawned.append(process)
+        return process
+
+    def running_turn(self, name):
+        self.turns.submit(name, "worker")
+        self.turns.pump()
+        self.assertIn(name, self.turns.running())
+
+    def test_observer_pins_the_group_and_a_dead_group_frees_the_slot(self):
+        schedule = "pinned-worker"
+        self.running_turn(schedule)
+        calls = []
+        release = object()
+
+        def recorder(process, authorization):
+            calls.append((process, authorization))
+            return release
+
+        adapter = SimpleNamespace(native_process_observer=recorder)
+        _pin_process_group(adapter, schedule)
+        process = self.group()
+        authorization = {"status": "authorized"}
+        returned = self.host._owned(lambda: adapter.native_process_observer(process, authorization))
+        self.assertEqual(calls, [(process, authorization)], "the wrapped observer runs once with its arguments")
+        self.assertIs(returned, release)
+        self.assertEqual(self.host._process_groups[schedule]["pgid"], process.pid)
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        self.assertEqual(self.host._group_state(self.host._process_groups[schedule]), "gone")
+        self.assertEqual(self.host.reconcile_dead_holds(), [], "a dead group frees nothing for a running turn")
+        self.assertEqual(self.turns.running(), [schedule], "the running turn keeps its slot")
+
+    def test_pin_failure_never_breaks_the_launch(self):
+        sentinel = object()
+        schedule = "pin-failure-worker"
+        self.running_turn(schedule)
+        exited = subprocess.Popen(["true"])
+        exited.wait()
+        adapter = SimpleNamespace(native_process_observer=lambda process, authorization: sentinel)
+        _pin_process_group(adapter, schedule)
+        returned = self.host._owned(lambda: adapter.native_process_observer(exited, {"status": "authorized"}))
+        self.assertIs(returned, sentinel, "an already-exited pid still returns the sentinel")
+        self.assertNotIn(schedule, self.host._process_groups, "an exited pid pins nothing")
+
+        live = self.group()
+        unknown = SimpleNamespace(native_process_observer=lambda process, authorization: sentinel)
+        _pin_process_group(unknown, "no-such-occurrence")
+        returned = self.host._owned(lambda: unknown.native_process_observer(live, {"status": "authorized"}))
+        self.assertIs(returned, sentinel, "an unknown occurrence still returns the sentinel")
+        self.assertNotIn("no-such-occurrence", self.host._process_groups, "an unknown occurrence pins nothing")
+
+    def test_no_observer_means_no_wrapper(self):
+        bare = SimpleNamespace()
+        _pin_process_group(bare, "anything")
+        self.assertFalse(hasattr(bare, "native_process_observer"), "no attribute is added")
+        none = SimpleNamespace(native_process_observer=None)
+        _pin_process_group(none, "anything")
+        self.assertIsNone(none.native_process_observer, "a None observer is left as None")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,29 @@ from otto.portfolio.resource_sync import normalize_instruction_contract
 from otto.portfolio.resource_drift import apply_resource_sync_action, select_resource_sync_action
 
 
+def _pin_process_group(adapter, schedule_id):
+    """Pin the native process group to its occurrence once the adapter spawns it.
+
+    The pin only lets a later restart prove the group gone; a process that is
+    already gone or an unknown occurrence leaves the hold conservatively held.
+    """
+    observer = getattr(adapter, "native_process_observer", None)
+    if not callable(observer):
+        return
+    from otto.portfolio.execution_host import ExecutionHost
+
+    def pinned(process, authorization):
+        release = observer(process, authorization)
+        host = ExecutionHost.current_bounded()
+        if host is not None:
+            try:
+                host.record_process_group(schedule_id, process.pid)
+            except (RuntimeError, PermissionError, OSError):
+                pass
+        return release
+    adapter.native_process_observer = pinned
+
+
 def _completed_worker_support_refs(result, verifier, authorization):
     """Exact delivered pins for authenticated completed-result reconstruction only."""
     if (not isinstance(result, Mapping) or result.get("context_digest_verified") is not True
@@ -850,7 +873,6 @@ class CanonicalRoleRuntime:
                 host = ExecutionHost.current_bounded()
                 if host is not None:
                     host.bind_native_session(schedule_id, session_id)
-                    host.pin_native_process(schedule_id, session_id)  # -> record_process_group once the child exists
                 return capture.authorize_delivery(logical_request_key, session_id, brief_sha256)
             adapter = self.adapter.bind_owner_authorization(
                 ExecutionHost.owner_callback(authorize),
@@ -863,6 +885,7 @@ class CanonicalRoleRuntime:
                 **({"role": role, "profile": requested_profile}
                    if callable(getattr(self.adapter, "validate_owner_host_composition", None)) else {}),
             )
+            _pin_process_group(adapter, schedule_id)
             capture.source_result_validator = getattr(adapter, "verify_source_result", None)
             owner_timeout = due.get("timeout_seconds")
             request = {**request, "owner_timeout_seconds": owner_timeout,

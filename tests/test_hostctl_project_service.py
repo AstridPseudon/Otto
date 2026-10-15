@@ -27,7 +27,7 @@ class SharedHostAdmissionTests(unittest.TestCase):
             host_config.write(home, config)
             with HostSession(config) as owner:
                 host = SimpleNamespace(bounded_transports=True,
-                    capacity=SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1)),
+                    capacity=SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=0)),
                     _executions={}, _capacity_holds={}, capacity_holds=lambda: {}, directory=home/'shared-ipc',
                     _status_read=lambda request, fn: fn())
                 router = SimpleNamespace(host=host, store=owner.store, services={})
@@ -51,7 +51,9 @@ class SharedHostAdmissionTests(unittest.TestCase):
                 self.assertEqual(held['outcome'],'held')
 
     def test_three_managers_share_total_three_with_queued_worker(self):
-        f=bounded_fixture.BoundedProjectHostTests(); f.setUp()
+        f=bounded_fixture.BoundedProjectHostTests()
+        f.capacity_policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=0)  # the former limit 3
+        f.setUp()
         try:
             starts={letter:f.send(letter,{'command':'start-manager'}) for letter in 'ABC'}
             f.wait(lambda:all(f.native.has_started('manager-'+letter) for letter in 'ABC'))

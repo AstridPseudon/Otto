@@ -79,7 +79,8 @@ class NativeFixture(fixture.Provider):
 
 
 class BoundedProjectHostTests(unittest.TestCase):
-    capacity_policy = CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1)  # the former 3-turn ceiling
+    # The former manager limit 2: three turns, at most two managers (one shared unit is the workers' floor), two workers.
+    capacity_policy = CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=1)
     def setUp(self):
         self.f = f = fixture.ExecutionApplicationTests()
         f.setUp()
