@@ -172,7 +172,9 @@ class _PairReceipt:
     replayed = False
 
     def to_dict(self):
-        return {"status": "committed", "event_ids": ["advisor-created"]}
+        # Mutation receipts name their event subject; the owner reader filters on it.
+        return {"status": "committed", "event_ids": ["advisor-created"],
+                "result_ref": {"authority": "owner", "kind": "wrk.assignment", "id": "advisor-created", "revision": "rev-1"}}
 
 
 class _PairReader:
@@ -182,7 +184,7 @@ class _PairReader:
     def get_receipt(self, key):
         return self.receipts.get(key)
 
-    def list_events(self):
+    def list_events(self, **_subjects):
         return (SimpleNamespace(event_id="advisor-created"),)
 
 

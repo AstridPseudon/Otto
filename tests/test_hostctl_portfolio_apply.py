@@ -5,7 +5,7 @@ from pathlib import Path
 from herzchen.contracts import ResourceRef
 from otto.hostctl import config as host_config
 from otto.hostctl.owner import HostSession
-from otto.portfolio.shared_documents import _document_ref, _write
+from otto.portfolio.shared_documents import _document_ref, _write, document_namespace
 from test_hostctl_cli import HostctlFixture, _write_bundle
 
 
@@ -52,7 +52,7 @@ class HostctlPortfolioApplyTests(HostctlFixture):
 
     def _apply(self, *args):
         return self._ottoctl("portfolio", "apply", "--portfolio", self.portfolio_id,
-                             "--root", str(self.root), *args)
+                             "--root", str(self.root), "--json", *args)
 
     def _owner(self, callback):
         def run():
@@ -99,7 +99,8 @@ class HostctlPortfolioApplyTests(HostctlFixture):
         def alter(session):
             session.host = None
             portfolio = ResourceRef(session.store.authority, "wrk.portfolio", self.portfolio_id)
-            ref = _document_ref(portfolio, "portfolio-setup.json")
+            ref = _document_ref(portfolio, "portfolio-setup.json",
+                                root_namespace=document_namespace(root=str(self.root)))
             return _write(session.owner, session.actor, portfolio, ref, "Otto-owned edit\n")
         self._owner(alter)
         before = self._counts()

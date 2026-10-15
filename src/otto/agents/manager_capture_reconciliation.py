@@ -1,4 +1,5 @@
 """Trusted terminal reparse for one lost manager resume-admission capture."""
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
 import hashlib
@@ -233,7 +234,7 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
 
 def retained_aborted_manager_capture(due, lifecycle_owner):
     """Retained owner capture proves physical terminality, never command effects."""
-    value = due.to_dict() if hasattr(due, "to_dict") else due
+    value = due.to_dict() if hasattr(due, "to_dict") else due if isinstance(due, Mapping) else vars(due)
     attempt = (value.get("host_evidence") or {}).get("gateway_attempt") or {}
     proof = attempt.get("missing_capture_reconciliation") or {}
     result = attempt.get("result") or {}

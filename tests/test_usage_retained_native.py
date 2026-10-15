@@ -231,8 +231,18 @@ class WrkRetainedBodyTests(unittest.TestCase):
             capture.record(result)
             records=f.owner.assignments.command_port.list_observations(worker.ref,kind='result');before=_digest(records[0].value)
             f.owner.assignments.command_port.append_result(worker.ref,'legacy opaque noncandidate',expected_generation=1,logical_request_key='opaque-legacy-result',actor=f.actor)
-            state={'project_ref':f.project.ref.to_dict(),'assignment_ref':manager.ref.to_dict(),'manager':'manager','manager_generation':1,'task_refs':{'J01':f.task.ref.to_dict()},'workers':{'J01':{'schedule_id':'review-worker-occurrence','assignment_ref':worker.ref.to_dict(),'principal':'review-worker','generation':1}}}
-            due={'assignment_ref':worker.ref.to_dict(),'generation':1,'stop_state':'completed','completion_state':'succeeded','in_flight_request':None,'host_evidence':{'gateway_attempt':{'result':result}}}
+            from herzchen.domains.assessment import AssessmentModule
+            from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
+            criterion=AssessmentModule(f.store,actor=f.actor).declare_scope('review-bodies',parent_obligation=f.task.ref,
+                protocol='fixture',criteria=[{'id':'C'}],designated_approver='manager',
+                policy={'required_for_completion':True},logical_request_key='review-bodies')
+            state={'authority':f.actor.authority,'project_ref':f.project.ref.to_dict(),'assignment_ref':manager.ref.to_dict(),'manager':'manager','manager_generation':1,'task_refs':{'J01':f.task.ref.to_dict()},'criterion_refs':{'C':criterion.criterion_refs[0].to_dict()},'workers':{'J01':{'schedule_id':'review-worker-occurrence','assignment_ref':worker.ref.to_dict(),'principal':'review-worker','generation':1}}}
+            base={'kind':'owner_local_bookkeeping','purpose':'Fixture bookkeeping','local_only':True,'capacity_units':1,'cumulative_allowance_units':1,'pool_id':'review-bodies-pool','task_criterion_pairs':['J01/C']}
+            state['assessment_policy']=base
+            f.owner.create_manager_assessment_pool(project_ref=state['project_ref'],task_ref=state['task_refs']['J01'],
+                manager_assignment_ref=state['assignment_ref'],manager_actor='manager',manager_generation=1,
+                logical_request_key='review-bodies-pool',assessment_policy=LocalAssessmentPolicy.from_run_config(base,state=state))
+            due={'schedule_id':'review-worker-occurrence','target':{'project_ref':f.project.ref.to_dict(),'task_ref':f.task.ref.to_dict()},'assignment_ref':worker.ref.to_dict(),'generation':1,'stop_state':'completed','completion_state':'succeeded','in_flight_request':None,'host_evidence':{'gateway_attempt':{'result':result}}}
             port=SimpleNamespace(read_due=lambda schedule:due)
             missing=ManagerJourneyCommands(owner=f.owner,portfolio=f.app.portfolio,state=state,due_port=port)
             with self.assertRaisesRegex(ValueError,'one exact canonical observation'):missing.review_input('J01')
