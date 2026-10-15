@@ -7,29 +7,33 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from herzchen.usage.capture import UsageStream
 
-from .contract import (HostContractError, HostEvent, HostKind, McpGrant, ModelBinding, NativeFlagFence,
-                       TurnResult, TurnSpec)
+from .contract import HostContractError, HostEvent, HostKind, McpGrant, NativeFlagFence, TurnResult, TurnSpec
 
 SANDBOX_PROFILES = frozenset({"read-only", "workspace-write"})
+_PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
-def native_caller_permission_overrides(worktree: str, writable_roots: tuple[str, ...], socket_path: str) -> list[str]:
+def native_caller_permission_overrides(worktree: str, writable_roots: tuple[str, ...], socket_path: str,
+                                       profile: str) -> list[str]:
     """Trusted host-selected workspace profile with a managed one-socket grant.
 
+    ``profile`` is the caller's permission profile name; it is written into every key it names.
     The network proxy feature is a BOOLEAN. Merely adding its nested fields
     or enabling direct network does not constrain traffic. No legacy sandbox
     flag may accompany this profile: it would override default_permissions.
     """
+    if not isinstance(profile, str) or not _PROFILE_NAME.match(profile):
+        raise ValueError("a native caller permission profile name is required")
     if (not isinstance(socket_path, str) or not os.path.isabs(socket_path)
             or ".." in Path(socket_path).parts or "\x00" in socket_path
             or len(os.fsencode(socket_path)) > 103):
         raise ValueError("one absolute bounded Unix socket address required")
-    profile = "otto-native-caller"
     values = [f'default_permissions="{profile}"', 'features.network_proxy=true',
               f'permissions.{profile}.extends=":workspace"',
               f'permissions.{profile}.network.enabled=true',
@@ -92,31 +96,22 @@ class CodexStream:
 
 class CodexHost(HostKind):
     kind = "codex"
-    profile_name = "codex"
-    adapter_id = "codex"
     profiles = SANDBOX_PROFILES
-    option_names = frozenset({"receipt_path", "native_caller_socket"})
-    # Unchanged edition defaults (policy-staging/megado/skill/templates/run.json).
-    slots = {
-        "coordinator": ModelBinding("gpt-5.6-luna", "medium"),
-        "worker_normal": ModelBinding("gpt-5.6-luna", "high"),
-        "worker_xhard": ModelBinding("gpt-5.6-sol", "high"),
-        "reviewer_normal": ModelBinding("gpt-5.6-luna", "xhigh"),
-        "reviewer_xhard": ModelBinding("gpt-5.6-sol", "high"),
-        "oracle": ModelBinding("gpt-6-astra", "high"),
-        "final_reviewer": ModelBinding("gpt-6-astra", "high"),
-    }
+    option_names = frozenset({"receipt_path", "native_caller_socket", "native_caller_profile"})
 
     def make_fence(self, spec: TurnSpec) -> NativeFlagFence:
         # Codex 0.150.1 exposes --sandbox on exec, not exec resume. Common restrictions precede the
         # subcommand; config/rules and approvals must not silently broaden them. Requested argv is not
         # observed evidence.
         socket = spec.options.get("native_caller_socket")
+        profile_name = spec.options.get("native_caller_profile")
         if socket is not None:
             if spec.session is None or spec.profile != "workspace-write":
                 raise HostContractError("a socket grant is only for an owner-authorized workspace-write resume")
+            if profile_name is None:
+                raise HostContractError("a socket grant needs the caller's permission profile name")
             flags = tuple(flag for value in native_caller_permission_overrides(
-                spec.workspace, spec.writable_roots, socket) for flag in ("-c", value))
+                spec.workspace, spec.writable_roots, socket, profile_name) for flag in ("-c", value))
         else:
             flags = ("-s", spec.profile)
             if spec.profile == "workspace-write":
@@ -124,7 +119,7 @@ class CodexHost(HostKind):
         return NativeFlagFence("codex-sandbox", flags,
                                {"profile": spec.profile, "workspace": spec.workspace,
                                 "roots": [spec.workspace, *spec.writable_roots],
-                                "socket": socket})
+                                "socket": socket, "native_caller_profile": profile_name})
 
     def render_mcp(self, grant: McpGrant, spec: TurnSpec) -> tuple:
         flags: list = []

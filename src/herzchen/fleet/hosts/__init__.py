@@ -3,8 +3,8 @@
 from . import claude, codex
 from .claude import ClaudeHost
 from .codex import CodexHost
-from .contract import (SLOTS, HostContractError, HostEvent, HostKind, HostRegistry, HostStream, LaunchPlan,
-                       McpGrant, McpServer, ModelBinding, NativeFlagFence, TurnResult, TurnSpec,
+from .contract import (HostContractError, HostEvent, HostKind, HostRegistry, HostStream, LaunchPlan,
+                       McpGrant, McpServer, ModelBinding, ModelPlan, NativeFlagFence, TurnResult, TurnSpec,
                        UnknownHostKind, WriteFence, run_turn)
 
 # The hosts this installation can drive. A kind that is not here is refused, never defaulted.
@@ -21,7 +21,7 @@ def known_kinds():
 
 
 __all__ = [
-    "SLOTS", "REGISTRY", "ClaudeHost", "CodexHost", "HostContractError", "HostEvent", "HostKind", "HostRegistry",
-    "HostStream", "LaunchPlan", "McpGrant", "McpServer", "ModelBinding", "NativeFlagFence", "TurnResult",
+    "REGISTRY", "ClaudeHost", "CodexHost", "HostContractError", "HostEvent", "HostKind", "HostRegistry",
+    "HostStream", "LaunchPlan", "McpGrant", "McpServer", "ModelBinding", "ModelPlan", "NativeFlagFence", "TurnResult",
     "TurnSpec", "UnknownHostKind", "WriteFence", "claude", "codex", "get_host", "known_kinds", "run_turn",
 ]

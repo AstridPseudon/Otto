@@ -169,16 +169,16 @@ class NativeCallerIngressTests(unittest.TestCase):
         from herzchen.contracts import HostRequest, HostIdentity, HostOperation
         from unittest.mock import patch
         path=str(self.root / "exact.sock")
-        values=native_caller_permission_overrides(str(self.root), (), path)
+        values=native_caller_permission_overrides(str(self.root), (), path, "otto-native-caller")
         self.assertIn('features.network_proxy=true',values)
         self.assertIn('permissions.otto-native-caller.network.mode="limited"',values)
         self.assertIn('permissions.otto-native-caller.network.domains={}',values)
         self.assertEqual([v for v in values if '.network.unix_sockets=' in v],
             ['permissions.otto-native-caller.network.unix_sockets={'+json.dumps(path)+'="allow"}'])
         for invalid in ('relative.sock','/tmp/../socket','/tmp/'+'x'*104):
-            with self.assertRaises(ValueError):native_caller_permission_overrides(str(self.root),(),invalid)
-        with self.assertRaises(ValueError):CodexCliBinding(str(self.root),native_caller_socket=path)
-        adapter=CodexCliBinding(str(self.root),native_caller_socket=path,
+            with self.assertRaises(ValueError):native_caller_permission_overrides(str(self.root),(),invalid,"otto-native-caller")
+        with self.assertRaises(ValueError):CodexCliBinding(str(self.root),native_caller_socket=path,native_caller_profile="otto-native-caller")
+        adapter=CodexCliBinding(str(self.root),native_caller_socket=path,native_caller_profile="otto-native-caller",
             native_process_observer=lambda *a:lambda:None,recipient_authorizer=lambda request:{})
         with patch('herzchen.adapters.host.subprocess.Popen',side_effect=OSError('test boundary')) as popen:
             adapter.execute(HostRequest(HostOperation.RESUME,HostIdentity('fixture','native'),self.c.f.task.ref,'workspace-write'))
@@ -186,7 +186,7 @@ class NativeCallerIngressTests(unittest.TestCase):
             self.assertNotIn('-s',argv)
             self.assertNotIn('--add-dir',argv)
             self.assertIn('default_permissions="otto-native-caller"',argv)
-        denied=CodexCliBinding(str(self.root),native_caller_socket=path,
+        denied=CodexCliBinding(str(self.root),native_caller_socket=path,native_caller_profile="otto-native-caller",
             native_process_observer=lambda *a:lambda:None)
         with patch('herzchen.adapters.host.subprocess.Popen') as popen:
             denied.execute(HostRequest(HostOperation.RESUME,HostIdentity('fixture','native'),self.c.f.task.ref,'workspace-write'))

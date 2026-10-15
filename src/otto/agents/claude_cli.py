@@ -29,13 +29,20 @@ from typing import Any, Callable, Mapping
 from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.contract import HostContractError
 # Re-exported: the owner-side adapters import these names from this module.
-from herzchen.fleet.hosts.claude import (MANAGER_TOOLS, MAX_LINE, MAX_STREAM, PARSER_SCHEMA, WORKER_TOOLS,
-                                         ClaudeBindingError, ClaudeStream, sandbox_policy, sandbox_wrap, text,
-                                         validate_effort, validate_max_turns, validate_tools)
+from herzchen.fleet.hosts.claude import (MAX_LINE, MAX_STREAM, ClaudeBindingError, ClaudeStream, sandbox_policy,
+                                         sandbox_wrap, text, validate_effort, validate_max_turns, validate_tools)
 
 VERSION = "2.1.293 (Claude Code)"
 MAX_ARTIFACT = 65536
 CLAUDE = get_host("claude-code")
+# Otto's side of the Claude surface: the parser schema and tool surfaces are Otto's policy, supplied
+# to the product-neutral fleet host rather than defined by it. Tool surfaces per role profile. A worker
+# leaf reads and writes files only; a manager also runs commands (tests, git, the owner's installed
+# client) and edits files. Agent/Task and web tools stay disabled for both, so no provider-native child
+# can escape owner custody. MCP is opt-in per turn and only through an owner-supplied McpGrant.
+PARSER_SCHEMA = "otto.claude-code-2.1.293.stream-json.v1"
+WORKER_TOOLS = ('Read', 'Write')
+MANAGER_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
 
 
 def digest(value: Any) -> str:
@@ -234,7 +241,7 @@ class ClaudeCliTransport:
         if type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 1800:
             raise ClaudeBindingError("bounded finite owner timeout required")
         self.timeout_seconds, self.process_factory = timeout_seconds, process_factory
-        self.tools = validate_tools(tools, getattr(scope, 'allow_subprocesses', False))
+        self.tools = validate_tools(tools, MANAGER_TOOLS, getattr(scope, 'allow_subprocesses', False))
         self.max_turns = validate_max_turns(max_turns)
         extra_env = dict(extra_env or {})
         if any(not isinstance(k, str) or not k.startswith('OTTO_') or not isinstance(v, str) or '\x00' in v
@@ -272,7 +279,7 @@ class ClaudeCliTransport:
             spec = TurnSpec(executable=self.pin.realpath, workspace=self.scope.workspace, prompt=prompt,
                             model=self.model, reasoning=self.reasoning, profile='workspace-write', session=session,
                             initializer=initializer, mcp=self.mcp,
-                            options={'tools': self.tools, 'max_turns': self.max_turns,
+                            options={'tools': self.tools, 'allowed_tools': MANAGER_TOOLS, 'max_turns': self.max_turns,
                                      'allow_subprocesses': getattr(self.scope, 'allow_subprocesses', False)})
             plan = CLAUDE.launch(spec, fence=self.scope)
             parser = CLAUDE.parser(spec, on_init=on_init, on_input=on_input, on_usage=on_usage)

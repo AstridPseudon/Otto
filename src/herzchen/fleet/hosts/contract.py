@@ -6,7 +6,7 @@ A host is an agent CLI (a harness). Adding one is a single ``HostKind`` implemen
 * how to pass the MCP tools and a token       -> ``render_mcp`` (flags); the token rides the environment
 * how to fence writes to a workspace          -> ``make_fence``
 * how to parse its output into events/usage   -> ``make_parser``
-* which models serve normal and xhard         -> ``slots``
+* which models serve normal and xhard         -> ``models`` (a ``ModelPlan`` the caller supplies)
 
 Everything else (``launch`` validation, token delivery, the registry, ``run_turn``) is shared, so labs,
 capacity, tools and landing never learn which harness they are driving. Unknown host kinds are refused.
@@ -14,20 +14,19 @@ capacity, tools and landing never learn which harness they are driving. Unknown 
 from __future__ import annotations
 
 import abc
+import copy
 from dataclasses import dataclass, field, replace
 import os
 import re
 import subprocess
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
-SLOTS = ("coordinator", "worker_normal", "worker_xhard", "reviewer_normal",
-         "reviewer_xhard", "oracle", "final_reviewer")
 OUTCOMES = frozenset({"succeeded", "failed", "unknown"})
 EVENT_KINDS = frozenset({"session", "turn", "done", "other"})
 
 _KIND = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")      # no "_": Claude joins server and tool with "__"
-_TOKEN_ENV = re.compile(r"^OTTO_[A-Z0-9_]+$")
+_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")              # matched with fullmatch: no trailing newline slips in
 
 
 class HostContractError(ValueError):
@@ -52,6 +51,18 @@ class ModelBinding:
     def __post_init__(self) -> None:
         _text(self.model, "model")
         _text(self.reasoning, "reasoning")
+
+
+@dataclass(frozen=True)
+class ModelPlan:
+    """The caller's model choice: the binding that serves normal work and the one that serves xhard work."""
+
+    normal: ModelBinding
+    xhard: ModelBinding
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.normal, ModelBinding) or not isinstance(self.xhard, ModelBinding):
+            raise HostContractError("a model plan binds normal and xhard to ModelBinding values")
 
 
 @dataclass(frozen=True)
@@ -83,6 +94,7 @@ class McpGrant:
     servers: tuple = ()
     token_env: Optional[str] = None
     token: Optional[str] = field(default=None, repr=False)
+    token_env_prefix: Optional[str] = None      # supplied by the caller; ignored when token_env is None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "servers", tuple(self.servers))
@@ -93,8 +105,12 @@ class McpGrant:
         if (self.token_env is None) != (self.token is None):
             raise HostContractError("a token needs its environment variable name, and the reverse")
         if self.token_env is not None:
-            if not isinstance(self.token_env, str) or not _TOKEN_ENV.match(self.token_env):
-                raise HostContractError("token environment variable must be an OTTO_* name")
+            bad_prefix = (not isinstance(self.token_env_prefix, str)
+                          or not _ENV_NAME.fullmatch(self.token_env_prefix))
+            if (bad_prefix or not isinstance(self.token_env, str) or not _ENV_NAME.fullmatch(self.token_env)
+                    or not self.token_env.startswith(self.token_env_prefix)
+                    or len(self.token_env) <= len(self.token_env_prefix)):
+                raise HostContractError("token environment variable must be an uppercase name under the caller-supplied prefix")
             _text(self.token, "token")
 
     @property
@@ -216,11 +232,9 @@ class HostKind(abc.ABC):
     """Implement this once to add an agent harness."""
 
     kind: str
-    profile_name: str
-    adapter_id: str
     profiles: frozenset            # permission profiles this CLI can honestly translate
-    slots: Mapping[str, ModelBinding]
     option_names: frozenset = frozenset()
+    models: Optional[ModelPlan] = None     # supplied by the caller through ``serving``
 
     # -- what a harness supplies ------------------------------------------------
     @abc.abstractmethod
@@ -240,13 +254,26 @@ class HostKind(abc.ABC):
     def make_parser(self, spec: TurnSpec, **callbacks: Any) -> HostStream: ...
 
     # -- what the contract does for every harness ---------------------------------
+    def serving(self, plan: ModelPlan) -> "HostKind":
+        """A copy of this host that answers normal and xhard with the caller's ``plan``."""
+        if not isinstance(plan, ModelPlan):
+            raise HostContractError("serving needs a ModelPlan")
+        bound = copy.copy(self)
+        bound.models = plan
+        return bound
+
+    def _plan(self) -> ModelPlan:
+        if self.models is None:
+            raise HostContractError("no model plan supplied for host %s" % self.kind)
+        return self.models
+
     @property
     def normal(self) -> ModelBinding:
-        return self.slots["worker_normal"]
+        return self._plan().normal
 
     @property
     def xhard(self) -> ModelBinding:
-        return self.slots["worker_xhard"]
+        return self._plan().xhard
 
     def check(self, spec: TurnSpec) -> None:
         if spec.profile not in self.profiles:
@@ -320,24 +347,17 @@ class HostRegistry:
             raise HostContractError("a host must implement HostKind")
         if not isinstance(getattr(host, "kind", None), str) or not _KIND.match(host.kind):
             raise HostContractError("host kind must be lowercase letters, digits and '-'")
-        for name in ("profile_name", "adapter_id"):
-            _text(getattr(host, name, None), host.kind + "." + name)
         profiles = getattr(host, "profiles", None)
         if not isinstance(profiles, frozenset) or not profiles or any(not isinstance(p, str) for p in profiles):
             raise HostContractError(host.kind + " must declare the permission profiles it supports")
-        slots = getattr(host, "slots", None)
-        if not isinstance(slots, Mapping) or tuple(slots) != SLOTS:
-            raise HostContractError("%s must bind every responsibility slot (including normal and xhard): %s"
-                                    % (host.kind, ", ".join(SLOTS)))
-        if any(not isinstance(b, ModelBinding) for b in slots.values()):
-            raise HostContractError(host.kind + " slots must be ModelBinding values")
+        models = getattr(host, "models", None)
+        if models is not None and not isinstance(models, ModelPlan):
+            raise HostContractError(host.kind + " models must be a ModelPlan or None")
 
     def register(self, host: HostKind) -> HostKind:
         self.validate(host)
         if host.kind in self._hosts:
             raise HostContractError("host kind %r already has an implementation" % host.kind)
-        if any(h.profile_name == host.profile_name for h in self._hosts.values()):
-            raise HostContractError("model profile name %r is already taken" % host.profile_name)
         self._hosts[host.kind] = host
         return host
 

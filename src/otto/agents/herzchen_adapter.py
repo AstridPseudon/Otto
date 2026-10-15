@@ -13,6 +13,10 @@ from typing import Any, Callable, Mapping, Optional
 from otto.portfolio.resource_sync import ResourceSyncError, normalize_instruction_contract
 import time
 
+# Otto's Codex permission profile for the managed native caller socket. The fleet host only
+# implements the grant; the name is Otto's policy and is supplied here.
+NATIVE_CALLER_PROFILE = "otto-native-caller"
+
 
 class HerzchenAdapterError(ValueError):
     """The owner request cannot be converted into a typed host request."""
@@ -512,6 +516,7 @@ class HerzchenCodexAdapter:
                 usage_callback=usage_callback, usage_phase=usage_phase,
                 native_process_observer=ExecutionHost.owner_callback(self.native_process_observer),
                 writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
+                native_caller_profile=NATIVE_CALLER_PROFILE,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
         else:

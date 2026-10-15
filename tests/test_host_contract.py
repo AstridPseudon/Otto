@@ -100,6 +100,12 @@ class Stop(OSError):
     """Raised by the fake process factory after the command is captured; nothing is launched."""
 
 
+def otto_tools():
+    """Otto's own Claude tool policy. The fleet package no longer carries it; the caller supplies it."""
+    from otto.agents import claude_cli
+    return claude_cli.WORKER_TOOLS, claude_cli.MANAGER_TOOLS
+
+
 def _canon(argv, **paths):
     out = list(argv)
     for key, value in paths.items():
@@ -158,6 +164,7 @@ class CodexRuntimeFlags(Workspace):
                                                {"native_receipt_path": self.root + "/r.json"}),
             "resume.workspace-write.socket": ("resume", "workspace-write", dict(
                 writable_roots=(self.extra,), native_caller_socket=self.sock,
+                native_caller_profile="otto-native-caller",
                 recipient_authorizer=lambda r: None, native_process_observer=lambda p, a: (lambda: None))),
         }
         self.assertEqual(set(cases), set(CODEX_GOLDEN))
@@ -251,7 +258,8 @@ class ContractFlags(Workspace):
             "resume.workspace-write.receipt": self.codex_plan("sess-1", "workspace-write",
                                                               receipt_path=self.root + "/r.json"),
             "resume.workspace-write.socket": self.codex_plan(
-                "sess-1", "workspace-write", writable_roots=(self.extra,), native_caller_socket=self.sock),
+                "sess-1", "workspace-write", writable_roots=(self.extra,), native_caller_socket=self.sock,
+                native_caller_profile="otto-native-caller"),
         }
         self.assertEqual(set(got), set(CODEX_GOLDEN))
         for name, plan in got.items():
@@ -269,14 +277,16 @@ class ContractFlags(Workspace):
 
     def claude_plan(self, tools, session=None, initializer=False, max_turns=8, **options):
         H = hosts()
+        _, manager_tools = otto_tools()
         spec = H.TurnSpec(executable="/L/claude", workspace=self.root, prompt="prompt", model="claude-sonnet-5-5",
                           reasoning="high", session=session, profile="workspace-write", initializer=initializer,
-                          options={"tools": tools, "max_turns": max_turns, "state_root": self.state, **options})
+                          options={"tools": tools, "allowed_tools": manager_tools, "max_turns": max_turns,
+                                   "state_root": self.state, **options})
         return H.get_host("claude-code").launch(spec)
 
     def test_claude_contract_emits_exactly_the_recorded_flags(self):
         H = hosts()
-        W, M = H.claude.WORKER_TOOLS, H.claude.MANAGER_TOOLS
+        W, M = otto_tools()
         for name, plan in {
             "worker.initializer": self.claude_plan(W, initializer=True),
             "worker.fresh": self.claude_plan(W),
@@ -290,9 +300,9 @@ class ContractFlags(Workspace):
         self.assertEqual(plan.cwd, self.root)
 
     def test_claude_contract_fence_is_the_recorded_os_write_fence(self):
-        worker = self.claude_plan(hosts().claude.WORKER_TOOLS)
-        manager = self.claude_plan(hosts().claude.MANAGER_TOOLS, allow_subprocesses=True,
-                                   extra_write_roots=(self.extra,))
+        worker_tools, manager_tools = otto_tools()
+        worker = self.claude_plan(worker_tools)
+        manager = self.claude_plan(manager_tools, allow_subprocesses=True, extra_write_roots=(self.extra,))
         self.assertEqual(worker.fence.kind, "sandbox-exec")
         command = worker.fence.wrap(["/bin/x", "a"])
         self.assertEqual(command[:2], ["/usr/bin/sandbox-exec", "-p"])
@@ -307,12 +317,13 @@ class ContractFlags(Workspace):
     def test_session_and_workspace_flags_cannot_drift_between_hosts(self):
         """One host's flags must not change because the other's tests pass: pin the shared surface."""
         codex_resume = self.codex_plan("sess-1", "read-only").argv
-        claude_resume = self.claude_plan(hosts().claude.WORKER_TOOLS, session="native-1").argv
+        worker_tools, _ = otto_tools()
+        claude_resume = self.claude_plan(worker_tools, session="native-1").argv
         self.assertEqual(codex_resume[codex_resume.index("resume") + 1], "sess-1")
         self.assertEqual(claude_resume[claude_resume.index("--resume") + 1], "native-1")
         self.assertEqual(codex_resume[codex_resume.index("-C") + 1], self.root)
         self.assertNotIn("--resume", self.codex_plan(None, "read-only").argv)
-        self.assertNotIn("--resume", self.claude_plan(hosts().claude.WORKER_TOOLS).argv)
+        self.assertNotIn("--resume", self.claude_plan(worker_tools).argv)
         self.assertIn("--dangerously-skip-permissions", claude_resume)       # the OS fence, not the CLI, is the boundary
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", codex_resume)
 
@@ -325,31 +336,49 @@ class ContractFlags(Workspace):
         with self.assertRaises(H.HostContractError):
             self.codex_plan(None, "read-only", unexpected_option=True)
         with self.assertRaises(H.HostContractError):    # a socket grant is only for an owner-authorized resume
-            self.codex_plan(None, "workspace-write", native_caller_socket=self.sock)
+            self.codex_plan(None, "workspace-write", native_caller_socket=self.sock,
+                            native_caller_profile="otto-native-caller")
+
+    def test_a_socket_grant_without_a_native_caller_profile_is_refused(self):
+        H = hosts()
+        with self.assertRaises(H.HostContractError):
+            self.codex_plan("sess-1", "workspace-write", writable_roots=(self.extra,), native_caller_socket=self.sock)
+
+    def test_the_codex_binding_refuses_a_socket_without_a_native_caller_profile(self):
+        from herzchen.adapters import host as codex_host
+        with self.assertRaises(ValueError):
+            codex_host.CodexCliBinding(self.root, native_caller_socket=self.sock,
+                                       native_process_observer=lambda p, a: (lambda: None))
 
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 class ModelSlots(unittest.TestCase):
-    def test_each_host_serves_normal_and_xhard_with_the_recorded_models(self):
+    def test_the_bare_fleet_host_carries_no_models_and_otto_supplies_the_recorded_ones(self):
+        from otto.agents import host_profiles
         H = hosts()
         for kind, golden in MODELS_GOLDEN.items():
             host = H.get_host(kind)
-            self.assertEqual((host.normal.model, host.normal.reasoning), golden["normal"])
-            self.assertEqual((host.xhard.model, host.xhard.reasoning), golden["xhard"])
-            self.assertEqual(tuple(host.slots), H.SLOTS)
+            self.assertIsNone(host.models)
+            with self.assertRaises(H.HostContractError):
+                host.normal
+            served = host_profiles.serving_host(kind)
+            self.assertEqual((served.normal.model, served.normal.reasoning), golden["normal"])
+            self.assertEqual((served.xhard.model, served.xhard.reasoning), golden["xhard"])
 
-    def test_model_profiles_are_derived_from_the_hosts_not_a_second_table(self):
+    def test_otto_model_plans_come_from_its_own_table_and_the_fleet_kinds_agree(self):
         from otto.agents import host_profiles
         H = hosts()
-        for kind in ("codex", "claude-code"):
-            host = H.get_host(kind)
-            profile = host_profiles.profile(host.profile_name)
-            self.assertEqual(profile["host_kinds"], [kind])
-            self.assertEqual(profile["adapter"], host.adapter_id)
-            self.assertEqual(profile["roles"], {slot: {"model": b.model, "reasoning": b.reasoning}
-                                                for slot, b in host.slots.items()})
+        self.assertEqual(set(host_profiles.PROFILES), {"codex", "claude"})
+        for kind in MODELS_GOLDEN:
+            profile = host_profiles.profile_for_host(kind)
+            roles = host_profiles.PROFILES[profile]["roles"]
+            expected = H.ModelPlan(H.ModelBinding(roles["worker_normal"]["model"], roles["worker_normal"]["reasoning"]),
+                                   H.ModelBinding(roles["worker_xhard"]["model"], roles["worker_xhard"]["reasoning"]))
+            self.assertEqual(host_profiles.model_plan(profile), expected)
+        otto_kinds = {k for p in host_profiles.PROFILES.values() for k in p["host_kinds"]}
+        self.assertEqual(set(H.known_kinds()), otto_kinds)
 
 
 # ---------------------------------------------------------------------------
@@ -359,11 +388,13 @@ class McpAndToken(Workspace):
     def grant(self):
         H = hosts()
         return H.McpGrant(servers=(H.McpServer("otto", "/bin/otto-tools", ("serve",), tools=("ask", "land")),),
-                          token_env="OTTO_TOOL_TOKEN", token="s3cret-token")
+                          token_env="OTTO_TOOL_TOKEN", token_env_prefix="OTTO_", token="s3cret-token")
 
     def plan(self, kind, **kw):
         H = hosts()
-        options = ({"tools": H.claude.WORKER_TOOLS, "state_root": self.state} if kind == "claude-code" else {})
+        worker_tools, manager_tools = otto_tools()
+        options = ({"tools": worker_tools, "allowed_tools": manager_tools, "state_root": self.state}
+                   if kind == "claude-code" else {})
         spec = H.TurnSpec(executable="/L/x", workspace=self.root, prompt="p", model="m", reasoning="high",
                           profile="workspace-write", options=options, **kw)
         return H.get_host(kind).launch(spec)
@@ -402,9 +433,13 @@ class McpAndToken(Workspace):
         H = hosts()
         server = H.McpServer("otto", "/bin/t")
         with self.assertRaises(H.HostContractError):
-            H.McpGrant(servers=(server,), token_env="HOME", token="x")                 # not an OTTO_* name
+            H.McpGrant(servers=(server,), token_env="HOME", token="x", token_env_prefix="OTTO_")  # not an OTTO_* name
         with self.assertRaises(H.HostContractError):
-            H.McpGrant(servers=(server,), token_env="OTTO_T", token=None)             # name without a value
+            H.McpGrant(servers=(server,), token_env="OTTO_T", token=None, token_env_prefix="OTTO_")  # name, no value
+        with self.assertRaises(H.HostContractError):
+            H.McpGrant(servers=(server,), token_env="OTTO_T", token="x")              # no prefix given: refused
+        with self.assertRaises(H.HostContractError):
+            H.McpGrant(servers=(server,), token_env="OTTO_T", token="x", token_env_prefix="OTHER_")  # wrong prefix
         with self.assertRaises(H.HostContractError):
             H.McpGrant(servers=(server, server))                                       # duplicate server
         with self.assertRaises(H.HostContractError):
@@ -494,11 +529,8 @@ def fake_host_class():
 
     class FakeHost(H.HostKind):
         kind = "fakecli"
-        profile_name = "fake"
-        adapter_id = "fake-cli"
         profiles = frozenset({"workspace-write"})
-        slots = {slot: H.ModelBinding("fake-small", "low") for slot in H.SLOTS} | {
-            "worker_xhard": H.ModelBinding("fake-large", "high")}
+        models = H.ModelPlan(H.ModelBinding("fake-small", "low"), H.ModelBinding("fake-large", "high"))
 
         def make_fence(self, spec):
             return FakeFence((spec.workspace, *spec.writable_roots))
@@ -539,7 +571,7 @@ class FakeHarness(Workspace):
 
         # launch a turn, pass MCP tools + a token, fence writes to a workspace
         grant = H.McpGrant(servers=(H.McpServer("otto", "/bin/otto-tools"),), token_env="OTTO_TOOL_TOKEN",
-                           token="tok-123")
+                           token_env_prefix="OTTO_", token="tok-123")
         spec = H.TurnSpec(executable=self.exe, workspace=self.root, prompt="hello", model=host.normal.model,
                           reasoning=host.normal.reasoning, profile="workspace-write",
                           writable_roots=(self.extra,), mcp=grant)
@@ -581,21 +613,18 @@ class FakeHarness(Workspace):
 
         class Incomplete(H.HostKind):
             kind = "half"
-            profile_name = "half"
-            adapter_id = "half"
             profiles = frozenset({"read-only"})
-            slots = {slot: H.ModelBinding("m", "low") for slot in H.SLOTS}
 
         with self.assertRaises(TypeError):                 # no parser, fence, mcp or launch: cannot even be built
             Incomplete()
         FakeHost = fake_host_class()
 
-        class MissingXhard(FakeHost):
-            kind = "noxhard"
-            slots = {slot: H.ModelBinding("m", "low") for slot in H.SLOTS if slot != "worker_xhard"}
+        class DictModels(FakeHost):
+            kind = "dictmodels"
+            models = {"worker_normal": H.ModelBinding("m", "low"), "worker_xhard": H.ModelBinding("m", "high")}
 
-        with self.assertRaises(H.HostContractError):
-            H.HostRegistry(MissingXhard())
+        with self.assertRaises(H.HostContractError):       # models must be a ModelPlan (or None), not a dict
+            H.HostRegistry(DictModels())
 
         class NotAHost:
             kind = "duck"
@@ -638,7 +667,43 @@ class UnknownHostRefused(unittest.TestCase):
     def test_a_host_added_to_the_registry_is_resolved_without_touching_host_profiles(self):
         H = hosts()
         registry = H.HostRegistry(H.CodexHost(), fake_host_class()())
-        self.assertEqual(registry.get("fakecli").profile_name, "fake")
+        self.assertEqual(registry.get("fakecli").normal.model, "fake-small")
+        self.assertEqual(registry.get("fakecli").xhard.model, "fake-large")
+
+
+# ---------------------------------------------------------------------------
+# The fleet is product-neutral: Otto's tool policy is supplied by the caller
+# ---------------------------------------------------------------------------
+class FleetIsNeutral(Workspace):
+    def claude_spec(self, initializer=False, **options):
+        H = hosts()
+        return H.TurnSpec(executable="/L/claude", workspace=self.root, prompt="p", model="claude-sonnet-5-5",
+                          reasoning="high", profile="workspace-write", initializer=initializer,
+                          options={"state_root": self.state, **options})
+
+    def test_the_fleet_claude_host_carries_no_otto_tool_policy(self):
+        H = hosts()
+        for name in ("WORKER_TOOLS", "MANAGER_TOOLS", "PARSER_SCHEMA"):
+            self.assertFalse(hasattr(H.claude, name), name)
+
+    def test_a_non_initializer_claude_turn_without_allowed_tools_is_refused(self):
+        from otto.agents.claude_cli import WORKER_TOOLS
+        H = hosts()
+        with self.assertRaises(H.HostContractError):
+            H.get_host("claude-code").launch(self.claude_spec(tools=WORKER_TOOLS, max_turns=8))
+        with self.assertRaises(H.HostContractError):           # and without tools either
+            H.get_host("claude-code").launch(self.claude_spec(allowed_tools=WORKER_TOOLS, max_turns=8))
+
+    def test_a_tool_outside_allowed_tools_is_refused(self):
+        H = hosts()
+        with self.assertRaises(H.HostContractError):
+            H.get_host("claude-code").launch(self.claude_spec(tools=("Bash",), allowed_tools=("Read", "Write"),
+                                                              allow_subprocesses=True, max_turns=8))
+
+    def test_an_initializer_turn_needs_neither_option_and_still_launches(self):
+        H = hosts()
+        plan = H.get_host("claude-code").launch(self.claude_spec(initializer=True))
+        self.assertEqual(self.flat(plan.argv), CLAUDE_GOLDEN["worker.initializer"])
 
 
 # ---------------------------------------------------------------------------

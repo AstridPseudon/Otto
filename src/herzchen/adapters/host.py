@@ -472,6 +472,7 @@ class CodexCliBinding(HostPort):
                  native_process_observer: Optional[Callable[..., Any]] = None,
                  writable_roots: tuple[str, ...] = (),
                  native_caller_socket: Optional[str] = None,
+                 native_caller_profile: Optional[str] = None,
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
                  usage_callback: Optional[Callable[[Mapping[str, Any]], Any]] = None,
@@ -485,10 +486,13 @@ class CodexCliBinding(HostPort):
             raise ValueError("writable_roots must be distinct existing absolute directories")
         self.writable_roots = roots
         if native_caller_socket is not None:
-            native_caller_permission_overrides(worktree, roots, native_caller_socket)
+            if native_caller_profile is None:
+                raise ValueError("a native caller permission profile name is required")
+            native_caller_permission_overrides(worktree, roots, native_caller_socket, native_caller_profile)
             if not callable(native_process_observer):
                 raise ValueError("Unix caller socket requires the trusted native process observer")
         self.native_caller_socket = native_caller_socket
+        self.native_caller_profile = native_caller_profile
         self.receipt_path = native_receipt_path or receipt_path
         self.prompt = prompt
         self.evidence_path = evidence_path
@@ -660,7 +664,8 @@ class CodexCliBinding(HostPort):
             session=request.identity.physical_session_id if resuming else None,
             writable_roots=self.writable_roots, mcp=self.mcp,
             options={**({"receipt_path": self.receipt_path} if self.receipt_path else {}),
-                     **({"native_caller_socket": self.native_caller_socket}
+                     **({"native_caller_socket": self.native_caller_socket,
+                         "native_caller_profile": self.native_caller_profile}
                         if self.native_caller_socket is not None and resuming else {})})
         plan = CODEX.launch(plan_spec)
         command = list(plan.command())

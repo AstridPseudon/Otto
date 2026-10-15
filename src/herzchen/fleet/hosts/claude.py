@@ -13,17 +13,14 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from .contract import (HostContractError, HostEvent, HostKind, McpGrant, ModelBinding, TurnResult, TurnSpec)
+from .contract import (HostContractError, HostEvent, HostKind, McpGrant, TurnResult, TurnSpec)
 
-PARSER_SCHEMA = "otto.claude-code-2.1.293.stream-json.v1"
 MAX_LINE = 256 * 1024
 MAX_STREAM = 2 * 1024 * 1024
-# Tool surfaces per role profile. A worker leaf reads and writes files only; a manager also runs
-# commands (tests, git, the owner's installed client) and edits files. Agent/Task and web tools stay
-# disabled for both, so no provider-native child can escape owner custody. MCP is opt-in per turn and
-# only through an owner-supplied McpGrant.
-WORKER_TOOLS = ('Read', 'Write')
-MANAGER_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
+# The Claude CLI's own built-in tool names. The caller picks the subset a turn may use (``allowed_tools``);
+# Agent/Task and web tools are not in this list, so no provider-native child is ever admitted. MCP is
+# opt-in per turn and only through a caller-supplied McpGrant.
+BUILTIN_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
 EFFORTS = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
 PROTECTED_NAMES = ('.git', '.agents', '.codex', '.aws', '.claude')
 STRICT_EMPTY_MCP = ('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}')
@@ -39,10 +36,12 @@ def text(value: Any, field: str) -> str:
     return value
 
 
-def validate_tools(tools: Any, allow_subprocesses: bool) -> tuple:
-    tools = tuple(tools)
-    if not tools or set(tools) - set(MANAGER_TOOLS) or len(set(tools)) != len(tools):
-        raise ClaudeBindingError("tool surface must be a subset of the qualified manager tools")
+def validate_tools(tools: Any, allowed: Any, allow_subprocesses: bool) -> tuple:
+    tools, allowed = tuple(tools), tuple(allowed)
+    if set(allowed) - set(BUILTIN_TOOLS):
+        raise ClaudeBindingError("allowed tools must be a subset of the Claude CLI built-in tools")
+    if not tools or set(tools) - set(allowed) or len(set(tools)) != len(tools):
+        raise ClaudeBindingError("tool surface must be a subset of the allowed tools")
     if 'Bash' in tools and not allow_subprocesses:
         raise ClaudeBindingError("Bash requires a scope that admits fenced child processes")
     return tools
@@ -303,28 +302,18 @@ class ClaudeHostStream:
 
 class ClaudeHost(HostKind):
     kind = "claude-code"
-    profile_name = "claude"
-    adapter_id = "claude-code"
     profiles = frozenset({"workspace-write"})
-    option_names = frozenset({"tools", "max_turns", "state_root", "allow_subprocesses", "extra_write_roots",
-                              "auth_lock"})
-    # Economical Haiku, Sonnet for XHARD/independent review, Opus for consequential judgment.
-    slots = {
-        "coordinator": ModelBinding("claude-haiku-5-5", "medium"),
-        "worker_normal": ModelBinding("claude-haiku-5-5", "high"),
-        "worker_xhard": ModelBinding("claude-sonnet-5-5", "high"),
-        "reviewer_normal": ModelBinding("claude-sonnet-5-5", "high"),
-        "reviewer_xhard": ModelBinding("claude-opus-5-5", "high"),
-        "oracle": ModelBinding("claude-opus-5-5", "high"),
-        "final_reviewer": ModelBinding("claude-opus-5-5", "high"),
-    }
+    option_names = frozenset({"tools", "allowed_tools", "max_turns", "state_root", "allow_subprocesses",
+                              "extra_write_roots", "auth_lock"})
 
     @staticmethod
     def tools_for(spec: TurnSpec) -> tuple:
-        """An initializer is inert: no tools, no MCP."""
+        """An initializer is inert: no tools, no MCP. Otherwise the caller must name both surfaces."""
         if spec.initializer:
             return ()
-        return validate_tools(spec.options.get("tools", WORKER_TOOLS),
+        if "tools" not in spec.options or "allowed_tools" not in spec.options:
+            raise HostContractError("claude-code needs the caller to pass tools and allowed_tools")
+        return validate_tools(spec.options["tools"], spec.options["allowed_tools"],
                               bool(spec.options.get("allow_subprocesses", False)))
 
     def make_fence(self, spec: TurnSpec) -> SandboxFence:
