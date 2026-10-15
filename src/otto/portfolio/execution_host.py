@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping
 from .owner_readers import json_value
 from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correlation_id
 from .owner_completion import OwnerCompletion, after_owner
+from .ipc_retention import prune_answered_responses
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -199,6 +200,7 @@ class ExecutionHost:
                  caller_authorizer: Any = None, owner_file_compatibility: bool = False,
                  bounded_transports: bool = False, manager_turn_limit: int = 2) -> None:
         self.directory = Path(directory)
+        self._last_response_prune = float('-inf')
         self.handler = handler
         if (caller_binding_reader is None) != (caller_context_resolver is None):
             raise ValueError("trusted ingress reader and canonical caller resolver must be supplied together")
@@ -974,8 +976,29 @@ class ExecutionHost:
                 except (OSError, ValueError) as exc:
                     self.failures["socket"] = {"code": type(exc).__name__, "message": str(exc)}
 
+    def _request_paths(self) -> list[Path]:
+        # Streams the directory and keeps only request names; answered responses
+        # are pruned on a timer below, so this scan stays bounded in practice.
+        with os.scandir(self.directory) as entries:
+            return [self.directory / entry.name for entry in entries
+                    if entry.name.startswith("request-") and entry.name.endswith(".json")]
+
+    def _prune_answered_responses(self) -> None:
+        # Answered responses (request consumed, terminal, past grace) leave the
+        # lane in bounded batches so the directory never grows without limit.
+        now = time.monotonic()
+        if now - self._last_response_prune < 60:
+            return
+        self._last_response_prune = now
+        try:
+            prune_answered_responses(self.directory, limit=200)
+        except OSError as exc:
+            self.failures["response-retention"] = {"code": type(exc).__name__, "message": str(exc)}
+
     def _serve_files(self, status: bool, *, allowed: frozenset[str] | None = None) -> None:
-        paths = list(self.directory.glob("request-*.json"))
+        if not status:
+            self._prune_answered_responses()
+        paths = self._request_paths()
         # Hash order is unrelated to admission age and can starve a project.
         def age(path):
             try:

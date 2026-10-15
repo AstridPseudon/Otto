@@ -6,6 +6,7 @@ transport below, so the owner retains the engine, Store and SQLite connection.
 
 from __future__ import annotations
 
+import atexit
 import base64
 from dataclasses import fields, is_dataclass
 from enum import Enum
@@ -439,6 +440,25 @@ class _OwnerService:
 
 
 _OWNER_SERVICES: Dict[str, _OwnerService] = {}
+
+
+def _close_owned_services() -> None:
+    """Atexit fallback: remove this process's owner directories and sockets.
+
+    Only services created by this process are closed. A forked child inherits
+    the registry but its transports name the parent's pid, so it leaves them.
+    """
+    for session_id, service in list(_OWNER_SERVICES.items()):
+        if service.transport.owner_pid != os.getpid():
+            continue
+        _OWNER_SERVICES.pop(session_id, None)
+        try:
+            service.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_owned_services)
 
 
 def _start_service(value: Any, domain_id: str, facade_name: str, endpoints: Sequence[str],
