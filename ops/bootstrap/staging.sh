@@ -1,25 +1,35 @@
 #!/bin/bash
-# The staging Otto: a fresh, empty Otto built from canon/main and started through the production
-# entry point. It has its own tree, Store, socket and log under $OTTO_STAGING_ROOT (default
-# $LABS_DIR/_staging). It is never a clone of the live Store and never the live install.
-#   staging.sh up        start the staging Otto; creates the tree and an empty Store on first use
-#   staging.sh down      stop it and every process it started; a leftover is an error
-#   staging.sh restart   down, move the tree to canon/main's head, up
-#   staging.sh wipe      empty the staging Store (refused while it is running)
-# Each start is its own process group, so down stops the whole group. Until the production entry
-# point can be rooted at the staging folder, up refuses to start it (see PROD_ENTRY below).
-# OTTO_STAGING_ENTRY replaces the entry point; the tests use it with a stub.
+# The staging Otto: a fresh, empty Otto started through the product CLI, from canon's own code.
+# It has its own tree, home, Store and log under $OTTO_STAGING_ROOT (default $LABS_DIR/_staging).
+# It is never a clone of the live Store and never the live install.
+#   staging.sh up        start the staging Otto; creates the tree, the home and an empty Store on first use
+#   staging.sh down      stop it and every process in its group; a leftover is an error
+#   staging.sh restart   down, move the tree to the ref's head (canon/main), up
+#   staging.sh wipe      empty the staging home and Store (refused while it is running)
+# The start is `ottoctl service run` from the tree's own src (see ottoctl below). Each start is its
+# own process group, so down stops the whole group. OTTO_STAGING_REF replaces canon/main as the ref
+# (the tests pin it to a commit sha).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
 STAGE_ROOT="${OTTO_STAGING_ROOT:-$LABS_DIR/_staging}"
+REF="${OTTO_STAGING_REF:-refs/heads/canon/main}"
 TREE="$STAGE_ROOT/tree"
-STORE="$STAGE_ROOT/store"
+HOME_DIR="$STAGE_ROOT/home"
+STORE_DIR="$STAGE_ROOT/store"
+STORE_FILE="$STORE_DIR/staging.store"
 RUN="$STAGE_ROOT/run"
 PIDFILE="$RUN/staging.pid"
 LOG="$RUN/staging.log"
-SOCK="$RUN/otto.sock"
-PROD_ENTRY="install/controller/shared_operating_service.py"
+STATUS_JSON="$RUN/staging.json"
+
+# The product CLI, run from the staging tree's own src. --home is always passed, and the variables
+# that point a process at a live install are removed, so nothing can fall back to ~/.otto.
+ottoctl() {
+  env -u OTTO_HOST_KIND -u OTTO_MANAGER_IPC -u OTTO_CALLER_SOCKET -u OTTO_HOME \
+    PYTHONPATH="$TREE/src" \
+    "$PY" -c 'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$HOME_DIR" "$@"
+}
 
 # The staging root must be an absolute folder that is not a live owner folder, a synced folder,
 # the canon checkout or the home folder itself. Checked before anything is written.
@@ -63,17 +73,20 @@ group_alive() {
   [ "$(ps -o stat= -g "$1" 2>/dev/null | sed 's/^ *//' | grep -vc '^Z' || true)" -gt 0 ]
 }
 
-# Bring the tree to canon/main's head and nothing else. Created on first use.
+# Bring the tree to REF's head and nothing else. Created on first use. The head is fetched by its
+# sha, so REF may be a branch (canon/main) or a commit.
 sync_tree() {
   local head
-  head="$(git -C "$OTTO_REPO" rev-parse --verify -q "refs/heads/canon/main^{commit}")" \
-    || die "no canon/main in $OTTO_REPO"
+  head="$(git -C "$OTTO_REPO" rev-parse --verify -q "$REF^{commit}")" \
+    || die "no $REF in $OTTO_REPO"
   mkdir -p "$TREE"
   [ -d "$TREE/.git" ] || git init -q "$TREE"
-  git -C "$TREE" fetch -q --force --no-tags "$OTTO_REPO" "refs/heads/canon/main:refs/staging/canon-main"
+  git -C "$TREE" fetch -q --force --no-tags "$OTTO_REPO" "$head" 2>/dev/null \
+    || git -C "$TREE" fetch -q --force --no-tags "$OTTO_REPO" "$REF:refs/staging/canon-main"
+  git -C "$TREE" update-ref refs/staging/canon-main "$head"
   git -C "$TREE" checkout -q --force --detach refs/staging/canon-main
   git -C "$TREE" clean -qfdx
-  [ "$(git -C "$TREE" rev-parse HEAD)" = "$head" ] || die "staging tree is not at canon/main's head"
+  [ "$(git -C "$TREE" rev-parse HEAD)" = "$head" ] || die "staging tree is not at $REF's head"
   echo "tree at $(git -C "$TREE" rev-parse --short HEAD)"
 }
 
@@ -93,6 +106,16 @@ stop_group() {
   return 1
 }
 
+# 0 once process group PGID has no live member, or 1 if one is still there after SECONDS.
+wait_group_gone() {
+  local pgid=$1 i
+  for i in $(seq 1 $(( $2 * 5 ))); do
+    group_alive "$pgid" || return 0
+    sleep 0.2
+  done
+  ! group_alive "$pgid"
+}
+
 # 0 once the entry has printed its ready line after LINES_BEFORE lines of log; 1 if it died or timed out.
 wait_ready() {
   local pid=$1 before=$2 i
@@ -106,44 +129,62 @@ wait_ready() {
   return 1
 }
 
+# The record of a ready start (run/staging.json): what runs, from which commits, where its state lives.
+write_status() {  # PID
+  "$PY" -c '
+import json, sys
+pid, sha, canon, py, home, store, lane, status, stop, started = sys.argv[1:]
+print(json.dumps({"sha": sha, "canon_main_sha": canon, "python": py, "pid": int(pid), "home": home,
+                  "store": store, "owner_lane": lane, "status": status, "stop_file": stop,
+                  "started_at": started}, indent=2))
+' "$1" "$(git -C "$TREE" rev-parse HEAD)" "$(git -C "$OTTO_REPO" rev-parse --verify -q "$REF^{commit}")" "$PY" \
+    "$HOME_DIR" "$STORE_FILE" "$HOME_DIR/owner-lane" "$HOME_DIR/run/service.json" \
+    "$HOME_DIR/run/service-stop" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS_JSON"
+}
+
 up() {
   guard_root
-  if [ -z "${OTTO_STAGING_ENTRY:-}" ]; then
-    die "up refused: $PROD_ENTRY now takes its locations from OTTO_* variables, but install/controller/operating_service.py (WORK, NATIVE_EVIDENCE_ROOT, LAUNCHER, EVIDENCE_SOURCE_STATE) and native_caller_address.py (the caller socket) still hard-code the live paths, and no staged controller state exists. Starting would touch the live owner. Nothing was started."
-  fi
-  local entry="$OTTO_STAGING_ENTRY" pid start before
-  [ -f "$entry" ] || die "up: no entry point at $entry"
+  local pid start before
   if [ -n "$(running_pid)" ]; then die "up: already running as pid $(running_pid)"; fi
   [ -d "$TREE/.git" ] || sync_tree
-  mkdir -p "$STORE" "$RUN"
+  mkdir -p "$HOME_DIR" "$STORE_DIR" "$RUN"
   touch "$LOG"
-  rm -f "$SOCK"  # a socket left by a killed run
+  if [ ! -f "$HOME_DIR/installation.json" ]; then
+    # A fresh home gets a new, empty Store. A Store file without an installation is never reused.
+    [ ! -e "$STORE_FILE" ] || die "up: a Store exists at $STORE_FILE but $HOME_DIR/installation.json does not; run wipe first"
+    ottoctl install --create --store "$STORE_FILE" --authority otto-staging-owner-v1 \
+      --owner otto-staging-owner --credential-ref otto-staging-credential-v1 >>"$LOG" 2>&1 \
+      || die "up: could not create the staging installation; see $LOG"
+  fi
   before="$(wc -l < "$LOG" | tr -d ' ')"
   cd "$TREE"
   set -m
-  env OTTO_STAGING_ROOT="$STAGE_ROOT" OTTO_STAGING_STORE="$STORE" OTTO_STAGING_SOCKET="$SOCK" \
-    OTTO_CONTROLLER_DIR="$TREE/install/controller" OTTO_PRIVATE_DIR="$STAGE_ROOT/private" \
-    OTTO_VISION_CONTROLLER_DIR="$STAGE_ROOT/controllers/vision" OTTO_ASTRID_CONTROLLER_DIR="$STAGE_ROOT/controllers/astrid" \
-    OTTO_HOST_HOME="$STAGE_ROOT/host-home" \
-    "$PY" "$entry" </dev/null >>"$LOG" 2>&1 &
+  ottoctl service run </dev/null >>"$LOG" 2>&1 &
   pid=$!
   set +m
   # Written at once, so down can find the process even if the wait below fails.
   start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true)"
   printf '%s\n%s\n' "$pid" "$start" > "$PIDFILE"
   if ! wait_ready "$pid" "$before"; then
-    if stop_group "$pid"; then rm -f "$PIDFILE" "$SOCK"; fi
+    stop_group "$pid" || die "up: the staging Otto did not report ready and group $pid survived KILL; pidfile kept; see $LOG"
+    rm -f "$PIDFILE"
     die "up: the staging Otto did not report ready; see $LOG"
   fi
-  echo "up: pid $pid, ready"
+  write_status "$pid"
+  echo "up: pid $pid, sha $(git -C "$TREE" rev-parse HEAD), ready"
 }
 
 down() {
   guard_root
-  local pid stale
+  local pid stale forced=""
   pid="$(running_pid)"
   if [ -n "$pid" ]; then
-    stop_group "$pid" || die "down: processes in group $pid survived KILL; pidfile kept"
+    # The service drains and closes on its stop marker; TERM and KILL are the fallback.
+    ottoctl service stop >>"$LOG" 2>&1 || echo "down: the stop request failed; see $LOG" >&2
+    if ! wait_group_gone "$pid" "${OTTO_STAGING_STOP_SECONDS:-60}"; then
+      forced=" (forced)"
+      stop_group "$pid" || die "down: processes in group $pid survived KILL; pidfile kept"
+    fi
   else
     # The leader is gone. Its group is not signalled, since the pid may have been reused;
     # leftover members are reported instead.
@@ -152,8 +193,8 @@ down() {
       die "down: group $stale has processes but its leader is gone; not signalled. Stop them by hand"
     fi
   fi
-  rm -f "$PIDFILE" "$SOCK"
-  echo "down: stopped"
+  rm -f "$PIDFILE" "$STATUS_JSON"
+  echo "down: stopped$forced"
 }
 
 restart() {
@@ -166,10 +207,8 @@ wipe() {
   guard_root
   [ -z "$(running_pid)" ] || die "wipe: the staging Otto is running; run down first"
   [ -f "$PIDFILE" ] && die "wipe: a pidfile is left; run down first"
-  rm -rf "$STORE"
-  mkdir -p "$STORE"
-  rm -f "$SOCK"
-  echo "wipe: staging Store is empty"
+  rm -rf "$HOME_DIR" "$STORE_DIR"
+  echo "wipe: staging home and Store removed; the next up creates an empty Store"
 }
 
 case "${1:-}" in
