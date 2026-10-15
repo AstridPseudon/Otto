@@ -14,17 +14,21 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 REASON=""
 LOCKED=""
+LANDED=""
 die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
 finish() {
   local rc=$?
   [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
+  # "landed" means pushed, whatever the exit status: a run stopped by a signal can end with status 0,
+  # and a cleanup failure after the push doesn't undo the landing.
+  if [ -n "$LANDED" ]; then echo "LAND RESULT: landed $LANDED"; return; fi
   case "$rc" in
-    0) echo "LAND RESULT: landed $(git -C "$OTTO_REPO" rev-parse --short HEAD)" ;;
     4) echo "LAND RESULT: d19" ;;
-    *) echo "LAND RESULT: refused ${REASON:-exit $rc}" ;;
+    *) echo "LAND RESULT: refused ${REASON:-ended before the merge was pushed (exit $rc)}" ;;
   esac
 }
 trap finish EXIT
+trap 'REASON="interrupted by a signal; canon/main unchanged unless the log says pushed"; exit 143' TERM INT HUP
 
 valid_task "${1:-}" || die "usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]"
 TASK="$1"
@@ -102,6 +106,11 @@ ids_of() {  # OUT FILE
   sed -n -E 's/^(FAILED|ERROR) ([^ ]+).*/\2/p' "$1"
   if [ "$rc" != 0 ] && [ "$rc" != 5 ] && ! grep -q -E '^(FAILED|ERROR) ' "$1"; then echo "$2::exit-$rc"; fi
 }
+
+# 0. The task's own check, on the rebased commit (D19, rule 1). Until 15 Oct the gate parsed it and never ran it.
+( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests "$HEAVY" --weight 1 --purpose "$TASK check" -- \
+    bash -c "$CHECK" ) > "$G/check.txt" 2>&1 || fail "the task's check failed: $CHECK (output: $G/check.txt)"
+log "check passed: $CHECK"
 
 # a. Sweep
 CHANGED_SRC="$(gitl diff --name-only "$BASE...$BRANCH" -- src | grep '\.py$' || true)"
@@ -249,6 +258,7 @@ if ! gitl push --quiet "$GIT_REMOTE" canon/main:main >> "$RUN/merge.log" 2>&1; t
   exit 1
 fi
 log "pushed canon/main to $GIT_REMOTE/main"
+LANDED="$(gitl rev-parse --short HEAD)"
 
 # i. clean up and record
 "$HERE/otto-lab.sh" remove "$TASK" | tee -a "$LOG"
