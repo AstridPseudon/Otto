@@ -16,6 +16,7 @@ set -euo pipefail
 
 ALLOWED_TOOLS='Read Edit Write Glob Grep Bash(git:*) Bash(bash:*) Bash(/opt/homebrew/bin/python3.11:*) Bash(~/Developer/otto-claude-host/bin/otto-heavy:*)'
 # Workers start clean: none of the operator's skills, slash commands or MCP connectors.
+ROUTE_ARGS=()
 ISOLATION=(--disable-slash-commands --strict-mcp-config --mcp-config '{"mcpServers":{}}')
 
 valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]"
@@ -39,7 +40,7 @@ done
 
 case "$ROUTE" in
   normal) MODEL=claude-haiku-5-5; PER_DAY=5 ;;
-  xhard) MODEL=claude-sonnet-5-5; PER_DAY=20 ;;
+  xhard) MODEL=claude-sonnet-5-5; PER_DAY=20; ALLOWED_TOOLS="Agent $ALLOWED_TOOLS"; ROUTE_ARGS=(--agents "$HAIKU_WORKER_AGENTS") ;;
   *) die "--route must be normal or xhard" ;;
 esac
 case "$DAYS" in
@@ -75,7 +76,7 @@ set -m
 ( cd "$LAB" && exec nohup env OTTO_WORKER_DEADLINE="$DEADLINE" claude -p \
     --model "$MODEL" --effort high "${SESSION_ARG[@]}" \
     --max-budget-usd "$BUDGET" --permission-mode acceptEdits \
-    --allowedTools "$ALLOWED_TOOLS" "${ISOLATION[@]}" --output-format json \
+    --allowedTools "$ALLOWED_TOOLS" "${ISOLATION[@]}" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --output-format json \
     < "$PROMPT" > "$OUT" 2> "$ERR" ) &
 PID=$!
 set +m

@@ -8,6 +8,11 @@ PY="${OTTO_PYTHON:-/opt/homebrew/bin/python3.11}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKERS_JSON="$OPS_DIR/workers.json"
 RUNS_DIR="$OPS_DIR/runs"
+HEAVY="${OTTO_HEAVY:-$HOME/Developer/otto-claude-host/bin/otto-heavy}"
+BASELINE_LAB="${BASELINE_LAB:-$LABS_DIR/_baseline}"
+GIT_REMOTE="${OTTO_REMOTE:-github}"
+# The sub-agent an xhard worker may call for legwork (copied from ops/experiments/POOLX/launch.sh).
+HAIKU_WORKER_AGENTS='{"haiku-worker":{"description":"Executes one precise, self-contained sub-brief in the Otto lab: explores and reads code, writes tests, makes edits, runs checks, and reports back with evidence (diff summary, test output tail).","prompt":"You are an execution worker in a git worktree of the Otto repo. Do exactly the sub-brief you are given, within the files it names. Never push, never run git stash or check out another commit, never run ottoctl, and never touch anything outside the lab. Run tests the way the sub-brief says. Report briefly: what you changed (files and functions), the commands you ran with their result tails, and anything you could not do.","model":"claude-haiku-5-5","effort":"high","tools":["Read","Edit","Write","Glob","Grep","Bash"]}}'
 
 die() { echo "error: $*" >&2; exit 1; }
 
