@@ -155,6 +155,17 @@ class FileBodyStore:
                     bytes_ += path.stat().st_size
         return {"files": files, "bytes": bytes_}
 
+    def entries(self, project_ref: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Every body file of one project: ``{"key": "p-<key>/<sha[:2]>/<sha>", "bytes": n}``."""
+        key = self.project_key(project_ref)
+        directory = self.root / key
+        rows = []
+        if directory.is_dir():
+            for path in sorted(directory.rglob("*")):
+                if path.is_file() and not path.name.startswith(".tmp-"):
+                    rows.append({"key": str(path.relative_to(self.root)), "bytes": path.stat().st_size})
+        return rows
+
     def purge_project(self, project_ref: Mapping[str, Any]) -> dict[str, Any]:
         """Delete every body of one project. Idempotent; records keep their carriers."""
         key = self.project_key(project_ref)
@@ -187,6 +198,11 @@ class RetainedNativeBodies:
     def on_files(cls, root: Any, actor: Any) -> "RetainedNativeBodies":
         """Bodies in a private content-addressed directory (no Evidence pack)."""
         return cls(None, actor, files=FileBodyStore(root))
+
+    def project_ref_dict(self, project_ref: Any) -> dict[str, Any]:
+        from herzchen.contracts import ResourceRef
+        project = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        return {"authority": project.authority, "kind": project.kind, "id": project.id}
 
     def purge_project(self, project_ref: Any) -> dict[str, Any]:
         if self.files is None:

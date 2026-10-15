@@ -296,6 +296,7 @@ def import_history(session: Any, registration: Mapping[str, Any], *, note: str,
         session.owner.sheet.withdraw(current.ref, logical_request_key=key + ":withdraw",
                                      base_revision=current.ref.revision)
     current = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+    session.owner.project_finished(current.ref)
     receipt.update(outcome="imported_history", lifecycle=current.lifecycle.value,
                    project_ref=current.ref.to_dict(), schema="otto.host-history-import.v1")
     receipt["steps"]["registration"] = {"custom": "otto_host_registration", "mode": "history",

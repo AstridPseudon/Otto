@@ -191,6 +191,11 @@ class HostSession:
             self.native_bodies = RetainedNativeBodies.on_files(native_body_root(self.config), self.actor)
             self.due_port = issue_store_due_record_port(self.store.domain_handler((due_record_contribution(),)),
                                                         self.actor, native_bodies=self.native_bodies)
+            # Clean-close: when a project becomes completed or withdrawn its transcripts are
+            # reclaimed (a failure is logged and left for a manual run); also callable by hand.
+            from otto.agents.clean_close import CleanClose
+            self.clean_close = CleanClose(self.store, self.native_bodies)
+            self.owner.on_project_finished = self.clean_close.on_finished
             self.portfolio = OttoPortfolio(self.owner.consumer_operations())
             return self
         except BaseException:

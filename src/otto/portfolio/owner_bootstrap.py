@@ -594,6 +594,7 @@ class PortfolioOwnerBootstrap:
         "project_read_grant",
         "queue_binding",
         "reviewed_policy",
+        "on_project_finished",
     )
 
     def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
@@ -640,6 +641,8 @@ class PortfolioOwnerBootstrap:
             raise ValueError("project read grant must bind the authenticated owner principal")
 
         self.store = store
+        # Called after a project's lifecycle becomes completed or withdrawn (see project_finished).
+        self.on_project_finished = None
         self.reviewed_policy = reviewed_policy
         self.binding = binding
         self.owner_actor = authenticated
@@ -695,6 +698,24 @@ class PortfolioOwnerBootstrap:
             folder_transport_request_bytes=folder_transport_request_bytes,
         )
 
+    def project_finished(self, project_ref: Any) -> Any:
+        """Tell the installed hook (clean-close) that a project may have just finished.
+
+        Never raises: a failing hook is logged and must not block or undo the
+        lifecycle transition that already committed. The hook decides whether
+        the project really is completed or withdrawn, and is idempotent.
+        """
+        hook = self.on_project_finished
+        if hook is None:
+            return None
+        try:
+            return hook(project_ref)
+        except Exception:
+            import logging
+            logging.getLogger("otto.clean_close").warning("project-finished hook failed for %r", project_ref,
+                                                          exc_info=True)
+            return None
+
     def consumer_operations(self) -> FiniteWorkOperations:
         """Return only finite serialized/read clients and typed binding data."""
 
@@ -718,6 +739,7 @@ class PortfolioOwnerBootstrap:
             project_read_grant=self.project_read_grant,
             direction_context_reader=self._direction_context_reader(),
             queue_binding=self.queue_binding,
+            on_lifecycle=self.project_finished,
         )
 
     def _direction_context_reader(self) -> Any:
