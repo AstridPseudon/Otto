@@ -88,7 +88,7 @@ def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path
     first = heavy(tmp_path, "--purpose", "render A", "--",
                   *py(f"import time; open({str(marks)!r},'a').write('A+%f\\n' % time.time()); time.sleep(2); "
                       f"open({str(marks)!r},'a').write('A-%f\\n' % time.time())"))
-    time.sleep(0.7)
+    holding(tmp_path, 1)
     second = heavy(tmp_path, "--purpose", "journey B", "--",
                    *py(f"import time; open({str(marks)!r},'a').write('B+%f\\n' % time.time())"))
     _, err2 = second.communicate(timeout=30)
@@ -199,9 +199,9 @@ def test_jobs_run_at_the_same_time_while_capacity_remains(tmp_path):
 def test_a_heavier_job_waits_for_enough_slots_and_is_not_starved(tmp_path):
     marks = tmp_path / "marks"
     first = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small1", 2), capacity=2)
-    time.sleep(0.6)
+    holding(tmp_path, 1, capacity=2)
     big = heavy(tmp_path, "--weight", "2", "--purpose", "full render", "--", *_job(marks, "big", 0.5), capacity=2)
-    time.sleep(0.6)
+    assert "waiting for 2 slot(s)" in big.stderr.readline()  # it heads the queue
     later = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small2", 0.2), capacity=2)
     for proc in (first, big, later):
         proc.communicate(timeout=60)
@@ -235,7 +235,7 @@ def test_a_small_job_uses_a_slot_the_waiting_head_cannot_and_never_delays_it(tmp
 
 def test_status_shows_capacity_and_what_is_running(tmp_path):
     job = heavy(tmp_path, "--weight", "2", "--purpose", "journey X", "--", *py("import time; time.sleep(2)"), capacity=4)
-    time.sleep(0.8)
+    holding(tmp_path, 2, capacity=4)
     status = json.loads(heavy(tmp_path, "status", capacity=4).communicate(timeout=30)[0])
     job.communicate(timeout=30)
     assert status["capacity"] == 4 and status["used"] == 2 and status["free"] == 2
