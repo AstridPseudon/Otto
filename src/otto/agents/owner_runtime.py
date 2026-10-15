@@ -850,6 +850,7 @@ class CanonicalRoleRuntime:
                 host = ExecutionHost.current_bounded()
                 if host is not None:
                     host.bind_native_session(schedule_id, session_id)
+                    host.pin_native_process(schedule_id, session_id)  # -> record_process_group once the child exists
                 return capture.authorize_delivery(logical_request_key, session_id, brief_sha256)
             adapter = self.adapter.bind_owner_authorization(
                 ExecutionHost.owner_callback(authorize),

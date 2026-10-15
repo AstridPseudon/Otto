@@ -12,7 +12,7 @@ from otto.hostctl import config as host_config, lanes
 from otto.hostctl.owner import create_store, HostSession
 from otto.hostctl.project_service import ProjectOwnerService
 from otto.hostctl.supervision import launchd_definition
-from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.execution_host import CapacityPolicy, ExecutionHost
 from tests import test_bounded_project_host as bounded_fixture
 
 
@@ -26,8 +26,9 @@ class SharedHostAdmissionTests(unittest.TestCase):
             created = create_store(config)
             host_config.write(home, config)
             with HostSession(config) as owner:
-                host = SimpleNamespace(bounded_transports=True, manager_turn_limit=3,
-                    _executions={}, _capacity_holds={}, directory=home/'shared-ipc',
+                host = SimpleNamespace(bounded_transports=True,
+                    capacity=SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1)),
+                    _executions={}, _capacity_holds={}, capacity_holds=lambda: {}, directory=home/'shared-ipc',
                     _status_read=lambda request, fn: fn())
                 router = SimpleNamespace(host=host, store=owner.store, services={})
                 service = ProjectOwnerService(config, router=router)
@@ -50,7 +51,7 @@ class SharedHostAdmissionTests(unittest.TestCase):
                 self.assertEqual(held['outcome'],'held')
 
     def test_three_managers_share_total_three_with_queued_worker(self):
-        f=bounded_fixture.BoundedProjectHostTests(); f.manager_turn_limit=3; f.setUp()
+        f=bounded_fixture.BoundedProjectHostTests(); f.setUp()
         try:
             starts={letter:f.send(letter,{'command':'start-manager'}) for letter in 'ABC'}
             f.wait(lambda:all(f.native.has_started('manager-'+letter) for letter in 'ABC'))

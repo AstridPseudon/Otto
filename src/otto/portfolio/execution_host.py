@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 import hashlib
 import os
 import queue
@@ -19,6 +20,7 @@ import math
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -185,6 +187,315 @@ class ExecutionAdmissionHeld(RuntimeError):
     """Dispatch is held for an explicitly inert owner service."""
 
 
+@dataclass(frozen=True)
+class CapacityPolicy:
+    """The pool's units. A turn weighs one unit; heavy work weighs what it asks.
+
+    ``turn_units`` are shared by workers and managers. ``manager_reserve`` units
+    are taken by managers only (a manager always gets a slot, whatever the
+    workers hold). ``heavy_headroom`` units are taken by heavy work only, so
+    turns cannot starve a check that a turn-holding worker needs to run.
+    """
+
+    turn_units: int = 6
+    manager_reserve: int = 2
+    heavy_headroom: int = 3
+
+    def __post_init__(self) -> None:
+        for name in ("turn_units", "manager_reserve", "heavy_headroom"):
+            value = getattr(self, name)
+            if type(value) is not int or value < (0 if name == "manager_reserve" else 1):
+                raise ValueError("capacity policy %s must be a positive integer" % name)
+
+    @property
+    def total_units(self) -> int:
+        return self.turn_units + self.manager_reserve + self.heavy_headroom
+
+    @property
+    def worker_units(self) -> int:
+        return self.turn_units
+
+    @property
+    def manager_units(self) -> int:
+        return self.turn_units + self.manager_reserve
+
+    def admits_turn(self, role: str, workers: int, managers: int) -> bool:
+        """Whether one more turn of ``role`` fits beside ``workers`` and ``managers``.
+
+        Managers fill their reserve first, so only the managers beyond it use
+        shared units. Any role other than manager counts as a worker.
+        """
+        shared = workers + max(0, managers - self.manager_reserve)
+        if role == "manager":
+            return workers + managers + 1 <= self.manager_units
+        return shared + 1 <= self.turn_units
+
+
+_UNBOUNDED_ALLOWANCE = 10 ** 15  # reusable capacity: the cumulative allowance never limits it
+
+
+def _owner_alive(pid: Any, birth: Any) -> bool:
+    """False only when the process is provably gone or its pid was reused."""
+    if type(pid) is not int or pid <= 0:
+        return True
+    try:
+        live = _process_start_identity(pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    except PermissionError:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    except (OSError, ValueError, IndexError):
+        return True  # unreadable is no proof
+    return not isinstance(birth, list) or list(live["birth"]) == birth
+
+
+class _MemoryLedger:
+    """The limits contract for a host that was not given an owner Store."""
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.rows: dict[str, dict[str, Any]] = {}
+
+    def reserve(self, rid: str, units: int) -> None:
+        if self.totals()["held_units"] + units > self.capacity:
+            raise RuntimeError("reusable capacity is exhausted")
+        self.rows[rid] = {"units": units, "status": "held", "charged": 0}
+
+    def uncertain(self, rid: str) -> None:
+        if self.rows[rid]["status"] == "held":
+            self.rows[rid]["status"] = "uncertain"
+
+    def settle(self, rid: str, units: int) -> None:
+        self.rows[rid].update(status="consumed", charged=units)
+
+    def release(self, rid: str) -> None:
+        self.rows[rid].update(status="released", charged=0)
+
+    def status(self, rid: str) -> str | None:
+        row = self.rows.get(rid)
+        return None if row is None else row["status"]
+
+    def totals(self) -> dict[str, int]:
+        return {"capacity_units": self.capacity,
+                "held_units": sum(r["units"] for r in self.rows.values() if r["status"] in ("held", "uncertain")),
+                "cumulative_used_units": sum(r["charged"] for r in self.rows.values())}
+
+
+class _StoreLedger:
+    """Reservations on kernel ``limits``, kept in the owner Store."""
+
+    def __init__(self, store: Any, capacity: int) -> None:
+        from herzchen.contracts import ResourceRef
+        from herzchen.kernel import LimitService
+        self._store, self._ref_type = store, ResourceRef
+        self._pool = ResourceRef(store.authority, "limit", "host-capacity")
+        self._service = LimitService(store)
+        existing = self._service.get_pool(self._pool)
+        if existing is None:
+            self._service.create_pool(self._pool, capacity_units=capacity,
+                cumulative_allowance_units=_UNBOUNDED_ALLOWANCE, logical_request_key="host-capacity:pool")
+        elif existing.capacity_units != capacity:
+            raise ValueError("existing host capacity pool differs from the adopted policy")
+        self._records: dict[str, Any] = {}
+
+    def _record(self, rid: str) -> Any:
+        if rid not in self._records:
+            found = self._service.get_reservation(self._ref_type(self._store.authority, "reservation", rid))
+            if found is None:
+                return None
+            self._records[rid] = found
+        return self._records[rid]
+
+    def reserve(self, rid: str, units: int) -> None:
+        self._records[rid] = self._service.reserve(self._pool, rid, units, logical_request_key="host-capacity:%s:reserve" % rid)
+
+    def uncertain(self, rid: str) -> None:
+        record = self._record(rid)
+        if record.status.value == "held":
+            self._records[rid] = self._service.mark_uncertain(record, logical_request_key="host-capacity:%s:uncertain" % rid)
+
+    def settle(self, rid: str, units: int) -> None:
+        self._records[rid] = self._service.settle(self._record(rid), units, logical_request_key="host-capacity:%s:settle" % rid)
+
+    def release(self, rid: str) -> None:
+        self._records[rid] = self._service.release(self._record(rid), logical_request_key="host-capacity:%s:release" % rid)
+
+    def status(self, rid: str) -> str | None:
+        record = self._record(rid)
+        return None if record is None else record.status.value
+
+    def totals(self) -> dict[str, int]:
+        pool = self._service.get_pool(self._pool)
+        return {"capacity_units": pool.capacity_units, "held_units": pool.held_units,
+                "cumulative_used_units": pool.cumulative_used_units}
+
+
+class CapacityPool:
+    """One pool for turns and heavy work, accounted on ``limits`` reservations.
+
+    Admission is tiered over the policy's units (see CapacityPolicy); every
+    admitted turn or heavy lease also holds a reservation, so the ledger shows
+    the same load the tiers admit against. Heavy work queues in arrival order,
+    and a waiter or holder whose process is gone stops counting.
+    """
+
+    _INDEX = "capacity-reservations.json"
+
+    def __init__(self, policy: CapacityPolicy, *, store: Any = None, directory: Path | None = None) -> None:
+        self.policy = policy
+        self._lock = threading.RLock()
+        self._ledger = _MemoryLedger(policy.total_units) if store is None else _StoreLedger(store, policy.total_units)
+        # Only a Store-backed pool outlives its process, so only it keeps an index.
+        self._index = None if store is None or directory is None else Path(directory) / self._INDEX
+        self._turns: dict[str, str] = {}
+        self._leases: dict[str, dict[str, Any]] = {}
+        self._waiting: list[dict[str, Any]] = []
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            value = json.loads(self._index.read_text()) if self._index is not None else {}
+        except (OSError, ValueError):
+            value = {}
+        if not isinstance(value, dict):
+            return
+        for key, rid in (value.get("turns") or {}).items():
+            if isinstance(rid, str) and self._ledger.status(rid) in ("held", "uncertain"):
+                self._turns[key] = rid
+        for ticket, row in (value.get("leases") or {}).items():
+            if (isinstance(row, dict) and isinstance(row.get("rid"), str) and type(row.get("units")) is int
+                    and self._ledger.status(row["rid"]) in ("held", "uncertain")):
+                self._leases[ticket] = row
+
+    def _save(self) -> None:
+        if self._index is not None:
+            self._index.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _atomic_json(self._index, {"turns": self._turns, "leases": self._leases})
+
+    def _reserve(self, rid: str, units: int, table: dict[str, Any], key: str, value: Any) -> None:
+        # The index names the reservation before it exists, so a crash between the
+        # two never leaves a held reservation that nothing can find.
+        table[key] = value
+        self._save()
+        try:
+            self._ledger.reserve(rid, units)
+        except BaseException:
+            table.pop(key, None)
+            self._save()
+            raise
+
+    # Turns -------------------------------------------------------------
+
+    def ensure_turn(self, key: str, *, uncertain: bool = False) -> None:
+        with self._lock:
+            rid = self._turns.get(key)
+            if rid is None or self._ledger.status(rid) not in ("held", "uncertain"):
+                rid = "turn-" + uuid.uuid4().hex
+                self._reserve(rid, 1, self._turns, key, rid)
+            if uncertain:
+                self._ledger.uncertain(rid)
+
+    def settle_turn(self, key: str) -> None:
+        with self._lock:
+            rid = self._turns.pop(key, None)
+            if rid is not None:
+                if self._ledger.status(rid) in ("held", "uncertain"):
+                    self._ledger.settle(rid, 1)
+                self._save()
+
+    def release_turn(self, key: str) -> None:
+        with self._lock:
+            rid = self._turns.pop(key, None)
+            if rid is not None:
+                if self._ledger.status(rid) in ("held", "uncertain"):
+                    self._ledger.release(rid)
+                self._save()
+
+    def sweep_turns(self, active: set[str]) -> list[str]:
+        """Release reservations of turns that are no longer running or held."""
+        with self._lock:
+            orphans = [key for key in self._turns if key not in active]
+            for key in orphans:
+                self.release_turn(key)
+            return orphans
+
+    # Heavy work --------------------------------------------------------
+
+    def _heavy_used(self) -> int:
+        return sum(row["units"] for row in self._leases.values())
+
+    def prune_dead_heavy(self) -> list[str]:
+        """Drop waiters and holders whose owner process is provably gone."""
+        with self._lock:
+            gone = [row["ticket"] for row in self._waiting if not _owner_alive(row["pid"], row["birth"])]
+            self._waiting = [row for row in self._waiting if row["ticket"] not in gone]
+            for ticket, row in list(self._leases.items()):
+                if not _owner_alive(row.get("pid"), row.get("birth")):
+                    if self._ledger.status(row["rid"]) in ("held", "uncertain"):
+                        self._ledger.release(row["rid"])
+                    del self._leases[ticket]
+                    gone.append(ticket)
+                    self._save()
+            return gone
+
+    def queue_heavy(self, owner: str, units: int, *, pid: int | None = None) -> str:
+        """Join the heavy queue; an oversize request is clamped to the headroom."""
+        units = max(1, min(int(units), self.policy.heavy_headroom))
+        birth = None
+        if pid is not None:
+            try:
+                birth = list(_process_start_identity(pid)["birth"])
+            except (OSError, ValueError, IndexError):
+                birth = None
+        with self._lock:
+            ticket = "heavy-" + uuid.uuid4().hex
+            self._waiting.append({"ticket": ticket, "owner": owner, "units": units, "pid": pid, "birth": birth})
+            return ticket
+
+    def claim_heavy(self, ticket: str) -> bool:
+        """Take the ticket's units now if it is first in line and they fit."""
+        with self._lock:
+            if ticket in self._leases:
+                return True
+            self.prune_dead_heavy()
+            if not self._waiting or self._waiting[0]["ticket"] != ticket:
+                if not any(row["ticket"] == ticket for row in self._waiting):
+                    raise KeyError("heavy ticket is not queued (its owner was gone, or it was released)")
+                return False
+            row = self._waiting[0]
+            if self._heavy_used() + row["units"] > self.policy.heavy_headroom:
+                return False
+            rid = "heavy-" + uuid.uuid4().hex
+            lease = {"rid": rid, "units": row["units"], "owner": row["owner"], "pid": row["pid"], "birth": row["birth"]}
+            self._reserve(rid, row["units"], self._leases, ticket, lease)
+            self._waiting.pop(0)
+            return True
+
+    def release_heavy(self, ticket: str) -> None:
+        with self._lock:
+            self._waiting = [row for row in self._waiting if row["ticket"] != ticket]
+            row = self._leases.pop(ticket, None)
+            if row is not None:
+                if self._ledger.status(row["rid"]) in ("held", "uncertain"):
+                    self._ledger.settle(row["rid"], row["units"])
+                self._save()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {"pool": self._ledger.totals(),
+                    "policy": {"turn_units": self.policy.turn_units, "manager_reserve": self.policy.manager_reserve,
+                               "heavy_headroom": self.policy.heavy_headroom},
+                    "turns": {"reserved": len(self._turns)},
+                    "heavy": {"used": self._heavy_used(), "limit": self.policy.heavy_headroom,
+                              "leases": sorted(self._leases), "waiting": [row["ticket"] for row in self._waiting]}}
+
+
 class ExecutionHost:
     """One owner-process command service, retained to admitted work completion.
 
@@ -198,7 +509,8 @@ class ExecutionHost:
                  socket_path: str | Path | None = None,
                  caller_binding_reader: Any = None, caller_context_resolver: Any = None,
                  caller_authorizer: Any = None, owner_file_compatibility: bool = False,
-                 bounded_transports: bool = False, manager_turn_limit: int = 2) -> None:
+                 bounded_transports: bool = False, capacity_policy: CapacityPolicy | None = None,
+                 capacity_store: Any = None) -> None:
         self.directory = Path(directory)
         self._last_response_prune = float('-inf')
         self.handler = handler
@@ -235,9 +547,12 @@ class ExecutionHost:
         self.failures: dict[str, dict[str, str]] = {}
         if type(bounded_transports) is not bool:
             raise TypeError("bounded_transports must be an explicit owner choice")
-        if type(manager_turn_limit) is not int or manager_turn_limit not in {2, 3}:
-            raise ValueError("qualified manager turn ceiling must be two or three")
-        self.manager_turn_limit = manager_turn_limit
+        if capacity_policy is not None and not isinstance(capacity_policy, CapacityPolicy):
+            raise TypeError("capacity_policy must be a CapacityPolicy")
+        # The one pool for turns and heavy work. Pass the owner Store to keep its
+        # reservations there; without one the host keeps them in memory.
+        self.capacity = CapacityPool(capacity_policy or CapacityPolicy(), store=capacity_store,
+                                     directory=self.directory)
         self.bounded_transports = bounded_transports
         self._owner_thread: int | None = None
         # These are continuations of retained requests, not durable new work.
@@ -248,6 +563,8 @@ class ExecutionHost:
         self._capacity_holds: dict[str, dict[str, Any]] = {}
         self._capacity_freed: set[str] = set()
         self._process_groups = self._load_process_groups()
+        self._pending_pins: dict[str, dict[str, Any]] = {}
+        self._pin_checked = self._reconcile_checked = 0.0
         self._last_project: str | None = None
         self._project_order: list[str] = []
 
@@ -348,9 +665,13 @@ class ExecutionHost:
                 pass  # Any changed/ambiguous terminal proof keeps custody.
         if attempt and not released:
             self._capacity_holds[due.schedule_id] = self._execution_scope(app, due)
-            self._reconcile_hold(due.schedule_id)
+            if self._reconcile_hold(due.schedule_id):
+                self.capacity.release_turn(due.schedule_id)
+            else:
+                self.capacity.ensure_turn(due.schedule_id, uncertain=True)
         else:
-            self._capacity_holds.pop(due.schedule_id, None)
+            if self._capacity_holds.pop(due.schedule_id, None) is not None:
+                self.capacity.settle_turn(due.schedule_id)  # a disposition ends custody of used capacity
             self._forget_process_group(due.schedule_id)
 
     _PROCESS_GROUPS = "capacity-process-groups.json"
@@ -387,8 +708,61 @@ class ExecutionHost:
         except OSError as error:
             raise PermissionError("process is not live; nothing to pin") from error
         self._process_groups[schedule_id] = {"pid": pid, "pgid": pgid, "birth": birth}
-        self._capacity_freed.discard(schedule_id)
+        if schedule_id in self._capacity_freed:
+            self._capacity_freed.discard(schedule_id)
+            self.capacity.ensure_turn(schedule_id, uncertain=True)  # the group is live again: it costs its slot
         self._save_process_groups()
+
+    def pin_native_process(self, schedule_id: str, session: str) -> None:
+        """Pin the native process for ``session`` once it exists, when the owner binds it.
+
+        The owner binds a session before the adapter spawns the work process, so
+        no pid is known yet. The owner loop looks for the child of this process
+        that leads its own group and carries the session on its command line,
+        and pins it with record_process_group. A process that never shows up
+        stays unpinned: its hold keeps the slot, which is the safe side.
+        """
+        job = self._executions.get(schedule_id)
+        if job is None or not job["running"]:
+            raise RuntimeError("native process has no admitted owner occurrence")
+        self._pending_pins[schedule_id] = {"session": session, "since": time.monotonic()}
+
+    _PIN_INTERVAL, _PIN_GIVE_UP = 0.25, 120.0
+
+    @staticmethod
+    def _own_children() -> list[tuple[int, int, list[str]]]:
+        try:
+            listing = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,command="], capture_output=True,
+                                     text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        me, rows = os.getpid(), []
+        for line in listing.splitlines():
+            fields = line.split(None, 3)
+            if len(fields) == 4 and all(f.isdigit() for f in fields[:3]) and int(fields[1]) == me:
+                rows.append((int(fields[0]), int(fields[2]), fields[3].split()))
+        return rows
+
+    def _pin_native_groups(self) -> None:
+        """Owner-loop step: pin each bound session's process group once it is live."""
+        now = time.monotonic()
+        if not self._pending_pins or now - self._pin_checked < self._PIN_INTERVAL:
+            return
+        self._pin_checked = now
+        children = self._own_children()
+        for schedule_id, pending in list(self._pending_pins.items()):
+            job = self._executions.get(schedule_id)
+            if job is None or not job["running"] or now - pending["since"] > self._PIN_GIVE_UP:
+                del self._pending_pins[schedule_id]
+                continue
+            for pid, pgid, argv in children:
+                if pid == pgid and pending["session"] in argv:  # it leads its own group; never a shared one
+                    try:
+                        self.record_process_group(schedule_id, pid)
+                    except (PermissionError, RuntimeError):
+                        pass  # already gone, or no longer an occurrence: nothing to pin
+                    del self._pending_pins[schedule_id]
+                    break
 
     @staticmethod
     def _group_state(record: Mapping[str, Any]) -> str:
@@ -443,8 +817,16 @@ class ExecutionHost:
         stays in the custody fence (_capacity_holds) and keeps blocking
         activation and supervised restart.
         """
-        return [key for key in list(self._capacity_holds)
-                if key not in self._capacity_freed and self._reconcile_hold(key)]
+        freed = [key for key in list(self._capacity_holds)
+                 if key not in self._capacity_freed and self._reconcile_hold(key)]
+        for key in freed:
+            self.capacity.release_turn(key)
+        # A reservation that no running turn or live hold stands behind is a leak
+        # from an earlier life of this host; dead heavy owners likewise.
+        self.capacity.sweep_turns(set(self.capacity_holds()) | {
+            key for key, value in self._executions.items() if value["running"]})
+        self.capacity.prune_dead_heavy()
+        return freed
 
     def capacity_holds(self) -> dict[str, dict[str, Any]]:
         """The holds that still cost a slot: the fence minus provably dead groups."""
@@ -472,14 +854,13 @@ class ExecutionHost:
         return value
 
     def _eligible(self, scope: Mapping[str, Any]) -> bool:
-        active_by_id = {**self._capacity_holds,
+        # Capacity follows processes: a hold whose group is provably gone no
+        # longer counts, though it stays in the custody fence.
+        active_by_id = {**self.capacity_holds(),
             **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
         active = list(active_by_id.values())
-        # Adopted manager ceiling (two by default, three explicitly qualified),
-        # worker two and total three are conjunctive. One
-        # total slot stays available to coordination when only workers run.
-        if (len(active) >= 3 or sum(row["role"] == scope["role"] for row in active)
-                >= (self.manager_turn_limit if scope["role"] == "manager" else 2)):
+        managers = sum(row["role"] == "manager" for row in active)
+        if not self.capacity.policy.admits_turn(scope["role"], len(active) - managers, managers):
             return False
         for row in active:
             if (row["assignment"] == scope["assignment"]
@@ -523,6 +904,7 @@ class ExecutionHost:
             try:
                 if self._execution_scope(job["app"], job["app"]._read(job["scope"]["schedule_id"])) != job["scope"]:
                     raise PermissionError("queued execution binding changed before admission")
+                self.capacity.ensure_turn(job["scope"]["schedule_id"])
             except Exception as error:
                 self._executions.pop(job["scope"]["schedule_id"])
                 job["completion"].resolve(error=error)
@@ -539,6 +921,15 @@ class ExecutionHost:
                 except Exception as observed:
                     self._capacity_holds[schedule] = job["scope"]
                     error = error or observed
+                self._pending_pins.pop(schedule, None)
+                try:
+                    if schedule in self.capacity_holds():
+                        self.capacity.ensure_turn(schedule, uncertain=True)  # custody keeps the units
+                    elif schedule not in self._capacity_holds:
+                        self.capacity.settle_turn(schedule)
+                    # else: held in the fence with its group gone; the units are already back
+                except Exception as observed:
+                    self.failures["capacity:" + schedule] = {"code": type(observed).__name__, "message": str(observed)}
                 self._executions.pop(schedule, None)
                 job["completion"].resolve(value, error)
 
@@ -588,10 +979,22 @@ class ExecutionHost:
             raise
         return result
 
+    _RECONCILE_INTERVAL = 30.0
+
+    def _capacity_tick(self) -> None:
+        """Owner-loop upkeep: pin bound native groups, and free what has provably died."""
+        self._pin_native_groups()
+        now = time.monotonic()
+        if now - self._reconcile_checked >= self._RECONCILE_INTERVAL:
+            self._reconcile_checked = now
+            self.reconcile_dead_holds()  # the next pump sees the freed slots
+
     def start(self) -> None:
         if self._threads:
             raise RuntimeError("execution host is already started")
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Holds were restored before the host serves; settle which are already dead.
+        self.reconcile_dead_holds()
         if self.owner_path is not None:
             # Exclusive custody; a live competing owner is never replaced.
             # PID alone is only a locator.  Re-read its process-start and boot
@@ -1164,6 +1567,7 @@ class ExecutionHost:
                         self._serve_files(False)
                     self._owned(self._pump_owner_calls)
                     self._owned(self._start_ready_executions)
+                    self._owned(self._capacity_tick)
             else:
                 self._serve_files(status)
             stop.wait(0.05)

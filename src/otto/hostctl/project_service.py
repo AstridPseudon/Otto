@@ -30,8 +30,8 @@ class ProjectOwnerService(OwnerService):
         if not host.bounded_transports or router.store is None:
             raise ValueError('existing bounded project owner required')
         limit = config.get('max_active_manager_turns', 3)
-        if limit != host.manager_turn_limit:
-            raise ValueError('installation manager limit differs from adopted shared host')
+        if limit > host.capacity.policy.manager_units:
+            raise ValueError('installation manager limit exceeds the shared host capacity pool')
         super().__init__(config, max_active_manager_turns=limit)
         self.router, self.shared_host, self.store = router, host, router.store
         self.protected_relay = protected_relay
@@ -402,15 +402,17 @@ class ProjectOwnerService(OwnerService):
 
     def _status(self, state: str = 'serving') -> dict[str, Any]:
         value = super()._status(state)
-        active = {**self.shared_host._capacity_holds, **{
+        policy = self.shared_host.capacity.policy
+        active = {**self.shared_host.capacity_holds(), **{
             key: item['scope'] for key, item in self.shared_host._executions.items() if item['running']}}
         managers = [v for v in active.values() if v['role'] == 'manager']
         value.update(shared_project_owner=True,
             manager_turns={'active': len(managers), 'active_projects': sorted(v['project'] for v in managers),
-                           'limit': self.shared_host.manager_turn_limit},
+                           'limit': policy.manager_units},
             manager_turn_active=bool(managers),
-            native_capacity={'active_or_uncertain': len(active), 'total_limit': 3, 'worker_limit': 2,
-                             'manager_limit': self.shared_host.manager_turn_limit,
+            native_capacity={'active_or_uncertain': len(active), 'total_limit': policy.manager_units,
+                             'worker_limit': policy.worker_units, 'manager_limit': policy.manager_units,
+                             'heavy_limit': policy.heavy_headroom,
                              'holds': sorted(self.shared_host._capacity_holds)},
             store_open_count=1, notification_mode='receipt-inspection')
         return value
