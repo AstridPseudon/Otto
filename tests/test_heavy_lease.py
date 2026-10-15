@@ -24,6 +24,12 @@ def heavy(tmp_path: Path, *args: str, capacity: int = 1, **kw) -> subprocess.Pop
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
 
 
+def holding(tmp_path: Path, used: int, capacity: int = 1) -> None:
+    """Wait until the pool's holders take USED slots (arrival order without fixed sleeps; only a hang fails)."""
+    while json.loads(heavy(tmp_path, "status", capacity=capacity).communicate()[0])["used"] != used:
+        time.sleep(0.05)
+
+
 def py(code: str) -> list[str]:
     return [sys.executable, "-c", textwrap.dedent(code)]
 
@@ -95,7 +101,7 @@ def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path
 
 def test_no_wait_returns_busy_and_names_what_is_running(tmp_path):
     first = heavy(tmp_path, "--purpose", "render A", "--", *py("import time; time.sleep(3)"))
-    time.sleep(0.7)
+    holding(tmp_path, 1)
     busy = heavy(tmp_path, "--no-wait", "--", *py("pass"))
     _, err = busy.communicate(timeout=30)
     first.communicate(timeout=30)
@@ -209,12 +215,12 @@ def test_a_small_job_uses_a_slot_the_waiting_head_cannot_and_never_delays_it(tmp
     # 4 slots: a 3-slot render runs; a 3-slot job waits at the head with 1 slot free. A 1-slot check
     # behind it takes that slot at once; a second one doesn't (the head must still fit beside it).
     marks = tmp_path / "marks"
-    render = heavy(tmp_path, "--weight", "3", "--", *_job(marks, "render", 2), capacity=4)
-    time.sleep(0.6)
+    render = heavy(tmp_path, "--weight", "3", "--", *_job(marks, "render", 4), capacity=4)
+    holding(tmp_path, 3, capacity=4)
     head = heavy(tmp_path, "--weight", "3", "--purpose", "transcript", "--", *_job(marks, "head", 0.5), capacity=4)
-    time.sleep(0.6)
-    check = heavy(tmp_path, "--weight", "1", "--purpose", "gate", "--", *_job(marks, "check", 3), capacity=4)
-    time.sleep(0.6)
+    assert "waiting for 3 slot(s)" in head.stderr.readline()  # it heads the queue
+    check = heavy(tmp_path, "--weight", "1", "--purpose", "gate", "--", *_job(marks, "check", 12), capacity=4)
+    holding(tmp_path, 4, capacity=4)
     second = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "second", 0.2), capacity=4)
     for proc in (render, head, check, second):
         proc.communicate(timeout=60)
