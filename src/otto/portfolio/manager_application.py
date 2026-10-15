@@ -307,7 +307,7 @@ class ManagerApplication:
         # it does not create a second document/session or Due authority.
         portfolio.document_operations = document_operations
         portfolio.due_port = due_port
-        assessment_owner = AssessmentModule(store, actor=actor)
+        assessment_owner = AssessmentModule(store, actor=actor, payload_resolver=owner.evidence_payload_resolver)
         assessment = OttoAssessment(assessment_owner, actor)
 
         def brief_readers(

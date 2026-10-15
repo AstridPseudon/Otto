@@ -594,6 +594,7 @@ class PortfolioOwnerBootstrap:
         "project_read_grant",
         "queue_binding",
         "reviewed_policy",
+        "evidence_payload_resolver",
         "on_project_finished",
     )
 
@@ -618,6 +619,7 @@ class PortfolioOwnerBootstrap:
         folder_transport_request_bytes: int = 16 * 1024,
         queue_ref: Any = None,
         reviewed_policy: Mapping[str, Any] | None = None,
+        evidence_payload_resolver: Any = None,
     ) -> None:
         from herzchen.authoring import AuthoringSessionService
         from herzchen.content import ContentCommandHandler
@@ -644,6 +646,8 @@ class PortfolioOwnerBootstrap:
         # Called after a project's lifecycle becomes completed or withdrawn (see project_finished).
         self.on_project_finished = None
         self.reviewed_policy = reviewed_policy
+        # The owner's evidence handler: verifies managed DAT payloads before accept or completion.
+        self.evidence_payload_resolver = evidence_payload_resolver
         self.binding = binding
         self.owner_actor = authenticated
         self.project_read_grant = project_read_grant
@@ -973,7 +977,8 @@ class PortfolioOwnerBootstrap:
 
         authorize()
         return ManagerAssessmentCommands(
-            assessment=OttoAssessment(AssessmentModule(self.store, actor=actor), actor),
+            assessment=OttoAssessment(AssessmentModule(self.store, actor=actor,
+                payload_resolver=self.evidence_payload_resolver), actor),
             reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
             generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
 

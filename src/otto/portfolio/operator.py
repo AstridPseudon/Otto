@@ -192,7 +192,8 @@ class ProjectOperator:
         need(scope['task_alias'] == 'T01' and scope['criterion_alias'] == 'C01', 'only original T01/C01 is permitted')
         self._task(json.dumps(scope['task_ref']))
         from herzchen.domains.assessment import AssessmentModule
-        assessment = AssessmentModule(self.store, actor=self.owner.owner_actor)
+        assessment = AssessmentModule(self.store, actor=self.owner.owner_actor,
+            payload_resolver=self.owner.evidence_payload_resolver)
         assessment_scope = assessment.get_scope(ResourceRef.from_dict(scope['assessment_scope_ref']))
         need(json_value(assessment_scope.ref) == scope['assessment_scope_ref'],
              'original C01 scope is stale')
