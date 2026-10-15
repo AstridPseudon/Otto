@@ -1,0 +1,233 @@
+"""Scratch-repo tests for ops/bootstrap: the land.sh gate and run-task.sh --route.
+
+Everything runs on temporary repos through the scripts' environment overrides; the heavy
+launcher and `claude` are stubs. OTTO_BOOTSTRAP_DIR points the tests at another copy of the
+scripts (used to show the tests failing against the old ones).
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BOOT = Path(os.environ.get("OTTO_BOOTSTRAP_DIR") or ROOT / "ops" / "bootstrap")
+
+GOOD_TEST = "from otto import mod\n\n\ndef test_f():\n    assert mod.f() == 1\n"
+BOUNDARY = "def test_boundary():\n    assert True\n"
+
+
+def sh(cmd, cwd=None, env=None, check=True):
+    r = subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
+    if check and r.returncode:
+        raise AssertionError("%s failed:\n%s%s" % (cmd, r.stdout, r.stderr))
+    return r
+
+
+class Scratch(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="bootgate-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo, self.labs, self.ops = self.tmp / "otto", self.tmp / "labs", self.tmp / "ops"
+        self.remote, self.baseline = self.tmp / "remote.git", self.tmp / "baseline"
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.ops.mkdir()
+        heavy = self.bin / "otto-heavy"
+        heavy.write_text('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
+        heavy.chmod(0o755)
+        self.env = dict(
+            os.environ, OTTO_REPO=str(self.repo), LABS_DIR=str(self.labs), OPS_DIR=str(self.ops),
+            OTTO_HEAVY=str(heavy), BASELINE_LAB=str(self.baseline), OTTO_PYTHON=sys.executable,
+            OTTO_REMOTE="github", PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+            GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+        )
+        sh(["git", "init", "-q", "-b", "canon/main", str(self.repo)])
+        sh(["git", "init", "-q", "--bare", "-b", "main", str(self.remote)])
+        self.write(self.repo, "src/otto/__init__.py", "")
+        self.write(self.repo, "src/otto/mod.py", "def f():\n    return 1\n")
+        self.write(self.repo, "src/herzchen/__init__.py", "")
+        self.write(self.repo, "tests/test_herzchen_boundary.py", BOUNDARY)
+        self.write(self.repo, "tests/test_mod.py", GOOD_TEST)
+        self.commit(self.repo, "base")
+        sh(["git", "remote", "add", "github", str(self.remote)], cwd=self.repo)
+        sh(["git", "push", "-q", "github", "canon/main:main"], cwd=self.repo, env=self.env)
+
+    @staticmethod
+    def write(root, rel, text):
+        p = Path(root) / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+    def commit(self, where, msg):
+        sh(["git", "add", "-A"], cwd=where, env=self.env)
+        sh(["git", "commit", "-q", "-m", msg], cwd=where, env=self.env)
+
+    def head(self, ref="canon/main"):
+        return sh(["git", "rev-parse", ref], cwd=self.repo).stdout.strip()
+
+    def lab(self, task, files, brief_extra="", deleted=()):
+        """Create a lab, write FILES ({rel: text}) and commit them, and write a brief."""
+        sh(["bash", str(BOOT / "otto-lab.sh"), "create", task], env=self.env)
+        lab = self.labs / task
+        for rel, text in files.items():
+            self.write(lab, rel, text)
+        self.commit(lab, "work")
+        (lab / ".brief.md").write_text("**Title:** Do %s\nCheck command: `true`\n%s\n" % (task, brief_extra))
+        return lab
+
+    def land(self, task, *args):
+        r = sh(["bash", str(BOOT / "land.sh"), task, *args], env=self.env, check=False)
+        # Every exit path ends with one LAND RESULT line that matches the exit code.
+        lines = r.stdout.strip().splitlines()
+        expected = {0: "landed", 4: "d19"}.get(r.returncode, "refused")
+        self.assertTrue(lines and lines[-1].startswith("LAND RESULT: " + expected), r.stdout + r.stderr)
+        if r.returncode == 0:
+            self.assertIn("tested commit ", self.log(task))
+        return r
+
+    def log(self, task):
+        return (self.ops / "runs" / task / "land.log").read_text()
+
+    def assertRefused(self, r, task, text=""):
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.head(), self.base, "canon/main moved")
+        self.assertTrue((self.labs / task).exists())
+        if text:
+            self.assertIn(text, self.log(task) + r.stdout + r.stderr)
+
+    @property
+    def base(self):
+        return self._base
+
+    def start(self):
+        self._base = self.head()
+
+
+class LandGate(Scratch):
+    def setUp(self):
+        super().setUp()
+        self.start()
+
+    def test_passing_task_lands(self):
+        self.lab("T1", {"src/otto/mod.py": "def f():\n    return 1\n\n\ndef g():\n    return 2\n",
+                        "tests/test_mod.py": GOOD_TEST + "\n\ndef test_g():\n    assert mod.g() == 2\n"})
+        r = self.land("T1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        parents = sh(["git", "rev-list", "--parents", "-1", "canon/main"], cwd=self.repo).stdout.split()
+        self.assertEqual(len(parents), 3, "merged with --no-ff")
+        self.assertEqual(self.head(), self.head("github/main"))
+        self.assertEqual(sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip(), self.head())
+        self.assertFalse((self.labs / "T1").exists())
+        self.assertEqual(sh(["git", "branch", "--list", "lab/T1"], cwd=self.repo).stdout.strip(), "")
+        log = self.log("T1")
+        for f in ("tests/test_mod.py", "tests/test_herzchen_boundary.py"):
+            for n in (1, 2):
+                self.assertIn("sweep %s run %d/2" % (f, n), log)
+        self.assertFalse((self.ops / "land.lock").exists())
+        self.assertIn("staging: skipped", log)
+        self.assertIn("lines removed", log)
+
+    def test_new_failure_is_refused(self):
+        self.lab("T2", {"src/otto/mod.py": "def f():\n    return 2\n"})
+        r = self.land("T2")
+        self.assertRefused(r, "T2", "NEW failure: tests/test_mod.py::test_f")
+
+    def test_failure_also_on_base_is_pre_existing(self):
+        self.write(self.repo, "tests/test_mod.py", GOOD_TEST + "\n\ndef test_bad():\n    assert False\n")
+        self.commit(self.repo, "known failure")
+        self.start()
+        self.lab("T3", {"src/otto/mod.py": "def f():\n    return 1\n\n\ndef h():\n    return 3\n"})
+        r = self.land("T3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("pre-existing failure (also on BASE): tests/test_mod.py::test_bad", self.log("T3"))
+        self.assertTrue(list((self.ops / "baseline" / self.base).rglob("test_mod.py.txt")))
+
+    def test_changed_assertion_exits_4_then_d19_decides(self):
+        changed = {"tests/test_mod.py": GOOD_TEST.replace("== 1", "!= 2")}
+        self.lab("T4", changed)
+        r = self.land("T4")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("D19: existing test expectations changed in tests/test_mod.py;", r.stderr)
+        self.assertIn("ops/reviews/D19-T4.brief.md", r.stderr)
+        self.assertEqual(self.head(), self.base)
+        (self.tmp / "no.md").write_text("Review\nSEND BACK: too loose\n")
+        self.assertRefused(self.land("T4", "--d19", str(self.tmp / "no.md")), "T4", "SEND BACK")
+        (self.tmp / "yes.md").write_text("Review\nDecision: LAND\n")
+        r = self.land("T4", "--d19", str(self.tmp / "yes.md"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(self.head(), self.base)
+
+    def test_setup_line_change_does_not_trigger_d19(self):
+        self.lab("T5", {"tests/test_mod.py": GOOD_TEST.replace("from otto import mod", "from otto import mod  # ok")})
+        r = self.land("T5")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_herzchen_layer_with_only_otto_code_is_refused(self):
+        self.lab("T6", {"src/otto/extra.py": "X = 1\n"}, "**Layer:** Herzchen fleet (PLAN.md D14). Goes in src/herzchen.")
+        self.assertRefused(self.land("T6"), "T6", "D14")
+
+    def test_missing_layer_only_logs(self):
+        self.lab("T7", {"src/otto/extra.py": "X = 1\n"})
+        r = self.land("T7")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Layer: none", self.log("T7"))
+
+    def test_remote_ahead_is_refused_before_merge(self):
+        other = self.tmp / "other"
+        sh(["git", "clone", "-q", str(self.remote), str(other)], env=self.env)
+        self.write(other, "README", "x")
+        self.commit(other, "remote only")
+        sh(["git", "push", "-q", "origin", "HEAD:main"], cwd=other, env=self.env)
+        self.lab("T8", {"src/otto/extra.py": "X = 1\n"})
+        self.assertRefused(self.land("T8"), "T8", "reconcile first")
+
+    def test_added_regression_test_passing_on_base_warns(self):
+        self.lab("T9", {"tests/test_new.py": "def test_ok():\n    assert True\n"})
+        r = self.land("T9")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WARN: tests/test_new.py passes on canon/main", self.log("T9"))
+
+
+class RunTaskRoute(Scratch):
+    def run_route(self, route, resume=False):
+        task = "R" + route
+        self.lab(task, {"note.txt": "x\n"})
+        argv = self.tmp / ("argv-" + route)
+        stub = self.bin / "claude"
+        stub.write_text('#!/bin/sh\nprintf "%%s\\n" "$@" > "%s.tmp"\nmv "%s.tmp" "%s"\n' % (argv, argv, argv))
+        stub.chmod(0o755)
+        args = ["bash", str(BOOT / "run-task.sh"), task, "--route", route, "--wall-seconds", "5"]
+        if resume:
+            msg = self.tmp / "msg.md"
+            msg.write_text("go on\n")
+            args += ["--resume", "11111111-1111-1111-1111-111111111111", "--message", str(msg)]
+        r = sh(args, env=self.env, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        while not argv.exists():  # the stub writes it when claude starts; only a hang fails
+            pass
+        return argv.read_text().split("\n")
+
+    def check_xhard(self, argv):
+        i = argv.index("--agents")
+        self.assertIn('"haiku-worker"', argv[i + 1])
+        tools = argv[argv.index("--allowedTools") + 1].split()
+        self.assertEqual(tools[0], "Agent")
+
+    def test_xhard_fresh(self):
+        self.check_xhard(self.run_route("xhard"))
+
+    def test_xhard_resume(self):
+        self.check_xhard(self.run_route("xhard", resume=True))
+
+    def test_normal_has_neither(self):
+        argv = self.run_route("normal")
+        self.assertNotIn("--agents", argv)
+        self.assertNotIn("Agent", argv[argv.index("--allowedTools") + 1].split())
+
+
+if __name__ == "__main__":
+    unittest.main()
