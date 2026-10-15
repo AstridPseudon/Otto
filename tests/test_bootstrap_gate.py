@@ -144,7 +144,7 @@ class LandGate(Scratch):
         r = self.land("T3")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("pre-existing failure (also on BASE): tests/test_mod.py::test_bad", self.log("T3"))
-        self.assertTrue(list((self.ops / "baseline" / self.base).rglob("test_mod.py.txt")))
+        self.assertTrue(list((self.ops / ".baseline" / self.base).rglob("test_mod.py.txt")))
 
     def test_changed_assertion_exits_4_then_d19_decides(self):
         changed = {"tests/test_mod.py": GOOD_TEST.replace("== 1", "!= 2")}
@@ -227,6 +227,67 @@ class RunTaskRoute(Scratch):
         argv = self.run_route("normal")
         self.assertNotIn("--agents", argv)
         self.assertNotIn("Agent", argv[argv.index("--allowedTools") + 1].split())
+
+    def test_workers_cannot_schedule_themselves(self):
+        for route in ("normal", "xhard"):
+            argv = self.run_route(route)
+            denied = argv[argv.index("--disallowedTools") + 1].split()
+            self.assertIn("ScheduleWakeup", denied)
+            self.assertIn("CronCreate", denied)
+
+
+class WorkersWait(unittest.TestCase):
+    """workers.py wait returns on each thing the manager must act on, and says which."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="bootwait-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.inbox = self.tmp / "requests.md"
+        self.inbox.write_text("## Orchestrator old\nolder text\n## Manager ask\n")
+        self.ledger = self.tmp / "workers.json"
+        self.worker = subprocess.Popen(["sleep", "600"])
+        self.addCleanup(self.stop_worker)
+        self.ledger.write_text('[{"task": "T1", "pid": %d}]\n' % self.worker.pid)
+
+    def stop_worker(self):
+        if self.worker.poll() is None:
+            self.worker.kill()
+        self.worker.wait()
+
+    def start(self, *extra):
+        proc = subprocess.Popen([sys.executable, "-I", str(BOOT / "workers.py"), "wait", "--file", str(self.ledger),
+                                 "--inbox", str(self.inbox), "--poll", "0.05", *extra],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertIn("waiting on", proc.stderr.readline())  # armed; only a hang fails
+        return proc
+
+    def test_new_orchestrator_section_wakes_it(self):
+        proc = self.start()
+        with self.inbox.open("a") as f:
+            f.write("## Manager another ask\n## Orchestrator 19:40Z: do X\n")
+        out, _ = proc.communicate()
+        self.assertEqual(out.strip(), "orchestrator: ## Orchestrator 19:40Z: do X")
+
+    def test_worker_exit_wakes_it(self):
+        proc = self.start()
+        self.stop_worker()
+        out, _ = proc.communicate()
+        self.assertEqual(out.strip(), "worker exited: T1 (pid %d)" % self.worker.pid)
+
+    def test_landing_result_wakes_it(self):
+        land = self.tmp / "land.out"
+        land.write_text("gate: sweeping\n")
+        proc = self.start("--land-out", str(land))
+        with land.open("a") as f:
+            f.write("LAND RESULT: landed abc123\n")
+        out, _ = proc.communicate()
+        self.assertEqual(out.strip(), "landing finished: %s: LAND RESULT: landed abc123" % land)
+
+    def test_nothing_to_wait_on_returns_at_once(self):
+        self.stop_worker()
+        r = sh([sys.executable, "-I", str(BOOT / "workers.py"), "wait", "--file", str(self.ledger),
+                "--inbox", str(self.inbox)])
+        self.assertIn("nothing running", r.stdout)
 
 
 if __name__ == "__main__":
