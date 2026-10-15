@@ -86,7 +86,7 @@ log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase
 
 
 # ---- gate ----
-G="$RUN/gate"; rm -rf "$G"; mkdir -p "$G"
+G="$RUN/.gate"; rm -rf "$G"; mkdir -p "$G"  # dot-folders: portfolio applies skip scratch
 gitl() { git -C "$OTTO_REPO" "$@"; }
 
 # Run one test file in DIR with output to OUT; the last line records pytest's exit status.
@@ -142,7 +142,7 @@ ensure_baseline() {
   BASELINE_READY=1
 }
 baseline_out() {  # FILE -> path of its cached output on BASE
-  local out="$OPS_DIR/baseline/$BASE/$1.txt"
+  local out="$OPS_DIR/.baseline/$BASE/$1.txt"
   if [ ! -f "$out" ]; then
     ensure_baseline
     mkdir -p "$(dirname "$out")"
