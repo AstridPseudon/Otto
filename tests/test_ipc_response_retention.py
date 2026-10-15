@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from unittest import mock
+
+from otto.portfolio import ipc_retention
 from otto.portfolio.execution_host import ExecutionHost
 from otto.portfolio.ipc_retention import ANSWERED_RESPONSE_GRACE_SECONDS, prune_answered_responses
 
@@ -78,6 +81,46 @@ class IpcResponseRetentionTests(unittest.TestCase):
         host = SimpleNamespace(directory=self.lane)
         paths = ExecutionHost._request_paths(host)
         self.assertEqual([path.name for path in paths], ["request-" + TOKEN + ".json"])
+
+
+class LargeResponseRetentionTests(IpcResponseRetentionTests):
+    """Responses over the parse cap are decided from their status projection only."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(ipc_retention, "MAX_PARSE_BYTES", 64)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _large_body(self, token):
+        # Deliberately not JSON: if the module tried to parse it, the decision would fail closed.
+        return self._write("response-" + token + ".json", raw="{" + "x" * 4096, age=self.old)
+
+    def _status(self, token, *, terminal_observed, outcome):
+        timing = {"phases": {"terminal": {"state": "observed" if terminal_observed else "absent"}}}
+        value = {"receipt_timing": timing, "summary": {"outcome": outcome}}
+        return self._write("status-response-" + token + ".json", value, age=self.old)
+
+    def test_large_terminal_response_pruned_without_parsing_body(self):
+        token = "6" * 32
+        response = self._large_body(token)
+        status = self._status(token, terminal_observed=True, outcome="succeeded")
+        self.assertEqual(prune_answered_responses(self.lane), 1)
+        self.assertFalse(response.exists())
+        self.assertFalse(status.exists())
+
+    def test_large_non_terminal_response_kept(self):
+        pending = "7" * 32
+        unobserved = "8" * 32
+        no_status = "9" * 32
+        kept = [
+            self._large_body(pending), self._status(pending, terminal_observed=True, outcome="pending"),
+            self._large_body(unobserved), self._status(unobserved, terminal_observed=False, outcome="succeeded"),
+            self._large_body(no_status),
+        ]
+        self.assertEqual(prune_answered_responses(self.lane), 0)
+        for path in kept:
+            self.assertTrue(path.exists(), path.name)
 
 
 if __name__ == "__main__":

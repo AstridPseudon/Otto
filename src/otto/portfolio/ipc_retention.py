@@ -9,7 +9,10 @@ these hold:
 * no ``request-<token>.json`` (the request was consumed and answered);
 * no ``pending-<token>.json`` (no retained receipt still names this response);
 * no ``socket-intent-<token>.json`` (authenticated socket custody owns it);
-* its outcome is terminal (not ``pending``/``unknown``, not ``terminal: false``);
+* its outcome is terminal (not ``pending``/``unknown``, not ``terminal: false``).
+  Responses over ``MAX_PARSE_BYTES`` are never parsed; their small
+  ``status-response-<token>.json`` projection must record the terminal receipt
+  phase as observed and a non-pending outcome;
 * it is older than the grace period, so pollers that re-read
   ``command-status`` after a settle still find it.
 
@@ -25,6 +28,7 @@ from typing import Any, Iterator, NamedTuple
 
 ANSWERED_RESPONSE_GRACE_SECONDS = 24 * 3600
 MAX_PARSE_BYTES = 16 * 1024 * 1024
+MAX_STATUS_BYTES = 256 * 1024
 _NON_TERMINAL_OUTCOMES = frozenset({"pending", "unknown"})
 
 
@@ -48,6 +52,29 @@ def _is_terminal(value: Any) -> bool:
     if value.get("outcome") in _NON_TERMINAL_OUTCOMES:
         return False
     return value.get("terminal") is not False
+
+
+def status_says_terminal(status: Path | None) -> bool:
+    """Decide terminal from the bounded status projection, never the big body."""
+    if status is None:
+        return False
+    try:
+        if status.stat().st_size > MAX_STATUS_BYTES:
+            return False
+        with status.open("rb") as stream:
+            value = json.loads(stream.read())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    timing = value.get("receipt_timing")
+    phases = timing.get("phases") if isinstance(timing, dict) else None
+    terminal = phases.get("terminal") if isinstance(phases, dict) else None
+    if not isinstance(terminal, dict) or terminal.get("state") != "observed":
+        return False
+    summary = value.get("summary")
+    outcome = summary.get("outcome") if isinstance(summary, dict) else None
+    return isinstance(outcome, str) and outcome not in _NON_TERMINAL_OUTCOMES
 
 
 def _read_terminal(path: Path, size: int) -> bool:
@@ -87,10 +114,15 @@ def scan_candidates(directory: str | Path, *, now: float | None = None,
             continue
         size = entry.stat(follow_symlinks=False).st_size
         path = root / name
-        if not _read_terminal(path, size):
-            continue
         status = root / ("status-" + name)
-        yield Candidate(path, token, size, mtime, status if status.exists() else None)
+        status_path = status if status.exists() else None
+        if size > MAX_PARSE_BYTES:
+            terminal = status_says_terminal(status_path)
+        else:
+            terminal = _read_terminal(path, size)
+        if not terminal:
+            continue
+        yield Candidate(path, token, size, mtime, status_path)
 
 
 def prune_answered_responses(directory: str | Path, *, limit: int = 200,
