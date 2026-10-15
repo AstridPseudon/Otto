@@ -1252,6 +1252,11 @@ class ManagerJourneyCommands:
         current = self.owner.graph.reader.get_identity(ResourceRef(project.ref.authority, project.ref.kind, project.ref.id))
         readback = json_value(lifecycle.read_current(current.ref))
         settled = isinstance(reconciled, Mapping) and reconciled.get("status") == "reconciled"
+        if readback.get("lifecycle") == "completed":
+            # Reclaim the finished project's transcripts; a failure here never undoes the close.
+            notify = getattr(self.owner, "project_finished", None)
+            if callable(notify):
+                notify(current.ref)
         return {"outcome": "completed" if settled and readback.get("lifecycle") == "completed" else "pending",
                 "project_completion_recorded": readback.get("lifecycle") == "completed",
                 "settlement_pending": not settled, "readback": readback, "effects": effects,

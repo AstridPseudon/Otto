@@ -199,10 +199,12 @@ class FiniteWorkOperations:
         content_command_guard: Any = None,
         direction_context_reader: Any = None,
         queue_binding: Any = None,
+        on_lifecycle: Any = None,
     ) -> None:
         if port is None or reader is None:
             raise ValueError("port and reader are required for the canonical binding")
         self.port = port
+        self._on_lifecycle = on_lifecycle
         if project_read_grant is not None and (
             not isinstance(project_read_grant, ProjectReadGrant)
             or project_read_grant.principal.authority != binding.authority
@@ -784,6 +786,8 @@ class FiniteWorkOperations:
                 settlement=payload.get("settlement"),
                 actor=self._actor(actor),
             )
+            if self._on_lifecycle is not None:
+                self._on_lifecycle(project_ref)
             return _json_value(result)
         except Exception as exc:
             return {"outcome":"error","error":{"code":type(exc).__name__,"message":str(exc),"operation":"work.lifecycle.transition"},"replayed":False,"event_ids":[]}
