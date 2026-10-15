@@ -470,6 +470,7 @@ class CodexCliBinding(HostPort):
                  recipient_authorizer: Optional[Callable[[HostRequest], Mapping[str, Any]]] = None,
                  native_start_callback: Optional[Callable[[str, str], None]] = None,
                  native_process_observer: Optional[Callable[..., Any]] = None,
+                 process_pin: Optional[Callable[[Any], None]] = None,
                  writable_roots: tuple[str, ...] = (),
                  native_caller_socket: Optional[str] = None,
                  native_caller_profile: Optional[str] = None,
@@ -504,6 +505,9 @@ class CodexCliBinding(HostPort):
         if native_process_observer is not None and not callable(native_process_observer):
             raise TypeError("native_process_observer must be a host capability")
         self._native_process_observer = native_process_observer
+        if process_pin is not None and not callable(process_pin):
+            raise TypeError("process_pin must be a host capability")
+        self._process_pin = process_pin
         self._delivery_consumed = False
         self.timeout_brief = None if timeout_brief is None else json.loads(json.dumps(timeout_brief))
         self.extended_timeout = _extended_timeout_brief(self.timeout_brief, model, reasoning)
@@ -843,6 +847,9 @@ class CodexCliBinding(HostPort):
                         observed_runner=RUNNER_ID, unsupported_reason="native_caller_registration_failed"),
                         {"delivery_state": "unknown", "reconciliation": str(exc), "command": command,
                          "started_at": started, "process_id": process.pid})
+            if self._process_pin is not None:
+                # Pin-only host hook for every work process, INVOKE and RESUME alike.
+                self._process_pin(process)
             if request.operation == HostOperation.RESUME and not self.extended_timeout:
                 stdout, stderr, exit_status, _ = _communicate_after_native_start(
                     process, prompt,

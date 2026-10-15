@@ -29,26 +29,42 @@ from otto.portfolio.resource_drift import apply_resource_sync_action, select_res
 
 
 def _pin_process_group(adapter, schedule_id):
-    """Pin the native process group to its occurrence once the adapter spawns it.
+    """Install the pin-only hook that records a work process group for its occurrence.
+
+    The adapter calls ``adapter.process_pin(process)`` once for every native work
+    process it spawns, for every role, so a worker turn is pinned too. The hook is
+    deliberately separate from the managed caller-socket observer
+    (``native_process_observer``): workers are never registered as managed callers,
+    and the observer is neither read nor wrapped here.
+
+    The adapter calls the hook from its transport thread, where no owner context
+    exists, so the hook is marshalled to the owner with ``ExecutionHost.owner_callback``
+    (the same way the caller-socket observer is). The owner serves that call while
+    the admitted transport wait is open. Installing it here, on the owner thread,
+    is what gives ``owner_callback`` the context to wrap.
 
     The pin only lets a later restart prove the group gone; a process that is
     already gone or an unknown occurrence leaves the hold conservatively held.
+    A pin failure never breaks the launch: claude_cli kills a turn whose
+    on_process raises, so the hook swallows its own errors.
     """
-    observer = getattr(adapter, "native_process_observer", None)
-    if not callable(observer):
-        return
     from otto.portfolio.execution_host import ExecutionHost
 
-    def pinned(process, authorization):
-        release = observer(process, authorization)
-        host = ExecutionHost.current_bounded()
-        if host is not None:
-            try:
+    def pin(process):
+        try:
+            host = ExecutionHost.current_bounded()
+            if host is not None:
                 host.record_process_group(schedule_id, process.pid)
-            except (RuntimeError, PermissionError, OSError):
-                pass
-        return release
-    adapter.native_process_observer = pinned
+        except (RuntimeError, PermissionError, OSError):
+            pass
+    owned = ExecutionHost.owner_callback(pin)
+
+    def safe(process):
+        try:
+            owned(process)
+        except (RuntimeError, PermissionError, OSError):
+            pass
+    adapter.process_pin = safe
 
 
 def _completed_worker_support_refs(result, verifier, authorization):

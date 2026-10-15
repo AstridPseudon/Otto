@@ -5,12 +5,14 @@ two manager-reserve units serve managers only, and three heavy-headroom units
 serve checks and other heavy work only. The host accounts them on kernel
 ``limits`` reservations (in the owner Store when one is supplied).
 """
+import json
 import os
 from pathlib import Path
 import signal
 import subprocess
 import tempfile
 from types import SimpleNamespace
+import threading
 import unittest
 
 from herzchen.fleet.capacity import CapacityPolicy
@@ -324,15 +326,20 @@ class ManagerCapIsGone(unittest.TestCase):
                 ExecutionHost(directory=directory, handler=lambda request: None, manager_turn_limit=3)
 
 
-class ProcessGroupPinTests(unittest.TestCase):
-    """The owner observer pins the native process group to its running occurrence."""
+class WorkerPinTests(unittest.TestCase):
+    """The separate pin-only hook records a worker turn's own process group.
+
+    The caller-socket observer is never involved: a worker is not a managed caller.
+    """
+
+    def make_host(self, directory):
+        return ExecutionHost(directory=directory, handler=lambda request: None, bounded_transports=True)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="otto-pin-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.host = ExecutionHost(directory=self.root / "ipc", handler=lambda request: None,
-                                  bounded_transports=True)
+        self.host = self.make_host(self.root / "ipc")
         self.turns = Turns(self.host, self.root)
         self.spawned = []
         self.addCleanup(PoolBehavior.reap_all, self)
@@ -347,56 +354,202 @@ class ProcessGroupPinTests(unittest.TestCase):
         self.turns.pump()
         self.assertIn(name, self.turns.running())
 
-    def test_observer_pins_the_group_and_a_dead_group_frees_the_slot(self):
-        schedule = "pinned-worker"
+    def test_owner_pin_hook_records_the_group(self):
+        schedule = "w"
         self.running_turn(schedule)
-        calls = []
-        release = object()
-
-        def recorder(process, authorization):
-            calls.append((process, authorization))
-            return release
-
-        adapter = SimpleNamespace(native_process_observer=recorder)
+        adapter = SimpleNamespace()
         _pin_process_group(adapter, schedule)
+        self.assertTrue(callable(adapter.process_pin), "the owner installs the pin-only hook")
         process = self.group()
-        authorization = {"status": "authorized"}
-        returned = self.host._owned(lambda: adapter.native_process_observer(process, authorization))
-        self.assertEqual(calls, [(process, authorization)], "the wrapped observer runs once with its arguments")
-        self.assertIs(returned, release)
+        self.assertIsNone(self.host._owned(lambda: adapter.process_pin(process)))
         self.assertEqual(self.host._process_groups[schedule]["pgid"], process.pid)
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
-        self.assertEqual(self.host._group_state(self.host._process_groups[schedule]), "gone")
-        self.assertEqual(self.host.reconcile_dead_holds(), [], "a dead group frees nothing for a running turn")
-        self.assertEqual(self.turns.running(), [schedule], "the running turn keeps its slot")
+        self.assertFalse(hasattr(adapter, "native_process_observer"), "the caller-socket observer is never touched")
 
     def test_pin_failure_never_breaks_the_launch(self):
-        sentinel = object()
         schedule = "pin-failure-worker"
         self.running_turn(schedule)
         exited = subprocess.Popen(["true"])
         exited.wait()
-        adapter = SimpleNamespace(native_process_observer=lambda process, authorization: sentinel)
+        adapter = SimpleNamespace()
         _pin_process_group(adapter, schedule)
-        returned = self.host._owned(lambda: adapter.native_process_observer(exited, {"status": "authorized"}))
-        self.assertIs(returned, sentinel, "an already-exited pid still returns the sentinel")
+        self.assertIsNone(self.host._owned(lambda: adapter.process_pin(exited)), "an exited pid raises nothing")
         self.assertNotIn(schedule, self.host._process_groups, "an exited pid pins nothing")
 
         live = self.group()
-        unknown = SimpleNamespace(native_process_observer=lambda process, authorization: sentinel)
+        unknown = SimpleNamespace()
         _pin_process_group(unknown, "no-such-occurrence")
-        returned = self.host._owned(lambda: unknown.native_process_observer(live, {"status": "authorized"}))
-        self.assertIs(returned, sentinel, "an unknown occurrence still returns the sentinel")
+        self.assertIsNone(self.host._owned(lambda: unknown.process_pin(live)), "an unknown occurrence raises nothing")
         self.assertNotIn("no-such-occurrence", self.host._process_groups, "an unknown occurrence pins nothing")
+        self.assertIsNone(adapter.process_pin(live), "outside the owner context the hook does nothing")
+        self.assertNotIn(schedule, self.host._process_groups)
 
-    def test_no_observer_means_no_wrapper(self):
-        bare = SimpleNamespace()
-        _pin_process_group(bare, "anything")
-        self.assertFalse(hasattr(bare, "native_process_observer"), "no attribute is added")
-        none = SimpleNamespace(native_process_observer=None)
-        _pin_process_group(none, "anything")
-        self.assertIsNone(none.native_process_observer, "a None observer is left as None")
+    def test_dead_worker_group_frees_its_reservation(self):
+        schedule = "w"
+        self.running_turn(schedule)
+        adapter = SimpleNamespace()
+        _pin_process_group(adapter, schedule)
+        process = self.group()
+        self.host._owned(lambda: adapter.process_pin(process))
+        # The running turn becomes a retained hold, as an unproven disposition makes it.
+        self.host._executions.pop(schedule)
+        self.host._capacity_holds[schedule] = {"schedule_id": schedule, "project": "project-w", "role": "worker",
+            "session": "s-w", "assignment": ("pool", schedule, 1), "workspace": str(self.root), "writer": False}
+        self.host.capacity.ensure_turn(schedule, uncertain=True)
+        self.assertEqual(self.host.capacity.snapshot()["pool"]["held_units"], 1)
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        self.assertEqual(self.host.reconcile_dead_holds(), [schedule])
+        self.assertEqual(self.host.capacity.snapshot()["pool"]["held_units"], 0)
+        self.assertEqual(self.host.capacity_holds(), {}, "the dead group no longer costs a slot")
+        self.assertIn(schedule, self.host._capacity_holds, "the custody fence stays")
+
+    def test_pin_from_the_transport_thread_reaches_the_owner(self):
+        schedule = "w"
+        self.running_turn(schedule)
+        adapter = SimpleNamespace()
+        process = self.group()
+        seen = {}
+        recorded = []
+        real_record = self.host.record_process_group
+
+        def recording(schedule_id, pid):
+            recorded.append(threading.get_ident())
+            return real_record(schedule_id, pid)
+        self.host.record_process_group = recording
+
+        def transport_operation():
+            seen["transport"] = threading.get_ident()
+            adapter.process_pin(process)
+
+        def owner_work():
+            seen["owner"] = threading.get_ident()
+            _pin_process_group(adapter, schedule)  # the owner context exists at install time
+            ExecutionHost.external_call(transport_operation)
+
+        self.host._owned(owner_work)
+        self.assertNotEqual(seen["transport"], seen["owner"], "the adapter pins from its transport thread")
+        self.assertEqual(recorded, [seen["owner"]], "the pin is recorded on the owner thread")
+        self.assertEqual(self.host._process_groups[schedule]["pgid"], process.pid)
+
+    def test_pin_from_a_foreign_thread_outside_a_transport_wait_is_silent(self):
+        schedule = "w"
+        self.running_turn(schedule)
+        adapter = SimpleNamespace()
+        self.host._owned(lambda: _pin_process_group(adapter, schedule))
+        process = self.group()
+        errors = []
+
+        def foreign():
+            try:
+                adapter.process_pin(process)
+            except BaseException as exc:  # the hook must never raise into the launch
+                errors.append(exc)
+        thread = threading.Thread(target=foreign)
+        thread.start()
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [], "a foreign pin outside any transport wait raises nothing")
+        self.assertNotIn(schedule, self.host._process_groups, "and pins nothing")
+
+    def test_claude_worker_turn_is_pinned(self):
+        # Bound copies keep the hook; the composition helper feeds the pin on every work process.
+        import sys
+        from otto.agents.claude_adapter import ClaudeWorkerAdapter, _compose_on_process
+        from otto.agents.claude_cli import LauncherPin, VERSION, file_digest
+        executable = str(Path(sys.executable).resolve())
+        pin = LauncherPin(executable, executable, file_digest(Path(executable)), VERSION)
+        adapter = ClaudeWorkerAdapter(owner="w", source=str(self.root), worktree=str(self.root),
+            launcher_pin=pin, state_root=str(self.root), requested_model="gpt-test", transport=SimpleNamespace())
+        self.assertIsNone(adapter.process_pin, "the hook is absent until the owner installs it")
+        self.assertIsNone(adapter.native_process_observer)
+        marker = lambda process: None
+        adapter.process_pin = marker
+        bound = adapter.bind_owner_authorization(lambda *args: {}, verifier=lambda *args: {},
+                                                 role="worker", profile="workspace-write")
+        self.assertIs(bound.process_pin, marker, "the bound copy keeps the pin hook")
+        self.running_turn("w")
+        _pin_process_group(bound, "w")
+        self.assertIsNone(bound.native_process_observer, "a plain worker has no caller-socket observer")
+        process = self.group()
+        on_process = _compose_on_process(None, {"status": "authorized"}, bound.process_pin)
+        cleanup = self.host._owned(lambda: on_process(process))
+        self.assertTrue(callable(cleanup), "claude_cli requires a callable cleanup")
+        self.assertIsNone(cleanup())
+        self.assertEqual(self.host._process_groups["w"]["pgid"], process.pid, "the worker group is recorded")
+
+    def test_claude_composition_order_and_absence(self):
+        from otto.agents.claude_adapter import _compose_on_process
+        events = []
+        sentinel = lambda: events.append("released")
+        process = SimpleNamespace(pid=1)
+
+        def observer(seen, authorization):
+            events.append(("observer", seen is process, authorization))
+            return sentinel
+
+        def pin(seen):
+            events.append(("pin", seen is process))
+
+        composed = _compose_on_process(observer, {"status": "authorized"}, pin)
+        self.assertIs(composed(process), sentinel, "a manager returns the observer's cleanup")
+        self.assertEqual(events, [("observer", True, {"status": "authorized"}), ("pin", True)],
+                         "the caller-socket observer runs first, then the pin")
+        self.assertIsNone(_compose_on_process(None, {}, None), "no observer and no pin means no callback")
+        worker = _compose_on_process(None, {}, pin)
+        self.assertTrue(callable(worker(process)), "a worker without an observer gets a no-op cleanup")
+        self.assertIs(_compose_on_process(observer, {}, None)(process), sentinel,
+                      "pin absent leaves the observer's cleanup unchanged")
+
+    def test_codex_worker_turn_is_pinned(self):
+        from unittest.mock import Mock, patch
+        import herzchen.adapters.host as codex_host
+        from herzchen.contracts import HostRequest, HostOperation, HostIdentity, ResourceRef
+        for operation in (HostOperation.INVOKE, HostOperation.RESUME):
+            with self.subTest(operation=operation.name):
+                path = self.root / ("native-%s.jsonl" % operation.name)
+                path.write_bytes((json.dumps({"type": "session_meta", "payload": {"id": "issued-session"}}) + "\n").encode())
+                pin = Mock(name="process_pin")
+                binding = codex_host.CodexCliBinding(
+                    worktree=str(self.root), launcher="/fixture/codex", model="fixture", reasoning="high",
+                    prompt="Exact current intent", process_pin=pin,
+                    trusted_thread_reader=Mock(return_value={"thread": {"id": "issued-session", "path": str(path)}}))
+                process = Mock(pid=4321, stdout=None, returncode=0)
+                process.communicate.return_value = ("", "")
+                with patch.object(codex_host.subprocess, "Popen", return_value=process) as popen, \
+                        patch.object(codex_host, "_communicate_after_native_start", return_value=("", "", 0, None)):
+                    binding.execute(HostRequest(operation, HostIdentity("fixture-worker", "issued-session"),
+                                                ResourceRef("fixture", "work.task", "task", "rev-1"), "read-only"))
+                self.assertEqual(popen.call_count, 1, "one native process per turn")
+                pin.assert_called_once_with(process)
+
+    def test_codex_without_pin_is_unchanged(self):
+        from unittest.mock import Mock, patch
+        import herzchen.adapters.host as codex_host
+        from herzchen.contracts import HostRequest, HostOperation, HostIdentity, ResourceRef
+        path = self.root / "native-none.jsonl"
+        path.write_bytes((json.dumps({"type": "session_meta", "payload": {"id": "issued-session"}}) + "\n").encode())
+        binding = codex_host.CodexCliBinding(
+            worktree=str(self.root), launcher="/fixture/codex", model="fixture", reasoning="high",
+            prompt="Exact current intent",
+            trusted_thread_reader=Mock(return_value={"thread": {"id": "issued-session", "path": str(path)}}))
+        self.assertIsNone(binding._process_pin)
+        process = Mock(pid=4322, stdout=None, returncode=0)
+        process.communicate.return_value = ("", "")
+        with patch.object(codex_host.subprocess, "Popen", return_value=process) as popen, \
+                patch.object(codex_host, "_communicate_after_native_start", return_value=("", "", 0, None)):
+            binding.execute(HostRequest(HostOperation.RESUME, HostIdentity("fixture-worker", "issued-session"),
+                                        ResourceRef("fixture", "work.task", "task", "rev-1"), "read-only"))
+        self.assertEqual(popen.call_count, 1)
+
+
+class StoreWorkerPinTests(WorkerPinTests):
+    """The same pin contract on a real owner Store ledger."""
+
+    def make_host(self, directory):
+        self.store = Store.create(self.root / "owner.sqlite", authority="owner")
+        self.addCleanup(self.store.close)
+        return ExecutionHost(directory=directory, handler=lambda request: None, bounded_transports=True,
+                             capacity_store=self.store)
 
 
 if __name__ == "__main__":
