@@ -1,7 +1,7 @@
 """Three fixed canonical views; one existing owner and serialized Store lane."""
 from pathlib import Path
 import argparse,hashlib,json,os,sys,threading,time,contextvars
-C=Path(os.environ.get('OTTO_CONTROLLER_DIR') or '/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-project-onboarding-20261010/controller')
+C=Path('/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-project-onboarding-20261010/controller')
 sys.path.insert(0,str(C));import operating_service as base
 # Exact source-authenticated optional descriptor, registered by the accepted
 # owner transfer producer. This startup composition admits no discovered or
@@ -16,10 +16,9 @@ if not getattr(base.domains,'_W0_owner_migration_composition',False):
   return tuple(sorted(selected if prior else (*selected,optional),key=lambda d:d.domain_id))
  _W0_exact_domains._W0_owner_migration_composition=True
  base.domains=_W0_exact_domains
-PRIVATE=Path(os.environ.get('OTTO_PRIVATE_DIR') or '/Users/hannahomalley/.codex/owner-services/otto-onboarding-20261010')
-VC=Path(os.environ.get('OTTO_VISION_CONTROLLER_DIR') or C.parent.parent/'otto-vision-20261011/controller')
-PC=Path(os.environ.get('OTTO_ASTRID_CONTROLLER_DIR') or C.parent.parent/'otto-astrid-union-port-20261011/controller')
-HOST_HOME=Path(os.environ.get('OTTO_HOST_HOME') or '/Users/hannahomalley/.otto')
+PRIVATE=Path('/Users/hannahomalley/.codex/owner-services/otto-onboarding-20261010')
+VC=C.parent.parent/'otto-vision-20261011/controller'
+PC=C.parent.parent/'otto-astrid-union-port-20261011/controller'
 def read(p):return json.loads(p.read_text())
 def dump(p,v):base.write(p,v)
 def identity(r):return tuple(r[k]for k in('authority','kind','id'))
@@ -579,7 +578,7 @@ def compose(*, hold_dispatch=False):
   startup_checkpoint('client-issuance')
   from otto.hostctl.config import load as load_host_installation
   from otto.hostctl.project_service import ProjectOwnerService
-  installation=load_host_installation(HOST_HOME)
+  installation=load_host_installation(Path('/Users/hannahomalley/.otto'))
   if installation.get('owner_composition',{}).get('kind')!='shared-project-services' or installation.get('max_active_manager_turns')!=3:raise PermissionError('exact shared host installation required')
   common.host_clients=ProjectOwnerService(installation,router=router)
   from scoped_client_service import ScopedViewClients
