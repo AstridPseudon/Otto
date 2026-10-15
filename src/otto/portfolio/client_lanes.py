@@ -28,6 +28,8 @@ REQUEST_SCHEMA = "otto.host-lane-request.v1"
 STATUS_FILE = "status.json"
 MANAGER_START_RESPONSE_SCHEMA = "otto.orchestrator-manager-start-response.v1"
 _CLIENT_RESPONSE_LIMIT = 1048576
+# Same window as ipc_retention.ANSWERED_RESPONSE_GRACE_SECONDS.
+ANSWERED_PAIR_GRACE_SECONDS = 24 * 3600
 
 
 def new_token() -> str:
@@ -197,16 +199,44 @@ def wait(lane: Path, token: str, *, timeout_seconds: float, poll_seconds: float 
 
 
 def requests(lane: Path) -> Iterator[tuple[str, Path]]:
-    """Requests that have no response yet, oldest first."""
+    """Requests that have no response yet, oldest first.
+
+    An answered pair past the retention window is removed as the listing passes
+    it. A request that vanishes between the glob and its stat was answered or
+    removed by someone else: it is skipped, never an error.
+    """
     lane = Path(lane)
     if not lane.is_dir():
         return
-    paths = sorted(lane.glob("request-*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name))
-    for path in paths:
+    dated = []
+    for path in lane.glob("request-*.json"):
+        try:
+            dated.append((path.stat().st_mtime_ns, path.name, path))
+        except FileNotFoundError:
+            continue
+    dated.sort()
+    for _, _, path in dated:
         token = path.name[len("request-"):-len(".json")]
         if (lane / ("response-" + token + ".json")).exists():
+            _retire_answered(lane, token)
             continue
         yield token, path
+
+
+def _retire_answered(lane: Path, token: str) -> None:
+    """Remove an answered pair once its response is past the window; a pending receipt keeps it.
+
+    The request goes first: a request left alone would look unanswered and run again.
+    """
+    response = lane / ("response-" + token + ".json")
+    try:
+        answered_at = response.stat().st_mtime
+    except FileNotFoundError:
+        return
+    if time.time() - answered_at < ANSWERED_PAIR_GRACE_SECONDS or (lane / ("pending-" + token + ".json")).exists():
+        return
+    (lane / ("request-" + token + ".json")).unlink(missing_ok=True)
+    response.unlink(missing_ok=True)
 
 
 def _respond_oversize_manager_start(lane: Path, token: str, value: Mapping[str, Any], request_key: str) -> None:
