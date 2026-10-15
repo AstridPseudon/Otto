@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from herzchen.usage.capture import UsageStream, MAX_LINE_BYTES, MAX_OBSERVATIONS
-from otto.agents.codex_cli import normalize_codex_jsonl, CodexCliAdapter
+from herzchen.fleet.hosts.codex import normalize_codex_jsonl
 from otto.agents.gateway import OwnerDueRecordAttemptCapture
 from otto.attention import DueRecord, InMemoryDueRecordPort, StateConflictError
 from herzchen.contracts import HostIdentity, HostRequest, HostOperation, ResourceRef
@@ -194,36 +194,6 @@ class UsageCaptureTests(unittest.TestCase):
 
 
 class AdapterBoundaryTests(unittest.TestCase):
-    def test_direct_emitted_usage_survives_adapter_interruption_and_telemetry_oserror_is_optional(self):
-        class Input(io.StringIO):
-            def close(self): pass
-        class Lines:
-            def __init__(self, interrupt): self.interrupt = interrupt
-            def __iter__(self):
-                for event in native('codex-direct', {'input_tokens': 5}): yield json.dumps(event) + '\n'
-                if self.interrupt: raise RuntimeError('interrupted after provider emission')
-        class Process:
-            pid = 7
-            returncode = 0
-            stdin = Input()
-            stderr = io.StringIO('')
-            def __init__(self, interrupt): self.stdout = Lines(interrupt)
-            def wait(self, **kwargs): return 0
-        for interrupt in (False, True):
-            for fail_telemetry in (False, True):
-                with self.subTest(interrupt=interrupt, fail_telemetry=fail_telemetry):
-                    observed = []
-                    def callback(item):
-                        observed.append(item)
-                        if fail_telemetry: raise OSError('optional diagnostic unavailable')
-                    adapter = CodexCliAdapter('/fixture/codex', '/fixture', model='test', reasoning='high', prompt='input',
-                        process_factory=lambda *a, **kw: Process(interrupt), on_usage=callback)
-                    request = HostRequest(HostOperation.INVOKE, HostIdentity('worker'), ResourceRef('owner', 'work.task', 'task'))
-                    receipt, metadata = adapter.execute(request)
-                    self.assertEqual(receipt.outcome.value, 'unknown' if interrupt else 'succeeded')
-                    self.assertEqual(len(observed), 1)
-                    self.assertEqual(metadata['usage_capture']['observations'][0]['usage']['metrics']['input_tokens'], 5)
-
     def test_host_stream_callback_precedes_terminal_wait_and_authority_callback_stays_separate(self):
         from herzchen.adapters.host import _communicate_after_native_start
         class Process:

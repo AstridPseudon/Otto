@@ -27,9 +27,12 @@ from pathlib import Path
 from herzchen.contracts.model import HostOperation, HostOutcome, HostPort, HostReceipt, HostRequest, ContractError
 from .receipt import AdapterReceiptEnvelope
 from herzchen.adapters.recovery_timing import timing_from_receipt
+from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
+from herzchen.fleet.hosts.codex import CodexStream, native_caller_permission_overrides  # noqa: F401  (re-exported)
 from herzchen.usage.capture import UsageStream
 
 RUNNER_ID = "codex-cli"
+CODEX = get_host("codex")     # the one place the Codex launch flags are built
 MAX_SUBMISSION_SIZE = 1_000_000
 
 
@@ -422,30 +425,6 @@ def _extended_timeout_brief(brief, model, reasoning):
         and spec.get("manifest_sha256") == "9d72c9b3efa302900a37cd279829285b823f70e57bc7e15d744570d05c7f45fe")
 
 
-def native_caller_permission_overrides(worktree: str, writable_roots: tuple[str, ...], socket_path: str) -> list[str]:
-    """Trusted host-selected workspace profile with a managed one-socket grant.
-
-    The network proxy feature is a BOOLEAN. Merely adding its nested fields
-    or enabling direct network does not constrain traffic. No legacy sandbox
-    flag may accompany this profile: it would override default_permissions.
-    """
-    if (not isinstance(socket_path, str) or not os.path.isabs(socket_path)
-            or ".." in Path(socket_path).parts or "\x00" in socket_path
-            or len(os.fsencode(socket_path)) > 103):
-        raise ValueError("one absolute bounded Unix socket address required")
-    profile = "otto-native-caller"
-    values = [f'default_permissions="{profile}"', 'features.network_proxy=true',
-              f'permissions.{profile}.extends=":workspace"',
-              f'permissions.{profile}.network.enabled=true',
-              f'permissions.{profile}.network.mode="limited"',
-              f'permissions.{profile}.network.domains={{}}',
-              f'permissions.{profile}.network.unix_sockets={{' + json.dumps(socket_path) + '="allow"}']
-    roots = dict.fromkeys((os.path.realpath(worktree), *writable_roots))
-    values.append(f'permissions.{profile}.workspace_roots={{' +
-                  ','.join(json.dumps(root) + '=true' for root in roots) + '}')
-    return values
-
-
 def workspace_delivery_contract(contract: Mapping[str, Any], profile: str, role: str, roots: tuple[str, ...]) -> bool:
     """Exact leaf/manager or capacity-one coordinating owner contract shape."""
     authority = contract.get("authority", {})
@@ -496,10 +475,11 @@ class CodexCliBinding(HostPort):
                  timeout_seconds: Optional[float] = None, occurrence_deadline: Optional[float] = None,
                  timeout_brief: Optional[Mapping[str, Any]] = None,
                  usage_callback: Optional[Callable[[Mapping[str, Any]], Any]] = None,
-                 usage_phase: str = "work",
+                 usage_phase: str = "work", mcp: Optional[McpGrant] = None,
                  source_verifier: Any = None, monotonic_clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__({HostOperation.INVOKE, HostOperation.RESUME})
         self.worktree, self.launcher, self.model, self.reasoning = worktree, launcher, model, reasoning
+        self.mcp = McpGrant() if mcp is None else mcp
         roots = tuple(os.path.realpath(value) for value in writable_roots)
         if any(not os.path.isabs(value) or not os.path.isdir(value) for value in roots) or len(set(roots)) != len(roots):
             raise ValueError("writable_roots must be distinct existing absolute directories")
@@ -665,33 +645,25 @@ class CodexCliBinding(HostPort):
                                 unsupported_reason="codex CLI binding requires an explicit supported profile"),
                     {"delivery_state": "not_started",
                      "reconciliation": "unsupported or missing requested permission profile"})
-        # Codex 0.150.1 exposes --sandbox on exec, not exec resume. Common
-        # restrictions precede the subcommand; config/rules and approvals must
-        # not silently broaden them. Requested argv is not observed evidence.
-        command = [self.launcher, "exec", "-C", self.worktree, "-m", self.model,
-                   "-c", f"model_reasoning_effort={self.reasoning}",
-                   "-c", 'approval_policy="never"',
-                   "--ignore-user-config", "--ignore-rules", "--json"]
-        if self.native_caller_socket is not None and request.operation == HostOperation.RESUME:
+        resuming = request.operation == HostOperation.RESUME
+        if self.native_caller_socket is not None and resuming:
             if request.requested_profile != "workspace-write" or not callable(self._recipient_authorizer):
                 return (HostReceipt(request.operation, HostOutcome.UNSUPPORTED, request.identity,
                                     request.identity.logical_agent_id, request.requested_profile,
                                     observed_runner=RUNNER_ID,
                                     unsupported_reason="socket grant requires an owner-authorized workspace-write resume"),
                         {"delivery_state": "not_started", "reconciliation": "socket grant requires an owner-authorized workspace-write resume"})
-            for value in native_caller_permission_overrides(self.worktree, self.writable_roots, self.native_caller_socket):
-                command.extend(["-c", value])
-        else:
-            command.extend(["-s", request.requested_profile])
-        if request.requested_profile == "workspace-write" and not (
-                self.native_caller_socket is not None and request.operation == HostOperation.RESUME):
-            for root in self.writable_roots:
-                command.extend(["--add-dir", root])
-        if request.operation == HostOperation.RESUME:
-            command.extend(["resume", request.identity.physical_session_id])
-        if self.receipt_path:
-            command.extend(["-o", self.receipt_path])
-        command.append("-")
+        # The Codex host owns every launch flag (sandbox, session, workspace, approvals).
+        plan_spec = TurnSpec(
+            executable=self.launcher, workspace=self.worktree, prompt=self.prompt, model=self.model,
+            reasoning=self.reasoning, profile=request.requested_profile,
+            session=request.identity.physical_session_id if resuming else None,
+            writable_roots=self.writable_roots, mcp=self.mcp,
+            options={**({"receipt_path": self.receipt_path} if self.receipt_path else {}),
+                     **({"native_caller_socket": self.native_caller_socket}
+                        if self.native_caller_socket is not None and resuming else {})})
+        plan = CODEX.launch(plan_spec)
+        command = list(plan.command())
         started = _now()
         resume_boundary = None
         resume_header = None
@@ -852,7 +824,7 @@ class CodexCliBinding(HostPort):
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, cwd=self.worktree,
-                                       env=os.environ.copy(), start_new_session=True)
+                                       env={**os.environ, **plan.env}, start_new_session=True)
             if request.operation == HostOperation.RESUME and self._native_process_observer is not None:
                 try:
                     cleanup = self._native_process_observer(process, delivered_authorization)
@@ -913,26 +885,18 @@ class CodexCliBinding(HostPort):
         finally:
             if caller_cleanup is not None:
                 caller_cleanup()
-        observed_session = None
-        observed_turn_id = None
-        native_turn_started = False
         observed_model = None
         observed_reasoning = None
         observed_profile = None
         # Identity comes only from host record headers, never recursively from
         # worker text or tool output. CLI stdout alone need not expose context.
         native_lines = stdout.splitlines()
+        stream = CODEX.parser(plan_spec)
         for line in native_lines:
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event, Mapping) and event.get("type") == "thread.started":
-                observed_session = event.get("thread_id")
-            if isinstance(event, Mapping) and event.get("type") == "turn.started":
-                native_turn_started = True
-            if isinstance(event, Mapping) and event.get("type") == "turn.completed":
-                observed_turn_id = event.get("turn_id")
+            stream.feed(line)
+        observed_session = stream.session_id
+        observed_turn_id = stream.turn_id
+        native_turn_started = stream.turn_started
         invocation_turn_verified = False
         trace_error = None
         if (request.operation == HostOperation.RESUME and observed_session is not None
