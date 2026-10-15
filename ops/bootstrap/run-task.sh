@@ -18,6 +18,8 @@ ALLOWED_TOOLS='Read Edit Write Glob Grep Bash(git:*) Bash(bash:*) Bash(/opt/home
 # Workers start clean: none of the operator's skills, slash commands or MCP connectors.
 ROUTE_ARGS=()
 ISOLATION=(--disable-slash-commands --strict-mcp-config --mcp-config '{"mcpServers":{}}')
+# A headless worker has no use for self-scheduling: each wake re-reads its whole context.
+ISOLATION+=(--disallowedTools "ScheduleWakeup CronCreate")
 
 valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]"
 TASK="$1"

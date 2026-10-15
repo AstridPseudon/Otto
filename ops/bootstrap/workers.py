@@ -8,6 +8,10 @@
   workers.py remove --file F --task T           drop T's entry; exit 1 if its worker is alive
   workers.py list   --file F                    one line per recorded worker
   workers.py spend  --runs DIR                  cost per task, from DIR/*/worker.json
+  workers.py wait   --file F --inbox R [--land-out P ...]
+                    block until something needs the manager: a recorded worker exits, a
+                    new "## Orchestrator" heading appears in R, or a P gets its LAND RESULT line;
+                    print one line per reason. The manager's one way to wait.
 
 F is a JSON list, the manager's ops/workers.json. Writes take a lock and replace the file
 atomically. Nothing here starts or signals a process, except that reading liveness is kill -0.
@@ -18,6 +22,7 @@ import fcntl
 import json
 import os
 import sys
+import time
 from contextlib import contextmanager
 
 
@@ -101,6 +106,40 @@ def cmd_remove(args):
     return 0
 
 
+def orchestrator_headings(path):
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [line.rstrip("\n") for line in f if line.startswith("## Orchestrator")]
+
+
+def land_result(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, errors="replace") as f:
+        lines = [line.rstrip("\n") for line in f if line.startswith("LAND RESULT:")]
+    return lines[-1] if lines else None
+
+
+def cmd_wait(args):
+    running = {e["task"]: e["pid"] for e in load(args.file) if alive(e["pid"])}
+    seen = len(orchestrator_headings(args.inbox))
+    landing = [p for p in args.land_out if land_result(p) is None]
+    if not running and not landing:
+        print("nothing running: no live worker and no landing in progress")
+        return 0
+    print(f"waiting on workers {sorted(running) or '-'}, landings {landing or '-'}, inbox {args.inbox}",
+          file=sys.stderr, flush=True)
+    while True:
+        reasons = [f"worker exited: {task} (pid {pid})" for task, pid in sorted(running.items()) if not alive(pid)]
+        reasons += [f"landing finished: {p}: {land_result(p)}" for p in landing if land_result(p) is not None]
+        reasons += [f"orchestrator: {h}" for h in orchestrator_headings(args.inbox)[seen:]]
+        if reasons:
+            print("\n".join(reasons))
+            return 0
+        time.sleep(args.poll)
+
+
 def cmd_list(args):
     entries = load(args.file)
     if not entries:
@@ -161,6 +200,13 @@ def main(argv=None):
         if name != "list":
             p.add_argument("--task", required=True)
         p.set_defaults(run=run)
+
+    p = sub.add_parser("wait")
+    p.add_argument("--file", required=True)
+    p.add_argument("--inbox", required=True)
+    p.add_argument("--land-out", action="append", default=[])
+    p.add_argument("--poll", type=float, default=15.0)
+    p.set_defaults(run=cmd_wait)
 
     p = sub.add_parser("add")
     p.add_argument("--file", required=True)
