@@ -12,7 +12,9 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
-ALLOWED_TOOLS='Read Edit Write Glob Grep Bash(git:*) Bash(/opt/homebrew/bin/python3.11:*) Bash(~/Developer/otto-claude-host/bin/otto-heavy:*)'
+ALLOWED_TOOLS='Read Edit Write Glob Grep Bash(git:*) Bash(bash:*) Bash(/opt/homebrew/bin/python3.11:*) Bash(~/Developer/otto-claude-host/bin/otto-heavy:*)'
+# Workers start clean: none of the operator's skills, slash commands or MCP connectors.
+ISOLATION=(--disable-slash-commands --strict-mcp-config --mcp-config '{"mcpServers":{}}')
 
 valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N]"
 TASK="$1"
@@ -59,7 +61,7 @@ set -m
 ( cd "$LAB" && exec nohup env OTTO_WORKER_DEADLINE="$DEADLINE" claude -p \
     --model "$MODEL" --effort high --session-id "$SESSION" \
     --max-budget-usd "$BUDGET" --permission-mode acceptEdits \
-    --allowedTools "$ALLOWED_TOOLS" --output-format json \
+    --allowedTools "$ALLOWED_TOOLS" "${ISOLATION[@]}" --output-format json \
     < .brief.md > "$RUN/worker.json" 2> "$RUN/worker.err" ) &
 PID=$!
 set +m
