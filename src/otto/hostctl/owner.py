@@ -67,6 +67,15 @@ def _private_dir(path: Path) -> None:
         os.chmod(path, 0o700)
 
 
+def native_body_root(config: Mapping[str, Any]) -> Path:
+    """Where this Otto home keeps each host turn's transcript, once, by digest.
+
+    Beside the other private runtime state, never inside a Store's directory or
+    another host's receiving tree. One directory per Store authority.
+    """
+    return Path(config["home"]) / "state" / "native-bodies" / config["store"]["authority"]
+
+
 def runtime_dirs(config: Mapping[str, Any]) -> None:
     home = Path(config["home"])
     for path in (home, home / "run", home / "receipts", home / "projects", home / "bin"):
@@ -176,8 +185,12 @@ class HostSession:
                                  "privileged_actor_ids": (self.host["principal"],)}
             self.owner = PortfolioOwnerBootstrap(self.store, binding=self.binding, owner_actor=actor,
                 project_read_grant=grant, folder_transport_request_bytes=256 * 1024 * 1024, **orchestration)
+            # Transcripts are stored once, by digest; Due records and their events
+            # carry a small reference (digest, bytes, media type) instead.
+            from otto.agents.retained_native import RetainedNativeBodies
+            self.native_bodies = RetainedNativeBodies.on_files(native_body_root(self.config), self.actor)
             self.due_port = issue_store_due_record_port(self.store.domain_handler((due_record_contribution(),)),
-                                                        self.actor)
+                                                        self.actor, native_bodies=self.native_bodies)
             self.portfolio = OttoPortfolio(self.owner.consumer_operations())
             return self
         except BaseException:
@@ -213,7 +226,8 @@ class HostSession:
         state = {"orchestrator_assignment_ref": (self.host or {}).get("root_assignment_ref"),
                  "external_execution_tool_entrypoint": None}
         server = SimpleNamespace(owner=self.owner, portfolio=self.portfolio, state=state,
-                                 due_port=self.due_port, _execution=lambda **kw: None,
+                                 due_port=self.due_port, native_bodies=self.native_bodies,
+                                 _execution=lambda **kw: None,
                                  _save_state=lambda: None, handle=self._unsupported)
         home = Path(self.config["home"])
         return ManagerJourneyService(server=server, host=None, run_path=run_path or home, workspace=home,
@@ -234,7 +248,8 @@ class HostSession:
         from otto.portfolio.owner_issue_loop import OwnerIssueReaders
         delivery = BoundHelpDelivery(readers=OwnerIssueReaders(self.owner.consumer_operations(), self.due_port))
         return self.owner.execution_application(due_port=self.due_port, adapter=adapter, issue_delivery=delivery,
-                                                manager_actor=manager_actor or self.actor.actor, **options)
+                                                manager_actor=manager_actor or self.actor.actor,
+                                                native_bodies=self.native_bodies, **options)
 
 
 def json_out(value: Any) -> str:
