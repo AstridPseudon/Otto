@@ -205,6 +205,28 @@ def test_a_heavier_job_waits_for_enough_slots_and_is_not_starved(tmp_path):
     assert s2 >= sb, "a later small job jumped the queue ahead of the waiting big job"
 
 
+def test_a_small_job_uses_a_slot_the_waiting_head_cannot_and_never_delays_it(tmp_path):
+    # 4 slots: a 3-slot render runs; a 3-slot job waits at the head with 1 slot free. A 1-slot check
+    # behind it takes that slot at once; a second one doesn't (the head must still fit beside it).
+    marks = tmp_path / "marks"
+    render = heavy(tmp_path, "--weight", "3", "--", *_job(marks, "render", 2), capacity=4)
+    time.sleep(0.6)
+    head = heavy(tmp_path, "--weight", "3", "--purpose", "transcript", "--", *_job(marks, "head", 0.5), capacity=4)
+    time.sleep(0.6)
+    check = heavy(tmp_path, "--weight", "1", "--purpose", "gate", "--", *_job(marks, "check", 3), capacity=4)
+    time.sleep(0.6)
+    second = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "second", 0.2), capacity=4)
+    for proc in (render, head, check, second):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    _, end_render = _span(marks, "render"); s_head, _ = _span(marks, "head")
+    s_check, e_check = _span(marks, "check"); s_second, _ = _span(marks, "second")
+    assert s_check < end_render, "the 1-slot check waited although the head couldn't use the free slot"
+    assert s_head >= end_render, "the 3-slot head started while the render held its slots"
+    assert s_head < e_check, "the head waited for the backfilled check: backfill delayed it"
+    assert s_second >= s_head, "a second small job backfilled into room the head needs"
+
+
 def test_status_shows_capacity_and_what_is_running(tmp_path):
     job = heavy(tmp_path, "--weight", "2", "--purpose", "journey X", "--", *py("import time; time.sleep(2)"), capacity=4)
     time.sleep(0.8)
