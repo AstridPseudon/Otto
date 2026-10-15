@@ -80,7 +80,14 @@ class Scratch(unittest.TestCase):
         return lab
 
     def land(self, task, *args):
-        return sh(["bash", str(BOOT / "land.sh"), task, *args], env=self.env, check=False)
+        r = sh(["bash", str(BOOT / "land.sh"), task, *args], env=self.env, check=False)
+        # Every exit path ends with one LAND RESULT line that matches the exit code.
+        lines = r.stdout.strip().splitlines()
+        expected = {0: "landed", 4: "d19"}.get(r.returncode, "refused")
+        self.assertTrue(lines and lines[-1].startswith("LAND RESULT: " + expected), r.stdout + r.stderr)
+        if r.returncode == 0:
+            self.assertIn("tested commit ", self.log(task))
+        return r
 
     def log(self, task):
         return (self.ops / "runs" / task / "land.log").read_text()

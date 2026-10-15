@@ -8,8 +8,23 @@
 # The check is the brief's line "Check command: `...`" unless --check is given. The title
 # is the brief's "Title:" line unless --title is given, and falls back to TASK.
 # Exit 4: existing test expectations changed and no --d19 decision was given.
+# The last line printed is always "LAND RESULT: landed <sha>", "LAND RESULT: d19" or
+# "LAND RESULT: refused <reason>", so a caller that started it detached can poll for it.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
+REASON=""
+LOCKED=""
+die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
+finish() {
+  local rc=$?
+  [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
+  case "$rc" in
+    0) echo "LAND RESULT: landed $(git -C "$OTTO_REPO" rev-parse --short HEAD)" ;;
+    4) echo "LAND RESULT: d19" ;;
+    *) echo "LAND RESULT: refused ${REASON:-exit $rc}" ;;
+  esac
+}
+trap finish EXIT
 
 valid_task "${1:-}" || die "usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]"
 TASK="$1"
@@ -55,10 +70,10 @@ TITLE="${TITLE:-$TASK}"
 
 mkdir -p "$RUN" "$OPS_DIR"
 mkdir "$OPS_DIR/land.lock" 2>/dev/null || die "another landing is running ($OPS_DIR/land.lock); wait for it"
-trap 'rmdir "$OPS_DIR/land.lock" 2>/dev/null || true' EXIT
+LOCKED=1
 LOG="$RUN/land.log"
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "$LOG"; }
-fail() { log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
+fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
 
 BASE="$(git -C "$OTTO_REPO" rev-parse canon/main)"
 log "land $TASK: BASE $BASE"
@@ -67,6 +82,7 @@ if ! git -C "$LAB" rebase --quiet canon/main; then
   git -C "$LAB" rebase --abort || true
   die "rebase onto canon/main conflicts; resume the worker's session with the conflict"
 fi
+log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase; the merge's tree)"
 
 
 # ---- gate ----
@@ -227,6 +243,7 @@ if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge.log" 2>&
 fi
 log "merged $(gitl rev-parse --short HEAD)"
 if ! gitl push --quiet "$GIT_REMOTE" canon/main:main >> "$RUN/merge.log" 2>&1; then
+  REASON="push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD)"
   log "FAIL: push to $GIT_REMOTE failed; the local merge stays on canon/main (see $RUN/merge.log)"
   echo "push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD) (log: $LOG)" >&2
   exit 1
