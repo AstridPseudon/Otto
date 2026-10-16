@@ -240,6 +240,23 @@ class LandGate(Scratch):
         self.lab("T6", {"src/otto/extra.py": "X = 1\n"}, "**Layer:** Herzchen fleet (PLAN.md D14). Goes in src/herzchen.")
         self.assertRefused(self.land("T6"), "T6", "D14")
 
+    def test_otto_layer_that_mentions_herzchen_is_not_refused(self):
+        # EVWIRE and LANEFIX, 16 Oct: "Otto composition … nothing in src/herzchen" was read as a Herzchen layer.
+        self.lab("T6B", {"src/otto/extra.py": "X = 1\n"}, "**Layer:** Otto composition (PLAN.md D14). Nothing in `src/herzchen`.")
+        r = self.land("T6B")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("D14", self.log("T6B").split("placement:")[-1].split("\n", 1)[1])
+
+    def test_staging_runs_the_tested_commits_scripts(self):
+        # The step ran nothing after PERCH landed (-x on 100644 files). Now it runs the lab's own scripts.
+        stub = "#!/bin/bash\necho \"$(basename \"$0\") $* $OTTO_COMMIT\" >> \"$OPS_DIR/staging-calls.txt\"\n"
+        self.lab("T8", {"src/otto/extra.py": "X = 1\n", "ops/bootstrap/staging.sh": stub, "ops/bootstrap/perch.sh": stub})
+        r = self.land("T8")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = (self.ops / "staging-calls.txt").read_text().splitlines()
+        self.assertEqual([c.split()[:2] for c in calls], [["staging.sh", "restart"], ["perch.sh", "all"]])
+        self.assertIn("staging: restart and perch --fake passed", self.log("T8"))
+
     def test_missing_layer_only_logs(self):
         self.lab("T7", {"src/otto/extra.py": "X = 1\n"})
         r = self.land("T7")
@@ -304,6 +321,7 @@ class RunTaskRoute(Scratch):
             denied = argv[argv.index("--disallowedTools") + 1].split()
             self.assertIn("ScheduleWakeup", denied)
             self.assertIn("CronCreate", denied)
+            self.assertIn("Monitor", denied)
 
 
 class WorkersWait(unittest.TestCase):
@@ -353,11 +371,14 @@ class WorkersWait(unittest.TestCase):
         out, _ = proc.communicate()
         self.assertEqual(out.strip(), "landing finished: %s: LAND RESULT: landed abc123" % land)
 
-    def test_nothing_to_wait_on_returns_at_once(self):
+    def test_with_nothing_running_it_waits_on_the_inbox(self):
         self.stop_worker()
-        r = sh([sys.executable, "-I", str(BOOT / "workers.py"), "wait", "--file", str(self.ledger),
-                "--inbox", str(self.inbox)])
-        self.assertIn("nothing running", r.stdout)
+        proc = self.start()
+        with self.inbox.open("a") as f:
+            f.write("## Orchestrator 04:40Z: disk is back\n")
+        out, _ = proc.communicate()
+        self.assertIn("waiting on the inbox only", out)
+        self.assertIn("orchestrator: ## Orchestrator 04:40Z: disk is back", out)
 
 
 if __name__ == "__main__":
