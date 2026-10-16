@@ -1936,6 +1936,84 @@ class ExecutionApplication:
             prepared = {**prepared, "superseded_unattempted_schedule_id": superseded.schedule_id}
         return self.start(schedule_id=schedule) if execute and prepared["outcome"] == "committed" else prepared
 
+    def continue_from_answer(self, *, asking_schedule_id: str, report_ref: Mapping[str, Any],
+                             issue_id: str, assignment_ref: Mapping[str, Any], generation: int,
+                             native_session_id: str, execute: bool = False) -> dict[str, Any]:
+        """Resume one answer against the exact asking occurrence and native session.
+
+        Task identity is insufficient here: the same task can have multiple
+        assignments, sessions and generations. The immutable answer report,
+        original DueRecord and current assignment must all agree before a new
+        role occurrence can be prepared.
+        """
+        prior = self._read(asking_schedule_id)
+        current = self._current(assignment_ref, generation)
+        target = prior.target
+        from herzchen.fleet.runner import require_asking_session
+        require_asking_session(
+            {"assignment_ref": prior.assignment_ref, "generation": prior.generation,
+             "native_session_id": target.get("native_id"), "schedule_id": prior.schedule_id},
+            {"assignment_ref": dict(assignment_ref), "generation": generation,
+             "native_session_id": native_session_id, "schedule_id": asking_schedule_id})
+        if (prior.assignment_ref != dict(assignment_ref) or prior.generation != generation
+                or current.ref.to_dict() != dict(assignment_ref)
+                or current.generation != generation or current.principal != prior.recipient
+                or target.get("native_id") != native_session_id
+                or target.get("assignment_ref") != dict(assignment_ref)
+                or target.get("project_ref") is None or target.get("task_ref") is None):
+            raise OccurrencePreparationError("answer does not match the exact asking session and assignment generation")
+        loop = self.portfolio._issue_loop()
+        if loop is None:
+            raise OccurrencePreparationError("owner help ports are unavailable")
+        reports = loop._issue_reports(target["project_ref"])
+        report = next((item for item in reports if item.get("ref") == dict(report_ref)), None)
+        value = report.get("value") if report else None
+        if (not isinstance(value, Mapping) or value.get("schema") != "otto.issue.response.v1"
+                or value.get("issue_id") != issue_id or value.get("awaiting") != "asking_session"
+                or value.get("asking_assignment_ref") != dict(assignment_ref)
+                or value.get("asking_generation") != generation
+                or value.get("asking_conversation") != native_session_id
+                or value.get("asking_schedule_id") != asking_schedule_id):
+            raise OccurrencePreparationError("answer report belongs to another issue, session or generation")
+        intent = next((item.get("value") for item in reports
+            if isinstance(item.get("value"), Mapping)
+            and item["value"].get("schema") == "otto.issue.delivery.v1"
+            and item["value"].get("issue_id") == issue_id
+            and item["value"].get("state") == "intent"
+            and item["value"].get("recipient_assignment_ref") == dict(assignment_ref)
+            and item["value"].get("recipient_generation") == generation
+            and item["value"].get("recipient_conversation") == native_session_id
+            and (item["value"].get("message") or {}).get("type") == "issue_response"
+            and (item["value"].get("message") or {}).get("report_ref") == dict(report_ref)
+            and (item["value"].get("message") or {}).get("resume_asking_session") is True), None)
+        if intent is None:
+            raise OccurrencePreparationError("answer has no retained delivery to this asking session")
+        if (prior.in_flight_request is not None or prior.stop_state != "completed"
+                or prior.completion_state != "succeeded"):
+            return {"outcome": "pending", "stage": "asking-occurrence-settlement",
+                "schedule_id": asking_schedule_id, "report_ref": dict(report_ref),
+                "generation": generation, "provider_called": False, "retry": False,
+                "reason": "the exact asking occurrence has not settled"}
+        project_ref, task_ref = target["project_ref"], target["task_ref"]
+        observed = task_reader(self.portfolio.operations, project_ref, task_ref)(
+            {key: task_ref[key] for key in ("authority", "kind", "id")})
+        latest_task_ref = observed["ref"]
+        request_key = "answer-session:" + _digest([asking_schedule_id, dict(report_ref),
+            dict(assignment_ref), generation, native_session_id])
+        answer_text = "\n\nAnswer to issue " + issue_id + ":\n" + value["response"] + \
+            "\nNext action: " + value["next_action"]
+        prepared = self.prepare_role(role=prior.role, project_ref=project_ref,
+            task_ref=latest_task_ref, assignment_ref=dict(assignment_ref), generation=generation,
+            mandate_ref=target["mandate_ref"], context_refs=tuple(prior.context_refs),
+            request_key=request_key, instruction=prior.instruction + answer_text,
+            model=prior.requested_model, reasoning=prior.requested_reasoning,
+            profile=prior.profile, native_session_id=native_session_id,
+            binding_schedule_id=asking_schedule_id, timeout_seconds=prior.timeout_seconds,
+            allowance_ref=prior.allowance_ref)
+        if execute and prepared.get("outcome") in {"committed", "prepared", "replayed"}:
+            return self.start(schedule_id=prepared["schedule_id"])
+        return prepared
+
     def continue_manager_after_tasks(self, *, manager_schedule_id: str,
                                      execute: bool = False) -> dict[str, Any]:
         """Deliver newly observed committed finishes and advance ordinary work.

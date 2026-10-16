@@ -233,6 +233,19 @@ class WaitingExplanation:
     def dispatch(self) -> bool:
         return False
 
+    @property
+    def asking_assignment_ref(self) -> Optional[ResourceRef]:
+        value = self.payload.get("asking_assignment_ref")
+        return _ref(value, "asking_assignment_ref") if value else None
+
+    @property
+    def asking_session_id(self) -> Optional[str]:
+        return self.payload.get("asking_session_id")
+
+    @property
+    def asking_generation(self) -> Optional[int]:
+        return self.payload.get("asking_generation")
+
 
 @dataclass(frozen=True)
 class AttentionReconciliation:
@@ -623,11 +636,24 @@ class _DecisionsModuleEngine:
         metadata: Optional[Mapping[str, Any]] = None,
         equivalent_review_name: Optional[str] = None,
         logical_request_key: Optional[str] = None,
+        asking_assignment_ref: Any = None,
+        asking_session_id: Optional[str] = None,
+        asking_generation: Optional[int] = None,
         actor: Optional[AuthenticatedActor] = None,
         failure_injector: Optional[Callable[[str], None]] = None,
     ) -> WaitingExplanation:
         if equivalent_review_name is not None:
             raise WaitingError("a cap must wait for the real decision, not an equivalent renamed review")
+        asking_values = (asking_assignment_ref, asking_session_id, asking_generation)
+        if any(value is not None for value in asking_values) and not all(value is not None for value in asking_values):
+            raise WaitingError("asking assignment, session, and generation must be bound together")
+        asking_assignment = None
+        if asking_assignment_ref is not None:
+            asking_assignment = self._current_ref(_ref(asking_assignment_ref, "asking_assignment_ref"), "asking_assignment_ref")
+            if not isinstance(asking_session_id, str) or not asking_session_id.strip():
+                raise WaitingError("asking_session_id must be a non-blank string")
+            if isinstance(asking_generation, bool) or not isinstance(asking_generation, int) or asking_generation < 1:
+                raise WaitingError("asking_generation must be a positive integer")
         subject_ref = self._current_ref(_ref(subject, "subject"), "subject")
         awaited = self._pin_reference(awaited_ref, "awaited_ref")
         awaited_identity = self.__writer.get_identity(ResourceRef(awaited.authority, awaited.kind, awaited.id))
@@ -657,6 +683,8 @@ class _DecisionsModuleEngine:
             "revisit_condition": revisit, "attention_key": attention_key, "required_decision_ref": required,
             "cap_reached": bool(cap_reached), "residual_risk": _safe(residual_risk),
             "verification_choice": _safe(verification_choice), "metadata": _safe(meta),
+            "asking_assignment_ref": asking_assignment, "asking_session_id": asking_session_id,
+            "asking_generation": asking_generation,
             "dispatch": False, "allowance": None, "reservation_ref": None, "launch": False,
         }
         with self.__writer.transaction() as tx:

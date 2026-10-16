@@ -69,6 +69,8 @@ class BoundHelpDelivery:
             current = self.readers.current_advisor(project)
         elif assignment.role == "orchestrator":
             current = self.readers.current_supervisor(project) or self.current_supervisor(project)
+        elif intent.get("message", {}).get("resume_asking_session") is True:
+            current = assignment
         else:
             raise IssueLoopError("help recipient role is unsupported")
         native = self.readers.conversation(project, assignment)
@@ -77,6 +79,16 @@ class BoundHelpDelivery:
                 or assignment.principal != intent.get("recipient_principal")
                 or native != intent.get("recipient_conversation") or not native):
             raise IssueLoopError("help delivery recipient or real conversation is stale")
+        if intent.get("message", {}).get("resume_asking_session") is True:
+            receipt = {"delivery_id": intent["delivery_id"],
+                       "report_ref": intent["message"]["report_ref"],
+                       "recipient_assignment_ref": intent["recipient_assignment_ref"],
+                       "generation": intent["recipient_generation"],
+                       "principal": intent["recipient_principal"],
+                       "conversation_id": native, "notification_sent": False}
+            return {"state": "pending", "transport": "retained-asking-session-continuation",
+                    "retry": False, "receipt": receipt,
+                    "next_action": "Resume the exact asking assignment generation in its captured native conversation."}
         if self.sender is not None:
             return self.sender(dict(intent))
         if self.interim is None or assignment.role == "project_advisor":
@@ -102,8 +114,8 @@ class ExecutionHelpDelivery(BoundHelpDelivery):
 
     The role's adopted occurrence supplies model, profile, context, native
     binding and allowance. An advice request grants no new execution budget.
-    Manager replies use the service's same-manager help continuation instead
-    of starting a second manager turn from the notification port.
+    Issue responses are handed to the service's retained asking-session
+    continuation rather than starting another role turn from this port.
     """
 
     def __init__(self, *, readers: Any, project_ref: Mapping[str, Any],
@@ -122,6 +134,11 @@ class ExecutionHelpDelivery(BoundHelpDelivery):
         if any(intent["project_ref"].get(k) != self.project_ref.get(k) for k in ("authority", "kind", "id")):
             raise IssueLoopError("automatic help is outside its bound project")
         assignment = self.readers.operations.assignments_port.get(intent["recipient_assignment_ref"])
+        if intent.get("message", {}).get("resume_asking_session") is True:
+            return {"state": "pending", "transport": "retained-asking-session-continuation", "retry": False,
+                    "receipt": {"recipient_assignment_ref": intent["recipient_assignment_ref"],
+                                "generation": intent["recipient_generation"],
+                                "conversation_id": intent["recipient_conversation"]}}
         if assignment.role == "manager":
             return {"state": "pending", "transport": "retained-manager-continuation", "retry": False}
         setup = read_setup(self.readers.operations, intent["project_ref"])

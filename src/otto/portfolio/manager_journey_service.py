@@ -507,11 +507,31 @@ class ManagerJourneyService:
         Operational reply grants keep their existing separate ingress.
         """
         state = self.server.state
+        if request.get("command") in {"ask", "wait-for-answer"}:
+            if (context.get("role") not in {"manager", "worker", "orchestrator", "project_advisor"}
+                    or context.get("project_ref") != state.get("project_ref")
+                    or not isinstance(context.get("occurrence_ref"), Mapping)):
+                raise PermissionError("ask and wait require the authenticated asking occurrence")
+            from .execution import DueRecord
+            raw_due = self.server.due_port.read_due(context["occurrence_ref"]["schedule_id"])
+            if not isinstance(raw_due, Mapping):
+                raise PermissionError("asking occurrence is unavailable")
+            due = DueRecord.from_dict(raw_due)
+            assignment = self.server.owner.assignments.command_port.get(context["assignment_ref"])
+            native = (context.get("native_session") or {}).get("id")
+            due_task, caller_task = due.target.get("task_ref"), context.get("task_ref")
+            same_task = (isinstance(due_task, Mapping) and isinstance(caller_task, Mapping)
+                and all(due_task.get(key) == caller_task.get(key) for key in ("authority", "kind", "id")))
+            if (due.assignment_ref != context["assignment_ref"] or due.generation != context["generation"]
+                    or not same_task
+                    or due.target.get("native_id") != native or assignment.principal != context["principal"]):
+                raise PermissionError("ask and wait occurrence binding is stale")
+            return
         if request.get("command") == "operating-setup" and request.get("operation", "read") not in {"read", "preview"}:
             raise PermissionError("native setup callers may read or preview; setup mutations require owner custody")
         if getattr(self.host, "bounded_transports", False) and (
                 request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help",
-                    "manager-worker-result", "manager-task-settlement", "manager-help-result",
+                    "manager-worker-result", "manager-task-settlement", "manager-help-result", "answer-session-result",
                     "start-retained-child", "parent-child-result"}
                 or request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
                 or request.get("command") == "operating-setup" and request.get("operation") == "activate"
@@ -575,6 +595,12 @@ class ManagerJourneyService:
 
     def __call__(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         command = request.get("command")
+        if command == "ask":
+            return self._ask(request, _CALLER.get())
+        if command == "wait-for-answer":
+            return self._wait_for_answer(request, _CALLER.get())
+        if command == "answer-session-result":
+            return self._answer_session_result(request)
         if command == "vision":
             installation = getattr(self.server, "vision", None)
             if installation is None:
@@ -1329,6 +1355,265 @@ class ManagerJourneyService:
             binding=self.server.owner.binding, project_read_grant=grant)
         return OttoPortfolio(scoped).read_pending(ref, actor=actor.actor)
 
+    def _ask(self, request: Mapping[str, Any], context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if context is None:
+            raise PermissionError("ask requires authenticated native assignment context")
+        fields = {"issue_key", "problem", "evidence", "impact", "requested_decision", "return_condition"}
+        if set(request) != {"command", "request_key", *fields}:
+            raise ValueError("ask requires issue key, problem, evidence, impact, requested decision and return condition")
+        self.authorize_caller(context, request)
+        state, loop = self.server.state, self.server.portfolio._issue_loop()
+        if loop is None:
+            return {"outcome": "unavailable", "provider_called": False, "reason": "owner issue ports are not bound"}
+        schedule_id = context["occurrence_ref"]["schedule_id"]
+        from .execution import DueRecord
+        raw_due = self.server.due_port.read_due(schedule_id)
+        if not isinstance(raw_due, Mapping):
+            raise PermissionError("asking occurrence is unavailable")
+        due = DueRecord.from_dict(raw_due)
+        from herzchen.kernel import EventCursorReader, EventFilter
+        assignment_ref = context["assignment_ref"]
+        stream = "report:" + assignment_ref["id"]
+        cursor = None
+        page = EventCursorReader(self.server.store).catch_up(stream,
+            event_filter=EventFilter(event_types=("work.report.appended",)), limit=1000)
+        cursor = page.cursor
+        while page.next_cursor is not None:
+            page = EventCursorReader(self.server.store).catch_up(stream, cursor=page.next_cursor,
+                event_filter=EventFilter(event_types=("work.report.appended",)), limit=1000)
+            cursor = page.cursor
+        actor = self.server.owner.binding.authenticated_actor(context["principal"])
+        task_before = self.server.owner.graph.current(ResourceRef.from_dict(context["task_ref"]))
+        prior_lifecycle = getattr(task_before.lifecycle, "value", task_before.lifecycle)
+        result = loop.ask(project_ref=state["project_ref"], assignment_ref=assignment_ref,
+            generation=context["generation"], actor=context["principal"],
+            asking_schedule_id=schedule_id,
+            **{field: request[field] for field in fields}, request_id=self.commands._key(request))
+        issue = next((item for item in loop.read_issues(project_ref=state["project_ref"])["issues"]
+            if item["issue_id"] == result["issue_id"]), None)
+        if issue is None or not isinstance(issue.get("current_owner_ref"), Mapping):
+            raise PermissionError("ask has no authenticated responsible recipient")
+        from herzchen.domains.work.decisions import DecisionsModule
+        wait = DecisionsModule(self.server.store, actor=actor).record_wait(
+            ResourceRef.from_dict(context["task_ref"]),
+            missing_obligation=request["requested_decision"], owner=issue["current_owner_ref"],
+            awaited_ref=result["report_ref"], revisit_condition=request["return_condition"],
+            asking_assignment_ref=ResourceRef.from_dict(assignment_ref),
+            asking_session_id=context["native_session"]["id"],
+            asking_generation=context["generation"],
+            metadata={"issue_id": result["issue_id"], "asking_schedule_id": schedule_id,
+                "asking_assignment_ref": assignment_ref, "asking_generation": context["generation"],
+                "asking_conversation": context["native_session"]["id"],
+                "prior_task_lifecycle": prior_lifecycle},
+            logical_request_key="ask-wait:" + result["issue_id"] + ":" + self.commands._key(request))
+        self.server.owner.graph.set_lifecycle(ResourceRef.from_dict(context["task_ref"]), "paused",
+            logical_request_key="ask-pause:" + result["issue_id"] + ":" + self.commands._key(request), actor=actor)
+        # Herzchen owns the durable wait and its session/generation fence.
+        # Otto keeps only an issue-to-wait pointer for command lookup.
+        state.setdefault("asking_waits", {})[result["issue_id"]] = {"wait_ref": wait.ref.to_dict()}
+        self.server._save_state()
+        return {**result, "outcome": "paused", "wait": json_value(wait), "cursor": cursor,
+            "asking_schedule_id": schedule_id, "assignment_ref": assignment_ref,
+            "generation": context["generation"], "native_session_id": context["native_session"]["id"],
+            "dispatch": False, "launch": False,
+            "next_action": "Stop this asking turn. The owner will resume this exact native session after its recipient answers."}
+
+    def _wait_for_answer(self, request: Mapping[str, Any], context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if context is None:
+            raise PermissionError("wait requires authenticated native assignment context")
+        fields = {"issue_id", "asking_schedule_id", "assignment_ref", "generation",
+                  "native_session_id", "cursor", "timeout_seconds"}
+        if set(request) != {"command", *fields}:
+            raise ValueError("wait requires the exact asking issue, occurrence and cursor")
+        self.authorize_caller(context, request)
+        if (request["assignment_ref"] != context["assignment_ref"]
+                or request["generation"] != context["generation"]
+                or request["asking_schedule_id"] != context["occurrence_ref"]["schedule_id"]
+                or request["native_session_id"] != context["native_session"]["id"]):
+            raise PermissionError("wait request differs from the authenticated asking session")
+        if (isinstance(request["timeout_seconds"], bool)
+                or not isinstance(request["timeout_seconds"], (int, float))
+                or request["timeout_seconds"] < 0):
+            raise ValueError("wait timeout must be non-negative")
+        from herzchen.contracts import ResourceRef
+        from herzchen.kernel import EventCursorReader, EventFilter
+        pointer = (self.server.state.get("asking_waits") or {}).get(request["issue_id"])
+        if not isinstance(pointer, Mapping) or not isinstance(pointer.get("wait_ref"), Mapping):
+            raise PermissionError("wait has no durable asking-session record")
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.decisions import DecisionsModule
+        waiting = DecisionsModule(self.server.store).get_wait(ResourceRef.from_dict(pointer["wait_ref"]))
+        if (waiting.asking_assignment_ref is None
+                or waiting.asking_assignment_ref.to_dict() != request["assignment_ref"]
+                or waiting.asking_generation != request["generation"]
+                or waiting.asking_session_id != request["native_session_id"]
+                or waiting.metadata.get("asking_schedule_id") != request["asking_schedule_id"]
+                or waiting.metadata.get("issue_id") != request["issue_id"]):
+            raise PermissionError("wait does not match its immutable Herzchen session fence")
+        from herzchen.fleet.runner import require_asking_session
+        require_asking_session(
+            {"assignment_ref": waiting.asking_assignment_ref.to_dict(),
+             "generation": waiting.asking_generation, "native_session_id": waiting.asking_session_id,
+             "schedule_id": waiting.metadata["asking_schedule_id"]},
+            {"assignment_ref": request["assignment_ref"], "generation": request["generation"],
+             "native_session_id": request["native_session_id"], "schedule_id": request["asking_schedule_id"]})
+        loop = self.server.portfolio._issue_loop()
+        import time
+        end = time.monotonic() + request["timeout_seconds"]
+        cursor = request["cursor"]
+        stream = "report:" + request["assignment_ref"]["id"]
+        reader = EventCursorReader(self.server.store)
+        while True:
+            page = reader.wait(stream, cursor=cursor,
+                event_filter=EventFilter(event_types=("work.report.appended",)),
+                timeout_seconds=max(0.0, end - time.monotonic()), limit=1000)
+            cursor = page.cursor
+            for event in page.events:
+                record = self.server.store.get_record(event.subject)
+                payload = record.payload if record is not None else {}
+                value = payload.get("value") if isinstance(payload, Mapping) else None
+                if (isinstance(value, Mapping) and value.get("schema") == "otto.issue.delivery.v1"
+                        and value.get("issue_id") == request["issue_id"]
+                        and value.get("state") == "intent"
+                        and (value.get("message") or {}).get("type") == "issue_response"
+                        and (value.get("message") or {}).get("resume_asking_session") is True
+                        and value.get("recipient_assignment_ref") == request["assignment_ref"]
+                        and value.get("recipient_generation") == request["generation"]
+                        and value.get("recipient_conversation") == request["native_session_id"]):
+                    report_ref = (value.get("message") or {}).get("report_ref")
+                    response = next((item for item in loop._issue_reports(self.server.state["project_ref"])
+                        if item.get("ref") == report_ref), None)
+                    answer = response.get("value") if response else None
+                    if (isinstance(answer, Mapping) and answer.get("schema") == "otto.issue.response.v1"
+                            and answer.get("issue_id") == request["issue_id"]
+                            and answer.get("asking_assignment_ref") == request["assignment_ref"]
+                            and answer.get("asking_generation") == request["generation"]
+                            and answer.get("asking_conversation") == request["native_session_id"]
+                            and answer.get("asking_schedule_id") == request["asking_schedule_id"]):
+                        return {"schema": "otto.wait.v1", "outcome": "answered",
+                            "answer_ref": report_ref, "issue_id": request["issue_id"],
+                            "asking_schedule_id": request["asking_schedule_id"],
+                            "assignment_ref": request["assignment_ref"],
+                            "generation": request["generation"],
+                            "native_session_id": request["native_session_id"], "cursor": cursor,
+                            "next_action": "Exit this turn; the owner resumes this exact session after it settles."}
+            if page.status != "ok" or time.monotonic() >= end:
+                return {"schema": "otto.wait.v1", "outcome": "timeout", "answer": None,
+                    "cursor": cursor, "status": page.status}
+
+    def _answer_session_result(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.commands._authorize()
+        fields = {"command", "asking_schedule_id", "report_ref", "issue_id", "assignment_ref",
+                  "generation", "native_session_id"}
+        if set(request) != fields:
+            raise ValueError("answer continuation requires its exact asking session and report")
+        state = self.server.state
+        from .execution import DueRecord
+        raw_due = self.server.due_port.read_due(request["asking_schedule_id"])
+        if not isinstance(raw_due, Mapping):
+            raise PermissionError("original asking occurrence is unavailable")
+        prior = DueRecord.from_dict(raw_due)
+        if (prior.assignment_ref != request["assignment_ref"] or prior.generation != request["generation"]
+                or prior.target.get("native_id") != request["native_session_id"]):
+            raise PermissionError("answer continuation does not match its original asking occurrence")
+        wait_pointer = (state.get("asking_waits") or {}).get(request["issue_id"])
+        if not isinstance(wait_pointer, Mapping) or not isinstance(wait_pointer.get("wait_ref"), Mapping):
+            raise PermissionError("answer has no matching durable ask pause")
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.decisions import DecisionsModule
+        waiting = DecisionsModule(self.server.store).get_wait(ResourceRef.from_dict(wait_pointer["wait_ref"]))
+        if (waiting.asking_assignment_ref is None
+                or waiting.asking_assignment_ref.to_dict() != request["assignment_ref"]
+                or waiting.asking_generation != request["generation"]
+                or waiting.asking_session_id != request["native_session_id"]
+                or waiting.metadata.get("asking_schedule_id") != prior.schedule_id
+                or waiting.metadata.get("issue_id") != request["issue_id"]):
+            raise PermissionError("answer does not match the immutable Herzchen wait session")
+        loop = self.server.portfolio._issue_loop()
+        reports = [] if loop is None else loop._issue_reports(prior.target["project_ref"])
+        response_report = next((item for item in reports if item.get("ref") == request["report_ref"]), None)
+        response_value = response_report.get("value") if response_report else None
+        delivery = next((item.get("value") for item in reports
+            if isinstance(item.get("value"), Mapping)
+            and item["value"].get("schema") == "otto.issue.delivery.v1"
+            and item["value"].get("issue_id") == request["issue_id"]
+            and item["value"].get("state") == "intent"
+            and item["value"].get("recipient_assignment_ref") == request["assignment_ref"]
+            and item["value"].get("recipient_generation") == request["generation"]
+            and item["value"].get("recipient_conversation") == request["native_session_id"]
+            and (item["value"].get("message") or {}).get("type") == "issue_response"
+            and (item["value"].get("message") or {}).get("report_ref") == request["report_ref"]
+            and (item["value"].get("message") or {}).get("resume_asking_session") is True), None)
+        if (not isinstance(response_value, Mapping)
+                or response_value.get("schema") != "otto.issue.response.v1"
+                or response_value.get("issue_id") != request["issue_id"]
+                or response_value.get("awaiting") != "asking_session"
+                or response_value.get("asking_assignment_ref") != request["assignment_ref"]
+                or response_value.get("asking_generation") != request["generation"]
+                or response_value.get("asking_conversation") != request["native_session_id"]
+                or response_value.get("asking_schedule_id") != prior.schedule_id or delivery is None):
+            raise PermissionError("answer report or retained delivery differs from the asking session")
+        assignment = self.server.owner.assignments.command_port.get(request["assignment_ref"])
+        app = self._execution(principal=assignment.principal, model=prior.requested_model,
+            reasoning=prior.requested_reasoning, evidence_id="answer-session-result")
+        if prior.in_flight_request is not None:
+            # Reconcile the exact Due from durable owner records on every
+            # retained request retry. This also works after host restart,
+            # when the in-memory execution table and completion callback are
+            # gone. The file request remains the durable answer-to-session
+            # continuation until this Due becomes terminal.
+            from .owner_completion import OwnerCompletion
+            recovered = app.recover(schedule_id=prior.schedule_id, execute=False)
+            if isinstance(recovered, OwnerCompletion):
+                return recovered.then(lambda _: self._answer_session_result(request))
+            prior = app._read(request["asking_schedule_id"])
+            if prior.in_flight_request is not None:
+                return {"outcome": "pending", "reason": "asking occurrence has not settled",
+                    "schedule_id": prior.schedule_id, "provider_called": False,
+                    "effects_started": False, "retry": False}
+        if prior.stop_state != "completed" or prior.completion_state != "succeeded":
+            return {"outcome": "held", "reason": "asking occurrence is not a settled success",
+                "provider_called": False, "retry": False}
+        current = self.server.owner.graph.current(ResourceRef.from_dict(prior.target["task_ref"]))
+        actor = self.server.owner.binding.authenticated_actor(assignment.principal)
+        def lifecycle_request_key(prefix: str, task_ref: ResourceRef) -> str:
+            suffix = hashlib.sha256(json.dumps([request["report_ref"], request["asking_schedule_id"],
+                task_ref.to_dict()], sort_keys=True).encode()).hexdigest()
+            return prefix + ":" + suffix
+        if current.lifecycle.value == "paused":
+            resume_lifecycle = waiting.metadata.get("prior_task_lifecycle", "active")
+            self.server.owner.graph.set_lifecycle(current.ref, resume_lifecycle,
+                logical_request_key=lifecycle_request_key("ask-resume", current.ref),
+                actor=actor)
+        try:
+            result = app.continue_from_answer(asking_schedule_id=request["asking_schedule_id"],
+                report_ref=request["report_ref"], issue_id=request["issue_id"],
+                assignment_ref=request["assignment_ref"], generation=request["generation"],
+                native_session_id=request["native_session_id"], execute=True)
+        except Exception:
+            latest = self.server.owner.graph.current(current.ref)
+            if getattr(latest.lifecycle, "value", latest.lifecycle) != "paused":
+                self.server.owner.graph.set_lifecycle(latest.ref, "paused",
+                    logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
+            raise
+        from .owner_completion import OwnerCompletion
+        if isinstance(result, OwnerCompletion):
+            def repause_on_failure(error: BaseException) -> Any:
+                latest = self.server.owner.graph.current(current.ref)
+                if getattr(latest.lifecycle, "value", latest.lifecycle) != "paused":
+                    self.server.owner.graph.set_lifecycle(latest.ref, "paused",
+                        logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
+                raise error
+            return result.then(lambda value: value, repause_on_failure)
+        if (isinstance(result, Mapping) and result.get("outcome") in
+                {"partial", "blocked", "held", "paused", "adoption-required", "prepared"}
+                and not result.get("provider_called") and not result.get("effects_started")):
+            latest = self.server.owner.graph.current(current.ref)
+            if getattr(latest.lifecycle, "value", latest.lifecycle) != "paused":
+                self.server.owner.graph.set_lifecycle(latest.ref, "paused",
+                    logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
+        return result
+
     def _help(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Manager operations and the host-bound recipient reply over IssueLoop."""
         self.commands._authorize()
@@ -1386,6 +1671,24 @@ class ManagerJourneyService:
         if self.host is None or (self.host._closing and not getattr(self.host, "bounded_transports", False)):
             return {**result, "continuation": {"outcome": "held", "provider_called": False,
                     "reason": "owner host must retain help continuation after restart", "retry": False}}
+        if command == "respond-help" and result.get("outcome") == "responded":
+            response = next((item.get("value") for item in loop._issue_reports(state["project_ref"])
+                if item.get("ref") == result.get("report_ref") and isinstance(item.get("value"), Mapping)), None)
+            if isinstance(response, Mapping) and response.get("awaiting") == "asking_session":
+                delivery = result.get("delivery") or {}
+                receipt = delivery.get("receipt") or {}
+                expected = {"asking_schedule_id": response.get("asking_schedule_id"),
+                    "report_ref": result["report_ref"], "issue_id": response.get("issue_id"),
+                    "assignment_ref": response.get("asking_assignment_ref"),
+                    "generation": response.get("asking_generation"),
+                    "native_session_id": response.get("asking_conversation")}
+                if (delivery.get("transport") != "retained-asking-session-continuation"
+                        or receipt.get("recipient_assignment_ref") != expected["assignment_ref"]
+                        or receipt.get("generation") != expected["generation"]
+                        or receipt.get("conversation_id") != expected["native_session_id"]):
+                    raise PermissionError("answer delivery receipt differs from the asking session")
+                continuation = self.host.submit({"command": "answer-session-result", **expected})
+                return {**result, "continuation": continuation}
         current_id = (state.get("manager_continuation") or {}).get("schedule_id") or state["schedule_id"]
         if command == "resolve-help" and self._receiving_manager_application(current_id):
             # The current turn receives the canonical application below. A new

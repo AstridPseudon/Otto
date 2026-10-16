@@ -12,6 +12,7 @@ import argparse
 from contextlib import redirect_stdout
 from io import StringIO
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Optional, Sequence
@@ -47,6 +48,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     help_parser = sub.add_parser("help", help="show the manager entry contract")
     _add_format(help_parser)
+
+    wait_parser = sub.add_parser("wait", help="wait for an answer to one exact asking session")
+    wait_parser.add_argument("--assignment-ref", required=True, help="asking work.assignment ResourceRef JSON")
+    wait_parser.add_argument("--generation", required=True, type=int)
+    wait_parser.add_argument("--native-session-id", required=True)
+    wait_parser.add_argument("--asking-schedule-id", required=True)
+    wait_parser.add_argument("--issue-id", required=True)
+    wait_parser.add_argument("--cursor", required=True, help="cursor returned when the ask was recorded")
+    wait_parser.add_argument("--timeout-seconds", type=float, default=300.0)
+    _add_format(wait_parser)
+
+    ask_parser = sub.add_parser("ask", help="route one bounded question to its responsible person")
+    ask_parser.add_argument("--issue-key", required=True)
+    ask_parser.add_argument("--problem", required=True)
+    ask_parser.add_argument("--evidence", required=True, help="evidence refs as a JSON array")
+    ask_parser.add_argument("--impact", required=True)
+    ask_parser.add_argument("--requested-decision", required=True)
+    ask_parser.add_argument("--return-condition", required=True)
+    ask_parser.add_argument("--request-key", required=True)
+    _add_format(ask_parser)
 
     vision = sub.add_parser(
         "vision",
@@ -1073,7 +1094,13 @@ def main(
     if portfolio is None:
         portfolio = OttoPortfolio()
     try:
-        if args.command == "help":
+        if args.command == "wait":
+            result = _surface_unavailable("otto.wait.v1", "caller_socket_required",
+                "Run otto wait through its authenticated native caller socket")
+        elif args.command == "ask":
+            result = _surface_unavailable("otto.ask.v1", "caller_socket_required",
+                "Run otto ask through its authenticated native caller socket")
+        elif args.command == "help":
             result: Any = {
                 **portfolio.help(),
                 "role_work_contract": {
@@ -1680,6 +1707,42 @@ def client_main(argv: Optional[Sequence[str]] = None) -> int:
         parsed = parser.parse_args(words)
     except SystemExit as exc:
         return int(exc.code or 0)
+    if parsed.command in {"wait", "ask"}:
+        try:
+            caller_socket = os.environ.get("OTTO_CALLER_SOCKET")
+            if not caller_socket:
+                result = {"outcome": "unavailable", "schema": "otto." + parsed.command + ".v1",
+                    "error": {"code": "caller_socket_required",
+                              "message": "otto " + parsed.command + " requires the authenticated native caller socket"}}
+            elif parsed.command == "wait" and (parsed.generation < 1 or not parsed.native_session_id.strip()
+                  or not parsed.asking_schedule_id.strip() or parsed.timeout_seconds < 0):
+                result = {"outcome": "error", "schema": "otto.wait.v1",
+                    "error": {"code": "invalid_wait_scope",
+                              "message": "wait requires a positive generation, asking schedule, native session, and non-negative timeout"}}
+            elif parsed.command == "ask":
+                evidence = _parse_json(parsed.evidence, "evidence")
+                if not isinstance(evidence, list):
+                    result = {"outcome": "error", "schema": "otto.ask.v1",
+                        "error": {"code": "invalid_evidence", "message": "evidence must be a JSON array"}}
+                else:
+                    from .caller_client import call
+                    result = call(caller_socket, {"command": "ask", "request_key": parsed.request_key,
+                        "issue_key": parsed.issue_key, "problem": parsed.problem, "evidence": evidence,
+                        "impact": parsed.impact, "requested_decision": parsed.requested_decision,
+                        "return_condition": parsed.return_condition}, timeout=60.0)
+            else:
+                from .caller_client import call
+                result = call(caller_socket, {"command": "wait-for-answer",
+                    "issue_id": parsed.issue_id, "asking_schedule_id": parsed.asking_schedule_id,
+                    "assignment_ref": _parse_ref(parsed.assignment_ref, "assignment_ref"),
+                    "generation": parsed.generation, "native_session_id": parsed.native_session_id,
+                    "cursor": parsed.cursor, "timeout_seconds": parsed.timeout_seconds},
+                    timeout=parsed.timeout_seconds + 5.0)
+        except ValueError as exc:
+            result = {"outcome": "error", "schema": "otto.cli-error.v1",
+                "error": {"code": "invalid_argument", "message": str(exc)}}
+        _emit(result, getattr(parsed, "format", "json"))
+        return _exit_code(result)
     if portfolio is None:
         _emit({"outcome": "error", "schema": "otto.cli-error.v1",
                "error": {"code": "usage", "message": "name the owner portfolio with --portfolio P"}}, "json")
