@@ -17,15 +17,27 @@
       "saves": {
         "create": {
           "project": {"title": "Canary plan", "outcome": "One creation route"},
-          "tasks": [{"id": "A", "title": "Plan A", "instructions": "Do A", "acceptance": "Done A"}]
+          "tasks": [
+            {"id": "A", "title": "Plan A", "instructions": "Do A", "acceptance": "Done A", "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.25, "lines": 20}}},
+            {"id": "B", "title": "Plan B", "instructions": "Do B", "acceptance": "Done B", "dependencies": ["A"], "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.5, "lines": 30}}},
+            {"id": "C", "title": "Plan C", "instructions": "Do C", "acceptance": "Done C", "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.25, "lines": 15}}}
+          ]
         },
         "edit": {
           "project": {"title": "Canary plan", "outcome": "One creation route"},
-          "tasks": [{"id": "A", "title": "Plan A two", "instructions": "Do A", "acceptance": "Done A"}]
+          "tasks": [
+            {"id": "A", "title": "Plan A edited", "instructions": "Do A", "acceptance": "Done A", "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.25, "lines": 20}}},
+            {"id": "B", "title": "Plan B", "instructions": "Do B", "acceptance": "Done B", "dependencies": ["A"], "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.75, "lines": 30}}},
+            {"id": "C", "title": "Plan C", "instructions": "Do C", "acceptance": "Done C", "dependencies": ["B"], "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.25, "lines": 15}}}
+          ]
         },
         "stale": {
           "project": {"title": "Canary plan", "outcome": "One creation route"},
-          "tasks": [{"id": "A", "title": "Plan A three", "instructions": "Do A", "acceptance": "Done A"}]
+          "tasks": [
+            {"id": "A", "title": "Plan A stale", "instructions": "Do A", "acceptance": "Done A", "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.25, "lines": 20}}},
+            {"id": "B", "title": "Plan B", "instructions": "Do B", "acceptance": "Done B", "dependencies": ["A"], "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.5, "lines": 30}}},
+            {"id": "C", "title": "Plan C", "instructions": "Do C", "acceptance": "Done C", "metadata_namespace": {"otto.plan": {"route": "normal", "size": 0.25, "lines": 15}}}
+          ]
         }
       },
       "wipe": true

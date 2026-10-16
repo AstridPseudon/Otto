@@ -11,7 +11,7 @@
 # restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
 # Stage 1 adds the scenario save-through-socket: the canary saved from its file through the owner socket from a cold
 # shell, read back, one task edited and saved again, then a save from the create's base, which is stale by then.
-# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,typed,nothing,revision,stale,growth
+# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,canary,readback,typed,edit,nothing,revision,history,stale,growth
 # seeds one fault per assertion kind, for a red run; each stage-1 fault is read by its own stage-1 assertion only.
 # Exit 0 when every assertion passes, 1 when one fails (the report is written either way), 2 on usage.
 set -euo pipefail
@@ -159,22 +159,25 @@ save_through_socket() {  # STAGE
   SAVE_STAGE="$1"
   SAVE_HOST="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$SAVE_STAGE" --key host | tr -d '"')"
   SAVE_PORTFOLIO="$("$PY" -I "$REPORT_PY" portfolio --project "$CANARY/project.json" --stage "$SAVE_STAGE")"
+  SAVE_ACTOR="$(env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$STAGE_ROOT/tree/src" "$PY" -c \
+    'import sys; from pathlib import Path; from otto.hostctl import config; print(config.load(Path(sys.argv[1]))["owner"]["actor"])' "$STAGE_ROOT/home")"
   # The owner admits the host, the same admit-host the host fixture runs; that names the portfolio the saves go to.
   cold_client service admit-host --host "$SAVE_HOST" > "$RAW/admission.json" 2>> "$RAW/save-errors.txt" \
     || echo '{"outcome": "unavailable"}' > "$RAW/admission.json"
   ADMITTED=""
   "$PY" -I "$REPORT_PY" admission --raw "$RAW" --project "$CANARY/project.json" --stage "$SAVE_STAGE" && ADMITTED=1
-  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-before-saves.json"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --admission "$RAW/admission.json" --out "$RAW/store-before-saves.json"
   save_step create ""
-  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-create.json"
-  project_id="$("$PY" -I -c 'import json, sys; print((json.load(open(sys.argv[1])).get("project_ref") or {}).get("id", ""))' \
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --refs "$RAW/save-create.json" --out "$RAW/store-after-create.json"
+  project_ref="$("$PY" -I -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1])).get("project_ref") or {}, separators=(",", ":")))' \
     "$RAW/save-create.json" 2>/dev/null || true)"
-  cold_client portfolio --portfolio "$SAVE_PORTFOLIO" read "$project_id" > "$RAW/read-back.json" 2>> "$RAW/save-errors.txt" \
+  cold_client portfolio --portfolio "$SAVE_PORTFOLIO" show project --project-ref "$project_ref" --actor "$SAVE_ACTOR" > "$RAW/read-back.json" 2>> "$RAW/save-errors.txt" \
     || echo '{"outcome": "unavailable"}' > "$RAW/read-back.json"
   save_step edit "$RAW/save-create.json"
-  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-edit.json"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --refs "$RAW/save-create.json" \
+    --refs "$RAW/save-edit.json" --out "$RAW/store-after-edit.json"
   save_step stale "$RAW/save-create.json"
-  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-stale.json"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --refs "$RAW/save-edit.json" --out "$RAW/store-after-stale.json"
 }
 
 # The canary: a fresh copy of the toy repo as canon/main, with the lab folder beside it.
@@ -347,7 +350,7 @@ run_stage() {  # STAGE
   fi
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
-  for kind in census store restart admit typed nothing revision stale growth; do
+  for kind in census store restart admit canary readback typed edit nothing revision history stale growth; do
     # A fault whose observation this run does not have is named in seeded.txt, not left to look like a clean run.
     if has_fault "$kind"; then
       "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind" \
@@ -355,7 +358,9 @@ run_stage() {  # STAGE
     fi
   done
 
-  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" --fake \
+  INIT_ARGS=()
+  [ -z "$FAKE" ] || INIT_ARGS+=(--fake)
+  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" "${INIT_ARGS[@]}" \
     --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
     --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
   STAGE_RC=0
@@ -382,9 +387,9 @@ else
     || die "no stage $STAGE in $CANARY/project.json"
   STAGES="$STAGE"
 fi
-# Stage 0 needs no real worker, so it runs without --fake; every later stage needs one, which is not built yet.
+# Stage 1 is owner-lane save/read only and has no worker tasks; it runs without --fake.
 for s in $STAGES; do
-  [ -n "$FAKE" ] || [ "$s" = 0 ] || die "stage $s needs a real worker, which is not built yet; only stage 0 runs without --fake"
+  [ -n "$FAKE" ] || [ "$s" = 0 ] || [ "$s" = 1 ] || die "stage $s needs a real worker, which is not built yet"
 done
 RC=0
 for s in $STAGES; do
