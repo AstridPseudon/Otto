@@ -137,6 +137,18 @@ class ReadBundleTests(unittest.TestCase):
         self.assertEqual(bundle["run_file"], "run.json")
         self.assertEqual(bundle["run"]["mode"], "setup_not_activated")
 
+    def test_generated_run_view_cannot_be_registered_as_a_source_bundle(self):
+        root = write_bundle(self.base / "generated")
+        run = json.loads((root / "run.yaml").read_text(encoding="utf-8"))
+        run["otto_generated_view"] = {
+            "from": "otto records",
+            "authority": "read-only projection",
+        }
+        (root / "run.yaml").write_text(json.dumps(run), encoding="utf-8")
+        (root / "tasklist.md").write_text("| id | outcome |\n| not a separator |\n", encoding="utf-8")
+        with self.assertRaisesRegex(BundleError, "generated run view.*source bundle"):
+            read_bundle(root)
+
     def test_both_run_files_is_error(self):
         root = write_bundle(self.base / "b", run_name="run.yaml")
         (root / "run.json").write_text(RUN_JSON, encoding="utf-8")

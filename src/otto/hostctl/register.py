@@ -25,7 +25,7 @@ from typing import Any, Mapping, Optional
 
 from herzchen.contracts import ResourceRef, canonical_json
 
-from .bundle import read_bundle
+from .bundle import parse_files, read_bundle
 
 REGISTRATION_SCHEMA = "otto.host-registration.v1"
 
@@ -76,11 +76,19 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
          worktree: str, tool_entrypoint: str) -> dict[str, Any]:
     """Pure: compute what registration and activation write.
 
-    ``bundle_source`` is a run directory (registration: the run dir is the
-    authority) or an already parsed bundle (activation: Otto's own stored
-    copies of the run's files are the authority).
+    ``bundle_source`` is a source bundle (registration: the submitted run
+    files are the authority) or an already parsed bundle (activation: Otto's
+    own stored copies of the run's files are the authority). A generated run
+    view is rejected by the bundle parser before its task table is parsed.
     """
-    bundle = read_bundle(bundle_source) if isinstance(bundle_source, (str, Path)) else bundle_source
+    if isinstance(bundle_source, (str, Path)):
+        bundle = read_bundle(bundle_source)
+    else:
+        # Rebuild every parsed field from the bundle's text. In particular,
+        # callers cannot smuggle task rows parsed from a generated view beside
+        # an unrelated source file mapping.
+        bundle = {**bundle_source, **parse_files(dict(bundle_source["files"]),
+                                                  raw_sha256=dict(bundle_source.get("raw_sha256") or {}))}
     run = bundle["run"]
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()

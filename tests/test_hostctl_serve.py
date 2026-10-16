@@ -18,6 +18,8 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from otto.hostctl import config as host_config
 from otto.hostctl import manager_client
@@ -345,6 +347,46 @@ class ServeTests(HostctlFixture):
     def attached(self):
         code, status = self._ottoctl("service", "status")
         return status["attached_project"]
+
+    def test_editing_generated_view_does_not_change_owner_show(self):
+        from otto.hostctl.serve import HostOwnerService
+
+        code, before = self._ottoctl("project", "status", "--project", "demo-run")
+        self.assertEqual(code, 0, before)
+        root = Path(tempfile.mkdtemp(prefix="hostctl-view-", dir="/tmp"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+
+        class Content:
+            @staticmethod
+            def read(_ref):
+                return {"content": {"roles": {"coordinator": {"model": "model", "reasoning": "medium"}}}}
+
+        service = object.__new__(HostOwnerService)
+        service.state = {"project_ref": {"authority": "test", "kind": "work.project", "id": "demo-run"}}
+        service.paths = {"run_view": root / "run"}
+        service.run_id = "demo-run"
+        service.config = {}
+        service.owner = SimpleNamespace(content=Content())
+        service._documents = lambda _project: [
+            {"path": name, "text": Path(self.bundle, name).read_text()}
+            for name in ("tasklist.md", "run.json")
+        ]
+        with patch("otto.hostctl.serve._registration", return_value={"steps": {"role_configuration": {
+                "authority": "test", "kind": "dat.content.document", "id": "role-config"}}}):
+            view = service.render_run_view()
+        run_path = view / "run.json"
+        generated = json.loads(run_path.read_text())
+        marker = generated["otto_generated_view"]
+        self.assertEqual(marker["authority"], "read-only projection")
+        self.assertIn("owner records", marker["note"])
+
+        run_path.write_text(json.dumps({"run_id": "forged", "roles": {}}))
+        (view / "tasklist.md").write_text("## Forged tasks\n| id | outcome |\n|---|---|\n| BAD | forged |\n")
+
+        code, after = self._ottoctl("project", "status", "--project", "demo-run")
+        self.assertEqual(code, 0, after)
+        self.assertEqual(after["tasks"], before["tasks"])
+        self.assertEqual(sorted(task["id"] for task in after["tasks"]), ["T1", "T2"])
 
     def test_service_starts_no_due_relays_status_and_denies_a_foreign_socket_caller(self):
         code, before = self._ottoctl("schedules", "--project", "demo-run")
