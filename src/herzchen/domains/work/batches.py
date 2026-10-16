@@ -132,6 +132,7 @@ class _ProjectBatchesEngine:
         actor: Optional[AuthenticatedActor] = None,
         decision_ref: Optional[Any] = None,
         base_revision: Optional[str] = None,
+        base_task_revisions: Optional[Mapping[str, str]] = None,
         next_action: Optional[str] = None,
     ) -> BatchResult:
         from herzchen.kernel import VersionConflictError
@@ -168,14 +169,15 @@ class _ProjectBatchesEngine:
                     stream="work:" + replay_target.id,
                     transaction=tx,
                 )
-                current = self.graph.get(project)
+                current = self.graph.current(project)
                 return self._result_from_replay(receipt, current)
 
-            record = self.graph.get(project)
+            record = self.graph.current(project)
             if record.kind is not WorkKind.PROJECT:
                 raise WorkValidationError("project sheet target must be a project")
             if base_revision is not None and base_revision != record.revision:
                 raise VersionConflictError("sheet base revision is stale")
+            self._fence_task_bases(record, base_task_revisions)
             plan = self.validate_project_sheet(record, sheet, decision_ref=decision_ref, next_action=next_action)
             parent_payload = plan["project_payload"]
             last_batch = dict(parent_payload["last_batch"])
@@ -221,7 +223,7 @@ class _ProjectBatchesEngine:
                 transaction=tx,
             )
             self._write_child_rows(tx, plan, receipt.event_ids[0])
-        fresh = self.graph.get(record.ref)
+        fresh = self.graph.current(record.ref)
         mappings = dict(plan["mappings"])
         return BatchResult(fresh, receipt, mappings, project_id=fresh.id)
 
@@ -239,7 +241,7 @@ class _ProjectBatchesEngine:
         """Run the owner validation path without opening a write transaction."""
         if not isinstance(sheet, Mapping):
             raise WorkValidationError("project sheet must be a mapping")
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         if record.kind is not WorkKind.PROJECT:
             raise WorkValidationError("project sheet target must be a project")
         plan = self._prepare_sheet(record, sheet, decision_ref=decision_ref, next_action=next_action)
@@ -263,7 +265,7 @@ class _ProjectBatchesEngine:
         next_action: Optional[str] = None,
     ) -> BatchResult:
         """Direct semantic command with the same gate and plan as a sheet."""
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         expected = base_revision or getattr(handle, "base_revision", None) or record.revision
         checkout = authoring.authorize_mutation(
             handle,
@@ -311,7 +313,7 @@ class _ProjectBatchesEngine:
 
         def validate(snapshot: Any, checkout: Any, checkout_root: str) -> Any:
             try:
-                self._validate_task_bases(self.graph.get(project), base_task_revisions)
+                self._validate_task_bases(self.graph.current(project), base_task_revisions)
                 self.validate_project_sheet(project, decode(snapshot))
             except (TypeError, ValueError, WorkValidationError, VersionConflictError) as exc:
                 return ValidationResult(False, str(exc))
@@ -325,6 +327,34 @@ class _ProjectBatchesEngine:
             )
 
         return CallableSemanticHandler(validate, apply)
+
+    def _fence_task_bases(self, project: WorkRecord, base_task_revisions: Optional[Mapping[str, str]]) -> None:
+        """Refuse a sheet whose named task bases are stale, before any write.
+
+        A key is a task's local id or alias. The refusal names each task that
+        changed since it was read, and nothing that did not change.
+        """
+
+        from herzchen.kernel import VersionConflictError
+
+        if not base_task_revisions:
+            return
+        tasks = [item for item in self.graph.list(project=project) if item.kind is WorkKind.TASK]
+        by_key: Dict[str, WorkRecord] = {}
+        for item in tasks:
+            by_key.setdefault(item.id, item)
+        for item in tasks:
+            for alias in item.aliases:
+                by_key.setdefault(alias, item)
+        changed: List[str] = []
+        for key, base in base_task_revisions.items():
+            item = by_key.get(str(key))
+            if item is None:
+                raise WorkValidationError(f"task base names no task in this project: {key!r}")
+            if item.revision != base:
+                changed.append(f"task {key!r} ({item.id}) changed since it was read: base {base}, now {item.revision}")
+        if changed:
+            raise VersionConflictError("; ".join(changed))
 
     def _validate_task_bases(self, project: WorkRecord, expected: Mapping[str, Optional[str]]) -> None:
         """Reject child-only edits made after a project checkout was opened."""
@@ -407,13 +437,13 @@ class _ProjectBatchesEngine:
                 transaction=tx,
             )
             if existing_receipt is not None:
-                existing = self.graph.get(receipt.result_ref or project_ref)
+                existing = self.graph.current(receipt.result_ref or project_ref)
                 return BatchResult(existing, receipt, {}, project_id=existing.id, materialisation=existing.payload.get("materialisation"))
             if reservation_ref is not None:
                 reservation_payload = {"record_type": "work.authoring-reservation", "project": project_ref, "actor": _safe(selected_actor), "status": "held", "request_key": request_key, "token": "token-" + uuid.uuid4().hex}
                 self.__writer.put_identity(ResourceRef(reservation_ref.authority, reservation_ref.kind, reservation_ref.id, "rev-1"), reservation_payload, version=1, transaction=tx)
                 self.__writer.put_reference(reservation_ref, transaction=tx)
-        project = self.graph.get(project_ref)
+        project = self.graph.current(project_ref)
         result = BatchResult(project, receipt, {}, project_id=project.id, materialisation=project.payload.get("materialisation"))
         if materializer is not None:
             result = self._materialize(result, materializer, request_key, reservation_ref)
@@ -423,7 +453,7 @@ class _ProjectBatchesEngine:
     create_project = create_pending_project
 
     def retry_materialisation(self, result_or_project: Any, materializer: Callable[[WorkRecord], Any], *, logical_request_key: Optional[str] = None, actor: Optional[AuthenticatedActor] = None) -> BatchResult:
-        project = result_or_project.project if isinstance(result_or_project, BatchResult) else self.graph.get(result_or_project)
+        project = result_or_project.project if isinstance(result_or_project, BatchResult) else self.graph.current(result_or_project)
         request_key = logical_request_key or project.payload.get("creation_request")
         if not request_key:
             raise WorkValidationError("saved project has no creation request ID")
@@ -456,8 +486,8 @@ class _ProjectBatchesEngine:
                 envelope, event_type="work.project.activated", result_ref=prior.result_ref,
                 stream="work:" + replay_target.id,
             )
-            return self.graph.get(self._unPinned(receipt.result_ref or replay_target))
-        record = self.graph.get(project)
+            return self.graph.current(self._unPinned(receipt.result_ref or replay_target))
+        record = self.graph.current(project)
         if record.kind is not WorkKind.PROJECT:
             raise WorkValidationError("only a project can be activated")
         if not manager:
@@ -476,12 +506,12 @@ class _ProjectBatchesEngine:
                 identity_payload=payload,
                 event_type="work.project.activated", effects={"explicit": True, "dispatch": False, "manager": _safe(manager)}, stream="work:" + record.id, transaction=tx,
             )
-        return self.graph.get(record.ref)
+        return self.graph.current(record.ref)
 
     activate = activate_project
 
     def observe_readiness(self, project: Any, observation: Mapping[str, Any], *, logical_request_key: Optional[str] = None, actor: Optional[AuthenticatedActor] = None) -> ResourceRef:
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         if not isinstance(observation, Mapping):
             raise WorkValidationError("readiness observation must be a mapping")
         key = self._request_key(logical_request_key)
@@ -494,7 +524,7 @@ class _ProjectBatchesEngine:
     set_readiness = observe_readiness
 
     def append_report(self, project: Any, value: Any, *, logical_request_key: Optional[str] = None, actor: Optional[AuthenticatedActor] = None) -> ResourceRef:
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         key = self._request_key(logical_request_key)
         ident = ResourceRef(self.__writer.authority, "wrk.report", "report-" + hashlib.sha256((record.id + ":" + key).encode()).hexdigest()[:28])
         payload = {"record_type": "work.report", "project": record.ref, "value": value, "append_only": True}
@@ -534,7 +564,7 @@ class _ProjectBatchesEngine:
 
     def choose_next_action(self, project: Any, action: str, records: Sequence[Any], *, logical_request_key: Optional[str] = None, actor: Optional[AuthenticatedActor] = None) -> BatchResult:
         action = _opaque(action, "action")
-        sheet = {"tasks": [{"id": self.graph.get(item).id} for item in records], "manager_action": action}
+        sheet = {"tasks": [{"id": self.graph.current(item).id} for item in records], "manager_action": action}
         return self.apply_project_sheet(project, sheet, logical_request_key=logical_request_key, actor=actor, next_action=action)
 
     def _prepare_sheet(self, project: WorkRecord, sheet: Mapping[str, Any], *, decision_ref: Any, next_action: Optional[str]) -> Dict[str, Any]:
@@ -612,6 +642,18 @@ class _ProjectBatchesEngine:
             else:
                 item["payload"]["project_ref"] = _safe(project.ref)
                 item["payload"]["parent"] = _safe(project.ref)
+        # Payloads are final here. Name each task's identity revision exactly as
+        # _write_child_rows will write it: an unchanged task keeps its current
+        # revision, a changed one takes the next, a new one is rev-1.
+        for item in planned:
+            record = item["record"]
+            if record is None:
+                item["new_ref"] = ResourceRef(item["ref"].authority, item["ref"].kind, item["ref"].id, "rev-1")
+            elif record.payload == item["payload"]:
+                item["new_ref"] = record.ref
+            else:
+                item["new_ref"] = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id, self._next_identity_revision(record))
+            mappings[item["local_key"]] = item["new_ref"]
         project_payload = dict(project.payload)
         for field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "resources"):
             if field in sheet:
@@ -638,8 +680,10 @@ class _ProjectBatchesEngine:
             for value in project.payload.get("tasks", ()):
                 old_ref = self._as_ref(value)
                 if old_ref.id not in planned_ids:
-                    retained.append(old_ref)
-            project_payload["tasks"] = [_safe(item["ref"]) for item in ordered] + [_safe(value) for value in retained]
+                    # A retained task may have been revised directly; name its current revision.
+                    kept = existing_by_id.get(old_ref.id)
+                    retained.append(kept.ref if kept is not None else old_ref)
+            project_payload["tasks"] = [_safe(item["new_ref"]) for item in ordered] + [_safe(value) for value in retained]
         history = list(project_payload.get("batch_history", ()))
         history.append({"task_keys": [item["local_key"] for item in planned], "mapping": mappings, "manager_action": next_action or sheet.get("manager_action"), "decision_ref": _safe(decision_ref)})
         project_payload["batch_history"] = history
@@ -672,6 +716,13 @@ class _ProjectBatchesEngine:
             if item.get("scope") not in (None, "", project.id, project.ref.to_dict()):
                 raise WorkValidationError("document change crosses the project scope")
 
+    @staticmethod
+    def _require_planned_ref(item: Mapping[str, Any], written: ResourceRef) -> None:
+        """The refs the plan named in the project must be the revisions actually written."""
+
+        if item["new_ref"] != written:
+            raise WorkValidationError(f"planned task revision {item['new_ref']!r} differs from the written {written!r}")
+
     def _write_child_rows(self, tx: Any, plan: Mapping[str, Any], history_event_id: str) -> None:
         for item in plan["planned"]:
             ref = item["ref"]
@@ -684,6 +735,7 @@ class _ProjectBatchesEngine:
                 # Retain its exact identity revision and history rather than
                 # manufacturing a no-op child revision.
                 if current.payload == payload:
+                    self._require_planned_ref(item, current.ref)
                     continue
                 revised = self.__writer.revise_identity(
                     current.ref,
@@ -700,6 +752,7 @@ class _ProjectBatchesEngine:
                 next_ref = ResourceRef(ref.authority, ref.kind, ref.id, "rev-1")
                 self.__writer.put_identity(next_ref, payload, version=1, transaction=tx, history_event_id=history_event_id)
                 self.__writer.put_reference(next_ref, transaction=tx)
+            self._require_planned_ref(item, next_ref)
             for value in payload.get("dependencies", ()):
                 self.__writer.put_reference(self._as_ref(value), transaction=tx)
         for doc in plan["documents"]["changes"]:
@@ -838,9 +891,13 @@ class _ProjectBatchesEngine:
         unknown = set(raw).difference(allowed)
         if unknown:
             raise WorkValidationError(f"unknown task fields for task[{index}]: {', '.join(sorted(unknown))}")
+        # A name that was only the old title follows a title change; an explicit name is kept.
+        derived_name = "title" in raw and "name" not in raw and payload.get("name") == payload.get("title")
         for field in ("title", "name", "body", "instructions", "outcome", "acceptance", "order"):
             if field in raw:
                 payload[field] = _safe(raw[field])
+        if derived_name:
+            payload["name"] = payload["title"]
         if "title" not in payload or not isinstance(payload["title"], str) or not payload["title"].strip():
             raise WorkValidationError(f"task[{index}] title must be non-blank")
         for field in ("fields", "metadata", "custom"):
@@ -897,7 +954,7 @@ class _ProjectBatchesEngine:
     def _resolve_parent_ref(self, value: Any, project: WorkRecord) -> ResourceRef:
         """Resolve an explicit parent and keep hierarchy within the project."""
 
-        parent = self.graph.get(value) if isinstance(value, str) else self.graph.get(self._as_ref(value))
+        parent = self.graph.current(value) if isinstance(value, str) else self.graph.current(self._as_ref(value))
         if parent.kind is WorkKind.PROJECT:
             if parent.id != project.id:
                 raise WorkValidationError("task parent must remain in the project scope")
@@ -940,11 +997,11 @@ class _ProjectBatchesEngine:
             status = {"status": "saved; editing not opened", "error": type(exc).__name__, "request_id": request_key, "project_id": result.project.id}
             if reservation is not None:
                 self._reconcile_reservation(reservation, status, request_key + "-materialisation-reconcile")
-            return BatchResult(self.graph.get(result.project.ref), result.receipt, result.mappings, "saved; editing not opened", result.project.id, status)
+            return BatchResult(self.graph.current(result.project.ref), result.receipt, result.mappings, "saved; editing not opened", result.project.id, status)
         status = {"status": "editable", "request_id": request_key, "project_id": result.project.id}
         if reservation is not None:
             self._reconcile_reservation(reservation, status, request_key + "-materialisation-opened")
-        return BatchResult(self.graph.get(result.project.ref), result.receipt, result.mappings, "editable", result.project.id, status)
+        return BatchResult(self.graph.current(result.project.ref), result.receipt, result.mappings, "editable", result.project.id, status)
 
     def _reconcile_reservation(self, reservation: ResourceRef, status: Mapping[str, Any], key: str) -> None:
         identity = self.__writer.get_identity(reservation)
@@ -957,7 +1014,7 @@ class _ProjectBatchesEngine:
             self.__writer.mutate(self._envelope("work.authoring.reconcile", identity.ref, payload, key, None, expected_version=identity.version, expected_revision=identity.ref.revision), event_type="work.authoring.reconciled", effects=dict(status), stream="authoring:" + reservation.id, transaction=tx)
 
     def _result_from_replay(self, receipt: Any, original: WorkRecord) -> BatchResult:
-        project = self.graph.get(receipt.result_ref or original.ref)
+        project = self.graph.current(receipt.result_ref or original.ref)
         mappings: Mapping[str, ResourceRef] = {}
         event_ids = set(getattr(receipt, "event_ids", ()))
         for event in self.__writer.list_events(stream="work:" + original.id):

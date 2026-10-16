@@ -7,7 +7,9 @@ to, so a save written against an older revision is refused, never applied over
 newer work. Without a ``project_ref`` the save creates the project.
 
 Tasks are inert: a save file can add, edit or explicitly withdraw tasks, but it
-never makes work runnable (A1). Omitting a task keeps it.
+never makes work runnable (A1). Omitting a task keeps it. A task may name the
+``revision`` it was read at, which is a per-task base: a task edited since is
+refused, and naming one needs the file's ``project_ref``.
 """
 
 import hashlib
@@ -16,7 +18,7 @@ from typing import Any, Mapping, Sequence
 
 SAVE_TEMPLATE_ID = "otto.save"
 SAVE_KEYS = frozenset({"project_ref", "project", "tasks", "criteria", "documents"})
-DIFF_SKIP = frozenset({"id", "local_id", "key", "dependencies", "depends_on", "metadata_namespace", "documents", "document_links"})
+DIFF_SKIP = frozenset({"id", "local_id", "key", "dependencies", "depends_on", "metadata_namespace", "documents", "document_links", "revision"})
 
 
 class SaveFileError(ValueError):
@@ -59,7 +61,11 @@ def parse_save_file(document: Any) -> dict[str, Any]:
             raise SaveFileError(f"task id {local_id!r} appears twice")
         if task.get("lifecycle", "pending") != "pending":
             raise SaveFileError(f"task {local_id!r} must be pending: a save never makes work runnable; activation starts work")
+        if "revision" in task and (not isinstance(task["revision"], str) or not task["revision"].strip()):
+            raise SaveFileError(f"task {local_id!r} revision must be a non-blank string")
         ids.append(local_id)
+    if project_ref is None and any("revision" in task for task in tasks):
+        raise SaveFileError("a task revision needs the project_ref it was read at; a new project has no earlier revision")
     dependencies = {task["id"]: _dependency_ids(task) for task in tasks}
     if project_ref is None:
         # A new project holds only this file's tasks, so an unknown dependency is refused before anything is created.

@@ -321,6 +321,9 @@ class OperationOwnerCapability:
     def get_identity(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_identity(ref)
 
+    def get_revision(self, ref: ResourceRef) -> Optional[IdentityRecord]:
+        return self.__owner.get_revision(ref)
+
     def get_receipt(self, logical_request_key: str) -> Optional[CommandReceipt]:
         return self.__owner.get_receipt(logical_request_key)
 
@@ -446,6 +449,9 @@ class DomainOwnerCapability:
     def get_identity(self, ref: ResourceRef) -> Any:
         return self.__owner.get_identity(ref)
 
+    def get_revision(self, ref: ResourceRef) -> Any:
+        return self.__owner.get_revision(ref)
+
     def get_receipt(self, logical_request_key: str) -> Optional[CommandReceipt]:
         return self.__owner.get_receipt(logical_request_key)
 
@@ -530,6 +536,12 @@ def _json(value: Any) -> str:
 
 def _ref_key(ref: ResourceRef) -> str:
     return ref.to_json()
+
+
+# Immutable revision snapshots of work records live in record_references under
+# a prefixed key, which cannot collide with a plain reference key (those are JSON).
+_KEPT_KIND_PREFIX = "work."
+_KEPT_KEY_PREFIX = "content:"
 
 
 def _descriptor_digest(descriptors: Sequence[DomainContribution]) -> str:
@@ -1418,6 +1430,7 @@ class Store:
             "INSERT INTO identities(authority, kind, id, current_revision, version, edit_token, payload_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (ref.authority, ref.kind, ref.id, ref.revision, version, edit_token, payload_json, now, now),
         )
+        self._keep_revision(tx, ref, version, json.loads(payload_json))
         if history_event_id is not None:
             self._capture_child(tx, history_event_id, None, None, ref, json.loads(payload_json))
         return IdentityRecord(ref, version, json.loads(payload_json), edit_token, now, now)
@@ -1705,6 +1718,32 @@ class Store:
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.get_identity(ref)
 
+    def get_revision(self, ref: ResourceRef) -> Optional[IdentityRecord]:
+        """Exact revision read. Never returns another revision's content.
+
+        The current pin (or an unpinned ref) reads the identity row as
+        get_identity does. An older pin reads only its kept snapshot, else None.
+        """
+        with self._transaction_lock:
+            self._require_open()
+            row = self._connection.execute(
+                "SELECT * FROM identities WHERE authority = ? AND kind = ? AND id = ?",
+                (ref.authority, ref.kind, ref.id),
+            ).fetchone()
+            if row is None:
+                return None
+            if ref.revision is None or ref.revision == row["current_revision"]:
+                return self._identity_from_row(row)
+            kept = self._connection.execute(
+                "SELECT reference_json FROM record_references WHERE reference_key = ?",
+                (_KEPT_KEY_PREFIX + _ref_key(ref),),
+            ).fetchone()
+            if kept is None:
+                return None
+            snapshot = json.loads(kept[0])
+            return IdentityRecord(ref, snapshot["version"], snapshot["content"], None,
+                                  snapshot["kept_at"], snapshot["kept_at"])
+
     def get_identity_ref(self, ref: ResourceRef) -> Optional[ResourceRef]:
         """Exact existence/current-pin read without selecting payload bytes."""
         with self._transaction_lock:
@@ -1887,6 +1926,7 @@ class Store:
             )
             if updated.rowcount != 1:
                 raise StoreError("identity revision affected {} rows, expected exactly one".format(updated.rowcount))
+            self._keep_revision(tx, new_ref, expected_version + 1, json.loads(payload_json))
             self.put_reference(new_ref, transaction=tx)
             revised = tx.execute(
                 "SELECT * FROM identities WHERE authority = ? AND kind = ? AND id = ?",
@@ -2035,6 +2075,21 @@ class Store:
         tx.execute(
             "INSERT OR IGNORE INTO record_references(reference_key, authority, kind, id, revision, reference_json) VALUES (?, ?, ?, ?, ?, ?)",
             (_ref_key(ref), ref.authority, ref.kind, ref.id, ref.revision, ref.to_json()),
+        )
+
+    def _keep_revision(self, tx: Transaction, ref: ResourceRef, version: int, payload: Mapping[str, Any]) -> None:
+        """Retain the exact persisted payload of a pinned work revision.
+
+        Called by every identity write in the same transaction, immediately
+        after the identities row is written, so a snapshot cannot drift from
+        the current identity. Non-work kinds and unpinned refs are not kept.
+        """
+        if not ref.kind.startswith(_KEPT_KIND_PREFIX) or ref.revision is None:
+            return
+        tx.execute(
+            "INSERT OR IGNORE INTO record_references(reference_key, authority, kind, id, revision, reference_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (_KEPT_KEY_PREFIX + _ref_key(ref), ref.authority, ref.kind, ref.id, ref.revision,
+             _json({"content": payload, "version": version, "kept_at": _now()})),
         )
 
     def get_reference(self, ref: ResourceRef) -> Optional[ResourceRef]:
@@ -2316,6 +2371,7 @@ class Store:
                     "UPDATE identities SET current_revision = ?, version = ?, payload_json = ?, updated_at = ? WHERE authority = ? AND kind = ? AND id = ?",
                     (result_ref.revision, next_version, _json(persisted_payload), _now(), target.authority, target.kind, target.id),
                 )
+            self._keep_revision(tx, result_ref, next_version, json.loads(_json(persisted_payload)))
 
             stream_name = stream or "{}:{}".format(target.kind, target.id)
             sequence = self._next_sequence(tx, stream_name)
@@ -2781,6 +2837,9 @@ class DomainHandler:
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self._owner.get_record(ref)
 
+    def get_revision(self, ref: ResourceRef) -> Optional[IdentityRecord]:
+        return self._owner.get_revision(ref)
+
     def get_reference(self, ref: ResourceRef) -> Optional[ResourceRef]:
         return self._owner.get_reference(ref)
 
@@ -2887,6 +2946,9 @@ class ConsumerStore:
 
     def get_record(self, ref: ResourceRef) -> Optional[IdentityRecord]:
         return self.__owner.get_record(ref)
+
+    def get_revision(self, ref: ResourceRef) -> Optional[IdentityRecord]:
+        return self.__owner.get_revision(ref)
 
     def registered_domains(self) -> Tuple[DomainContribution, ...]:
         return self.__owner.registered_domains()

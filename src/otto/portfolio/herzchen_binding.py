@@ -2325,9 +2325,12 @@ class FiniteWorkOperations:
         from .save import SAVE_TEMPLATE_ID, diff_save
 
         operation = "work.project.save"
+        # A task's revision is the base it was read at, not task content: it is
+        # the per-task fence, and it stays out of the seed the sheet is built from.
+        task_bases = {str(task["id"]): task["revision"] for task in payload["seed"]["tasks"] if task.get("revision") is not None}
+        seed = dict(payload["seed"], tasks=[{key: value for key, value in task.items() if key != "revision"} for task in payload["seed"]["tasks"]])
         if self.sheet_port is None:
             return self._unsupported(operation, request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet command port was not injected")
-        seed = payload["seed"]
         actor_value = self._actor(actor)
         before = self._owner_reader.get_receipt(request_id)
         try:
@@ -2344,7 +2347,7 @@ class FiniteWorkOperations:
             else:
                 project = ResourceRef.from_dict(payload["project_ref"])
                 base_revision = project.revision
-            batch = self.sheet_port.apply(project, sheet, logical_request_key=request_id, actor=actor_value, base_revision=base_revision)
+            batch = self.sheet_port.apply(project, sheet, logical_request_key=request_id, actor=actor_value, base_revision=base_revision, base_task_revisions=task_bases or None)
         except VersionConflictError as exc:
             current = self.sheet_port.export(project)
             return {"outcome": "conflict", "error": {"code": "stale_base", "message": str(exc), "operation": operation},

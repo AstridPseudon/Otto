@@ -471,7 +471,7 @@ class _WorkGraphEngine:
         self._validate_payload(changes, namespaces=tuple(metadata_namespaces or ()))
         with self.__writer.transaction() as tx:
             self._write_revision(tx, record, changes, request_key, actor, "work.revised", request_payload=request_payload)
-        return self.get(record.ref)
+        return self.current(record.ref)
 
     update = revise
 
@@ -536,7 +536,8 @@ class _WorkGraphEngine:
         if revision == record.revision:
             reviewed = record.payload
         else:
-            reviewed = self._payload_at(record, revision)
+            kept = self.__writer.get_revision(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id, revision))
+            reviewed = None if kept is None else kept.payload
             if reviewed is None:
                 raise admission.AdmissionDiffError(
                     f"reviewed revision {revision} is superseded by {record.revision} and cannot be compared", {})
@@ -548,13 +549,6 @@ class _WorkGraphEngine:
         updated = self.revise(record.ref, metadata_namespaces={admission.NAMESPACE: stamp}, base_revision=record.revision,
                               logical_request_key=key, actor=actor)
         return {"outcome": "admitted", "task_ref": updated.ref, "admitted_revision": revision, "stamp": stamp}
-
-    def _payload_at(self, record: WorkRecord, revision: str) -> Optional[Mapping[str, Any]]:
-        for event in self.__writer.list_events(stream="work:" + record.id):
-            payload = (event.effects or {}).get("result_payload")
-            if event.subject.revision == revision and isinstance(payload, Mapping):
-                return payload
-        return None
 
     def link_parent(self, child: Any, parent: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         request_key = self._request_key(logical_request_key)
@@ -573,7 +567,7 @@ class _WorkGraphEngine:
         with self.__writer.transaction() as tx:
             self._write_revision(tx, child_record, payload, request_key, actor, "work.parent-linked", request_payload=request_payload)
             self._retain_links(tx, parent_record.ref, ())
-        return self.get(child_record.ref)
+        return self.current(child_record.ref)
 
     def link_dependency(self, record: Any, prerequisite: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         request_key = self._request_key(logical_request_key)
@@ -593,7 +587,7 @@ class _WorkGraphEngine:
         with self.__writer.transaction() as tx:
             self._write_revision(tx, record_value, proposed, request_key, actor, "work.dependency-linked", request_payload=request_payload)
             self._retain_links(tx, None, (prerequisite_value.ref,))
-        return self.get(record_value.ref)
+        return self.current(record_value.ref)
 
     def unlink_dependency(self, record: Any, prerequisite: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         """Remove a current graph edge, retaining its ordinary revision history."""
@@ -611,7 +605,7 @@ class _WorkGraphEngine:
         ensure_completed_task_unchanged(current, payload)
         with self.__writer.transaction() as tx:
             self._write_revision(tx, current, payload, request_key, actor, "work.revised", request_payload=request_payload)
-        return self.get(current.ref)
+        return self.current(current.ref)
 
     def withdraw(self, target: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         return self.revise(target, lifecycle=Lifecycle.WITHDRAWN, logical_request_key=logical_request_key, actor=actor)
@@ -634,7 +628,7 @@ class _WorkGraphEngine:
         payload["readiness"] = readiness
         with self.__writer.transaction() as tx:
             self._write_revision(tx, record, payload, request_key, actor, "work.state-changed", request_payload=request_payload)
-        return self.get(record.ref)
+        return self.current(record.ref)
 
     def state_view(self, target: Any) -> WorkStateView:
         record = self._require(target)
@@ -645,10 +639,18 @@ class _WorkGraphEngine:
     # ---- reads --------------------------------------------------------------------
 
     def get(self, target: Any) -> WorkRecord:
-        record = self._resolve(target)
+        """Read a record; a revisioned ResourceRef returns exactly that kept revision."""
+        ResourceRef = _contract_types()[3]
+        record = self._resolve(target, exact=True)
         if record is None:
+            if isinstance(target, ResourceRef) and target.revision is not None:
+                raise WorkNotFoundError(f"work revision not kept: {target!r}")
             raise WorkNotFoundError(f"work record not found: {target!r}")
         return record
+
+    def current(self, target: Any) -> WorkRecord:
+        """Fresh current read for owner code acting on the live record; a pinned ref names the record, not that snapshot."""
+        return self._require(target)
 
     def resolve(self, target: Any) -> WorkRecord:
         return self.get(target)
@@ -813,21 +815,24 @@ class _WorkGraphEngine:
             aliases = (payload.get("alias", ref.id),)
         return WorkRecord(ref, kind, payload.get("title", payload.get("name", kind.value.title())), payload.get("name", payload.get("title", kind.value.title())), aliases, parent, deps, project_ref, lifecycle, dict(payload.get("readiness", {})), payload, version)
 
-    def _resolve(self, target: Any) -> Optional[WorkRecord]:
+    def _resolve(self, target: Any, *, exact: bool = False) -> Optional[WorkRecord]:
         ResourceRef = _contract_types()[3]
         if isinstance(target, WorkRecord):
-            # A record object is a convenient locator, not a write lease.  A
-            # fresh supported read avoids using a stale pinned revision after
-            # another operation in the same work graph has committed.
-            return self._resolve(target.ref)
+            # A record object is a locator, not a write lease: it resolves to
+            # the fresh current read of its unpinned ref, so a stale pinned
+            # revision is never used after another operation has committed.
+            return self._resolve(self._unPinned(target.ref), exact=exact)
         if isinstance(target, ResourceRef):
-            identity = self.__writer.get_record(target)
+            if exact and target.revision is not None:
+                identity = self.__writer.get_revision(target)
+            else:
+                identity = self.__writer.get_record(target)
             return None if identity is None else self._from_identity(identity)
         if isinstance(target, Mapping):
             if "id" in target:
-                return self._resolve(target["id"])
+                return self._resolve(target["id"], exact=exact)
             if "ref" in target:
-                return self._resolve(target["ref"])
+                return self._resolve(target["ref"], exact=exact)
         if not isinstance(target, str):
             return None
         for record in self._all_records():
@@ -894,8 +899,12 @@ class _WorkGraphEngine:
 
     def _revision_changes(self, record: WorkRecord, *, title: Optional[str] = None, name: Optional[str] = None, outcome: Optional[str] = None, add_alias: Optional[str] = None, aliases: Sequence[str] = (), fields: Optional[Mapping[str, Any]] = None, lifecycle: Optional[Union[Lifecycle, str]] = None, metadata_namespaces: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         payload = dict(record.payload)
+        # A name that was only the old title follows a title change; an explicit name is kept.
+        derived_name = name is None and title is not None and payload.get("name") == payload.get("title")
         if title is not None:
             payload["title"] = self._title(title, "title")
+            if derived_name:
+                payload["name"] = payload["title"]
         if name is not None:
             payload["name"] = self._title(name, "name")
         if outcome is not None:
