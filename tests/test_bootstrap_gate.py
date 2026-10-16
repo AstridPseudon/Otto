@@ -4,6 +4,7 @@ Everything runs on temporary repos through the scripts' environment overrides; t
 launcher and `claude` are stubs. OTTO_BOOTSTRAP_DIR points the tests at another copy of the
 scripts (used to show the tests failing against the old ones).
 """
+import json
 import os
 import shutil
 import signal
@@ -333,6 +334,90 @@ class RunTaskRoute(Scratch):
             self.assertIn("ScheduleWakeup", denied)
             self.assertIn("CronCreate", denied)
             self.assertIn("Monitor", denied)
+
+
+class RunTaskCodex(Scratch):
+    """--host codex: Luna or Sol in Codex's workspace-write sandbox; codex names the session; the
+    launcher commits what the worker leaves, because the sandbox keeps .git read-only."""
+
+    def run_codex(self, route, resume=None):
+        task = "C" + route
+        if resume is None:
+            self.lab(task, {"note.txt": "x\n"})
+        argv = self.tmp / ("codex-argv-" + route + ("-resume" if resume else ""))
+        stub = self.bin / "codex"
+        stub.write_text(
+            '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s.tmp"\n'
+            'echo \'{"type":"thread.started","thread_id":"thread-%s"}\'\n'
+            'echo \'{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":3}}\'\n'
+            'echo made > made-by-worker.txt\nmv "%s.tmp" "%s"\n' % (argv, route, argv, argv))
+        stub.chmod(0o755)
+        args = ["bash", str(BOOT / "run-task.sh"), task, "--route", route, "--host", "codex", "--wall-seconds", "30"]
+        if resume:
+            msg = self.tmp / "msg.md"
+            msg.write_text("go on\n")
+            args += ["--resume", resume, "--message", str(msg)]
+        r = sh(args, env=self.env, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lab = self.labs / task
+        while sh(["git", "log", "-1", "--format=%s"], cwd=lab, env=self.env).stdout.strip().find("worker's changes") < 0:
+            pass  # the launcher commits once the stub exits; only a hang fails
+        return task, lab, argv.read_text().split("\n"), r.stdout
+
+    def test_models_and_sandbox_by_route(self):
+        for route, model, effort in (("normal", "gpt-6-luna", "high"), ("xhard", "gpt-6-sol", "xhigh")):
+            _, _, argv, _ = self.run_codex(route)
+            self.assertEqual(argv[:2], ["exec", "-m"])
+            self.assertEqual(argv[2], model)
+            self.assertIn('model_reasoning_effort="%s"' % effort, argv)
+            self.assertIn('sandbox_mode="workspace-write"', argv)
+            self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", argv)
+            self.assertTrue(any(a.startswith("sandbox_workspace_write.writable_roots=") for a in argv))
+
+    def test_session_named_by_codex_and_work_committed(self):
+        task, lab, _, out = self.run_codex("normal")
+        self.assertIn("session thread-normal", out)
+        ledger = json.loads((self.ops / "workers.json").read_text())
+        self.assertEqual([e["session_id"] for e in ledger if e["task"] == task], ["thread-normal"])
+        tracked = sh(["git", "ls-files"], cwd=lab, env=self.env).stdout.split()
+        self.assertIn("made-by-worker.txt", tracked)
+        self.assertNotIn(".brief.md", tracked)
+        self.assertTrue((self.ops / "runs" / task / "worker.jsonl").exists())
+
+    def test_resume_continues_the_session(self):
+        task, _, _, _ = self.run_codex("normal")
+        _, _, argv, _ = self.run_codex("normal", resume="thread-normal")
+        self.assertEqual(argv[:2], ["exec", "resume"])
+        self.assertEqual([a for a in argv if a][-2:], ["thread-normal", "-"])
+        self.assertTrue((self.ops / "runs" / task / "worker.1.jsonl").exists())
+
+    def test_program_default_host_file(self):
+        (self.ops / "worker-host").write_text("codex\n")
+        task = "Cdefault"
+        self.lab(task, {"note.txt": "x\n"})
+        stub = self.bin / "codex"
+        stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-default"}\'\n')
+        stub.chmod(0o755)
+        r = sh(["bash", str(BOOT / "run-task.sh"), task, "--wall-seconds", "30"], env=self.env, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("gpt-6-luna", r.stdout)
+
+
+class WorkersSpend(unittest.TestCase):
+    def test_claude_last_file_and_codex_tokens(self):
+        runs = Path(tempfile.mkdtemp(prefix="spend-"))
+        self.addCleanup(shutil.rmtree, runs, True)
+        (runs / "A").mkdir()
+        (runs / "A" / "worker.json").write_text(json.dumps({"total_cost_usd": 1.0}))
+        (runs / "A" / "worker.1.json").write_text(json.dumps({"total_cost_usd": 2.5}))  # running total
+        (runs / "B").mkdir()
+        for name in ("worker.jsonl", "worker.1.jsonl"):
+            (runs / "B" / name).write_text('{"type":"turn.completed","usage":{"input_tokens":10,'
+                                            '"cached_input_tokens":4,"output_tokens":3}}\n')
+        r = subprocess.run([sys.executable, "-I", str(BOOT / "workers.py"), "spend", "--runs", str(runs)],
+                           capture_output=True, text=True, check=True)
+        self.assertIn("$2.5000", r.stdout.split("total (claude)")[1])
+        self.assertIn("in 20 (cached 8), out 6", r.stdout)
 
 
 class WorkersWait(unittest.TestCase):
