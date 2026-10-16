@@ -434,6 +434,27 @@ class RunTaskCodex(Scratch):
         finally:
             release.write_text("go")
 
+    def test_a_stopped_rebase_is_finished_with_the_workers_resolution(self):
+        # A landing's rebase stopped on a conflict; the worker resolves the markers but can't run git.
+        task = "Crebase"
+        lab = self.lab(task, {"shared.txt": "lab side\n"})
+        self.write(self.repo, "shared.txt", "canon side\n")
+        self.commit(self.repo, "canon moves")
+        sh(["git", "update-ref", "refs/heads/canon/main", "HEAD"], cwd=self.repo, env=self.env)
+        r = sh(["git", "rebase", "canon/main"], cwd=lab, env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0, "the scratch rebase should conflict")
+        stub = self.bin / "codex"
+        stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-rebase"}\'\n'
+                        'printf "both sides\\n" > shared.txt\n')
+        stub.chmod(0o755)
+        r = sh(["bash", str(BOOT / "run-task.sh"), task, "--host", "codex", "--wall-seconds", "30"], env=self.env, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        while (lab / ".git").exists() and sh(["git", "status"], cwd=lab, env=self.env).stdout.find("rebase in progress") >= 0:
+            pass  # the launcher finishes the rebase when the stub exits; only a hang fails
+        self.assertEqual((lab / "shared.txt").read_text(), "both sides\n")
+        log = sh(["git", "log", "--format=%s", "-3"], cwd=lab, env=self.env).stdout.split("\n")
+        self.assertEqual(log[1], "canon moves", log)
+
     def test_program_default_host_file(self):
         (self.ops / "worker-host").write_text("codex\n")
         task = "Cdefault"

@@ -57,6 +57,17 @@ archive_manager_files() {  # LAB TASK
 # Commit what a sandboxed worker left in its lab (Codex keeps .git read-only, so it can't).
 # The manager's files never go in. Nothing to commit is not an error.
 commit_worker_changes() {  # LAB TASK EVENTS
+  # A lab left mid-rebase (a landing's rebase stopped on conflicts) goes back to its worker, who resolves
+  # the markers; the worker can't run git, so this finishes the rebase with its resolution (16 Oct: RETIRE).
+  if [ -d "$(git -C "$1" rev-parse --git-path rebase-merge)" ] || [ -d "$(git -C "$1" rev-parse --git-path rebase-apply)" ]; then
+    if git -C "$1" grep -n -E '^(<<<<<<<|>>>>>>>)( |$)' -- . >/dev/null 2>&1; then
+      echo "commit_worker_changes: conflict markers remain in $1; the rebase stays stopped"; return 1
+    fi
+    git -C "$1" add -A && { git -C "$1" reset -q -- .brief.md .worker.json .worker.err 2>/dev/null || true; } \
+      && GIT_EDITOR=true git -C "$1" rebase --continue >/dev/null \
+      && echo "commit_worker_changes: rebase finished at $(git -C "$1" rev-parse --short HEAD)"
+    return
+  fi
   [ -n "$(uncommitted_work "$1")" ] || { echo "commit_worker_changes: nothing to commit in $1"; return 0; }
   # `git add -A` skips ignored files; naming an ignored one (labs ignore .brief.md) makes git refuse the
   # whole add (16 Oct: LAND's draft went uncommitted). Unstage the manager's files after instead.
