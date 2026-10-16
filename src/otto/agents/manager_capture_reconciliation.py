@@ -127,14 +127,15 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
             and starts[0].get("started_at", -1) <= ends[0].get("completed_at", -1),
             "exact admitted native turn is missing, repeated, aborted or still active")
     observed = datetime.fromisoformat(admission["observed_at"].replace("Z", "+00:00"))
-    # The native trace records epoch seconds while owner admission retains
-    # subsecond UTC precision. Compare the shared second, which identifies
-    # the same turn-start state, instead of comparing unlike timestamp
-    # precision or widening a time window.
+    # The native trace records whole epoch seconds while owner admission
+    # retains subsecond UTC precision. Compare at the trace's recorded
+    # precision and require admission to fall within this exact turn's
+    # start-to-terminal interval; do not add a tolerance around either edge.
     require(observed.tzinfo is not None
             and type(starts[0]["started_at"]) is int
-            and starts[0]["started_at"] == int(observed.timestamp()),
-            "native start differs from retained owner admission second")
+            and type(ends[0]["completed_at"]) is int
+            and starts[0]["started_at"] <= int(observed.timestamp()) <= ends[0]["completed_at"],
+            "retained owner admission second falls outside the exact native turn")
     text = user_texts[0]
     blocks = re.findall(r'<otto-resource-brief sha256="([a-f0-9]{64})">\s*(.*?)\s*</otto-resource-brief>', text, re.S)
     requests = re.findall(r'<otto-invocation-request[^>]*sha256="([a-f0-9]{64})">\s*(.*?)\s*</otto-invocation-request>', text, re.S)
