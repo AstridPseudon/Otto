@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
 from .owner_readers import json_value
@@ -531,7 +532,18 @@ class ExecutionHost:
         task_ref = due.target.get("task_ref")
         project_ref = due.target.get("project_ref")
         if isinstance(task_ref, Mapping) and isinstance(project_ref, Mapping):
-            observed = task_reader(app.portfolio.operations, project_ref, task_ref)(
+            operations = app.portfolio.operations
+            # Owner-facing Operations exposes the canonical, unscoped reader as
+            # ``_owner_reader``. The shared task reader expects that reader via
+            # a ``reader`` attribute; build a narrow view so admission uses the
+            # same authoritative source as the rest of the execution owner.
+            reader = getattr(operations, "_owner_reader", None)
+            if reader is None:
+                reader = getattr(operations, "reader", None)
+            reader_operations = (
+                operations if reader is None else SimpleNamespace(reader=reader)
+            )
+            observed = task_reader(reader_operations, project_ref, task_ref)(
                 {key: task_ref[key] for key in ("authority", "kind", "id")})
             lifecycle = observed.get("lifecycle")
             lifecycle = getattr(lifecycle, "value", lifecycle)
