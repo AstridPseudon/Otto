@@ -1168,6 +1168,7 @@ class ManagerJourneyService:
         }
         worker_due_rows = []
         ordinary_ids = []
+        ordinary_due_ids = []
         for schedule_id in known:
             due = self.server.due_port.read_due(schedule_id)
             if isinstance(due, Mapping) and due.get("schedule_id") == schedule_id and due.get("role") == "worker":
@@ -1176,7 +1177,10 @@ class ManagerJourneyService:
                 raise PermissionError("retained worker startup recovery has no exact worker Due")
             else:
                 ordinary_ids.append(schedule_id)
-        if not self.server.state.get("manager") and ordinary_ids:
+                if isinstance(due, Mapping) and due.get("schedule_id") == schedule_id:
+                    ordinary_due_ids.append(schedule_id)
+        if (not self.server.state.get("manager")
+                and (ordinary_due_ids or (app is None and ordinary_ids))):
             raise PermissionError("startup recovery has non-worker occurrences but no bound manager execution")
         known = ordinary_ids
         attention = getattr(self.server, "reminder_attention", None)
