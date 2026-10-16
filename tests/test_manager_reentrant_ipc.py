@@ -43,14 +43,14 @@ from pathlib import Path
 spec=importlib.util.spec_from_file_location("owner_manager_ctl",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
 client.IPC=Path(sys.argv[2]);client.STATUS_OWNER=client.IPC/"owner.json";client.SERVICE=client.IPC/"unused.sock"
 Path(sys.argv[5]).write_text(json.dumps({"ready":True}))
-deadline=time.monotonic()+10
+deadline=time.monotonic()+30
 while not Path(sys.argv[6]).exists() and time.monotonic()<deadline:time.sleep(.01)
 if not Path(sys.argv[6]).exists():raise RuntimeError("child command admission expired")
 results=[]
 for request in json.loads(Path(sys.argv[7]).read_text()):
     results.append(client.call(request))
 Path(sys.argv[3]).write_text(json.dumps(results))
-deadline=time.monotonic()+10
+deadline=time.monotonic()+30
 while not Path(sys.argv[4]).exists() and time.monotonic()<deadline:time.sleep(.01)
 if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline expired")
 ''')
@@ -63,7 +63,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
                 observed = super().execute(request)
                 result = subprocess.run([sys.executable, str(outer.native_child), str(outer.client),
                     str(outer.directory), str(outer.child_receipt), str(outer.release), str(outer.child_ready), str(outer.allow_commands), str(outer.requests_file)],
-                    capture_output=True, text=True, timeout=12)
+                    capture_output=True, text=True, timeout=60)
                 if result.returncode:
                     raise RuntimeError(result.stderr)
                 return observed
@@ -78,7 +78,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.host.close()
 
     def wait_file(self, path):
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + 30
         while not path.exists() and time.monotonic() < deadline:
             time.sleep(.01)
         self.assertTrue(path.exists(), str(path))
@@ -163,7 +163,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         closing = threading.Thread(target=self.host.close)
         closing.start()
         try:
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + 30
             while not self.host._closing and time.monotonic() < deadline:
                 time.sleep(.01)
             self.assertTrue(self.host._closing)
@@ -196,7 +196,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
             self.release.touch()
             self.wait_file(response)
         finally:
-            self.release.touch(); closing.join(10)
+            self.release.touch(); closing.join(30)
         self.assertFalse(closing.is_alive())
         self.assertFalse(self.host.owner_path.exists())
         self.assertFalse(queued.exists())

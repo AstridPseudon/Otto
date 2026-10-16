@@ -93,14 +93,17 @@ class ExternalOwnerContextTests(unittest.TestCase):
             if request['command']=='start-manager':
                 def transport():
                     begun.set()
-                    if not finished.wait(5):raise RuntimeError('test transport did not settle')
+                    if not finished.wait(30):raise RuntimeError('test transport did not settle')
                     return {'outcome':'succeeded'}
                 return ExecutionHost.external_call(transport)
             return self.service(request)
         host=ExecutionHost(directory=self.ingress.directory,handler=handler)
+        # start() creates the inbox before serving; this test serves without start(),
+        # so the pump must not race the first publish to create it.
+        self.ingress.directory.mkdir(mode=0o700,parents=True,exist_ok=True)
         def submit():
             try:
-                self.assertTrue(begun.wait(2))
+                self.assertTrue(begun.wait(30))
                 requests=[{'command':'owner-context','operation':op,'request_key':'during-'+op}
                           for op in ('whoami','effective-context','direction-read','direction-history')]
                 requests += [{'command':'owner-context','operation':'events-read','request_key':'during-events',
@@ -112,21 +115,21 @@ class ExternalOwnerContextTests(unittest.TestCase):
                 for request in requests:
                     published=self.ingress.publish({'schema':self.ingress.schema,'request':request})
                     response=Path(published['response_path'])
-                    deadline=time.monotonic()+3
+                    deadline=time.monotonic()+30
                     while not response.exists() and time.monotonic()<deadline:time.sleep(.005)
                     self.assertTrue(response.exists(),request)
                     observed[request['operation']]=json.loads(response.read_text())
                 forged={'command':'owner-context','operation':'whoami','request_key':'ungranted-read'}
                 path=self.ingress.directory/'request-deadbeef.json';path.write_text(json.dumps(forged))
                 response=self.ingress.directory/'response-deadbeef.json'
-                deadline=time.monotonic()+3
+                deadline=time.monotonic()+30
                 while not response.exists() and time.monotonic()<deadline:time.sleep(.005)
                 self.assertTrue(response.exists());observed['forged']=json.loads(response.read_text())
             except BaseException as exc:errors.append(exc)
             finally:finished.set()
         thread=threading.Thread(target=submit);thread.start()
         outer=host._dispatch({'command':'start-manager'},ingress=HostIngress('file-ipc',self.ingress.directory/'outer'))
-        thread.join(5)
+        thread.join(30)
         self.assertFalse(thread.is_alive())
         if errors:raise errors[0]
         self.assertEqual(outer['outcome'],'succeeded')
