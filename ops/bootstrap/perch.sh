@@ -12,7 +12,7 @@
 # restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
 # Stage 1 adds the scenario save-through-socket: the canary saved from its file through the owner socket from a cold
 # shell, read back, one task edited and saved again, then a save from the create's base, which is stale by then.
-# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,canary,readback,typed,edit,nothing,revision,history,stale,growth,stage2_scenario,stage2_canary,stage2_review,admission_presence,admit_order,unadmitted,reserve,worker_kill,store_snapshot,stage2_census
+# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,canary,readback,typed,edit,nothing,revision,history,stale,growth,stage2_scenario,stage2_canary,stage2_review,admission_presence,admit_order,unadmitted,reserve,worker_kill,store_snapshot,stage2_census,conflict,owner
 # seeds one fault per assertion kind, for a red run; each stage-1 fault is read by its own stage-1 assertion only.
 # Exit 0 when every assertion passes, 1 when one fails (the report is written either way), 2 on usage.
 set -euo pipefail
@@ -688,13 +688,13 @@ run_stage() {  # STAGE
         if [ "$FAKE" = true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "fake-harness"
         else
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "real-worker-adapter-unavailable"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "owner-managed-landing-conflict-not-wired"
         fi ;;
       owner-driven-canary)
         if [ "$FAKE" = true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "fake-harness-only"
         else
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "skipped: automatic dispatch adapter unavailable"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "owner-project-activation-and-dispatch-not-wired"
         fi ;;
       *) die "perch.sh has no scenario called $scenario" ;;
     esac
@@ -762,7 +762,7 @@ run_stage() {  # STAGE
   fi
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
-  for kind in census store restart admit canary readback typed edit nothing revision history stale growth stage2_scenario stage2_canary stage2_review admission_presence admit_order unadmitted reserve worker_kill store_snapshot stage2_census; do
+  for kind in census store restart admit canary readback typed edit nothing revision history stale growth stage2_scenario stage2_canary stage2_review admission_presence admit_order unadmitted reserve worker_kill store_snapshot stage2_census conflict owner; do
     # A fault whose observation this run does not have is named in seeded.txt, not left to look like a clean run.
     if has_fault "$kind"; then
       "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind" \

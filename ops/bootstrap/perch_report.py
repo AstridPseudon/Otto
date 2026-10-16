@@ -693,6 +693,13 @@ def seed(raw, kind):
         if len(kept) == len(lines):
             raise ValueError("no landing-conflict event in this run to seed a conflict fault into")
         path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+    elif kind == "owner":
+        path = raw / "events.tsv"
+        lines = read_lines(path)
+        kept = [line for line in lines if "\towner-dispatch-launched\t" not in line]
+        if len(kept) == len(lines):
+            raise ValueError("no owner-dispatch-launched event in this run to seed an owner-path fault into")
+        path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
     elif kind == "census":
         (raw / "census.up.txt").write_text("", encoding="utf-8")
     elif kind == "store":
@@ -1448,14 +1455,17 @@ def assertions(raw):
     add("timeline-events", failures, "every task has its events")
 
     if config.get("stage") == "4":
-        owner_note = notes.get("owner-driven-canary")
-        if config.get("fake"):
-            add("owner-driven-canary", [], "not proven by the fake harness",
-                skip="fake harness does not exercise Otto admission or dispatch")
-        else:
-            add("owner-driven-canary", [] if owner_note == "ran" else
-                [owner_note or "the scenario did not run through Otto"],
-                "the Otto admitted, dispatched, checked, completed and landed its canary task")
+        # A note saying that the scenario ran is not evidence. Require owner-side
+        # admission and automatic dispatch observations for the happy canary task,
+        # followed by its worker/check/landing lifecycle. Direct fake worktree runs
+        # do not satisfy this owner-driven acceptance assertion.
+        happy = next((task for task in config.get("tasks", []) if task.get("expect") == "landed"), None)
+        owner_kinds = {e["kind"] for e in events if happy and e["task"] == happy["name"]}
+        owner_required = {"owner-admitted", "owner-task-admitted", "owner-dispatch-launched",
+                          "lab-created", "turn", "done", "check-passed", "landed", "lab-deleted"}
+        add("owner-driven-canary", [] if owner_required <= owner_kinds else
+            ["owner journey missing " + ", ".join(sorted(owner_required - owner_kinds))],
+            "the owner admitted and automatically dispatched the canary through check, done, landing and lab deletion")
         conflict_task = next((task for task in config.get("tasks", []) if task.get("landing_conflict")), None)
         kinds = [e["kind"] for e in events if conflict_task and e["task"] == conflict_task["name"]]
         expected = {"lab-created", "turn", "done", "check-passed", "landing-conflict", "refused", "lab-deleted"}

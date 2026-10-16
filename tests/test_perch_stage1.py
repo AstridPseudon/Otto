@@ -359,6 +359,9 @@ class StageFourLandingAssertionTests(unittest.TestCase):
                                           "landing_conflict": True}])
         (raw / "config.json").write_text(json.dumps(config), encoding="utf-8")
         rows = [
+            ("canary-stage4-happy", "owner-admitted"),
+            ("canary-stage4-happy", "owner-task-admitted"),
+            ("canary-stage4-happy", "owner-dispatch-launched"),
             ("canary-stage4-happy", "lab-created"), ("canary-stage4-happy", "check-passed"),
             ("canary-stage4-happy", "landed"), ("canary-stage4-happy", "lab-deleted"),
             ("canary-stage4-conflict", "lab-created"), ("canary-stage4-conflict", "check-passed"),
@@ -381,6 +384,24 @@ class StageFourLandingAssertionTests(unittest.TestCase):
         self.assertEqual(got["timeline-events"], "pass", got)
         self.assertEqual(got["landing-conflict-refused"], "pass", got)
         self.assertEqual(got["landing-conflict-lab-deleted"], "pass", got)
+        self.assertEqual(got["owner-driven-canary"], "pass", got)
+
+    def test_missing_owner_dispatch_turns_only_owner_journey_assertion_red(self):
+        raw = self._raw()
+        before = {row["name"]: row["status"] for row in report.assertions(raw)}
+        report.seed(raw, "owner")
+        after = {row["name"]: row["status"] for row in report.assertions(raw)}
+        self.assertEqual(after["owner-driven-canary"], "fail", after)
+        self.assertEqual({name: state for name, state in after.items() if name != "owner-driven-canary"},
+                         {name: state for name, state in before.items() if name != "owner-driven-canary"}, after)
+
+    def test_direct_fake_worktree_events_do_not_count_as_owner_journey(self):
+        raw = self._raw()
+        events = raw / "events.tsv"
+        events.write_text("".join(line for line in events.read_text(encoding="utf-8").splitlines(keepends=True)
+                                   if "\towner-" not in line), encoding="utf-8")
+        got = {row["name"]: row["status"] for row in report.assertions(raw)}
+        self.assertEqual(got["owner-driven-canary"], "fail", got)
 
     def test_seeded_missing_conflict_turns_only_the_conflict_assertion_red(self):
         raw = self._raw()
