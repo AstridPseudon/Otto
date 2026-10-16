@@ -86,9 +86,11 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     else:
         # Rebuild every parsed field from the bundle's text. In particular,
         # callers cannot smuggle task rows parsed from a generated view beside
-        # an unrelated source file mapping.
+        # an unrelated source file mapping. Keep the supplied run record:
+        # portfolio apply adds canonical card_dependencies to it in memory.
         bundle = {**bundle_source, **parse_files(dict(bundle_source["files"]),
-                                                  raw_sha256=dict(bundle_source.get("raw_sha256") or {}))}
+                                                  raw_sha256=dict(bundle_source.get("raw_sha256") or {})),
+                  "run": bundle_source["run"]}
     run = bundle["run"]
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
