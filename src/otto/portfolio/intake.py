@@ -380,7 +380,7 @@ class OttoPortfolio:
                 "consumer_boundary": "finite serialized operations and reader only; no Store, DomainHandler, database path, SQL, callback, or generic writer",
                 "restart": "close the owner Store and reopen it through the same owner bootstrap before restart/read evidence",
                 "typed_task_batch": "use the finite operations.sheet_port.apply(project_ref, {tasks: [...]}, logical_request_key=..., actor=operations.binding.authenticated_actor(actor), base_revision=project_ref['revision']); read its returned project with batch.project.ref.to_dict()",
-                "protected_pending_fields": "edit_pending rejects tasks, documents, assignments, and receipts; use their typed finite ports",
+                "protected_pending_fields": "edit_pending rejects protected fields; a tasks-only edit authors inert pending tasks through the typed route; documents use their typed ports",
                 "admission_frame": "admit requires non-blank outcome, recipient, route, and authority text; records a decision without launching, dispatching, reserving budget, or creating a session",
                 "public_journey_example": "profiles/otto/ott06-public-journey.py contains a complete create/edit/read/replay/task-batch/admit/close-open/reopen sequence with every actor and request_id argument",
             },
@@ -1108,6 +1108,10 @@ class OttoPortfolio:
         task_values = _json_copy(list(tasks), field="tasks")
         if any(not isinstance(item, Mapping) for item in task_values):
             raise PortfolioError("each task must be an object")
+        # Authored tasks are inert: they never dispatch.  Only activation
+        # makes work runnable, so every caller of this route stays pending.
+        if any(item.get("lifecycle", "pending") != "pending" or item.get("withdraw") for item in task_values):
+            raise PortfolioError("tasks authored through the typed route must be inert: lifecycle pending and not withdrawn; activation alone starts work")
         revision = base_revision if base_revision is not None else project.get("revision")
         if not isinstance(revision, str) or not revision.strip():
             raise PortfolioError("task-list authoring requires the current project revision")
@@ -1308,6 +1312,13 @@ class OttoPortfolio:
 
     def edit_pending(self, project_ref: Any, edit: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         request_id, actor = self._request(request_id, actor)
+        if isinstance(edit, Mapping) and "tasks" in edit:
+            # Inert pending tasks are the one task route on a draft: a tasks-only
+            # edit goes through the typed ProjectSheet port, which refuses any
+            # lifecycle that could run.  Mixing tasks with field edits is refused.
+            if set(edit) != {"tasks"}:
+                raise PortfolioError("a pending edit that carries tasks must carry only tasks; author them through the typed task route")
+            return self.author_task_list(project_ref, edit["tasks"], actor=actor, request_id=request_id)
         return self._execute(
             "work.pending.edit",
             {"project_ref": _ref(project_ref), "edit": _edit(edit)},

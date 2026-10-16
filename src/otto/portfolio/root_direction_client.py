@@ -14,6 +14,17 @@ from herzchen.content.instructions import validate_instruction_content
 from .owner_readers import json_value
 
 
+def _refuse_task_authority(value: Any) -> None:
+    """Direction text never authors tasks; plan tasks enter Otto only through the typed task route."""
+    if isinstance(value, Mapping):
+        for name, item in value.items():
+            if 'task' in str(name).lower():
+                raise ValueError('direction content cannot author or edit tasks; use the typed task route')
+            _refuse_task_authority(item)
+    elif isinstance(value, list):
+        for item in value: _refuse_task_authority(item)
+
+
 class RootDirectionAuthoring:
     def __init__(self, service):
         self.service, self.owner = service, service.server.owner
@@ -29,6 +40,7 @@ class RootDirectionAuthoring:
         if operation == 'direction-draft':
             if set(payload) != {'content', 'expected_revision'}:
                 raise ValueError('direction-draft requires content and expected_revision only')
+            _refuse_task_authority(payload['content'])
             return self.service._authenticated_owner_context(
                 {'command': 'owner-context', 'operation': operation, 'request_key': key, **payload},
                 self.owner.owner_actor)
@@ -37,6 +49,7 @@ class RootDirectionAuthoring:
         # Validate the whole finite request before closing admission or mutation.
         content = payload['content']
         validate_instruction_content(content)
+        _refuse_task_authority(content)
         subject = ResourceRef.from_dict(root.payload['responsibility_ref'])
         direction = self.owner.direction_surface().read(subject, assignment_ref=root.ref, generation=root.generation)
         if (direction['latest_ref'] != payload['expected_direction_ref']
@@ -98,6 +111,7 @@ class RootDirectionAuthoring:
         return {**result, 'BASE_ref': revision.ref.to_dict(), 'draft_ref': pin,
                 'project_join_count': len(projects), 'tasks_created': False,
                 'allowances_changed': False, 'project_activation': False,
+                'dispatch': False, 'launch': False,
                 'client_binding_refresh_required': True}
 
 
