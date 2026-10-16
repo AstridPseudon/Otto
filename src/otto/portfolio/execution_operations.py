@@ -1223,10 +1223,88 @@ def prepare_current_assignment_occurrence(
     }
 
 
+def recheck_execution_admission(app: Any, due: Any) -> dict[str, Any]:
+    """Read current worker assignment, task admission, and dependency state.
+
+    This is the final, side-effect-free owner check before a queued worker is
+    allowed to enter its operation.  The ordinary ``_resources`` path still
+    performs its existing reconciliation and runtime checks afterwards.
+    Manager and orchestrator turns do not inherit worker task admission rules.
+    """
+    role = _value(due, "role")
+    result: dict[str, Any] = {"role": role, "schedule_id": _value(due, "schedule_id")}
+    if role != "worker":
+        result["worker_readiness"] = "not_applicable"
+        return result
+
+    target = _value(due, "target")
+    task_ref = target.get("task_ref") if isinstance(target, Mapping) else None
+    if task_ref is None:
+        raise OccurrencePreparationError("worker task reference is unavailable at admission")
+    if not isinstance(task_ref, Mapping):
+        raise OccurrencePreparationError("worker task reference is unavailable at admission")
+
+    assignment_ref = _value(due, "assignment_ref")
+    generation = _value(due, "generation")
+    current = app._current(assignment_ref, generation)
+    current_ref = current.ref.to_dict()
+    if current_ref != dict(assignment_ref):
+        raise OccurrencePreparationError("worker assignment changed before admission")
+
+    operations = app.portfolio.operations
+    reader = operations._owner_reader
+    graph = operations.port
+    from .dependencies import PortfolioDependencies
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.work.readiness import ready as work_ready
+
+    project_ref = target.get("project_ref")
+    if not isinstance(project_ref, Mapping):
+        raise OccurrencePreparationError("worker project reference is unavailable at admission")
+    task_identity = ResourceRef(task_ref["authority"], task_ref["kind"], task_ref["id"])
+    task = reader.get_record(task_identity)
+    if (task is None or any(getattr(task.ref, key) != task_ref.get(key)
+                            for key in ("authority", "kind", "id"))):
+        raise OccurrencePreparationError("worker task is unavailable at admission")
+    task_project = task.payload.get("project_ref")
+    if (not isinstance(task_project, Mapping)
+            or any(task_project.get(key) != project_ref.get(key)
+                   for key in ("authority", "kind", "id"))):
+        raise OccurrencePreparationError("worker task belongs to another project at admission")
+    dependencies = PortfolioDependencies(
+        graph, reader, actor=app.binding.authenticated_actor(app.actor),
+        owner_actor=getattr(operations, "dependency_owner_actor", None),
+    )
+    read_revision = getattr(reader, "get_revision", None)
+    if not callable(read_revision):
+        raise OccurrencePreparationError("worker admission revision reader is unavailable")
+    readiness = work_ready(
+        task,
+        read_record=reader.get_record,
+        read_revision=read_revision,
+        project_readiness=lambda ref: dependencies.readiness(ref, observe=False),
+    )
+    if readiness.get("ready") is not True:
+        raise OccurrencePreparationError(
+            "worker task dependencies or admission block launch: "
+            + json.dumps(readiness.get("blockers", []), sort_keys=True, separators=(",", ":"))
+        )
+    result.update({
+        "assignment_ref": current_ref,
+        "generation": generation,
+        "project_ref": dict(project_ref),
+        "task_ref": task.ref.to_dict(),
+        "worker_readiness": "ready",
+        "readiness": readiness,
+    })
+    return result
+
+
 __all__ = [
     "OccurrencePreparationError", "OWNER_TIMEOUT_MAX_SECONDS", "build_manager_callback_due",
     "compact_operation_status", "compact_project_status", "compact_task_acceptance_projection", "derive_manager_continuation_request", "manager_continuation_schedule_id",
     "complete_task_from_command",
     "prepare_current_assignment_occurrence", "read_project_progress_reports",
+    "recheck_execution_admission",
     "validate_owner_timeout_seconds",
 ]

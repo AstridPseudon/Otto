@@ -285,6 +285,49 @@ class ExecutionHost:
         finally:
             _DISPATCH_CONTEXT.value = previous
 
+    @staticmethod
+    def worker_facade_for_occurrence(
+        *, app: Any, due: Any, token: object, token_book: Any,
+        tools: Any, roles: Mapping[str, Any], assignment_context: Callable[[str], Mapping[str, Any]],
+        fallback: Any = None, ledger: Any = None,
+    ) -> Any:
+        """Build a worker facade bound to one current owner assignment.
+
+        The live TokenBook grant must name this Due's assignment ID and the
+        worker role. Landing check/done context is resolved again at call time
+        through the supplied owner resolver; worker arguments cannot choose
+        the lab, task, or landing pins.
+        """
+        from herzchen.fleet.tools import (
+            AllowlistedPort, FeedbackLedger, ToolFacade, TokenBook,
+        )
+        from herzchen.fleet.tools.facade import LandingOwnerPort
+
+        if not isinstance(token_book, TokenBook):
+            raise TypeError("a live owner TokenBook is required")
+        if getattr(due, "role", None) != "worker":
+            raise PermissionError("landing facade requires a worker occurrence")
+        grant = token_book.resolve(token)
+        assignment_ref = getattr(due, "assignment_ref", None)
+        generation = getattr(due, "generation", None)
+        if (grant.role != "worker" or not isinstance(assignment_ref, Mapping)
+                or grant.assignment != assignment_ref.get("id")):
+            raise PermissionError("worker token does not name this occurrence assignment")
+        app._current(assignment_ref, generation)
+
+        def resolve_context(assignment: str) -> Mapping[str, Any]:
+            if assignment != grant.assignment:
+                raise PermissionError("worker token cannot resolve another assignment")
+            app._current(assignment_ref, generation)
+            return assignment_context(assignment)
+
+        owner = LandingOwnerPort(resolve_context, fallback=fallback)
+        allowed = tuple(spec.operation for spec in tools)
+        return ToolFacade(
+            tools, roles, AllowlistedPort(owner, allowed), token_book,
+            FeedbackLedger() if ledger is None else ledger,
+        )
+
     def _owner_request(self, operation: Callable[[], Any]) -> Any:
         completed, result = threading.Event(), {}
         with self._lock:
@@ -540,27 +583,39 @@ class ExecutionHost:
                                           value["scope"]["role"] == "worker"))
             job = ready[0]
             try:
-                if self._execution_scope(job["app"], job["app"]._read(job["scope"]["schedule_id"])) != job["scope"]:
+                due = job["app"]._read(job["scope"]["schedule_id"])
+                if self._execution_scope(job["app"], due) != job["scope"]:
                     raise PermissionError("queued execution binding changed before admission")
+                from .execution_operations import recheck_execution_admission
+                admission_binding = recheck_execution_admission(job["app"], due)
                 self.capacity.ensure_turn(job["scope"]["schedule_id"])
             except Exception as error:
                 self._executions.pop(job["scope"]["schedule_id"])
                 job["completion"].resolve(error=error)
                 continue
             job["running"] = True
+            job["admission_binding"] = admission_binding
             self._forget_process_group(job["scope"]["schedule_id"])  # a new attempt owns its own group
             self._last_project = job["scope"]["project"]
             schedule = job["scope"]["schedule_id"]
 
             def finish(value: Any = None, error: BaseException | None = None, *, job=job, schedule=schedule) -> None:
+                if job.get("operation_started"):
+                    try:
+                        # Capture/settlement has already run through this owner.
+                        self.restore_execution(job["app"], job["app"]._read(schedule))
+                    except Exception as observed:
+                        self._capacity_holds[schedule] = job["scope"]
+                        error = error or observed
+                else:
+                    # Admission refusal has happened before an owner operation
+                    # or provider call. It releases only this provisional slot.
+                    self._capacity_holds.pop(schedule, None)
+                    self._forget_process_group(schedule)
                 try:
-                    # Capture/settlement has already run through this owner.
-                    self.restore_execution(job["app"], job["app"]._read(schedule))
-                except Exception as observed:
-                    self._capacity_holds[schedule] = job["scope"]
-                    error = error or observed
-                try:
-                    if schedule in self.capacity_holds():
+                    if not job.get("operation_started"):
+                        self.capacity.release_turn(schedule)
+                    elif schedule in self.capacity_holds():
                         self.capacity.ensure_turn(schedule, uncertain=True)  # custody keeps the units
                     elif schedule not in self._capacity_holds:
                         self.capacity.settle_turn(schedule)
@@ -572,6 +627,13 @@ class ExecutionHost:
 
             try:
                 def admitted_operation():
+                    due = job["app"]._read(schedule)
+                    if self._execution_scope(job["app"], due) != job["scope"]:
+                        raise PermissionError("execution binding changed at the final launch check")
+                    from .execution_operations import recheck_execution_admission
+                    if recheck_execution_admission(job["app"], due) != job["admission_binding"]:
+                        raise PermissionError("worker admission or dependency state changed before launch")
+                    job["operation_started"] = True
                     token = _ACTIVE_EXECUTION.set((self, job))
                     try:
                         return job["operation"]()

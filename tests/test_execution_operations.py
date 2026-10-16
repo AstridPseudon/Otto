@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from otto.attention import DueRecord
@@ -16,6 +17,7 @@ from otto.portfolio.execution_operations import (
     commit_local_checkpoint,
     derive_manager_continuation_request,
     prepare_current_assignment_occurrence,
+    recheck_execution_admission,
     read_project_progress_reports,
     validate_owner_timeout_seconds,
 )
@@ -79,6 +81,182 @@ class DuePort:
 
 class Tests(unittest.TestCase):
     def due(self): return Due(assignment_ref=BASE, target={"assignment_ref": BASE, "native_id": "session"})
+
+    def _worker_admission_fixture(self, *, admitted=True, revision_available=True,
+                                  project_dependency=None, task_blocked=False):
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.admission import content_digest
+
+        project_ref = {"authority": "owner", "kind": "work.project", "id": "p", "revision": "p-2"}
+        task_ref = {"authority": "owner", "kind": "work.task", "id": "t", "revision": "t-2"}
+        portfolio_ref = {"authority": "owner", "kind": "wrk.portfolio", "id": "portfolio"}
+        upstream_ref = {"authority": "owner", "kind": "work.project", "id": "upstream", "revision": "u-1"}
+        gate_ref = {"authority": "owner", "kind": "work.gate", "id": "gate", "revision": "g-1"}
+
+        class Record:
+            def __init__(self, ref, payload):
+                self.ref, self.payload = ResourceRef.from_dict(ref), payload
+
+        dependencies = [gate_ref] if project_dependency == "gate" else (
+            [upstream_ref] if project_dependency == "project" else [])
+        project = Record(project_ref, {"dependencies": dependencies, "metadata": {"otto_orchestrator": {
+            "portfolio_ref": portfolio_ref, "project_ref": project_ref,
+        }}})
+        upstream = Record(upstream_ref, {"dependencies": [], "lifecycle": "active",
+            "metadata": {"otto_orchestrator": {"portfolio_ref": portfolio_ref,
+                "project_ref": upstream_ref}}})
+        gate = Record(gate_ref, {"project_ref": upstream_ref, "lifecycle": "active"})
+        task_payload = {"project_ref": project_ref,
+            "dependencies": [gate_ref] if task_blocked else [], "title": "admitted task"}
+        task_payload["metadata_namespaces"] = {"work.admission": {
+            "revision": "t-1", "digest": content_digest(task_payload),
+        }}
+        if not admitted:
+            task_payload["title"] = "changed after admission"
+        task = Record(task_ref, task_payload)
+        reviewed = Record({**task_ref, "revision": "t-1"}, task_payload)
+
+        class Reader:
+            def get_record(self, ref):
+                if ref.id == "p": return project
+                if ref.id == "upstream": return upstream
+                if ref.id == "gate": return gate
+                if ref.id == "t": return task
+                return None
+            def get_revision(self, ref):
+                return reviewed if revision_available and ref.id == "t" and ref.revision == "t-1" else None
+
+        class Graph:
+            def list(self, **kwargs): return []
+
+        current = SimpleNamespace(ref=SimpleNamespace(to_dict=lambda: REF), payload={})
+        binding = SimpleNamespace(authenticated_actor=lambda actor: actor)
+        operations = SimpleNamespace(_owner_reader=Reader(), port=Graph(), dependency_owner_actor=None)
+        app = SimpleNamespace(
+            _current=lambda ref, generation: current,
+            portfolio=SimpleNamespace(operations=operations),
+            binding=binding, actor="manager",
+        )
+        due = SimpleNamespace(
+            role="worker", schedule_id="worker-due", generation=1,
+            assignment_ref=REF,
+            target={"project_ref": project_ref, "task_ref": task_ref},
+        )
+        return app, due, project, task
+
+    def test_last_moment_worker_admission_rechecks_current_assignment_and_dependencies(self):
+        app, due, _, _ = self._worker_admission_fixture()
+        snapshot = recheck_execution_admission(app, due)
+        self.assertEqual(snapshot["worker_readiness"], "ready")
+        self.assertEqual(snapshot["task_ref"]["id"], "t")
+
+        for options, message in (({"admitted": False}, "admission"),
+                                 ({"revision_available": False}, "admission"),
+                                 ({"project_dependency": "project"}, "dependencies"),
+                                 ({"project_dependency": "gate"}, "dependencies"),
+                                 ({"task_blocked": True}, "dependencies")):
+            app, due, _, _ = self._worker_admission_fixture(**options)
+            with self.assertRaisesRegex(OccurrencePreparationError, message):
+                recheck_execution_admission(app, due)
+
+    def test_host_final_gate_blocks_fresh_resume_and_retry_on_stale_task_admission(self):
+        from otto.portfolio.execution_host import ExecutionHost
+
+        with tempfile.TemporaryDirectory() as root:
+            for mode in ("fresh", "resume", "retry"):
+                app, due, _, _ = self._worker_admission_fixture(admitted=False)
+                due.schedule_id = "worker-" + mode
+                due.project_ref = "project-p"
+                due.profile = "workspace-write"
+                due.host_evidence = {"gateway_attempt": {"physical_session_id": "session-" + mode}}
+                app.runtime = SimpleNamespace(adapter=SimpleNamespace(
+                    owner_transport_only=True, worktree=root,
+                ))
+                app._read = lambda schedule, due=due: due
+                host = ExecutionHost(directory=Path(root) / mode, handler=lambda request: None,
+                                     bounded_transports=True)
+                calls = []
+                with self.assertRaises(OccurrencePreparationError):
+                    completion = host._owned(lambda: host.admit_execution(
+                        app, due, lambda: calls.append(mode),
+                    ))
+                    host._owned(host._start_ready_executions)
+                    if completion.error is not None:
+                        raise completion.error
+                self.assertEqual(calls, [])
+
+    def test_host_final_gate_rechecks_state_changed_after_queue_selection(self):
+        from otto.portfolio.execution_host import ExecutionHost
+
+        with tempfile.TemporaryDirectory() as root:
+            app, due, _, task = self._worker_admission_fixture()
+            due.project_ref = "project-p"
+            due.profile = "workspace-write"
+            due.host_evidence = {"gateway_attempt": {"physical_session_id": "queued-session"}}
+            app.runtime = SimpleNamespace(adapter=SimpleNamespace(
+                owner_transport_only=True, worktree=root,
+            ))
+            app._read = lambda schedule: due
+            host = ExecutionHost(directory=Path(root) / "ipc", handler=lambda request: None,
+                                 bounded_transports=True)
+            calls = []
+            completion = host._owned(lambda: host.admit_execution(app, due, lambda: calls.append("launched")))
+            original_ensure = host.capacity.ensure_turn
+            used_before = host.capacity.snapshot()["pool"]["cumulative_used_units"]
+
+            def mutate_after_selection(*args, **kwargs):
+                value = original_ensure(*args, **kwargs)
+                task.payload["title"] = "changed while queued"
+                return value
+
+            host.capacity.ensure_turn = mutate_after_selection
+            host._owned(host._start_ready_executions)
+            self.assertIsInstance(completion.error, OccurrencePreparationError)
+            self.assertEqual(calls, [])
+            self.assertEqual(host.capacity.snapshot()["turns"]["reserved"], 0)
+            self.assertEqual(host.capacity.snapshot()["pool"]["cumulative_used_units"], used_before)
+
+    def test_final_admission_gate_does_not_apply_worker_task_rules_to_managers(self):
+        due = SimpleNamespace(role="manager", schedule_id="manager-due")
+        self.assertEqual(recheck_execution_admission(None, due)["worker_readiness"], "not_applicable")
+
+    def test_worker_done_reaches_its_own_assignment(self):
+        from herzchen.fleet.tools import CHECK, DONE, FeedbackLedger, TokenBook, ToolSpec
+        from otto.portfolio.execution_host import ExecutionHost
+
+        calls = []
+        service = SimpleNamespace(
+            check=lambda lab, task: calls.append(("check", lab, task)) or {"feedback": True},
+            done=lambda lab, task, **pins: calls.append(("done", lab, task, pins)) or {"landed": True},
+        )
+        due = SimpleNamespace(role="worker", assignment_ref=REF, generation=7)
+        book = TokenBook()
+        token = book.issue(REF["id"], "worker")
+        app = SimpleNamespace(_current=lambda ref, generation: self.assertEqual((ref, generation), (REF, 7)))
+        facade = ExecutionHost.worker_facade_for_occurrence(
+            app=app, due=due, token=token, token_book=book,
+            tools=(ToolSpec("check", CHECK, "worker-check", args=("lab_name", "task_id")),
+                   ToolSpec("done", DONE, "worker-done", args=("summary",))),
+            roles={"worker": ("check", "done")},
+            assignment_context=lambda assignment: {
+                "service": service, "lab_name": "owned-lab", "task_id": assignment,
+                "candidate": "candidate", "criterion": "criterion",
+            },
+            ledger=FeedbackLedger(),
+        )
+        self.assertTrue(facade.call(token, "check", {"lab_name": "other", "task_id": "foreign"})["feedback"])
+        self.assertTrue(facade.call(token, "done", {"summary": "ready"})["submitted"])
+        self.assertEqual(calls[0], ("check", "owned-lab", REF["id"]))
+        self.assertEqual(calls[1][0:3], ("done", "owned-lab", REF["id"]))
+
+        foreign = book.issue("foreign-assignment", "worker")
+        with self.assertRaises(PermissionError):
+            ExecutionHost.worker_facade_for_occurrence(
+                app=app, due=due, token=foreign, token_book=book,
+                tools=(ToolSpec("check", CHECK, "worker-check"),),
+                roles={"worker": ("check",)},
+                assignment_context=lambda assignment: {"service": service, "lab_name": "owned-lab", "task_id": assignment},
+            )
 
     def test_current_assignment_is_reconciled_from_public_base(self):
         result = prepare_current_assignment_occurrence(
