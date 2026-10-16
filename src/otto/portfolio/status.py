@@ -134,13 +134,17 @@ def manager_activity(store: Any, project_ref: Any, *,
 def portfolio_status(session: Any, portfolio_ref: Any = None, *,
                      service_status: Optional[Mapping[str, Any]] = None,
                      owner_authorized: bool = False,
-                     now: Optional[datetime] = None) -> dict[str, Any]:
+                     now: Optional[datetime] = None,
+                     labs: Any = None) -> dict[str, Any]:
     """Read a host's own portfolio, or an owner's explicitly selected portfolio.
 
     Call under the owner service command lock. Readiness is computed without
     persisting observations, so status never manufactures project activity.
+    ``labs`` is an optional ``LabFleet``; its count is the lab count (``None``
+    when no fleet is supplied). ``slot_kinds`` are the responsibility slots.
     """
     from herzchen.kernel import LimitService
+    from otto.agents.host_profiles import SLOTS
     from .dependencies import PortfolioDependencies
     from .issue_loop import IssueLoop
 
@@ -247,4 +251,5 @@ def portfolio_status(session: Any, portfolio_ref: Any = None, *,
                 "allowances": {key: sum(pool[key] for pool in all_pools.values())
                                for key in ("cumulative_allowance_units", "used", "held", "remaining")}},
             "needs_orchestrator": attention, "observed_at": now.isoformat(), "read_only": True,
-            "provider_called": False}
+            "provider_called": False, "labs": {"count": None if labs is None else len(labs.names())},
+            "slot_kinds": list(SLOTS)}

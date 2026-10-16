@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 from herzchen.authoring import domain_contribution as authoring_contribution
 from herzchen.content import domain_contribution as content_contribution
-from herzchen.content.model import ContentRevision
+from herzchen.content.model import ContentDocument, ContentRevision
 from herzchen.content.packets import domain_contribution as packets
 from herzchen.contracts import ResourceRef, TransactionContext
 from herzchen.domains.assessment.module import contribution as assessment
@@ -57,13 +57,17 @@ class ShowTests(unittest.TestCase):
         self.store.register_domain_handler(domains)
         self.addCleanup(self.store.close)
         binding = HerzchenBindingConfig("a3-show-test", "fixture-credential")
-        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
-        self.portfolio = OttoPortfolio(self.owner.consumer_operations())
-        saved = self.portfolio.save_project(_file(_task("A"), _task("B", dependencies=["A"])),
-                                            actor="owner", request_id="show-seed")
+        seed = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
+        saved = OttoPortfolio(seed.consumer_operations()).save_project(
+            _file(_task("A"), _task("B", dependencies=["A"])), actor="owner", request_id="show-seed")
         self.assertEqual(saved["outcome"], "saved", saved)
         self.project_ref = saved["project_ref"]
         self.task_ref = saved["task_refs"]["B"]
+        # The read is scoped: the owner reads this one project through a grant for it.
+        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+            project_read_grant=ProjectReadGrant(binding.authenticated_actor("owner"),
+                (self.project_ref["id"],), "fixture-owner", "1"))
+        self.portfolio = OttoPortfolio(self.owner.consumer_operations())
 
     def _show(self, *argv, kind):
         out = StringIO()
@@ -120,18 +124,19 @@ class OpenTests(unittest.TestCase):
         self.editor = DocumentEditorHost(owner=self.owner, directory=self.f.root / "editor",
                                          secret=b"s" * 32, clock=lambda: 1000.0)
 
-    def run_open(self, *argv):
+    def run_open(self, step, *argv):
+        refs = () if step == "release" else ("--project-ref", json.dumps(self.project),
+                                             "--document-ref", json.dumps(self.doc))
         out = StringIO()
         with redirect_stdout(out):
-            code = cli.main(["open", *argv, "--project-ref", json.dumps(self.project),
-                             "--document-ref", json.dumps(self.doc)], editor_host=self.editor)
+            code = cli.main(["open", step, *refs, *argv], editor_host=self.editor)
         return code, json.loads(out.getvalue())
 
     def head(self):
         return self.owner.content.read(ResourceRef.from_dict(self.doc))["current_revision"]["revision"]
 
-    def start(self):
-        code, opened = self.run_open("start", "--request-key", "open")
+    def start(self, key="open"):
+        code, opened = self.run_open("start", "--request-key", key)
         self.assertEqual(code, 0, opened)
         self.assertEqual(opened["outcome"], "opened", opened)
         return json.dumps(opened["handle"])
@@ -153,7 +158,7 @@ class OpenTests(unittest.TestCase):
         handle = self.start()
         # A second writer publishes a newer revision after this session opened.
         ref = ResourceRef.from_dict(self.doc)
-        document = self.owner.content.read(ref)["document"]
+        document = ContentDocument.from_dict(self.f.store.get_identity(ref).payload["document"])
         other = ContentRevision(ref, "rev-other", {"text": "Other writer"}, self.owner.owner_actor,
                                 parent_revision=self.head())
         context = TransactionContext(self.owner.owner_actor, "other-writer",
@@ -163,13 +168,24 @@ class OpenTests(unittest.TestCase):
         self.run_open("autosave", "--request-key", "save", "--handle-json", handle,
                       "--buffer-json", json.dumps({"content": {"text": "Stale draft"}}))
         code, refused = self.run_open("finish", "--request-key", "stale-finish", "--handle-json", handle)
-        self.assertNotEqual(refused["outcome"], "finished", refused)
+        self.assertEqual(code, 4, refused)
+        self.assertEqual(refused["outcome"], "conflict", refused)
+        self.assertEqual(refused["error"]["code"], "stale_base", refused)
+        self.assertEqual(refused["current_revision"], other_head)
         self.assertFalse(refused["dat_revision_advanced"], refused)
         self.assertEqual(self.head(), other_head)
         code, released = self.run_open("release", "--request-key", "release", "--handle-json", handle)
         self.assertEqual(code, 0, released)
         self.assertTrue(released["nonpublishing"], released)
         self.assertEqual(self.head(), other_head)
+        # The correction path: reopen on the new head, then check in.
+        corrected = self.start("reopen")
+        self.run_open("autosave", "--request-key", "correct", "--handle-json", corrected,
+                      "--buffer-json", json.dumps({"content": {"text": "Corrected"}}))
+        code, finished = self.run_open("finish", "--request-key", "correct-finish", "--handle-json", corrected)
+        self.assertEqual(code, 0, finished)
+        self.assertTrue(finished["dat_revision_advanced"], finished)
+        self.assertNotEqual(self.head(), other_head)
 
 
 class StatusTests(unittest.TestCase):
