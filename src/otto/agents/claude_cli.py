@@ -29,9 +29,11 @@ from typing import Any, Callable, Mapping
 from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.contract import HostContractError
 from herzchen.fleet.custody import Custody
+from herzchen.fleet.tools import CHECK, DONE, TASK, ToolSpec
 # Re-exported: the owner-side adapters import these names from this module.
-from herzchen.fleet.hosts.claude import (MAX_LINE, MAX_STREAM, ClaudeBindingError, ClaudeStream, sandbox_policy,
-                                         sandbox_wrap, text, validate_effort, validate_max_turns, validate_tools)
+from herzchen.fleet.hosts.claude import (MAX_LINE, MAX_STREAM, WORKER_BUILTIN_TOOLS, ClaudeBindingError,
+                                         ClaudeStream, sandbox_policy, sandbox_wrap, text, validate_effort,
+                                         validate_max_turns, validate_tools)
 
 VERSION = "2.1.293 (Claude Code)"
 MAX_ARTIFACT = 65536
@@ -42,8 +44,23 @@ CLAUDE = get_host("claude-code")
 # client) and edits files. Agent/Task and web tools stay disabled for both, so no provider-native child
 # can escape owner custody. MCP is opt-in per turn and only through an owner-supplied McpGrant.
 PARSER_SCHEMA = "otto.claude-code-2.1.293.stream-json.v1"
-WORKER_TOOLS = ('Read', 'Write')
+WORKER_TOOLS = WORKER_BUILTIN_TOOLS
 MANAGER_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
+# The one MCP server a worker sees, and the owner calls behind it. Which role may call which tool is
+# ``ROLE_PROFILES[role]['calls']`` in claude_adapter. ``task`` reads the caller's own context over an
+# operation already on the owner's allowlist; ``check`` is feedback only (a worker's check never
+# counts as acceptance) and ``done`` only submits. Their operations are not on the allowlist yet, so
+# the allowlisted port refuses them until the owner puts them there.
+TOOL_SERVER = 'otto'
+TOOL_ENV_PREFIX = 'OTTO_TOOL_'
+TOOL_SPECS = (
+    ToolSpec('task', TASK, 'effective-context', description="Read this assignment's task and context."),
+    ToolSpec('check', CHECK, 'worker-check',
+             description='Run the checks on your work. The result is feedback only; it is never acceptance.'),
+    ToolSpec('done', DONE, 'worker-done', args=('summary',),
+             description='Submit your work as finished. The owner decides acceptance.'),
+)
+OWNER_OPERATIONS = ('effective-context',)
 
 
 def digest(value: Any) -> str:
@@ -137,7 +154,7 @@ class MacWriteScope:
     flags: tuple = ()
 
     def __init__(self, workspace: str, state_root: str, *, authentication: str = 'isolated',
-                 allow_subprocesses: bool = False, extra_write_roots: Any = ()):
+                 allow_subprocesses: bool = False, extra_write_roots: Any = (), exec_allow: tuple = ()):
         self.workspace = str(Path(workspace).resolve(strict=True))
         self.state_root = str(Path(state_root).resolve(strict=True))
         if (not Path(self.workspace).is_dir() or not Path(self.state_root).is_dir()
@@ -172,10 +189,18 @@ class MacWriteScope:
                 raise ClaudeBindingError('extra write roots must be existing unprotected directories')
             extra.append(str(resolved))
         self.extra_write_roots = tuple(dict.fromkeys(extra))
+        execs = []
+        for command in tuple(exec_allow):
+            resolved = os.path.realpath(command)
+            if not os.path.isfile(resolved):
+                raise ClaudeBindingError('exec allowances must be existing absolute file paths')
+            execs.append(resolved)
+        self.exec_allow = tuple(dict.fromkeys(execs))
         # The policy text belongs to the host contract: one fence, one place.
         self.policy = sandbox_policy(self.workspace, self.state_root, allow_subprocesses=allow_subprocesses,
                                      extra_write_roots=self.extra_write_roots,
-                                     auth_lock=self.auth_helper['lock'] if self.auth_helper else None)
+                                     auth_lock=self.auth_helper['lock'] if self.auth_helper else None,
+                                     exec_allow=self.exec_allow)
         self.pin = {"authentication": authentication, "auth_helper": self.auth_helper,
                     "identity": self.identity, "workspace": self.workspace,
                     "state_root": self.state_root, "policy_sha256": hashlib.sha256(self.policy.encode()).hexdigest(),
@@ -184,6 +209,9 @@ class MacWriteScope:
         if allow_subprocesses or self.extra_write_roots:
             # Leaf pins stay byte-identical; only an extended profile adds keys.
             self.pin.update(subprocesses=allow_subprocesses, extra_write_roots=list(self.extra_write_roots))
+        if self.exec_allow:
+            # Only a scope that grants its MCP server's binary adds the key; leaf pins stay identical.
+            self.pin['exec_allow'] = list(self.exec_allow)
         self.preflight_interpreter = dict(_preflight_interpreter())
 
     def preflight(self) -> Mapping[str, Any]:
@@ -264,9 +292,12 @@ class ClaudeCliTransport:
         """
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('CLAUDE_', 'ANTHROPIC_'))}
-        env.update(CLAUDE_CODE_SAFE_MODE='1',
-                   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
+        env.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
                    TMPDIR=self.scope.state_root, **getattr(self, 'extra_env', {}))
+        if self.mcp.empty:
+            # Safe mode also drops every MCP server, so a granted worker runs without it (see the host's
+            # confined leaf launch); everything else stays disabled through its flags.
+            env['CLAUDE_CODE_SAFE_MODE'] = '1'
         # An agent never inherits heavy-lease markers: the runner knows a nested call by its lease, not by these.
         env = {key: value for key, value in env.items() if not key.startswith('OTTO_HEAVY_')}
         if self.authentication == 'isolated':

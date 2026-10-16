@@ -19,7 +19,7 @@ from otto.agents.claude_adapter import ClaudeWorkerAdapter, ClaudeNativeResultVe
 from otto.portfolio.occurrence_reads import handle, result_view, read_captured_artifact
 
 
-def frames(prompt='input', cwd='/scope', tools=('Read', 'Write'), session='native-session', error=False):
+def frames(prompt='input', cwd='/scope', tools=('Edit', 'Glob', 'Grep', 'Read', 'Write'), session='native-session', error=False):
     return [
         {'type':'system','subtype':'init','session_id':session,'cwd':cwd,'model':'gpt-test',
          'permissionMode':'bypassPermissions','tools':list(tools),'mcp_servers':[],'plugins':[],'skills':[],'slash_commands':[]},
@@ -35,7 +35,7 @@ def frames(prompt='input', cwd='/scope', tools=('Read', 'Write'), session='nativ
 
 
 def parse(events, **kwargs):
-    p = ClaudeStream(prompt='input', cwd='/scope', model='gpt-test', tools=('Read','Write'), **kwargs)
+    p = ClaudeStream(prompt='input', cwd='/scope', model='gpt-test', tools=('Edit','Glob','Grep','Read','Write'), **kwargs)
     for event in events: p.feed(json.dumps(event).encode())
     return p
 
@@ -83,7 +83,7 @@ class ParserTests(unittest.TestCase):
 PROCESS = r'''
 import sys,json,os
 frame=json.loads(sys.stdin.readline());prompt=frame['message']['content'][0]['text'];session=frame.get('session_id') or 'native-session'
-init=prompt.startswith('Initialize this session only.');tools=[] if init else ['Read','Write'];cwd=os.getcwd()
+init=prompt.startswith('Initialize this session only.');tools=[] if init else ['Edit','Glob','Grep','Read','Write'];cwd=os.getcwd()
 def emit(e): print(json.dumps(e),flush=True)
 emit({'type':'system','subtype':'init','session_id':session,'cwd':cwd,'model':'gpt-test','permissionMode':'bypassPermissions','tools':tools,'mcp_servers':[],'plugins':[],'skills':[],'slash_commands':[]})
 emit({'type':'user','uuid':'input-init' if init else 'input-work','session_id':session,'message':{'role':'user','content':[{'type':'text','text':prompt}]}})

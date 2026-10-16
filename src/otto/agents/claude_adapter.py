@@ -18,8 +18,11 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from herzchen.fleet.hosts import McpGrant
+from herzchen.fleet.tools.pins import exec_allow_for, require_sole_server
 from .claude_cli import (ClaudeBindingError, ClaudeCliTransport, LauncherPin, MANAGER_TOOLS,
-                         MacWriteScope, MAX_ARTIFACT, PARSER_SCHEMA, WORKER_TOOLS, digest, file_digest, text)
+                         MacWriteScope, MAX_ARTIFACT, PARSER_SCHEMA, TOOL_SERVER, WORKER_TOOLS, digest,
+                         file_digest, text)
 from .herzchen_adapter import HerzchenCodexAdapter, _context_digest
 
 IDENTITY = 'otto.adapter.claude-code-2.1.293.leaf.v1'
@@ -29,9 +32,9 @@ _WORKER_EFFECTS = frozenset({'read_delivered_context', 'read_linked_sources', 'f
 # workspace-write-manager contract: canonical manager commands are reached
 # through the installed client (Bash), never by the provider directly.
 ROLE_PROFILES: Mapping[str, Mapping[str, Any]] = {
-    'worker': {'tools': WORKER_TOOLS, 'effect_profile': 'workspace-write-worker',
+    'worker': {'tools': WORKER_TOOLS, 'calls': ('task', 'check', 'done'), 'effect_profile': 'workspace-write-worker',
                'effects': _WORKER_EFFECTS, 'artifacts_required': True, 'max_turns': 8},
-    'manager': {'tools': MANAGER_TOOLS, 'effect_profile': 'workspace-write-manager',
+    'manager': {'tools': MANAGER_TOOLS, 'calls': (), 'effect_profile': 'workspace-write-manager',
                 'effects': _WORKER_EFFECTS | {'canonical_manager_commands'}, 'artifacts_required': False,
                 'max_turns': 200},
 }
@@ -262,7 +265,7 @@ class ClaudeWorkerAdapter:
                  roles: tuple = ('worker',), manager_transport: ClaudeCliTransport | None = None,
                  manager_write_roots: tuple = (), native_caller_socket: str | None = None,
                  native_process_observer: Any = None, manager_timeout_seconds: float = 1800,
-                 manager_env: Mapping[str, str] | None = None):
+                 manager_env: Mapping[str, str] | None = None, worker_mcp: McpGrant | None = None):
         self.owner, self.source = text(owner, 'owner'), text(source, 'source')
         self.worktree = str(Path(worktree).resolve(strict=True))
         self.writable_roots = ()
@@ -277,8 +280,12 @@ class ClaudeWorkerAdapter:
         self.native_caller_socket, self.native_process_observer = native_caller_socket, native_process_observer
         # Pin-only hook: called once per native work process for every role (see _compose_on_process).
         self.process_pin = None
-        self.transport = transport or ClaudeCliTransport(launcher_pin, MacWriteScope(self.worktree, state_root, authentication=authentication),
-            model=requested_model, reasoning=requested_reasoning, authentication=authentication)
+        if worker_mcp is not None:
+            require_sole_server(worker_mcp, TOOL_SERVER)
+        self.transport = transport or ClaudeCliTransport(launcher_pin,
+            MacWriteScope(self.worktree, state_root, authentication=authentication,
+                          exec_allow=() if worker_mcp is None else exec_allow_for(worker_mcp)),
+            model=requested_model, reasoning=requested_reasoning, authentication=authentication, mcp=worker_mcp)
         self.manager_transport = None
         if 'manager' in roles:
             self.manager_transport = manager_transport or ClaudeCliTransport(launcher_pin,
@@ -305,7 +312,9 @@ class ClaudeWorkerAdapter:
                 'parser_sha256': file_digest(Path(__file__).with_name('claude_cli.py')),
                 'binding_sha256': file_digest(Path(__file__)), 'scope': self._transport_for(role).scope.pin,
                 'model': self.requested_model, 'reasoning': self.requested_reasoning,
-                'authentication': self.transport.authentication, 'permission_mode': 'bypassPermissions',
+                'authentication': self.transport.authentication,
+                'permission_mode': ('dontAsk' if role == 'worker' and not getattr(self.transport, 'mcp', McpGrant()).empty
+                                    else 'bypassPermissions'),
                 'profile': 'workspace-write', 'role': 'worker-leaf' if role == 'worker' else role}
         if self.roles != ('worker',):
             value.update(roles=list(self.roles), tools=list(ROLE_PROFILES[role]['tools']))

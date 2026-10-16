@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -21,6 +22,24 @@ MAX_STREAM = 2 * 1024 * 1024
 # Agent/Task and web tools are not in this list, so no provider-native child is ever admitted. MCP is
 # opt-in per turn and only through a caller-supplied McpGrant.
 BUILTIN_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
+# The file tools a worker gets on every host (no Bash: a worker runs no commands of its own).
+WORKER_BUILTIN_TOOLS = ('Edit', 'Glob', 'Grep', 'Read', 'Write')
+# Tools whose --allowedTools rule is pinned to the workspace. The OS fence confines writes only (reads are
+# allowed by default), so a leaf's every tool that reads or lists files carries the path scope itself. A
+# profile that runs commands (Bash) keeps its recorded Glob/Grep rules.
+LEAF_SCOPED_TOOLS = frozenset({'Read', 'Write', 'Edit', 'Glob', 'Grep'})
+COMMAND_SCOPED_TOOLS = frozenset({'Read', 'Write', 'Edit'})
+# Live probe (ops/runs/TOOLS, CLI 2.1.301): under --dangerously-skip-permissions the --allowedTools path
+# scopes are inert and Read/Grep/Glob read any file the user can; under dontAsk a call outside the scope is
+# refused. --safe-mode also drops every MCP server, so a worker that is granted its one server runs without
+# it (settings, slash commands and every other MCP config stay off through --setting-sources,
+# --disable-slash-commands and --strict-mcp-config).
+CONFINED_PERMISSION_MODE = 'dontAsk'
+
+
+def confined_leaf(spec: Any, tools: Sequence[str]) -> bool:
+    """A command-free worker turn that has been granted its MCP server."""
+    return not spec.initializer and 'Bash' not in tools and not spec.mcp.empty
 EFFORTS = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
 PROTECTED_NAMES = ('.git', '.agents', '.codex', '.aws', '.claude')
 STRICT_EMPTY_MCP = ('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}')
@@ -66,20 +85,32 @@ def mcp_tool_names(grant: McpGrant) -> tuple:
 
 # -- the OS write fence ------------------------------------------------------------------------------
 def sandbox_policy(workspace: str, state_root: str, *, allow_subprocesses: bool = False,
-                   extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None) -> str:
+                   extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None,
+                   exec_allow: Sequence[str] = ()) -> str:
     """A Read/Write leaf may write its workspace and host state root, never its protected directories.
 
     A manager profile runs commands: its children inherit this same write fence, so only process
-    creation is relaxed, never file writes.
+    creation is relaxed, never file writes. ``exec_allow`` lets a leaf fork and exec exactly the listed
+    absolute binaries (its one MCP server) and nothing else; it has no effect when subprocesses are allowed.
     """
     quote = json.dumps
-    policy = ('(version 1)(allow default)(deny file-write*)'
-              + ('' if allow_subprocesses else '(deny process-fork)(deny process-exec)')
+    exec_allow = tuple(exec_allow)
+    for path in exec_allow:
+        if not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path:
+            raise ClaudeBindingError("exec_allow entries must be absolute paths")
+    leaf_exec = bool(exec_allow) and not allow_subprocesses
+    if leaf_exec:
+        spawn = '(deny process-exec)(allow process-fork)'
+    else:
+        spawn = '' if allow_subprocesses else '(deny process-fork)(deny process-exec)'
+    policy = ('(version 1)(allow default)(deny file-write*)' + spawn
               + ''.join('(allow file-write* (subpath ' + quote(root) + '))'
                         for root in (workspace, state_root, *extra_write_roots))
               + '(allow file-write* (literal "/dev/null"))'
               + ''.join('(deny file-write* (subpath ' + quote(str(Path(workspace) / name)) + '))'
                         for name in PROTECTED_NAMES))
+    if leaf_exec:
+        policy += ''.join('(allow process-exec (literal ' + quote(path) + '))' for path in exec_allow)
     if auth_lock:
         policy += (('' if allow_subprocesses else
                     '(allow process-fork)(allow process-exec (literal "/usr/bin/security"))')
@@ -103,15 +134,20 @@ class SandboxFence:
     flags: tuple = ()
 
     def __init__(self, workspace: str, state_root: str, *, allow_subprocesses: bool = False,
-                 extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None) -> None:
+                 extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None,
+                 exec_allow: Sequence[str] = ()) -> None:
         if type(allow_subprocesses) is not bool:
             raise ClaudeBindingError('allow_subprocesses must be explicit')
         self.workspace = workspace
         self.policy = sandbox_policy(workspace, state_root, allow_subprocesses=allow_subprocesses,
-                                     extra_write_roots=tuple(extra_write_roots), auth_lock=auth_lock)
+                                     extra_write_roots=tuple(extra_write_roots), auth_lock=auth_lock,
+                                     exec_allow=tuple(exec_allow))
         self.pin = {"kind": self.kind, "workspace": workspace, "state_root": state_root,
                     "subprocesses": allow_subprocesses, "extra_write_roots": list(extra_write_roots),
                     "policy_sha256": hashlib.sha256(self.policy.encode()).hexdigest()}
+        if exec_allow:
+            # Pins without an exec allowance stay byte-identical; only a granted server adds the key.
+            self.pin["exec_allow"] = list(exec_allow)
 
     def wrap(self, argv: Sequence[str], *, initializer: bool = False) -> list:
         return sandbox_wrap(self.policy, self.workspace, argv, initializer=initializer)
@@ -125,8 +161,9 @@ class ClaudeStream:
                  session: str | None = None, on_init: Callable[..., Any] | None = None,
                  on_input: Callable[..., Any] | None = None,
                  on_usage: Callable[..., Any] | None = None, phase: str = "work",
-                 mcp_servers: tuple = (), mcp_tools: tuple = ()):
+                 mcp_servers: tuple = (), mcp_tools: tuple = (), permission_mode: str = 'bypassPermissions'):
         self.prompt, self.cwd, self.model, self.tools = prompt, cwd, model, tools
+        self.permission_mode = permission_mode
         self.session, self.on_init, self.on_input = session, on_init, on_input
         self.mcp_servers, self.mcp_tools = tuple(mcp_servers), tuple(mcp_tools)
         from herzchen.usage.capture import UsageStream
@@ -171,7 +208,7 @@ class ClaudeStream:
                 raise ClaudeBindingError("duplicate native initialization")
             session = text(event.get('session_id'), 'native session')
             if (self.session is not None and session != self.session or event.get('cwd') != self.cwd
-                    or event.get('model') != self.model or event.get('permissionMode') != 'bypassPermissions'
+                    or event.get('model') != self.model or event.get('permissionMode') != self.permission_mode
                     or not isinstance(event.get('tools'), list)
                     or sorted(event['tools']) != sorted((*self.tools, *self.mcp_tools))
                     or not self._servers_match(event.get('mcp_servers')) or event.get('plugins', []) != []
@@ -304,7 +341,7 @@ class ClaudeHost(HostKind):
     kind = "claude-code"
     profiles = frozenset({"workspace-write"})
     option_names = frozenset({"tools", "allowed_tools", "max_turns", "state_root", "allow_subprocesses",
-                              "extra_write_roots", "auth_lock"})
+                              "extra_write_roots", "auth_lock", "exec_allow"})
 
     @staticmethod
     def tools_for(spec: TurnSpec) -> tuple:
@@ -322,7 +359,8 @@ class ClaudeHost(HostKind):
         return SandboxFence(spec.workspace, spec.options["state_root"],
                             allow_subprocesses=spec.options.get("allow_subprocesses", False),
                             extra_write_roots=tuple(spec.options.get("extra_write_roots", ())),
-                            auth_lock=spec.options.get("auth_lock"))
+                            auth_lock=spec.options.get("auth_lock"),
+                            exec_allow=tuple(spec.options.get("exec_allow", ())))
 
     def render_mcp(self, grant: McpGrant, spec: TurnSpec) -> tuple:
         if grant.empty or spec.initializer:
@@ -342,14 +380,20 @@ class ClaudeHost(HostKind):
         reasoning = validate_effort(spec.reasoning)
         tools = self.tools_for(spec)
         max_turns = validate_max_turns(spec.options.get("max_turns", 8))
+        confined = confined_leaf(spec, tools)
         command = [spec.executable, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
-                   '--verbose', '--replay-user-messages', '--safe-mode', '--setting-sources', '', *mcp_flags,
-                   '--disable-slash-commands', '--dangerously-skip-permissions', '--tools', ','.join(tools),
+                   '--verbose', '--replay-user-messages', *(() if confined else ('--safe-mode',)),
+                   '--setting-sources', '', *mcp_flags, '--disable-slash-commands',
+                   *(('--permission-mode', CONFINED_PERMISSION_MODE) if confined
+                     else ('--dangerously-skip-permissions',)), '--tools', ','.join(tools),
                    '--model', spec.model, '--effort', reasoning,
                    '--max-turns', '1' if spec.initializer else str(max_turns)]
         if not spec.initializer:
-            command.extend(['--allowedTools', *(name + '(' + spec.workspace + '/**)'
-                                                if name in {'Read', 'Write', 'Edit'} else name for name in tools),
+            scoped = COMMAND_SCOPED_TOOLS if 'Bash' in tools else LEAF_SCOPED_TOOLS
+            # A rule's "/path" is project-relative; only "//path" names an absolute directory (probed).
+            root = ('/' if confined else '') + spec.workspace
+            command.extend(['--allowedTools', *(name + '(' + root + '/**)'
+                                                if name in scoped else name for name in tools),
                             *mcp_tool_names(spec.mcp)])
         if spec.session is not None:
             command.extend(['--resume', text(spec.session, 'exact native session')])
@@ -369,4 +413,6 @@ class ClaudeHost(HostKind):
             prompt=spec.prompt, cwd=spec.workspace, model=spec.model, tools=self.tools_for(spec),
             session=spec.session, on_init=callbacks.get("on_init"), on_input=callbacks.get("on_input"),
             on_usage=callbacks.get("on_usage"), phase="initializer" if spec.initializer else "work",
-            mcp_servers=tuple(s.name for s in grant.servers), mcp_tools=mcp_tool_names(grant)))
+            mcp_servers=tuple(s.name for s in grant.servers), mcp_tools=mcp_tool_names(grant),
+            permission_mode=(CONFINED_PERMISSION_MODE if confined_leaf(spec, self.tools_for(spec))
+                             else 'bypassPermissions')))

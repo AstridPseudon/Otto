@@ -45,7 +45,8 @@ def native_state_root(config: Mapping[str, Any]) -> Path:
 def compose_claude(config: Mapping[str, Any], *, worktree: str, model: str, reasoning: str,
                    roles: tuple = ("worker", "manager"), owner: str = "otto-host",
                    native_caller_socket: Optional[str] = None, native_process_observer: Any = None,
-                   manager_write_roots: tuple = (), manager_env: Optional[Mapping[str, str]] = None) -> Any:
+                   manager_write_roots: tuple = (), manager_env: Optional[Mapping[str, str]] = None,
+                   worker_mcp: Any = None) -> Any:
     """Compose the declared Claude Code adapter with real pins (no launch)."""
     from otto.agents.claude_adapter import ClaudeWorkerAdapter
     from otto.agents.claude_cli import LauncherPin
@@ -60,7 +61,7 @@ def compose_claude(config: Mapping[str, Any], *, worktree: str, model: str, reas
         state_root=str(native_state_root(config)), requested_model=model, requested_reasoning=reasoning,
         roles=roles, authentication=settings.get("authentication", "existing-user"),
         native_caller_socket=native_caller_socket, native_process_observer=native_process_observer,
-        manager_write_roots=tuple(manager_write_roots), manager_env=manager_env)
+        manager_write_roots=tuple(manager_write_roots), manager_env=manager_env, worker_mcp=worker_mcp)
 
 
 def adapter_selection(config: Mapping[str, Any], *, worktree: Optional[str] = None) -> Any:
