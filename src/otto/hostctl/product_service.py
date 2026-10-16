@@ -128,7 +128,9 @@ class SharedLaneRelay:
 
     def __init__(self, home: Path, host: Any) -> None:
         self.home = Path(home)
-        self.grants_dir = lanes.private_dir(self.home / 'run' / 'shared-grants')
+        # Created with the first grant and removed at close once empty, so an owner that relayed
+        # nothing leaves nothing behind.
+        self.grants_dir = self.home / 'run' / 'shared-grants'
         self.host = host
         self.service: Any = None  # set once the ProjectOwnerService exists
 
@@ -143,6 +145,7 @@ class SharedLaneRelay:
             view.server.grant_reply(manager_token, request, principal)
         # The router's owner_route trusts only this grant: it names the exact
         # view and the digest of the exact request that is about to be relayed.
+        lanes.private_dir(self.grants_dir)
         lanes.atomic_json(self.grants_dir / (manager_token + '.json'),
                           {'schema': GRANT_SCHEMA, 'token': manager_token, 'view': key,
                            'digest': request_digest(request), 'command': command})
@@ -167,6 +170,13 @@ class SharedLaneRelay:
         path.unlink(missing_ok=True)  # single use
         return grant['view']
 
+    def release(self) -> None:
+        """Remove the grants directory when no grant is outstanding; a pending grant is retained custody."""
+        try:
+            self.grants_dir.rmdir()
+        except OSError:
+            pass
+
 
 @dataclass
 class ProductOwner:
@@ -174,6 +184,7 @@ class ProductOwner:
     host: Any
     router: Any
     service: Any
+    relay: Any
     root: Any
     sessions: list
     views: dict
@@ -283,12 +294,13 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
 
         # The caller socket serves launched managers, so an owner with no project view binds none
         # (and the 103-byte socket address limit applies only once a project is composed).
-        # Reservations live in the owner Store (limits stream), not in memory.
+        # Reservations stay in memory, as in the live start: a Store-backed ledger would write a
+        # pool event into an empty Store at first start and pin the policy across restarts.
         host = ExecutionHost(directory=host_dir, handler=lambda request: None,
                              owner_path=home / 'run' / 'shared-host-owner.json',
                              socket_path=socket_path(config, 'shared-project-services') if resolved else None,
                              owner_file_compatibility=True, bounded_transports=True,
-                             capacity_policy=policy, capacity_store=store)
+                             capacity_policy=policy)
         if hold_dispatch:
             host.hold_admission()
 
@@ -340,7 +352,7 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
                                  'composition_source_next_append': _source_next_append(store)})
         checkpoint('composition-complete')
         trace['store']['source_next_append'] = _source_next_append(store)
-        return ProductOwner(store=store, host=host, router=router, service=service, root=root,
+        return ProductOwner(store=store, host=host, router=router, service=service, relay=relay, root=root,
                             sessions=sessions, views=views, skipped=skipped, reconciliation=reconciliation,
                             policy=policy, hold_dispatch=hold_dispatch, stale_stop=stale_stop)
     except BaseException:
@@ -442,6 +454,7 @@ def run_product_service(config: Mapping[str, Any], *, emit: Callable[[Mapping[st
             finally:
                 close_store(owner.store, seal=orderly and owner.store.admission_report.get('mode') == 'clean-close',
                             trace=trace)
+        owner.relay.release()
         # Only after the Store is released may the status say closed.
         owner.service.finalize_closed()
         closed = {'outcome': 'closed'}

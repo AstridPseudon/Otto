@@ -458,6 +458,47 @@ class EmptyOwnerTests(ProductFixture):
         self.assertEqual((ready["attached_projects"], ready["skipped_projects"], ready["dues_started"]), ([], [], 0))
         self.assertEqual(read_status(status_path(Path(self.home)))["outcome"], "running")
 
+    def _event_count(self):
+        from herzchen.kernel.store import Store
+        from otto.hostctl.owner import host_domains
+        config = host_config.load(Path(self.home))
+        target = config["store"]
+        store = Store.open(target["path"], authority=target["authority"], expected_domains=host_domains(),
+                           expected_domain_digest=target["domain_descriptor_digest"])
+        try:
+            return len(store.list_events())
+        finally:
+            store.close()
+
+    def test_a_start_and_orderly_stop_leave_the_store_and_the_run_folder_as_they_were(self):
+        # Staging stage 0 expects an empty Store after a start, and `down` must leave only the
+        # files a closed Otto leaves in home/run (perch_report.AT_REST_RUN).
+        self._init()
+        self._stop_plain_service()
+        before = self._event_count()
+        events, thread = self._product()
+        self._ready_doc(events)
+        stop_marker(Path(self.home)).write_text("stop\n")
+        thread.join(timeout=60)
+        self.assertEqual(self.product_result["value"]["outcome"], "closed")
+        self.assertEqual(self._event_count(), before, "the product start must not write to the Store")
+        left = sorted(path.name for path in (Path(self.home) / "run").iterdir())
+        self.assertEqual(left, ["generation", "service-stop", "service.json"])
+
+    def test_an_unrouted_request_is_refused_before_any_grant_exists(self):
+        self._prepared()
+        events, thread = self._product()
+        self._ready_doc(events)
+        self.assertFalse((Path(self.home) / "run" / "shared-grants").exists())
+        host_dir = Path(self.home) / "shared-host"
+        token = lanes.new_token()
+        lanes.submit(host_dir, {"command": "read-help"}, token=token)
+        reply = host_dir / ("response-" + token + ".json")
+        deadline = time.monotonic() + 30
+        while not reply.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(json.loads(reply.read_text())["outcome"], "error")
+
     def test_unknown_project_is_refused(self):
         self._init()
         self._stop_plain_service()
