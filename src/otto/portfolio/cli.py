@@ -12,11 +12,14 @@ import argparse
 import json
 from typing import Any, Mapping, Optional, Sequence
 
+from herzchen.authoring.sessions import InvalidSessionError
+
 from .assessment import OttoAssessment
 from .intake import OttoPortfolio, PortfolioError
 from .operating_brief import OperatingBriefError, prepare_canonical_operating_brief
 from .resource_sync import ResourceSyncError, resolve_assignment_attachments
 from .observability_views import VIEW_PRESETS
+from .show import open_session, show_project
 
 
 TASK_VIEWS = ("all", "upcoming", "ready", "blocked", "in_progress", "completed")
@@ -54,6 +57,44 @@ def build_parser() -> argparse.ArgumentParser:
     save.add_argument("--actor", required=True)
     save.add_argument("--request-id", default=None, help="logical request key (default: derived from the file's content)")
     _add_format(save)
+
+    show = sub.add_parser("show", help="read one project or task; the output is the same on the Claude and Codex lanes")
+    show_sub = show.add_subparsers(dest="show_command", required=True)
+    show_project_parser = show_sub.add_parser("project", help="one project's row and its task rows")
+    show_project_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
+    show_project_parser.add_argument("--actor", required=True)
+    show_project_parser.add_argument("--limit", type=int, default=100)
+    _add_format(show_project_parser)
+    show_task_parser = show_sub.add_parser("task", help="one task's detail")
+    show_task_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
+    show_task_parser.add_argument("--task-ref", required=True, help="canonical task ResourceRef as JSON")
+    show_task_parser.add_argument("--actor", required=True)
+    show_task_parser.add_argument("--limit", type=int, default=100)
+    _add_format(show_task_parser)
+
+    open_parser = sub.add_parser("open", help="open, autosave, finish or release one project document's authoring session through the owner editor")
+    open_sub = open_parser.add_subparsers(dest="open_command", required=True)
+    for step, step_help in (
+        ("start", "open the authoring session and return its handle"),
+        ("autosave", "save the editor buffer into the open session"),
+        ("finish", "check the session in; a stale base is refused and changes nothing"),
+        ("release", "close the open session by its handle without publishing"),
+    ):
+        step_parser = open_sub.add_parser(step, help=step_help)
+        step_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
+        step_parser.add_argument("--document-ref", required=True, help="canonical document ResourceRef as JSON")
+        step_parser.add_argument("--request-key", required=True)
+        if step == "start":
+            step_parser.add_argument("--inactivity-seconds", type=float, default=None)
+        else:
+            step_parser.add_argument("--handle-json", required=True, help="the handle that open returned, as JSON")
+        if step == "autosave":
+            step_parser.add_argument("--buffer-json", required=True, help="the editor's current JSON content value")
+        _add_format(step_parser)
+
+    status = sub.add_parser("status", help="portfolio status: projects, tasks, pool, managers, lab count and slot kinds")
+    status.add_argument("--portfolio-ref", help="canonical portfolio ResourceRef as JSON (default: this host's portfolio)")
+    _add_format(status)
 
     create = sub.add_parser("create-pending", help="create an inert pending project (legacy command)")
     create.add_argument("--actor", required=True)
@@ -967,6 +1008,9 @@ def main(
     observability_views: Any = None,
     observability_grant: Any = None,
     vision_operations: Any = None,
+    status_session: Any = None,
+    labs: Any = None,
+    editor_host: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1097,6 +1141,33 @@ def main(
                 result = _request_error(str(exc))
             else:
                 result = portfolio.save_project(document, actor=args.actor, request_id=args.request_id)
+        elif args.command == "show":
+            if args.show_command == "project":
+                result = show_project(portfolio, actor=args.actor,
+                                      project_ref=_parse_ref(args.project_ref, "project_ref"), limit=args.limit)
+            else:
+                project_ref = _parse_ref(args.project_ref, "project_ref")
+                task_ref = _parse_ref(args.task_ref, "task_ref")
+                if project_ref.get("kind") != "work.project" or task_ref.get("kind") != "work.task":
+                    result = _request_error("show task requires a work.project ref and work.task ref")
+                else:
+                    result = _task_detail(portfolio, actor=args.actor, project_ref=project_ref,
+                                          task_ref=task_ref, limit=args.limit)
+        elif args.command == "open":
+            if editor_host is None:
+                result = _surface_unavailable(
+                    "otto.open.v1", "editor_host_unavailable",
+                    "Inject the owner's DocumentEditorHost at cli.main(..., editor_host=...).",
+                )
+            else:
+                try:
+                    result = open_session(editor_host, args)
+                except PermissionError as exc:
+                    result = _request_error(str(exc), code="denied")
+                except InvalidSessionError as exc:
+                    result = _request_error(str(exc), code="session_not_open")
+        elif args.command == "status":
+            result = _status_command(args, status_session, labs)
         elif args.command == "create-pending":
             try:
                 edit = json.loads(args.edit_json)
@@ -1177,6 +1248,17 @@ def main(
         result = _request_error(str(exc))
     _emit(result, getattr(args, "format", "json"))
     return _exit_code(result)
+
+
+def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[str, Any]:
+    if session is None:
+        return _surface_unavailable(
+            "otto.portfolio-status.v1", "status_session_unavailable",
+            "Inject the owner session at cli.main(..., status_session=...).",
+        )
+    from .status import portfolio_status
+    selected = _parse_ref(args.portfolio_ref, "portfolio_ref") if args.portfolio_ref else None
+    return portfolio_status(session, selected, labs=labs)
 
 
 def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[str, Any]:
