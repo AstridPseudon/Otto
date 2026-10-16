@@ -8,6 +8,8 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -23,7 +25,10 @@ spec = importlib.util.spec_from_file_location("perch_report", BOOTSTRAP / "perch
 perch_report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(perch_report)
 
-NAMES = ("staging-ready", "no-leaked-process", "timeline-events", "labs-left-behind", "harness-pool-within-limit")
+NAMES = ("staging-ready", "no-leaked-process", "timeline-events", "labs-left-behind", "harness-pool-within-limit",
+         "store-matches-stage", "staging-at-rest-clean", "status-while-up", "status-after-kill-is-stale",
+         "restart-after-kill-keeps-store", "status-after-stop", "refused-start-names-its-reason")
+LIFECYCLE = NAMES[-5:]
 
 
 def clean_raw(root):
@@ -32,6 +37,7 @@ def clean_raw(root):
     raw.mkdir(parents=True, exist_ok=True)
     (raw / "config.json").write_text(json.dumps({
         "stage": "0", "fake": True, "check": "check", "pool_limit": 1, "faults": [], "staging_restart": 0,
+        "store": {"store_events": 0, "store_tasks": 0, "store_bytes_max": 262144},
         "staging_sha": "a" * 40, "canon_main_sha": "b" * 40, "started_at": "2026-10-16T10:00:00Z",
         "finished_at": "2026-10-16T10:05:00Z",
         "tasks": [{"name": "canary-add-sub", "expect": "landed"}, {"name": "canary-refused", "expect": "refused"}],
@@ -66,6 +72,29 @@ def clean_raw(root):
     (raw / "timeline.json").write_text(json.dumps({"store_events": 0, "tasks": [], "error": None}), encoding="utf-8")
     for name in ("report-product.txt", "report-canary.txt"):
         (raw / name).write_text("landed on canon/main:\n  abc 2026-10-16 Land canary-add-sub\n", encoding="utf-8")
+    # The staging-lifecycle scenario ran: a status while up, a KILL, a restart, a refused second start, a stop.
+    store = {"error": None, "bytes": 139264, "page_size": 4096, "page_count": 34, "freelist_count": 0,
+             "integrity": "ok", "rows": {"identities": 16, "store_metadata": 11}}
+    for name, value in {
+        "staging-up.json": {"pid": 4242, "sha": "a" * 40},
+        "installation.json": {"store": {"authority": "otto-staging-owner-v1"}},
+        "status-up.json": {"outcome": "running", "holder": {"pid": 4242}, "holder_alive": True, "generation": 1,
+                           "store": {"authority": "otto-staging-owner-v1"}},
+        "status-killed.json": {"outcome": "stale", "holder_alive": False, "generation": 1, "holder": {"pid": 4242}},
+        "status-restarted.json": {"outcome": "running", "holder_alive": True, "generation": 2, "holder": {"pid": 4343}},
+        "status-stopped.json": {"outcome": "closed", "generation": 2},
+        "store-before-kill.json": store, "store-restarted.json": dict(store), "store-at-rest.json": dict(store),
+        "refused.json": {"exit_code": 3, "at": "2026-10-16T10:02:00Z", "error": {"code": "owner_service_running"},
+                         "entry": {"outcome": "unavailable", "error": {"code": "owner_service_running"}}, "log_tail": []},
+        "at-rest.json": {"home_run": ["generation", "service-stop", "service.json"], "service_state": "closed",
+                         "sockets": [], "store_holders": {"staging.store": [], "staging.store.fnd-owner.lock": []},
+                         "perch_canary": [], "error": None},
+    }.items():
+        (raw / name).write_text(json.dumps(value), encoding="utf-8")
+    (raw / "generation-up.txt").write_text("1\n", encoding="utf-8")
+    (raw / "census.up.txt").write_text("4242 4242 0:03 /opt/homebrew/bin/python3.11 -c x --home /x/home\n", encoding="utf-8")
+    (raw / "notes.json").write_text(json.dumps({"staging-lifecycle": "ran", "restart_after_kill_rc": 0,
+                                                "refused_start_rc": 3}), encoding="utf-8")
     return raw
 
 
@@ -78,6 +107,14 @@ def edit(raw, name, fn):
     path.write_text(fn(path.read_text(encoding="utf-8")), encoding="utf-8")
 
 
+def patch(raw, name, fn):
+    """Change one JSON observation of a run in place."""
+    path = Path(raw) / name
+    value = json.loads(path.read_text(encoding="utf-8"))
+    fn(value)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
 SEEDED_FAULTS = {
     "staging-ready": lambda raw: edit(raw, "config.json", lambda t: t.replace('"staging_restart": 0', '"staging_restart": 1')),
     "no-leaked-process": lambda raw: edit(
@@ -86,6 +123,13 @@ SEEDED_FAULTS = {
         line for line in t.splitlines(keepends=True) if "check-passed" not in line)),
     "labs-left-behind": lambda raw: edit(raw, "leftovers.txt", lambda t: t + "worktree /x/labs/canary-refused\n"),
     "harness-pool-within-limit": lambda raw: edit(raw, "samples.jsonl", lambda t: t.replace('"pool_units": 1', '"pool_units": 2')),
+    "store-matches-stage": lambda raw: perch_report.seed(raw, "store"),
+    "staging-at-rest-clean": lambda raw: patch(raw, "at-rest.json", lambda v: v["home_run"].append("c-leftover.sock")),
+    "status-while-up": lambda raw: perch_report.seed(raw, "census"),
+    "status-after-kill-is-stale": lambda raw: patch(raw, "status-killed.json", lambda v: v.update(outcome="serving", holder_alive=True)),
+    "restart-after-kill-keeps-store": lambda raw: perch_report.seed(raw, "restart"),
+    "status-after-stop": lambda raw: patch(raw, "status-stopped.json", lambda v: v.update(outcome="running")),
+    "refused-start-names-its-reason": lambda raw: (Path(raw) / "refused.json").unlink(),
 }
 
 
@@ -127,6 +171,51 @@ class AssertionKindTests(unittest.TestCase):
         SEEDED_FAULTS["labs-left-behind"](raw)
         self.assertEqual(perch_report.cmd_check(Namespace(raw=str(raw))), 1)
 
+    def test_store_matches_stage(self):
+        raw = clean_raw(self.tmp / "raw")
+        self.assertEqual(statuses(raw)["store-matches-stage"], "pass")
+        cases = [
+            ("an event the stage does not expect", "timeline.json", lambda v: v.update(store_events=1)),
+            ("a task the stage does not expect", "timeline.json",
+             lambda v: v.update(tasks=[{"task_id": "t1", "complete": True, "gaps": [], "events": []}])),
+            ("a Store that could not be read", "timeline.json", lambda v: v.update(error="file is not a database")),
+            ("a Store over the stage's size limit", "store-at-rest.json", lambda v: v.update(bytes=300000)),
+            ("a stage that states no Store contents", "config.json", lambda v: v.pop("store")),
+        ]
+        for i, (label, name, fn) in enumerate(cases):
+            with self.subTest(label):
+                raw = clean_raw(self.tmp / ("store-%d" % i))
+                patch(raw, name, fn)
+                self.assertEqual(statuses(raw)["store-matches-stage"], "fail")
+
+    def test_staging_at_rest_clean(self):
+        raw = clean_raw(self.tmp / "raw")
+        self.assertEqual(statuses(raw)["staging-at-rest-clean"], "pass")
+        cases = [
+            ("a file down does not leave", lambda v: v["home_run"].append("stop-marker.tmp")),
+            ("a socket", lambda v: v["sockets"].append("/x/home/run/c-1.sock")),
+            ("a Store holder", lambda v: v["store_holders"].update({"staging.store": ["4242"]})),
+            ("a service still serving", lambda v: v.update(service_state="serving")),
+            ("canary scratch", lambda v: v["perch_canary"].append("stage-0-1")),
+        ]
+        for i, (label, fn) in enumerate(cases):
+            with self.subTest(label):
+                raw = clean_raw(self.tmp / ("rest-%d" % i))
+                patch(raw, "at-rest.json", fn)
+                self.assertEqual(statuses(raw)["staging-at-rest-clean"], "fail")
+        raw = clean_raw(self.tmp / "rest-missing")
+        (raw / "at-rest.json").unlink()
+        self.assertEqual(statuses(raw)["staging-at-rest-clean"], "fail", "an unchecked root must not pass")
+
+    def test_a_lifecycle_that_did_not_run_is_skipped_and_says_why(self):
+        raw = clean_raw(self.tmp / "raw")
+        (raw / "notes.json").write_text(json.dumps({"staging-lifecycle": "skipped: staging did not start"}), encoding="utf-8")
+        got = {r["name"]: r for r in perch_report.assertions(raw)}
+        for name in LIFECYCLE:
+            self.assertEqual(got[name]["status"], "skip", name)
+            self.assertIn("staging did not start", got[name]["detail"])
+        self.assertEqual(perch_report.cmd_check(Namespace(raw=str(raw))), 0, "a skipped check is not a red run")
+
 
 class RenderTests(unittest.TestCase):
     def setUp(self):
@@ -153,6 +242,64 @@ class RenderTests(unittest.TestCase):
         out = self.tmp / "report.md"
         perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
         self.assertIn("fake_worker.py", out.read_text(encoding="utf-8"))
+
+
+class StagingRootSnapshotTests(unittest.TestCase):
+    """The Store at rest and the staging root after down, read from real files: a SQLite Store and a socket."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="perch-rest-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_store_snapshot_counts_rows_and_checks_integrity(self):
+        store = self.tmp / "staging.store"
+        con = sqlite3.connect(store)
+        con.execute("CREATE TABLE a (x INTEGER)")
+        con.executemany("INSERT INTO a VALUES (?)", [(1,), (2,)])
+        con.execute("CREATE TABLE b (y INTEGER)")
+        con.commit()
+        con.close()
+        snap = perch_report.store_snapshot(str(store))
+        self.assertIsNone(snap["error"])
+        self.assertEqual(snap["integrity"], "ok")
+        self.assertEqual(snap["rows"], {"a": 2, "b": 0})
+        self.assertGreater(snap["bytes"], 0)
+
+    def test_census_finds_a_process_by_its_stage_root(self):
+        root = self.tmp / "scratch-stage-root"
+        proc = subprocess.Popen([PY, "-c", "import time; time.sleep(60)", "--home", str(root)])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        found = self.tmp / "census.txt"
+        perch_report.cmd_census(Namespace(out=str(found), stage_root=str(root)))
+        self.assertIn(proc.pid, perch_report.pids_of(perch_report.read_lines(found)))
+        perch_report.cmd_census(Namespace(out=str(found), stage_root=""))
+        self.assertNotIn(proc.pid, perch_report.pids_of(perch_report.read_lines(found)),
+                         "a root that is not given is not matched by its name")
+
+    def test_store_snapshot_says_when_there_is_no_store(self):
+        self.assertEqual(perch_report.store_snapshot(str(self.tmp / "none.store")), {"error": "no Store file"})
+
+    def test_at_rest_names_what_down_left_behind(self):
+        root = self.tmp / "_staging"
+        (root / "home" / "run").mkdir(parents=True)
+        (root / "home" / "run" / "service.json").write_text(json.dumps({"state": "closed"}), encoding="utf-8")
+        (root / "home" / "run" / "generation").write_text("2\n", encoding="utf-8")
+        (root / "store").mkdir()
+        (root / "store" / "staging.store").write_text("", encoding="utf-8")
+        (root / "tree").mkdir()
+        sock = root / "home" / "run" / "c-1.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(str(sock))
+        out = self.tmp / "at-rest.json"
+        perch_report.cmd_at_rest(Namespace(stage_root=str(root), out=str(out)))
+        rest = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(rest["home_run"], ["c-1.sock", "generation", "service.json"])
+        self.assertEqual(rest["service_state"], "closed")
+        self.assertEqual(rest["sockets"], [str(sock)])
+        self.assertEqual(rest["store_holders"], {"staging.store": []})
+        self.assertEqual(rest["perch_canary"], [])
+        self.assertIsNone(rest["error"])
 
 
 class StoreTimelineSubcommandTests(unittest.TestCase):
@@ -220,13 +367,19 @@ class FakeRunTests(unittest.TestCase):
 
 
 # The assertions each seeded fault turns red in a real run. A lab left behind also leaves its lab-deleted
-# event unrecorded; a staging that never came up leaves no Store to read.
+# event unrecorded; a staging that never came up leaves no Store to read, and its lifecycle is skipped.
 EXPECTED_RED = {
     "leak": {"no-leaked-process"},
     "lab": {"labs-left-behind", "timeline-events"},
     "pool": {"harness-pool-within-limit"},
     "timeline": {"timeline-events"},
-    "staging": {"staging-ready", "timeline-events"},
+    "staging": {"staging-ready", "timeline-events", "store-matches-stage"},
+    "status": {"status-after-kill-is-stale"},
+    "restart": {"restart-after-kill-keeps-store"},
+    "refuse": {"refused-start-names-its-reason"},
+    "store": {"store-matches-stage"},
+    "atrest": {"staging-at-rest-clean"},
+    "census": {"status-while-up"},
 }
 
 

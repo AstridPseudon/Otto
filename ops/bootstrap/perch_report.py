@@ -4,11 +4,16 @@ perch.sh runs each part. Every subcommand reads or writes one run's raw folder, 
 is a change to a file there and the checks are plain functions over it.
   stages    --project FILE                    the stage names in the canary project file
   tasks     --project FILE --stage S          the stage's task names, in order
+  stage     --project FILE --stage S --key K  one value of a stage (a list prints a line each; a flag, true or false)
   field     --project FILE --key KEY          one top-level string of the project file (e.g. check)
-  census    --out FILE                        otto-related processes now (pid, pgid, etime, command)
-  sample    --raw DIR --stage-root DIR --canary DIR   one line for samples.jsonl
+  census    --out FILE [--stage-root DIR]     otto-related processes now (pid, pgid, etime, command)
+  sample    --raw DIR --stage-root DIR --canary DIR [--status FILE]   one line for samples.jsonl
   snapshot  --canon DIR --labs DIR --out FILE  worktrees, lab branches and lab folders left over
   timeline  --src DIR --store FILE --authority A --out FILE   the Store's task timelines (herzchen)
+  store     --store FILE --out FILE           the Store at rest: bytes, pages, freelist, integrity, rows per table
+  at-rest   --stage-root DIR --out FILE       what the staging root holds after down: run files, sockets, holders
+  seed      --raw DIR --fault KIND            a seeded fault in the observations (census, store, restart)
+  note      --raw DIR --key K --value V       one fact of the run, into notes.json (JSON when it parses)
   init      --raw DIR ...                     config.json: the stage, the tasks and their expectations
   check     --raw DIR                         assertions.json; exit 1 on any failure
   render    --raw DIR --out FILE              report.md
@@ -19,13 +24,21 @@ import datetime
 import json
 import os
 import shutil
+import sqlite3
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CENSUS_MARKERS = ("ottoctl", "otto.hostctl", "_staging", "fake_worker", "perch-canary")
+# Otto's own processes are found by their stage root (the --home in their command line), not by name, so a
+# scratch root is watched as well as the default one. ottoctl and otto.hostctl match every root, so they are gone.
+CENSUS_MARKERS = ("_staging", "fake_worker", "perch-canary")
 LEAK_MARKERS = ("_staging", "fake_worker")
+# What `down` leaves in home/run: the published status (closed), the generation and the stop marker.
+AT_REST_RUN = ("service.json", "generation", "service-stop")
+LIFECYCLE = ("status-while-up", "status-after-kill-is-stale", "restart-after-kill-keeps-store",
+             "status-after-stop", "refused-start-names-its-reason")
 # The events a task must show, by how it ends. "lab-created" and "lab-deleted" are the lab's life;
 # the rest are the worker's turns and the check's verdict; "landed" and "refused" close the task.
 REQUIRED = {
@@ -62,8 +75,19 @@ def cmd_stages(args):
 
 
 def cmd_tasks(args):
-    for name in read_json(args.project)["stages"][args.stage]:
+    for name in read_json(args.project)["stages"][args.stage]["tasks"]:
         print(name)
+
+
+def cmd_stage(args):
+    value = read_json(args.project)["stages"][args.stage].get(args.key)
+    if isinstance(value, list):
+        for item in value:
+            print(item)
+    elif isinstance(value, bool):
+        print("true" if value else "false")
+    else:
+        print("" if value is None else json.dumps(value))
 
 
 def cmd_field(args):
@@ -72,14 +96,25 @@ def cmd_field(args):
 
 def cmd_census(args):
     mine = str(os.getpid())
+    root = args.stage_root or ""
     # perch's own tools (this script, sampling or reporting) are not the Otto's processes.
     lines = [line for line in ps_lines() if line.split(None, 1)[0] != mine and "perch_report.py" not in line
-             and any(marker in line for marker in CENSUS_MARKERS)]
+             and ((root and root in line) or any(marker in line for marker in CENSUS_MARKERS))]
     Path(args.out).write_text("".join(line + "\n" for line in lines), encoding="utf-8")
 
 
 def store_bytes(store):
     return sum(os.path.getsize(p) for p in (store, store + "-wal") if os.path.exists(p))
+
+
+def read_status(path):
+    """The staging status the sampler read with `staging.sh status`; a missing or half-written one reads as none."""
+    if not path:
+        return {}
+    try:
+        return read_json(path, {}) or {}
+    except ValueError:
+        return {}
 
 
 def cmd_sample(args):
@@ -88,15 +123,15 @@ def cmd_sample(args):
     disk = shutil.disk_usage(stage_root) if stage_root.exists() else None
     swap = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True).stdout.strip()
     units = [line for line in ps_lines() if "fake_worker.py" in line and "--lab" in line and args.canary in line]
-    service = read_json(stage_root / "home" / "run" / "service.json", {}) or {}
+    status = read_status(args.status)
     line = {
         "at": now_iso(),
         "disk_free_kb": disk.free // 1024 if disk else None,
         "swap": swap,
         "pool_units": len(units),
         "store_bytes": store_bytes(str(stage_root / "store" / "staging.store")),
-        "staging_state": service.get("state"),
-        "staging_generation": service.get("generation"),
+        "staging_state": status.get("outcome", "unavailable"),
+        "staging_generation": status.get("generation"),
     }
     with open(raw / "samples.jsonl", "a", encoding="utf-8") as handle:
         handle.write(json.dumps(line, sort_keys=True) + "\n")
@@ -116,6 +151,95 @@ def cmd_snapshot(args):
     if labs.exists():
         found += ["lab-folder " + str(p) for p in sorted(labs.iterdir())]
     Path(args.out).write_text("".join(item + "\n" for item in found), encoding="utf-8")
+
+
+# ---- the staging root at rest, and the Store at rest -------------------------------------------
+
+def store_snapshot(store):
+    """The Store's size, pages, integrity and rows per table, read through a read-only connection."""
+    path = Path(store)
+    if not path.exists():
+        return {"error": "no Store file"}
+    try:
+        con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            names = [r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+            return {
+                "error": None, "bytes": store_bytes(store), "page_size": con.execute("PRAGMA page_size").fetchone()[0],
+                "page_count": con.execute("PRAGMA page_count").fetchone()[0],
+                "freelist_count": con.execute("PRAGMA freelist_count").fetchone()[0],
+                "integrity": con.execute("PRAGMA integrity_check").fetchone()[0],
+                "rows": {name: con.execute('SELECT COUNT(*) FROM "%s"' % name).fetchone()[0] for name in names},
+            }
+        finally:
+            con.close()
+    except sqlite3.DatabaseError as exc:
+        return {"error": str(exc)}
+
+
+def cmd_store(args):
+    Path(args.out).write_text(json.dumps(store_snapshot(args.store), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def cmd_at_rest(args):
+    root = Path(args.stage_root)
+    run_dir = root / "home" / "run"
+    error = None
+    names = sorted(os.listdir(run_dir)) if run_dir.is_dir() else []
+    service = read_json(run_dir / "service.json", None) if run_dir.is_dir() else None
+    sockets = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if Path(dirpath, d) != root / "tree"]  # the tree is a checkout, not state
+        sockets += [str(Path(dirpath, f)) for f in filenames if stat.S_ISSOCK(os.lstat(Path(dirpath, f)).st_mode)]
+    holders = {}
+    store_dir = root / "store"
+    for path in sorted(store_dir.iterdir()) if store_dir.is_dir() else []:
+        try:
+            found = subprocess.run(["lsof", "-t", str(path)], capture_output=True, text=True)
+            holders[path.name] = found.stdout.split()
+        except OSError as exc:
+            error = "lsof could not run: %s" % exc
+    canary = root / "perch-canary"
+    record = {"home_run": names, "service_state": (service or {}).get("state"), "sockets": sockets,
+              "store_holders": holders, "perch_canary": sorted(os.listdir(canary)) if canary.is_dir() else [],
+              "error": error}
+    Path(args.out).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def seed(raw, kind):
+    """A seeded fault in one observation of the run, so that the assertion which reads it must turn red."""
+    raw = Path(raw)
+    if kind == "census":
+        (raw / "census.up.txt").write_text("", encoding="utf-8")
+    elif kind == "store":
+        timeline = read_json(raw / "timeline.json", {}) or {}
+        timeline["store_events"] = timeline.get("store_events", 0) + 1
+        (raw / "timeline.json").write_text(json.dumps(timeline, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "restart":
+        snap = read_json(raw / "store-restarted.json", {}) or {}
+        rows = snap.get("rows", {})
+        table = next((name for name in sorted(rows) if rows[name] > 0), None)
+        if table is None:
+            raise ValueError("no table with rows to seed a restart fault into")
+        rows[table] -= 1
+        (raw / "store-restarted.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    else:
+        raise ValueError("no seeded observation fault called %s" % kind)
+
+
+def cmd_seed(args):
+    seed(args.raw, args.fault)
+
+
+def cmd_note(args):
+    path = Path(args.raw, "notes.json")
+    notes = read_json(path, {}) or {}
+    try:
+        notes[args.key] = json.loads(args.value)
+    except ValueError:
+        notes[args.key] = args.value
+    path.write_text(json.dumps(notes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 # ---- the Store's timelines (herzchen's read) ---------------------------------------------------
@@ -150,10 +274,11 @@ def cmd_timeline(args):
 
 def cmd_init(args):
     project = read_json(args.project)
-    tasks = [{"name": name, "expect": project["tasks"][name]["expect"]} for name in project["stages"][args.stage]]
+    stage = project["stages"][args.stage]
+    tasks = [{"name": name, "expect": project["tasks"][name]["expect"]} for name in stage["tasks"]]
     config = {
         "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"], "stage_root": args.stage_root,
-        "pool_limit": project["pool_limit"], "faults": [f for f in args.faults.split(",") if f],
+        "pool_limit": project["pool_limit"], "store": stage.get("store"), "faults": [f for f in args.faults.split(",") if f],
         "staging_restart": args.staging_restart, "staging_sha": args.staging_sha,
         "canon_main_sha": args.canon_main_sha, "started_at": args.started_at, "finished_at": now_iso(),
     }
@@ -196,13 +321,106 @@ def leaks(raw, config):
 
 # ---- assertions --------------------------------------------------------------------------------
 
+LIFECYCLE_OK = {
+    "status-while-up": "running; the holder pid, the census, the generation and the Store authority agree",
+    "status-after-kill-is-stale": "stale after the KILL, and the holder is not alive",
+    "restart-after-kill-keeps-store": "running at generation +1 after the restart; integrity ok; row counts unchanged",
+    "status-after-stop": "closed after down",
+    "refused-start-names-its-reason": "the second start was refused with exit 3 and owner_service_running",
+}
+
+
+def lifecycle_failures(raw, notes):
+    """The staging-lifecycle scenario's failures, by assertion name. perch.sh records each observation in raw/."""
+    up = read_json(raw / "status-up.json", None)
+    staged = read_json(raw / "staging-up.json", None)
+    installed = read_json(raw / "installation.json", None)
+    generation = read_lines(raw / "generation-up.txt")
+    census = pids_of(read_lines(raw / "census.up.txt"))
+    killed = read_json(raw / "status-killed.json", None)
+    before = read_json(raw / "store-before-kill.json", None)
+    restarted = read_json(raw / "status-restarted.json", None)
+    after = read_json(raw / "store-restarted.json", None)
+    stopped = read_json(raw / "status-stopped.json", None)
+    refused = read_json(raw / "refused.json", None)
+    found = {name: [] for name in LIFECYCLE}
+
+    if up is None or staged is None:
+        found["status-while-up"].append("the status or staging.json was not recorded while up")
+    else:
+        pid = staged.get("pid")
+        holder_pid = (up.get("holder") or {}).get("pid")
+        if up.get("outcome") != "running":
+            found["status-while-up"].append("outcome %s while up, not running" % up.get("outcome"))
+        if holder_pid != pid:
+            found["status-while-up"].append("holder pid %s, but staging.json names %s" % (holder_pid, pid))
+        if pid not in census:
+            found["status-while-up"].append("pid %s is not in the census taken while up" % pid)
+        if str(up.get("generation")) != (generation[0] if generation else None):
+            found["status-while-up"].append("generation %s, but run/generation says %s"
+                                            % (up.get("generation"), generation[0] if generation else None))
+        authority = ((installed or {}).get("store") or {}).get("authority")
+        if (up.get("store") or {}).get("authority") != authority:
+            found["status-while-up"].append("store authority %s, but installation.json says %s"
+                                            % ((up.get("store") or {}).get("authority"), authority))
+
+    if killed is None:
+        found["status-after-kill-is-stale"].append("no status was recorded after the KILL")
+    else:
+        if killed.get("outcome") != "stale":
+            found["status-after-kill-is-stale"].append("outcome %s after the KILL, not stale" % killed.get("outcome"))
+        if killed.get("holder_alive") is not False:
+            found["status-after-kill-is-stale"].append("holder_alive is %s after the KILL" % killed.get("holder_alive"))
+
+    if killed is None or before is None or restarted is None or after is None:
+        found["restart-after-kill-keeps-store"].append("the status or Store before or after the KILL was not recorded")
+    else:
+        if notes.get("restart_after_kill_rc") != 0:
+            found["restart-after-kill-keeps-store"].append("the start after the KILL exited %s" % notes.get("restart_after_kill_rc"))
+        if restarted.get("outcome") != "running":
+            found["restart-after-kill-keeps-store"].append("outcome %s after the restart, not running" % restarted.get("outcome"))
+        expected = (killed.get("generation") or 0) + 1
+        if restarted.get("generation") != expected:
+            found["restart-after-kill-keeps-store"].append("generation %s after the restart, expected %s"
+                                                           % (restarted.get("generation"), expected))
+        if after.get("integrity") != "ok":
+            found["restart-after-kill-keeps-store"].append("PRAGMA integrity_check says %s" % after.get("integrity"))
+        if after.get("rows") != before.get("rows"):
+            tables = sorted(set(before.get("rows", {})) | set(after.get("rows", {})))
+            changed = ["%s %s -> %s" % (t, before["rows"].get(t), after["rows"].get(t)) for t in tables
+                       if before["rows"].get(t) != after["rows"].get(t)]
+            found["restart-after-kill-keeps-store"].append("row counts changed: " + "; ".join(changed))
+
+    if stopped is None:
+        found["status-after-stop"].append("no status was recorded after down")
+    elif stopped.get("outcome") != "closed":
+        found["status-after-stop"].append("outcome %s after down, not closed" % stopped.get("outcome"))
+
+    if notes.get("refused_start_rc") in (None, 0):
+        found["refused-start-names-its-reason"].append(
+            "the second start was not refused (exit %s)" % notes.get("refused_start_rc"))
+    if refused is None:
+        found["refused-start-names-its-reason"].append("no refusal record: run/staging.refused.json is missing")
+    else:
+        if refused.get("exit_code") != 3:
+            found["refused-start-names-its-reason"].append("refusal exit code %s, not 3" % refused.get("exit_code"))
+        code = (refused.get("error") or {}).get("code")
+        if code != "owner_service_running":
+            found["refused-start-names-its-reason"].append("refusal error.code is %s, not owner_service_running" % code)
+    return found
+
+
 def assertions(raw):
     config = read_json(raw / "config.json", {}) or {}
+    notes = read_json(raw / "notes.json", {}) or {}
     results = []
 
-    def add(name, failures, ok_detail):
-        results.append({"name": name, "status": "fail" if failures else "pass",
-                        "detail": "; ".join(failures) if failures else ok_detail})
+    def add(name, failures, ok_detail, skip=None):
+        if skip:
+            results.append({"name": name, "status": "skip", "detail": skip})
+        else:
+            results.append({"name": name, "status": "fail" if failures else "pass",
+                            "detail": "; ".join(failures) if failures else ok_detail})
 
     add("staging-ready", [] if config.get("staging_restart") == 0
         else ["staging restart exited %s" % config.get("staging_restart")], "staging restart ready")
@@ -228,10 +446,62 @@ def assertions(raw):
     left = read_lines(raw / "leftovers.txt")
     add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")
 
+    # Until stage 2 there is no product pool to read: this is the harness's own count of its fake workers.
     limit = config.get("pool_limit")
     peak = pool_units_peak(raw)
     add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
         "peak %s of limit %s" % (peak, limit))
+
+    # The Store must hold what the stage says it holds, both ways; a read that failed is not a match.
+    expect = config.get("store")
+    recorded = read_json(raw / "timeline.json", None)
+    store_at_rest = read_json(raw / "store-at-rest.json", None)
+    failures = []
+    if expect is None:
+        failures.append("the stage states no expected Store contents")
+    if recorded is None:
+        failures.append("the Store timeline was not recorded")
+    elif recorded.get("error"):
+        failures.append("the Store was not read: " + recorded["error"])
+    elif expect is not None:
+        if recorded.get("store_events") != expect["store_events"]:
+            failures.append("%s events in the Store, the stage expects %s" % (recorded.get("store_events"), expect["store_events"]))
+        if len(recorded.get("tasks", [])) != expect["store_tasks"]:
+            failures.append("%d tasks in the Store, the stage expects %s" % (len(recorded.get("tasks", [])), expect["store_tasks"]))
+    if store_at_rest is None:
+        failures.append("the Store at rest was not recorded")
+    elif store_at_rest.get("error"):
+        failures.append("the Store at rest: " + store_at_rest["error"])
+    elif expect is not None and "store_bytes_max" in expect and store_at_rest["bytes"] > expect["store_bytes_max"]:
+        failures.append("the Store is %d bytes at rest, the stage allows %d" % (store_at_rest["bytes"], expect["store_bytes_max"]))
+    add("store-matches-stage", failures, "%s events and %s tasks in the Store, as the stage expects"
+        % (expect and expect["store_events"], expect and expect["store_tasks"]))
+
+    # After down the staging root holds only what a closed Otto leaves: no socket, no Store holder, no canary scratch.
+    rest = read_json(raw / "at-rest.json", None)
+    failures = []
+    if rest is None:
+        failures.append("the staging root was not checked after down")
+    else:
+        if rest.get("error"):
+            failures.append("the staging root could not be read: " + rest["error"])
+        failures += ["home/run holds %s, which down does not leave" % name
+                     for name in rest.get("home_run", []) if name not in AT_REST_RUN]
+        if rest.get("service_state") not in (None, "closed"):
+            failures.append("service.json says %s after down" % rest.get("service_state"))
+        failures += ["socket left behind: %s" % path for path in rest.get("sockets", [])]
+        failures += ["%s is still held by pid %s" % (name, " ".join(pids))
+                     for name, pids in sorted(rest.get("store_holders", {}).items()) if pids]
+        failures += ["perch-canary/ still holds %s" % entry for entry in rest.get("perch_canary", [])]
+    add("staging-at-rest-clean", failures, "after down: home/run holds only service.json (closed), generation and "
+        "service-stop; no socket, no Store holder, no canary scratch")
+
+    # The lifecycle scenario: its observations exist only when it ran; otherwise each of its checks is skipped, and says why.
+    lifecycle = notes.get("staging-lifecycle")
+    skip = None if lifecycle == "ran" else (lifecycle or "skipped: this stage has no staging-lifecycle scenario")
+    found = {} if skip else lifecycle_failures(raw, notes)
+    for name in LIFECYCLE:
+        add(name, found.get(name, []), LIFECYCLE_OK[name], skip=skip)
     return results
 
 
@@ -256,9 +526,10 @@ def cmd_check(args):
     raw = Path(args.raw)
     results = assertions(raw)
     (raw / "assertions.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    label = {"pass": "PASS", "fail": "FAIL", "skip": "SKIP"}
     for r in results:
-        print("%-4s %-26s %s" % ("PASS" if r["status"] == "pass" else "FAIL", r["name"], r["detail"]))
-    return 0 if all(r["status"] == "pass" for r in results) else 1
+        print("%-4s %-32s %s" % (label[r["status"]], r["name"], r["detail"]))
+    return 1 if any(r["status"] == "fail" for r in results) else 0
 
 
 # ---- report.md ---------------------------------------------------------------------------------
@@ -301,6 +572,39 @@ def spend_and_history(path):
     return text.rstrip()
 
 
+def staging_lines(raw):
+    notes = read_json(raw / "notes.json", {}) or {}
+    rows = []
+    for when, name in (("up", "status-up.json"), ("after the KILL", "status-killed.json"),
+                       ("after the restart", "status-restarted.json"), ("after down", "status-stopped.json")):
+        status = read_json(raw / name, None) or {}
+        rows.append([when, status.get("outcome", "not recorded"), status.get("generation", "-"),
+                     status.get("holder_alive", "-")])
+    refused = read_json(raw / "refused.json", None)
+    refusal = ("exit %s, error.code %s" % (refused.get("exit_code"), (refused.get("error") or {}).get("code"))
+               if refused else "none")
+    return table(["observed", "outcome", "generation", "holder alive"], rows) + [
+        "",
+        "- scenario: %s" % notes.get("staging-lifecycle", "not declared by this stage"),
+        "- the start after the KILL exited %s" % notes.get("restart_after_kill_rc", "not run"),
+        "- the second start exited %s; its refusal record: %s" % (notes.get("refused_start_rc", "not run"), refusal),
+    ]
+
+
+def at_rest_lines(raw):
+    snap = read_json(raw / "store-at-rest.json", None) or {}
+    rest = read_json(raw / "at-rest.json", None) or {}
+    if snap.get("error"):
+        return ["Store: %s." % snap["error"]]
+    lines = ["- Store file %s bytes; %s pages of %s bytes, %s free; integrity %s." % (
+        snap.get("bytes", "?"), snap.get("page_count", "?"), snap.get("page_size", "?"),
+        snap.get("freelist_count", "?"), snap.get("integrity", "?"))]
+    lines += table(["table", "rows"], sorted((snap.get("rows") or {}).items()))
+    lines.append("- home/run after down: %s (service.json says %s)"
+                 % (", ".join(rest.get("home_run", [])) or "nothing", rest.get("service_state", "no service.json")))
+    return lines
+
+
 def cmd_render(args):
     raw = Path(args.raw)
     config = read_json(raw / "config.json", {}) or {}
@@ -321,6 +625,7 @@ def cmd_render(args):
     out += ["", "## Assertions", ""]
     out += table(["assertion", "result", "detail"],
                  [[r["name"], r["status"], r["detail"]] for r in results]) if results else ["(not checked)"]
+    out += ["", "## Staging lifecycle", ""] + staging_lines(raw)
     out += ["", "## Task timelines", ""]
     for task in config.get("tasks", []):
         rows = [[e["at"], e["source"], e["kind"], e["detail"]] for e in events if e["task"] == task["name"]]
@@ -347,6 +652,7 @@ def cmd_render(args):
     out += table(["at", "pool units", "staging state"],
                  [[s["at"], s["pool_units"], "%s (gen %s)" % (s["staging_state"], s["staging_generation"])]
                   for s in samples]) if samples else ["(no samples)"]
+    out += ["", "## Staging at rest", ""] + at_rest_lines(raw)
     out += ["", "## Store growth", ""]
     if samples:
         first, last = samples[0]["store_bytes"], samples[-1]["store_bytes"]
@@ -370,15 +676,27 @@ def build_parser():
     p = sub.add_parser("stages"); p.add_argument("--project", required=True); p.set_defaults(fn=cmd_stages)
     p = sub.add_parser("tasks"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
     p.set_defaults(fn=cmd_tasks)
+    p = sub.add_parser("stage"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
+    p.add_argument("--key", required=True); p.set_defaults(fn=cmd_stage)
     p = sub.add_parser("field"); p.add_argument("--project", required=True); p.add_argument("--key", required=True)
     p.set_defaults(fn=cmd_field)
-    p = sub.add_parser("census"); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_census)
+    p = sub.add_parser("census"); p.add_argument("--out", required=True); p.add_argument("--stage-root", default="")
+    p.set_defaults(fn=cmd_census)
     p = sub.add_parser("sample")
     p.add_argument("--raw", required=True); p.add_argument("--stage-root", required=True)
-    p.add_argument("--canary", required=True); p.set_defaults(fn=cmd_sample)
+    p.add_argument("--canary", required=True); p.add_argument("--status", default="")
+    p.set_defaults(fn=cmd_sample)
     p = sub.add_parser("snapshot")
     p.add_argument("--canon", required=True); p.add_argument("--labs", required=True)
     p.add_argument("--out", required=True); p.set_defaults(fn=cmd_snapshot)
+    p = sub.add_parser("store"); p.add_argument("--store", required=True); p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_store)
+    p = sub.add_parser("at-rest"); p.add_argument("--stage-root", required=True); p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_at_rest)
+    p = sub.add_parser("seed"); p.add_argument("--raw", required=True); p.add_argument("--fault", required=True)
+    p.set_defaults(fn=cmd_seed)
+    p = sub.add_parser("note"); p.add_argument("--raw", required=True); p.add_argument("--key", required=True)
+    p.add_argument("--value", required=True); p.set_defaults(fn=cmd_note)
     p = sub.add_parser("timeline")
     p.add_argument("--src", required=True); p.add_argument("--store", required=True)
     p.add_argument("--authority", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_timeline)

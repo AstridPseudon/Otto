@@ -6,8 +6,11 @@
 # Otto, and writes ops/perch/STAGE/UTC-TIME/report.md with the raw data beside it. The canary project
 # is ops/bootstrap/canary/project.json; STAGE is one of its stage names (0 today).
 # --fake: the canary's worker is the fake worker (real commits in the lab, no model). A run without
-# it needs a real worker, which is not built yet; stage 0 needs none.
-# PERCH_FAULT=leak,lab,pool,timeline,staging seeds one fault per assertion kind, for a red run.
+# it needs a real worker, which is not built yet; stage 0 needs none, so it runs without the flag.
+# A stage's scenarios add steps of their own: staging-lifecycle (stage 0) reads the status, KILLs the Otto,
+# restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
+# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census seeds one fault per
+# assertion kind, for a red run.
 # Exit 0 when every assertion passes, 1 when one fails (the report is written either way), 2 on usage.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -32,7 +35,8 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # Stop what this run started and may still hold; runs on every exit. Pids are numbers, so the words split.
 stop_background() {
   local pid
-  for pid in $SAMPLER $HOLD_POOL $HOLD_LEAK; do kill "$pid" 2>/dev/null || true; done
+  if [ -n "$SAMPLER" ]; then kill -- "-$SAMPLER" 2>/dev/null || true; fi
+  for pid in $HOLD_POOL $HOLD_LEAK; do kill "$pid" 2>/dev/null || true; done
 }
 trap stop_background EXIT
 
@@ -56,15 +60,73 @@ hold_worker() {  # LAB NAME
 }
 stop_hold() { kill "$1" 2>/dev/null || true; pool_mark -1; }
 
-# Restart the staging Otto on the commit under test. A seeded staging fault gives it one second to report ready.
+# Restart the staging Otto on the commit under test. A stage that wipes starts on an empty Store: the Otto is
+# brought down, its home and Store are removed, and only then is it started.
 restart_staging() {
   local t rc=0 ref="$STAGING_REF"
   # A seeded staging fault pins a ref that does not exist, so the restart fails before it starts anything.
   has_fault staging && ref="refs/heads/perch-seeded-missing-ref"
   t="$(date +%s)"
-  OTTO_STAGING_REF="$ref" bash "$STAGING" restart < /dev/null > "$RAW/staging-restart.log" 2>&1 || rc=$?
+  if [ "$WIPE" = true ]; then
+    bash "$STAGING" down < /dev/null >> "$RAW/staging-restart.log" 2>&1 \
+      && bash "$STAGING" wipe < /dev/null >> "$RAW/staging-restart.log" 2>&1 || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    OTTO_STAGING_REF="$ref" bash "$STAGING" restart < /dev/null >> "$RAW/staging-restart.log" 2>&1 || rc=$?
+  fi
   phase staging-restart "" "$t"
   RESTART_RC=$rc
+}
+
+# The product's reading of the staging Otto, written to FILE: `staging.sh status`, or an unavailable outcome when
+# it prints nothing. Read-only, so it is safe while the Otto runs.
+status_to() {  # FILE
+  bash "$STAGING" status < /dev/null > "$1" 2>/dev/null || true
+  [ -s "$1" ] || echo '{"outcome": "unavailable"}' > "$1"
+}
+
+# The scenario staging-lifecycle, from its first start: the status it reports, the census that must hold its pid,
+# and the identity it must match (staging.json, installation.json and the generation as they are now).
+lifecycle_up() {
+  cp "$STAGE_ROOT/run/staging.json" "$RAW/staging-up.json"
+  cp "$STAGE_ROOT/home/installation.json" "$RAW/installation.json"
+  cp "$STAGE_ROOT/home/run/generation" "$RAW/generation-up.txt"
+  "$PY" -I "$REPORT_PY" census --out "$RAW/census.up.txt" --stage-root "$STAGE_ROOT"
+  status_to "$RAW/status-up.json"
+}
+
+# The rest of staging-lifecycle, after the canary tasks: a KILL of the whole group, as a crash takes it; a start
+# after it; then a second start while the first owner holds the Store, which must be refused.
+lifecycle_recover() {
+  local pid rc aside t
+  pid="$(sed -n 's/.*"pid": \([0-9][0-9]*\).*/\1/p' "$STAGE_ROOT/run/staging.json" | head -n 1)"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-before-kill.json"
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+  if has_fault status; then
+    # The seeded fault: the probe reads the raw file the Otto wrote before it died, which still says "serving".
+    cp "$STAGE_ROOT/home/run/service.json" "$RAW/status-killed.json"
+  else
+    status_to "$RAW/status-killed.json"
+  fi
+
+  t="$(date +%s)"; rc=0
+  bash "$STAGING" up < /dev/null > "$RAW/restart-after-kill.log" 2>&1 || rc=$?
+  phase restart-after-kill "" "$t"
+  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key restart_after_kill_rc --value "$rc"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-restarted.json"
+  status_to "$RAW/status-restarted.json"
+
+  # The pidfile is set aside, so the wrapper no longer knows the running owner and attempts a second start.
+  aside="$STAGE_ROOT/run/staging.pid.aside"
+  cp "$STAGE_ROOT/run/staging.pid" "$aside"
+  rm -f "$STAGE_ROOT/run/staging.pid"
+  rc=0
+  bash "$STAGING" up < /dev/null > "$RAW/refused-start.log" 2>&1 || rc=$?
+  mv "$aside" "$STAGE_ROOT/run/staging.pid"
+  if has_fault refuse; then rm -f "$STAGE_ROOT/run/staging.refused.json"; fi
+  if [ -f "$STAGE_ROOT/run/staging.refused.json" ]; then cp "$STAGE_ROOT/run/staging.refused.json" "$RAW/refused.json"; fi
+  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key refused_start_rc --value "$rc"
 }
 
 # The canary: a fresh copy of the toy repo as canon/main, with the lab folder beside it.
@@ -135,13 +197,43 @@ run_stage() {  # STAGE
   STARTED="$(now)"
   RESTART_RC=0
 
-  "$PY" -I "$REPORT_PY" census --out "$RAW/census.before.txt"
-  ( while :; do "$PY" -I "$REPORT_PY" sample --raw "$RAW" --stage-root "$STAGE_ROOT" --canary "$CANARY_DIR" || true; sleep 0.5; done ) >/dev/null 2>&1 &
+  "$PY" -I "$REPORT_PY" census --out "$RAW/census.before.txt" --stage-root "$STAGE_ROOT"
+  # The sampler records the product's reading of the staging Otto, not its raw file. It has a process group of its
+  # own, so stopping it also stops a status call it is waiting on.
+  set -m
+  ( while :; do
+      if bash "$STAGING" status < /dev/null > "$RAW/.status" 2>/dev/null; then
+        mv -f "$RAW/.status" "$RAW/status-sampled.json"
+      else
+        rm -f "$RAW/status-sampled.json"
+      fi
+      "$PY" -I "$REPORT_PY" sample --raw "$RAW" --stage-root "$STAGE_ROOT" --canary "$CANARY_DIR" \
+        --status "$RAW/status-sampled.json" || true
+      sleep 0.5
+    done ) >/dev/null 2>&1 &
   SAMPLER=$!
+  set +m
 
+  WIPE="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key wipe)"
   restart_staging
   STAGING_SHA="$(sed -n 's/.*"sha": "\([0-9a-f]*\)".*/\1/p' "$STAGE_ROOT/run/staging.json" 2>/dev/null | head -n 1 || true)"
   CANON_MAIN_SHA="$(git -C "$OTTO_REPO" rev-parse --short -q --verify 'canon/main^{commit}' || echo none)"
+
+  # The stage's scenarios. One whose staging never came up is skipped, and the report says why.
+  RUN_LIFECYCLE=""
+  for scenario in $("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key scenarios); do
+    case "$scenario" in
+      staging-lifecycle)
+        if [ "$RESTART_RC" -eq 0 ]; then
+          lifecycle_up
+          RUN_LIFECYCLE=1
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key staging-lifecycle --value ran
+        else
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key staging-lifecycle --value "skipped: staging did not start"
+        fi ;;
+      *) die "perch.sh has no scenario called $scenario" ;;
+    esac
+  done
 
   t="$(date +%s)"; make_canon; phase canary-setup "" "$t"
   CHECK="$("$PY" -I "$REPORT_PY" field --project "$CANARY/project.json" --key check)"
@@ -159,6 +251,7 @@ run_stage() {  # STAGE
   done
   for pid in $HOLD_POOL; do stop_hold "$pid"; done
   HOLD_POOL=""
+  if [ -n "$RUN_LIFECYCLE" ]; then lifecycle_recover; fi
 
   if has_fault leak; then
     # A worker that outlives the run: the census after must find it.
@@ -168,8 +261,12 @@ run_stage() {  # STAGE
   t="$(date +%s)"
   bash "$STAGING" down < /dev/null > "$RAW/staging-down.log" 2>&1 || true
   phase staging-down "" "$t"
-  kill "$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true; SAMPLER=""
-  "$PY" -I "$REPORT_PY" census --out "$RAW/census.after.txt"
+  kill -- "-$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true
+  # Its group, a status call it may still be running included, must be gone before the census reads the root.
+  for i in $(seq 1 50); do kill -0 -- "-$SAMPLER" 2>/dev/null || break; sleep 0.2; done
+  SAMPLER=""
+  if [ -n "$RUN_LIFECYCLE" ]; then status_to "$RAW/status-stopped.json"; fi
+  "$PY" -I "$REPORT_PY" census --out "$RAW/census.after.txt" --stage-root "$STAGE_ROOT"
   if [ -n "$HOLD_LEAK" ]; then kill "$HOLD_LEAK" 2>/dev/null || true; wait "$HOLD_LEAK" 2>/dev/null || true; HOLD_LEAK=""; fi
 
   "$PY" -I "$REPORT_PY" snapshot --canon "$CANON" --labs "$LABS" --out "$RAW/leftovers.txt"
@@ -186,6 +283,18 @@ run_stage() {  # STAGE
   case "$CANARY_DIR" in
     "$STAGE_ROOT"/perch-canary/*) rm -rf "$CANARY_DIR" ;;
   esac
+
+  # The staging root and the Store, at rest: after down and after the canary scratch is gone.
+  if has_fault atrest; then
+    # The seeded fault: a socket file the Otto left in its run folder.
+    mkdir -p "$STAGE_ROOT/home/run"
+    touch "$STAGE_ROOT/home/run/c-leftover.sock"
+  fi
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
+  "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
+  for kind in census store restart; do
+    if has_fault "$kind"; then "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind"; fi
+  done
 
   "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" --fake \
     --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
@@ -206,7 +315,6 @@ for arg in "$@"; do
     *) usage ;;
   esac
 done
-[ -n "$FAKE" ] || die "a run without --fake needs a real worker, which is not built yet"
 if [ "$STAGE" = all ]; then
   STAGES="$("$PY" -I "$REPORT_PY" stages --project "$CANARY/project.json")"
 else
@@ -215,6 +323,10 @@ else
     || die "no stage $STAGE in $CANARY/project.json"
   STAGES="$STAGE"
 fi
+# Stage 0 needs no real worker, so it runs without --fake; every later stage needs one, which is not built yet.
+for s in $STAGES; do
+  [ -n "$FAKE" ] || [ "$s" = 0 ] || die "stage $s needs a real worker, which is not built yet; only stage 0 runs without --fake"
+done
 RC=0
 for s in $STAGES; do
   run_stage "$s"

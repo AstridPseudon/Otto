@@ -3,7 +3,12 @@
   "check": "{python} -m unittest discover -q -s tests -t .",
   "pool_limit": 1,
   "stages": {
-    "0": ["canary-add-sub", "canary-refused"]
+    "0": {
+      "tasks": ["canary-add-sub", "canary-refused"],
+      "store": {"store_events": 0, "store_tasks": 0, "store_bytes_max": 262144},
+      "scenarios": ["staging-lifecycle"],
+      "wipe": true
+    }
   },
   "tasks": {
     "canary-add-sub": {
