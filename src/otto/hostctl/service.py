@@ -369,7 +369,8 @@ class OwnerService:
             entries = [entry for entry in self.config.get("hosts", {}).values()
                        if entry.get("portfolio_ref", {}).get("id") == portfolio]
             if len(entries) != 1:
-                raise LookupError("name exactly one admitted portfolio with --portfolio")
+                raise LookupError("%d admitted portfolios match %r: name exactly one admitted portfolio with --portfolio"
+                                  % (len(entries), portfolio))
             namespace = argparse.Namespace(**values, home=str(self.home), host=entries[0]["kind"],
                 owner_authorized=True, service_status=self._status(), project_operation=operation[1])
             result = self.call(lambda: self._run_operation(HOST_OPERATIONS[operation], namespace, operation),

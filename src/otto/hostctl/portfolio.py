@@ -56,9 +56,38 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def save_parser() -> argparse.ArgumentParser:
+    """`ottoctl portfolio [--portfolio P] save FILE --actor A`: the save the owner lane carries, --portfolio before or after."""
+    result = argparse.ArgumentParser(prog="ottoctl portfolio save")
+    result.add_argument("--portfolio", help="owner: select an admitted portfolio by id")
+    result.add_argument("command", choices=("save",))
+    result.add_argument("file")
+    result.add_argument("--actor", required=True)
+    result.add_argument("--request-id", default=None)
+    result.add_argument("--format", choices=("json", "text"), default="json")
+    return result
+
+
+def _names_save(tokens: list) -> bool:
+    """True when the first word is `save`, with an optional `--portfolio P` (or `--portfolio=P`) in front of it."""
+    rest = tokens[2:] if tokens[:1] == ["--portfolio"] else tokens[1:] if tokens[:1] and tokens[0].startswith("--portfolio=") else tokens
+    return rest[:1] == ["save"]
+
+
 def prepare_portfolio_request(args: argparse.Namespace) -> None:
     if args.portfolio_args in (["--help"], ["-h"]):
         parser().parse_args(args.portfolio_args)
+    if _names_save(args.portfolio_args):
+        # The owner reads the save file, so its path is made absolute here; the forwarded form is validated like any command.
+        from otto.portfolio.cli import build_parser as portfolio_cli_parser
+        options = save_parser().parse_args(args.portfolio_args)
+        forwarded = ["save", str(Path(options.file).absolute()), "--actor", options.actor, "--format", options.format]
+        if options.request_id is not None:
+            forwarded += ["--request-id", options.request_id]
+        portfolio_cli_parser().parse_args(forwarded)
+        args.portfolio = options.portfolio
+        args.portfolio_args = forwarded
+        return
     if not args.portfolio_args or args.portfolio_args[0] not in {
             "status", "documents", "retire", "sync-docs", "apply", "gate", "prerequisite"}:
         if args.portfolio_args:

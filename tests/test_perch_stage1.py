@@ -71,16 +71,33 @@ class OwnerSocketSaveTests(HostctlFixture):
         self.assertEqual(refused["error"]["code"], "stale_base", refused)
         self.assertFalse(refused["dispatch"], refused)
 
-    @unittest.expectedFailure
     def test_cold_client_save_reaches_the_owner_socket(self):
-        # Known gap (A2 gap 2): `ottoctl portfolio --portfolio P save FILE` is refused by the client before it reaches the
-        # owner. prepare_portfolio_request (hostctl/portfolio.py:68) validates save against the portfolio CLI parser, which
-        # has no --portfolio, and client_request (hostctl/cli.py:859) only uses the owner lane when args.portfolio is set.
-        # Those files are outside this lab. Remove the decorator when the client routes save; unexpected success fails.
+        # The client forwards save to the owner lane (hostctl/portfolio.py prepare_portfolio_request, client_request).
         code, result = self._ottoctl("portfolio", "--portfolio", "claude-code-portfolio",
                                      "save", _save_file(self.home, "cold.json", SAVE_DOCUMENT), "--actor", "owner")
         self.assertEqual(code, 0, result)
         self.assertEqual(result.get("outcome"), "saved", result)
+
+    def test_save_with_a_mistyped_portfolio_is_refused_naming_it_and_the_owner_is_untouched(self):
+        before = self.owner_service.call(self._store_events)
+        code, result = self._ottoctl("portfolio", "--portfolio", "claude-cod-portfolio",
+                                     "save", _save_file(self.home, "typo.json", SAVE_DOCUMENT), "--actor", "owner")
+        self.assertNotEqual(code, 0, result)
+        self.assertEqual(result.get("outcome"), "error", result)
+        self.assertIn("claude-cod-portfolio", result["error"]["message"], result)
+        self.assertEqual(self.owner_service.call(self._store_events), before)
+
+    def test_the_admitted_portfolio_is_the_one_the_stage_names(self):
+        code, admitted = self._ottoctl("service", "admit-host", "--host", "claude-code", "--launcher", self.launcher)
+        self.assertEqual(code, 0, admitted)
+        self.assertEqual(admitted["host"]["portfolio_ref"]["id"], report.portfolio_id("claude-code"), admitted)
+
+    def _store_events(self):
+        from otto.hostctl import config as host_config
+        from otto.hostctl.owner import HostSession
+        config = host_config.load(Path(self.home))
+        with HostSession(config, host=config["hosts"]["claude-code"]) as session:
+            return len(session.store.list_events())
 
     def test_non_allowlisted_operation_is_still_refused(self):
         result = self._owner("host", "show", {"portfolio": "claude-code-portfolio"})
@@ -89,6 +106,7 @@ class OwnerSocketSaveTests(HostctlFixture):
 
 
 STAGE1_FAULTS = {
+    "admit": "portfolio-admitted-before-saves",
     "typed": "tasks-are-typed-records",
     "nothing": "nothing-runs",
     "revision": "edit-makes-revision",
@@ -107,7 +125,8 @@ def stage_one_run(root):
 
     ref = {"authority": "otto-staging-owner-v1", "type": "wrk.project", "id": "p1"}
     task = {"authority": "otto-staging-owner-v1", "type": "wrk.task", "id": "t1"}
-    put("config.json", {"stage": "1", "fake": True, "tasks": [], "check": "true", "stage_root": "", "pool_limit": 1,
+    put("admission.json", {"outcome": "admitted", "host": {"portfolio_ref": dict(ref, id=report.portfolio_id("claude-code"))}})
+    put("config.json", {"stage": "1", "fake": True, "tasks": [], "check": "true", "stage_root": "", "pool_limit": 1, "host": "claude-code",
                         "store": {"store_events": 4, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},
                         "faults": [], "staging_restart": 0, "staging_sha": "x", "canon_main_sha": "x",
                         "started_at": "x", "finished_at": "x"})
@@ -167,6 +186,16 @@ class StageOneAssertionTests(unittest.TestCase):
                        check=True)
         code = subprocess.run([sys.executable, "-I", str(HERE / "perch_report.py"), "check", "--raw", str(raw)]).returncode
         self.assertEqual(code, 1)
+
+    def test_a_stage_one_fault_is_refused_in_a_run_without_its_observation(self):
+        raw = self._run("stage0-fault")
+        raw.mkdir()
+        for kind in STAGE1_FAULTS:
+            with self.subTest(fault=kind):
+                done = subprocess.run([sys.executable, "-I", str(HERE / "perch_report.py"), "seed", "--raw", str(raw),
+                                       "--fault", kind], capture_output=True, text=True)
+                self.assertNotEqual(done.returncode, 0, kind)
+                self.assertEqual(list(raw.iterdir()), [], kind)
 
     def test_a_stage_without_the_save_scenario_reports_no_stage_one_rows(self):
         raw = stage_one_run(self._run("stage0"))

@@ -11,7 +11,7 @@
 # restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
 # Stage 1 adds the scenario save-through-socket: the canary saved from its file through the owner socket from a cold
 # shell, read back, one task edited and saved again, then a save from the create's base, which is stale by then.
-# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,typed,nothing,revision,stale,growth
+# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,typed,nothing,revision,stale,growth
 # seeds one fault per assertion kind, for a red run; each stage-1 fault is read by its own stage-1 assertion only.
 # Exit 0 when every assertion passes, 1 when one fails (the report is written either way), 2 on usage.
 set -euo pipefail
@@ -143,6 +143,8 @@ cold_client() {
 save_step() {  # NAME REF_FROM
   local name=$1 ref=${2:-} doc="$RAW/save-$1.input.json"
   local args=(--name "$name")
+  # No save runs before the admission is recorded and checked: the save is recorded unavailable instead.
+  if [ -z "$ADMITTED" ]; then echo '{"outcome": "unavailable"}' > "$RAW/save-$name.json"; return 0; fi
   [ -z "$ref" ] || args+=(--ref-from "$ref")
   if "$PY" -I "$REPORT_PY" save-doc --project "$CANARY/project.json" --stage "$SAVE_STAGE" "${args[@]}" --out "$doc" \
       && cold_client portfolio --portfolio "$SAVE_PORTFOLIO" save "$doc" --actor owner > "$RAW/save-$name.json" 2>> "$RAW/save-errors.txt"; then
@@ -155,7 +157,13 @@ save_step() {  # NAME REF_FROM
 save_through_socket() {  # STAGE
   local project_id
   SAVE_STAGE="$1"
-  SAVE_PORTFOLIO="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$SAVE_STAGE" --key portfolio | tr -d '"')"
+  SAVE_HOST="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$SAVE_STAGE" --key host | tr -d '"')"
+  SAVE_PORTFOLIO="$("$PY" -I "$REPORT_PY" portfolio --project "$CANARY/project.json" --stage "$SAVE_STAGE")"
+  # The owner admits the host, the same admit-host the host fixture runs; that names the portfolio the saves go to.
+  cold_client service admit-host --host "$SAVE_HOST" > "$RAW/admission.json" 2>> "$RAW/save-errors.txt" \
+    || echo '{"outcome": "unavailable"}' > "$RAW/admission.json"
+  ADMITTED=""
+  "$PY" -I "$REPORT_PY" admission --raw "$RAW" --project "$CANARY/project.json" --stage "$SAVE_STAGE" && ADMITTED=1
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-before-saves.json"
   save_step create ""
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-create.json"
@@ -339,7 +347,7 @@ run_stage() {  # STAGE
   fi
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
-  for kind in census store restart typed nothing revision stale growth; do
+  for kind in census store restart admit typed nothing revision stale growth; do
     # A fault whose observation this run does not have is named in seeded.txt, not left to look like a clean run.
     if has_fault "$kind"; then
       "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind" \
