@@ -18,7 +18,7 @@ from otto.attention import DueRecord
 from .execution_operations import (
     OccurrencePreparationError, build_manager_callback_due,
     derive_manager_continuation_request, manager_continuation_schedule_id, manager_worker_result_schedule_id, prepare_current_assignment_occurrence,
-    validate_owner_timeout_seconds,
+    recheck_execution_admission, validate_owner_timeout_seconds,
 )
 from .owner_readers import json_value, owner_ref, project_reader, task_reader
 from .manager_guide import resolve_required_instruction_adoption
@@ -1211,19 +1211,49 @@ class ExecutionApplication:
                 result = self.recover(schedule_id=schedule_id, execute=False)
                 host.restore_execution(self, self._read(schedule_id))
                 return result
+            # Reconcile authorized assignment adoption before the bounded host
+            # performs its queue admission check against the refreshed Due.
+            try:
+                due = self._resources(due)
+            except Exception as exc:
+                return self._start_preparation_failure(due, exc)
             return host.admit_execution(self, due,
-                lambda: self._start(schedule_id=schedule_id, settle=settle))
-        return self._start(schedule_id=schedule_id, settle=settle)
+                lambda: self._gated_start(schedule_id=schedule_id, settle=settle))
+        return self._gated_start(schedule_id=schedule_id, settle=settle)
 
-    def _start(self, *, schedule_id: str, settle: bool) -> Any:
+    @staticmethod
+    def _start_preparation_failure(due: DueRecord, exc: Exception) -> dict[str, Any]:
+        return {"outcome": "partial", "stage": "runtime", "schedule_id": due.schedule_id,
+                "assignment_ref": due.assignment_ref, "generation": due.generation,
+                "error": {"code": type(exc).__name__, "message": str(exc)},
+                "next_action": "retry start on this exact prepared occurrence"}
+
+    def _gated_start(self, *, schedule_id: str, settle: bool) -> Any:
+        """Shared launch entry for direct and bounded-host execution."""
+        due = self._read(schedule_id)
+        if ((due.host_evidence or {}).get("gateway_attempt") is not None
+                or due.stop_state != "active" or due.host_state == "paused"):
+            return self.recover(schedule_id=schedule_id, execute=False)
+        try:
+            due = self._resources(due)
+            recheck_execution_admission(self, due)
+        except Exception as exc:
+            blocker = {"role": due.role, "code": type(exc).__name__, "message": str(exc)}
+            return {"outcome": "partial", "stage": "admission", "schedule_id": schedule_id,
+                    "assignment_ref": due.assignment_ref, "generation": due.generation,
+                    "readiness": {"ready": False, "blockers": [blocker]}, "error": blocker,
+                    "provider_called": False, "effects_started": False,
+                    "next_action": "resolve the current worker admission or dependency blocker before retrying"}
+        return self._start(schedule_id=schedule_id, settle=settle, due=due)
+
+    def _start(self, *, schedule_id: str, settle: bool, due: DueRecord | None = None) -> Any:
         # Re-read at admission: queued work does not pin stale authorization,
         # debit allowance, or claim a provider until a slot is actually ready.
-        due = self._read(schedule_id)
+        due = self._read(schedule_id) if due is None else due
         attempt = (due.host_evidence or {}).get("gateway_attempt")
         if attempt is not None or due.stop_state != "active" or due.host_state == "paused":
             return self.recover(schedule_id=schedule_id, execute=False)
         try:
-            due = self._resources(due)
             if due.role == "manager":
                 try:
                     synchronization = self.synchronize_manual_manager_occurrence(schedule_id=due.schedule_id)
@@ -1251,7 +1281,40 @@ class ExecutionApplication:
                         "error": json_value(synchronization.get("error") or blockers[0]),
                         "provider_called": False, "effects_started": False,
                         "next_action": "resolve the reported manager readiness blocker before starting this occurrence"}
+            # The host rechecks queued work before granting its slot. Recheck
+            # again at the provider boundary so direct execution and any state
+            # changes during owner preparation share the same launch gate.
+            admission = recheck_execution_admission(self, due)
+            retained_admission = None
+            if due.role == "worker":
+                retained_admission = {key: admission[key] for key in (
+                    "role", "schedule_id", "assignment_ref", "generation",
+                    "project_ref", "task_ref", "worker_readiness", "admitted_revision",
+                ) if key in admission}
+                retained_admission["readiness_sha256"] = _digest(admission.get("readiness"))
+                evidence = dict(due.host_evidence or {})
+                evidence["execution_admission"] = retained_admission
+                admission_key = hashlib.sha256(json.dumps(
+                    [due.schedule_id, due.version, retained_admission], sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False,
+                ).encode()).hexdigest()
+                saved = self.due_port.save_due(due.schedule_id, replace(
+                    due, host_evidence=evidence,
+                ).to_dict(), request_id="execution-admission:" + admission_key,
+                    expected_version=due.version)
+                due = DueRecord.from_dict(saved)
             kwargs = self._kwargs(due)
+            latest_admission = recheck_execution_admission(self, due)
+            if retained_admission is not None:
+                current_admission = {key: latest_admission[key] for key in (
+                    "role", "schedule_id", "assignment_ref", "generation",
+                    "project_ref", "task_ref", "worker_readiness", "admitted_revision",
+                ) if key in latest_admission}
+                current_admission["readiness_sha256"] = _digest(latest_admission.get("readiness"))
+                if current_admission != retained_admission:
+                    raise OccurrencePreparationError(
+                        "worker admission or dependencies changed before provider launch"
+                    )
             result = self.runtime.invoke_role(role=due.role, mode="direct", **kwargs)
         except Exception as exc:
             observed = self._read(schedule_id)

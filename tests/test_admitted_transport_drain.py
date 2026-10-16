@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 import unittest
+from herzchen.contracts import ResourceRef
+from herzchen.domains.work.admission import authoring_stamp
 from otto.portfolio.execution_host import ExecutionHost
 from otto.portfolio.owner_completion import after_owner
 
@@ -26,8 +28,26 @@ class AdmittedDrainTests(unittest.TestCase):
     def test_preparation_crossing_drain_preserves_exact_admitted_transport(self):
         with tempfile.TemporaryDirectory() as root:
             entered, release, done = threading.Event(), threading.Event(), threading.Event()
-            due=Due(target={},assignment_ref={'authority':'fixture','id':'worker'})
-            app=SimpleNamespace(runtime=SimpleNamespace(adapter=SimpleNamespace(worktree=root,owner_transport_only=True)),_read=lambda sid:due)
+            assignment_ref={'authority':'fixture','kind':'wrk.assignment','id':'worker'}
+            project_ref=ResourceRef('fixture','work.project','project','p1').to_dict()
+            task_ref=ResourceRef('fixture','work.task','task','t1').to_dict()
+            task_payload={'project_ref':project_ref,'dependencies':[]}
+            task_payload['metadata_namespaces']={'work.admission':authoring_stamp('t0',task_payload,'fixture')}
+            task=SimpleNamespace(ref=ResourceRef.from_dict(task_ref),payload=task_payload)
+            project=SimpleNamespace(ref=ResourceRef.from_dict(project_ref),payload={'dependencies':[]})
+            class Reader:
+                def get_record(self, ref):
+                    if (ref.authority,ref.kind,ref.id)==('fixture','work.task','task'): return task
+                    if (ref.authority,ref.kind,ref.id)==('fixture','work.project','project'): return project
+                    return None
+            class Graph:
+                def list(self, **kwargs): return []
+            due=Due(target={'project_ref':project_ref,'task_ref':task_ref},assignment_ref=assignment_ref)
+            current=SimpleNamespace(ref=SimpleNamespace(to_dict=lambda:assignment_ref))
+            operations=SimpleNamespace(_owner_reader=Reader(),port=Graph(),dependency_owner_actor=None)
+            app=SimpleNamespace(runtime=SimpleNamespace(adapter=SimpleNamespace(worktree=root,owner_transport_only=True)),
+                _read=lambda sid:due,_current=lambda ref,generation:current,
+                portfolio=SimpleNamespace(operations=operations),binding=SimpleNamespace(authenticated_actor=lambda actor:actor),actor='fixture')
             calls=[]
             host=ExecutionHost(directory=Path(root)/'ipc',handler=lambda x:None,bounded_transports=True)
             def effect():
