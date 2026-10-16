@@ -168,6 +168,8 @@ class HerzchenCodexAdapter:
         self._owner_authorizer = owner_authorizer
         self._owner_delivery_verifier = owner_delivery_verifier
         self.native_process_observer = native_process_observer
+        # Pin-only hook for every native work process; separate from the caller-socket observer.
+        self.process_pin: Optional[Callable[[Any], None]] = None
         self.source_verifier_factory, self.monotonic_clock = source_verifier_factory, monotonic_clock
         self._source_verifier = None
         self._usage_callback = None
@@ -198,6 +200,7 @@ class HerzchenCodexAdapter:
         )
         bound._turn_started_callback = self._turn_started_callback
         bound._usage_callback = self._usage_callback
+        bound.process_pin = self.process_pin
         return bound
 
     def _role_native_capabilities(self, *, role: Optional[str], profile: Optional[str]) -> tuple[Any, Any]:
@@ -515,6 +518,7 @@ class HerzchenCodexAdapter:
                 native_start_callback=native_start_callback,
                 usage_callback=usage_callback, usage_phase=usage_phase,
                 native_process_observer=ExecutionHost.owner_callback(self.native_process_observer),
+                **({"process_pin": self.process_pin} if self.process_pin is not None else {}),
                 writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
                 native_caller_profile=NATIVE_CALLER_PROFILE,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
@@ -533,6 +537,7 @@ class HerzchenCodexAdapter:
                    if self._turn_started_callback is not None else {}),
                 **({"native_process_observer": ExecutionHost.owner_callback(self.native_process_observer)}
                    if self.native_process_observer is not None else {}),
+                **({"process_pin": self.process_pin} if self.process_pin is not None else {}),
                 **({"native_caller_socket": self.native_caller_socket} if self.native_caller_socket is not None else {}),
                 **({"usage_callback": usage_callback, "usage_phase": usage_phase}
                    if self._usage_callback is not None else {}),

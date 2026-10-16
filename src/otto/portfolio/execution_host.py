@@ -26,6 +26,7 @@ from .owner_readers import json_value
 from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correlation_id
 from .owner_completion import OwnerCompletion, after_owner
 from .ipc_retention import prune_answered_responses
+from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -198,7 +199,8 @@ class ExecutionHost:
                  socket_path: str | Path | None = None,
                  caller_binding_reader: Any = None, caller_context_resolver: Any = None,
                  caller_authorizer: Any = None, owner_file_compatibility: bool = False,
-                 bounded_transports: bool = False, manager_turn_limit: int = 2) -> None:
+                 bounded_transports: bool = False, capacity_policy: CapacityPolicy | None = None,
+                 capacity_store: Any = None) -> None:
         self.directory = Path(directory)
         self._last_response_prune = float('-inf')
         self.handler = handler
@@ -235,9 +237,12 @@ class ExecutionHost:
         self.failures: dict[str, dict[str, str]] = {}
         if type(bounded_transports) is not bool:
             raise TypeError("bounded_transports must be an explicit owner choice")
-        if type(manager_turn_limit) is not int or manager_turn_limit not in {2, 3}:
-            raise ValueError("qualified manager turn ceiling must be two or three")
-        self.manager_turn_limit = manager_turn_limit
+        if capacity_policy is not None and not isinstance(capacity_policy, CapacityPolicy):
+            raise TypeError("capacity_policy must be a CapacityPolicy")
+        # The one pool for turns and heavy work. Pass the owner Store to keep its
+        # reservations there; without one the host keeps them in memory.
+        self.capacity = CapacityPool(capacity_policy or CapacityPolicy(), store=capacity_store,
+            process_birth=lambda pid: list(_process_start_identity(pid)["birth"]))
         self.bounded_transports = bounded_transports
         self._owner_thread: int | None = None
         # These are continuations of retained requests, not durable new work.
@@ -248,6 +253,7 @@ class ExecutionHost:
         self._capacity_holds: dict[str, dict[str, Any]] = {}
         self._capacity_freed: set[str] = set()
         self._process_groups = self._load_process_groups()
+        self._reconcile_checked = 0.0
         self._last_project: str | None = None
         self._project_order: list[str] = []
 
@@ -348,9 +354,13 @@ class ExecutionHost:
                 pass  # Any changed/ambiguous terminal proof keeps custody.
         if attempt and not released:
             self._capacity_holds[due.schedule_id] = self._execution_scope(app, due)
-            self._reconcile_hold(due.schedule_id)
+            if self._reconcile_hold(due.schedule_id):
+                self.capacity.release_turn(due.schedule_id)
+            else:
+                self.capacity.ensure_turn(due.schedule_id, uncertain=True)
         else:
-            self._capacity_holds.pop(due.schedule_id, None)
+            if self._capacity_holds.pop(due.schedule_id, None) is not None:
+                self.capacity.settle_turn(due.schedule_id)  # a disposition ends custody of used capacity
             self._forget_process_group(due.schedule_id)
 
     _PROCESS_GROUPS = "capacity-process-groups.json"
@@ -387,7 +397,9 @@ class ExecutionHost:
         except OSError as error:
             raise PermissionError("process is not live; nothing to pin") from error
         self._process_groups[schedule_id] = {"pid": pid, "pgid": pgid, "birth": birth}
-        self._capacity_freed.discard(schedule_id)
+        if schedule_id in self._capacity_freed:
+            self._capacity_freed.discard(schedule_id)
+            self.capacity.ensure_turn(schedule_id, uncertain=True)  # the group is live again: it costs its slot
         self._save_process_groups()
 
     @staticmethod
@@ -443,8 +455,16 @@ class ExecutionHost:
         stays in the custody fence (_capacity_holds) and keeps blocking
         activation and supervised restart.
         """
-        return [key for key in list(self._capacity_holds)
-                if key not in self._capacity_freed and self._reconcile_hold(key)]
+        freed = [key for key in list(self._capacity_holds)
+                 if key not in self._capacity_freed and self._reconcile_hold(key)]
+        for key in freed:
+            self.capacity.release_turn(key)
+        # A reservation that no running turn or live hold stands behind is a leak
+        # from an earlier life of this host; dead heavy owners likewise.
+        self.capacity.sweep_turns(set(self.capacity_holds()) | {
+            key for key, value in self._executions.items() if value["running"]})
+        self.capacity.prune_dead_heavy()
+        return freed
 
     def capacity_holds(self) -> dict[str, dict[str, Any]]:
         """The holds that still cost a slot: the fence minus provably dead groups."""
@@ -472,14 +492,13 @@ class ExecutionHost:
         return value
 
     def _eligible(self, scope: Mapping[str, Any]) -> bool:
-        active_by_id = {**self._capacity_holds,
+        # Capacity follows processes: a hold whose group is provably gone no
+        # longer counts, though it stays in the custody fence.
+        active_by_id = {**self.capacity_holds(),
             **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
         active = list(active_by_id.values())
-        # Adopted manager ceiling (two by default, three explicitly qualified),
-        # worker two and total three are conjunctive. One
-        # total slot stays available to coordination when only workers run.
-        if (len(active) >= 3 or sum(row["role"] == scope["role"] for row in active)
-                >= (self.manager_turn_limit if scope["role"] == "manager" else 2)):
+        managers = sum(row["role"] == "manager" for row in active)
+        if not self.capacity.policy.admits_turn(scope["role"], len(active) - managers, managers):
             return False
         for row in active:
             if (row["assignment"] == scope["assignment"]
@@ -523,6 +542,7 @@ class ExecutionHost:
             try:
                 if self._execution_scope(job["app"], job["app"]._read(job["scope"]["schedule_id"])) != job["scope"]:
                     raise PermissionError("queued execution binding changed before admission")
+                self.capacity.ensure_turn(job["scope"]["schedule_id"])
             except Exception as error:
                 self._executions.pop(job["scope"]["schedule_id"])
                 job["completion"].resolve(error=error)
@@ -539,6 +559,14 @@ class ExecutionHost:
                 except Exception as observed:
                     self._capacity_holds[schedule] = job["scope"]
                     error = error or observed
+                try:
+                    if schedule in self.capacity_holds():
+                        self.capacity.ensure_turn(schedule, uncertain=True)  # custody keeps the units
+                    elif schedule not in self._capacity_holds:
+                        self.capacity.settle_turn(schedule)
+                    # else: held in the fence with its group gone; the units are already back
+                except Exception as observed:
+                    self.failures["capacity:" + schedule] = {"code": type(observed).__name__, "message": str(observed)}
                 self._executions.pop(schedule, None)
                 job["completion"].resolve(value, error)
 
@@ -588,10 +616,21 @@ class ExecutionHost:
             raise
         return result
 
+    _RECONCILE_INTERVAL = 30.0
+
+    def _capacity_tick(self) -> None:
+        """Owner-loop upkeep: free what has provably died."""
+        now = time.monotonic()
+        if now - self._reconcile_checked >= self._RECONCILE_INTERVAL:
+            self._reconcile_checked = now
+            self.reconcile_dead_holds()  # the next pump sees the freed slots
+
     def start(self) -> None:
         if self._threads:
             raise RuntimeError("execution host is already started")
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Holds were restored before the host serves; settle which are already dead.
+        self.reconcile_dead_holds()
         if self.owner_path is not None:
             # Exclusive custody; a live competing owner is never replaced.
             # PID alone is only a locator.  Re-read its process-start and boot
@@ -1164,6 +1203,7 @@ class ExecutionHost:
                         self._serve_files(False)
                     self._owned(self._pump_owner_calls)
                     self._owned(self._start_ready_executions)
+                    self._owned(self._capacity_tick)
             else:
                 self._serve_files(status)
             stop.wait(0.05)

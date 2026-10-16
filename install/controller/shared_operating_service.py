@@ -408,7 +408,7 @@ def compose(*, hold_dispatch=False):
    else:os.environ['ASTRID_SOURCE_STATE']=before_source_state
   from otto.portfolio.owner_vision import OwnerVision
   common.vision=OwnerVision(owner=owner,editor=common.document_editor,managed_pack=vision_managed,expected_selection=expected)
-  host=ExecutionHost(directory=C/'manager-ipc',handler=lambda request:None,owner_path=C/'manager-status-owner.json',socket_path=base.native_caller_socket_path(),owner_file_compatibility=True,bounded_transports=True,manager_turn_limit=3)
+  host=ExecutionHost(directory=C/'manager-ipc',handler=lambda request:None,owner_path=C/'manager-status-owner.json',socket_path=base.native_caller_socket_path(),owner_file_compatibility=True,bounded_transports=True)
   if hold_dispatch:host.hold_admission()
   views={};servers={};qualified={}
   for key,state in states.items():

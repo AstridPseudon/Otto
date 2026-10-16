@@ -228,6 +228,25 @@ def captured_artifact_bytes(artifact: Mapping[str, Any]) -> bytes:
     return body
 
 
+def _compose_on_process(observer, authorization, pin):
+    """Host registration for one native work process, or None when there is none.
+
+    The managed caller-socket observer (``observer``, managers with a socket only)
+    runs first and its cleanup is the one returned. Then ``pin``, the separate
+    pin-only hook, records the group for every role. A worker has no observer, so
+    its cleanup is a no-op. claude_cli requires a callable cleanup from this callback.
+    """
+    if observer is None and not callable(pin):
+        return None
+
+    def on_process(process):
+        cleanup = observer(process, dict(authorization)) if observer is not None else (lambda: None)
+        if callable(pin):
+            pin(process)
+        return cleanup
+    return on_process
+
+
 class ClaudeWorkerAdapter:
     owner_transport_only = True
     owner_bound = True
@@ -256,6 +275,8 @@ class ClaudeWorkerAdapter:
         if native_caller_socket is not None and ('manager' not in roles or not callable(native_process_observer)):
             raise ClaudeBindingError('a managed caller socket requires the manager role and its process observer')
         self.native_caller_socket, self.native_process_observer = native_caller_socket, native_process_observer
+        # Pin-only hook: called once per native work process for every role (see _compose_on_process).
+        self.process_pin = None
         self.transport = transport or ClaudeCliTransport(launcher_pin, MacWriteScope(self.worktree, state_root, authentication=authentication),
             model=requested_model, reasoning=requested_reasoning, authentication=authentication)
         self.manager_transport = None
@@ -414,12 +435,12 @@ class ClaudeWorkerAdapter:
                 if admitted: raise ClaudeBindingError('duplicate useful native admission')
                 on_turn(turn, datetime.now(timezone.utc).isoformat())
                 admitted = True
-            on_process = None
+            observer = None
             if role == 'manager' and self.native_caller_socket is not None:
                 # Register the owned native process so the managed caller
                 # socket can authenticate its descendants (kernel peer PID).
                 observer = ExecutionHost.owner_callback(self.native_process_observer)
-                on_process = lambda process: observer(process, dict(authorization))
+            on_process = _compose_on_process(observer, authorization, self.process_pin)
             work = ExecutionHost.external_call(lambda: transport.run(prompt, session=session,
                 on_input=input_started, on_process=on_process, **usage_options))
             if work['outcome'] == 'failed':

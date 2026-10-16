@@ -15,7 +15,7 @@ from herzchen.contracts import HostIdentity, ResourceRef
 from herzchen.content.instructions import validate_instruction_content
 from herzchen.domains.work import WorkGraph
 from otto.agents.herzchen_adapter import HerzchenCodexAdapter
-from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.execution_host import CapacityPolicy, ExecutionHost
 from otto.portfolio.herzchen_binding import ProjectReadGrant
 from otto.portfolio.manager_journey_service import ManagerJourneyService
 from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
@@ -79,7 +79,8 @@ class NativeFixture(fixture.Provider):
 
 
 class BoundedProjectHostTests(unittest.TestCase):
-    manager_turn_limit = 2
+    # The former manager limit 2: three turns, at most two managers (one shared unit is the workers' floor), two workers.
+    capacity_policy = CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=1)
     def setUp(self):
         self.f = f = fixture.ExecutionApplicationTests()
         f.setUp()
@@ -93,7 +94,7 @@ class BoundedProjectHostTests(unittest.TestCase):
         self.native = NativeFixture()
         self.directory = self.root / "ipc"
         self.host = ExecutionHost(directory=self.directory, handler=lambda request: None, bounded_transports=True,
-            manager_turn_limit=self.manager_turn_limit)
+            capacity_policy=self.capacity_policy)
         self.services, self.apps, self.states = {}, {}, {}
         self.saves, self.owner_threads = [], []
         self.owner_targets = {}

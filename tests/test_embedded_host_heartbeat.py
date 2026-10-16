@@ -11,13 +11,17 @@ from otto.hostctl import lanes
 from otto.hostctl.cli import _await
 from otto.hostctl.project_service import ProjectOwnerService
 from otto.hostctl.service import owner_lane, read_status, status_path
+from otto.portfolio.execution_host import CapacityPolicy
 
 
 class SerializedHost:
     """Disposable owner queue: every canonical operation has one thread."""
 
     bounded_transports = True
-    manager_turn_limit = 3
+    capacity = SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=0))
+
+    def capacity_holds(self):
+        return dict(self._capacity_holds)
 
     def __init__(self, home):
         self.directory = Path(home) / 'shared-ipc'
