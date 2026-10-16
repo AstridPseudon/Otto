@@ -262,9 +262,15 @@ done
 ST="$LAB/ops/bootstrap"
 if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
   SHA="$(git -C "$LAB" rev-parse HEAD)"
-  ( cd "$LAB" && OTTO_COMMIT="$SHA" bash "$ST/staging.sh" restart ) >> "$G/staging.log" 2>&1 || fail "staging.sh restart failed ($G/staging.log)"
-  ( cd "$LAB" && OTTO_COMMIT="$SHA" bash "$ST/perch.sh" all --fake ) >> "$G/staging.log" 2>&1 || fail "perch.sh all --fake failed ($G/staging.log)"
-  log "staging: restart and perch --fake passed on $SHA"
+  # perch restarts staging on OTTO_STAGING_REF itself. Until 16 Oct the gate passed OTTO_COMMIT, which
+  # nothing reads, so staging ran BASE (STAGE0 F1); its reports now outlive the lab (F6).
+  ( cd "$LAB" && OTTO_STAGING_REF="$SHA" PERCH_OUT="$OTTO_REPO/ops/perch" bash "$ST/perch.sh" all --fake ) \
+    >> "$G/staging.log" 2>&1 || fail "perch.sh all --fake failed ($G/staging.log)"
+  for report in $(sed -n 's/^perch: stage .* report at //p' "$G/staging.log"); do
+    grep -q "staging tree sha $SHA" "$report" \
+      || fail "staging did not run the tested commit $SHA: $(grep -m1 'staging tree sha' "$report") ($report)"
+  done
+  log "staging: perch --fake passed on $SHA (reports under $OTTO_REPO/ops/perch)"
 else
   log "staging: skipped (STAGE/PERCH not landed)"
 fi
