@@ -198,7 +198,7 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   from otto.portfolio.root_direction_client import install_owner_root_client
   # Move this exact manager project under the current owner root. A one-project
   # scope is sufficient when its canonical supervision join is current.
-  project=self.f.owner.graph.get(ResourceRef.from_dict(self.state['project_ref']))
+  project=self.f.owner.graph.current(ResourceRef.from_dict(self.state['project_ref']))
   relation=project.payload['metadata']['otto_orchestrator']
   transfer=self.f.owner.orchestration_port.transfer_supervision(actor=self.f.owner.owner_actor,
    request_id='move-supervisor-project-to-owner-root',portfolio_ref=self.main.scope.to_dict(),

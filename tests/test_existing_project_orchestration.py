@@ -72,7 +72,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
         self.assertEqual(preview["writes"], 0)
         self.assertEqual(self.store.consumer().snapshot_counts(), before_counts)
         self.assertTrue(all("otto_orchestrator" not in project.payload["metadata"]
-                            for project in (self.owner.graph.get(item.ref) for item in self.projects)))
+                            for project in (self.owner.graph.current(item.ref) for item in self.projects)))
 
         result = self.operations.execute(
             "work.orchestrator.projects.attach", self._request(),
@@ -98,7 +98,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
                 self._request(target_assignment_ref=foreign.ref.to_dict(),
                               target_assignment_revision=foreign.revision),
                 request_id="foreign-target", actor="owner")
-        self.assertIsNone(self.owner.graph.get(self.projects[0].ref).payload["metadata"].get("otto_orchestrator"))
+        self.assertIsNone(self.owner.graph.current(self.projects[0].ref).payload["metadata"].get("otto_orchestrator"))
 
         stale_project = self.owner.graph.revise(
             self.projects[1].ref, outcome="revised", logical_request_key="revise-project")
@@ -107,7 +107,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
             self.operations.execute(
                 "work.orchestrator.projects.attach", self._request(),
                 request_id="stale-project", actor="owner")
-        self.assertIsNone(self.owner.graph.get(self.projects[0].ref).payload["metadata"].get("otto_orchestrator"))
+        self.assertIsNone(self.owner.graph.current(self.projects[0].ref).payload["metadata"].get("otto_orchestrator"))
 
         replacement = self.owner.assignments.reassign(
             self.owner.assignments.get(self.specs[0]["assignment_ref"]).ref,
@@ -120,7 +120,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
                 "work.orchestrator.projects.attach", self._request(stale_specs),
                 request_id="stale-assignment", actor="owner")
         self.assertEqual(replacement.generation, 2)
-        self.assertIsNone(self.owner.graph.get(self.projects[2].ref).payload["metadata"].get("otto_orchestrator"))
+        self.assertIsNone(self.owner.graph.current(self.projects[2].ref).payload["metadata"].get("otto_orchestrator"))
 
     def test_pending_unassigned_projects_attach_without_creating_managers(self):
         pending = self.owner.graph.create_project(title="Queued", logical_request_key="queued")
@@ -136,7 +136,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.store.consumer().snapshot_counts(), counts)
         result = self.operations.execute("work.orchestrator.projects.attach", request, request_id="queued-attach", actor="owner")
         self.assertEqual(result["outcome"], "attached")
-        current = self.owner.graph.get(pending.ref)
+        current = self.owner.graph.current(pending.ref)
         self.assertEqual(current.payload["lifecycle"], "pending")
         for field in ("manager", "worker", "execution", "budget"):
             self.assertEqual(current.payload[field], pending.payload[field])
@@ -156,14 +156,14 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
         spec = {"project_ref": pending.ref.to_dict(), "assignment_ref": None, "assignment_generation": 1}
         with self.assertRaisesRegex(WorkValidationError, "absent assignment"):
             self.operations.execute("work.orchestrator.projects.attach", self._request([spec]), request_id="partial-null-pins", actor="owner")
-        self.assertNotIn("otto_orchestrator", self.owner.graph.get(pending.ref).payload["metadata"])
+        self.assertNotIn("otto_orchestrator", self.owner.graph.current(pending.ref).payload["metadata"])
 
     def test_noninert_pending_project_requires_assignment_pins(self):
         pending = self.owner.graph.create_project(title="Queued", logical_request_key="not-inert")
         changed = self.owner.graph.revise(pending.ref, lifecycle="active", logical_request_key="active-no-manager")
         with self.assertRaisesRegex(WorkValidationError, "inert pending"):
             self.operations.execute("work.orchestrator.projects.attach", self._request([{"project_ref": changed.ref.to_dict()}]), request_id="nonpending-null", actor="owner")
-        self.assertNotIn("otto_orchestrator", self.owner.graph.get(pending.ref).payload["metadata"])
+        self.assertNotIn("otto_orchestrator", self.owner.graph.current(pending.ref).payload["metadata"])
 
     def test_duplicate_selection_and_retained_replay_are_safe(self):
         duplicate = self.specs + [dict(self.specs[0])]
@@ -172,7 +172,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
                 "work.orchestrator.projects.attach", self._request(duplicate),
                 request_id="duplicate", actor="owner")
         self.assertTrue(all("otto_orchestrator" not in project.payload["metadata"]
-                            for project in (self.owner.graph.get(item.ref) for item in self.projects)))
+                            for project in (self.owner.graph.current(item.ref) for item in self.projects)))
 
         first = self.operations.execute(
             "work.orchestrator.projects.attach", self._request(),

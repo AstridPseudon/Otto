@@ -281,7 +281,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.assertEqual(final["outcome"], "succeeded", final)
         closed = json.loads((self.root / "close.json").read_text())
         self.assertEqual(closed["outcome"], "completed", closed)
-        self.assertEqual(f.owner.graph.get(f.project.ref).lifecycle.value, "completed")
+        self.assertEqual(f.owner.graph.current(f.project.ref).lifecycle.value, "completed")
         progress = lambda rows: [row for row in rows if row["value"].get("schema") == "otto.manager-progress.v1"]
         self.assertEqual(progress(self.reports()), progress(reports_before))
         self.assertEqual(len(f.provider.calls), 4)
@@ -302,7 +302,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.assertEqual(response["outcome"], "error", response)
         self.assertIn("GUIDE/MANDATE", response["message"])
         self.assertFalse(any(len(call.args) > 2 for call in journal.call_args_list), "no ordinary journal mutation")
-        self.assertEqual(f.owner.graph.get(f.task.ref).lifecycle.value, "pending")
+        self.assertEqual(f.owner.graph.current(f.task.ref).lifecycle.value, "pending")
         self.assertEqual(len(f.provider.calls), 1)
 
     def test_review_input_exact_result_and_stale_worker_fence_and_cli_shape(self):
@@ -342,7 +342,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
                 patch.object(self.host.handler, "_retain_task_settlement", return_value={"outcome": "held"}):
             accepted = self.wait_response(self.send("abcd", request))
         self.assertEqual(accepted["completion"]["outcome"], "completed", accepted)
-        before = f.owner.graph.get(f.task.ref).payload
+        before = f.owner.graph.current(f.task.ref).payload
         from herzchen.kernel.limits import LimitService
         pool = ResourceRef(f.actor.authority, "limit", "journey-local")
         usage = LimitService(f.store).get_pool(pool).cumulative_used_units
@@ -351,10 +351,10 @@ Path(sys.argv[4]).write_text(json.dumps(result))
                              for name in ("acceptance", "publication", "remote", "runtime")}}))
         self.assertEqual(closed["outcome"], "held", closed)
         self.assertIn("genuine artifact", closed["reason"])
-        self.assertEqual(f.owner.graph.get(f.task.ref).payload, before)
+        self.assertEqual(f.owner.graph.current(f.task.ref).payload, before)
         self.assertEqual(LimitService(f.store).get_pool(pool).cumulative_used_units, usage)
         self.assertEqual(usage, 1)
-        self.assertEqual(f.owner.graph.get(f.project.ref).lifecycle.value, "pending")
+        self.assertEqual(f.owner.graph.current(f.project.ref).lifecycle.value, "pending")
         before_due = f.port.read_due(self.anchor)
         prepared = f.app.continue_manager_after_tasks(manager_schedule_id=self.anchor, execute=False)
         self.assertEqual(prepared["outcome"], "committed", prepared)
@@ -381,13 +381,13 @@ Path(sys.argv[4]).write_text(json.dumps(result))
                 patch.object(self.host.handler, "_retain_task_settlement", return_value={"outcome": "held"}):
             old_review = self.wait_response(self.send("abcd", request))
         self.assertEqual(old_review["completion"]["outcome"], "completed")
-        old = f.owner.graph.get(f.task.ref)
+        old = f.owner.graph.current(f.task.ref)
         old_payload = json.loads(json.dumps(old.payload))
-        project = f.owner.graph.get(f.project.ref)
+        project = f.owner.graph.current(f.project.ref)
         outcome = "Repair the promised artifact path and verify its actual contents under C01"
         batch = f.owner.sheet.apply(project.ref, {"tasks": [{"id": "J02", "title": "Correct preserved artifact obligation",
             "outcome": outcome, "acceptance": ["C01"]}]}, logical_request_key="corrective-task", actor=f.actor)
-        corrective = f.owner.graph.get(batch.mappings["J02"])
+        corrective = f.owner.graph.current(batch.mappings["J02"])
         criterion = self.server.state["criterion_refs"]["C01"]
         from otto.portfolio.manager_journey_command import _digest
         content = {"schema": "otto.completed-task-correction.v1", "owner_actor": "manager",
@@ -406,7 +406,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
             "purpose": "explicit correction bookkeeping without resetting prior consumption", "pool_id": "corrective-local",
             "capacity_units": 1, "cumulative_allowance_units": 1, "task_criterion_pairs": ["J02/C01"]}, state=self.server.state)
         self.host.handler.commands.policy = policy
-        project = f.owner.graph.get(f.project.ref)
+        project = f.owner.graph.current(f.project.ref)
         self.assertEqual(self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task"))), (set(), []))
         content_type = type(f.owner.content)
         original_read = content_type.read
@@ -418,7 +418,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
             return value
         with patch.object(content_type, "read", new=tampered_read), self.assertRaisesRegex(ValueError, "pin distinct preserved"):
             self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task")))
-        self.assertEqual(f.owner.graph.get(old.ref).payload, old_payload)
+        self.assertEqual(f.owner.graph.current(old.ref).payload, old_payload)
         f.provider.work_release.set()
         admitted = self.wait_response(self.send("1111", {**self.worker_request(), "task": "J02", "route": "normal",
             "principal": "corrective-worker", "request_key": "corrective-artifact-worker", "focus": outcome}))
@@ -431,7 +431,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
             "judgments": {"C01": {"verdict": "PASS", "rationale": "corrected_artifact_pass", "evidence_refs": inputs["evidence_refs"]}}}))
         self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
         self.wait_response(Path(reviewed["task_settlement_notification"]["response_path"]))
-        project = f.owner.graph.get(f.project.ref)
+        project = f.owner.graph.current(f.project.ref)
         rows = list(f.owner.graph.list(project=project.ref, kind="task"))
         covered, proof = self.host.handler.commands._completed_task_corrections(project, rows)
         self.assertEqual(covered, {old.ref.id})
@@ -440,13 +440,13 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         limits = LimitService(f.store)
         self.assertEqual(limits.get_pool(ResourceRef(f.actor.authority, "limit", "journey-local")).cumulative_used_units, 1)
         self.assertEqual(limits.get_pool(policy.pool_ref).cumulative_used_units, 1)
-        self.assertEqual(f.owner.graph.get(old.ref).payload, old_payload)
+        self.assertEqual(f.owner.graph.current(old.ref).payload, old_payload)
         closed = self.wait_response(self.send("4444", {"command": "finish-project", "request_key": "corrected-terminal-close",
             "dispositions": {name: {"status": "qualified", "rationale": "corrective obligation verified; old acceptance retained as history"}
                              for name in ("acceptance", "publication", "remote", "runtime")}}))
         self.assertEqual(closed["outcome"], "completed", closed)
-        self.assertEqual(f.owner.graph.get(old.ref).payload, old_payload)
-        project = f.owner.graph.get(f.project.ref)
+        self.assertEqual(f.owner.graph.current(old.ref).payload, old_payload)
+        project = f.owner.graph.current(f.project.ref)
         self.assertEqual(project.lifecycle.value, "completed")
         control = project.payload["lifecycle_control"]
         self.assertIn("completed_task_corrections", json.dumps(control))
@@ -648,7 +648,7 @@ if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
         self.assertIn("not owner prohibitions", context["requirement_provenance"]["agent_suggestions"])
         self.assertEqual(context["execution_task_ref"], application.task.ref.to_dict())
         self.assertEqual(context["reported_task_ref"], application.task.ref.to_dict())
-        self.assertEqual(application.owner.graph.get(application.task.ref).lifecycle.value, "completed")
+        self.assertEqual(application.owner.graph.current(application.task.ref).lifecycle.value, "completed")
         self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
                                   owner_path=self.directory / "manager-status-owner.json")
         self.install_candidate()
@@ -722,8 +722,8 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.assertEqual(next_worker["outcome"], "admitted", next_worker)
         settled_next = self.wait_response(Path(next_worker["response_path"]))
         self.wait_response(Path(settled_next["manager_result_notification"]["response_path"]))
-        self.assertEqual(f.owner.graph.get(f.task.ref).lifecycle.value, "completed")
-        self.assertEqual(f.owner.graph.get(next_task.ref).lifecycle.value, "pending")
+        self.assertEqual(f.owner.graph.current(f.task.ref).lifecycle.value, "completed")
+        self.assertEqual(f.owner.graph.current(next_task.ref).lifecycle.value, "pending")
         callback = f.port.read_due(advanced["schedule_id"])
         facts = callback["host_evidence"]["task_settlement_continuation"]
         self.assertEqual(len(facts["completed_tasks"]), 1)

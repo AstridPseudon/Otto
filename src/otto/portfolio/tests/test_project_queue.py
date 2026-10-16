@@ -111,7 +111,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(read["order"], extension["readback"]["order"])
             self.assertFalse(read["dispatch"])
         for p in (self.first, self.pending, self.third):
-            now = self.owner.graph.get(p.ref)
+            now = self.owner.graph.current(p.ref)
             self.assertEqual(now.payload["lifecycle"], "pending")
             self.assertEqual(now.payload["tasks"], [])
             self.assertIsNone(now.payload["execution"])
@@ -206,7 +206,7 @@ class QueueTests(unittest.TestCase):
         self.ops.content_port = original
         changed = self.append(project_ref=self.third.ref.to_dict())
         self.assertEqual(changed["outcome"], "held", changed)
-        self.assertIsNone(self.owner.graph.get(self.third.ref).payload["metadata"].get("otto_orchestrator"))
+        self.assertIsNone(self.owner.graph.current(self.third.ref).payload["metadata"].get("otto_orchestrator"))
         replay = self.append()
         self.assertEqual(replay["outcome"], "queued", replay)
         self.assertEqual(replay["enrollment"]["outcome"], "replayed")

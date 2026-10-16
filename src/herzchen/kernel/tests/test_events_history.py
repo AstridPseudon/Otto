@@ -92,7 +92,7 @@ class HistoryTests(unittest.TestCase):
                 raise Interrupted()
         self.assertEqual(len(self.store.list_events()),events_before)
         self.assertIsNone(self.store.get_receipt('rolled-back'))
-        self.assertEqual(self.graph.get(task).payload['lifecycle'],'active')
+        self.assertEqual(self.graph.current(task).payload['lifecycle'],'active')
         positions = [r[0] for r in self.store.connection.execute('SELECT append_position FROM events ORDER BY append_position')]
         self.assertEqual(positions,list(range(1,len(positions)+1)))
 
@@ -106,7 +106,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(facets),2)
         self.assertEqual({x['after']['ref']['revision'] for x in facets},{'rev-1'})
         self.assertTrue(all(not x['before']['exists'] for x in facets))
-        task = self.graph.get(result.mappings['A'])
+        task = self.graph.current(result.mappings['A'])
         next_result = batches.apply_project_sheet(result.project,{'tasks':[{'id':'A','lifecycle':'active'}]},logical_request_key='sheet-next')
         facets = self.event().effects['history_summary']['facets']
         self.assertEqual(len(facets),1)
@@ -489,7 +489,7 @@ class HistoryTests(unittest.TestCase):
             handler.mutate(envelope,identity_payload=payload,event_type='work.revised',effects={})
         self.assertEqual(self.store.consumer().snapshot_counts(),counts)
         self.assertIsNone(self.store.get_receipt('oversized'))
-        self.assertNotIn('documents',self.graph.get(self.project).payload.get('custom',{}))
+        self.assertNotIn('documents',self.graph.current(self.project).payload.get('custom',{}))
 
     def test_legacy_oversized_fields_are_disclosed_without_losing_source_bytes(self):
         legacy=self.legacy_copy()

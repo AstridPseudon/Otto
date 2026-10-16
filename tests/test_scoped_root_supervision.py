@@ -93,7 +93,7 @@ class ScopedRootSupervisionTests(unittest.TestCase):
         transferred = self._transfer(before_project, before_relation)
 
         self.assertEqual(transferred["outcome"], "transferred")
-        after_project = self.owner.graph.get(ResourceRef.from_dict(transferred["project_ref"]))
+        after_project = self.owner.graph.current(ResourceRef.from_dict(transferred["project_ref"]))
         after_relation = after_project.payload["metadata"]["otto_orchestrator"]
         self.assertEqual(after_relation["assignment_ref"], self.astrid_root.ref.to_dict())
         self.assertEqual(after_relation["portfolio_ref"], self.portfolio.to_dict())

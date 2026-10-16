@@ -33,7 +33,7 @@ class RootDirectionSynchronizationTests(unittest.TestCase):
   self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
   self.assertEqual(self.owner.assignments.get(self.root.ref).ref,self.root.ref)
   self.assertEqual(self.owner.direction_surface().read(self.subject)['effective_ref'],self.oldpin.to_dict())
-  for v in self.projects:self.assertEqual(self.owner.graph.get(v.ref),v)
+  for v in self.projects:self.assertEqual(self.owner.graph.current(v.ref),v)
  def test_exact_rev2_to3_all_joins_effective_and_lost_response_recovery(self):
   self.assertEqual(self.root.revision,'rev-2')
   result=self.call();self.assertTrue(result['assignment_resources_refreshed']);self.assertEqual(result['assignment_ref']['revision'],'rev-3');self.assertEqual(result['generation'],1)

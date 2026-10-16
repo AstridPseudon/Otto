@@ -69,6 +69,6 @@ class OwnerScopeAmendmentTests(unittest.TestCase):
     def test_current_completed_task_rejected(self):
         authority=self.authorization()
         self.graph.revise(self.task.ref,lifecycle='completed',logical_request_key='complete')
-        with self.assertRaises(AssessmentError):self.call(authority,parent_obligation=self.graph.get(self.task.ref).ref)
+        with self.assertRaises(AssessmentError):self.call(authority,parent_obligation=self.graph.current(self.task.ref).ref)
 
 if __name__=='__main__':unittest.main()

@@ -30,7 +30,7 @@ class CompletionProjectRefreshTests(unittest.TestCase):
   self.assertEqual(self.commands.review_task(self.review)['outcome'],'accepted')
   self.finish={'command':'finish-task','task':'T','request_key':'finish','review_key':'accepted'}
  def refresh(self):
-  self.f.call();self.state['project_ref']=self.owner.graph.get(self.project.ref).ref.to_dict()
+  self.f.call();self.state['project_ref']=self.owner.graph.current(self.project.ref).ref.to_dict()
  def test_exact_refresh_finish_and_replay_preserve_review_and_debit(self):
   before=self.commands._journal('accepted','intent');review=self.commands._journal('accepted','review')
   self.refresh();pool=LimitService(self.f.f.store).get_pool(ResourceRef(self.state['authority'],'limit','completion-pool'))
@@ -49,9 +49,9 @@ class CompletionProjectRefreshTests(unittest.TestCase):
   revision=ContentRevision(document.ref,'rev-4',body,f.owner.owner_actor,parent_revision=base.revision)
   f.owner.content.execute(f.owner.content.build_append_revision(f.f.context('base-next-again',expected_revision=base.revision),document,revision))
   resources[0].update(resource_ref=revision.ref.to_dict(),content_digest=validate_instruction_content(body))
-  projects=[f.owner.graph.get(v.ref)for v in f.projects]
+  projects=[f.owner.graph.current(v.ref)for v in f.projects]
   f.owner.synchronize_portfolio_direction(assignment_ref=root.ref.to_dict(),generation=1,direction_ref=draft['revision_ref'],expected_binding_ref=draft['binding_ref'],resources=resources,expected_default_ref=projects[0].payload['metadata']['otto_orchestrator']['default_ref'],projects=[{'project_ref':v.ref.to_dict(),'project_version':v.version,'supervision':deepcopy(v.payload['metadata']['otto_orchestrator'])}for v in projects],logical_request_key='mission-sync-again')
-  self.state['project_ref']=self.owner.graph.get(self.project.ref).ref.to_dict()
+  self.state['project_ref']=self.owner.graph.current(self.project.ref).ref.to_dict()
  def pending_pin(self):
   self.refresh()
   with patch.object(self.commands,'_native_settlement',return_value={'outcome':'pending'}):
@@ -69,11 +69,11 @@ class CompletionProjectRefreshTests(unittest.TestCase):
   self.assertEqual(self.commands.finish_task(self.finish)['outcome'],'replayed');self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
   self.assertEqual(self.commands._journal('accepted','intent'),manifest);self.assertEqual(self.commands._journal('accepted','review'),review)
   self.assertEqual(LimitService(self.f.f.store).get_pool(pool.ref),pool)
-  current=self.owner.graph.get(self.project.ref);self.owner.graph.revise(current.ref,title='Later unrelated bookkeeping',logical_request_key='later-bookkeeping');self.state['project_ref']=self.owner.graph.get(current.ref).ref.to_dict();counts=self.f.f.store.consumer().snapshot_counts()
+  current=self.owner.graph.current(self.project.ref);self.owner.graph.revise(current.ref,title='Later unrelated bookkeeping',logical_request_key='later-bookkeeping');self.state['project_ref']=self.owner.graph.current(current.ref).ref.to_dict();counts=self.f.f.store.consumer().snapshot_counts()
   self.assertEqual(self.commands.finish_task(self.finish)['outcome'],'replayed');self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
  def test_pending_pin_unrelated_edit_or_changed_review_proof_rejects_without_effect(self):
-  original=self.pending_pin();self.second_refresh();current=self.owner.graph.get(self.project.ref)
-  self.owner.graph.revise(current.ref,title='Changed outcome scope',logical_request_key='unrelated-after-pin');self.state['project_ref']=self.owner.graph.get(current.ref).ref.to_dict()
+  original=self.pending_pin();self.second_refresh();current=self.owner.graph.current(self.project.ref)
+  self.owner.graph.revise(current.ref,title='Changed outcome scope',logical_request_key='unrelated-after-pin');self.state['project_ref']=self.owner.graph.current(current.ref).ref.to_dict()
   counts=self.f.f.store.consumer().snapshot_counts()
   with self.assertRaises(PermissionError):self.commands.finish_task(self.finish)
   self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts);self.assertEqual(self.commands._journal('finish','finish-project-pin'),original)
@@ -95,8 +95,8 @@ class CompletionProjectRefreshTests(unittest.TestCase):
    self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
    self.assertEqual(self.commands._journal('finish','finish-project-pin'),original)
  def test_unrelated_revision_in_chain_and_stale_generation_reject(self):
-  self.refresh();current=self.owner.graph.get(self.project.ref);self.owner.graph.revise(current.ref,title='Changed outcome scope',logical_request_key='unrelated')
-  self.state['project_ref']=self.owner.graph.get(current.ref).ref.to_dict();counts=self.f.f.store.consumer().snapshot_counts()
+  self.refresh();current=self.owner.graph.current(self.project.ref);self.owner.graph.revise(current.ref,title='Changed outcome scope',logical_request_key='unrelated')
+  self.state['project_ref']=self.owner.graph.current(current.ref).ref.to_dict();counts=self.f.f.store.consumer().snapshot_counts()
   with self.assertRaises(PermissionError):self.commands.finish_task(self.finish)
   self.assertEqual(self.f.f.store.consumer().snapshot_counts(),counts)
   self.state['manager_generation']=2

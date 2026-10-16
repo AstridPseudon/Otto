@@ -26,7 +26,7 @@ class OrchestratorClientTests(unittest.TestCase):
   with self.assertRaises(PermissionError):client.call({'operation':'whoami','request_key':'r','principal':'owner'})
   with self.assertRaises(PermissionError):client.call({'operation':'read-manager','project_id':'foreign','request_key':'r'})
   with self.assertRaises(PermissionError):client.call({'operation':'read-manager','project_id':self.f.project.ref.id,'request_key':'r'})
-  p=self.f.owner.graph.get(self.f.project.ref);relation=p.payload['metadata']['otto_orchestrator'];before=self.f._default_identity(relation);self.f._transfer(p,relation,target=root)
+  p=self.f.owner.graph.current(self.f.project.ref);relation=p.payload['metadata']['otto_orchestrator'];before=self.f._default_identity(relation);self.f._transfer(p,relation,target=root)
   self.assertEqual(before,self.f._default_identity(relation))
   self.assertEqual(client.call({'operation':'read-manager','project_id':p.ref.id,'request_key':'r'})['principal'],binding['principal'])
   second=self.a.request(conversation_ref={'host':'codex','native_id':'astrid-chat'},requested_project_ids=[p.ref.id],request_key='accidental-new-key')

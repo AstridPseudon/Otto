@@ -127,7 +127,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
             expected_revision=base.revision, expected_generation=base.generation,
             logical_request_key='new-resource-adoption', actor=f.actor)
         mandate_content = f.owner.content.read(ResourceRef.from_dict(prior.target['mandate_ref']))['content']
-        current_task = f.owner.graph.get(f.task.ref).ref.to_dict()
+        current_task = f.owner.graph.current(f.task.ref).ref.to_dict()
         made = f.app.portfolio.create_document(f.project.ref, actor='manager', request_id='current-mandate',
             document_id='current-mandate', role='mandate', content={**mandate_content,
                 'assignment_ref': current.ref.to_dict(), 'task_ref': current_task,
@@ -395,7 +395,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         self.assertEqual(len(f.provider.calls), calls + 1)
         self.assertEqual(f.port.read_due(worker["schedule_id"]), before)
         self.assertEqual(self.reports(), reports)
-        self.assertNotEqual(f.owner.graph.get(f.task.ref).lifecycle.value, "completed")
+        self.assertNotEqual(f.owner.graph.current(f.task.ref).lifecycle.value, "completed")
 
     def test_worker_result_waits_for_manager_settlement_without_preparing_or_provider(self):
         f = self.fixture

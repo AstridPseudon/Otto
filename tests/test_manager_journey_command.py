@@ -385,7 +385,7 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         intent=self.commands._journal("withdrawn-project-close", "project-intent")
         self.assertEqual(intent["withdrawn_unused_planning_refs"], [planning.ref.to_dict()])
         self.assertNotIn(planning.id, [ref['id'] for ref in intent['task_refs']])
-        retained=self.application.owner.graph.get(planning.ref)
+        retained=self.application.owner.graph.current(planning.ref)
         self.assertEqual(retained.lifecycle.value, "withdrawn");self.assertNotIn("completion",retained.payload)
         self.assertEqual(self.application.provider.calls, [])
 
@@ -468,7 +468,7 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         self.commands.due_port = self.application.port
         reviewed = self.commands.review_task(request)
         self.assertEqual(reviewed["completion"]["outcome"], "pending", reviewed)
-        self.assertEqual(self.application.owner.graph.get(self.application.task.ref).lifecycle.value, "pending")
+        self.assertEqual(self.application.owner.graph.current(self.application.task.ref).lifecycle.value, "pending")
         calls = len(self.application.provider.calls)
         self.commands.settle_execution = lambda due: self.application.app.recover(schedule_id=due["schedule_id"], execute=False)
         completed = self.commands.review_task(request)

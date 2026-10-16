@@ -61,7 +61,7 @@ class PendingInertTaskTests(unittest.TestCase):
         record = self._record()
         self.assertEqual(record.lifecycle.value, "pending")
         self.assertEqual(len(record.payload["tasks"]), 1)
-        task = self.owner.graph.get(ResourceRef.from_dict(record.payload["tasks"][0]))
+        task = self.owner.graph.current(ResourceRef.from_dict(record.payload["tasks"][0]))
         self.assertEqual(task.lifecycle.value, "pending")
 
     def test_draft_edit_refuses_task_that_could_run_before_any_write(self):
@@ -87,7 +87,7 @@ class PendingInertTaskTests(unittest.TestCase):
         self.assertFalse(result["launch"])
         record = self._record()
         self.assertEqual(record.lifecycle.value, "pending")
-        task = self.owner.graph.get(ResourceRef.from_dict(record.payload["tasks"][0]))
+        task = self.owner.graph.current(ResourceRef.from_dict(record.payload["tasks"][0]))
         self.assertEqual(task.lifecycle.value, "pending")
 
 
@@ -163,7 +163,7 @@ class DirectionSyncFenceTests(unittest.TestCase):
         self.assertFalse(result["dispatch"])
         self.assertFalse(result["launch"])
         self.assertFalse(result["tasks_created"])
-        self.assertEqual(self.owner.graph.get(self.project.ref).payload["tasks"], [])
+        self.assertEqual(self.owner.graph.current(self.project.ref).payload["tasks"], [])
 
 
 if __name__ == "__main__":

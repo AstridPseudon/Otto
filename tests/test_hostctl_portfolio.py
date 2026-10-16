@@ -98,5 +98,5 @@ class HostctlPortfolioTests(HostctlFixture):
         # than disclosing their existence through a foreign-portfolio error.
         self.assertEqual(result['error']['code'], 'LookupError', result)
         self.assertIn('no project', result['error']['message'].lower())
-        current = self._owner(lambda session: session.owner.graph.get(foreign.ref))
+        current = self._owner(lambda session: session.owner.graph.current(foreign.ref))
         self.assertEqual(current.dependencies, ())

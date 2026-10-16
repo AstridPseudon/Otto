@@ -199,7 +199,7 @@ class RootDirectionClientTests(unittest.TestCase):
     self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
    with self.assertRaises(PermissionError):client.call({'operation':'read-manager','project_id':foreign.id,'request_key':'foreign-read'})
   for project_id,payload in before.items():
-   current=self.owner.graph.get(ResourceRef(self.root.ref.authority,'work.project',project_id))
+   current=self.owner.graph.current(ResourceRef(self.root.ref.authority,'work.project',project_id))
    self.assertEqual(current.payload,payload)
    self.assertEqual(current.payload['lifecycle'],'pending');self.assertFalse(current.payload['tasks'])
 

@@ -169,13 +169,13 @@ class PortfolioStatusTests(unittest.TestCase):
         self.foreign_project()
         gate = self.owner.graph.create_gate(self.projects[0].ref, logical_request_key="gate")
         self.deps.change(self.projects[1], gate, request_id="link")
-        stored = self.owner.graph.get(self.projects[1].ref).payload.get("readiness")
+        stored = self.owner.graph.current(self.projects[1].ref).payload.get("readiness")
         before = self.store.consumer().snapshot_counts()
         with patch.object(type(self.owner.graph), "set_readiness", side_effect=AssertionError("status wrote readiness")):
             result = self.status()
         self.assertEqual(result["totals"]["readiness"], {"ready": 2, "blocked": 1})
         self.assertEqual(self.store.consumer().snapshot_counts(), before)
-        self.assertEqual(self.owner.graph.get(self.projects[1].ref).payload.get("readiness"), stored)
+        self.assertEqual(self.owner.graph.current(self.projects[1].ref).payload.get("readiness"), stored)
 
     def test_concurrent_status_does_not_attribute_other_project_turn(self):
         self.manager()

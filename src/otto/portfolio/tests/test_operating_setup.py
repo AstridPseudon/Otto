@@ -608,15 +608,15 @@ class OperatingSetupTests(unittest.TestCase):
             policy={"required_for_completion": True}, logical_request_key="owner-task-scope")
         result = fixture.commands.review_task(fixture.request(key="reuse-adopted-scope"))
         self.assertEqual(result["completion"]["outcome"], "completed", result)
-        self.assertEqual(f.owner.graph.get(task).lifecycle.value, "completed")
+        self.assertEqual(f.owner.graph.current(task).lifecycle.value, "completed")
         from otto.portfolio.assessment import OttoAssessment
-        rows = OttoAssessment(assessment, f.actor).coverage(f.owner.graph.get(task).ref)
+        rows = OttoAssessment(assessment, f.actor).coverage(f.owner.graph.current(task).ref)
         self.assertEqual(rows["scope_count"], 1)
         self.assertEqual(rows["scopes"][0]["ref"], scope.ref.to_dict())
         # Setup uses the current completed head; completion consumed the
         # original accepted scope and must not create or spend another gate.
         state = fixture.fixture.state
-        state["task_refs"]["PA01"] = f.owner.graph.get(task).ref.to_dict()
+        state["task_refs"]["PA01"] = f.owner.graph.current(task).ref.to_dict()
         policy = LocalAssessmentPolicy.from_run_config(state["assessment_policy"], state=state)
         commands = f.owner.manager_assessment(project_ref=state["project_ref"],
             task_ref=state["task_refs"]["PA01"], manager_assignment_ref=state["assignment_ref"],
@@ -826,7 +826,7 @@ class OperatingSetupTests(unittest.TestCase):
         # later project revision is valid history when that stored ref and
         # project_revision agree; it must not be compared to the new head.
         prior_project_ref = dict(state["project_ref"])
-        current_project = graph.get(ResourceRef.from_dict(prior_project_ref))
+        current_project = graph.current(ResourceRef.from_dict(prior_project_ref))
         next_project_ref = ResourceRef(current_project.ref.authority, current_project.ref.kind,
             current_project.ref.id, "rev-" + str(current_project.version + 1))
         f.store.revise_identity(current_project.ref, dict(current_project.payload),
