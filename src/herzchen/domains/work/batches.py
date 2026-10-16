@@ -18,7 +18,7 @@ from herzchen.command_ports import command_facade
 from herzchen.contracts import AuthenticatedActor, CommandEnvelope, DomainContribution, ReferenceBinding, ResourceRef, TransactionContext, canonical_json, canonical_request_digest, ReplayConflictError
 
 from .model import Lifecycle, WorkKind, WorkNotFoundError, WorkRecord, WorkValidationError
-from .module import KIND_PREFIX, SCHEMA_REVISION, WorkGraph, ensure_completed_task_unchanged
+from .module import KIND_PREFIX, SCHEMA_REVISION, WorkGraph, ensure_completed_task_unchanged, merge_metadata_namespaces, validate_metadata_namespaces
 
 
 BATCH_SCHEMA_REVISION = "work.batch.v1"
@@ -583,6 +583,7 @@ class _ProjectBatchesEngine:
                 if forbidden in raw:
                     raise WorkValidationError(f"observed field {forbidden!r} cannot be authored by a sheet")
             self._apply_task_fields(payload, raw, project, index)
+            validate_metadata_namespaces(payload, tuple(raw.get("metadata_namespace", {})))
             mappings[local_key] = ref
             planned.append({"local_key": local_key, "raw": raw, "ref": ref, "payload": payload, "version": version, "existing": current is not None, "record": current})
         # Resolve dependencies after all local identities exist, allowing a
@@ -628,12 +629,8 @@ class _ProjectBatchesEngine:
         if "metadata_namespace" in sheet:
             if not isinstance(sheet["metadata_namespace"], Mapping):
                 raise WorkValidationError("metadata_namespace must be a mapping")
-            namespaces = dict(project_payload.get("metadata_namespaces", {}))
-            for namespace, values in sheet["metadata_namespace"].items():
-                if not isinstance(values, Mapping):
-                    raise WorkValidationError("metadata namespace values must be mappings")
-                namespaces[str(namespace)] = dict(namespaces.get(str(namespace), {}), **dict(values))
-            project_payload["metadata_namespaces"] = namespaces
+            project_payload["metadata_namespaces"] = merge_metadata_namespaces(project_payload.get("metadata_namespaces", {}), sheet["metadata_namespace"])
+            validate_metadata_namespaces(project_payload, tuple(sheet["metadata_namespace"]))
         if "tasks" in sheet:
             ordered = sorted(planned, key=lambda item: (int(item["payload"].get("order", item["raw"].get("order", 0))), item["local_key"]))
             planned_ids = {item["ref"].id for item in planned}
@@ -854,12 +851,7 @@ class _ProjectBatchesEngine:
         if "metadata_namespace" in raw:
             if not isinstance(raw["metadata_namespace"], Mapping):
                 raise WorkValidationError(f"task[{index}].metadata_namespace must be a mapping")
-            namespaces = dict(payload.get("metadata_namespaces", {}))
-            for namespace, values in raw["metadata_namespace"].items():
-                if not isinstance(values, Mapping):
-                    raise WorkValidationError("task metadata namespace values must be mappings")
-                namespaces[str(namespace)] = dict(namespaces.get(str(namespace), {}), **dict(values))
-            payload["metadata_namespaces"] = namespaces
+            payload["metadata_namespaces"] = merge_metadata_namespaces(payload.get("metadata_namespaces", {}), raw["metadata_namespace"])
         if "aliases" in raw or "alias" in raw:
             values = list(payload.get("aliases", ()))
             additions = raw.get("aliases", ())

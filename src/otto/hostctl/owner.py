@@ -52,6 +52,9 @@ def host_domains() -> tuple:
     from herzchen.evidence.commands import domain_contribution as evidence
     from otto.attention import due_record_contribution
     from otto.portfolio.direction import adoption_contribution, contribution as direction
+    from otto.portfolio.plan_metadata import register_plan_metadata
+    # The work domain refuses otto.plan writes until this type is registered.
+    register_plan_metadata()
     items = (*contributions(include_orchestration=True, include_assignment_resources=True),
              content(), packets(), authoring(), assessment(), due_record_contribution(),
              direction(), adoption_contribution(), evidence())
