@@ -76,6 +76,15 @@ class FolderOpenTests(unittest.TestCase):
                                        "--request-key", "folder-export")
         self.assertEqual(code, 0, exported)
         self.assertEqual(exported["files"]["README.md"], "[topic](docs/research/topic.md)")
+        # A checkout abandoned unchecked is released; this runs first because a check-in moves the project revision.
+        code, abandoned = self.run_open("start", "--project-ref", ref, "--actor", "owner",
+                                        "--request-key", "folder-open-abandoned", "--directory",
+                                        str(self.f.root / "folder-abandoned"))
+        self.assertEqual(code, 0, abandoned)
+        code, released = self.run_open("release", "--project-ref", ref, "--actor", "owner",
+                                       "--session-id", abandoned["session_id"], "--request-key", "folder-release")
+        self.assertEqual(code, 0, released)
+        self.assertEqual(released["outcome"], "released", released)
         directory = self.f.root / "folder-work"
         code, opened = self.run_open("start", "--project-ref", ref, "--actor", "owner",
                                      "--request-key", "folder-open", "--directory", str(directory))
@@ -91,10 +100,11 @@ class FolderOpenTests(unittest.TestCase):
         self.assertEqual(finished["outcome"], "finished", finished)
         verified = self.f.portfolio.export_folder(self.ref, actor="owner", request_id="folder-verify")
         self.assertEqual(verified["files"]["README.md"], "# Edited from the folder\n")
-        code, released = self.run_open("release", "--project-ref", ref, "--actor", "owner",
-                                       "--session-id", opened["session_id"], "--request-key", "folder-release")
-        self.assertEqual(code, 0, released)
-        self.assertEqual(released["outcome"], "released", released)
+        # A successful check-in already closes the session, so a later release is refused as not open.
+        code, again = self.run_open("release", "--project-ref", ref, "--actor", "owner",
+                                    "--session-id", opened["session_id"], "--request-key", "folder-release-done")
+        self.assertEqual(code, 4, again)
+        self.assertEqual(again["error"]["code"], "InvalidSessionError", again)
 
 
 class LateWriterTests(unittest.TestCase):
