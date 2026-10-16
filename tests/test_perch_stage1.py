@@ -59,6 +59,16 @@ class OwnerSocketSaveTests(HostctlFixture):
         self.assertFalse(result["dispatch"], result)
         self.assertFalse(result["launch"], result)
 
+    def test_the_save_names_each_task_with_a_typed_ref_as_the_store_holds_it(self):
+        # The shape the staging gate reads: a ResourceRef's dict, with its record type under `kind`.
+        created = self._save("create.json")
+        self.assertEqual(created.get("outcome"), "saved", created)
+        self.assertEqual(set(created["task_refs"]), {"A"}, created)
+        ref = created["task_refs"]["A"]
+        self.assertEqual(set(ref) - {"revision"}, {"authority", "kind", "id"}, ref)
+        for key in ("authority", "kind", "id"):
+            self.assertTrue(str(ref[key]).strip(), ref)
+
     def test_stale_save_sent_through_the_owner_socket_is_refused(self):
         created = self._save("create.json")
         edited = copy.deepcopy(SAVE_DOCUMENT)
@@ -123,8 +133,8 @@ def stage_one_run(root):
     def put(name, value):
         (raw / name).write_text(value if isinstance(value, str) else json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
-    ref = {"authority": "otto-staging-owner-v1", "type": "wrk.project", "id": "p1"}
-    task = {"authority": "otto-staging-owner-v1", "type": "wrk.task", "id": "t1"}
+    ref = {"authority": "otto-staging-owner-v1", "kind": "wrk.project", "id": "p1"}
+    task = {"authority": "otto-staging-owner-v1", "kind": "wrk.assignment", "id": "t1"}
     put("admission.json", {"outcome": "admitted", "host": {"portfolio_ref": dict(ref, id=report.portfolio_id("claude-code"))}})
     put("config.json", {"stage": "1", "fake": True, "tasks": [], "check": "true", "stage_root": "", "pool_limit": 1, "host": "claude-code",
                         "store": {"store_events": 4, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},

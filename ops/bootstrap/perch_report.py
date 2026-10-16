@@ -273,7 +273,7 @@ def seed(raw, kind):
         refs = save.get("task_refs") or {}
         if not refs:
             raise ValueError("no saved task refs to seed a typed-record fault into")
-        next(iter(refs.values()))["type"] = ""
+        next(iter(refs.values()))["kind"] = ""
         (raw / "save-create.json").write_text(json.dumps(save, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "nothing":
         # The create save claims it dispatched a run.
@@ -493,7 +493,7 @@ def lifecycle_failures(raw, notes):
 
 STAGE1_OK = {
     "portfolio-admitted-before-saves": "the owner admitted the stage's host, naming its portfolio, before the first save",
-    "tasks-are-typed-records": "the created project's tasks are typed refs (authority, type, id), one record type",
+    "tasks-are-typed-records": "the created project's tasks are typed refs (authority, kind, id), one record kind",
     "nothing-runs": "every save reports dispatch and launch false, and no lab, worker or turn ran",
     "edit-makes-revision": "saving one edited task moved the project to a later revision",
     "stale-save-refused": "a save from the create's base is refused as stale_base with a diff",
@@ -543,12 +543,13 @@ def stage1_failures(raw, config):
             found["tasks-are-typed-records"].append("the create save recorded no task refs")
         types = set()
         for alias, ref in sorted(refs.items()):
-            if not isinstance(ref, dict) or not all(str(ref.get(k) or "").strip() for k in ("authority", "type", "id")):
-                found["tasks-are-typed-records"].append("task %s is not a typed ref (authority, type, id)" % alias)
+            # A ResourceRef serializes as {authority, kind, id, revision}: its record type is `kind`.
+            if not isinstance(ref, dict) or not all(str(ref.get(k) or "").strip() for k in ("authority", "kind", "id")):
+                found["tasks-are-typed-records"].append("task %s is not a typed ref (authority, kind, id)" % alias)
             else:
-                types.add(ref["type"])
+                types.add(ref["kind"])
         if len(types) > 1:
-            found["tasks-are-typed-records"].append("the tasks have %d record types" % len(types))
+            found["tasks-are-typed-records"].append("the tasks have %d record kinds" % len(types))
 
     for name, save in (("save-create", created), ("save-edit", edited), ("save-stale", stale)):
         if save is None:
