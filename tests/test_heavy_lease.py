@@ -1,6 +1,7 @@
 """ottoctl heavy: many agents share the machine's capacity, and nothing a job started outlives it (real processes)."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -247,3 +248,87 @@ def test_status_shows_capacity_and_what_is_running(tmp_path):
     job.communicate(timeout=30)
     assert status["capacity"] == 4 and status["used"] == 2 and status["free"] == 2
     assert status["holders"][0]["purpose"] == "journey X"
+
+
+def ticketed(tmp_path: Path, n: int) -> None:
+    """Wait until N waiters hold tickets (state, not time)."""
+    while len(list((tmp_path / "state" / "waiting").glob("*.json"))) != n:
+        time.sleep(0.05)
+
+
+def _mark_then_wait(marks: Path, name: str, go: Path) -> list[str]:
+    return py(f"import os, time; open({str(marks)!r},'a').write('{name}\\n')\n"
+              f"while not os.path.exists({str(go)!r}): time.sleep(0.05)")
+
+
+def admitted(tmp_path: Path) -> list[str]:
+    """Purposes in the order the pool admitted them (the log's admission stamp, not a racy child write)."""
+    lines = (tmp_path / "state" / "heavy.log").read_text().splitlines()
+    return [r["purpose"] for r in sorted(map(json.loads, lines), key=lambda r: r["admitted_ns"])]
+
+
+def _queue(tmp_path, names_weights, capacity, already=0):
+    """Start waiters one by one, each ticket observed before the next starts."""
+    procs = []
+    for n, (name, weight) in enumerate(names_weights, already + 1):
+        procs.append(heavy(tmp_path, "--weight", str(weight), "--purpose", name, "--", *py("pass"), capacity=capacity))
+        ticketed(tmp_path, n)
+    return procs
+
+
+def _holder(tmp_path, weight, capacity):
+    go = tmp_path / "go0"
+    marks = tmp_path / "marks0"
+    proc = heavy(tmp_path, "--weight", str(weight), "--purpose", "H0", "--", *_mark_then_wait(marks, "H0", go),
+                 capacity=capacity)
+    holding(tmp_path, weight, capacity=capacity)
+    return proc, go
+
+
+def test_waiters_start_in_arrival_order(tmp_path):
+    holder, go = _holder(tmp_path, 1, 1)
+    procs = _queue(tmp_path, [("A", 1), ("B", 1), ("C", 1)], 1)
+    go.write_text("")
+    for proc in (holder, *procs):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    assert admitted(tmp_path) == ["H0", "A", "B", "C"]
+
+
+def test_backfill_takes_the_earliest_that_fits(tmp_path):
+    # cap 6: H0 (4) runs, HEAD (3) waits with 2 free, so backfill room is 6 - 3 = 3. B2 (2) arrived before
+    # B1 (1) and both fit: B2 goes first. We hold the admission guard while both arrive, so neither polls first.
+    holder, go = _holder(tmp_path, 4, 6)
+    head = _queue(tmp_path, [("HEAD", 3)], 6)
+    with open(tmp_path / "state" / "admit.lock", "a+") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        rest = _queue(tmp_path, [("B2", 2), ("B1", 1)], 6, already=1)
+    while not (tmp_path / "state" / "heavy.log").exists() or len(admitted(tmp_path)) < 2:
+        time.sleep(0.05)  # both backfillers have run and ended while H0 still holds its slots
+    go.write_text("")
+    for proc in (holder, *head, *rest):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    assert admitted(tmp_path) == ["H0", "B2", "B1", "HEAD"]
+
+
+def test_a_killed_waiter_never_blocks_the_queue(tmp_path):
+    holder, go = _holder(tmp_path, 1, 1)
+    doomed, nxt = _queue(tmp_path, [("doomed", 1), ("next", 1)], 1)
+    doomed.kill()
+    doomed.communicate()
+    go.write_text("")
+    holder.communicate(timeout=60)
+    nxt.communicate(timeout=60)
+    assert nxt.returncode == 0 and admitted(tmp_path) == ["H0", "next"]
+
+
+def test_a_later_small_job_never_overtakes_the_waiting_gate(tmp_path):
+    # The real friction: a 4-slot job holds the pool; a 1-slot gate waits; later 1- and 2-slot jobs must not pass it.
+    holder, go = _holder(tmp_path, 4, 4)
+    procs = _queue(tmp_path, [("gate", 1), ("S1", 1), ("S2", 1), ("M", 2)], 4)
+    go.write_text("")
+    for proc in (holder, *procs):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    assert admitted(tmp_path) == ["H0", "gate", "S1", "S2", "M"]

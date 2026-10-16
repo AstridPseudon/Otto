@@ -9,16 +9,16 @@ machine's capacity; light work (edits, checks, show) takes none:
 **Capacity** is a number of slots: ``$OTTO_HEAVY_CAPACITY``, else ``<dir>/capacity``, else one slot
 per 2 GB of physical memory (4 on an 8 GB Mac). A job takes ``--weight`` slots (default 1). A guide
 for this machine: a frame or visualize call 1, a real-film journey or full test suite 2, a
-full-film render 3. Jobs run concurrently while slots remain. Arrivals queue in order, so a big job
-isn't starved by a stream of small ones. While the job at the head waits for more slots than are
-free, a smaller job behind it may take free slots, but only while the head could still start beside
-every such job: it never delays the head. While the OS reports **critical** memory pressure, a new
+full-film render 3. Jobs run concurrently while slots remain. Each waiter takes a ticket in
+``waiting/``; the earliest live ticket is the head, so a big job isn't starved by a stream of small
+ones. While the head waits for more slots than are free, the earliest ticket behind it that fits may
+take free slots, but only while the head could still start beside every such job: it never delays it. While the OS reports **critical** memory pressure, a new
 job waits for a running one to finish instead of piling on (it never waits on an otherwise idle
 machine).
 
 **State:** ``$OTTO_HEAVY_DIR``, default ``~/.local/state/otto``. Each slot is an ``flock`` on
 ``slots/<i>.lock``, so the kernel frees it when its holder dies. Each lease names itself in
-``holders/<id>.json``.
+``holders/<id>.json`` (marked ``backfill`` if it took slots ahead of the head).
 
 **Cleanup:** CMD runs in its own session with ``OTTO_HEAVY_LEASE=<id>`` in its environment. When it
 ends, fails, is interrupted or runs out of time, the lease stops its process group and every process
@@ -56,7 +56,7 @@ PRESSURE_CRITICAL = 4  # kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 
 
 def state_dir() -> Path:
     path = Path(os.environ.get("OTTO_HEAVY_DIR") or Path.home() / ".local" / "state" / "otto")
-    for sub in ("slots", "holders"):
+    for sub in ("slots", "holders", "waiting"):
         (path / sub).mkdir(parents=True, exist_ok=True)
     return path
 
@@ -233,39 +233,49 @@ def _try_slots(directory: Path, cap: int, weight: int) -> list | None:
     return None
 
 
-def _try_backfill(directory: Path, cap: int, weight: int) -> list | None:
-    """Free slots for a job queued behind the head, or none.
+def _waiting(directory: Path) -> list[dict]:
+    """Live tickets in arrival order (names sort by arrival ns); a dead waiter's ticket is dropped."""
+    out = []
+    for path in sorted((directory / "waiting").glob("*.json")):
+        try:
+            item = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if _alive(int(item.get("pid") or 0)):
+            out.append({**item, "ticket": path.name})
+        else:
+            path.unlink(missing_ok=True)
+    return out
 
-    Backfilled jobs together never take more than ``cap - head weight`` slots, so once the jobs the
-    head is waiting on end, the head fits beside all of them. Each one is marked in ``backfill/``
-    before the guard is released, so two arrivals can't both count the same room.
+
+def _take(directory: Path, cap: int, weight: int, ticket: str, blocked: bool, claim) -> tuple:
+    """Take slots if it is this ticket's turn: (slots or None, tickets ahead, running holders).
+
+    Whoever holds the earliest ticket is the head and starts when its weight fits. Others may backfill
+    only while the head can't start, in arrival order, and backfilled jobs together never take more
+    than ``cap - head weight``, so the head never waits longer because of them. ``claim`` records the
+    holder under the same guard, so two waiters can never count the same room.
     """
-    try:
-        head = json.loads((directory / "head.json").read_text())
-    except (OSError, ValueError):
-        return None
-    if not _alive(int(head.get("pid") or 0)) or memory_pressure() == PRESSURE_CRITICAL:
-        return None
-    marks = directory / "backfill"
-    marks.mkdir(exist_ok=True)
-    with open(directory / "backfill.lock", "a+") as guard:
+    with open(directory / "admit.lock", "a+") as guard:
         fcntl.flock(guard, fcntl.LOCK_EX)
-        taken = 0
-        for mark in marks.glob("*.json"):
-            try:
-                item = json.loads(mark.read_text())
-            except (OSError, ValueError):
-                continue
-            if _alive(int(item.get("pid") or 0)):
-                taken += int(item.get("weight", 1))
-            else:
-                mark.unlink(missing_ok=True)
-        if weight + taken > cap - int(head.get("weight", cap)):
-            return None
+        queue = _waiting(directory)
+        ahead = next((i for i, t in enumerate(queue) if t["ticket"] == ticket), None)
+        running = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
+        if ahead is None or (blocked and running):
+            return None, ahead or 0, running
+        backfill = ahead > 0
+        if backfill:
+            head = int(queue[0].get("weight", cap))
+            if cap - sum(int(h.get("weight", 1)) for h in running) >= head:
+                return None, ahead, running  # the head can start now; it goes first
+            room = cap - head - sum(int(h.get("weight", 1)) for h in running if h.get("backfill"))
+            first = next((t for t in queue[1:] if int(t.get("weight", 1)) <= room), None)
+            if not first or first["ticket"] != ticket:
+                return None, ahead, running
         slots = _try_slots(directory, cap, weight)
         if slots:
-            (marks / f"{os.getpid()}.json").write_text(json.dumps({"pid": os.getpid(), "weight": weight}))
-        return slots
+            claim(backfill)
+        return slots, ahead, running
 
 
 def _append_log(directory: Path, record: dict) -> None:
@@ -285,6 +295,9 @@ def status() -> dict:
     return {"capacity": cap, "used": used, "free": max(0, cap - used),
             "holders": [{k: h.get(k) for k in ("owner", "purpose", "weight", "started_at", "expires_at")}
                         for h in holders],
+            "waiting": [{"purpose": t.get("purpose"), "weight": t.get("weight"),
+                         "queued_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t.get("queued_at", 0)))}
+                        for t in _waiting(directory)],
             "machine": machine_state()}
 
 
@@ -306,66 +319,57 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
             print(f"heavy: stopped {len(item['reaped'])} leftovers of {item.get('owner')}'s dead lease "
                   f"({item.get('purpose')})", file=sys.stderr)
 
-    # Queue in arrival order: whoever holds queue.lock is next and waits for its slots.
+    # Queue in arrival order: a ticket per waiter; the earliest live ticket is the head (see _take).
     queued_at = time.time()
-    queue = open(directory / "queue.lock", "a+")
+    ticket = directory / "waiting" / f"{time.time_ns()}-{os.getpid()}.json"
+    ticket.with_suffix(".tmp").write_text(json.dumps(
+        {"pid": os.getpid(), "weight": weight, "purpose": purpose, "queued_at": queued_at}))
+    os.replace(ticket.with_suffix(".tmp"), ticket)
+    lease_id = uuid.uuid4().hex[:12]
+    record = {"lease_id": lease_id, "owner": owner, "purpose": purpose, "weight": weight, "capacity": cap,
+              "holder_pid": os.getpid(), "command": command}
+    holder_file = directory / "holders" / f"{lease_id}.json"
+
+    def claim(backfill: bool) -> None:
+        now = time.time()
+        record.update(backfill=backfill, admitted_ns=time.time_ns(), waited_seconds=round(now - queued_at, 1),
+                      started_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
+                      expires_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now + max_minutes * 60)))
+        holder_file.write_text(json.dumps(record, indent=1))
+        ticket.unlink(missing_ok=True)
+
+    handlers = {sig: signal.signal(sig, lambda signum, _f: sys.exit(128 + signum))
+                for sig in (signal.SIGINT, signal.SIGTERM)}
     announced = False
-    slots = None
-    while True:
-        try:
-            fcntl.flock(queue, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except OSError as exc:
-            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise
-            slots = _try_backfill(directory, cap, weight)
-            if slots:
-                print("heavy: running in free slots the waiting job ahead can't use", file=sys.stderr)
-                break
-            if not wait:
-                print(f"heavy: no capacity now; running: {_describe(_holders(directory))}", file=sys.stderr)
-                return EXIT_BUSY
-            if not announced:
-                print("heavy: queued behind another job waiting for capacity", file=sys.stderr)
-                announced = True
-            time.sleep(POLL_SECONDS)
-    head = directory / "head.json"
     try:
-        announced = False
-        while not slots:
-            running = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
-            pressured = memory_pressure() == PRESSURE_CRITICAL and running
-            slots = None if pressured else _try_slots(directory, cap, weight)
+        while True:
+            blocked = memory_pressure() == PRESSURE_CRITICAL
+            slots, ahead, running = _take(directory, cap, weight, ticket.name, blocked, claim)
             if slots:
+                if record["backfill"]:
+                    print("heavy: running in free slots the waiting job ahead can't use", file=sys.stderr)
                 break
             if not wait:
                 print(f"heavy: no capacity now ({cap} slots; running: {_describe(running)})", file=sys.stderr)
                 return EXIT_BUSY
             if not announced:
-                reason = "memory pressure is critical" if pressured else f"all {cap} slots in use"
-                print(f"heavy: waiting for {weight} slot(s), {reason}; running: {_describe(running)}", file=sys.stderr)
-                head.write_text(json.dumps({"pid": os.getpid(), "weight": weight}))
+                what = (f"waiting for {weight} slot(s), "
+                        + ("memory pressure is critical" if blocked else f"all {cap} slots in use") if not ahead
+                        else f"queued behind {ahead} waiting job(s)")
+                print(f"heavy: {what}; running: {_describe(running)}", file=sys.stderr)
                 announced = True
             _reap_dead_holders(directory)
             time.sleep(POLL_SECONDS)
     finally:
-        if announced:
-            head.unlink(missing_ok=True)
-        fcntl.flock(queue, fcntl.LOCK_UN)
-        queue.close()
+        ticket.unlink(missing_ok=True)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
 
-    lease_id = uuid.uuid4().hex[:12]
-    started = time.time()
-    before = machine_state()
+    started = record["admitted_ns"] / 1e9
+    record["machine_before"] = machine_state()
     env = dict(os.environ, **{LEASE_ENV: lease_id})
     child = subprocess.Popen(command, env=env, start_new_session=True)
-    record = {"lease_id": lease_id, "owner": owner, "purpose": purpose, "weight": weight, "capacity": cap,
-              "pid": child.pid, "pgid": child.pid, "holder_pid": os.getpid(), "command": command,
-              "waited_seconds": round(started - queued_at, 1),
-              "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
-              "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started + max_minutes * 60)),
-              "machine_before": before}
-    holder_file = directory / "holders" / f"{lease_id}.json"
+    record.update(pid=child.pid, pgid=child.pid)
     holder_file.write_text(json.dumps(record, indent=1))
 
     outcome, code = "exited", None
@@ -402,7 +406,6 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
                                 "seconds": round(time.time() - started, 1), "machine_after": machine_state(),
                                 "leftovers": sweep, "inherited_leftovers": inherited})
         holder_file.unlink(missing_ok=True)
-        (directory / "backfill" / f"{os.getpid()}.json").unlink(missing_ok=True)
         for handle in slots or []:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
