@@ -1271,18 +1271,58 @@ def recheck_execution_admission(app: Any, due: Any) -> dict[str, Any]:
             or any(task_project.get(key) != project_ref.get(key)
                    for key in ("authority", "kind", "id"))):
         raise OccurrencePreparationError("worker task belongs to another project at admission")
+
+    def read_record(ref: Any) -> Any:
+        if isinstance(ref, Mapping):
+            ref = ResourceRef.from_dict(ref)
+        return reader.get_record(ref)
+
     dependencies = PortfolioDependencies(
         graph, reader, actor=app.binding.authenticated_actor(app.actor),
         owner_actor=getattr(operations, "dependency_owner_actor", None),
     )
+    project_identity = ResourceRef(project_ref["authority"], project_ref["kind"], project_ref["id"])
+    project = reader.get_record(project_identity)
+    if project is None:
+        raise OccurrencePreparationError("worker project is unavailable at admission")
+    supervision = (project.payload.get("metadata") or {}).get("otto_orchestrator")
+    if isinstance(supervision, Mapping) and supervision:
+        project_readiness = lambda ref: dependencies.readiness(ref, observe=False)
+    else:
+        # Standalone work projects are valid worker scopes. Apply the Otto
+        # portfolio gate only when the project is supervised; standalone
+        # projects still fail closed on any declared project dependency or
+        # external prerequisite gate.
+        project_dependencies = project.payload.get("dependencies") or ()
+        external_gates = [gate for gate in graph.list(project=project_identity, kind="gate")
+            if ((gate.payload.get("fields") or {}).get("portfolio_setup") or {}).get("external_prerequisite")]
+        standalone_ready = not project_dependencies and not external_gates
+        project_readiness = lambda _ref: {"ready": standalone_ready,
+            "blockers": [] if standalone_ready else [{"reason": "standalone_project_dependencies"}]}
     read_revision = getattr(reader, "get_revision", None)
     if not callable(read_revision):
-        raise OccurrencePreparationError("worker admission revision reader is unavailable")
+        # Serialized owner readers intentionally omit historical reads. A
+        # modern admission stamp carries a full reviewer-visible digest, so
+        # validate both digests in the current payload and let readiness use
+        # that proof directly. Legacy stamps cannot prove this and remain
+        # fail-closed; this path does not claim an exact historical read.
+        from herzchen.domains.work import admission
+        stamp = admission.stamp_of(task.payload)
+        admitted_revision = admission.admitted_revision(task.payload)
+        if (not isinstance(stamp, Mapping)
+                or not isinstance(stamp.get("reviewed_digest"), str)
+                or not stamp.get("reviewed_digest")
+                or admitted_revision is None
+                or admitted_revision != stamp.get("revision")):
+            raise OccurrencePreparationError(
+                "worker admission requires an exact revision reader or a verified modern admission stamp"
+            )
+        read_revision = None
     readiness = work_ready(
         task,
-        read_record=reader.get_record,
+        read_record=read_record,
         read_revision=read_revision,
-        project_readiness=lambda ref: dependencies.readiness(ref, observe=False),
+        project_readiness=project_readiness,
     )
     if readiness.get("ready") is not True:
         raise OccurrencePreparationError(
@@ -1295,6 +1335,7 @@ def recheck_execution_admission(app: Any, due: Any) -> dict[str, Any]:
         "project_ref": dict(project_ref),
         "task_ref": task.ref.to_dict(),
         "worker_readiness": "ready",
+        "admitted_revision": readiness.get("admitted_revision"),
         "readiness": readiness,
     })
     return result

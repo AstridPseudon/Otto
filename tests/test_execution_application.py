@@ -26,6 +26,7 @@ from otto.agents.herzchen_adapter import HerzchenCodexAdapter
 from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
 from otto.portfolio.herzchen_binding import HerzchenBindingConfig, ProjectReadGrant
 from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.execution_operations import OccurrencePreparationError
 from otto.portfolio.advisor_execution import AdvisorExecution
 from otto.portfolio.advisor_delivery import AdvisorDeliveryPorts, ExactSessionDelivery, AdvisorDeliveryError
 from otto.host_bridge import DeterministicHostExecutor
@@ -178,6 +179,59 @@ class ExecutionApplicationTests(unittest.TestCase):
         duplicate = self.app.assign_and_start(**self.request())
         self.assertEqual(duplicate["outcome"], "replayed")
         self.assertEqual(len(self.provider.calls), 1)
+
+    def test_direct_start_rechecks_worker_admission_and_retains_admitted_revision(self):
+        prepared = self.app.assign_worker(**self.request())
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        current_check = self.app._current
+
+        def denied(_ref, _generation):
+            raise OccurrencePreparationError("worker admission changed before launch")
+
+        self.app._current = denied
+        blocked = self.app.start(schedule_id=prepared["schedule_id"])
+        self.assertEqual(blocked["outcome"], "partial")
+        self.assertEqual(self.provider.calls, [])
+
+        self.app._current = current_check
+        launched = self.app.start(schedule_id=prepared["schedule_id"])
+        self.assertEqual(launched["outcome"], "succeeded", launched)
+        due = self.port.read_due(prepared["schedule_id"])
+        admission = due["host_evidence"]["execution_admission"]
+        self.assertEqual(admission["worker_readiness"], "ready")
+        stamp = self.task.payload["metadata_namespaces"]["work.admission"]
+        self.assertEqual(admission["admitted_revision"], stamp["revision"])
+        self.assertEqual(len(self.provider.calls), 1)
+
+    def test_resume_launch_rechecks_and_records_worker_admission_revision(self):
+        first = self.app.assign_and_start(**self.request())
+        self.assertEqual(first["outcome"], "succeeded", first)
+        resumed = self.app.correct_worker(schedule_id=first["schedule_id"],
+            request_key="admission-resume", instruction="Review the retained result and add one focused check.")
+        self.assertEqual(resumed["outcome"], "succeeded", resumed)
+        due = self.port.read_due(resumed["schedule_id"])
+        admission = due["host_evidence"]["execution_admission"]
+        stamp = self.task.payload["metadata_namespaces"]["work.admission"]
+        self.assertEqual(admission["admitted_revision"], stamp["revision"])
+        self.assertEqual(admission["worker_readiness"], "ready")
+        self.assertEqual(len(self.provider.calls), 2)
+
+    def test_direct_start_blocks_incomplete_task_dependency_before_provider(self):
+        graph = WorkGraph(self.store, actor=self.actor)
+        prerequisite = graph.create_task(self.project.ref, title="Unfinished prerequisite",
+            logical_request_key="admission-prerequisite")
+        dependent = graph.create_task(self.project.ref, title="Dependent task",
+            dependencies=(prerequisite.ref,), logical_request_key="admission-dependent")
+        request = self.request()
+        request.update(task_ref=dependent.ref.to_dict(), request_key="worker-with-dependency",
+            instruction_contract={**request["instruction_contract"],
+                "task_ref": dependent.ref.to_dict(), "objective": dependent.payload["title"]})
+        prepared = self.app.assign_worker(**request)
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        blocked = self.app.start(schedule_id=prepared["schedule_id"])
+        self.assertEqual(blocked["outcome"], "partial")
+        self.assertIn("dependency_not_completed", json.dumps(blocked["error"]))
+        self.assertEqual(self.provider.calls, [])
 
     def test_worker_preparation_reads_document_revision_when_response_omits_record(self):
         original = self.app.portfolio.create_document

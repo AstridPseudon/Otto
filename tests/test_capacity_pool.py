@@ -11,25 +11,66 @@ from pathlib import Path
 import signal
 import subprocess
 import tempfile
+from dataclasses import fields
 from types import SimpleNamespace
 import threading
 import unittest
 
+from herzchen.domains.work import WorkGraph
 from herzchen.fleet.capacity import CapacityPolicy
 from herzchen.kernel import Store
 from otto.agents.owner_runtime import _pin_process_group
 from otto.portfolio.execution_host import ExecutionHost
 from otto.portfolio.owner_completion import OwnerCompletion
+from tests import test_execution_application
+
+
+def admitted_worker_fixture(test_case):
+    fixture = test_execution_application.ExecutionApplicationTests()
+    fixture.setUp()
+    test_case.addCleanup(fixture.doCleanups)
+    return fixture
+
+
+def admitted_worker_due(fixture, name, project):
+    task = WorkGraph(fixture.store, actor=fixture.actor).create_task(
+        fixture.project.ref, title="Capacity task " + name, logical_request_key="task-" + name)
+    fixture.task = task
+    request = fixture.request()
+    request["request_key"] = "worker-" + name
+    prepared = fixture.app.assign_worker(**request)
+    if prepared["outcome"] != "committed":
+        raise AssertionError(prepared)
+    return fixture.app._read(prepared["schedule_id"])
 
 
 class Turns:
     """Fake occurrences: each admitted turn stays running until released."""
 
-    def __init__(self, host, root):
+    def __init__(self, host, root, fixture):
         self.host, self.root, self.completions = host, Path(root), {}
         self.dues = {}
+        self.admission_fixture = fixture
+        app = fixture.app
+        self.app = SimpleNamespace(
+            runtime=app.runtime, portfolio=app.portfolio, binding=app.binding,
+            actor=app.actor, _current=app._current,
+            _read=lambda schedule: self.dues[schedule])
 
     def due(self, name, role, project):
+        if role == "worker":
+            # Keep the capacity occurrence synthetic, while borrowing its task,
+            # exact assignment, admission stamp, and dependency graph from the
+            # real owner fixture. The prelaunch gate can therefore run in full.
+            admitted_due = admitted_worker_due(self.admission_fixture, name, project)
+            target = dict(admitted_due.target)
+            target["requested_profile"] = "read-only"
+            values = {item.name: getattr(admitted_due, item.name) for item in fields(admitted_due)}
+            values.update(schedule_id=name, role=role, project_ref=project,
+                profile="read-only", target=target,
+                host_evidence={"gateway_attempt": {"physical_session_id": "session-" + name}},
+                stop_state="completed", completion_state="succeeded")
+            return SimpleNamespace(**values)
         return SimpleNamespace(schedule_id=name, project_ref=project, role=role, profile="read-only",
             target={}, host_evidence={}, assignment_ref={"authority": "pool", "id": name}, generation=1,
             stop_state="completed", completion_state="succeeded")
@@ -37,9 +78,7 @@ class Turns:
     def submit(self, name, role="worker", project=None):
         due = self.due(name, role, project or "project-" + name)
         self.dues[name] = due
-        app = SimpleNamespace(
-            runtime=SimpleNamespace(adapter=SimpleNamespace(owner_transport_only=True, worktree=str(self.root))),
-            _read=lambda schedule: self.dues[schedule])
+        app = self.app
         completion = OwnerCompletion()
         self.completions[name] = completion
         self.host._owned(lambda: self.host.admit_execution(app, due, lambda: completion))
@@ -74,7 +113,8 @@ class PoolBehavior:
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.host = self.make_host(self.root / "ipc")
-        self.turns = Turns(self.host, self.root)
+        self.admission_fixture = admitted_worker_fixture(self)
+        self.turns = Turns(self.host, self.root, self.admission_fixture)
         self.spawned = []
         self.addCleanup(self.reap_all)
 
@@ -340,7 +380,8 @@ class WorkerPinTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.host = self.make_host(self.root / "ipc")
-        self.turns = Turns(self.host, self.root)
+        self.admission_fixture = admitted_worker_fixture(self)
+        self.turns = Turns(self.host, self.root, self.admission_fixture)
         self.spawned = []
         self.addCleanup(PoolBehavior.reap_all, self)
 
