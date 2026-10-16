@@ -383,6 +383,7 @@ class RunTaskCodex(Scratch):
             self.assertEqual(argv[2], model)
             self.assertIn('model_reasoning_effort="%s"' % effort, argv)
             self.assertIn('sandbox_mode="workspace-write"', argv)
+            self.assertIn("sandbox_workspace_write.network_access=true", argv)  # Unix sockets need it
             self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", argv)
             self.assertTrue(any(a.startswith("sandbox_workspace_write.writable_roots=") for a in argv))
 

@@ -95,8 +95,10 @@ if [ "$HOST" = claude ]; then
 PID=$!
 else
 # The sandbox is set with -c, which `exec resume` also takes. The heavy pool's state must be writable.
+# network_access: without it the sandbox refuses AF_UNIX bind/connect, and most Otto tests start an
+# owner on a Unix socket (16 Oct: SAVEFIX couldn't run its tests). .git stays read-only either way.
 CODEX_ARGS=(-m "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" -c 'sandbox_mode="workspace-write"'
-  -c "sandbox_workspace_write.writable_roots=[\"$HEAVY_STATE_DIR\"]"
+  -c "sandbox_workspace_write.writable_roots=[\"$HEAVY_STATE_DIR\"]" -c 'sandbox_workspace_write.network_access=true'
   --ignore-user-config --skip-git-repo-check --json -o "$LAST")
 if [ -n "$RESUME" ]; then CODEX_RUN=(codex exec resume "${CODEX_ARGS[@]}" "$SESSION" -); else CODEX_RUN=(codex exec "${CODEX_ARGS[@]}" -); fi
 ( cd "$LAB" || exit 1
