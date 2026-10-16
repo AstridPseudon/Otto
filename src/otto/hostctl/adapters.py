@@ -43,6 +43,7 @@ def native_state_root(config: Mapping[str, Any]) -> Path:
 
 
 def compose_claude(config: Mapping[str, Any], *, worktree: str, model: str, reasoning: str,
+                   source: Optional[str] = None,
                    roles: tuple = ("worker", "manager"), owner: str = "otto-host",
                    native_caller_socket: Optional[str] = None, native_process_observer: Any = None,
                    manager_write_roots: tuple = (), manager_env: Optional[Mapping[str, str]] = None,
@@ -57,7 +58,7 @@ def compose_claude(config: Mapping[str, Any], *, worktree: str, model: str, reas
     if model not in settings.get("models", ()) or reasoning not in settings.get("efforts", ()):
         raise AdapterUnavailable("model/effort not qualified for claude-code on this host: " + model + "/" + reasoning)
     pin = LauncherPin.inspect(settings["launcher"], qualified=settings.get("qualified_versions"))
-    return ClaudeWorkerAdapter(owner=owner, source=worktree, worktree=worktree, launcher_pin=pin,
+    return ClaudeWorkerAdapter(owner=owner, source=source or worktree, worktree=worktree, launcher_pin=pin,
         state_root=str(native_state_root(config)), requested_model=model, requested_reasoning=reasoning,
         roles=roles, authentication=settings.get("authentication", "existing-user"),
         native_caller_socket=native_caller_socket, native_process_observer=native_process_observer,

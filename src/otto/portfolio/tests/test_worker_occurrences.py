@@ -20,17 +20,23 @@ class WorkerOccurrenceTests(unittest.TestCase):
     def setUp(self):
         self.roles = fixtures.RoleContextTests(); self.roles.setUp(); self.addCleanup(self.roles.doCleanups)
         self.f = self.roles.f
+        self.root = Path(self.f.temporary.name).resolve()
+        worker_lab = self.root / "worker-lab"
+        worker_lab.mkdir()
         manager, schedule, _ = self.roles.role()
         self.manager = manager
         self.assertEqual(self.f.app.start(schedule_id=schedule)["outcome"], "succeeded")
+        self.f.app.runtime.adapter.worktree = str(worker_lab)
+        self.f.app.runtime.adapter.source = str(worker_lab)
+        self.f.app.runtime.adapter.writable_roots = (str(worker_lab),)
         self.parent_request = dict(self.f.request(), request_key="coordinating-parent")
+        self.parent_request["instruction_contract"]["authority"]["workspace_roots"] = [str(worker_lab)]
         self.parent_request["instruction_contract"]["delegation"] = {"max_depth": 1, "result_consumption": "yield"}
         self.parent_request["instruction_contract"]["allowed_operations"].append("canonical_child_commands")
         self.parent_request["instruction_contract"]["authority"]["permitted_effects"].append("canonical_child_commands")
         parent = self.f.app.assign_and_start(**self.parent_request)
         self.assertEqual(parent["outcome"], "succeeded", parent)
         self.parent = self.f.app._read(parent["schedule_id"])
-        self.root = Path(self.f.temporary.name).resolve()
         self.run = self.root / "run"; self.run.mkdir()
         self.config = {"roles": {"worker_normal": {"model": "gpt-test", "reasoning": "high"},
                                  "worker_xhard": {"model": "gpt-test", "reasoning": "high"}},
@@ -41,9 +47,30 @@ class WorkerOccurrenceTests(unittest.TestCase):
             "task_refs": {"D02": self.f.task.ref.to_dict()}, "criterion_refs": {},
             "requested_model": "gpt-test", "requested_reasoning": "high", "schedule_id": schedule,
             "workers": {"D02": {**parent, "principal": "worker", "model": "gpt-test", "reasoning": "high"}}}
+        def execution(**options):
+            worker_context = options.pop("_worker_context", None)
+            workspace = (worker_context or {}).get("workspace", options.get("workspace"))
+            if workspace is not None:
+                workspace = Path(workspace).resolve()
+                self.f.app.runtime.adapter.worktree = str(workspace)
+                self.f.app.runtime.adapter.source = str(workspace)
+                self.f.app.runtime.adapter.writable_roots = (str(workspace),)
+            return self.f.app
+        def worker_lab_provider(project_ref, task_ref):
+            if project_ref != state["project_ref"] or task_ref != state["task_refs"]["D02"]:
+                raise PermissionError("synthetic worker lab is scoped to this fixture's exact project and task")
+            return {"workspace": worker_lab}
+        def worker_context_provider(due):
+            target = due.get("target") if isinstance(due, dict) else None
+            if (not isinstance(target, dict)
+                    or target.get("project_ref") != state["project_ref"]
+                    or target.get("task_ref") != state["task_refs"]["D02"]):
+                raise PermissionError("synthetic worker context is scoped to this fixture's exact project and task")
+            return {"workspace": worker_lab}
         self.server = SimpleNamespace(state=state, owner=self.f.owner, portfolio=self.f.app.portfolio,
             due_port=self.f.port, binding=self.f.binding, _save_state=lambda: None,
-            _execution=lambda **options: self.f.app)
+            _execution=execution,
+            worker_lab_provider=worker_lab_provider, worker_context_provider=worker_context_provider)
         self.bindings = {}
         self.ingress = SimpleNamespace(live_occurrence=lambda schedule: False)
         class Ingress:

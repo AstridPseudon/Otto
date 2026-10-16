@@ -86,6 +86,14 @@ class ManagerAssessmentCommands:
             self._completed_scope(scope)
         else:
             scope = self._scope(scope.ref)
+        check_accepted = self._policy.scope_mode == "check-accepted"
+        acceptance_mode_valid = (scope.policy.get("acceptance_mode") == "check-accepted"
+                                 if check_accepted else "acceptance_mode" not in scope.policy)
+        if (scope.review_required == check_accepted
+                or scope.allow_no_review != check_accepted
+                or not acceptance_mode_valid
+                or (check_accepted and scope.protocol != "check-accepted")):
+            raise PermissionError("required assessment scope mode differs from the configured owner policy")
         expected = {criterion for task, criterion in self._policy.task_criterion_pairs if task == self._task}
         if set(scope.criterion_refs) != expected:
             raise PermissionError("required scope does not cover the exact configured task criteria")
@@ -157,6 +165,8 @@ class ManagerAssessmentCommands:
         op, args = request.get("operation"), request.get("arguments")
         if op not in OPERATIONS or not isinstance(args, Mapping):
             raise ValueError("unknown assessment operation or missing arguments object")
+        if self._policy.scope_mode == "check-accepted" and op in {"assess", "accept"}:
+            raise PermissionError("check-accepted assessments require the verified fleet adapter")
         fields = {
             "declare-scope": {"scope_ref", "criterion_refs", "protocol"},
             "resolve-required-scope": set(),
@@ -185,18 +195,23 @@ class ManagerAssessmentCommands:
         common = {"logical_request_key": key}
         if op == "declare-scope":
             criteria = self._criteria(args.get("criterion_refs"))
+            check_accepted = self._policy.scope_mode == "check-accepted"
+            protocol = "check-accepted" if check_accepted else args.get("protocol")
             existing = self.required_scope(require=False)
             if existing is not None:
-                if set(existing.criterion_refs) != set(criteria) or existing.protocol != args.get("protocol"):
+                if set(existing.criterion_refs) != set(criteria) or existing.protocol != protocol:
                     raise PermissionError("declaration conflicts with the existing required scope")
                 return {"outcome": "replayed", "ref": existing.ref.to_dict(),
                         "required_scope_reused": True}
+            scope_policy = {"required_for_completion": True}
+            if check_accepted:
+                scope_policy["acceptance_mode"] = "check-accepted"
             record = self._assessment.declare_scope(
                 self._ref(args.get("scope_ref"), "scope_ref", kind="assessment.scope", stable=True),
                 parent_obligation=self._task, criteria=criteria,
-                protocol=args.get("protocol"), designated_approver=self._actor.actor,
-                authority=self._actor.authority, review_required=True, allow_no_review=False,
-                policy={"required_for_completion": True}, **common)
+                protocol=protocol, designated_approver=self._actor.actor,
+                authority=self._actor.authority, review_required=not check_accepted,
+                allow_no_review=check_accepted, policy=scope_policy, **common)
         elif op == "close-finding":
             finding = self._assessment.get_finding(ref("finding_ref", "assessment.finding"))
             result = self._assessment.get_result(finding.result_ref)

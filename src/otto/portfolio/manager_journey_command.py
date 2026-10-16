@@ -292,6 +292,7 @@ class ManagerJourneyCommands:
                         "generation": current.generation, "payload": current.payload},
                         binding["assignment_ref"], self.owner.graph.reader)
                     or any(member != task for member, _ in policy.task_criterion_pairs)
+                    or policy.scope_mode != base_policy.scope_mode
                     or set(policy.task_criterion_pairs) != {pair for pair in base_policy.task_criterion_pairs if pair[0] == task}
                     or binding.get("pool_ref") != policy.pool_ref.to_dict()
                     or binding.get("criterion_refs") != [criterion.to_dict() for _, criterion in policy.task_criterion_pairs]):
@@ -320,6 +321,7 @@ class ManagerJourneyCommands:
                  "task_criterion_pairs": [{"task_ref": task.to_dict(), "criterion_ref": criterion.to_dict()}
                     for task, criterion in policy.task_criterion_pairs],
                  "purpose": policy.purpose, "local_only": policy.local_only,
+                 "scope_mode": policy.scope_mode,
                  "capacity_units": policy.capacity_units,
                  "cumulative_allowance_units": policy.cumulative_allowance_units,
                  "allocation_key": supplement["binding"]["allocation_key"] if supplement else None,

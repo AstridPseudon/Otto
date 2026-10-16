@@ -112,6 +112,212 @@ finish("Manager turn %d: done." % turn)
 BRIEF_T1 = "# Brief: T1\n\nBuild the first outcome. Proof: tests pass.\n"
 
 
+class WorkerWorkspaceCompositionTests(unittest.TestCase):
+    def test_fresh_project_view_loads_owner_policy_and_exact_criterion_aliases(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from herzchen.contracts import ResourceRef
+        from otto.hostctl.serve import HostOwnerService
+
+        project = ResourceRef("owner", "work.project", "project-a", "project-r2")
+        prior_task = ResourceRef("owner", "work.task", "task-a", "task-r2")
+        task = ResourceRef("owner", "work.task", "task-a", "task-r3")
+        criterion = ResourceRef("owner", "assessment.criterion", "criterion-a", "criterion-r1")
+        identities = {ref.id: SimpleNamespace(ref=ref, payload=payload)
+                      for ref, payload in ((project, {"tasks": [prior_task.to_dict()]}),
+                                           (task, {"alias": "T1"}),
+                                           (criterion, {"definition": {"source_alias": "C01"}}))}
+        reader = SimpleNamespace(get_identity=lambda ref: identities.get(ref.id))
+        scope = SimpleNamespace(parent_obligation_ref=prior_task, criterion_refs=(criterion,))
+        assessed = SimpleNamespace(coverage=lambda parent: {"scopes": [{"ref": {"id": "scope-a"}}]
+                                   if parent.id == task.id else []},
+                                   get_scope=lambda _ref: scope)
+        service = object.__new__(HostOwnerService)
+        service.state = {"authority": "owner", "project_ref": project.to_dict(),
+                         "task_refs": {"T1": prior_task.to_dict()}, "manager": "manager"}
+        service.owner = SimpleNamespace(
+            binding=SimpleNamespace(authenticated_actor=lambda principal: principal),
+            graph=SimpleNamespace(reader=reader, current=lambda _ref: identities[project.id]),
+            evidence_payload_resolver=object())
+        service.store = object()
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
+                "task_criterion_pairs": ["T1/C01"]}})}]
+
+        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
+             patch("herzchen.domains.assessment.AssessmentModule"):
+            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+
+        self.assertEqual(service.state["assessment_policy"]["scope_mode"], "check-accepted")
+        self.assertEqual(service.state["task_refs"], {"T1": task.to_dict()})
+        self.assertEqual(service.state["criterion_refs"], {"C01": criterion.to_dict()})
+        self.assertIsNone(service.assert_assessment_policy_current())
+        policy = __import__("otto.portfolio.local_assessment_policy", fromlist=["LocalAssessmentPolicy"])
+        parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
+        self.assertEqual(parsed.task_criterion_pairs, ((task, criterion),))
+
+        hydrated_state = json.loads(json.dumps(service.state))
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "changed owner policy",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
+                "task_criterion_pairs": ["T1/C01"]}})}]
+        with self.assertRaisesRegex(RuntimeError, "changed after owner view hydration"):
+            service.assert_assessment_policy_current()
+        self.assertEqual(service.state, hydrated_state, "freshness check must not mutate trusted service state")
+
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C01"]}})}]
+        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
+             patch("herzchen.domains.assessment.AssessmentModule"):
+            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+        parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
+        self.assertEqual(parsed.scope_mode, "review-required")
+
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C99"]}})}]
+        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
+             patch("herzchen.domains.assessment.AssessmentModule"):
+            with self.assertRaisesRegex(RuntimeError, "does not bind current owner records"):
+                service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+
+    def _service(self, due, workspace):
+        from types import SimpleNamespace
+        from otto.hostctl.serve import HostOwnerService
+        service = object.__new__(HostOwnerService)
+        service.due_port = SimpleNamespace(read_due=lambda schedule: due if schedule == due["schedule_id"] else None)
+        service.worker_mcp_provider = lambda _due: {"token": "owner grant"}
+        service.worker_context_provider = lambda _due: {"workspace": workspace}
+        service.worker_lab_provider = lambda _project, _task: {"workspace": workspace}
+        service._default_adapter_factory = False
+        def adapter_factory(*, principal, model, reasoning, service, worker_mcp=None, workspace=None):
+            return {"principal": principal, "model": model, "reasoning": reasoning,
+                    "worker_mcp": worker_mcp, "workspace": workspace}
+        service.adapter_factory = adapter_factory
+        service.session = SimpleNamespace(execution_application=lambda adapter, **_kwargs: adapter)
+        service.state = {"manager": "manager"}
+        return service
+
+    @staticmethod
+    def _fleet_registry_for_due():
+        import threading
+        from types import SimpleNamespace
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.admission import authoring_stamp
+        from herzchen.fleet.tools.tokens import TokenBook
+        from otto.hostctl.product_service import OwnerFleetRegistry
+
+        task_ref = ResourceRef("owner", "work.task", "task-a", "task-r1")
+        payload = {"kind": "task", "fields": {}, "metadata_namespaces": {}}
+        payload["metadata_namespaces"]["work.admission"] = authoring_stamp("task-r1", payload, "reviewer")
+        task = SimpleNamespace(ref=task_ref, payload=payload)
+        assignment_ref = ResourceRef("owner", "wrk.assignment", "assignment-a", "assignment-r2")
+        assignment = SimpleNamespace(ref=assignment_ref, generation=2, role="executor",
+                                      principal="worker-a", scope=task_ref)
+        owner = SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: task),
+                                assignments=SimpleNamespace(get=lambda _ref: assignment))
+        tokens = TokenBook()
+        token = tokens.issue("assignment-a", "worker")
+        record = SimpleNamespace(assignment="assignment-a", task=task, admitted_revision="task-r1",
+                                 state="launched", role="worker", token=token)
+        registry = object.__new__(OwnerFleetRegistry)
+        registry.owner = owner
+        registry.config = {"python": sys.executable}
+        registry.tokens = tokens
+        registry.records = {"assignment-a": record}
+        registry.dispatcher = SimpleNamespace()
+        registry._due_keys, registry._due_bindings = {}, {}
+        registry._lock = threading.RLock()
+        registry.facade_server = object()
+        registry.facade_socket = "/tmp/otto-worker.sock"
+        registry.assignment_context = lambda assignment_id, token=None: {
+            "assignment_id": assignment_id, "token": token}
+        due = {"schedule_id": "worker-run", "role": "worker", "recipient": "worker-a",
+               "assignment_ref": assignment_ref.to_dict(), "generation": 2,
+               "target": {"task_ref": task_ref.to_dict(), "assignment_ref": assignment_ref.to_dict()}}
+        return registry, due
+
+    def test_prepared_worker_workspace_is_verified_and_passed_to_adapter(self):
+        service = self._service({"schedule_id": "pre-dispatch", "role": "manager"}, "/owner/labs/task-a")
+        captured = service._execution(principal="worker", model="m", reasoning="high",
+            evidence_id="pre-dispatch", project_ref={"id": "p"}, task_ref={"id": "t"},
+            workspace="/owner/labs/task-a")
+        self.assertEqual(captured["workspace"], "/owner/labs/task-a")
+
+    def test_exact_worker_due_binds_lab_and_mcp_and_rejects_project_workspace_spoof(self):
+        due = {"schedule_id": "worker-run", "role": "worker", "recipient": "worker-a",
+               "assignment_ref": {"id": "assignment-a"}, "generation": 1,
+               "target": {"task_ref": {"id": "task-a"}}}
+        service = self._service(due, "/owner/labs/task-a")
+        execution = service._execution(principal="worker-a", model="m", reasoning="high",
+                                       evidence_id="worker-run")
+        self.assertEqual(execution["workspace"], "/owner/labs/task-a")
+        self.assertEqual(execution["worker_mcp"], {"token": "owner grant"})
+        with self.assertRaises(PermissionError):
+            service._execution(principal="worker-a", model="m", reasoning="high",
+                               evidence_id="worker-run", workspace="/project/workspace")
+
+    def test_non_manager_without_worker_due_cannot_fall_back_to_project_workspace(self):
+        service = self._service({"schedule_id": "manager-run", "role": "manager"}, "/owner/labs/task-a")
+        with self.assertRaises(PermissionError):
+            service._execution(principal="worker-a", model="m", reasoning="high", evidence_id="missing-worker")
+
+    def test_exact_project_advisor_help_due_keeps_non_worker_execution_available(self):
+        from types import SimpleNamespace
+        from herzchen.contracts import ResourceRef
+        assignment_ref = ResourceRef("owner", "wrk.assignment", "advisor-a", "rev-3")
+        assignment = SimpleNamespace(ref=assignment_ref, generation=2, role="project_advisor",
+                                     principal="advisor-a")
+        due = {"schedule_id": "help-run", "role": "project_advisor", "recipient": "advisor-a",
+               "assignment_ref": assignment_ref.to_dict(), "generation": 2}
+        service = self._service(due, "/owner/labs/task-a")
+        service.owner = SimpleNamespace(assignments=SimpleNamespace(get=lambda _ref: assignment))
+        execution = service._execution(principal="advisor-a", model="m", reasoning="high",
+                                       evidence_id="help-run")
+        self.assertEqual(execution["principal"], "advisor-a")
+
+    def test_caller_context_keeps_the_exact_help_due_identity(self):
+        from types import SimpleNamespace
+        from herzchen.contracts import ResourceRef
+        assignment_ref = ResourceRef("owner", "wrk.assignment", "advisor-a", "rev-3")
+        assignment = SimpleNamespace(ref=assignment_ref, generation=2, role="project_advisor",
+                                     principal="advisor-a")
+        due = {"schedule_id": "help-run", "role": "project_advisor", "recipient": "advisor-a",
+               "assignment_ref": assignment_ref.to_dict(), "generation": 2,
+               "requested_model": "m", "requested_reasoning": "high"}
+        service = self._service(due, "/owner/labs/task-a")
+        service.owner = SimpleNamespace(assignments=SimpleNamespace(get=lambda _ref: assignment))
+        service.session = SimpleNamespace(execution_application=lambda adapter, **_kwargs:
+            SimpleNamespace(caller_context=lambda _caller: {"identity": "advisor"}))
+        context = service._caller_context(SimpleNamespace(schedule_id="help-run",
+            actor=SimpleNamespace(actor="advisor-a")))
+        self.assertEqual(context, {"identity": "advisor"})
+        due["generation"] = 3
+        with self.assertRaises(PermissionError):
+            service._caller_context(SimpleNamespace(schedule_id="help-run",
+                actor=SimpleNamespace(actor="advisor-a")))
+
+    def test_dispatcher_due_requires_exact_owner_generation_principal_and_task_revision(self):
+        registry, due = self._fleet_registry_for_due()
+        grant = registry.grant_for_due(due)
+        self.assertEqual(grant.token, registry.records["assignment-a"].token)
+        for key, value in (("generation", 1), ("recipient", "other")):
+            registry, forged = self._fleet_registry_for_due()
+            forged[key] = value
+            with self.subTest(key=key), self.assertRaises(PermissionError):
+                registry.grant_for_due(forged)
+        registry, stale_task = self._fleet_registry_for_due()
+        stale_task["target"]["task_ref"] = {**stale_task["target"]["task_ref"], "revision": "task-old"}
+        with self.assertRaises(PermissionError):
+            registry.grant_for_due(stale_task)
+
+
 @unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"), "macOS fence")
 class ServeTests(HostctlFixture):
     dispatch = False
@@ -200,6 +406,123 @@ class ManagerLoopTests(ServeTests):
     """The manager dispatches a Claude worker over the socket, yields, and is resumed."""
     dispatch = True
 
+    def setUp(self):
+        # This integration test exercises the canonical worker lab resolver,
+        # which requires an owner-local checkout and admitted otto.plan data.
+        # Give only this fixture a disposable repo and add plan metadata at
+        # activation, where the real register/materialize path creates tasks.
+        from unittest.mock import patch
+        from otto.hostctl import register
+        from otto.hostctl import serve
+        from otto.hostctl.product_service import OwnerFleetRegistry
+
+        materialize = register.materialize
+        task_refs = register._task_refs
+
+        def materialize_with_worker_plans(session, record, registration, **kwargs):
+            registration = dict(registration)
+            planned = []
+            for task in registration["tasks"]:
+                task = dict(task)
+                task["metadata_namespace"] = {"otto.plan": {
+                    "route": "xhard" if task["id"] == "T2" else "normal",
+                    "size": 1, "repo": "manager-loop-fixture", "branch": "main"}}
+                planned.append(task)
+            registration["tasks"] = planned
+
+            def admitted_task_refs(session, project_record):
+                refs = task_refs(session, project_record)
+                actor = session.binding.authenticated_actor(session.host_principal())
+                for alias, raw in refs.items():
+                    current = session.owner.graph.current(ResourceRef.from_dict(raw))
+                    admitted = session.owner.graph.revise(current.ref,
+                        fields={"manager_loop_fixture_admitted": True}, actor=actor,
+                        logical_request_key="manager-loop-admit:" + alias)
+                    refs[alias] = admitted.ref.to_dict()
+                return refs
+
+            from herzchen.contracts import ResourceRef
+            with patch.object(register, "_task_refs", admitted_task_refs):
+                return materialize(session, record, registration, **kwargs)
+
+        patcher = patch.object(register, "materialize", materialize_with_worker_plans)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        attach = serve.attach
+
+        def attach_with_worker_providers(*args, **kwargs):
+            import hashlib
+            import threading
+            from herzchen.fleet.labs import LabFleet
+            from types import MethodType
+
+            journey = attach(*args, **kwargs)
+            fleets = {}
+            registry = object.__new__(OwnerFleetRegistry)
+            registry.owner = journey.owner
+            registry.config = journey.config
+            registry._pair_lock = threading.RLock()
+
+            def pair(_registry, key, repo, branch):
+                if key not in fleets:
+                    branch_key = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:20]
+                    labs_root = repo.parent / (repo.name + ".otto-labs") / branch_key
+                    fleets[key] = LabFleet(repo, labs_root, checkpoint=lambda *_args, **_kwargs: None)
+                return fleets[key], None
+
+            registry._pair = MethodType(pair, registry)
+
+            def prepare(project_ref, task_ref):
+                return OwnerFleetRegistry.prepare_worker_lab(registry, project_ref, task_ref)
+
+            def context_for_due(due):
+                if not isinstance(due, dict) or due.get("role") != "worker":
+                    raise PermissionError("fixture lab context requires a worker Due")
+                target = due.get("target")
+                if not isinstance(target, dict) or not isinstance(target.get("project_ref"), dict) \
+                        or not isinstance(target.get("task_ref"), dict):
+                    raise PermissionError("fixture worker Due has no exact project and task references")
+                assignment = due.get("assignment_ref")
+                if not isinstance(assignment, dict) or not assignment.get("id"):
+                    raise PermissionError("fixture worker Due has no assignment reference")
+                if target.get("assignment_ref") != assignment:
+                    raise PermissionError("fixture worker Due assignment target does not match")
+                return prepare(target["project_ref"], target["task_ref"])
+
+            journey.worker_lab_provider = prepare
+            journey.worker_context_provider = context_for_due
+            journey.worker_mcp_provider = lambda due: {"fixture_grant": due["assignment_ref"]["id"]}
+            return journey
+
+        attach_patcher = patch.object(serve, "attach", attach_with_worker_providers)
+        attach_patcher.start()
+        self.addCleanup(attach_patcher.stop)
+
+        start_service = self._start_service
+
+        def start_service_with_fixture_repository():
+            import subprocess
+            repo = Path(self.bundle).parent / "manager-loop-line"
+            repo.mkdir()
+            self.worker_repo = repo
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True,
+                           capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Fixture"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "fixture@example.invalid"], check=True)
+            (repo / "README.md").write_text("Disposable manager loop fixture repository.\n")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "fixture base"], check=True,
+                           capture_output=True, text=True)
+            installation_path = Path(self.home, "installation.json")
+            installation = json.loads(installation_path.read_text())
+            installation["repositories"] = {"manager-loop-fixture": str(repo)}
+            installation_path.write_text(json.dumps(installation, indent=2))
+            return start_service()
+
+        self._start_service = start_service_with_fixture_repository
+        super().setUp()
+
     def test_service_starts_no_due_relays_status_and_denies_a_foreign_socket_caller(self):
         self.skipTest("covered by ServeTests")
 
@@ -207,7 +530,7 @@ class ManagerLoopTests(ServeTests):
         self.skipTest("covered by ServeTests")
 
     @staticmethod
-    def service_adapter_factory(*, principal, model, reasoning, service):
+    def service_adapter_factory(*, principal, model, reasoning, service, worker_mcp=None, workspace=None, **_):
         """Real manager fence (children allowed); the worker leaf skips sandbox-exec.
 
         A scripted launcher is an interpreter script, which the leaf fence's
@@ -220,7 +543,7 @@ class ManagerLoopTests(ServeTests):
         pin = LauncherPin.inspect(claude_settings(service.config)["launcher"])
         state = str(native_state_root(service.config))
         launch = service.manager_launch()
-        worktree = service.worktree()
+        worktree = workspace or service.worktree()
         unfenced = type("UnfencedScope", (), {"identity": MacWriteScope.identity, "workspace": worktree,
             "state_root": state, "allow_subprocesses": False,
             "pin": {"identity": MacWriteScope.identity, "workspace": worktree, "state_root": state,
@@ -243,23 +566,47 @@ class ManagerLoopTests(ServeTests):
         root = Path(self.worktree)
         started = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(started.get("outcome"), "succeeded", started)
-        deadline = time.monotonic() + 120
-        while not (root / "manager-turn-3.txt").exists() and time.monotonic() < deadline:
+        first_receipt = root / "run-worker-1.json"
+        second_receipt = root / "run-worker-2.json"
+        required = (first_receipt, second_receipt, root / "manager-turn-3.txt")
+        deadline = time.monotonic() + 180
+        last_read_error = None
+        while time.monotonic() < deadline:
+            if all(path.exists() for path in required):
+                try:
+                    first = json.loads(first_receipt.read_text())
+                    second = json.loads(second_receipt.read_text())
+                except (FileNotFoundError, json.JSONDecodeError) as exc:
+                    last_read_error = exc
+                else:
+                    break
             time.sleep(0.2)
-        first = json.loads((root / "run-worker-1.json").read_text())
-        second = json.loads((root / "run-worker-2.json").read_text())
+        else:
+            missing = [path.name for path in required if not path.exists()]
+            self.fail("manager dispatch/resume timed out; missing: " + ", ".join(missing) +
+                      "; last receipt read error: " + repr(last_read_error) +
+                      "; observed files: " + ", ".join(sorted(path.name for path in root.iterdir())))
         # Routing is proven from run.json (Otto's generated view): normal -> Haiku, xhard -> Sonnet.
         self.assertEqual((first["outcome"], first["selection"]["model"], first["selection"]["reasoning"]),
                          ("admitted", "claude-haiku-5-5", "high"), first)
         self.assertEqual((second["outcome"], second["selection"]["model"]), ("admitted", "claude-sonnet-5-5"), second)
         self.assertEqual(first["caller_context"]["role"], "manager")
-        self.assertTrue((root / "answer-claude-haiku-5-5.txt").exists(), "normal-route worker did not run")
-        self.assertTrue((root / "answer-claude-sonnet-5-5.txt").exists(), "xhard-route worker did not run")
+        status = self.orchestrator("status")
+        self.assertEqual(status["outcome"], "ok", status)
+        lab_root = self.worker_repo.parent / (self.worker_repo.name + ".otto-labs")
+        task_ids = {alias: ref["id"] for alias, ref in status["task_refs"].items()}
+        self.assertEqual(len(list(lab_root.glob("**/" + task_ids["T1"] + "/answer-claude-haiku-5-5.txt"))), 1,
+                        "normal-route worker did not write its assignment lab")
+        self.assertEqual(len(list(lab_root.glob("**/" + task_ids["T2"] + "/answer-claude-sonnet-5-5.txt"))), 1,
+                        "xhard-route worker did not write its assignment lab")
+        self.assertFalse((root / "answer-claude-haiku-5-5.txt").exists(),
+                         "normal-route worker wrote the manager workspace")
+        self.assertFalse((root / "answer-claude-sonnet-5-5.txt").exists(),
+                         "xhard-route worker wrote the manager workspace")
         # Each worker result was delivered back by resuming the same manager session.
         self.assertTrue((root / "manager-turn-2.txt").exists(), "manager not resumed after T1")
         self.assertTrue((root / "manager-turn-3.txt").exists(), "manager not resumed after T2")
         self.assertEqual(len(list(root.glob(".turns-*"))), 1, "the manager continued one session")
-        self.assertEqual(self.orchestrator("status")["outcome"], "ok")
 
 
 class EscalationTests(ServeTests):
