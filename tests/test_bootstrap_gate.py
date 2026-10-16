@@ -6,6 +6,7 @@ scripts (used to show the tests failing against the old ones).
 """
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -130,6 +131,28 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "land.lock").exists())
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
+
+    def test_a_landing_stopped_by_a_signal_never_reports_landed(self):
+        started = self.tmp / "check-started"
+        check = "%s -c \"open('%s','w').close(); import time; time.sleep(600)\"" % (sys.executable, started)
+        self.lab("T10", {"note.txt": "x\n"})
+        proc = subprocess.Popen(["bash", str(BOOT / "land.sh"), "T10", "--check", check], env=self.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        while not started.exists() and proc.poll() is None:  # wait for the check to start; only a hang fails
+            pass
+        if proc.poll() is not None:
+            self.fail("land.sh ended before its check ran:\n" + "".join(proc.communicate()))
+        os.killpg(proc.pid, signal.SIGTERM)
+        out, err = proc.communicate()
+        self.assertNotEqual(proc.returncode, 0, out + err)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("LAND RESULT: refused interrupted"), out + err)
+        self.assertEqual(self.head(), self.base, "canon/main moved")
+        self.assertFalse((self.ops / "land.lock").exists(), "the lock outlived the stopped landing")
+
+    def test_a_failing_check_is_refused(self):
+        self.lab("T11", {"note.txt": "x\n"})
+        r = self.land("T11", "--check", "false")
+        self.assertRefused(r, "T11", "the task's check failed: false")
 
     def test_new_failure_is_refused(self):
         self.lab("T2", {"src/otto/mod.py": "def f():\n    return 2\n"})

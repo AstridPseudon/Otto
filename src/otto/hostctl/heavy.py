@@ -10,7 +10,9 @@ machine's capacity; light work (edits, checks, show) takes none:
 per 2 GB of physical memory (4 on an 8 GB Mac). A job takes ``--weight`` slots (default 1). A guide
 for this machine: a frame or visualize call 1, a real-film journey or full test suite 2, a
 full-film render 3. Jobs run concurrently while slots remain. Arrivals queue in order, so a big job
-isn't starved by a stream of small ones. While the OS reports **critical** memory pressure, a new
+isn't starved by a stream of small ones. While the job at the head waits for more slots than are
+free, a smaller job behind it may take free slots, but only while the head could still start beside
+every such job: it never delays the head. While the OS reports **critical** memory pressure, a new
 job waits for a running one to finish instead of piling on (it never waits on an otherwise idle
 machine).
 
@@ -231,6 +233,41 @@ def _try_slots(directory: Path, cap: int, weight: int) -> list | None:
     return None
 
 
+def _try_backfill(directory: Path, cap: int, weight: int) -> list | None:
+    """Free slots for a job queued behind the head, or none.
+
+    Backfilled jobs together never take more than ``cap - head weight`` slots, so once the jobs the
+    head is waiting on end, the head fits beside all of them. Each one is marked in ``backfill/``
+    before the guard is released, so two arrivals can't both count the same room.
+    """
+    try:
+        head = json.loads((directory / "head.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not _alive(int(head.get("pid") or 0)) or memory_pressure() == PRESSURE_CRITICAL:
+        return None
+    marks = directory / "backfill"
+    marks.mkdir(exist_ok=True)
+    with open(directory / "backfill.lock", "a+") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        taken = 0
+        for mark in marks.glob("*.json"):
+            try:
+                item = json.loads(mark.read_text())
+            except (OSError, ValueError):
+                continue
+            if _alive(int(item.get("pid") or 0)):
+                taken += int(item.get("weight", 1))
+            else:
+                mark.unlink(missing_ok=True)
+        if weight + taken > cap - int(head.get("weight", cap)):
+            return None
+        slots = _try_slots(directory, cap, weight)
+        if slots:
+            (marks / f"{os.getpid()}.json").write_text(json.dumps({"pid": os.getpid(), "weight": weight}))
+        return slots
+
+
 def _append_log(directory: Path, record: dict) -> None:
     path = directory / "heavy.log"
     with open(directory / "log.lock", "a+") as guard:
@@ -273,6 +310,7 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     queued_at = time.time()
     queue = open(directory / "queue.lock", "a+")
     announced = False
+    slots = None
     while True:
         try:
             fcntl.flock(queue, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -280,6 +318,10 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
         except OSError as exc:
             if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
                 raise
+            slots = _try_backfill(directory, cap, weight)
+            if slots:
+                print("heavy: running in free slots the waiting job ahead can't use", file=sys.stderr)
+                break
             if not wait:
                 print(f"heavy: no capacity now; running: {_describe(_holders(directory))}", file=sys.stderr)
                 return EXIT_BUSY
@@ -287,10 +329,10 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
                 print("heavy: queued behind another job waiting for capacity", file=sys.stderr)
                 announced = True
             time.sleep(POLL_SECONDS)
-    slots = None
+    head = directory / "head.json"
     try:
         announced = False
-        while True:
+        while not slots:
             running = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
             pressured = memory_pressure() == PRESSURE_CRITICAL and running
             slots = None if pressured else _try_slots(directory, cap, weight)
@@ -302,10 +344,13 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
             if not announced:
                 reason = "memory pressure is critical" if pressured else f"all {cap} slots in use"
                 print(f"heavy: waiting for {weight} slot(s), {reason}; running: {_describe(running)}", file=sys.stderr)
+                head.write_text(json.dumps({"pid": os.getpid(), "weight": weight}))
                 announced = True
             _reap_dead_holders(directory)
             time.sleep(POLL_SECONDS)
     finally:
+        if announced:
+            head.unlink(missing_ok=True)
         fcntl.flock(queue, fcntl.LOCK_UN)
         queue.close()
 
@@ -357,6 +402,7 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
                                 "seconds": round(time.time() - started, 1), "machine_after": machine_state(),
                                 "leftovers": sweep, "inherited_leftovers": inherited})
         holder_file.unlink(missing_ok=True)
+        (directory / "backfill" / f"{os.getpid()}.json").unlink(missing_ok=True)
         for handle in slots or []:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()

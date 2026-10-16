@@ -24,6 +24,12 @@ def heavy(tmp_path: Path, *args: str, capacity: int = 1, **kw) -> subprocess.Pop
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
 
 
+def holding(tmp_path: Path, used: int, capacity: int = 1) -> None:
+    """Wait until the pool's holders take USED slots (arrival order without fixed sleeps; only a hang fails)."""
+    while json.loads(heavy(tmp_path, "status", capacity=capacity).communicate()[0])["used"] != used:
+        time.sleep(0.05)
+
+
 def py(code: str) -> list[str]:
     return [sys.executable, "-c", textwrap.dedent(code)]
 
@@ -82,7 +88,7 @@ def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path
     first = heavy(tmp_path, "--purpose", "render A", "--",
                   *py(f"import time; open({str(marks)!r},'a').write('A+%f\\n' % time.time()); time.sleep(2); "
                       f"open({str(marks)!r},'a').write('A-%f\\n' % time.time())"))
-    time.sleep(0.7)
+    holding(tmp_path, 1)
     second = heavy(tmp_path, "--purpose", "journey B", "--",
                    *py(f"import time; open({str(marks)!r},'a').write('B+%f\\n' % time.time())"))
     _, err2 = second.communicate(timeout=30)
@@ -95,7 +101,7 @@ def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path
 
 def test_no_wait_returns_busy_and_names_what_is_running(tmp_path):
     first = heavy(tmp_path, "--purpose", "render A", "--", *py("import time; time.sleep(3)"))
-    time.sleep(0.7)
+    holding(tmp_path, 1)
     busy = heavy(tmp_path, "--no-wait", "--", *py("pass"))
     _, err = busy.communicate(timeout=30)
     first.communicate(timeout=30)
@@ -178,11 +184,18 @@ def _job(marks: Path, name: str, seconds: float) -> list[str]:
               f"open({str(marks)!r},'a').write('{name}-=%f\\n' % time.time())")
 
 
+def _together(marks: Path, name: str, n: int) -> list[str]:
+    # Start, then stay until N jobs have started (they can only all start if they run at once).
+    return py(f"import time; open({str(marks)!r},'a').write('{name}+=%f\\n' % time.time())\n"
+              f"while open({str(marks)!r}).read().count('+=') < {n}: time.sleep(0.05)\n"
+              f"open({str(marks)!r},'a').write('{name}-=%f\\n' % time.time())")
+
+
 def test_jobs_run_at_the_same_time_while_capacity_remains(tmp_path):
     marks = tmp_path / "marks"
-    a = heavy(tmp_path, "--purpose", "frames A", "--", *_job(marks, "A", 2), capacity=3)
-    b = heavy(tmp_path, "--purpose", "frames B", "--", *_job(marks, "B", 2), capacity=3)
-    c = heavy(tmp_path, "--purpose", "frames C", "--", *_job(marks, "C", 2), capacity=3)
+    a = heavy(tmp_path, "--purpose", "frames A", "--", *_together(marks, "A", 3), capacity=3)
+    b = heavy(tmp_path, "--purpose", "frames B", "--", *_together(marks, "B", 3), capacity=3)
+    c = heavy(tmp_path, "--purpose", "frames C", "--", *_together(marks, "C", 3), capacity=3)
     for proc in (a, b, c):
         proc.communicate(timeout=60)
         assert proc.returncode == 0
@@ -193,9 +206,9 @@ def test_jobs_run_at_the_same_time_while_capacity_remains(tmp_path):
 def test_a_heavier_job_waits_for_enough_slots_and_is_not_starved(tmp_path):
     marks = tmp_path / "marks"
     first = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small1", 2), capacity=2)
-    time.sleep(0.6)
+    holding(tmp_path, 1, capacity=2)
     big = heavy(tmp_path, "--weight", "2", "--purpose", "full render", "--", *_job(marks, "big", 0.5), capacity=2)
-    time.sleep(0.6)
+    assert "waiting for 2 slot(s)" in big.stderr.readline()  # it heads the queue
     later = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small2", 0.2), capacity=2)
     for proc in (first, big, later):
         proc.communicate(timeout=60)
@@ -205,9 +218,31 @@ def test_a_heavier_job_waits_for_enough_slots_and_is_not_starved(tmp_path):
     assert s2 >= sb, "a later small job jumped the queue ahead of the waiting big job"
 
 
+def test_a_small_job_uses_a_slot_the_waiting_head_cannot_and_never_delays_it(tmp_path):
+    # 4 slots: a 3-slot render runs; a 3-slot job waits at the head with 1 slot free. A 1-slot check
+    # behind it takes that slot at once; a second one doesn't (the head must still fit beside it).
+    marks = tmp_path / "marks"
+    render = heavy(tmp_path, "--weight", "3", "--", *_job(marks, "render", 4), capacity=4)
+    holding(tmp_path, 3, capacity=4)
+    head = heavy(tmp_path, "--weight", "3", "--purpose", "transcript", "--", *_job(marks, "head", 0.5), capacity=4)
+    assert "waiting for 3 slot(s)" in head.stderr.readline()  # it heads the queue
+    check = heavy(tmp_path, "--weight", "1", "--purpose", "gate", "--", *_job(marks, "check", 12), capacity=4)
+    holding(tmp_path, 4, capacity=4)
+    second = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "second", 0.2), capacity=4)
+    for proc in (render, head, check, second):
+        proc.communicate(timeout=60)
+        assert proc.returncode == 0
+    _, end_render = _span(marks, "render"); s_head, _ = _span(marks, "head")
+    s_check, e_check = _span(marks, "check"); s_second, _ = _span(marks, "second")
+    assert s_check < end_render, "the 1-slot check waited although the head couldn't use the free slot"
+    assert s_head >= end_render, "the 3-slot head started while the render held its slots"
+    assert s_head < e_check, "the head waited for the backfilled check: backfill delayed it"
+    assert s_second >= s_head, "a second small job backfilled into room the head needs"
+
+
 def test_status_shows_capacity_and_what_is_running(tmp_path):
     job = heavy(tmp_path, "--weight", "2", "--purpose", "journey X", "--", *py("import time; time.sleep(2)"), capacity=4)
-    time.sleep(0.8)
+    holding(tmp_path, 2, capacity=4)
     status = json.loads(heavy(tmp_path, "status", capacity=4).communicate(timeout=30)[0])
     job.communicate(timeout=30)
     assert status["capacity"] == 4 and status["used"] == 2 and status["free"] == 2
