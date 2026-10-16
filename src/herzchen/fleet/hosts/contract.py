@@ -150,6 +150,30 @@ class TurnSpec:
 
 
 @dataclass(frozen=True)
+class ContinuationRequest:
+    """Prior landing facts supplied for a separately authorized continuation."""
+
+    session_id: str
+    workspace: str
+    attempt_id: str
+    landing_log: str
+    settled: bool
+    landing_outcome: str
+
+    def __post_init__(self) -> None:
+        _text(self.session_id, "continuation session_id")
+        _text(self.workspace, "continuation workspace")
+        _text(self.attempt_id, "continuation attempt_id")
+        if not os.path.isabs(self.workspace):
+            raise HostContractError("continuation workspace must be absolute")
+        _text(self.landing_log, "landing_log")
+        if type(self.settled) is not bool:
+            raise HostContractError("settled must be a boolean")
+        if not isinstance(self.landing_outcome, str) or self.landing_outcome not in {"failed", "conflict"}:
+            raise HostContractError("landing_outcome must be failed or conflict")
+
+
+@dataclass(frozen=True)
 class HostEvent:
     """One normalized observation. ``other`` carries everything the contract does not name."""
 
@@ -252,6 +276,9 @@ class HostKind(abc.ABC):
     @abc.abstractmethod
     def build_stdin(self, spec: TurnSpec) -> bytes: ...
 
+    def prepare_continuation(self, spec: TurnSpec, request: ContinuationRequest) -> TurnSpec:
+        raise HostContractError("host %s does not support continuations" % self.kind)
+
     @abc.abstractmethod
     def make_parser(self, spec: TurnSpec, **callbacks: Any) -> HostStream: ...
 
@@ -337,6 +364,29 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
         return TurnResult(None, None, "unknown", events=tuple(events), exit_status=code, error=str(exc), plan=plan)
     return replace(result, events=tuple(events), exit_status=code, plan=plan,
                    error=result.error or (stderr.decode("utf-8", "replace")[:512] if code else None))
+
+
+def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationRequest, *,
+                     authorize: Any, fence: Optional[WriteFence] = None,
+                     process_factory: Any = subprocess.Popen, timeout: float = 120.0) -> TurnResult:
+    """Run one exact-session continuation; the owner rechecks the receipt and retry bound in ``authorize``."""
+    if not isinstance(request, ContinuationRequest):
+        raise HostContractError("request must be a ContinuationRequest")
+    if request.settled is not True:
+        raise HostContractError("landing must be settled before continuation")
+    if request.landing_outcome not in {"failed", "conflict"}:
+        raise HostContractError("only failed or conflicting landings may continue")
+    if not isinstance(spec, TurnSpec) or spec.session is None or spec.session != request.session_id:
+        raise HostContractError("continuation must resume the exact TurnSpec session")
+    if spec.workspace != request.workspace:
+        raise HostContractError("continuation must use the exact parked workspace")
+    resumed = host.prepare_continuation(spec, request)
+    if (not isinstance(resumed, TurnSpec) or resumed.session != request.session_id
+            or resumed.workspace != request.workspace or resumed.initializer):
+        raise HostContractError("host continuation must preserve session and parked workspace for a work turn")
+    if not callable(authorize) or authorize(request) is not True:
+        raise HostContractError("continuation was not authorized")
+    return run_turn(host, resumed, fence=fence, process_factory=process_factory, timeout=timeout)
 
 
 class HostRegistry:
