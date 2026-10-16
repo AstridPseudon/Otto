@@ -7,7 +7,7 @@
                     --lab L --started ISO --deadline ISO
   workers.py remove --file F --task T           drop T's entry; exit 1 if its worker is alive
   workers.py list   --file F                    one line per recorded worker
-  workers.py spend  --runs DIR                  per task: claude cost (last run file), codex tokens
+  workers.py spend  --runs DIR                  per task: the last run file's claude cost or codex tokens
   workers.py codex-session --events F --pid P  print the session id codex names in F
   workers.py wait   --file F --inbox R [--land-out P ...]
                     block until something needs the manager: a recorded worker exits, a
@@ -175,8 +175,8 @@ def codex_usage(path):
 
 
 def cmd_spend(args):
-    """Per task: claude's cost is the LAST run file's total_cost_usd (a resumed session reports its
-    running total, so the files must never be added up); codex's tokens are summed over its event files."""
+    """Per task: the LAST run file is the total, for claude (total_cost_usd) and codex (turn.completed
+    usage) alike: a resumed session reports its running total, so the files must never be added up."""
     rows, total = [], 0.0
     names = sorted(os.listdir(args.runs)) if os.path.isdir(args.runs) else []
     for name in names:
@@ -199,8 +199,9 @@ def cmd_spend(args):
                     total += cost
                 rows.append((label, cost, "error" if isinstance(result, dict) and result.get("is_error") else "ok"))
         if codex:
-            usage = [codex_usage(os.path.join(folder, f)) for f in codex]
-            used = {key: sum(u[key] for u in usage) for key in usage[0]}
+            # A resumed Codex session reports the thread's running total, as claude does: the last
+            # file is the task's usage (16 Oct: ASK's runs read 47.1M, 53.4M, 55.5M input).
+            used = codex_usage(os.path.join(folder, codex[-1]))
             rows.append((f"{name} (codex, {len(codex)} runs)", None,
                          "in %(input_tokens)d (cached %(cached_input_tokens)d), out %(output_tokens)d "
                          "(reasoning %(reasoning_output_tokens)d)" % used))
