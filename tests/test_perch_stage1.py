@@ -346,5 +346,109 @@ class StageOneProjectFileTests(unittest.TestCase):
         self.assertNotEqual(docs["edit"]["tasks"], docs["create"]["tasks"])
 
 
+class StageFourLandingAssertionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="perch-stage4-")
+        self.addCleanup(self.temporary.cleanup)
+
+    def _raw(self):
+        raw = stage_one_run(Path(self.temporary.name) / "clean")
+        config = json.loads((raw / "config.json").read_text(encoding="utf-8"))
+        config.update(stage="4", tasks=[{"name": "canary-stage4-happy", "expect": "landed"},
+                                         {"name": "canary-stage4-conflict", "expect": "conflict",
+                                          "landing_conflict": True}])
+        (raw / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        rows = [
+            ("canary-stage4-happy", "lab-created"), ("canary-stage4-happy", "check-passed"),
+            ("canary-stage4-happy", "landed"), ("canary-stage4-happy", "lab-deleted"),
+            ("canary-stage4-conflict", "lab-created"), ("canary-stage4-conflict", "check-passed"),
+            ("canary-stage4-conflict", "landing-conflict"), ("canary-stage4-conflict", "refused"),
+            ("canary-stage4-conflict", "lab-deleted"),
+        ]
+        (raw / "events.tsv").write_text("".join("2026-10-16T10:00:00Z\t%s\t%s\t\n" % row for row in rows),
+                                             encoding="utf-8")
+        for name, turns in (("canary-stage4-happy", 2), ("canary-stage4-conflict", 1)):
+            events = [{"at": "2026-10-16T10:00:00Z", "kind": "turn", "task": name, "turn": 1, "sha": "c1"}]
+            if turns == 2:
+                events.append({"at": "2026-10-16T10:00:00Z", "kind": "turn", "task": name, "turn": 2, "sha": "c2"})
+            events.append({"at": "2026-10-16T10:00:00Z", "kind": "done", "task": name, "turns": turns})
+            (raw / ("worker-%s.jsonl" % name)).write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+        return raw
+
+    def test_a_green_check_is_refused_at_conflict_and_the_lab_is_deleted(self):
+        raw = self._raw()
+        got = {row["name"]: row["status"] for row in report.assertions(raw)}
+        self.assertEqual(got["timeline-events"], "pass", got)
+        self.assertEqual(got["landing-conflict-refused"], "pass", got)
+        self.assertEqual(got["landing-conflict-lab-deleted"], "pass", got)
+
+    def test_seeded_missing_conflict_turns_only_the_conflict_assertion_red(self):
+        raw = self._raw()
+        before = {row["name"]: row["status"] for row in report.assertions(raw)}
+        report.seed(raw, "conflict")
+        after = {row["name"]: row["status"] for row in report.assertions(raw)}
+        self.assertEqual(after["landing-conflict-refused"], "fail", after)
+        self.assertEqual({name: state for name, state in after.items() if name != "landing-conflict-refused"},
+                         {name: state for name, state in before.items() if name != "landing-conflict-refused"}, after)
+
+    def test_a_conflicted_lab_left_behind_fails_its_dedicated_assertion(self):
+        raw = self._raw()
+        path = raw / "events.tsv"
+        path.write_text("".join(line for line in path.read_text(encoding="utf-8").splitlines(keepends=True)
+                                 if not ("canary-stage4-conflict" in line and "lab-deleted" in line)), encoding="utf-8")
+        got = {row["name"]: row["status"] for row in report.assertions(raw)}
+        self.assertEqual(got["landing-conflict-lab-deleted"], "fail", got)
+
+
+class StageFourProjectFileTests(unittest.TestCase):
+    def test_stage_four_canary_declares_green_and_landing_conflict_tasks(self):
+        project = json.loads((HERE / "canary" / "project.json").read_text(encoding="utf-8"))
+        stage = project["stages"]["4"]
+        self.assertEqual(stage["tasks"], ["canary-stage4-happy", "canary-stage4-conflict"])
+        self.assertIn("landing-conflict", stage["scenarios"])
+        self.assertEqual(project["tasks"][stage["tasks"][0]]["expect"], "landed")
+        self.assertTrue(project["tasks"][stage["tasks"][1]]["landing_conflict"])
+
+    def test_fake_worker_check_conflict_refusal_and_lab_cleanup(self):
+        temporary = tempfile.TemporaryDirectory(prefix="perch-stage4-git-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        canon = root / "canon"
+        canon.mkdir()
+        (canon / "toy").mkdir()
+        (canon / "toy" / "mathx.py").write_text('STAGE4_CONFLICT_SLOT = "base"\n', encoding="utf-8")
+        (canon / "tests").mkdir()
+        (canon / "tests" / "test_mathx.py").write_text("import unittest\nclass T(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(canon), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(canon), "-c", "user.name=perch", "-c", "user.email=perch@localhost",
+                        "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(canon), "-c", "user.name=perch", "-c", "user.email=perch@localhost",
+                        "commit", "-q", "-m", "base"], check=True)
+        lab = root / "labs" / "conflict"
+        lab.parent.mkdir()
+        subprocess.run(["git", "-C", str(canon), "worktree", "add", "-q", "-b", "lab/conflict", str(lab)], check=True)
+        events = root / "worker.jsonl"
+        worker_project = HERE / "canary" / "project.json"
+        subprocess.run([sys.executable, "-I", str(HERE / "canary" / "fake_worker.py"), "--lab", str(lab),
+                        "--task", "canary-stage4-conflict", "--project", str(worker_project), "--events", str(events)],
+                       check=True)
+        checked = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q", "-s", str(lab / "tests")],
+                                 cwd=lab, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        (canon / "toy" / "mathx.py").write_text('STAGE4_CONFLICT_SLOT = "owner"\n', encoding="utf-8")
+        subprocess.run(["git", "-C", str(canon), "add", "toy/mathx.py"], check=True)
+        subprocess.run(["git", "-C", str(canon), "-c", "user.name=perch", "-c", "user.email=perch@localhost",
+                        "commit", "-q", "-m", "concurrent"], check=True)
+        merge = subprocess.run(["git", "-C", str(canon), "merge", "--no-ff", "lab/conflict"],
+                               capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0, merge.stdout + merge.stderr)
+        subprocess.run(["git", "-C", str(canon), "merge", "--abort"], check=True)
+        self.assertTrue(lab.exists())
+        subprocess.run(["git", "-C", str(canon), "worktree", "remove", "--force", str(lab)], check=True)
+        subprocess.run(["git", "-C", str(canon), "branch", "-D", "lab/conflict"], check=True,
+                       stdout=subprocess.DEVNULL)
+        self.assertFalse(lab.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

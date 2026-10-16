@@ -68,6 +68,13 @@
         "unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": false}},
       "dependencies": {"A": [], "B": ["A"], "C": ["B"]},
       "wipe": true
+    },
+    "4": {
+      "tasks": ["canary-stage4-happy", "canary-stage4-conflict"],
+      "store": {"store_events": 0, "store_tasks": 0, "store_bytes_max": 262144},
+      "host": "claude-code",
+      "scenarios": ["staging-lifecycle", "owner-driven-canary", "landing-conflict"],
+      "wipe": true
     }
   },
   "tasks": {
@@ -82,6 +89,20 @@
       "expect": "refused",
       "turns": [
         {"path": "toy/mathx.py", "replace": ["return a + b", "return a - b"]}
+      ]
+    },
+    "canary-stage4-happy": {
+      "expect": "landed",
+      "turns": [
+        {"path": "toy/mathx.py", "append": "\n\ndef stage4_happy():\n    return 'landed'\n"},
+        {"path": "tests/test_mathx.py", "append": "\n\nclass Stage4HappyTests(unittest.TestCase):\n    def test_stage4_happy(self):\n        self.assertEqual(mathx.stage4_happy(), 'landed')\n"}
+      ]
+    },
+    "canary-stage4-conflict": {
+      "expect": "conflict",
+      "landing_conflict": true,
+      "turns": [
+        {"path": "toy/mathx.py", "replace": ["STAGE4_CONFLICT_SLOT = \"base\"", "STAGE4_CONFLICT_SLOT = \"worker\""]}
       ]
     }
   }

@@ -527,7 +527,7 @@ make_canon() {
 # One task: lab, worker, check, land or refuse, lab removed. The seeded timeline fault drops the
 # first task's check event; the seeded lab fault leaves the last task's lab behind.
 run_task() {  # TASK FIRST LAST
-  local task=$1 t rc=0 check_rc=0
+  local task=$1 t rc=0 check_rc=0 conflict_task=0 merge_rc=0
   local lab="$LABS/$task"
   t="$(date +%s)"
   git -C "$CANON" worktree add -q -b "lab/$task" "$lab" canon/main
@@ -551,11 +551,26 @@ run_task() {  # TASK FIRST LAST
     if [ "$check_rc" -eq 0 ]; then event check-passed "$task" "rc 0"; else event check-failed "$task" "rc $check_rc"; fi
   fi
 
+  conflict_task="$($PY -I -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["tasks"][sys.argv[2]].get("landing_conflict", False)))' "$CANARY/project.json" "$task")"
+  if [ "$check_rc" -eq 0 ] && [ "$conflict_task" -eq 1 ] && ! has_fault conflict; then
+    # Both branches change the same canary line. The fake worker's check is green, so only landing can refuse it.
+    "$PY" -I -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]) / "toy/mathx.py"; s=p.read_text(); q=chr(34); p.write_text(s.replace("STAGE4_CONFLICT_SLOT = " + q + "base" + q, "STAGE4_CONFLICT_SLOT = " + q + "owner" + q, 1))' "$CANON"
+    git -C "$CANON" add toy/mathx.py
+    git -C "$CANON" -c user.name=perch-canary -c user.email=perch-canary@localhost commit -q -m "Canary concurrent edit"
+  fi
+
   if [ "$check_rc" -eq 0 ] && git -C "$CANON" -c user.name=perch-canary -c user.email=perch-canary@localhost \
       merge -q --no-ff -m "Land $task" "lab/$task"; then
     event landed "$task" "$(git -C "$CANON" rev-parse --short HEAD)"
   else
-    event refused "$task" "check rc $check_rc"
+    merge_rc=$?
+    if [ "$check_rc" -eq 0 ] && [ "$conflict_task" -eq 1 ] && [ "$merge_rc" -ne 0 ]; then
+      event landing-conflict "$task" "merge rc $merge_rc"
+      git -C "$CANON" merge --abort >/dev/null 2>&1 || true
+      event refused "$task" "landing conflict"
+    else
+      event refused "$task" "check rc $check_rc"
+    fi
   fi
 
   if has_fault lab && [ "$3" = yes ]; then
@@ -667,6 +682,20 @@ run_stage() {  # STAGE
           setup_rc=$?
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: stage-2 owner setup failed (rc $setup_rc)"
         fi ;;
+      landing-conflict)
+        # The task's normal worker/check/landing flow seeds the conflict after a passing check.
+        # This observation names the harness mode; it is not a product-owned real-worker proof.
+        if [ "$FAKE" = true ]; then
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "fake-harness"
+        else
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "real-worker-adapter-unavailable"
+        fi ;;
+      owner-driven-canary)
+        if [ "$FAKE" = true ]; then
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "fake-harness-only"
+        else
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "skipped: automatic dispatch adapter unavailable"
+        fi ;;
       *) die "perch.sh has no scenario called $scenario" ;;
     esac
   done
@@ -681,7 +710,7 @@ run_stage() {  # STAGE
     # Two workers held on the first task's lab for the whole run: two units against a limit of one.
     HOLD_POOL="$(hold_worker "$LABS/$first" "$first") $(hold_worker "$LABS/$first" "$first")"
   fi
-  if [ "$stage" != 2 ]; then
+  if [ "$stage" != 2 ] && { [ "$stage" != 4 ] || [ "$FAKE" = true ]; }; then
     for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage "$stage"); do
       run_task "$task" "$([ "$task" = "$first" ] && echo yes || echo no)" "$([ "$task" = "$last" ] && echo yes || echo no)"
     done
