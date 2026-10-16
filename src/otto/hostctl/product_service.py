@@ -410,8 +410,22 @@ class OwnerFleetRegistry:
             raise PermissionError("worker task reference is stale")
         payload = current.payload
         task_project = payload.get("project_ref") if isinstance(payload, Mapping) else None
-        if not isinstance(task_project, Mapping) or ResourceRef.from_dict(task_project) != project:
+        if not isinstance(task_project, Mapping):
             raise PermissionError("worker task does not belong to the requested project")
+        recorded_project = ResourceRef.from_dict(task_project)
+        project_identity = (project.authority, project.kind, project.id)
+        if (recorded_project.authority, recorded_project.kind, recorded_project.id) != project_identity:
+            raise PermissionError("worker task does not belong to the requested project")
+        current_project = self.owner.graph.current(ResourceRef(project.authority, "work.project", project.id))
+        if (current_project.ref.authority, current_project.ref.kind, current_project.ref.id) != project_identity:
+            raise PermissionError("worker project identity is not current")
+        linked = current_project.payload.get("tasks") if isinstance(current_project.payload, Mapping) else None
+        if not isinstance(linked, (list, tuple)) or not any(
+                (candidate.authority, candidate.kind, candidate.id) ==
+                (task.authority, task.kind, task.id)
+                for candidate in (ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
+                                  for raw in linked) if isinstance(candidate, ResourceRef)):
+            raise PermissionError("worker task is not linked by the current project")
         admitted = admitted_revision(payload)
         if not isinstance(admitted, str) or admitted != current.ref.revision:
             raise PermissionError("worker task has no current admitted revision")

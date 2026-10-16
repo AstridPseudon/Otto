@@ -84,7 +84,8 @@ def _write_latch(path, pgid, leader_birth, members):
     return str(path)
 
 
-def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory=None, repository_path=None):
+def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory=None,
+                            repository_path=None, current_project_revision="project-r1"):
     """A live dispatch record and the exact task projection it admitted."""
     from herzchen.contracts import ResourceRef
     from herzchen.domains.work.admission import authoring_stamp
@@ -102,6 +103,9 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
     payload["metadata_namespaces"]["work.admission"] = authoring_stamp("admitted-r1", payload, "reviewer")
     task = SimpleNamespace(id=task_id,
         ref=ResourceRef("fixture", "work.task", task_id, "admitted-r1"), payload=payload)
+    current_project = SimpleNamespace(
+        ref=ResourceRef("fixture", "work.project", project_ref.id, current_project_revision),
+        payload={"tasks": [task.ref.to_dict()]})
 
     class FleetStub:
         def __init__(self, repo, labs_root, *, checkpoint):
@@ -136,7 +140,8 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assignment_ref = ResourceRef("fixture", "wrk.assignment", "assignment-owned-by-worker", "assignment-r1")
     owner_assignment = SimpleNamespace(ref=assignment_ref, generation=1, role="executor", scope=task.ref)
-    owner = SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: task),
+    owner = SimpleNamespace(graph=SimpleNamespace(
+        current=lambda ref: current_project if ref.kind == "work.project" else task),
                             assignments=SimpleNamespace(get=lambda _ref: owner_assignment))
     tokens = TokenBook()
     assignment = "assignment-owned-by-worker"
@@ -155,7 +160,7 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
             and isinstance(plan.get("branch"), str)
             and subprocess.run(["git", "-C", str(repository), "show-ref", "--verify", "--quiet",
                                 "refs/heads/" + plan["branch"]]).returncode == 0):
-        registry.prepare_worker_lab(project_ref, task.ref)
+        registry.prepare_worker_lab(current_project.ref, task.ref)
     return registry, task, record, token, repository
 
 
@@ -178,6 +183,22 @@ def test_owner_registry_binds_lab_and_line_to_dispatch_record_and_reuses_repo_br
     assert first["lab_name"] == "task-owned-by-worker"
     assert first["fleet"] is second["fleet"]
     assert first["landing"] is second["landing"]
+
+
+def test_owner_registry_allows_project_revision_advance_only_while_task_is_still_linked(monkeypatch, tmp_path):
+    registry, task, _record, _token, _repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"},
+        current_project_revision="project-r2")
+    project = registry.owner.graph.current(ResourceRef("fixture", "work.project", "project-owned"))
+
+    # Task authorship pins r1; owner setup advanced the project to r2 without
+    # changing its task. The current project still owns that task's lab.
+    assert task.payload["project_ref"]["revision"] == "project-r1"
+    assert registry.prepare_worker_lab(project.ref, task.ref)["lab_name"] == task.ref.id
+
+    project.payload["tasks"] = []
+    with pytest.raises(PermissionError, match="not linked"):
+        registry.prepare_worker_lab(project.ref, task.ref)
 
 
 def test_owner_registry_refuses_token_from_another_assignment(monkeypatch, tmp_path):
