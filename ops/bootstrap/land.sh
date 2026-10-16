@@ -1,7 +1,8 @@
 #!/bin/bash
 # Land one finished task onto canon/main through the gate (RUNBOOK section 4): rebase the lab,
-# run the check, sweep the tests the task touches (twice each) against a BASE baseline, check
-# placement (D14) and changed test expectations (D19), merge --no-ff, push to $GIT_REMOTE,
+# check placement (D14) and changed test expectations (D19), run the check, sweep the tests the
+# task touches (twice each) against a BASE baseline (a new failure is re-run alone, paired with
+# BASE, before it refuses; flaky ones are listed in $OPS_DIR/flaky.txt), merge --no-ff, push to $GIT_REMOTE,
 # remove the lab and branch. One landing at a time. Every step is logged to
 # $RUNS_DIR/TASK/land.log. A gate failure before the merge leaves canon/main unchanged.
 #   land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]
@@ -88,10 +89,46 @@ if ! git -C "$LAB" rebase --quiet canon/main; then
 fi
 log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase; the merge's tree)"
 
+gitl() { git -C "$OTTO_REPO" "$@"; }
+
+# Cheap checks first, so an exit 4 or a D14 refusal costs seconds, not a sweep.
+# placement (D14)
+read -r HZ_ADD HZ_DEL OT_ADD OT_DEL <<< "$(gitl diff --numstat "$BASE...$BRANCH" | awk '
+  $1 ~ /^[0-9]+$/ { if ($3 ~ /^src\/herzchen\//) { ha += $1; hd += $2 } else if ($3 ~ /^src\/otto\//) { oa += $1; od += $2 } }
+  END { print ha+0, hd+0, oa+0, od+0 }')"
+LAYER="$(brief_field "$LAB" Layer)"
+log "placement: src/herzchen +$HZ_ADD -$HZ_DEL; src/otto +$OT_ADD -$OT_DEL; Layer: ${LAYER:-none}"
+case "$LAYER" in
+  *[Hh]erzchen*) if [ "$OT_ADD" -gt 0 ] && [ "$HZ_ADD" -eq 0 ]; then
+    fail "D14: Layer says Herzchen but the task added $OT_ADD lines under src/otto and none under src/herzchen"; fi ;;
+esac
+
+# existing tests (D19)
+D19_FILES=""
+for f in $(gitl diff --name-only --diff-filter=M "$BASE...$BRANCH" -- 'tests/*.py'); do
+  if gitl diff -U0 "$BASE...$BRANCH" -- "$f" | grep -E '^-[^-]' | grep -q -E 'assert|pytest\.raises'; then
+    D19_FILES="$D19_FILES $f"
+  fi
+done
+if [ -n "$D19_FILES" ]; then
+  D19_FILES="${D19_FILES# }"
+  if [ -z "$D19" ]; then
+    log "D19: existing test expectations changed in $D19_FILES"
+    echo "D19: existing test expectations changed in $D19_FILES; write ops/reviews/D19-$TASK.brief.md and run ops/launch_review.sh D19-$TASK opus, then re-run land.sh $TASK --d19 ops/reviews/D19-$TASK.md" >&2
+    exit 4
+  fi
+  [ -f "$D19" ] || D19="$(dirname "$OPS_DIR")/$D19"
+  [ -f "$D19" ] || fail "D19 decision file not found: $D19"
+  VERDICT="$(grep -m1 -E 'LAND|SEND BACK' "$D19" || true)"
+  case "$VERDICT" in
+    *"SEND BACK"*) fail "D19: review says SEND BACK ($D19)" ;;
+    *LAND*) log "D19: review says LAND ($D19) for $D19_FILES" ;;
+    *) fail "D19: no LAND or SEND BACK in $D19" ;;
+  esac
+fi
 
 # ---- gate ----
 G="$RUN/.gate"; rm -rf "$G"; mkdir -p "$G"  # dot-folders: portfolio applies skip scratch
-gitl() { git -C "$OTTO_REPO" "$@"; }
 
 # Run one test file in DIR with output to OUT; the last line records pytest's exit status.
 run_pytest() {  # DIR FILE OUT
@@ -160,13 +197,39 @@ baseline_out() {  # FILE -> path of its cached output on BASE
   echo "$out"
 }
 
+# A new failing id in a file that exists on BASE is re-run alone, 3 times on the lab and 3 on BASE,
+# interleaved so both see the same load. A failure BASE shows too, or one the lab doesn't repeat, is
+# flaky: listed in flaky.txt, not refused. Returns 0 only for a failure that reproduces on the lab alone.
+failed_run() { local rc; rc="$(sed -n 's/^=== exit //p' "$1" | tail -n 1)"; [ "$rc" != 0 ] && [ "$rc" != 5 ] && [ "$rc" != 4 ]; }
+PAIRN=0
+reproduces() {  # FILE ID
+  local f="$1" id="$2" target="$2" k lab_f=0 base_f=0 p flaky
+  case "$id" in *::exit-*) target="$f" ;; esac  # a run that died without a FAILED line: re-run the file
+  ensure_baseline
+  PAIRN=$((PAIRN + 1)); p="$G/pair-$PAIRN"
+  for k in 1 2 3; do
+    run_pytest "$LAB" "$target" "$p-lab$k.txt"; ! failed_run "$p-lab$k.txt" || lab_f=$((lab_f + 1))
+    run_pytest "$BASELINE_LAB" "$target" "$p-base$k.txt"; ! failed_run "$p-base$k.txt" || base_f=$((base_f + 1))
+  done
+  flaky="$id lab $lab_f/3 base $base_f/3"
+  if [ "$base_f" -gt 0 ]; then log "flaky on BASE too: $id (lab $lab_f/3, base $base_f/3; outputs $p-*.txt)"
+  elif [ "$lab_f" -ge 2 ]; then log "NEW failure: $id (reproduced $lab_f/3 alone, BASE 0/3; outputs $p-*.txt)"; return 0
+  else log "flaky, not reproduced: $id (lab $lab_f/3, base 0/3; outputs $p-*.txt)"; fi
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $TASK $flaky" >> "$OPS_DIR/flaky.txt"
+  return 1
+}
+
 NEW_FAILS=""
 for f in $SWEEP; do
   : > "$G/lab.ids"
   for n in 1 2; do
     run_pytest "$LAB" "$f" "$G/run$n.txt"
-    ids_of "$G/run$n.txt" "$f" >> "$G/lab.ids"
-    log "sweep $f run $n/2: $(grep -c . < <(ids_of "$G/run$n.txt" "$f") || true) failing"
+    ids="$(ids_of "$G/run$n.txt" "$f")"; kept=""
+    if [ -n "$ids" ]; then
+      printf '%s\n' "$ids" >> "$G/lab.ids"
+      kept="$G/fail-$(basename "$f")-run$n.txt"; cp "$G/run$n.txt" "$kept"
+    fi
+    log "sweep $f run $n/2: $(printf '%s' "$ids" | grep -c . || true) failing${kept:+ (output: $kept)}"
   done
   sort -u "$G/lab.ids" -o "$G/lab.ids"
   [ -s "$G/lab.ids" ] || continue
@@ -178,7 +241,7 @@ for f in $SWEEP; do
   ids_of "$bo" "$f" | sort -u > "$G/base.ids"
   while IFS= read -r id; do
     if grep -qxF -- "$id" "$G/base.ids"; then log "pre-existing failure (also on BASE): $id"
-    else log "NEW failure: $id"; NEW_FAILS="$NEW_FAILS$id"$'\n'; fi
+    elif reproduces "$f" "$id"; then NEW_FAILS="$NEW_FAILS$id"$'\n'; fi
   done < "$G/lab.ids"
 done
 [ -z "$NEW_FAILS" ] || fail "new test failures: $(echo "$NEW_FAILS" | grep . | tr '\n' ' ')"
@@ -203,47 +266,12 @@ else
   log "staging: skipped (STAGE/PERCH not landed)"
 fi
 
-# e. placement (D14)
-read -r HZ_ADD HZ_DEL OT_ADD OT_DEL <<< "$(gitl diff --numstat "$BASE...$BRANCH" | awk '
-  $1 ~ /^[0-9]+$/ { if ($3 ~ /^src\/herzchen\//) { ha += $1; hd += $2 } else if ($3 ~ /^src\/otto\//) { oa += $1; od += $2 } }
-  END { print ha+0, hd+0, oa+0, od+0 }')"
-LAYER="$(brief_field "$LAB" Layer)"
-log "placement: src/herzchen +$HZ_ADD -$HZ_DEL; src/otto +$OT_ADD -$OT_DEL; Layer: ${LAYER:-none}"
-case "$LAYER" in
-  *[Hh]erzchen*) if [ "$OT_ADD" -gt 0 ] && [ "$HZ_ADD" -eq 0 ]; then
-    fail "D14: Layer says Herzchen but the task added $OT_ADD lines under src/otto and none under src/herzchen"; fi ;;
-esac
-
-# f. existing tests (D19)
-D19_FILES=""
-for f in $(gitl diff --name-only --diff-filter=M "$BASE...$BRANCH" -- 'tests/*.py'); do
-  if gitl diff -U0 "$BASE...$BRANCH" -- "$f" | grep -E '^-[^-]' | grep -q -E 'assert|pytest\.raises'; then
-    D19_FILES="$D19_FILES $f"
-  fi
-done
-if [ -n "$D19_FILES" ]; then
-  D19_FILES="${D19_FILES# }"
-  if [ -z "$D19" ]; then
-    log "D19: existing test expectations changed in $D19_FILES"
-    echo "D19: existing test expectations changed in $D19_FILES; write ops/reviews/D19-$TASK.brief.md and run ops/launch_review.sh D19-$TASK opus, then re-run land.sh $TASK --d19 ops/reviews/D19-$TASK.md" >&2
-    exit 4
-  fi
-  [ -f "$D19" ] || D19="$(dirname "$OPS_DIR")/$D19"
-  [ -f "$D19" ] || fail "D19 decision file not found: $D19"
-  VERDICT="$(grep -m1 -E 'LAND|SEND BACK' "$D19" || true)"
-  case "$VERDICT" in
-    *"SEND BACK"*) fail "D19: review says SEND BACK ($D19)" ;;
-    *LAND*) log "D19: review says LAND ($D19) for $D19_FILES" ;;
-    *) fail "D19: no LAND or SEND BACK in $D19" ;;
-  esac
-fi
-
-# g. remote
+# e. remote
 git -C "$OTTO_REPO" fetch --quiet "$GIT_REMOTE" || fail "cannot fetch $GIT_REMOTE"
 gitl merge-base --is-ancestor "$GIT_REMOTE/main" canon/main \
   || fail "$GIT_REMOTE main has commits canon/main lacks; reconcile first"
 
-# h. merge and push
+# f. merge and push
 [ "$(gitl rev-parse canon/main)" = "$BASE" ] \
   || fail "canon/main moved during the gate; run land.sh $TASK again"
 if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge.log" 2>&1; then
@@ -260,7 +288,7 @@ fi
 log "pushed canon/main to $GIT_REMOTE/main"
 LANDED="$(gitl rev-parse --short HEAD)"
 
-# i. clean up and record
+# g. clean up and record
 "$HERE/otto-lab.sh" remove "$TASK" | tee -a "$LOG"
 SHORT="$(gitl diff --shortstat "$BASE" HEAD)"
 REMOVED="$(gitl diff --numstat "$BASE" HEAD | awk '{ d += $2 } END { print d+0 }')"
