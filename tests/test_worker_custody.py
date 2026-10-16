@@ -131,6 +131,9 @@ class WorkerCustodyTests(unittest.TestCase):
         (root / 'run.yaml').write_text(json.dumps({'roles': {
             'worker_normal': {'model': 'gpt-test', 'reasoning': 'high'},
             'worker_xhard': {'model': 'gpt-test', 'reasoning': 'high'}}}))
+        lab_workspace = root / 'worker-labs' / 'J01'
+        lab_workspace.mkdir(parents=True)
+        f.app.runtime.adapter.worktree = str(lab_workspace)
         old = {'schedule_id': self.schedule, 'principal': 'worker', 'model': 'gpt-test',
             'reasoning': 'high', 'request_key': 'first-worker', 'assignment_ref': self.before['assignment_ref'],
             'generation': 1, 'submission': {'command': 'run-worker', 'request_key': 'first-worker'}}
@@ -138,11 +141,16 @@ class WorkerCustodyTests(unittest.TestCase):
         state = {'workers': {'J01': old}, 'task_refs': {'J01': f.task.ref.to_dict()},
                  'project_ref': f.project.ref.to_dict(),'assignment_ref':manager.ref.to_dict()}
         admissions = []
+        def worker_lab(project_ref, task_ref):
+            if project_ref != state['project_ref'] or task_ref != state['task_refs']['J01']:
+                raise PermissionError('worker lab requested for a different project or task')
+            return {'workspace': str(lab_workspace), 'project_ref': project_ref, 'task_ref': task_ref}
         def submit(request):
             admissions.append(request)
             return {'outcome': 'admitted', 'retained_handle': 'fresh-handle'}
         server = SimpleNamespace(state=state, due_port=f.port, owner=f.owner, portfolio=f.app.portfolio, _execution=lambda **kw: f.app,
-                                 _save_state=lambda: None)
+                                 _save_state=lambda: None,
+                                 worker_lab_provider=worker_lab)
         service = object.__new__(ManagerJourneyService)
         service.server = server; service.host = SimpleNamespace(_closing=False, submit=submit)
         service._execution=server._execution;service.adapter_selection=None

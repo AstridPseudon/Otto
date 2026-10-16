@@ -98,17 +98,27 @@ class BoundedProjectHostTests(unittest.TestCase):
         self.services, self.apps, self.states = {}, {}, {}
         self.saves, self.owner_threads = [], []
         self.owner_targets = {}
+        self.worker_labs = {}
         for letter, project in zip("ABCDE", projects):
             task = graph.create_task(project.ref, title="Task " + letter, logical_request_key="task-" + letter)
             workspace = self.root / letter
             workspace.mkdir()
-            (workspace / "run.yaml").write_text(json.dumps({"roles": {
+            run_config = json.dumps({"roles": {
                 "worker_normal": {"model": "gpt-test", "reasoning": "high"},
-                "worker_xhard": {"model": "gpt-test", "reasoning": "high"}}}))
+                "worker_xhard": {"model": "gpt-test", "reasoning": "high"}}})
+            (workspace / "run.yaml").write_text(run_config)
+            worker_workspace = self.root / "worker-labs" / letter
+            worker_workspace.mkdir(parents=True)
+            (worker_workspace / "run.yaml").write_text(run_config)
+            self.worker_labs[task.ref.id] = (project.ref.id, worker_workspace)
             manager = "manager-" + letter
 
-            def execution(*, principal, model, reasoning, evidence_id, workspace=workspace, manager=manager):
-                adapter = HerzchenCodexAdapter(owner=principal, source=str(workspace), worktree=str(workspace),
+            def execution(*, principal, model, reasoning, evidence_id, workspace=workspace, manager=manager,
+                          _worker_context=None, project_ref=None, task_ref=None):
+                execution_workspace = (Path(_worker_context["workspace"]).resolve()
+                                       if _worker_context is not None else workspace)
+                adapter = HerzchenCodexAdapter(owner=principal, source=str(execution_workspace),
+                    worktree=str(execution_workspace),
                     launcher="fixture-only", requested_model=model, requested_reasoning=reasoning,
                     require_host_context=True, binding_factory=self.native.binding,
                     turn_context_reader=lambda session, turn: self.native.contexts.get((session, turn)))
@@ -159,7 +169,23 @@ class BoundedProjectHostTests(unittest.TestCase):
                 binding=f.binding, store=f.store, due_port=f.port, _execution=execution,
                 _save_state=lambda letter=letter: self.saves.append(letter))
 
-            def handle(request, state=state, execution=execution):
+            def worker_lab_provider(project_ref, task_ref, authority=project.ref.authority):
+                binding = self.worker_labs.get(task_ref.get("id")) if isinstance(task_ref, dict) else None
+                if (binding is None or binding[0] != project_ref.get("id")
+                        or task_ref.get("authority") != authority):
+                    raise PermissionError("fixture cannot resolve this task's worker lab")
+                return {"workspace": str(binding[1])}
+
+            def worker_context_provider(due, lab_provider=worker_lab_provider):
+                target = due.get("target") if isinstance(due, dict) else None
+                if not isinstance(target, dict):
+                    raise PermissionError("fixture worker Due has no task target")
+                return lab_provider(target.get("project_ref"), target.get("task_ref"))
+
+            server.worker_lab_provider = worker_lab_provider
+            server.worker_context_provider = worker_context_provider
+
+            def handle(request, state=state, execution=execution, server=server):
                 self.owner_threads.append(threading.get_ident())
                 if request["command"] == "start-manager":
                     return execution(principal=state["manager"], model="gpt-test", reasoning="high",
@@ -171,8 +197,12 @@ class BoundedProjectHostTests(unittest.TestCase):
                     due = f.port.read_due(request["schedule_id"])
                     if due["project_ref"] != state["project_ref"]["id"]:
                         raise PermissionError("foreign fixture occurrence")
+                    worker_context = (server.worker_context_provider(due)
+                                      if due.get("role") == "worker" else None)
                     return execution(principal=due["recipient"], model="gpt-test", reasoning="high",
-                        evidence_id=due["schedule_id"]).start(schedule_id=due["schedule_id"])
+                        evidence_id=due["schedule_id"], _worker_context=worker_context,
+                        project_ref=due.get("project_ref"), task_ref=due.get("target", {}).get("task_ref")).start(
+                            schedule_id=due["schedule_id"])
                 raise ValueError("unsupported fixture request")
             server.handle = handle
             self.services[letter] = ManagerJourneyService(server=server, host=self.host,
@@ -378,7 +408,7 @@ class BoundedProjectHostTests(unittest.TestCase):
             contract = self.f.request()["instruction_contract"]
             contract["task_ref"] = self.states["A"]["task_refs"]["T"]
             contract["authority"].update(owner_actor="coordinator-A",
-                workspace_roots=[str(self.services["A"].workspace)])
+                workspace_roots=[str(self.worker_labs[self.states["A"]["task_refs"]["T"]["id"]][1])])
             contract["delegation"] = {"max_depth": 1, "result_consumption": "yield"}
             contract["allowed_operations"].append("canonical_child_commands")
             contract["authority"]["permitted_effects"].append("canonical_child_commands")
@@ -462,7 +492,7 @@ class BoundedProjectHostTests(unittest.TestCase):
         self.wait(lambda: self.native.has_started("worker-A"))
         def second_app():
             app = self.apps["B"]
-            app.runtime.adapter.worktree = str(self.services["A"].workspace)
+            app.runtime.adapter.worktree = str(self.worker_labs[self.states["A"]["task_refs"]["T"]["id"]][1])
             return app
         app = self.host._owner_request(second_app)
         seed = self.host._owner_request(lambda: next(row for row in self.f.port.list_due(
