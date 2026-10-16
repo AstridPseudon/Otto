@@ -51,23 +51,23 @@ class RetentionOwnerReadTests(unittest.TestCase):
             portfolio_ref=portfolio, main_assignment_ref=root.ref)
         project = owner.graph.create_project(title="Queued selected", logical_request_key="queued-selected")
         task = owner.graph.create_task(project.ref, title="Bounded structural row", logical_request_key="retention-task")
-        project = owner.graph.get(project.ref)
+        project = owner.graph.current(project.ref)
         project_ref = ResourceRef(project.ref.authority, project.ref.kind, project.ref.id,
                                   "rev-" + str(project.version + 1))
         project_payload = dict(project.payload, tasks=[task.ref.to_dict()])
         self.store.revise_identity(project.ref, project_payload, revision=project_ref.revision,
             expected_revision=project.ref.revision, expected_version=project.version)
-        project = owner.graph.get(project_ref)
+        project = owner.graph.current(project_ref)
         owner.consumer_operations().execute("work.orchestrator.projects.attach", {
             "target_assignment_ref": root.ref.to_dict(), "target_assignment_revision": root.revision,
             "target_assignment_generation": root.generation,
             "projects": [{"project_ref": project.ref.to_dict(), "project_version": project.version,
                           "assignment_ref": None, "assignment_revision": None, "assignment_generation": None}]},
             request_id="enroll", actor="owner")
-        return root, subject, pin, owner.graph.get(project.ref)
+        return root, subject, pin, owner.graph.current(project.ref)
 
     def complete_project_for_preview(self, project):
-        current = self.owner.graph.get(project.ref)
+        current = self.owner.graph.current(project.ref)
         next_ref = ResourceRef(current.ref.authority, current.ref.kind, current.ref.id,
                                "rev-" + str(current.version + 1))
         metadata = dict(current.payload.get("metadata", {}))
@@ -77,7 +77,7 @@ class RetentionOwnerReadTests(unittest.TestCase):
                        lifecycle_control={"reconciliation": {"status": "reconciled"}})
         self.store.revise_identity(current.ref, payload, revision=next_ref.revision,
             expected_revision=current.ref.revision, expected_version=current.version)
-        return self.owner.graph.get(next_ref)
+        return self.owner.graph.current(next_ref)
 
     def test_owner_route_is_bounded_and_lifecycle_never_claims_empty_complete(self):
         root, _subject, _pin, project = self.setup_portfolio()
@@ -113,7 +113,7 @@ class RetentionOwnerReadTests(unittest.TestCase):
     def test_lifecycle_projects_only_exact_task_pins_and_retains_completion_survivors(self):
         root, _subject, _pin, project = self.setup_portfolio()
         task_ref = ResourceRef.from_dict(project.payload["tasks"][0])
-        task = self.owner.graph.get(task_ref)
+        task = self.owner.graph.current(task_ref)
         payload = dict(task.payload)
         candidate_doc = self.create_document("retention-candidate", _subject)
         result_doc = self.create_document("retention-result", _subject)
@@ -134,7 +134,7 @@ class RetentionOwnerReadTests(unittest.TestCase):
 
         # Keep the project-declared exact task pin current and provide complete
         # structural reconciliation evidence without reading global history.
-        current_project = self.owner.graph.get(project.ref)
+        current_project = self.owner.graph.current(project.ref)
         metadata = dict(current_project.payload.get("metadata", {}))
         next_project_ref = ResourceRef(current_project.ref.authority, current_project.ref.kind,
             current_project.ref.id, "rev-" + str(current_project.version + 1))
@@ -191,7 +191,7 @@ class RetentionOwnerReadTests(unittest.TestCase):
 
     def test_lifecycle_marks_stale_or_foreign_task_pins_partial(self):
         root, _subject, _pin, project = self.setup_portfolio()
-        current = self.owner.graph.get(project.ref)
+        current = self.owner.graph.current(project.ref)
         bad = ResourceRef(self.store.authority, "work.task", "missing-task", "rev-1")
         foreign = ResourceRef("foreign-authority", "work.task", "foreign-task", "rev-1")
         next_ref = ResourceRef(current.ref.authority, current.ref.kind, current.ref.id,
@@ -234,7 +234,7 @@ class RetentionOwnerReadTests(unittest.TestCase):
             with self.subTest(case=label):
                 current_project_ref = self.store.get_identity_ref(ResourceRef(
                     project.ref.authority, project.ref.kind, project.ref.id))
-                current_project = self.owner.graph.get(current_project_ref)
+                current_project = self.owner.graph.current(current_project_ref)
                 next_project_ref = ResourceRef(current_project.ref.authority, current_project.ref.kind,
                     current_project.ref.id, "rev-" + str(current_project.version + 1))
                 metadata = dict(current_project.payload.get("metadata", {}))
