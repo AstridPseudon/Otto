@@ -46,7 +46,7 @@ def _current_joins(owner: Any, root: Any) -> dict[str, Any]:
         raise PermissionError("current root join query exceeds the existing finite project cap")
     projects: dict[str, Any] = {}
     for raw in rows:
-        project = owner.graph.get(raw if isinstance(raw, ResourceRef) else ResourceRef.from_dict(raw))
+        project = owner.graph.current(raw if isinstance(raw, ResourceRef) else ResourceRef.from_dict(raw))
         relation = (project.payload.get("metadata") or {}).get("otto_orchestrator") or {}
         if (relation.get("assignment_ref") != root.ref.to_dict()
                 or relation.get("generation") != root.generation
@@ -560,7 +560,7 @@ def merge_packets_for_shared_compose(existing_states: Mapping[str, Mapping[str, 
     for name in ("onboarding", "vision", "retention", "claude"):
         state = existing[name]
         project_ref = state.get("project_ref")
-        project = owner.graph.get(__import__("herzchen.contracts", fromlist=["ResourceRef"]).ResourceRef.from_dict(project_ref))
+        project = owner.graph.current(__import__("herzchen.contracts", fromlist=["ResourceRef"]).ResourceRef.from_dict(project_ref))
         relation = (project.payload.get("metadata") or {}).get("otto_orchestrator") or {}
         if (project.ref.to_dict() != project_ref or relation.get("assignment_ref") != root.ref.to_dict()
                 or relation.get("generation") != root.generation
@@ -574,7 +574,7 @@ def merge_packets_for_shared_compose(existing_states: Mapping[str, Mapping[str, 
         raise PermissionError("existing Otto view identities must be unique")
     if "astrid" in existing:
         state = existing["astrid"]
-        project = owner.graph.get(__import__("herzchen.contracts", fromlist=["ResourceRef"]).ResourceRef.from_dict(state["project_ref"]))
+        project = owner.graph.current(__import__("herzchen.contracts", fromlist=["ResourceRef"]).ResourceRef.from_dict(state["project_ref"]))
         relation = (project.payload.get("metadata") or {}).get("otto_orchestrator") or {}
         if (project.ref.to_dict() != state["project_ref"] or relation.get("assignment_ref") == root.ref.to_dict()
                 or state.get("root_help_binding", {}).get("assignment_ref") != relation.get("assignment_ref")

@@ -169,7 +169,7 @@ def _link(owner, actor, association, *, remove=False):
 
 
 def _project_portfolio(owner, project):
-    record = owner.graph.get(_base(project))
+    record = owner.graph.current(_base(project))
     value = (record.payload.get("metadata") or {}).get("otto_orchestrator") or {}
     return _base(value["portfolio_ref"]) if value.get("portfolio_ref") else None
 

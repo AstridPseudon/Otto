@@ -430,7 +430,7 @@ class _OrchestrationEngine:
             prior = self._lookup_replay(envelope)
             if prior is not None:
                 receipt = self._writer.mutate(envelope, event_type=PLACEMENT_EVENT, result_ref=prior.result_ref, stream="work:" + project_ref.id, transaction=tx)
-                project = self.batches.graph.get(prior.result_ref or project_ref)
+                project = self.batches.graph.current(prior.result_ref or project_ref)
                 relation = dict(project.payload.get("metadata", {}).get(SUPERVISION_KEY, {}))
                 return {"outcome": "replayed", "project_ref": project.ref.to_dict(), "project": project.payload, "receipt": receipt.to_dict(), "supervision": relation, "replayed": True, "event_ids": list(receipt.event_ids), "executable": False}
 
@@ -466,7 +466,7 @@ class _OrchestrationEngine:
                 stream="work:" + batch.project.id,
                 transaction=tx,
             )
-            project = self.batches.graph.get(batch.project.ref)
+            project = self.batches.graph.current(batch.project.ref)
             return {"outcome": "created", "project_ref": project.ref.to_dict(), "project": project.payload, "receipt": receipt.to_dict(), "project_receipt": batch.receipt.to_dict(), "default_ref": ResourceRef(self.authority, DEFAULT_KIND, pointer_ref.id, pointer_revision).to_dict(), "assignment_ref": ResourceRef(self.authority, "wrk.assignment", assignment.id, _current_revision(assignment)).to_dict(), "supervision": relation, "replayed": False, "event_ids": list(receipt.event_ids), "executable": False}
 
     def set_default(
@@ -535,9 +535,9 @@ class _OrchestrationEngine:
             prior = self._lookup_replay(envelope)
             if prior is not None:
                 receipt = self._writer.mutate(envelope, event_type=TRANSFER_EVENT, result_ref=prior.result_ref, stream="work:" + project.id, transaction=tx)
-                record = self.batches.graph.get(project)
+                record = self.batches.graph.current(project)
                 return {"outcome": "replayed", "project_ref": record.ref.to_dict(), "project": record.payload, "receipt": receipt.to_dict(), "replayed": True, "event_ids": list(receipt.event_ids)}
-            record = self.batches.graph.get(project)
+            record = self.batches.graph.current(project)
             if _current_revision(record) != expected_project_revision or record.version != expected_project_version:
                 raise WorkValidationError("project revision or version is stale")
             current = self._assignment(current_ref, expected_revision=_revision(current_assignment_revision, "current_assignment_revision"), expected_generation=int(current_assignment_generation), field="current_assignment_ref")
@@ -589,7 +589,7 @@ class _OrchestrationEngine:
             if prior is not None:
                 return {"outcome": "replayed", "project_ref": prior.result_ref.to_dict(),
                         "receipt": prior.to_dict(), "replayed": True, "event_ids": list(prior.event_ids)}
-            record = self.batches.graph.get(project)
+            record = self.batches.graph.current(project)
             relation = record.payload.get("metadata", {}).get(SUPERVISION_KEY) or {}
             if (record.version != expected_project_version
                     or not _same_identity(ResourceRef.from_dict(relation.get("portfolio_ref", {})), self.portfolio_ref)):
@@ -680,7 +680,7 @@ class _OrchestrationEngine:
                 raise WorkValidationError("selection must include every existing root join")
             records = []
             for item in normalized:
-                record = self.batches.graph.get(ResourceRef.from_dict(item["project_ref"]))
+                record = self.batches.graph.current(ResourceRef.from_dict(item["project_ref"]))
                 relation = record.payload.get("metadata", {}).get(SUPERVISION_KEY)
                 if (record.ref.to_dict() != item["project_ref"] or record.version != item["project_version"]
                         or relation != item["supervision"] or not isinstance(relation, Mapping)
@@ -862,7 +862,7 @@ class _OrchestrationEngine:
             if identity_key in seen:
                 raise WorkValidationError(f"{field}.project_ref is duplicated")
             seen.add(identity_key)
-            record = self.batches.graph.get(project)
+            record = self.batches.graph.current(project)
             if record.ref != project:
                 raise WorkValidationError(f"{field}.project_ref revision is stale")
             expected_version = item.get("project_version", item.get("expected_project_version"))

@@ -762,7 +762,7 @@ class _TemplateEngineEngine:
         if owner_target is None and resource.id != BLANK_TEMPLATE_ID and project_seed is None:
             raise TemplateReferenceError("template instantiation requires an existing project owner")
         if owner_target is not None:
-            owner_record = self.graph.get(owner_target)
+            owner_record = self.graph.current(owner_target)
             if owner_record.kind is not WorkKind.PROJECT:
                 raise TemplateReferenceError("template owner must be a project")
         else:
@@ -927,7 +927,7 @@ class _TemplateEngineEngine:
         for field in ("profile_ref", "allowance_ref"):
             if field in resource.definition:
                 self._resolve_external(_ref(resource.definition[field], field), field)
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         if record.kind is not WorkKind.PROJECT:
             raise TemplateReferenceError("protocol adoption requires a project")
         fields = dict(record.payload.get("fields", {}))
@@ -937,7 +937,7 @@ class _TemplateEngineEngine:
 
     def resume(self, target: Any) -> WorkRecord:
         """Read the existing durable record; this operation never creates."""
-        return self.graph.get(target)
+        return self.graph.current(target)
 
     def clone_seed(self, template: Union[str, WorkTemplate]) -> WorkTemplate:
         """Return a planning clone with live/evidence/consumed facts removed."""
@@ -1186,7 +1186,7 @@ class _TemplateEngineEngine:
             raise TemplateReferenceError(f"{field} must use an explicit $local or typed ResourceRef")
         reference = self._resolve_external(_ref(value, field), field)
         try:
-            record = self.graph.get(reference)
+            record = self.graph.current(reference)
         except Exception as exc:
             raise TemplateReferenceError(f"{field} is not a work reference: {reference.to_json()}") from exc
         if record.kind not in set(WorkKind):
@@ -1211,11 +1211,11 @@ class _TemplateEngineEngine:
         local = _marker_name(value)
         if local is not None:
             try:
-                return self.graph.get(local_refs[local])
+                return self.graph.current(local_refs[local])
             except KeyError as exc:
                 raise TemplateReferenceError(f"local reference not yet instantiated: {local}") from exc
         reference = self._resolve_external(_ref(value), "work reference")
-        return self.graph.get(reference)
+        return self.graph.current(reference)
 
     @staticmethod
     def _ordered_nodes(nodes: Sequence[Mapping[str, Any]], edges: Mapping[str, set[str]]) -> list[Mapping[str, Any]]:

@@ -130,7 +130,7 @@ class OrchestratorAdmissions:
         # Project authority is issued only over current canonical supervision
         # joins. The client cannot add projects later or adopt itself.
         for project_id in project_ids:
-            project = self.owner.graph.get(ResourceRef(root.ref.authority, 'work.project', project_id))
+            project = self.owner.graph.current(ResourceRef(root.ref.authority, 'work.project', project_id))
             relation = project.payload.get('metadata', {}).get('otto_orchestrator', {})
             if relation.get('assignment_ref') != root.ref.to_dict() or relation.get('generation') != root.generation:
                 raise PermissionError('project is not currently supervised by this owner root')
@@ -221,14 +221,14 @@ class ScopedOrchestratorClient:
             if task is not None:
                 if not isinstance(task, Mapping) or task.get('authority') != root.ref.authority or task.get('kind') != 'work.task':
                     raise PermissionError('client payload task scope is invalid')
-                record = self.owner.graph.get(ResourceRef.from_dict(task))
+                record = self.owner.graph.current(ResourceRef.from_dict(task))
                 parent = record.project_ref
                 if (parent.id if isinstance(parent, ResourceRef) else None) != project_id:
                     raise PermissionError('client payload task belongs to another project')
         if operation not in {'status', 'whoami', 'portfolio'}:
             if project_id not in self.binding['project_ids']:
                 raise PermissionError('project is outside the issued orchestrator scope')
-            record = self.owner.graph.get(ResourceRef(root.ref.authority, 'work.project', project_id))
+            record = self.owner.graph.current(ResourceRef(root.ref.authority, 'work.project', project_id))
             relation = record.payload.get('metadata', {}).get('otto_orchestrator', {})
             if relation.get('assignment_ref') != root.ref.to_dict() or relation.get('generation') != root.generation:
                 raise PermissionError('project supervision is not adopted for this client')
