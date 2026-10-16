@@ -3,10 +3,13 @@ from copy import deepcopy
 from dataclasses import replace
 from unittest.mock import patch
 import unittest
-from herzchen.content import ContentDocument, ContentRevision
+from herzchen.content import ContentCommandHandler, ContentDocument, ContentRevision
+from herzchen.content.packets import AccessDeniedError, ContextPacketService
+from herzchen.content.reads import EvidenceReadGrant
 from herzchen.content.instructions import validate_instruction_content
 from herzchen.contracts import ResourceRef
-from herzchen.domains.assessment import AssessmentModule, contribution
+from herzchen.domains.assessment import AssessmentAuthorityError, AssessmentModule, contribution
+from herzchen.domains.assessment.module import verify_dat_evidence
 from herzchen.kernel.limits import LimitService
 from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
 from otto.portfolio.herzchen_binding import ProjectReadGrant
@@ -31,6 +34,32 @@ class CompletionProjectRefreshTests(unittest.TestCase):
   self.finish={'command':'finish-task','task':'T','request_key':'finish','review_key':'accepted'}
  def refresh(self):
   self.f.call();self.state['project_ref']=self.owner.graph.current(self.project.ref).ref.to_dict()
+ def test_private_owner_evidence_is_read_only_for_exact_assessment_and_manager_approves(self):
+  fixture=self.f.f;task=ResourceRef.from_dict(self.state['task_refs']['T']);candidate=ResourceRef.from_dict(self.review['candidate_ref'])
+  decisions=AssessmentModule(fixture.store).list_decisions(parent_obligation=task)
+  self.assertEqual(len(decisions),1)
+  decision=decisions[0]
+  self.assertEqual(decision.author,'manager')
+  accepted=next(event for event in fixture.store.consumer().list_events(stream='assessment') if event.subject==decision.ref)
+  self.assertEqual(accepted.actor.actor,'manager')
+  manager=fixture.binding.authenticated_actor('manager')
+  scopes=(task,self.project.ref)
+  with self.assertRaises(PermissionError):
+   ContentCommandHandler(fixture.store).metadata(candidate,actor=manager,scopes=scopes)
+  with self.assertRaises(AccessDeniedError):
+   ContextPacketService(fixture.store).resolve_reference(candidate,actor=manager,scopes=scopes)
+  pin=decision.payload['evidence_digests'][0]
+  grant=EvidenceReadGrant.from_dict(pin['evidence_read_grant'])
+  self.assertEqual(grant.evidence,candidate)
+  self.assertEqual(verify_dat_evidence(fixture.store,candidate,actor=manager,scopes=scopes,
+   evidence_read_grant=grant)['state'],'verified')
+  other=fixture.create_document('ungranted-source',self.project.ref,role='SOURCE')
+  other_ref=replace(other.ref,revision='rev-1')
+  self.assertEqual(verify_dat_evidence(fixture.store,other_ref,actor=manager,scopes=scopes,
+   evidence_read_grant=grant)['state'],'unknown')
+  with self.assertRaises(AssessmentAuthorityError):
+   AssessmentModule(fixture.store,actor=fixture.actor).accept(decision.result_ref,
+    rationale='owner cannot approve',evidence_refs=[candidate],logical_request_key='owner-approval-attempt')
  def test_exact_refresh_finish_and_replay_preserve_review_and_debit(self):
   before=self.commands._journal('accepted','intent');review=self.commands._journal('accepted','review')
   self.refresh();pool=LimitService(self.f.f.store).get_pool(ResourceRef(self.state['authority'],'limit','completion-pool'))

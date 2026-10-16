@@ -939,6 +939,7 @@ class PortfolioOwnerBootstrap:
         """Issue finite assessment commands for the current assigned manager/task."""
         from herzchen.contracts import ResourceRef
         from herzchen.domains.assessment import AssessmentModule
+        from herzchen.content.reads import EvidenceReadGrant
         from .assessment import OttoAssessment
         from .manager_assessment_command import ManagerAssessmentCommands
         from .local_assessment_policy import LocalAssessmentPolicy
@@ -975,10 +976,19 @@ class PortfolioOwnerBootstrap:
                     or pool.cumulative_allowance_units != assessment_policy.cumulative_allowance_units):
                 raise PermissionError("local assessment pool is missing or differs from the bound policy")
 
+        def issue_evidence_read_grant(evidence: ResourceRef, parent: ResourceRef) -> EvidenceReadGrant:
+            # Recheck the owner's current project grant and manager assignment
+            # for each exact evidence read. This grants no assessment write.
+            authorize()
+            if parent != task or evidence.authority != task.authority or evidence.revision is None:
+                raise PermissionError("assessment evidence is outside the owner-issued grant")
+            return EvidenceReadGrant(self.owner_actor, actor, project, task, evidence)
+
         authorize()
         return ManagerAssessmentCommands(
             assessment=OttoAssessment(AssessmentModule(self.store, actor=actor,
-                payload_resolver=self.evidence_payload_resolver), actor),
+                payload_resolver=self.evidence_payload_resolver,
+                evidence_read_grant_issuer=issue_evidence_read_grant), actor),
             reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
             generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
 
