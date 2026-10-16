@@ -62,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     save.add_argument("--request-id", default=None, help="logical request key (default: derived from the file's content)")
     _add_format(save)
 
+    retire = sub.add_parser("retire", help="retire a work record with a reason and optional successor")
+    retire.add_argument("ref", help="canonical work ResourceRef as JSON")
+    retire.add_argument("--reason", required=True)
+    retire.add_argument("--by", help="successor work ResourceRef as JSON")
+    retire.add_argument("--request-id", default=None)
+    _add_format(retire)
+
     show = sub.add_parser("show", help="read one project or task; the output is the same on the Claude and Codex lanes")
     show_sub = show.add_subparsers(dest="show_command", required=True)
     show_project_parser = show_sub.add_parser("project", help="one project's row and its task rows")
@@ -1172,6 +1179,21 @@ def main(
                 result = _request_error(str(exc))
             else:
                 result = portfolio.save_project(document, actor=args.actor, request_id=args.request_id)
+        elif args.command == "retire":
+            try:
+                sheet = portfolio.operations.sheet_port
+                retired = sheet.retire(_parse_ref(args.ref, "ref"), reason=args.reason,
+                    by=_parse_ref(args.by, "by") if args.by else None,
+                    logical_request_key=args.request_id)
+                record = getattr(retired, "project", retired)
+                ref = getattr(record, "ref", None)
+                payload = getattr(record, "payload", {})
+                result = {"outcome": "retired", "ref": None if ref is None else ref.to_dict(),
+                          "retirement": dict(payload.get("retirement", {"reason": args.reason,
+                              "by": _parse_ref(args.by, "by") if args.by else None})),
+                          "read_only": False, "dispatch": False, "launch": False}
+            except (AttributeError, TypeError, ValueError, PermissionError) as exc:
+                result = _request_error(str(exc), code="retirement_refused")
         elif args.command == "show":
             if args.show_command == "project":
                 result = show_project(portfolio, actor=args.actor,

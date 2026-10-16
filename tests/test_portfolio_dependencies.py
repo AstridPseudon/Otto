@@ -144,6 +144,31 @@ class PortfolioDependenciesTests(unittest.TestCase):
             request_id='still-task-only', actor='orchestrator')
         self.assertEqual(refused['outcome'], 'error')
 
+    def test_retirement_is_terminal_historical_and_completed_gate_cannot_have_successor(self):
+        predecessor, successor = self.projects[:2]
+        old_ref = predecessor.ref
+        retired = self.graph.retire(old_ref, reason="merged", by=successor.ref,
+                                    logical_request_key="retire-project")
+        self.assertEqual(retired.payload["retirement"]["reason"], "merged")
+        self.assertEqual(retired.payload["retirement"]["by"]["id"], successor.id)
+        self.assertEqual(retired.lifecycle.value, "withdrawn")
+        self.assertFalse(retired.readiness.get("ready"))
+        self.assertFalse(retired.readiness.get("dispatch"))
+        self.assertIsNotNone(self.store.consumer().get_revision(old_ref))
+        with self.assertRaisesRegex(WorkValidationError, "terminal"):
+            self.graph.set_readiness(retired.ref, {"ready": True, "dispatch": True})
+        self.graph.set_lifecycle(self.gate.ref, "completed", logical_request_key="complete-gate")
+        with self.assertRaisesRegex(WorkValidationError, "completed"):
+            self.graph.retire(self.gate.ref, reason="replaced", by=successor.ref,
+                              logical_request_key="retire-completed-gate")
+
+    def test_retired_dependency_names_successor_and_is_not_redirected(self):
+        predecessor, successor, dependent = self.projects
+        self.graph.retire(predecessor.ref, reason="superseded", by=successor.ref,
+                          logical_request_key="retire-dependency")
+        with self.assertRaisesRegex(WorkValidationError, "successor is " + successor.id):
+            self.deps.change(dependent, predecessor, request_id="link-retired")
+
 
 if __name__ == '__main__':
     unittest.main()

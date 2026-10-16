@@ -177,6 +177,17 @@ class PortfolioStatusTests(unittest.TestCase):
         self.assertEqual(self.store.consumer().snapshot_counts(), before)
         self.assertEqual(self.owner.graph.current(self.projects[1].ref).payload.get("readiness"), stored)
 
+    def test_status_renders_retirement_successor_and_terminal_readiness(self):
+        predecessor, successor = self.projects[:2]
+        self.owner.graph.retire(predecessor.ref, reason="superseded", by=successor.ref,
+                                logical_request_key="status-retire")
+        row = next(item for item in self.status()["projects"]
+                   if item["project_ref"]["id"] == predecessor.id)
+        self.assertEqual(row["retirement"]["reason"], "superseded")
+        self.assertEqual(row["retirement"]["by"]["id"], successor.id)
+        self.assertFalse(row["readiness"]["ready"])
+        self.assertFalse(row["readiness"]["dispatch"])
+
     def test_concurrent_status_does_not_attribute_other_project_turn(self):
         self.manager()
         service = {"attached_projects": [{"project_id": p.id} for p in self.projects],

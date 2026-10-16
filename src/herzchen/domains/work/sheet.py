@@ -484,15 +484,54 @@ class _ProjectSheetEngine:
     update = revise
 
     def withdraw(self, target: Any, *, logical_request_key: Optional[str] = None, base_revision: Optional[str] = None) -> Any:
+        return self.retire(target, reason="withdrawn", logical_request_key=logical_request_key, base_revision=base_revision)
+
+    def retire(self, target: Any, *, reason: str, by: Any = None,
+               logical_request_key: Optional[str] = None, base_revision: Optional[str] = None) -> Any:
+        located = _ref(target)
+        if located is not None and located.kind == "dat.content.association":
+            return self.retire_document_membership(located, reason=reason, by=by,
+                logical_request_key=logical_request_key, base_revision=base_revision)
         record = self.graph.current(target)
-        if record.kind is WorkKind.PROJECT:
-            # The accepted graph command is the relevant semantic operation
-            # for a project lifecycle transition; task withdrawal compiles to
-            # the parent sheet batch below.
-            if base_revision is not None and record.ref.revision != base_revision:
-                raise VersionConflictError("project withdrawal base revision is stale")
-            return self.graph.withdraw(record, logical_request_key=logical_request_key, actor=self.actor)
-        return self.revise(target, lifecycle=Lifecycle.WITHDRAWN.value, withdraw=True, logical_request_key=logical_request_key, base_revision=base_revision)
+        if base_revision is not None and record.ref.revision != base_revision:
+            raise VersionConflictError("work retirement base revision is stale")
+        return self.graph.retire(record, reason=reason, by=by,
+                                 logical_request_key=logical_request_key, actor=self.actor)
+
+    def retire_document_membership(self, association: Any, *, reason: str, by: Any = None,
+                                   logical_request_key: Optional[str] = None,
+                                   base_revision: Optional[str] = None) -> Any:
+        """Retire one DAT association through the project sheet revision path."""
+        ref = _ref(association)
+        if ref is None or ref.kind != "dat.content.association":
+            raise WorkValidationError("document membership must name a DAT association")
+        identity = self.__writer.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+        if identity is None or identity.payload.get("record_type") != "dat.content.association":
+            raise WorkValidationError("document membership was not found")
+        payload = identity.payload
+        if payload.get("active") is not True:
+            raise WorkValidationError("document membership is already retired")
+        reason = reason.strip() if isinstance(reason, str) else ""
+        if not reason:
+            raise WorkValidationError("retirement requires a non-blank reason")
+        subject = self.graph.current(payload.get("subject"))
+        project = subject if subject.kind is WorkKind.PROJECT else self.graph.current(subject.project_ref)
+        if base_revision is not None and project.ref.revision != base_revision:
+            raise VersionConflictError("document membership retirement base revision is stale")
+        binding = payload.get("document")
+        document_ref = binding.ref if hasattr(binding, "ref") else binding
+        if isinstance(document_ref, Mapping) and isinstance(document_ref.get("ref"), Mapping):
+            document_ref = document_ref["ref"]
+        link = {"document_ref": _safe(document_ref), "namespace": payload.get("namespace", "work"),
+                "key": payload.get("key", "document"), "active": False,
+                "association_ref": ref.to_dict(),
+                "retirement": {"reason": reason, "by": _safe(by)}}
+        if subject.kind is WorkKind.PROJECT:
+            sheet = {"document_links": [link]}
+        else:
+            sheet = {"tasks": [{"id": subject.id, "document_links": [link]}]}
+        return self.apply(project.ref, sheet, logical_request_key=logical_request_key,
+                          base_revision=project.ref.revision)
 
     def link_dependency(self, record: Any, prerequisite: Any, *, logical_request_key: Optional[str] = None, base_revision: Optional[str] = None) -> Any:
         target = self.graph.current(record)

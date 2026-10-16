@@ -177,6 +177,20 @@ class OtToSaveTests(unittest.TestCase):
         self.assertTrue(refused["retry"])
         self.assertIn("Retry", refused["next_action"])
 
+    def test_dependency_on_retired_task_names_successor_and_is_not_redirected(self):
+        created = self._created(_task("A"), _task("B"))
+        tasks = {task.alias: task for task in self._tasks(created["project_ref"])}
+        self.owner.graph.retire(tasks["A"].ref, reason="superseded", by=tasks["B"].ref,
+                                logical_request_key="retire-A")
+        current_project = self._project(created["project_ref"])
+        counts = self._counts()
+        refused = self._save(_file(_task("C", dependencies=["A"]),
+            project_ref=current_project.ref.to_dict()))
+        self.assertEqual(refused["outcome"], "error", refused)
+        self.assertIn(tasks["B"].id, refused["error"]["message"])
+        self.assertEqual(self._counts(), counts)
+        self.assertEqual({task.alias for task in self._tasks(current_project.ref.to_dict())}, {"A", "B"})
+
     def test_refused_typed_metadata_creates_no_project(self):
         counts = self._counts()
         refused = self._save(_file(_task("A", metadata_namespace={PLAN_NAMESPACE: {"route": "fast"}})))

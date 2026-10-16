@@ -101,6 +101,17 @@ class ShowTests(unittest.TestCase):
         self.assertTrue(shown["read_only"])
         self.assertFalse(shown["dispatch"])
 
+    def test_show_project_renders_retirement_successor(self):
+        successor = self.owner.graph.create_project(title="Replacement", logical_request_key="show-successor")
+        self.owner.graph.retire(self.project_ref, reason="superseded", by=successor.ref,
+                                logical_request_key="show-retire")
+        code, out = self._show("show", "project", "--project-ref", json.dumps(self.project_ref),
+                               "--actor", "owner", kind="codex")
+        self.assertEqual(code, 0, out)
+        shown = json.loads(out)
+        self.assertEqual(shown["project"]["retirement"]["reason"], "superseded")
+        self.assertEqual(shown["project"]["retirement"]["by"]["id"], successor.id)
+
 
 class OpenTests(unittest.TestCase):
     """``open`` drives the authoring session through the injected owner editor host."""
@@ -133,6 +144,22 @@ class OpenTests(unittest.TestCase):
 
     def head(self):
         return self.owner.content.read(ResourceRef.from_dict(self.doc))["current_revision"]["revision"]
+
+    def test_document_membership_retirement_keeps_association_history(self):
+        self.owner.sheet.apply(self.project, {"document_links": [{"document_ref": self.doc,
+            "namespace": "work", "key": "retirement-test"}]}, logical_request_key="sheet-link")
+        association = next(ref for ref in self.f.store.find_identity_refs(kind="dat.content.association",
+            payload_matches={("record_type",): "dat.content.association", ("key",): "retirement-test"})
+            if (self.f.store.get_identity(ref).payload.get("subject") or {}).get("id") == self.project["id"])
+        previous = self.f.store.get_identity(association)
+        result = self.owner.sheet.command_port.retire(association, reason="superseded document",
+            by=ResourceRef.from_dict(self.doc), logical_request_key="retire-document-membership")
+        current = self.f.store.get_identity(association)
+        self.assertNotEqual(current.ref.revision, previous.ref.revision)
+        self.assertFalse(current.payload["active"])
+        self.assertEqual(current.payload["retirement"]["reason"], "superseded document")
+        events = self.f.store.list_events(subjects=(ResourceRef.from_dict(self.project),))
+        self.assertTrue(events)
 
     def start(self, key="open"):
         code, opened = self.run_open("start", "--request-key", key)

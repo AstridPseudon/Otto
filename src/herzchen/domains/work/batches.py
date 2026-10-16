@@ -597,6 +597,8 @@ class _ProjectBatchesEngine:
         return self.apply_project_sheet(project, sheet, logical_request_key=logical_request_key, actor=actor, next_action=action)
 
     def _prepare_sheet(self, project: WorkRecord, sheet: Mapping[str, Any], *, decision_ref: Any, next_action: Optional[str], creating: bool = False) -> Dict[str, Any]:
+        if project.payload.get("retirement"):
+            raise WorkValidationError("retired project is terminal and cannot be revised")
         allowed = {"title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata", "metadata_namespace", "tasks", "criteria", "documents", "document_links", "document_changes", "manager_action", "resources"}
         unknown = set(sheet).difference(allowed)
         if unknown:
@@ -882,8 +884,19 @@ class _ProjectBatchesEngine:
                 if namespace == PRIMARY_DIRECTION_NAMESPACE:
                     raise WorkValidationError("primary direction binding requires the owner direction operation")
                 key = _opaque(raw.get("key", "document"), "document link key")
-                ident = ResourceRef(self.__writer.authority, "dat.content.association", "link-" + hashlib.sha256(canonical_json({"subject": owner, "namespace": namespace, "key": key}).encode()).hexdigest()[:28])
-                payload = {"record_type": "dat.content.association", "subject": owner, "namespace": namespace, "key": key, "document": ReferenceBinding(ResourceRef(binding.authority, binding.kind, binding.id, binding.revision), "pinned" if binding.revision else "current"), "active": True}
+                subject = ResourceRef(owner.authority, owner.kind, owner.id)
+                if raw.get("association_ref") is not None:
+                    ident = self._as_ref(raw["association_ref"])
+                    if ident.authority != self.__writer.authority or ident.kind != "dat.content.association":
+                        raise WorkValidationError("document association_ref must name an owner-local DAT association")
+                else:
+                    ident = ResourceRef(self.__writer.authority, "dat.content.association", "link-" + hashlib.sha256(canonical_json({"subject": subject, "namespace": namespace, "key": key}).encode()).hexdigest()[:28])
+                payload = {"record_type": "dat.content.association", "subject": subject, "namespace": namespace, "key": key, "document": ReferenceBinding(ResourceRef(binding.authority, binding.kind, binding.id, binding.revision), "pinned" if binding.revision else "current"), "active": raw.get("active", True)}
+                if "retirement" in raw:
+                    retirement = raw["retirement"]
+                    if not isinstance(retirement, Mapping) or not isinstance(retirement.get("reason"), str) or not retirement["reason"].strip():
+                        raise WorkValidationError("document membership retirement requires a reason")
+                    payload["retirement"] = dict(retirement)
                 links.append({"ref": ident, "payload": payload})
                 refs.extend((document, binding))
         changes: List[Dict[str, Any]] = []
@@ -909,7 +922,9 @@ class _ProjectBatchesEngine:
         return {"links": links, "changes": changes, "refs": tuple(refs)}
 
     def _apply_task_fields(self, payload: Dict[str, Any], raw: Mapping[str, Any], project: WorkRecord, index: int) -> None:
-        allowed = {"id", "alias", "aliases", "kind", "title", "name", "body", "instructions", "outcome", "acceptance", "fields", "metadata", "metadata_namespace", "custom", "order", "lifecycle", "dependencies", "depends_on", "documents", "document_links", "parent", "project_ref", "withdraw"}
+        if payload.get("retirement"):
+            raise WorkValidationError(f"retired task {payload.get('id')!r} is terminal and cannot be revised")
+        allowed = {"id", "alias", "aliases", "kind", "title", "name", "body", "instructions", "outcome", "acceptance", "fields", "metadata", "metadata_namespace", "custom", "order", "lifecycle", "dependencies", "depends_on", "documents", "document_links", "parent", "project_ref", "withdraw", "retirement"}
         unknown = set(raw).difference(allowed)
         if unknown:
             raise WorkValidationError(f"unknown task fields for task[{index}]: {', '.join(sorted(unknown))}")
@@ -970,9 +985,20 @@ class _ProjectBatchesEngine:
                 found = None
             if found is None or found.project_ref is None or found.project_ref.id != project.id:
                 raise WorkNotFoundError(f"task dependency not found in project: {value!r}")
+            if found.payload.get("retirement"):
+                retirement = found.payload["retirement"]
+                successor = retirement.get("by")
+                named = "" if not successor else "; successor is " + str(successor.get("id", "unknown"))
+                raise WorkValidationError(f"task dependency {ref.id!r} is retired{named}; dependencies are not redirected")
             return ResourceRef(found.ref.authority, found.ref.kind, found.ref.id)
         if self.__writer.get_identity(ResourceRef(ref.authority, ref.kind, ref.id)) is None:
             raise WorkNotFoundError(f"task dependency not found: {value!r}")
+        identity = self.__writer.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+        if identity is not None and identity.payload.get("retirement"):
+            retirement = identity.payload["retirement"]
+            successor = retirement.get("by")
+            named = "" if not successor else "; successor is " + str(successor.get("id", "unknown"))
+            raise WorkValidationError(f"task dependency {ref.id!r} is retired{named}; dependencies are not redirected")
         return ResourceRef(ref.authority, ref.kind, ref.id)
 
     def _resolve_parent_ref(self, value: Any, project: WorkRecord) -> ResourceRef:
