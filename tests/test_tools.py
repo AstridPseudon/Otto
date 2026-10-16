@@ -532,7 +532,7 @@ def test_claude_worker_argv_pins_tools_and_one_server(tmp_path):
     config = json.loads(argv[argv.index("--mcp-config") + 1])
     assert set(config["mcpServers"]) == {"srv"}
     allowed = argv[argv.index("--allowedTools") + 1:]
-    for name in ("mcp__srv__task", "mcp__srv__check", "mcp__srv__done", "Edit(%s/**)" % ws):
+    for name in ("mcp__srv__task", "mcp__srv__check", "mcp__srv__done", "Edit(/%s/**)" % ws):
         assert name in allowed
     assert not any("t0k" in part for part in argv)
     assert plan.env == {"TOK_X": "t0k"}
@@ -685,6 +685,12 @@ def test_fake_harness_uses_tools(kind, tmp_path, sock_dir):
         allowed = argv[argv.index("--allowedTools") + 1:]
         for name in OTTO_CALLS:
             assert "mcp__%s__%s" % (TOOL_SERVER, name) in allowed
+        # every file tool is pinned to the workspace; the OS fence confines writes only
+        for name in WORKER_TOOLS:
+            assert "%s(/%s/**)" % (name, ws) in allowed
+        # a command-free worker with its one granted server runs confined: dontAsk, no safe mode
+        assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+        assert "--safe-mode" not in argv and "--dangerously-skip-permissions" not in argv
     else:
         assert "--ignore-user-config" in argv
         mcp_parts = [part for part in argv if part.startswith("mcp_servers.")]
@@ -795,3 +801,118 @@ def test_mac_write_scope_pins_the_server_exec(tmp_path):
     plain = MacWriteScope(str(ws), str(state), authentication="isolated")
     assert "(deny process-fork)" in plain.policy
     assert "exec_allow" not in plain.pin
+
+
+# --- confined worker: the launch shape the live probe established
+
+def _dirs(tmp_path):
+    ws, state = str(tmp_path / "w"), str(tmp_path / "st")
+    os.mkdir(ws)
+    os.mkdir(state)
+    return ws, state
+
+
+def _otto_grant():
+    """The worker's one granted server, named the way the adapter requires it."""
+    return sole_server_grant(server=TOOL_SERVER, tools=tuple(spec.name for spec in TOOL_SPECS),
+                             command=sys.executable, token="t0k", token_env=TOOL_ENV_PREFIX + "A1",
+                             token_env_prefix=TOOL_ENV_PREFIX)
+
+
+def _confined_spec(ws, state, *, mcp=None, tools=WORKER_TOOLS, initializer=False, **options):
+    """A claude-code turn built the way the harness builds one; no mcp means an MCP-less turn."""
+    options = {"state_root": state, **options}
+    if not initializer:
+        options.setdefault("tools", tools)
+        options.setdefault("allowed_tools", MANAGER_TOOLS)
+    return TurnSpec(executable="/L/claude", workspace=ws, prompt="p", model="claude-sonnet-5-5",
+                    reasoning="high", profile="workspace-write", initializer=initializer,
+                    mcp=McpGrant() if mcp is None else mcp, options=options)
+
+
+def test_confined_worker_launch_flags(tmp_path):
+    ws, state = _dirs(tmp_path)
+    host = get_host("claude-code")
+
+    # a command-free worker with its one granted server runs under dontAsk, without safe mode
+    argv = list(host.launch(_confined_spec(ws, state, mcp=_otto_grant())).argv)
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert "--safe-mode" not in argv and "--dangerously-skip-permissions" not in argv
+    allowed = argv[argv.index("--allowedTools") + 1:]
+    for name in WORKER_TOOLS:
+        assert "%s(/%s/**)" % (name, ws) in allowed
+
+    # the same worker with no MCP server keeps the old shape: safe mode, bypass, single-slash scopes
+    argv = list(host.launch(_confined_spec(ws, state)).argv)
+    assert "--safe-mode" in argv and "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv
+    allowed = argv[argv.index("--allowedTools") + 1:]
+    for name in WORKER_TOOLS:
+        assert "%s(%s/**)" % (name, ws) in allowed
+    assert "Glob" not in allowed and "Grep" not in allowed
+
+    # a manager runs Bash: it keeps safe mode, bypass and the bare Glob/Grep entries
+    manager = _confined_spec(ws, state, tools=MANAGER_TOOLS, allow_subprocesses=True)
+    argv = list(host.launch(manager).argv)
+    assert "--safe-mode" in argv and "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv
+    allowed = argv[argv.index("--allowedTools") + 1:]
+    assert "Glob" in allowed and "Grep" in allowed
+
+    # an initializer is inert and keeps safe mode and bypass even when a grant is present
+    argv = list(host.launch(_confined_spec(ws, state, mcp=_otto_grant(), initializer=True)).argv)
+    assert "--safe-mode" in argv and "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv
+
+
+def test_parser_expects_the_launched_permission_mode(tmp_path):
+    ws, state = _dirs(tmp_path)
+    host = get_host("claude-code")
+    confined = _confined_spec(ws, state, mcp=_otto_grant())
+    bare = _confined_spec(ws, state)
+
+    def init_frame(permission_mode, tools, servers):
+        return json.dumps({"type": "system", "subtype": "init", "session_id": "s-1", "cwd": ws,
+                           "model": "claude-sonnet-5-5", "permissionMode": permission_mode, "tools": tools,
+                           "mcp_servers": servers, "plugins": [], "skills": [], "slash_commands": [],
+                           }).encode()
+
+    confined_tools = sorted([*WORKER_TOOLS, "mcp__otto__check", "mcp__otto__done", "mcp__otto__task"])
+    connected = [{"name": "otto", "status": "connected"}]
+    accepted = host.parser(confined)
+    accepted.feed(init_frame("dontAsk", confined_tools, connected))
+    assert accepted.stream.session == "s-1" and accepted.stream.init is not None
+    with pytest.raises(ClaudeBindingError):
+        host.parser(confined).feed(init_frame("bypassPermissions", confined_tools, connected))
+
+    accepted = host.parser(bare)
+    accepted.feed(init_frame("bypassPermissions", sorted(WORKER_TOOLS), []))
+    assert accepted.stream.session == "s-1" and accepted.stream.init is not None
+    with pytest.raises(ClaudeBindingError):
+        host.parser(bare).feed(init_frame("dontAsk", sorted(WORKER_TOOLS), []))
+
+
+def test_transport_drops_safe_mode_env_only_with_a_grant(tmp_path):
+    from otto.agents.claude_cli import VERSION, ClaudeCliTransport, LauncherPin, MacWriteScope
+    ws, state = _dirs(tmp_path)
+    pin = LauncherPin("/x", "/x", "0", VERSION)
+    scope = MacWriteScope(ws, state, authentication="isolated")
+    granted = ClaudeCliTransport(pin, scope, model="claude-sonnet-5-5", reasoning="high", mcp=_otto_grant())
+    assert "CLAUDE_CODE_SAFE_MODE" not in granted.environment()
+    plain = ClaudeCliTransport(pin, scope, model="claude-sonnet-5-5", reasoning="high")
+    assert plain.environment()["CLAUDE_CODE_SAFE_MODE"] == "1"
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"),
+                    reason="needs macOS sandbox-exec")
+def test_adapter_pins_follow_the_permission_mode(tmp_path):
+    from otto.agents.claude_adapter import ClaudeWorkerAdapter
+    from otto.agents.claude_cli import VERSION, LauncherPin
+    ws, state = _dirs(tmp_path)
+    pin = LauncherPin("/x", "/x", "0", VERSION)
+    common = dict(owner="o", source=ws, worktree=ws, launcher_pin=pin, state_root=state,
+                  requested_model="claude-sonnet-5-5", authentication="isolated")
+    granted = ClaudeWorkerAdapter(**common, worker_mcp=_otto_grant())
+    assert granted.pins()["permission_mode"] == "dontAsk"
+    bare = ClaudeWorkerAdapter(**common)
+    assert bare.pins()["permission_mode"] == "bypassPermissions"

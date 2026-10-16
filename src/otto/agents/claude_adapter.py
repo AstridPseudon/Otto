@@ -312,7 +312,9 @@ class ClaudeWorkerAdapter:
                 'parser_sha256': file_digest(Path(__file__).with_name('claude_cli.py')),
                 'binding_sha256': file_digest(Path(__file__)), 'scope': self._transport_for(role).scope.pin,
                 'model': self.requested_model, 'reasoning': self.requested_reasoning,
-                'authentication': self.transport.authentication, 'permission_mode': 'bypassPermissions',
+                'authentication': self.transport.authentication,
+                'permission_mode': ('dontAsk' if role == 'worker' and not getattr(self.transport, 'mcp', McpGrant()).empty
+                                    else 'bypassPermissions'),
                 'profile': 'workspace-write', 'role': 'worker-leaf' if role == 'worker' else role}
         if self.roles != ('worker',):
             value.update(roles=list(self.roles), tools=list(ROLE_PROFILES[role]['tools']))

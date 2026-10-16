@@ -24,6 +24,22 @@ MAX_STREAM = 2 * 1024 * 1024
 BUILTIN_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
 # The file tools a worker gets on every host (no Bash: a worker runs no commands of its own).
 WORKER_BUILTIN_TOOLS = ('Edit', 'Glob', 'Grep', 'Read', 'Write')
+# Tools whose --allowedTools rule is pinned to the workspace. The OS fence confines writes only (reads are
+# allowed by default), so a leaf's every tool that reads or lists files carries the path scope itself. A
+# profile that runs commands (Bash) keeps its recorded Glob/Grep rules.
+LEAF_SCOPED_TOOLS = frozenset({'Read', 'Write', 'Edit', 'Glob', 'Grep'})
+COMMAND_SCOPED_TOOLS = frozenset({'Read', 'Write', 'Edit'})
+# Live probe (ops/runs/TOOLS, CLI 2.1.301): under --dangerously-skip-permissions the --allowedTools path
+# scopes are inert and Read/Grep/Glob read any file the user can; under dontAsk a call outside the scope is
+# refused. --safe-mode also drops every MCP server, so a worker that is granted its one server runs without
+# it (settings, slash commands and every other MCP config stay off through --setting-sources,
+# --disable-slash-commands and --strict-mcp-config).
+CONFINED_PERMISSION_MODE = 'dontAsk'
+
+
+def confined_leaf(spec: Any, tools: Sequence[str]) -> bool:
+    """A command-free worker turn that has been granted its MCP server."""
+    return not spec.initializer and 'Bash' not in tools and not spec.mcp.empty
 EFFORTS = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
 PROTECTED_NAMES = ('.git', '.agents', '.codex', '.aws', '.claude')
 STRICT_EMPTY_MCP = ('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}')
@@ -145,8 +161,9 @@ class ClaudeStream:
                  session: str | None = None, on_init: Callable[..., Any] | None = None,
                  on_input: Callable[..., Any] | None = None,
                  on_usage: Callable[..., Any] | None = None, phase: str = "work",
-                 mcp_servers: tuple = (), mcp_tools: tuple = ()):
+                 mcp_servers: tuple = (), mcp_tools: tuple = (), permission_mode: str = 'bypassPermissions'):
         self.prompt, self.cwd, self.model, self.tools = prompt, cwd, model, tools
+        self.permission_mode = permission_mode
         self.session, self.on_init, self.on_input = session, on_init, on_input
         self.mcp_servers, self.mcp_tools = tuple(mcp_servers), tuple(mcp_tools)
         from herzchen.usage.capture import UsageStream
@@ -191,7 +208,7 @@ class ClaudeStream:
                 raise ClaudeBindingError("duplicate native initialization")
             session = text(event.get('session_id'), 'native session')
             if (self.session is not None and session != self.session or event.get('cwd') != self.cwd
-                    or event.get('model') != self.model or event.get('permissionMode') != 'bypassPermissions'
+                    or event.get('model') != self.model or event.get('permissionMode') != self.permission_mode
                     or not isinstance(event.get('tools'), list)
                     or sorted(event['tools']) != sorted((*self.tools, *self.mcp_tools))
                     or not self._servers_match(event.get('mcp_servers')) or event.get('plugins', []) != []
@@ -363,14 +380,20 @@ class ClaudeHost(HostKind):
         reasoning = validate_effort(spec.reasoning)
         tools = self.tools_for(spec)
         max_turns = validate_max_turns(spec.options.get("max_turns", 8))
+        confined = confined_leaf(spec, tools)
         command = [spec.executable, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
-                   '--verbose', '--replay-user-messages', '--safe-mode', '--setting-sources', '', *mcp_flags,
-                   '--disable-slash-commands', '--dangerously-skip-permissions', '--tools', ','.join(tools),
+                   '--verbose', '--replay-user-messages', *(() if confined else ('--safe-mode',)),
+                   '--setting-sources', '', *mcp_flags, '--disable-slash-commands',
+                   *(('--permission-mode', CONFINED_PERMISSION_MODE) if confined
+                     else ('--dangerously-skip-permissions',)), '--tools', ','.join(tools),
                    '--model', spec.model, '--effort', reasoning,
                    '--max-turns', '1' if spec.initializer else str(max_turns)]
         if not spec.initializer:
-            command.extend(['--allowedTools', *(name + '(' + spec.workspace + '/**)'
-                                                if name in {'Read', 'Write', 'Edit'} else name for name in tools),
+            scoped = COMMAND_SCOPED_TOOLS if 'Bash' in tools else LEAF_SCOPED_TOOLS
+            # A rule's "/path" is project-relative; only "//path" names an absolute directory (probed).
+            root = ('/' if confined else '') + spec.workspace
+            command.extend(['--allowedTools', *(name + '(' + root + '/**)'
+                                                if name in scoped else name for name in tools),
                             *mcp_tool_names(spec.mcp)])
         if spec.session is not None:
             command.extend(['--resume', text(spec.session, 'exact native session')])
@@ -390,4 +413,6 @@ class ClaudeHost(HostKind):
             prompt=spec.prompt, cwd=spec.workspace, model=spec.model, tools=self.tools_for(spec),
             session=spec.session, on_init=callbacks.get("on_init"), on_input=callbacks.get("on_input"),
             on_usage=callbacks.get("on_usage"), phase="initializer" if spec.initializer else "work",
-            mcp_servers=tuple(s.name for s in grant.servers), mcp_tools=mcp_tool_names(grant)))
+            mcp_servers=tuple(s.name for s in grant.servers), mcp_tools=mcp_tool_names(grant),
+            permission_mode=(CONFINED_PERMISSION_MODE if confined_leaf(spec, self.tools_for(spec))
+                             else 'bypassPermissions')))

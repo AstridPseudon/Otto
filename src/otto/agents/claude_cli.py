@@ -292,9 +292,12 @@ class ClaudeCliTransport:
         """
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('CLAUDE_', 'ANTHROPIC_'))}
-        env.update(CLAUDE_CODE_SAFE_MODE='1',
-                   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
+        env.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
                    TMPDIR=self.scope.state_root, **getattr(self, 'extra_env', {}))
+        if self.mcp.empty:
+            # Safe mode also drops every MCP server, so a granted worker runs without it (see the host's
+            # confined leaf launch); everything else stays disabled through its flags.
+            env['CLAUDE_CODE_SAFE_MODE'] = '1'
         # An agent never inherits heavy-lease markers: the runner knows a nested call by its lease, not by these.
         env = {key: value for key, value in env.items() if not key.startswith('OTTO_HEAVY_')}
         if self.authentication == 'isolated':
