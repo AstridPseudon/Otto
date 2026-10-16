@@ -12,7 +12,7 @@
     "1": {
       "tasks": [],
       "host": "claude-code",
-      "store": {"store_events": 4, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},
+      "store": {"store_events": 3, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},
       "scenarios": ["save-through-socket"],
       "saves": {
         "create": {
