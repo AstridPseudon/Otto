@@ -962,6 +962,7 @@ class OttoPortfolio:
             project_rows.append({
                 "project_ref": actual_project,
                 "title": project.get("title"),
+                "criteria": _json_copy(project.get("criteria", []), field="criteria"),
                 "lifecycle": project.get("lifecycle", "unknown"),
                 "parent_ref": project.get("parent_ref"),
                 "manager_assignments": _json_copy((final_inbox.get("manager") or {}).get("assignments", ()), field="manager_assignments") if isinstance(final_inbox.get("manager"), Mapping) else [],
@@ -1155,7 +1156,9 @@ class OttoPortfolio:
             parsed = parse_save_file(document)
             key = request_id if request_id is not None else save_request_key(document)
         except SaveFileError as exc:
-            return {"outcome": "error", "error": {"code": "invalid_save_file", "message": str(exc), "operation": "work.project.save"}}
+            return {"outcome": "error", "error": {"code": "invalid_save_file", "message": str(exc), "operation": "work.project.save"},
+                    "next_action": "Correct the named save-file issue and submit the save again.",
+                    "retry": False, "dispatch": False, "launch": False}
         return self._execute("work.project.save", parsed, request_id=key, actor=actor)
 
     def read_work(
