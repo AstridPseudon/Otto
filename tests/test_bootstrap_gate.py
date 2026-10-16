@@ -348,6 +348,35 @@ class RunTaskRoute(Scratch):
         self.assertIn("sweep tests/test_named.py run 2/2", log)
 
 
+class CheckPreexistingReds(Scratch):
+    """A check that fails only on a test canon also fails lands, logging it as pre-existing; a check
+    failure canon doesn't share still refuses (16 Oct: canon's manager-loop red refused three landings)."""
+
+    def canon_red(self):
+        self.write(self.repo, "tests/test_red.py", "def test_red():\n    assert False\n")
+        self.commit(self.repo, "canon has a red test")
+        sh(["git", "push", "-q", "github", "canon/main:main"], cwd=self.repo, env=self.env)
+
+    def brief(self, task, check):
+        (self.labs / task / ".brief.md").write_text("**Title:** Do %s\nCheck command: `%s`\n" % (task, check))
+
+    def test_a_red_canon_shares_does_not_refuse(self):
+        self.canon_red()
+        self.lab("T12", {"note.txt": "x\n"})
+        self.brief("T12", "%s -m pytest -q tests/test_red.py" % sys.executable)
+        r = self.land("T12")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("also red on BASE", self.log("T12"))
+        self.assertIn("tests/test_red.py::test_red", (self.ops / "canon-reds.txt").read_text())
+
+    def test_a_red_canon_does_not_share_refuses(self):
+        self.lab("T13", {"tests/test_new_red.py": "def test_new():\n    assert False\n"})
+        self.brief("T13", "%s -m pytest -q tests/test_new_red.py" % sys.executable)
+        r = self.land("T13")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("check failed", r.stdout + r.stderr)
+
+
 class RunTaskCodex(Scratch):
     """--host codex: Luna or Sol in Codex's workspace-write sandbox; codex names the session; the
     launcher commits what the worker leaves, because the sandbox keeps .git read-only."""
