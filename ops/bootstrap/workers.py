@@ -126,8 +126,9 @@ def cmd_wait(args):
     seen = len(orchestrator_headings(args.inbox))
     landing = [p for p in args.land_out if land_result(p) is None]
     if not running and not landing:
-        print("nothing running: no live worker and no landing in progress")
-        return 0
+        # Nothing of its own runs, so the manager is waiting on the orchestrator: wait on the inbox alone
+        # (16 Oct: with an early return here, the manager wrote its own sleep-loop watcher instead).
+        print("nothing running: no live worker and no landing in progress; waiting on the inbox only", flush=True)
     print(f"waiting on workers {sorted(running) or '-'}, landings {landing or '-'}, inbox {args.inbox}",
           file=sys.stderr, flush=True)
     while True:

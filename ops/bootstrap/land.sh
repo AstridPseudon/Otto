@@ -98,8 +98,8 @@ read -r HZ_ADD HZ_DEL OT_ADD OT_DEL <<< "$(gitl diff --numstat "$BASE...$BRANCH"
   END { print ha+0, hd+0, oa+0, od+0 }')"
 LAYER="$(brief_field "$LAB" Layer)"
 log "placement: src/herzchen +$HZ_ADD -$HZ_DEL; src/otto +$OT_ADD -$OT_DEL; Layer: ${LAYER:-none}"
-case "$LAYER" in
-  *[Hh]erzchen*) if [ "$OT_ADD" -gt 0 ] && [ "$HZ_ADD" -eq 0 ]; then
+case "$LAYER" in  # the Layer's leading word names it ("Otto … nothing in src/herzchen" is Otto)
+  [Hh]erzchen*) if [ "$OT_ADD" -gt 0 ] && [ "$HZ_ADD" -eq 0 ]; then
     fail "D14: Layer says Herzchen but the task added $OT_ADD lines under src/otto and none under src/herzchen"; fi ;;
 esac
 
@@ -257,10 +257,13 @@ for f in $TESTS_ADDED; do
 done
 
 # d. staging hook
-if [ -x "$HERE/staging.sh" ] && [ -x "$HERE/perch.sh" ]; then
+# The tested commit's own staging scripts (-f, not -x: they land as 100644, and -x skipped this step
+# silently after PERCH landed).
+ST="$LAB/ops/bootstrap"
+if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
   SHA="$(git -C "$LAB" rev-parse HEAD)"
-  ( cd "$LAB" && OTTO_COMMIT="$SHA" "$HERE/staging.sh" restart ) >> "$G/staging.log" 2>&1 || fail "staging.sh restart failed ($G/staging.log)"
-  ( cd "$LAB" && OTTO_COMMIT="$SHA" "$HERE/perch.sh" all --fake ) >> "$G/staging.log" 2>&1 || fail "perch.sh all --fake failed ($G/staging.log)"
+  ( cd "$LAB" && OTTO_COMMIT="$SHA" bash "$ST/staging.sh" restart ) >> "$G/staging.log" 2>&1 || fail "staging.sh restart failed ($G/staging.log)"
+  ( cd "$LAB" && OTTO_COMMIT="$SHA" bash "$ST/perch.sh" all --fake ) >> "$G/staging.log" 2>&1 || fail "perch.sh all --fake failed ($G/staging.log)"
   log "staging: restart and perch --fake passed on $SHA"
 else
   log "staging: skipped (STAGE/PERCH not landed)"
