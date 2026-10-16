@@ -73,6 +73,28 @@ def detached_sleeper(pidfile: Path, *, stop_self: bool = False, linger: float = 
         + (f"time.sleep({linger})\n" if linger else ""))
 
 
+def ticketed(tmp_path: Path, n: int) -> None:
+    """Wait until N waiters hold tickets (state, not time)."""
+    while len(list((tmp_path / "state" / "waiting").glob("*.json"))) != n:
+        time.sleep(0.05)
+
+
+def _mark_then_wait(marks: Path, name: str, go: Path) -> list[str]:
+    """A job that records its start, then stays (holding its slots) until the test creates GO."""
+    return py(f"import os, time; open({str(marks)!r},'a').write('{name}\\n')\n"
+              f"while not os.path.exists({str(go)!r}): time.sleep(0.05)")
+
+
+def started(marks: Path) -> list[str]:
+    return marks.read_text().split() if marks.exists() else []
+
+
+def await_started(marks: Path, n: int) -> list[str]:
+    while len(started(marks)) < n:
+        time.sleep(0.05)
+    return started(marks)
+
+
 def test_runs_the_command_returns_its_exit_code_and_logs_machine_state(tmp_path):
     proc = heavy(tmp_path, "--purpose", "unit", "--", *py("import sys; sys.exit(3)"))
     out, err = proc.communicate(timeout=30)
@@ -85,27 +107,27 @@ def test_runs_the_command_returns_its_exit_code_and_logs_machine_state(tmp_path)
 
 
 def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path):
-    marks = tmp_path / "marks"
-    first = heavy(tmp_path, "--purpose", "render A", "--",
-                  *py(f"import time; open({str(marks)!r},'a').write('A+%f\\n' % time.time()); time.sleep(2); "
-                      f"open({str(marks)!r},'a').write('A-%f\\n' % time.time())"))
+    marks, go = tmp_path / "marks", tmp_path / "go"
+    first = heavy(tmp_path, "--purpose", "render A", "--", *_mark_then_wait(marks, "A", go))
     holding(tmp_path, 1)
-    second = heavy(tmp_path, "--purpose", "journey B", "--",
-                   *py(f"import time; open({str(marks)!r},'a').write('B+%f\\n' % time.time())"))
-    _, err2 = second.communicate(timeout=30)
-    first.communicate(timeout=30)
-    times = dict(line.split("+") if "+" in line else (line.split("-")[0] + "-", line.split("-")[1])
-                 for line in marks.read_text().splitlines())
-    assert float(times["B"]) >= float(times["A-"]), "the second lease started before the first ended"
+    second = heavy(tmp_path, "--purpose", "journey B", "--", *py(f"open({str(marks)!r},'a').write('B\\n')"))
+    ticketed(tmp_path, 1)
+    assert await_started(marks, 1) == ["A"], "the second lease started while the first held the only slot"
+    go.write_text("")
+    _, err2 = second.communicate(timeout=60)
+    first.communicate(timeout=60)
+    assert started(marks) == ["A", "B"]
     assert "waiting for 1 slot(s)" in err2 and "render A" in err2
 
 
 def test_no_wait_returns_busy_and_names_what_is_running(tmp_path):
-    first = heavy(tmp_path, "--purpose", "render A", "--", *py("import time; time.sleep(3)"))
+    go = tmp_path / "go"
+    first = heavy(tmp_path, "--purpose", "render A", "--", *_mark_then_wait(tmp_path / "marks", "A", go))
     holding(tmp_path, 1)
     busy = heavy(tmp_path, "--no-wait", "--", *py("pass"))
-    _, err = busy.communicate(timeout=30)
-    first.communicate(timeout=30)
+    _, err = busy.communicate(timeout=60)
+    go.write_text("")
+    first.communicate(timeout=60)
     assert busy.returncode == 75 and "render A" in err
 
 
@@ -180,11 +202,6 @@ def _span(marks: Path, name: str) -> tuple[float, float]:
     return float(lines[name + "+"]), float(lines[name + "-"])
 
 
-def _job(marks: Path, name: str, seconds: float) -> list[str]:
-    return py(f"import time; open({str(marks)!r},'a').write('{name}+=%f\\n' % time.time()); time.sleep({seconds}); "
-              f"open({str(marks)!r},'a').write('{name}-=%f\\n' % time.time())")
-
-
 def _together(marks: Path, name: str, n: int) -> list[str]:
     # Start, then stay until N jobs have started (they can only all start if they run at once).
     return py(f"import time; open({str(marks)!r},'a').write('{name}+=%f\\n' % time.time())\n"
@@ -205,60 +222,59 @@ def test_jobs_run_at_the_same_time_while_capacity_remains(tmp_path):
 
 
 def test_a_heavier_job_waits_for_enough_slots_and_is_not_starved(tmp_path):
-    marks = tmp_path / "marks"
-    first = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small1", 2), capacity=2)
+    marks, go = tmp_path / "marks", tmp_path / "go"
+    quick = lambda name: py(f"open({str(marks)!r},'a').write('{name}\\n')")
+    first = heavy(tmp_path, "--weight", "1", "--", *_mark_then_wait(marks, "small1", go), capacity=2)
     holding(tmp_path, 1, capacity=2)
-    big = heavy(tmp_path, "--weight", "2", "--purpose", "full render", "--", *_job(marks, "big", 0.5), capacity=2)
+    big = heavy(tmp_path, "--weight", "2", "--purpose", "full render", "--", *quick("big"), capacity=2)
     assert "waiting for 2 slot(s)" in big.stderr.readline()  # it heads the queue
-    later = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "small2", 0.2), capacity=2)
+    later = heavy(tmp_path, "--weight", "1", "--", *quick("small2"), capacity=2)
+    ticketed(tmp_path, 2)
+    assert started(marks) == ["small1"], "the 2-slot job or a later small job started while a slot was taken"
+    go.write_text("")
     for proc in (first, big, later):
         proc.communicate(timeout=60)
         assert proc.returncode == 0
-    s1, e1 = _span(marks, "small1"); sb, eb = _span(marks, "big"); s2, _ = _span(marks, "small2")
-    assert sb >= e1, "the 2-slot job started while a slot was taken"
-    assert s2 >= sb, "a later small job jumped the queue ahead of the waiting big job"
+    assert started(marks) == ["small1", "big", "small2"], "a later small job jumped the queue ahead of the big one"
 
 
 def test_a_small_job_uses_a_slot_the_waiting_head_cannot_and_never_delays_it(tmp_path):
     # 4 slots: a 3-slot render runs; a 3-slot job waits at the head with 1 slot free. A 1-slot check
     # behind it takes that slot at once; a second one doesn't (the head must still fit beside it).
     marks = tmp_path / "marks"
-    render = heavy(tmp_path, "--weight", "3", "--", *_job(marks, "render", 4), capacity=4)
+    go = {n: tmp_path / f"go_{n}" for n in ("render", "head", "check")}
+    render = heavy(tmp_path, "--weight", "3", "--", *_mark_then_wait(marks, "render", go["render"]), capacity=4)
     holding(tmp_path, 3, capacity=4)
-    head = heavy(tmp_path, "--weight", "3", "--purpose", "transcript", "--", *_job(marks, "head", 0.5), capacity=4)
+    head = heavy(tmp_path, "--weight", "3", "--purpose", "transcript", "--",
+                 *_mark_then_wait(marks, "head", go["head"]), capacity=4)
     assert "waiting for 3 slot(s)" in head.stderr.readline()  # it heads the queue
-    check = heavy(tmp_path, "--weight", "1", "--purpose", "gate", "--", *_job(marks, "check", 12), capacity=4)
+    check = heavy(tmp_path, "--weight", "1", "--purpose", "gate", "--",
+                  *_mark_then_wait(marks, "check", go["check"]), capacity=4)
     holding(tmp_path, 4, capacity=4)
-    second = heavy(tmp_path, "--weight", "1", "--", *_job(marks, "second", 0.2), capacity=4)
+    assert await_started(marks, 2) == ["render", "check"], "the check waited although the head couldn't use the free slot"
+    second = heavy(tmp_path, "--weight", "1", "--", *py(f"open({str(marks)!r},'a').write('second\\n')"), capacity=4)
+    ticketed(tmp_path, 2)
+    assert started(marks) == ["render", "check"], "a second small job backfilled into room the head needs"
+    go["render"].write_text("")
+    assert await_started(marks, 3) == ["render", "check", "head"], "the head did not start right after the render ended"
+    # the head started while the check still runs, and the second small job is still behind it
+    go["head"].write_text(""); go["check"].write_text("")
     for proc in (render, head, check, second):
         proc.communicate(timeout=60)
         assert proc.returncode == 0
-    _, end_render = _span(marks, "render"); s_head, _ = _span(marks, "head")
-    s_check, e_check = _span(marks, "check"); s_second, _ = _span(marks, "second")
-    assert s_check < end_render, "the 1-slot check waited although the head couldn't use the free slot"
-    assert s_head >= end_render, "the 3-slot head started while the render held its slots"
-    assert s_head < e_check, "the head waited for the backfilled check: backfill delayed it"
-    assert s_second >= s_head, "a second small job backfilled into room the head needs"
+    assert started(marks) == ["render", "check", "head", "second"]
 
 
 def test_status_shows_capacity_and_what_is_running(tmp_path):
-    job = heavy(tmp_path, "--weight", "2", "--purpose", "journey X", "--", *py("import time; time.sleep(2)"), capacity=4)
+    go = tmp_path / "go"
+    job = heavy(tmp_path, "--weight", "2", "--purpose", "journey X", "--",
+                *_mark_then_wait(tmp_path / "marks", "X", go), capacity=4)
     holding(tmp_path, 2, capacity=4)
     status = json.loads(heavy(tmp_path, "status", capacity=4).communicate(timeout=30)[0])
+    go.write_text("")
     job.communicate(timeout=30)
     assert status["capacity"] == 4 and status["used"] == 2 and status["free"] == 2
     assert status["holders"][0]["purpose"] == "journey X"
-
-
-def ticketed(tmp_path: Path, n: int) -> None:
-    """Wait until N waiters hold tickets (state, not time)."""
-    while len(list((tmp_path / "state" / "waiting").glob("*.json"))) != n:
-        time.sleep(0.05)
-
-
-def _mark_then_wait(marks: Path, name: str, go: Path) -> list[str]:
-    return py(f"import os, time; open({str(marks)!r},'a').write('{name}\\n')\n"
-              f"while not os.path.exists({str(go)!r}): time.sleep(0.05)")
 
 
 def admitted(tmp_path: Path) -> list[str]:
