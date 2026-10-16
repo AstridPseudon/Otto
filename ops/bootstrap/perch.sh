@@ -40,7 +40,11 @@ stop_background() {
   if [ -n "$SAMPLER" ]; then kill -- "-$SAMPLER" 2>/dev/null || true; fi
   for pid in $HOLD_POOL $HOLD_LEAK; do kill "$pid" 2>/dev/null || true; done
 }
-trap stop_background EXIT
+# A fatal shell error must not exit 0. bash 3.2 gives the EXIT trap $? = 0 after a set -u abort
+# (16 Oct: stage 1 died on an unbound variable, wrote no report, and exited 0), so only the normal
+# end sets PERCH_FINISHED, and an exit 0 without it becomes 70.
+PERCH_FINISHED=""
+trap 'rc=$?; stop_background; if [ "$rc" = 0 ] && [ -z "$PERCH_FINISHED" ]; then echo "perch: stopped before finishing (a fatal shell error above)" >&2; rc=70; fi; exit "$rc"' EXIT
 
 # One line of the observation record: time, task, event, detail. The worker's own events are in worker-TASK.jsonl.
 event() { printf '%s\t%s\t%s\t%s\n' "$(now)" "$2" "$1" "$3" >> "$RAW/events.tsv"; }
@@ -360,7 +364,7 @@ run_stage() {  # STAGE
 
   INIT_ARGS=()
   [ -z "$FAKE" ] || INIT_ARGS+=(--fake)
-  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" "${INIT_ARGS[@]}" \
+  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} \
     --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
     --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
   STAGE_RC=0
@@ -396,4 +400,5 @@ for s in $STAGES; do
   run_stage "$s"
   [ "$STAGE_RC" -eq 0 ] || RC=1
 done
+PERCH_FINISHED=1
 exit "$RC"

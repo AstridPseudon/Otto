@@ -407,3 +407,29 @@ class SeededFaultRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PerchExitStatus(unittest.TestCase):
+    """A fatal error inside perch.sh must not exit 0. On bash 3.2 the EXIT trap's last command
+    replaced the status, so stage 1 died on an unbound variable, wrote no report and exited 0
+    (16 Oct). A copy of the real script with an unset variable read right after the trap must fail."""
+
+    def test_a_fatal_error_is_not_exit_0(self):
+        text = PERCH.read_text()
+        marker = "run_stage() {  # STAGE"  # inside a function, where bash 3.2 lost the status
+        self.assertIn(marker, text)
+        tmp = Path(tempfile.mkdtemp(prefix="perchexit-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        boot = tmp / "bootstrap"
+        shutil.copytree(PERCH.parent, boot)  # perch.sh sources its siblings
+        copy = boot / "perch.sh"
+        copy.write_text(text.replace(marker, marker + '\n: "$PERCH_TEST_UNSET_VARIABLE"', 1))
+        r = subprocess.run(["bash", str(copy), "1"], cwd=tmp, capture_output=True, text=True,
+                           env={k: v for k, v in os.environ.items() if k != "PERCH_TEST_UNSET_VARIABLE"})
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 70, r.stdout + r.stderr)  # the trap's verdict, not bash's 0
+        self.assertIn("PERCH_TEST_UNSET_VARIABLE", r.stderr)
+
+    def test_init_args_expand_when_empty(self):
+        # Without --fake the array is empty; bash 3.2 under set -u calls "${a[@]}" unbound.
+        self.assertIn('${INIT_ARGS[@]+"${INIT_ARGS[@]}"}', PERCH.read_text())
+
