@@ -133,7 +133,8 @@ G="$RUN/.gate"; rm -rf "$G"; mkdir -p "$G"  # dot-folders: portfolio applies ski
 # Run one test file in DIR with output to OUT; the last line records pytest's exit status.
 run_pytest() {  # DIR FILE OUT
   local rc=0
-  ( cd "$1" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests "$HEAVY" --weight 1 --purpose "$TASK gate" -- \
+  ( cd "$1" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit" \
+      "$HEAVY" --weight 1 --purpose "$TASK gate" -- \
       "$PY" -m pytest -q -rfE -p no:cacheprovider "$2" ) > "$3" 2>&1 || rc=$?
   echo "=== exit $rc" >> "$3"
 }
@@ -145,7 +146,9 @@ ids_of() {  # OUT FILE
 }
 
 # 0. The task's own check, on the rebased commit (D19, rule 1). Until 15 Oct the gate parsed it and never ran it.
-( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests "$HEAVY" --weight 1 --purpose "$TASK check" -- \
+# otto_gate_exit (beside this script): a run is over when pytest has reported, even if a test leaked a thread.
+( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit" \
+    "$HEAVY" --weight 1 --purpose "$TASK check" -- \
     bash -c "$CHECK" ) > "$G/check.txt" 2>&1 || fail "the task's check failed: $CHECK (output: $G/check.txt)"
 log "check passed: $CHECK"
 

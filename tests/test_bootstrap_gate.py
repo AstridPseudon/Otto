@@ -425,7 +425,7 @@ class RunTaskCodex(Scratch):
         release = self.tmp / "release"
         stub = self.bin / "codex"
         stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-pipe"}\'\n'
-                        'while [ ! -e "%s" ]; do sleep 0.2; done\n' % release)
+                        'while [ ! -e "%s" ] && [ -d "%s" ]; do sleep 0.2; done\n' % (release, self.tmp))
         stub.chmod(0o755)
         try:
             r = subprocess.run(["bash", str(BOOT / "run-task.sh"), task, "--host", "codex", "--wall-seconds", "60"],
@@ -444,6 +444,27 @@ class RunTaskCodex(Scratch):
         r = sh(["bash", str(BOOT / "run-task.sh"), task, "--wall-seconds", "30"], env=self.env, check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("gpt-6-luna", r.stdout)
+
+
+class GateExitPlugin(unittest.TestCase):
+    """otto_gate_exit: a run that leaked a non-daemon thread still ends when pytest has reported,
+    with pytest's status, and names the thread (16 Oct: a 53-minute hang after a 91 s run)."""
+
+    def test_leaked_thread_does_not_hold_the_run(self):
+        tmp = Path(tempfile.mkdtemp(prefix="gateexit-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "test_leak.py").write_text(textwrap.dedent("""
+            import threading
+            def test_leaks_and_fails():
+                threading.Thread(target=threading.Event().wait, name="leaked-waiter").start()
+                assert False
+        """))
+        env = dict(os.environ, PYTHONPATH=str(BOOT), PYTEST_ADDOPTS="-p otto_gate_exit")
+        r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_leak.py"],
+                           cwd=tmp, env=env, capture_output=True, text=True)  # a hang here is the failure
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("leaked-waiter", r.stderr)
+        self.assertIn("1 failed", r.stdout)
 
 
 class WorkersSpend(unittest.TestCase):
