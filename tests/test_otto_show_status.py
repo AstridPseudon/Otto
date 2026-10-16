@@ -30,6 +30,7 @@ from herzchen.fleet.labs import LabFleet
 from herzchen.kernel import Store
 from otto.agents.host_profiles import SLOTS, resolve_profile_name
 from otto.hostctl.owner import host_domains
+from otto.hostctl import cli as hostctl_cli
 from otto.portfolio import cli
 from otto.portfolio.document_editor_host import DocumentEditorHost
 from otto.portfolio.fixtures import project_authoring
@@ -89,7 +90,6 @@ class ShowTests(unittest.TestCase):
                 self.assertEqual(codex_code, 0, codex_out)
                 self.assertEqual(claude_out, codex_out)
                 self.assertEqual(json.loads(claude_out)["outcome"], "read")
-
     def test_show_project_reads_its_title_and_both_tasks(self):
         code, out = self._show("show", "project", "--project-ref", json.dumps(self.project_ref),
                                "--actor", "owner", kind="codex")
@@ -111,6 +111,17 @@ class ShowTests(unittest.TestCase):
         shown = json.loads(out)
         self.assertEqual(shown["project"]["retirement"]["reason"], "superseded")
         self.assertEqual(shown["project"]["retirement"]["by"]["id"], successor.id)
+
+
+class HostServiceExitTests(unittest.TestCase):
+    def test_unrequested_closed_service_run_has_nonzero_exit_status(self):
+        output = StringIO()
+        with patch.object(hostctl_cli, "LOCAL_COMMANDS", {
+                **hostctl_cli.LOCAL_COMMANDS,
+                ("service", "run"): lambda _args: {"outcome": "closed", "owner_exit_requested": False},
+        }), redirect_stdout(output):
+            code = hostctl_cli.main(["service", "run"])
+        self.assertNotEqual(code, 0, output.getvalue())
 
 
 class OpenTests(unittest.TestCase):

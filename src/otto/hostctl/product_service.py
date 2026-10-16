@@ -32,7 +32,7 @@ from . import lanes
 from .owner import HostSession, host_domains, runtime_dirs, service_store
 from .project_service import ProjectOwnerService
 from .serve import HostOwnerService, request_digest, socket_path
-from .service import _RELAYED, owner_lane, stop_marker, status_path
+from .service import _RELAYED, _requested_closure, owner_lane, stop_marker, status_path
 
 EXIT_STARTUP_REFUSED = 78
 REFUSAL_SCHEMA = 'otto.owner-startup-refusal.v1'
@@ -1224,4 +1224,5 @@ def run_product_service(config: Mapping[str, Any], *, emit: Callable[[Mapping[st
     if result is not None:
         return result
     return {'outcome': 'closed', 'generation': owner.service.generation, 'requests_served': owner.service.served,
-            'relays_open': len(owner.service.relays), 'provider_called': False}
+            'relays_open': len(owner.service.relays), 'owner_exit_requested': stop_marker(home).exists(),
+            'closure': _requested_closure(home), 'provider_called': False}

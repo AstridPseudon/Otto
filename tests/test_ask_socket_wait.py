@@ -1,15 +1,19 @@
 """ASK socket wait and paused admission regressions."""
 import os
 import json
+import socket
 import tempfile
 import threading
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from otto.portfolio import cli
+from otto.portfolio.caller_client import call, call_connection
 from otto.portfolio.execution_host import ExecutionAdmissionHeld, ExecutionHost
+from otto.portfolio.manager_journey_service import ManagerJourneyService
 
 
 def test_otto_wait_uses_existing_authenticated_caller_socket():
@@ -38,6 +42,64 @@ def test_otto_wait_uses_existing_authenticated_caller_socket():
         "timeout_seconds": 8.0,
     }
     assert request["timeout"] > 8
+
+
+def test_otto_wait_reports_owner_down_and_restart_event_when_socket_is_gone(tmp_path):
+    result = call(str(tmp_path / "closed-owner.sock"), {"command": "wait-for-answer"}, timeout=1)
+    assert result["schema"] == "otto.wait.v1"
+    assert result["outcome"] == "owner_down"
+    assert result["owner_event"]["type"] == "owner-down"
+    assert "restart" in result["next_action"]
+
+    client, owner = socket.socketpair()
+    owner.close()
+    with client:
+        dropped = call_connection(client, {"command": "wait-for-answer"})
+    assert dropped["outcome"] == "owner_down"
+    assert dropped["owner_event"]["type"] == "owner-down"
+
+    output = StringIO()
+    with patch.dict(os.environ, {"OTTO_CALLER_SOCKET": str(tmp_path / "closed-owner.sock")}), \
+         redirect_stdout(output):
+        code = cli.client_main([
+            "wait", "--assignment-ref", '{"authority":"a","kind":"work.assignment","id":"x","revision":"r1"}',
+            "--generation", "1", "--native-session-id", "native", "--asking-schedule-id", "schedule",
+            "--issue-id", "issue", "--cursor", "cursor", "--timeout-seconds", "5",
+        ])
+    assert code != 0
+    assert json.loads(output.getvalue())["owner_event"]["type"] == "owner-down"
+
+
+def test_active_otto_wait_is_released_with_owner_down_event_on_drain():
+    assignment = {"authority": "a", "kind": "work.assignment", "id": "x", "revision": "r1"}
+    server = SimpleNamespace(
+        state={"asking_waits": {"issue": {"wait_ref": {
+            "authority": "a", "kind": "work.wait", "id": "wait", "revision": "r1"}}}},
+        store=object(), portfolio=SimpleNamespace(_issue_loop=lambda: object()),
+    )
+    service = object.__new__(ManagerJourneyService)
+    service.server = server
+    service.host = SimpleNamespace(draining=True)
+    waiting = SimpleNamespace(
+        asking_assignment_ref=SimpleNamespace(to_dict=lambda: assignment), asking_generation=1,
+        asking_session_id="native", metadata={"asking_schedule_id": "schedule", "issue_id": "issue"},
+    )
+    page = SimpleNamespace(cursor="cursor-after-drain", events=(), status="timeout")
+    request = {"command": "wait-for-answer", "issue_id": "issue", "asking_schedule_id": "schedule",
+               "assignment_ref": assignment, "generation": 1, "native_session_id": "native",
+               "cursor": "cursor-before-drain", "timeout_seconds": 10.0}
+    context = {"assignment_ref": assignment, "generation": 1,
+               "occurrence_ref": {"schedule_id": "schedule"}, "native_session": {"id": "native"}}
+    decisions = SimpleNamespace(get_wait=lambda _ref: waiting)
+    cursor_reader = SimpleNamespace(wait=lambda *_args, **_kwargs: page)
+    with patch.object(ManagerJourneyService, "authorize_caller"), \
+         patch("herzchen.domains.work.decisions.DecisionsModule", return_value=decisions), \
+         patch("herzchen.fleet.runner.require_asking_session"), \
+         patch("herzchen.kernel.EventCursorReader", return_value=cursor_reader):
+        result = service._wait_for_answer(request, context)
+    assert result["outcome"] == "owner_down"
+    assert result["owner_event"]["type"] == "owner-down"
+    assert result["cursor"] == "cursor-after-drain"
 
 
 def test_ask_wait_invalid_json_arguments_return_structured_errors():

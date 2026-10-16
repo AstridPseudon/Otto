@@ -1574,7 +1574,7 @@ class ManagerJourneyService:
         while True:
             page = reader.wait(stream, cursor=cursor,
                 event_filter=EventFilter(event_types=("work.report.appended",)),
-                timeout_seconds=max(0.0, end - time.monotonic()), limit=1000)
+                timeout_seconds=min(0.25, max(0.0, end - time.monotonic())), limit=1000)
             cursor = page.cursor
             for event in page.events:
                 record = self.server.store.get_record(event.subject)
@@ -1605,7 +1605,14 @@ class ManagerJourneyService:
                             "generation": request["generation"],
                             "native_session_id": request["native_session_id"], "cursor": cursor,
                             "next_action": "Exit this turn; the owner resumes this exact session after it settles."}
-            if page.status != "ok" or time.monotonic() >= end:
+            if getattr(self.host, "draining", False):
+                return {"schema": "otto.wait.v1", "outcome": "owner_down", "answer": None,
+                    "cursor": cursor,
+                    "owner_event": {"type": "owner-down", "reason": "the owner service is draining or restarting"},
+                    "retry": False,
+                    "next_action": "check `ottoctl service status`; after the owner restarts, retry this exact wait "
+                                   "with the returned cursor and original session scope"}
+            if time.monotonic() >= end or page.status not in {"ok", "timeout"}:
                 return {"schema": "otto.wait.v1", "outcome": "timeout", "answer": None,
                     "cursor": cursor, "status": page.status}
 

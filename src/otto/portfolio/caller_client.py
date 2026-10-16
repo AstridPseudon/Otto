@@ -69,6 +69,13 @@ def call_connection(connection: socket.socket, request: dict) -> dict:
             chunks.append(part)
         return json.loads(b"".join(chunks))
     except (OSError, ValueError) as exc:
+        if request.get("command") == "wait-for-answer":
+            return {"schema": "otto.wait.v1", "outcome": "owner_down", "answer": None,
+                    "owner_event": {"type": "owner-down", "source": "authenticated-caller-socket",
+                                    "reason": str(exc)},
+                    "retry": False,
+                    "next_action": "the owner service stopped or restarted while waiting; check `ottoctl service status`, "
+                                   "then retry this exact wait with its original session scope and latest cursor"}
         return {"outcome": "unknown" if sent else "unavailable", "retry": False,
                 "outer_command": {"transport": "unix-socket", "request_id": request_id,
                                   "retained": None, "retention": "unconfirmed"},
@@ -89,6 +96,13 @@ def call(path: str, request: dict, *, timeout: Optional[float] = None) -> dict:
         try:
             connection.connect(path)
         except OSError as exc:
+            if request.get("command") == "wait-for-answer":
+                return {"schema": "otto.wait.v1", "outcome": "owner_down", "answer": None,
+                        "owner_event": {"type": "owner-down", "source": "authenticated-caller-socket",
+                                        "reason": str(exc)},
+                        "retry": False,
+                        "next_action": "the owner service is down or restarting; check `ottoctl service status`, "
+                                       "then ask its owner to restart it with `ottoctl --home <service home> service run`"}
             return {"outcome": "unavailable", "retry": False,
                     "error": {"kind": "transport", "code": type(exc).__name__, "message": str(exc)},
                     "next_action": "restore the supported owner connection; no command was sent"}
