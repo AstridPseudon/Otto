@@ -13,15 +13,19 @@ from herzchen.domains.work import WorkGraph, WorkKind, contributions
 from herzchen.domains.work.batches import ProjectBatches
 from herzchen.domains.work.model import WorkValidationError
 from herzchen.domains.work.module import register_metadata_namespace
+from herzchen.domains.work.sheet import ProjectSheet
 from herzchen.kernel.store import Store
 from otto.portfolio.plan_metadata import PLAN_NAMESPACE, register_plan_metadata
 
 
-GOOD_PLAN = {"route": "normal", "size": "small", "lines": 40, "repo": "otto", "branch": "lab/TYPE"}
+GOOD_PLAN = {"route": "normal", "size": 0.5, "lines": 40, "repo": "otto", "branch": "lab/TYPE"}
 
 BAD_PLANS = (
     {"route": "fast"},
-    {"size": "huge"},
+    {"size": 0},
+    {"size": -1.5},
+    {"size": "1.25"},
+    {"size": True},
     {"lines": 0},
     {"lines": "40"},
     {"route": "normal", "colour": "blue"},
@@ -142,6 +146,17 @@ class TaskMetadataWriterTests(unittest.TestCase):
                                          logical_request_key="work-owned-namespace")
         (task,) = self._tasks()
         self.assertEqual(task.payload["metadata_namespaces"], {"work.policy": {"mode": "owner"}})
+
+    def test_saved_plan_reads_back_through_get_list_and_sheet_export(self):
+        plan = {"route": "xhard", "size": 1.25, "lines": 40, "repo": "otto", "branch": "lab/TYPE"}
+        self.batches.apply_project_sheet(self.project, _sheet("RB1", plan, title="Readback"),
+                                         logical_request_key="readback-plan")
+        (listed,) = self._tasks()
+        self.assertEqual(self.graph.get(listed.ref).payload["metadata_namespaces"], {PLAN_NAMESPACE: plan})
+        self.assertEqual(listed.payload["metadata_namespaces"], {PLAN_NAMESPACE: plan})
+        view = ProjectSheet(self.store).export(self.project)
+        (exported,) = view["tasks"]
+        self.assertEqual(exported["authored"]["metadata_namespaces"], {PLAN_NAMESPACE: plan})
 
     def test_task_saved_without_metadata_still_reads(self):
         task = self._task("OLD1")
