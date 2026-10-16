@@ -234,17 +234,22 @@ def _try_slots(directory: Path, cap: int, weight: int) -> list | None:
 
 
 def _waiting(directory: Path) -> list[dict]:
-    """Live tickets in arrival order (names sort by arrival ns); a dead waiter's ticket is dropped."""
+    """Live tickets in arrival order. A waiter holds an flock on its ticket, so the kernel frees it on
+    death: a ticket we can lock is dead (never judged by pid, which the machine reuses) and is dropped."""
     out = []
     for path in sorted((directory / "waiting").glob("*.json")):
         try:
-            item = json.loads(path.read_text())
+            with open(path) as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except OSError as exc:
+                    if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                        raise
+                    out.append({**json.loads(handle.read()), "ticket": path.name})
+                    continue
+            path.unlink(missing_ok=True)
         except (OSError, ValueError):
             continue
-        if _alive(int(item.get("pid") or 0)):
-            out.append({**item, "ticket": path.name})
-        else:
-            path.unlink(missing_ok=True)
     return out
 
 
@@ -322,8 +327,10 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     # Queue in arrival order: a ticket per waiter; the earliest live ticket is the head (see _take).
     queued_at = time.time()
     ticket = directory / "waiting" / f"{time.time_ns()}-{os.getpid()}.json"
-    ticket.with_suffix(".tmp").write_text(json.dumps(
-        {"pid": os.getpid(), "weight": weight, "purpose": purpose, "queued_at": queued_at}))
+    mine = open(ticket.with_suffix(".tmp"), "w")  # locked before it is visible; held until we start or exit
+    fcntl.flock(mine, fcntl.LOCK_EX)
+    mine.write(json.dumps({"weight": weight, "purpose": purpose, "queued_at": queued_at}))
+    mine.flush()
     os.replace(ticket.with_suffix(".tmp"), ticket)
     lease_id = uuid.uuid4().hex[:12]
     record = {"lease_id": lease_id, "owner": owner, "purpose": purpose, "weight": weight, "capacity": cap,
@@ -362,6 +369,7 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
             time.sleep(POLL_SECONDS)
     finally:
         ticket.unlink(missing_ok=True)
+        mine.close()
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
 

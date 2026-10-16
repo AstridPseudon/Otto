@@ -332,3 +332,13 @@ def test_a_later_small_job_never_overtakes_the_waiting_gate(tmp_path):
         proc.communicate(timeout=60)
         assert proc.returncode == 0
     assert admitted(tmp_path) == ["H0", "gate", "S1", "S2", "M"]
+
+
+def test_a_ticket_nobody_holds_is_ignored_even_if_its_pid_is_alive(tmp_path):
+    # A killed waiter's pid can be reused by an unrelated live process; only the ticket's lock says it waits.
+    (tmp_path / "state" / "waiting").mkdir(parents=True)
+    stale = tmp_path / "state" / "waiting" / f"1-{os.getpid()}.json"
+    stale.write_text(json.dumps({"pid": os.getpid(), "weight": 1, "purpose": "ghost", "queued_at": 0}))
+    proc = heavy(tmp_path, "--", *py("pass"))
+    proc.communicate(timeout=60)
+    assert proc.returncode == 0 and not stale.exists()
