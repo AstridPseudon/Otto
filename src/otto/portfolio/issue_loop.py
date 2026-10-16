@@ -175,6 +175,8 @@ class IssueLoop:
     def _manager(self, project_ref: Mapping[str, Any], assignment_ref: Any, actor: str,
                  generation: int) -> Any:
         assignment = self._assignment(assignment_ref)
+        if _ref(_field(assignment, "ref")) != _ref(assignment_ref):
+            raise IssueLoopError("asking assignment reference is stale")
         current = self.ports.current_manager(project_ref)
         if _ref_id(_field(current, "ref")) != _ref_id(_field(assignment, "ref")):
             raise IssueLoopError("assignment is not the current project manager")
@@ -189,6 +191,69 @@ class IssueLoop:
         status = str(getattr(status, "value", status)).lower()
         if status not in {"active", "running", "assigned", "queued", "reassigned", "in-flight"}:
             raise IssueLoopError("manager assignment is not active")
+        return assignment
+
+    def _asking_occurrence(self, project: Mapping[str, Any], assignment_ref: Any,
+                           generation: int, schedule_id: Any,
+                           expected_conversation: Any = None) -> tuple[Any, str]:
+        from otto.attention import DueRecord
+
+        schedule_id = _text(schedule_id, "asking_schedule_id")
+        assignment = self._assignment(assignment_ref)
+        if _ref(_field(assignment, "ref")) != _ref(assignment_ref):
+            raise IssueLoopError("asking assignment reference is stale")
+        status = str(getattr(_field(assignment, "status", "active"), "value",
+                             _field(assignment, "status", "active"))).lower()
+        if status not in {"active", "running", "assigned", "queued", "reassigned", "in-flight"}:
+            raise IssueLoopError("asking assignment is not active")
+        if _field(assignment, "generation") != generation:
+            raise IssueLoopError("asking assignment generation is stale")
+        raw = self.ports.due_records.read_due(schedule_id)
+        try:
+            due = DueRecord.from_dict(raw) if isinstance(raw, Mapping) else None
+        except Exception as exc:
+            raise IssueLoopError("asking DueRecord is invalid") from exc
+        target = due.target if due is not None else None
+        if (due is None or due.schedule_id != schedule_id
+                or due.assignment_ref != _ref(assignment_ref) or due.generation != generation
+                or due.recipient != _principal(assignment) or not isinstance(target, Mapping)
+                or _ref(target.get("assignment_ref")) != _ref(assignment_ref)
+                or target.get("role") != _field(assignment, "role")
+                or not isinstance(target.get("project_ref"), Mapping)
+                or any(target["project_ref"].get(k) != project.get(k) for k in ("authority", "kind", "id"))
+                or not isinstance(target.get("task_ref"), Mapping)):
+            raise IssueLoopError("asking DueRecord does not prove this project assignment occurrence")
+        scope = _field(assignment, "scope")
+        direct_project_scope = scope is not None and all(
+            _field(scope, key) == project.get(key) for key in ("authority", "kind", "id"))
+        task_scope = scope is not None and _field(scope, "kind") == "work.task"
+        if (not direct_project_scope and not task_scope
+                or task_scope and any(_field(scope, key) != target["task_ref"].get(key)
+                                      for key in ("authority", "kind", "id"))):
+            raise IssueLoopError("asking DueRecord task scope differs from the assignment")
+        conversation = target.get("native_id")
+        bound_session = _field(assignment, "session") or None
+        if callable(self.ports.recipient_conversation):
+            bound_session = self.ports.recipient_conversation(project, assignment)
+        if (not isinstance(conversation, str) or not conversation.strip()
+                or bound_session is not None and bound_session != conversation
+                or expected_conversation is not None and expected_conversation != conversation):
+            raise IssueLoopError("asking DueRecord native conversation is stale")
+        return assignment, conversation
+
+    def _asking_assignment(self, project: Mapping[str, Any], assignment_ref: Any,
+                           actor: str, generation: int, schedule_id: Any) -> tuple[Any, str]:
+        assignment, conversation = self._asking_occurrence(project, assignment_ref,
+            generation, schedule_id)
+        if _principal(assignment) != actor:
+            raise IssueLoopError("actor is not the assigned asker")
+        return assignment, conversation
+
+    def _current_asking_assignment(self, project: Mapping[str, Any], opened: Mapping[str, Any]) -> Any:
+        ref = opened.get("asking_assignment_ref") or opened.get("origin_assignment_ref")
+        generation = opened.get("asking_generation", opened.get("origin_generation"))
+        assignment, _ = self._asking_occurrence(project, ref, generation,
+            opened.get("asking_schedule_id"), opened.get("asking_conversation"))
         return assignment
 
     @staticmethod
@@ -490,6 +555,8 @@ class IssueLoop:
                 continue
             try:
                 owner = (self.ports.current_manager(project) if issue.get("awaiting") == "manager"
+                         else self._current_asking_assignment(project, opened)
+                         if issue.get("awaiting") == "asking_session"
                          else self._recipient(project, issue["purpose"]))
             except Exception:
                 owner = None
@@ -605,7 +672,8 @@ class IssueLoop:
                 "report_ref": linked["ref"], "report_sha256": hashlib.sha256(json.dumps(body,
                     sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
                 "retained_report": body}
-            if message.get("type") == "issue_response" and body.get("schema") == "otto.issue.response.v1":
+            if (message.get("type") == "issue_response" and message.get("resume_asking_session") is not True
+                    and body.get("schema") == "otto.issue.response.v1"):
                 context.update(next_action=body.get("next_action"), supported_application={
                     "command": "resolve-help", "issue_id": intent["issue_id"],
                     "requires": "current manager authority and concrete application evidence; existing resolution guards apply"})
@@ -632,7 +700,9 @@ class IssueLoop:
                      actor: str, issue_key: str, problem: str, evidence: Sequence[Any],
                      impact: str, requested_decision: str,
                      return_condition: str, request_id: str,
-                     purpose: str = "operational_help") -> dict[str, Any]:
+                     purpose: str = "operational_help",
+                     _ask_origin: bool = False,
+                     _asking_schedule_id: Optional[str] = None) -> dict[str, Any]:
         project, assignment_ref = _ref(project_ref, "project_ref"), _ref(assignment_ref, "assignment_ref")
         actor, issue_key = _text(actor, "actor"), _text(issue_key, "issue_key")
         request_id = _text(request_id, "request_id")
@@ -644,7 +714,16 @@ class IssueLoop:
         if isinstance(evidence, (str, bytes)) or not isinstance(evidence, Sequence):
             raise IssueLoopError("evidence must be a sequence of references or facts")
         evidence_value = _json(list(evidence), "evidence")
-        manager = self._manager(project, assignment_ref, actor, generation)
+        if _ask_origin:
+            asking_schedule_id = _text(_asking_schedule_id, "asking_schedule_id")
+            manager, asking_conversation = self._asking_assignment(project, assignment_ref,
+                actor, generation, asking_schedule_id)
+        else:
+            manager = self._manager(project, assignment_ref, actor, generation)
+            asking_conversation = (_field(manager, "session") or None)
+            asking_schedule_id = None
+            if callable(self.ports.recipient_conversation):
+                asking_conversation = self.ports.recipient_conversation(project, manager)
         if purpose == "advice":
             # Explicit disabled policy fails before appending or consuming allowance.
             supervisor = self._recipient(project, purpose)
@@ -657,7 +736,9 @@ class IssueLoop:
                 supervisor = self._recipient(project, purpose)
             except Exception:
                 supervisor = None
-        issue_id = (_stable("issue", project.get("id"), issue_key) if purpose == "operational_help"
+        issue_id = (_stable("issue", project.get("id"), issue_key,
+                    assignment_ref, generation, asking_conversation, asking_schedule_id) if _ask_origin else
+                    _stable("issue", project.get("id"), issue_key) if purpose == "operational_help"
                     else _stable("issue", project.get("id"), purpose, issue_key))
         project_reports = self._issue_reports(project)
         existing = next((item for item in self.derive_issues(project_reports)
@@ -692,6 +773,11 @@ class IssueLoop:
                  "reopens": (bool(prior_submission["value"].get("reopens")) if prior_submission is not None
                              else bool(existing and existing["state"] == "resolved")),
                  "issue_version": self._next_issue_version(project, issue_id), "request_id": request_id}
+        if _ask_origin:
+            issue.update(asking_assignment_ref=assignment_ref,
+                         asking_generation=generation,
+                         asking_conversation=asking_conversation,
+                         asking_schedule_id=asking_schedule_id)
         if purpose == "advice":
             issue["purpose"] = purpose
         report = self._append_issue_record(project, manager, issue, request_id=request_id,
@@ -706,6 +792,17 @@ class IssueLoop:
             request_key="submit:" + report["ref"]["id"])
         return {"outcome": "submitted", "issue_id": issue_id, "report_ref": report["ref"],
                 "delivery": delivery, "reopened": issue["reopens"]}
+
+    def ask(self, *, project_ref: Any, assignment_ref: Any, generation: int,
+            actor: str, issue_key: str, problem: str, evidence: Sequence[Any],
+            impact: str, requested_decision: str, return_condition: str,
+            request_id: str, asking_schedule_id: str) -> dict[str, Any]:
+        """Open a question from an authenticated agent assignment occurrence."""
+        return self.submit_issue(project_ref=project_ref, assignment_ref=assignment_ref,
+            generation=generation, actor=actor, issue_key=issue_key, problem=problem,
+            evidence=evidence, impact=impact, requested_decision=requested_decision,
+            return_condition=return_condition, request_id=request_id, _ask_origin=True,
+            _asking_schedule_id=asking_schedule_id)
 
     def respond_to_issue(self, *, project_ref: Any, issue_id: str, actor: str,
                          authority_source: str, response: str, proposed_solution: str,
@@ -731,25 +828,49 @@ class IssueLoop:
             value = prior.get("value")
             if not isinstance(value, Mapping) or value.get("schema") != "otto.issue.response.v1" or value.get("request_id") != request_id:
                 continue
+            origin = next(item.get("value") for item in self._issue_reports(project)
+                if isinstance(item.get("value"), Mapping) and item["value"].get("schema") == "otto.issue.v1"
+                and item["value"].get("issue_id") == issue_id)
+            has_ask_origin = isinstance(origin.get("asking_assignment_ref"), Mapping)
             expected = {"schema": "otto.issue.response.v1", "issue_id": issue_id,
                 "project_ref": project, "response": response.strip(),
                 "authority_source": authority_source.strip(), "proposed_solution": proposed_solution.strip(),
                 "next_action": next_action.strip(), "user_decision": decision_value,
-                "awaiting": "user" if user_only else "manager", "request_id": request_id}
+                "awaiting": "user" if user_only else "asking_session" if has_ask_origin else "manager", "request_id": request_id}
             if any(value.get(key) != expected_value for key, expected_value in expected.items()):
                 raise IssueLoopError("request_id was reused with changed issue input")
-            manager = self.ports.current_manager(project)
-            if (value.get("current_owner_ref") != _ref(_field(supervisor if user_only else manager, "ref"))
-                    or value.get("manager_generation", _field(manager, "generation")) != _field(manager, "generation")
+            manager = None if has_ask_origin else self.ports.current_manager(project)
+            asker = (self._current_asking_assignment(project, origin)
+                     if origin.get("asking_assignment_ref") else None)
+            expected_owner = (_ref(_field(supervisor, "ref")) if user_only else
+                              _ref(_field(asker, "ref")) if has_ask_origin else _ref(_field(manager, "ref")))
+            if (value.get("current_owner_ref") != expected_owner
+                    or (not has_ask_origin and value.get("manager_generation", _field(manager, "generation")) != _field(manager, "generation"))
                     or value.get("responding_assignment_ref", _ref(_field(supervisor, "ref"))) != _ref(_field(supervisor, "ref"))):
                 raise IssueLoopError("retained response recipient is stale")
-            delivery = self._route_delivery(project=project, issue_id=issue_id, recipient_assignment=manager,
-                actor=actor, message={"type": "issue_response", "issue_id": issue_id, "report_ref": _ref(prior.get("ref"))},
+            destination = asker if origin.get("asking_assignment_ref") else manager
+            delivery = self._route_delivery(project=project, issue_id=issue_id, recipient_assignment=destination,
+                actor=actor, message={"type": "issue_response", "resume_asking_session": bool(origin.get("asking_assignment_ref")),
+                    "issue_id": issue_id, "report_ref": _ref(prior.get("ref")),
+                    **({"asking_assignment_ref": origin["asking_assignment_ref"],
+                        "asking_generation": origin["asking_generation"],
+                        "asking_conversation": origin["asking_conversation"],
+                        "asking_schedule_id": origin["asking_schedule_id"]} if has_ask_origin else {})},
                 request_key="response:" + _ref(prior.get("ref"))["id"]) if not user_only else None
             return {"outcome": "awaiting_user" if user_only else "responded", "issue_id": issue_id,
                 "report_ref": _ref(prior.get("ref"), "report_ref"),
                 "current_owner_ref": value.get("current_owner_ref"),
                 "delivery": delivery, "replayed": True}
+        issue_reports = self._issue_reports(project)
+        opened_value = next((item.get("value") for item in issue_reports
+            if isinstance(item.get("value"), Mapping)
+            and item["value"].get("schema") == "otto.issue.v1"
+            and item["value"].get("issue_id") == issue_id), {})
+        if (isinstance(opened_value, Mapping) and opened_value.get("asking_assignment_ref")
+                and any(isinstance(item.get("value"), Mapping)
+                    and item["value"].get("schema") == "otto.issue.response.v1"
+                    and item["value"].get("issue_id") == issue_id for item in issue_reports)):
+            raise IssueLoopError("asking session already has an accepted answer")
         issues = self.derive_issues(self._issue_reports(project))
         issue = next((item for item in issues if item["issue_id"] == issue_id), None)
         if issue is None or issue["state"] != "open":
@@ -757,30 +878,43 @@ class IssueLoop:
         origin = next(item for item in self._issue_reports(project)
                       if isinstance(item.get("value"), Mapping) and item["value"].get("issue_id") == issue_id
                       and item["value"].get("schema") == "otto.issue.v1")
-        manager = self.ports.current_manager(project)
-        current_manager_ref = _ref(_field(manager, "ref"), "manager_assignment_ref")
+        has_ask_origin = isinstance(origin["value"].get("asking_assignment_ref"), Mapping)
+        manager = None if has_ask_origin else self.ports.current_manager(project)
+        current_manager_ref = None if has_ask_origin else _ref(_field(manager, "ref"), "manager_assignment_ref")
+        asker = self._current_asking_assignment(project, origin["value"]) if has_ask_origin else None
         body = {"schema": "otto.issue.response.v1", "issue_id": issue_id,
                 "project_ref": project, "response": _text(response, "response"),
                 "authority_source": _text(authority_source, "authority_source"),
                 "proposed_solution": _text(proposed_solution, "proposed_solution"),
                 "next_action": _text(next_action, "next_action"),
                 "user_decision": decision_value,
-                "awaiting": "user" if user_only else "manager", "request_id": request_id,
+                "awaiting": "user" if user_only else "asking_session" if has_ask_origin else "manager", "request_id": request_id,
                 "observed_at": _stamp(self.ports.now()),
                 "issue_version": self._next_issue_version(project, issue_id),
                 "responding_assignment_ref": _ref(_field(supervisor, "ref")),
                 "responding_generation": _field(supervisor, "generation"),
-                "manager_generation": _field(manager, "generation"),
+                **({} if has_ask_origin else {"manager_generation": _field(manager, "generation")}),
                 "authority_kind": "suggestion" if issue["purpose"] == "advice" else "operational_response",
-                "current_owner_ref": (_ref(_field(supervisor, "ref")) if user_only else current_manager_ref),
+                **({"asking_assignment_ref": origin["value"]["asking_assignment_ref"],
+                    "asking_generation": origin["value"]["asking_generation"],
+                    "asking_conversation": origin["value"]["asking_conversation"],
+                    "asking_schedule_id": origin["value"]["asking_schedule_id"]} if has_ask_origin else {}),
+                "current_owner_ref": (_ref(_field(supervisor, "ref")) if user_only else
+                    _ref(_field(asker, "ref")) if has_ask_origin else current_manager_ref),
                 }
         report = self._append_issue_record(project, supervisor, body, request_id=request_id,
                               actor=actor, generation=int(_field(supervisor, "generation", 1)))
         if user_only:
             return {"outcome": "awaiting_user", "issue_id": issue_id, "report_ref": report["ref"],
                     "current_owner_ref": body["current_owner_ref"], "delivery": {"state": "pending", "transport": "unsupported"}}
-        delivery = self._route_delivery(project=project, issue_id=issue_id, recipient_assignment=manager,
-            actor=actor, message={"type": "issue_response", "issue_id": issue_id, "report_ref": report["ref"]},
+        destination = asker if has_ask_origin else manager
+        delivery = self._route_delivery(project=project, issue_id=issue_id, recipient_assignment=destination,
+            actor=actor, message={"type": "issue_response", "resume_asking_session": has_ask_origin,
+                "issue_id": issue_id, "report_ref": report["ref"],
+                **({"asking_assignment_ref": origin["value"]["asking_assignment_ref"],
+                    "asking_generation": origin["value"]["asking_generation"],
+                    "asking_conversation": origin["value"]["asking_conversation"],
+                    "asking_schedule_id": origin["value"]["asking_schedule_id"]} if has_ask_origin else {})},
             request_key="response:" + report["ref"]["id"])
         return {"outcome": "responded", "issue_id": issue_id, "report_ref": report["ref"], "delivery": delivery}
 

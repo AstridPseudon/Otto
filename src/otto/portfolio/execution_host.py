@@ -111,7 +111,7 @@ _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "com
                                  "request-help", "request-advice", "read-help", "respond-help", "resolve-help",
                                  "start-retained-help",
                                  "project-lifecycle-read", "commit",
-                                 "advisor-decision-state", "execution-control"})
+                                 "advisor-decision-state", "execution-control", "answer-session-result"})
 
 
 def _starts_work(request: Mapping[str, Any]) -> bool:
@@ -121,7 +121,8 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
     return (request.get("command") == "owner-execution" and request.get("operation") in {"launch", "start-prepared"}
             or request.get("command") in {"start-manager", "run-worker",
                 "start-retained-worker", "start-retained-help", "manager-worker-result",
-                "manager-task-settlement", "manager-help-result", "request-help", "request-advice", "start-retained-child", "parent-child-result"}
+                "manager-task-settlement", "manager-help-result", "answer-session-result",
+                "request-help", "request-advice", "start-retained-child", "parent-child-result"}
             or request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
             or request.get("command") == "operating-setup" and request.get("operation") == "activate"
             or request.get("command") == "execution-control" and request.get("operation") == "resume")
@@ -521,6 +522,25 @@ class ExecutionHost:
             raise RuntimeError("bounded execution requires its serialized owner")
         if not getattr(app.runtime.adapter, "owner_transport_only", False):
             raise TypeError("adapter has no isolated owner-callback transport contract")
+        # Admission is the single launch boundary. Re-read the owner task here:
+        # the prepared DueRecord can outlive a task pause and must not authorize
+        # a provider call from its earlier readiness snapshot.
+        if due.host_state in {"paused", "waiting"}:
+            raise ExecutionAdmissionHeld("paused task cannot be admitted")
+        from .owner_readers import task_reader
+        task_ref = due.target.get("task_ref")
+        project_ref = due.target.get("project_ref")
+        if isinstance(task_ref, Mapping) and isinstance(project_ref, Mapping):
+            observed = task_reader(app.portfolio.operations, project_ref, task_ref)(
+                {key: task_ref[key] for key in ("authority", "kind", "id")})
+            lifecycle = observed.get("lifecycle")
+            lifecycle = getattr(lifecycle, "value", lifecycle)
+            task_payload = observed.get("payload") if isinstance(observed, Mapping) else None
+            readiness = task_payload.get("readiness") if isinstance(task_payload, Mapping) else None
+            readiness_state = (readiness.get("state", readiness.get("status"))
+                               if isinstance(readiness, Mapping) else readiness)
+            if lifecycle in {"paused", "waiting"} or readiness_state in {"paused", "waiting"}:
+                raise ExecutionAdmissionHeld("paused task cannot be admitted")
         current = self._executions.get(due.schedule_id)
         if current is not None:
             return current["completion"]
@@ -967,7 +987,11 @@ class ExecutionHost:
     def _dispatch(self, request: Mapping[str, Any], *, ingress: Any = None,
                   _turn_admitted: bool = False) -> Any:
         try:
-            if self.bounded_transports and threading.get_ident() != self._owner_thread:
+            command = request.get("command")
+            # Event-cursor waiting is read-only. Authenticate it on the socket
+            # thread and leave the serialized Store lane available for answers.
+            if (self.bounded_transports and threading.get_ident() != self._owner_thread
+                    and command != "wait-for-answer"):
                 return self._owner_request(lambda: self._dispatch(request, ingress=ingress))
             if self._dispatch_held:
                 command = request.get("command")
@@ -1013,6 +1037,8 @@ class ExecutionHost:
             if self._closing and _starts_work(request):
                 return {"outcome": "held", "reason": "owner host is draining",
                         "provider_called": False, "effects_started": False, "retry": False}
+            if command == "wait-for-answer":
+                return self._call_bound(request, ingress)
             # The manager-only planning write uses the same custodian pump,
             # with socket peer authorization before its finite public effect.
             if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker", "project-documents"}:
@@ -1051,31 +1077,40 @@ class ExecutionHost:
                 connection, _ = self._socket.accept()
             except socket.timeout:
                 continue
+            with self._lock:
+                thread = threading.Thread(target=self._serve_socket_connection,
+                    args=(connection,), name="otto-caller-socket-request", daemon=False)
+                self._children.add(thread)
+                thread.start()
+
+    def _serve_socket_connection(self, connection: socket.socket) -> None:
+        try:
             with connection:
                 connection.settimeout(5)
-                try:
-                    raw = b""
-                    while not raw.endswith(b"\n") and len(raw) <= 256 * 1024:
-                        part = connection.recv(65536)
-                        if not part:
-                            break
-                        raw += part
-                    from .identity_context import HostIngress
-                    result = self._dispatch(json.loads(raw), ingress=HostIngress("unix-socket", connection))
-                    if isinstance(result, OwnerCompletion):
-                        # Socket callers wait outside the owner. Native finite
-                        # commands normally return directly; retained file
-                        # starts use the independent completion path below.
-                        ready = threading.Event()
-                        observed = {}
-                        self._owner_request(lambda: result.then(
-                            lambda value: (observed.update(value=value), ready.set()),
-                            lambda error: (observed.update(error=str(error)), ready.set())))
-                        ready.wait()
-                        result = observed.get("value", {"outcome": "error", "message": observed.get("error")})
-                    connection.sendall(json.dumps(json_value(result), sort_keys=True).encode())
-                except (OSError, ValueError) as exc:
-                    self.failures["socket"] = {"code": type(exc).__name__, "message": str(exc)}
+                raw = b""
+                while not raw.endswith(b"\n") and len(raw) <= 256 * 1024:
+                    part = connection.recv(65536)
+                    if not part:
+                        break
+                    raw += part
+                from .identity_context import HostIngress
+                result = self._dispatch(json.loads(raw), ingress=HostIngress("unix-socket", connection))
+                if isinstance(result, OwnerCompletion):
+                    # A native wait settles outside the owner pump, while the
+                    # owner remains free to process its corresponding answer.
+                    ready = threading.Event()
+                    observed = {}
+                    self._owner_request(lambda: result.then(
+                        lambda value: (observed.update(value=value), ready.set()),
+                        lambda error: (observed.update(error=str(error)), ready.set())))
+                    ready.wait()
+                    result = observed.get("value", {"outcome": "error", "message": observed.get("error")})
+                connection.sendall(json.dumps(json_value(result), sort_keys=True).encode())
+        except (OSError, ValueError) as exc:
+            self.failures["socket"] = {"code": type(exc).__name__, "message": str(exc)}
+        finally:
+            with self._lock:
+                self._children.discard(threading.current_thread())
 
     def _request_paths(self) -> list[Path]:
         # Streams the directory and keeps only request names; answered responses
@@ -1134,6 +1169,16 @@ class ExecutionHost:
                     continue
                 if (command == "status") != status:
                     continue
+                if command == "answer-session-result":
+                    pending_path = self.directory / ("pending-" + token + ".json")
+                    if pending_path.exists():
+                        try:
+                            retained_state = json.loads(pending_path.read_text())
+                            retry_after = retained_state.get("retry_after")
+                        except (OSError, ValueError, TypeError):
+                            retry_after = None
+                        if isinstance(retry_after, (int, float)) and retry_after > time.time():
+                            continue
                 # The pump also sees its own outer request. It already owns
                 # that token; never describe it as a queued second dispatch.
                 with self._lock:
@@ -1230,14 +1275,19 @@ class ExecutionHost:
                                     self._active_files.discard(token)
                         result.then(complete, lambda error, complete=complete: complete(error=error))
                         continue
-                    if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result"} and result.get("outcome") == "pending"
+                    if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result", "answer-session-result"} and result.get("outcome") == "pending"
                             and result.get("provider_called") is False and result.get("effects_started") is False):
                         pending = self.directory / ("pending-" + token + ".json")
-                        if not pending.exists():
+                        if command == "answer-session-result" or not pending.exists():
                             retained = _timed_receipt(result, timing)
-                            _atomic_json(pending, {**retained, "request_id": token, "request_retained": True,
+                            value = {**retained, "request_id": token, "request_retained": True,
                                 "response_path": str(response),
-                                "next_action": "The owner retains this observed worker result until the same manager settles; do not resend it."})
+                                "next_action": ("The owner retains this exact answer continuation and rechecks its asking Due until settlement; do not resend it."
+                                    if command == "answer-session-result" else
+                                    "The owner retains this observed worker result until the same manager settles; do not resend it.")}
+                            if command == "answer-session-result":
+                                value["retry_after"] = time.time() + 0.5
+                            _atomic_json(pending, value)
                         continue
                     _atomic_json(response, _timed_receipt(result, timing))
                 (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
@@ -1396,9 +1446,25 @@ class ExecutionHost:
         if context is None or context[0] is not self or context[1] != threading.get_ident():
             raise RuntimeError("worker submission requires its serialized command owner")
         if self._closing and not (self.bounded_transports and request.get("command") in {
-                "manager-worker-result", "manager-task-settlement", "manager-help-result", "parent-child-result"}):
+                "manager-worker-result", "manager-task-settlement", "manager-help-result", "parent-child-result",
+                "answer-session-result"}):
             raise RuntimeError("execution host is draining; no new worker may be admitted")
-        if request.get("command") not in {"start-retained-worker", "start-retained-help", "manager-worker-result", "manager-task-settlement", "manager-help-result", "start-retained-child", "parent-child-result"}:
+        command = request.get("command")
+        if command == "answer-session-result":
+            base_fields = {"command", "asking_schedule_id", "report_ref", "issue_id",
+                           "assignment_ref", "generation", "native_session_id"}
+            if set(request) != base_fields:
+                raise ValueError("answer continuation must be bound to its exact asking occurrence")
+            schedule_id = request["asking_schedule_id"]
+            if not isinstance(schedule_id, str) or not schedule_id.strip():
+                raise ValueError("answer continuation needs its asking schedule id")
+        elif command in {"start-retained-worker", "start-retained-help", "manager-worker-result",
+                         "manager-task-settlement", "manager-help-result", "start-retained-child",
+                         "parent-child-result"}:
+            schedule_id = request.get("schedule_id")
+            if not isinstance(schedule_id, str) or not schedule_id.strip():
+                raise ValueError("retained work needs its schedule id")
+        else:
             raise ValueError("only prepared work or an observed result/completion continuation may be retained")
         encoded = json.dumps(json_value(request), sort_keys=True, separators=(",", ":"))
         token = hashlib.sha256(encoded.encode()).hexdigest()
@@ -1410,7 +1476,7 @@ class ExecutionHost:
                     raise ValueError("retained worker input changed")
             else:
                 _atomic_json(path, dict(request))
-        return {"outcome": "admitted", "schedule_id": request["schedule_id"],
+        return {"outcome": "admitted", "schedule_id": schedule_id,
                 "retained_handle": token, "response_path": str(response),
                 "provider_called": False, "retry_provider": False,
                 "next_command": "worker-status" if request["command"] == "start-retained-worker" else "command-status"}

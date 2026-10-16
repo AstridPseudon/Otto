@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
+import time
 from pathlib import Path
 import shutil
 import stat
@@ -923,60 +925,92 @@ class EventCursorReader:
             after_sequence, after_event_id = 0, None
         else:
             after_sequence, after_event_id, _ = self._decode_cursor(cursor, shape)
-        connection = self.store.connection
-        if after_event_id is not None:
-            identity_row = connection.execute(
-                "SELECT event_id FROM events WHERE store_authority = ? AND stream = ? AND sequence = ?",
-                (self.store.authority, stream, after_sequence),
+        with self.store._transaction_lock:
+            connection = self.store.connection
+            if after_event_id is not None:
+                identity_row = connection.execute(
+                    "SELECT event_id FROM events WHERE store_authority = ? AND stream = ? AND sequence = ?",
+                    (self.store.authority, stream, after_sequence),
+                ).fetchone()
+                if identity_row is not None and identity_row[0] != after_event_id:
+                    raise CursorScopeError("cursor event identity does not match the authoritative stream")
+            max_row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE store_authority = ? AND stream = ?",
+                (self.store.authority, stream),
             ).fetchone()
-            if identity_row is not None and identity_row[0] != after_event_id:
-                raise CursorScopeError("cursor event identity does not match the authoritative stream")
-        max_row = connection.execute(
-            "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE store_authority = ? AND stream = ?",
-            (self.store.authority, stream),
-        ).fetchone()
-        watermark = int(max_row[0] if max_row else 0)
-        where = ["store_authority = ?", "stream = ?", "sequence > ?", "sequence <= ?"]
-        params: list[Any] = [self.store.authority, stream, after_sequence, watermark]
-        if event_filter.event_types:
-            where.append("event_type IN ({})".format(",".join("?" for _ in event_filter.event_types)))
-            params.extend(event_filter.event_types)
-        if event_filter.subject is not None:
-            where.extend(["subject_authority = ?", "subject_kind = ?", "subject_id = ?"])
-            params.extend([event_filter.subject.authority, event_filter.subject.kind, event_filter.subject.id])
-        if event_filter.operation is not None:
-            where.append("operation = ?")
-            params.append(event_filter.operation)
-        visibility_terms = ",".join("?" for _ in event_filter.visibility)
-        where.append("COALESCE(json_extract(effects_json, '$.visibility'), 'public') IN ({})".format(visibility_terms))
-        params.extend(event_filter.visibility)
-        rows = connection.execute(
-            "SELECT * FROM events WHERE " + " AND ".join(where) + " ORDER BY sequence ASC LIMIT ?",
-            tuple(params + [limit + 1]),
-        ).fetchall()
-        # A visibility filter must not turn deliberately hidden events into a
-        # false sequence gap.  Gap detection is against the authoritative
-        # stream; the returned rows are the caller's accessible projection.
-        raw_first = connection.execute(
-            "SELECT MIN(sequence) FROM events WHERE store_authority = ? AND stream = ? AND sequence > ? AND sequence <= ?",
-            (self.store.authority, stream, after_sequence, watermark),
-        ).fetchone()[0]
-        status = "ok"
-        gap_from = gap_to = None
-        if raw_first is not None and int(raw_first) > after_sequence + 1:
-            status = "gap"
-            gap_from, gap_to = after_sequence + 1, int(raw_first) - 1
-        selected = rows[:limit]
-        event_values = tuple(self.store._event_from_row(row) for row in selected)
-        last_sequence = event_values[-1].sequence if event_values else after_sequence
-        last_event_id = event_values[-1].event_id if event_values else after_event_id
-        post_cursor = self._new_cursor(shape, last_sequence, last_event_id, watermark)
-        next_cursor = post_cursor if len(rows) > limit else None
-        return EventPage(event_values, post_cursor, next_cursor, status, gap_from, gap_to, watermark)
+            watermark = int(max_row[0] if max_row else 0)
+            where = ["store_authority = ?", "stream = ?", "sequence > ?", "sequence <= ?"]
+            params: list[Any] = [self.store.authority, stream, after_sequence, watermark]
+            if event_filter.event_types:
+                where.append("event_type IN ({})".format(",".join("?" for _ in event_filter.event_types)))
+                params.extend(event_filter.event_types)
+            if event_filter.subject is not None:
+                where.extend(["subject_authority = ?", "subject_kind = ?", "subject_id = ?"])
+                params.extend([event_filter.subject.authority, event_filter.subject.kind, event_filter.subject.id])
+            if event_filter.operation is not None:
+                where.append("operation = ?")
+                params.append(event_filter.operation)
+            visibility_terms = ",".join("?" for _ in event_filter.visibility)
+            where.append("COALESCE(json_extract(effects_json, '$.visibility'), 'public') IN ({})".format(visibility_terms))
+            params.extend(event_filter.visibility)
+            rows = connection.execute(
+                "SELECT * FROM events WHERE " + " AND ".join(where) + " ORDER BY sequence ASC LIMIT ?",
+                tuple(params + [limit + 1]),
+            ).fetchall()
+            # A visibility filter must not turn deliberately hidden events into a
+            # false sequence gap.  Gap detection is against the authoritative
+            # stream; the returned rows are the caller's accessible projection.
+            raw_first = connection.execute(
+                "SELECT MIN(sequence) FROM events WHERE store_authority = ? AND stream = ? AND sequence > ? AND sequence <= ?",
+                (self.store.authority, stream, after_sequence, watermark),
+            ).fetchone()[0]
+            status = "ok"
+            gap_from = gap_to = None
+            if raw_first is not None and int(raw_first) > after_sequence + 1:
+                status = "gap"
+                gap_from, gap_to = after_sequence + 1, int(raw_first) - 1
+            selected = rows[:limit]
+            event_values = tuple(self.store._event_from_row(row) for row in selected)
+            last_sequence = event_values[-1].sequence if event_values else after_sequence
+            last_event_id = event_values[-1].event_id if event_values else after_event_id
+            post_cursor = self._new_cursor(shape, last_sequence, last_event_id, watermark)
+            next_cursor = post_cursor if len(rows) > limit else None
+            return EventPage(event_values, post_cursor, next_cursor, status, gap_from, gap_to, watermark)
 
     def catch_up(self, stream: str, *, cursor: Optional[str] = None, event_filter: Optional[EventFilter] = None, limit: int = 100) -> EventPage:
         """Alias emphasizing restart/disconnect recovery semantics."""
         return self.page(stream, cursor=cursor, event_filter=event_filter, limit=limit)
+
+    def wait(
+        self,
+        stream: str,
+        *,
+        cursor: Optional[str] = None,
+        event_filter: Optional[EventFilter] = None,
+        timeout_seconds: float = 0,
+        poll_interval_seconds: float = 0.1,
+        limit: int = 100,
+    ) -> EventPage:
+        """Long-poll a scoped event cursor until matching activity or timeout.
+
+        Cursor validation is performed by ``page`` on every pass, so expired,
+        cross-stream, and altered-filter cursors remain fenced during waits.
+        """
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+            raise ValueError("timeout_seconds must be non-negative")
+        if isinstance(poll_interval_seconds, bool) or not isinstance(poll_interval_seconds, (int, float)) or not math.isfinite(poll_interval_seconds) or poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        deadline = time.monotonic() + float(timeout_seconds)
+        current_cursor = cursor
+        while True:
+            page = self.page(stream, cursor=current_cursor, event_filter=event_filter, limit=limit)
+            if page.events or page.status != "ok":
+                return page
+            current_cursor = page.cursor
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return EventPage((), page.cursor, None, "timeout", watermark=page.watermark)
+            time.sleep(min(float(poll_interval_seconds), remaining))
 
 
 @dataclass(frozen=True)
