@@ -30,6 +30,7 @@ from herzchen.adapters.recovery_timing import timing_from_receipt
 from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.codex import CodexStream, native_caller_permission_overrides  # noqa: F401  (re-exported)
 from herzchen.usage.capture import UsageStream
+from herzchen.fleet.custody import Custody
 
 RUNNER_ID = "codex-cli"
 CODEX = get_host("codex")     # the one place the Codex launch flags are built
@@ -37,7 +38,10 @@ MAX_SUBMISSION_SIZE = 1_000_000
 
 
 def _terminate_owned_process(process: Any) -> None:
-    """Cancel one launched CLI occurrence without claiming provider release."""
+    """Cancel one launched CLI occurrence without claiming provider release.
+
+    Retained only as a bare-pgid helper for tests that import it; production launches stop through custody.
+    """
 
     try:
         os.killpg(process.pid, signal.SIGKILL)
@@ -46,6 +50,25 @@ def _terminate_owned_process(process: Any) -> None:
             process.kill()
         except OSError:
             pass
+
+
+def _terminate_launched(process: Any, custody: Any = None) -> Any:
+    """Stop one launched occurrence through its custody tree; a bare process is killed alone."""
+
+    if custody is not None:
+        disposition = custody.terminate()
+        if process.poll() is None:
+            # Our unreaped child cannot be recycled, so killing the leader directly is always safe.
+            try:
+                process.kill()
+            except OSError:
+                pass
+        return disposition
+    try:
+        process.kill()
+    except OSError:
+        pass
+    return None
 
 
 def _communicate_after_native_start(
@@ -58,6 +81,7 @@ def _communicate_after_native_start(
     native_start_callback: Optional[Callable[[Optional[str], str], None]] = None,
     usage_stream: Optional[UsageStream] = None,
     finite_timeout: bool = False,
+    custody: Any = None,
 ) -> tuple[str, str, int | None, bool]:
     """Bound transport/start, then retain an identified native turn to terminal.
 
@@ -136,7 +160,7 @@ def _communicate_after_native_start(
             remaining = deadline - monotonic_clock()
             if remaining <= 0:
                 timed_out = True
-                _terminate_owned_process(process)
+                _terminate_launched(process, custody)
                 process.wait()
                 break
             native_started.wait(min(0.05, remaining))
@@ -145,7 +169,7 @@ def _communicate_after_native_start(
             # The owner keeps custody until the identified turn is terminal.
             process.wait()
     except BaseException:
-        _terminate_owned_process(process)
+        _terminate_launched(process, custody)
         try:
             process.wait()
         finally:
@@ -810,6 +834,8 @@ class CodexCliBinding(HostPort):
                 self._native_start_callback(turn_id, admitted_at)
                 usage_stream.turn_id = turn_id
         caller_cleanup = None
+        custody = None
+        custody_disposition = None
         def resolve_usage_turn(session_id):
             # Fresh initializer usage may omit a CLI turn ID. Reuse the exact
             # host trace selector and prompt binding, with its bounded read.
@@ -831,9 +857,11 @@ class CodexCliBinding(HostPort):
                 "locator": self.evidence_path}, on_usage=self._usage_callback,
             turn_resolver=resolve_usage_turn)
         try:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, text=True, cwd=self.worktree,
-                                       env={**os.environ, **plan.env}, start_new_session=True)
+            custody = Custody.launch(command,
+                latch_path=self.evidence_path + ".custody" if self.evidence_path else None,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cwd=self.worktree, env={**os.environ, **plan.env})
+            process = custody.process
             if request.operation == HostOperation.RESUME and self._native_process_observer is not None:
                 try:
                     cleanup = self._native_process_observer(process, delivered_authorization)
@@ -841,7 +869,7 @@ class CodexCliBinding(HostPort):
                         raise TypeError("native caller observer must return exact lifetime cleanup")
                     caller_cleanup = cleanup
                 except Exception as exc:
-                    _terminate_owned_process(process)
+                    _terminate_launched(process, custody)
                     return (HostReceipt(request.operation, HostOutcome.UNKNOWN, request.identity,
                         request.identity.logical_agent_id, request.requested_profile,
                         observed_runner=RUNNER_ID, unsupported_reason="native_caller_registration_failed"),
@@ -857,6 +885,7 @@ class CodexCliBinding(HostPort):
                     start_timeout_seconds=effective_timeout,
                     monotonic_clock=self.monotonic_clock,
                     native_start_callback=native_start_callback, usage_stream=usage_stream,
+                    custody=custody,
                 )
             else:
                 # Fresh initialization and the explicitly adopted bounded
@@ -865,7 +894,7 @@ class CodexCliBinding(HostPort):
                     stdout, stderr, exit_status, _ = _communicate_after_native_start(
                         process, prompt, expected_session_id=request.identity.physical_session_id,
                         start_timeout_seconds=effective_timeout, monotonic_clock=self.monotonic_clock,
-                        usage_stream=usage_stream, finite_timeout=True)
+                        usage_stream=usage_stream, finite_timeout=True, custody=custody)
                 else:
                     # Compatible injected old ports with communicate-only streams.
                     stdout, stderr = process.communicate(prompt, timeout=effective_timeout)
@@ -873,7 +902,7 @@ class CodexCliBinding(HostPort):
                     for line in stdout.splitlines(keepends=True):
                         usage_stream.feed(line)
         except subprocess.TimeoutExpired:
-            _terminate_owned_process(process)
+            _terminate_launched(process, custody)
             if self.occurrence_deadline is None:
                 stdout, stderr = process.communicate()
             else:
@@ -897,6 +926,9 @@ class CodexCliBinding(HostPort):
         finally:
             if caller_cleanup is not None:
                 caller_cleanup()
+            if custody is not None:
+                # Sweeps stragglers the CLI left behind; a no-op once the tree is already proven gone.
+                custody_disposition = custody.release()
         observed_model = None
         observed_reasoning = None
         observed_profile = None
@@ -974,7 +1006,7 @@ class CodexCliBinding(HostPort):
             outcome = HostOutcome.UNKNOWN
         elif exit_status == 0 and physical_session:
             outcome = HostOutcome.SUCCEEDED
-        elif exit_status == 0 or exit_status is None:
+        elif exit_status is None or exit_status <= 0:
             outcome = HostOutcome.UNKNOWN
         else:
             outcome = HostOutcome.FAILED
@@ -982,7 +1014,10 @@ class CodexCliBinding(HostPort):
                               request.requested_profile, observed_runner=RUNNER_ID,
                               observed_profile=observed_profile, process_id=str(process.pid),
                               unsupported_reason=None if outcome == HostOutcome.SUCCEEDED else (
-                                  "native_invocation_context_unverified" if trace_error is not None else ("codex_execution_timeout" if exit_status is None else "codex_execution_failed")))
+                                  "native_invocation_context_unverified" if trace_error is not None else (
+                                      "codex_execution_timeout" if exit_status is None
+                                      else "codex_execution_interrupted" if exit_status < 0
+                                      else "codex_execution_failed")))
         verification_failures = []
         native_context = _native_host_context(
             native_lines,
@@ -1006,7 +1041,7 @@ class CodexCliBinding(HostPort):
             evidence_text += json.dumps(native_context, ensure_ascii=False, sort_keys=True) + "\n"
         if self.evidence_path:
             Path(self.evidence_path).write_text(evidence_text, encoding="utf-8")
-        return receipt, {"usage_capture": usage_stream.snapshot(),
+        result = {"usage_capture": usage_stream.snapshot(),
                          "command": command, "stdout": stdout, "stderr": stderr,
                          "exit_status": exit_status, "observed_model": observed_model,
                          "observed_reasoning": observed_reasoning, "observed_profile": observed_profile,
@@ -1027,6 +1062,9 @@ class CodexCliBinding(HostPort):
                          "delivery_state": "done" if outcome == HostOutcome.SUCCEEDED else "unknown",
                          "reconciliation": trace_error or (None if physical_session else "session unresolved"),
                          "started_at": started, "ended_at": _now()}
+        if custody_disposition is not None and not custody_disposition.gone:
+            result["custody"] = {"state": custody_disposition.state, "reason": custody_disposition.reason}
+        return receipt, result
 
 def capture_native_cli_candidate(text: str, *, expected_session_id: str | None) -> dict[str, Any]:
     """Retain the exact CLI carrier for reconciliation, never grant task authority.
