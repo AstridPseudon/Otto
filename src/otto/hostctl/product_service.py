@@ -257,14 +257,6 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         checkpoint('owner-construction')
         policy = capacity_policy(config)
         host_dir = lanes.private_dir(home / 'shared-host')
-        # Reservations live in the owner Store (limits stream), not in memory.
-        host = ExecutionHost(directory=host_dir, handler=lambda request: None,
-                             owner_path=home / 'run' / 'shared-host-owner.json',
-                             socket_path=socket_path(config, 'shared-project-services'),
-                             owner_file_compatibility=True, bounded_transports=True,
-                             capacity_policy=policy, capacity_store=store)
-        if hold_dispatch:
-            host.hold_admission()
 
         # Enumerate activated projects; a receipt is named by its quoted run id.
         skipped: list[dict[str, str]] = []
@@ -288,6 +280,17 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
             raise ValueError('install between zero and sixteen explicit project views')
         if project is not None and not any(project in {record.ref.id, run_id} for run_id, record, _ in resolved):
             raise LookupError('project ' + project + ' is not registered, activated and supervised by an admitted host')
+
+        # The caller socket serves launched managers, so an owner with no project view binds none
+        # (and the 103-byte socket address limit applies only once a project is composed).
+        # Reservations live in the owner Store (limits stream), not in memory.
+        host = ExecutionHost(directory=host_dir, handler=lambda request: None,
+                             owner_path=home / 'run' / 'shared-host-owner.json',
+                             socket_path=socket_path(config, 'shared-project-services') if resolved else None,
+                             owner_file_compatibility=True, bounded_transports=True,
+                             capacity_policy=policy, capacity_store=store)
+        if hold_dispatch:
+            host.hold_admission()
 
         views: dict[str, Any] = {}
         for run_id, record, kind in resolved:
