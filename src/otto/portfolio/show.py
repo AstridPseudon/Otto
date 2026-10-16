@@ -21,10 +21,10 @@ from typing import Any, Mapping, Optional
 
 SHOW_PROJECT_SCHEMA = "otto.show.project.v1"
 
-# CLI step -> the editor host's finite operation name. ``release`` is the owner-side release of a
-# session by its id (sessions.release through discard_session): it works on an open session and on
-# one a refused finish parked for cleanup, and it publishes nothing.
-OPEN_OPERATIONS = {"start": "open", "autosave": "save", "finish": "finish", "release": "discard-lost"}
+# CLI step -> the editor host's finite operation name. ``release`` is the host's ``discard``: it
+# closes an open session without publishing. A refused check-in leaves the session open, so release
+# works there; a session the lifecycle parked for recovery is refused with session_not_open.
+OPEN_OPERATIONS = {"start": "open", "autosave": "save", "finish": "finish", "release": "discard"}
 
 
 def show_project(portfolio: Any, *, actor: str, project_ref: Mapping[str, Any], limit: int) -> dict[str, Any]:
@@ -53,8 +53,9 @@ def _stale_check_in(editor_host: Any, request: Mapping[str, Any], handle: Mappin
     handle's base with the document's current revision first keeps the session open and writes nothing.
     The late DAT append still guards the race between this read and the finish.
     """
+    current_ref = {key: value for key, value in request["document_ref"].items() if key != "revision"}
     read = editor_host.operations.document_reader.read_document(
-        request["project_ref"], request["document_ref"], actor=editor_host.actor)
+        request["project_ref"], current_ref, actor=editor_host.actor)
     if read.get("outcome") != "read":
         return None  # the finish itself refuses an unreadable document
     current = (read.get("revision_ref") or {}).get("revision")
@@ -70,14 +71,9 @@ def open_session(editor_host: Any, args: Any) -> dict[str, Any]:
     """One authoring-session step, through the owner's editor host (``open`` is the CLI verb)."""
     operation = OPEN_OPERATIONS[args.open_command]
     request: dict[str, Any] = {"command": "document-authoring", "operation": operation,
-                               "request_key": args.request_key}
-    if operation == "discard-lost":
-        handle = json.loads(args.handle_json)
-        if not isinstance(handle, dict) or not isinstance(handle.get("session_id"), str):
-            raise ValueError("release needs the handle that open returned")
-        request["session_id"] = handle["session_id"]
-        return dict(editor_host.dispatch(request, actor=editor_host.actor))
-    request.update(project_ref=json.loads(args.project_ref), document_ref=json.loads(args.document_ref))
+                               "request_key": args.request_key,
+                               "project_ref": json.loads(args.project_ref),
+                               "document_ref": json.loads(args.document_ref)}
     if operation == "open":
         if args.inactivity_seconds is not None:
             request["inactivity_seconds"] = args.inactivity_seconds

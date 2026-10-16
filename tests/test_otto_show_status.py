@@ -125,11 +125,10 @@ class OpenTests(unittest.TestCase):
                                          secret=b"s" * 32, clock=lambda: 1000.0)
 
     def run_open(self, step, *argv):
-        refs = () if step == "release" else ("--project-ref", json.dumps(self.project),
-                                             "--document-ref", json.dumps(self.doc))
         out = StringIO()
         with redirect_stdout(out):
-            code = cli.main(["open", step, *refs, *argv], editor_host=self.editor)
+            code = cli.main(["open", step, "--project-ref", json.dumps(self.project),
+                             "--document-ref", json.dumps(self.doc), *argv], editor_host=self.editor)
         return code, json.loads(out.getvalue())
 
     def head(self):
@@ -153,6 +152,7 @@ class OpenTests(unittest.TestCase):
         self.assertEqual(code, 0, finished)
         self.assertTrue(finished["dat_revision_advanced"], finished)
         self.assertNotEqual(self.head(), head)
+        self.assertEqual(finished["publication"]["dat_revision_ref"]["revision"], self.head())
 
     def test_stale_check_in_is_refused_and_release_changes_nothing(self):
         handle = self.start()
@@ -178,6 +178,10 @@ class OpenTests(unittest.TestCase):
         self.assertEqual(code, 0, released)
         self.assertTrue(released["nonpublishing"], released)
         self.assertEqual(self.head(), other_head)
+        # A session that is already released is refused as not open, with a structured error.
+        code, again = self.run_open("release", "--request-key", "release-again", "--handle-json", handle)
+        self.assertEqual(again["error"]["code"], "session_not_open", again)
+        self.assertNotEqual(code, 0)
         # The correction path: reopen on the new head, then check in.
         corrected = self.start("reopen")
         self.run_open("autosave", "--request-key", "correct", "--handle-json", corrected,

@@ -12,6 +12,8 @@ import argparse
 import json
 from typing import Any, Mapping, Optional, Sequence
 
+from herzchen.authoring.sessions import InvalidSessionError
+
 from .assessment import OttoAssessment
 from .intake import OttoPortfolio, PortfolioError
 from .operating_brief import OperatingBriefError, prepare_canonical_operating_brief
@@ -76,13 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         ("start", "open the authoring session and return its handle"),
         ("autosave", "save the editor buffer into the open session"),
         ("finish", "check the session in; a stale base is refused and changes nothing"),
-        ("release", "release the session by its handle without publishing"),
+        ("release", "close the open session by its handle without publishing"),
     ):
         step_parser = open_sub.add_parser(step, help=step_help)
+        step_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
+        step_parser.add_argument("--document-ref", required=True, help="canonical document ResourceRef as JSON")
         step_parser.add_argument("--request-key", required=True)
-        if step != "release":
-            step_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
-            step_parser.add_argument("--document-ref", required=True, help="canonical document ResourceRef as JSON")
         if step == "start":
             step_parser.add_argument("--inactivity-seconds", type=float, default=None)
         else:
@@ -1163,6 +1164,8 @@ def main(
                     result = open_session(editor_host, args)
                 except PermissionError as exc:
                     result = _request_error(str(exc), code="denied")
+                except InvalidSessionError as exc:
+                    result = _request_error(str(exc), code="session_not_open")
         elif args.command == "status":
             result = _status_command(args, status_session, labs)
         elif args.command == "create-pending":
