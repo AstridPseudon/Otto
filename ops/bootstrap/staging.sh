@@ -6,6 +6,9 @@
 #   staging.sh down      stop it and every process in its group; a leftover is an error
 #   staging.sh restart   down, move the tree to the ref's head (canon/main), up
 #   staging.sh wipe      empty the staging home and Store (refused while it is running)
+#   staging.sh status    the product's own reading of the staging Otto (running, stale, closed...), read-only
+# A start that dies before it reports ready leaves run/staging.refused.json: the exit code, the product's
+# error.code and the last JSON document it printed. A later start that succeeds removes it.
 # The start is `ottoctl service run` from the tree's own src (see ottoctl below). Each start is its
 # own process group, so down stops the whole group. OTTO_STAGING_REF replaces canon/main as the ref
 # (the tests pin it to a commit sha).
@@ -142,9 +145,44 @@ print(json.dumps({"sha": sha, "canon_main_sha": canon, "python": py, "pid": int(
     "$HOME_DIR/run/service-stop" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS_JSON"
 }
 
+# The interpreted status of the staging Otto, read through the product: running, draining, stale or closed,
+# with holder_alive and the generation. Read-only: nothing is started, written or signalled.
+status() {
+  guard_root
+  if [ ! -d "$TREE/.git" ]; then echo '{"outcome": "absent"}'; return 0; fi
+  ottoctl service status
+}
+
+# A start that died before ready: its exit code and the last JSON document it printed since LINES_BEFORE
+# lines of log (the product's own refusal, e.g. owner_service_running), kept in run/staging.refused.json.
+record_refusal() {  # EXIT_CODE LINES_BEFORE
+  local name
+  name="$("$PY" -c '
+import json, sys
+from datetime import datetime, timezone
+rc, log, before, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+text = "".join(open(log, encoding="utf-8").readlines()[before:])
+decoder, last, at = json.JSONDecoder(), None, 0
+while True:
+    start = text.find("{", at)
+    if start < 0:
+        break
+    try:
+        last, at = decoder.raw_decode(text, start)
+    except ValueError:
+        at = start + 1
+error = last.get("error") if isinstance(last, dict) else None
+record = {"exit_code": int(rc), "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          "error": error, "entry": last, "log_tail": text.splitlines()[-5:]}
+open(out, "w", encoding="utf-8").write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+print((error or {}).get("code", "no error.code"))
+' "$1" "$LOG" "$2" "$RUN/staging.refused.json")"
+  die "up: refused, exit $1: $name; see $RUN/staging.refused.json and $LOG"
+}
+
 up() {
   guard_root
-  local pid start before
+  local pid start before rc
   if [ -n "$(running_pid)" ]; then die "up: already running as pid $(running_pid)"; fi
   [ -d "$TREE/.git" ] || sync_tree
   mkdir -p "$HOME_DIR" "$STORE_DIR" "$RUN"
@@ -166,10 +204,17 @@ up() {
   start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true)"
   printf '%s\n%s\n' "$pid" "$start" > "$PIDFILE"
   if ! wait_ready "$pid" "$before"; then
-    stop_group "$pid" || die "up: the staging Otto did not report ready and group $pid survived KILL; pidfile kept; see $LOG"
+    if kill -0 "$pid" 2>/dev/null; then
+      stop_group "$pid" || die "up: the staging Otto did not report ready and group $pid survived KILL; pidfile kept; see $LOG"
+      rm -f "$PIDFILE"
+      die "up: the staging Otto did not report ready; see $LOG"
+    fi
+    # It died before ready: reap it for its exit code, and keep the reason it printed.
+    rc=0; wait "$pid" || rc=$?
     rm -f "$PIDFILE"
-    die "up: the staging Otto did not report ready; see $LOG"
+    record_refusal "$rc" "$before"
   fi
+  rm -f "$RUN/staging.refused.json"
   write_status "$pid"
   echo "up: pid $pid, sha $(git -C "$TREE" rev-parse HEAD), ready"
 }
@@ -216,5 +261,6 @@ case "${1:-}" in
   down) down ;;
   restart) restart ;;
   wipe) wipe ;;
-  *) die "usage: staging.sh up|down|restart|wipe" ;;
+  status) status ;;
+  *) die "usage: staging.sh up|down|restart|wipe|status" ;;
 esac
