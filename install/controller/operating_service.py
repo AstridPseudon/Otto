@@ -52,7 +52,8 @@ def composition(state, *, admission="full", should_stop=None):
  try:
   binding=HerzchenBindingConfig(AUTH,CREDENTIAL); actor=binding.authenticated_actor(OWNER)
   owner=PortfolioOwnerBootstrap(store,binding=binding,owner_actor=OWNER,project_read_grant=ProjectReadGrant(actor,(state['project_ref']['id'],),str(HERE/'canonical-state.json'),'operating-activation-v1'))
-  store.configure_history_projection(batch_size=100)
+  projection=store.configure_history_projection(batch_size=100)
+  while projection.maintain(raise_on_error=True)['outcome']=='advanced':pass
   native_bodies=native_body_capability(state,owner,store)
   port=issue_store_due_record_port(store.domain_handler((due_record_contribution(),)),actor,native_bodies=native_bodies)
   return store,binding,owner,port
