@@ -8,6 +8,27 @@
       "store": {"store_events": 0, "store_tasks": 0, "store_bytes_max": 262144},
       "scenarios": ["staging-lifecycle"],
       "wipe": true
+    },
+    "1": {
+      "tasks": [],
+      "portfolio": "claude-code-portfolio",
+      "store": {"store_events": 4, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},
+      "scenarios": ["save-through-socket"],
+      "saves": {
+        "create": {
+          "project": {"title": "Canary plan", "outcome": "One creation route"},
+          "tasks": [{"id": "A", "title": "Plan A", "instructions": "Do A", "acceptance": "Done A"}]
+        },
+        "edit": {
+          "project": {"title": "Canary plan", "outcome": "One creation route"},
+          "tasks": [{"id": "A", "title": "Plan A two", "instructions": "Do A", "acceptance": "Done A"}]
+        },
+        "stale": {
+          "project": {"title": "Canary plan", "outcome": "One creation route"},
+          "tasks": [{"id": "A", "title": "Plan A three", "instructions": "Do A", "acceptance": "Done A"}]
+        }
+      },
+      "wipe": true
     }
   },
   "tasks": {

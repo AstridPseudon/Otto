@@ -9,8 +9,10 @@
 # it needs a real worker, which is not built yet; stage 0 needs none, so it runs without the flag.
 # A stage's scenarios add steps of their own: staging-lifecycle (stage 0) reads the status, KILLs the Otto,
 # restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
-# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census seeds one fault per
-# assertion kind, for a red run.
+# Stage 1 adds the scenario save-through-socket: the canary saved from its file through the owner socket from a cold
+# shell, read back, one task edited and saved again, then a save from the create's base, which is stale by then.
+# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,typed,nothing,revision,stale,growth
+# seeds one fault per assertion kind, for a red run; each stage-1 fault is read by its own stage-1 assertion only.
 # Exit 0 when every assertion passes, 1 when one fails (the report is written either way), 2 on usage.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -129,6 +131,44 @@ lifecycle_recover() {
   "$PY" -I "$REPORT_PY" note --raw "$RAW" --key refused_start_rc --value "$rc"
 }
 
+# The product's client from a cold shell: an empty environment, the staging home named by --home, the tree's own
+# src on the path, as staging.sh runs it. Its answer is its stdout.
+cold_client() {
+  env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$STAGE_ROOT/tree/src" "$PY" -c \
+    'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$STAGE_ROOT/home" "$@" < /dev/null
+}
+
+# One save of the stage's document NAME through the owner socket, from REF_FROM's project ref when it is an edit or a
+# stale base. Its answer is raw/save-NAME.json; a client that gives none is recorded as unavailable, which fails.
+save_step() {  # NAME REF_FROM
+  local name=$1 ref=${2:-} doc="$RAW/save-$1.input.json"
+  local args=(--name "$name")
+  [ -z "$ref" ] || args+=(--ref-from "$ref")
+  if "$PY" -I "$REPORT_PY" save-doc --project "$CANARY/project.json" --stage "$SAVE_STAGE" "${args[@]}" --out "$doc" \
+      && cold_client portfolio --portfolio "$SAVE_PORTFOLIO" save "$doc" --actor owner > "$RAW/save-$name.json" 2>> "$RAW/save-errors.txt"; then
+    return 0
+  fi
+  echo '{"outcome": "unavailable"}' > "$RAW/save-$name.json"
+}
+
+# The scenario save-through-socket: a Store snapshot before, then create, read back, edit, stale; a snapshot after each save.
+save_through_socket() {  # STAGE
+  local project_id
+  SAVE_STAGE="$1"
+  SAVE_PORTFOLIO="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$SAVE_STAGE" --key portfolio | tr -d '"')"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-before-saves.json"
+  save_step create ""
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-create.json"
+  project_id="$("$PY" -I -c 'import json, sys; print((json.load(open(sys.argv[1])).get("project_ref") or {}).get("id", ""))' \
+    "$RAW/save-create.json" 2>/dev/null || true)"
+  cold_client portfolio --portfolio "$SAVE_PORTFOLIO" read "$project_id" > "$RAW/read-back.json" 2>> "$RAW/save-errors.txt" \
+    || echo '{"outcome": "unavailable"}' > "$RAW/read-back.json"
+  save_step edit "$RAW/save-create.json"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-edit.json"
+  save_step stale "$RAW/save-create.json"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-after-stale.json"
+}
+
 # The canary: a fresh copy of the toy repo as canon/main, with the lab folder beside it.
 make_canon() {
   cp -R "$CANARY/toy/." "$CANON/"
@@ -231,6 +271,13 @@ run_stage() {  # STAGE
         else
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key staging-lifecycle --value "skipped: staging did not start"
         fi ;;
+      save-through-socket)
+        if [ "$RESTART_RC" -eq 0 ]; then
+          save_through_socket "$stage"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key save-through-socket --value ran
+        else
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key save-through-socket --value "skipped: staging did not start"
+        fi ;;
       *) die "perch.sh has no scenario called $scenario" ;;
     esac
   done
@@ -292,8 +339,12 @@ run_stage() {  # STAGE
   fi
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
-  for kind in census store restart; do
-    if has_fault "$kind"; then "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind"; fi
+  for kind in census store restart typed nothing revision stale growth; do
+    # A fault whose observation this run does not have is named in seeded.txt, not left to look like a clean run.
+    if has_fault "$kind"; then
+      "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind" \
+        || printf 'seeded %s not applied: this run has no such observation\n' "$kind" >> "$RAW/seeded.txt"
+    fi
   done
 
   "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" --fake \

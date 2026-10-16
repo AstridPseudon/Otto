@@ -5,6 +5,7 @@ is a change to a file there and the checks are plain functions over it.
   stages    --project FILE                    the stage names in the canary project file
   tasks     --project FILE --stage S          the stage's task names, in order
   stage     --project FILE --stage S --key K  one value of a stage (a list prints a line each; a flag, true or false)
+  save-doc  --project FILE --stage S --name N [--ref-from RESPONSE] --out FILE   one of a stage's save documents
   field     --project FILE --key KEY          one top-level string of the project file (e.g. check)
   census    --out FILE [--stage-root DIR]     otto-related processes now (pid, pgid, etime, command)
   sample    --raw DIR --stage-root DIR --canary DIR [--status FILE]   one line for samples.jsonl
@@ -12,7 +13,8 @@ is a change to a file there and the checks are plain functions over it.
   timeline  --src DIR --store FILE --authority A --out FILE   the Store's task timelines (herzchen)
   store     --store FILE --out FILE           the Store at rest: bytes, pages, freelist, integrity, rows per table
   at-rest   --stage-root DIR --out FILE       what the staging root holds after down: run files, sockets, holders
-  seed      --raw DIR --fault KIND            a seeded fault in the observations (census, store, restart)
+  seed      --raw DIR --fault KIND            a seeded fault in the observations (census, store, restart, typed,
+                                              nothing, revision, stale, growth)
   note      --raw DIR --key K --value V       one fact of the run, into notes.json (JSON when it parses)
   init      --raw DIR ...                     config.json: the stage, the tasks and their expectations
   check     --raw DIR                         assertions.json; exit 1 on any failure
@@ -39,6 +41,12 @@ LEAK_MARKERS = ("_staging", "fake_worker")
 AT_REST_RUN = ("service.json", "generation", "service-stop")
 LIFECYCLE = ("status-while-up", "status-after-kill-is-stale", "restart-after-kill-keeps-store",
              "status-after-stop", "refused-start-names-its-reason")
+# Stage 1's save-through-socket scenario and the assertions it feeds. Each assertion reads the responses and
+# Store snapshots the scenario wrote to raw/, and each has one seeded fault (seed --fault) that only it reads.
+SAVE_SCENARIO = "save-through-socket"
+STAGE1 = ("tasks-are-typed-records", "nothing-runs", "edit-makes-revision", "stale-save-refused", "store-growth-per-save")
+# The events of a lab run: a save starts none of them.
+RUN_EVENTS = ("lab-created", "turn", "done", "check-passed", "check-failed", "landed", "refused", "lab-deleted")
 # The events a task must show, by how it ends. "lab-created" and "lab-deleted" are the lab's life;
 # the rest are the worker's turns and the check's verdict; "landed" and "refused" close the task.
 REQUIRED = {
@@ -92,6 +100,17 @@ def cmd_stage(args):
 
 def cmd_field(args):
     print(read_json(args.project)[args.key])
+
+
+def cmd_save_doc(args):
+    """One of a stage's save documents, with the project ref of an earlier save's response when it is an edit or a stale base."""
+    document = read_json(args.project)["stages"][args.stage]["saves"][args.name]
+    if args.ref_from:
+        ref = (read_json(args.ref_from, {}) or {}).get("project_ref")
+        if not ref:
+            raise SystemExit("no project_ref in %s" % args.ref_from)
+        document = dict(document, project_ref=ref)
+    Path(args.out).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def cmd_census(args):
@@ -224,6 +243,39 @@ def seed(raw, kind):
             raise ValueError("no table with rows to seed a restart fault into")
         rows[table] -= 1
         (raw / "store-restarted.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "typed":
+        # A task ref with no record type: the create save's first task is not a typed record.
+        save = read_json(raw / "save-create.json", {}) or {}
+        refs = save.get("task_refs") or {}
+        if not refs:
+            raise ValueError("no saved task refs to seed a typed-record fault into")
+        next(iter(refs.values()))["type"] = ""
+        (raw / "save-create.json").write_text(json.dumps(save, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "nothing":
+        # The create save claims it dispatched a run.
+        save = read_json(raw / "save-create.json", {}) or {}
+        save["dispatch"] = True
+        (raw / "save-create.json").write_text(json.dumps(save, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "revision":
+        # The edit's project ref is the create's revision: the edit did not move the project.
+        created = read_json(raw / "save-create.json", {}) or {}
+        edited = read_json(raw / "save-edit.json", {}) or {}
+        edited["project_ref"] = dict(edited.get("project_ref") or {}, revision=(created.get("project_ref") or {}).get("revision"))
+        (raw / "save-edit.json").write_text(json.dumps(edited, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "stale":
+        # The save from the old base is reported as saved, not refused.
+        stale = read_json(raw / "save-stale.json", {}) or {}
+        stale["outcome"] = "saved"
+        (raw / "save-stale.json").write_text(json.dumps(stale, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "growth":
+        # The Store after the stale save holds one row more than after the edit, so a refused save appears to write.
+        snap = read_json(raw / "store-after-stale.json", {}) or {}
+        rows = snap.get("rows", {})
+        table = next(iter(sorted(rows)), None)
+        if table is None:
+            raise ValueError("no table with rows to seed a growth fault into")
+        rows[table] += 1
+        (raw / "store-after-stale.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     else:
         raise ValueError("no seeded observation fault called %s" % kind)
 
@@ -410,6 +462,97 @@ def lifecycle_failures(raw, notes):
     return found
 
 
+STAGE1_OK = {
+    "tasks-are-typed-records": "the created project's tasks are typed refs (authority, type, id), one record type",
+    "nothing-runs": "every save reports dispatch and launch false, and no lab, worker or turn ran",
+    "edit-makes-revision": "saving one edited task moved the project to a later revision",
+    "stale-save-refused": "a save from the create's base is refused as stale_base with a diff",
+    "store-growth-per-save": "the create and the edit each added rows, the stale save added none, none over the stage's limit",
+}
+
+
+def _store_rows(snapshot):
+    return sum((snapshot or {}).get("rows", {}).values())
+
+
+def stage1_failures(raw, config):
+    """The save-through-socket scenario's failures, by assertion name. Each check reads only what its own fault touches."""
+    created = read_json(raw / "save-create.json", None)
+    edited = read_json(raw / "save-edit.json", None)
+    stale = read_json(raw / "save-stale.json", None)
+    snaps = {name: read_json(raw / ("store-%s.json" % name), None) for name in
+             ("before-saves", "after-create", "after-edit", "after-stale")}
+    limit = (config.get("store") or {}).get("rows_per_save_max")
+    found = {name: [] for name in STAGE1}
+
+    if created is None:
+        found["tasks-are-typed-records"].append("the create save was not recorded")
+    else:
+        refs = created.get("task_refs") or {}
+        if not refs:
+            found["tasks-are-typed-records"].append("the create save recorded no task refs")
+        types = set()
+        for alias, ref in sorted(refs.items()):
+            if not isinstance(ref, dict) or not all(str(ref.get(k) or "").strip() for k in ("authority", "type", "id")):
+                found["tasks-are-typed-records"].append("task %s is not a typed ref (authority, type, id)" % alias)
+            else:
+                types.add(ref["type"])
+        if len(types) > 1:
+            found["tasks-are-typed-records"].append("the tasks have %d record types" % len(types))
+
+    for name, save in (("save-create", created), ("save-edit", edited), ("save-stale", stale)):
+        if save is None:
+            found["nothing-runs"].append("%s was not recorded" % name)
+        elif save.get("dispatch") is not False or save.get("launch") is not False:
+            found["nothing-runs"].append("%s says dispatch %s, launch %s; a save runs nothing"
+                                         % (name, save.get("dispatch"), save.get("launch")))
+    ran = sorted({"%s %s" % (e["task"], e["kind"]) for e in observed(raw) if e["kind"] in RUN_EVENTS})
+    if ran:
+        found["nothing-runs"].append("run events during the saves: " + ", ".join(ran))
+    if pool_peak(raw):
+        found["nothing-runs"].append("the pool peaked at %d workers during the saves" % pool_peak(raw))
+
+    if created is None or edited is None:
+        found["edit-makes-revision"].append("the create or the edit save was not recorded")
+    else:
+        if edited.get("outcome") != "saved":
+            found["edit-makes-revision"].append("the edit save outcome is %s, not saved" % edited.get("outcome"))
+        base = (created.get("project_ref") or {}).get("revision")
+        new = (edited.get("project_ref") or {}).get("revision")
+        # Revisions are opaque (rev-2, rev-3): the edit moved the project if it is at a different one than the create.
+        if not new or new == base:
+            found["edit-makes-revision"].append("the edit is at revision %s, the create's revision %s" % (new, base))
+
+    if stale is None:
+        found["stale-save-refused"].append("the stale save was not recorded")
+    else:
+        if stale.get("outcome") != "conflict":
+            found["stale-save-refused"].append("the stale save outcome is %s, not conflict" % stale.get("outcome"))
+        code = (stale.get("error") or {}).get("code")
+        if code != "stale_base":
+            found["stale-save-refused"].append("the stale save error.code is %s, not stale_base" % code)
+        if not isinstance(stale.get("diff"), dict):
+            found["stale-save-refused"].append("the stale save names no diff")
+
+    if any(snap is None or snap.get("error") for snap in snaps.values()):
+        broken = [name for name, snap in snaps.items() if snap is None or snap.get("error")]
+        found["store-growth-per-save"].append("the Store was not read after: " + ", ".join(broken))
+    else:
+        before, after_create, after_edit, after_stale = (_store_rows(snaps[n]) for n in
+                                                         ("before-saves", "after-create", "after-edit", "after-stale"))
+        growth = {"create": after_create - before, "edit": after_edit - after_create, "stale": after_stale - after_edit}
+        if growth["create"] <= 0:
+            found["store-growth-per-save"].append("the create save added %d rows" % growth["create"])
+        if growth["edit"] <= 0:
+            found["store-growth-per-save"].append("the edit save added %d rows" % growth["edit"])
+        if growth["stale"] != 0:
+            found["store-growth-per-save"].append("the stale save added %d rows; a refused save adds none" % growth["stale"])
+        for name, rows in growth.items():
+            if limit is not None and rows > limit:
+                found["store-growth-per-save"].append("the %s save added %d rows, the stage allows %d" % (name, rows, limit))
+    return found
+
+
 def assertions(raw):
     config = read_json(raw / "config.json", {}) or {}
     notes = read_json(raw / "notes.json", {}) or {}
@@ -502,6 +645,14 @@ def assertions(raw):
     found = {} if skip else lifecycle_failures(raw, notes)
     for name in LIFECYCLE:
         add(name, found.get(name, []), LIFECYCLE_OK[name], skip=skip)
+
+    # Stage 1's save scenario: listed only by a stage that saves, so a stage without it keeps its report as it was.
+    if SAVE_SCENARIO in notes:
+        save_note = notes.get(SAVE_SCENARIO)
+        skip = None if save_note == "ran" else (save_note or "skipped: the stage did not run its save scenario")
+        found = {} if skip else stage1_failures(raw, config)
+        for name in STAGE1:
+            add(name, found.get(name, []), STAGE1_OK[name], skip=skip)
     return results
 
 
@@ -680,6 +831,9 @@ def build_parser():
     p.add_argument("--key", required=True); p.set_defaults(fn=cmd_stage)
     p = sub.add_parser("field"); p.add_argument("--project", required=True); p.add_argument("--key", required=True)
     p.set_defaults(fn=cmd_field)
+    p = sub.add_parser("save-doc"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
+    p.add_argument("--name", required=True); p.add_argument("--ref-from", default="")
+    p.add_argument("--out", required=True); p.set_defaults(fn=cmd_save_doc)
     p = sub.add_parser("census"); p.add_argument("--out", required=True); p.add_argument("--stage-root", default="")
     p.set_defaults(fn=cmd_census)
     p = sub.add_parser("sample")
