@@ -169,6 +169,53 @@ class LandGate(Scratch):
         self.assertIn("pre-existing failure (also on BASE): tests/test_mod.py::test_bad", self.log("T3"))
         self.assertTrue(list((self.ops / ".baseline" / self.base).rglob("test_mod.py.txt")))
 
+    def flaky_file(self, fail_on):
+        """A test file whose Nth run in each tree (a counter per tree, kept outside it) fails when N is in
+        fail_on[tree name]; the lab's tree is named after the task, BASE's is 'baseline'."""
+        return ("import pathlib\nfrom otto import mod\n\nFAIL = %r\nP = pathlib.Path(%r) / ('count-' + "
+                "pathlib.Path(__file__).resolve().parents[1].name)\n\n\ndef test_flaky():\n"
+                "    n = int(P.read_text()) if P.exists() else 0\n    P.write_text(str(n + 1))\n"
+                "    assert n not in FAIL.get(P.name[6:], ())\n" % (fail_on, str(self.tmp)))
+
+    def flaky_lab(self, task, fail_on):
+        self.write(self.repo, "tests/test_flaky.py", self.flaky_file(fail_on))
+        self.commit(self.repo, "flaky test")
+        self.start()
+        self.lab(task, {"src/otto/mod.py": "def f():\n    return 1\n\n\ndef g():\n    return 2\n"})
+
+    def test_a_flaky_failure_is_listed_not_refused(self):
+        self.flaky_lab("T20", {"T20": {0}})
+        r = self.land("T20")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("flaky, not reproduced: tests/test_flaky.py::test_flaky (lab 0/3, base 0/3", self.log("T20"))
+        self.assertIn(" T20 tests/test_flaky.py::test_flaky lab 0/3 base 0/3", (self.ops / "flaky.txt").read_text())
+
+    def test_a_failure_that_reproduces_alone_is_refused(self):
+        self.flaky_lab("T21", {"T21": set(range(100))})
+        self.assertRefused(self.land("T21"), "T21", "reproduced 3/3 alone, BASE 0/3")
+        self.assertFalse((self.ops / "flaky.txt").exists())
+
+    def test_a_failure_flaky_on_base_too_is_not_refused(self):
+        # base run 0 is the cached baseline (passes); the BASE re-runs are runs 1-3, and run 1 fails
+        self.flaky_lab("T22", {"T22": {0, 2, 3}, "baseline": {1}})
+        r = self.land("T22")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("flaky on BASE too: tests/test_flaky.py::test_flaky (lab 2/3, base 1/3", self.log("T22"))
+        self.assertIn(" T22 tests/test_flaky.py::test_flaky lab 2/3 base 1/3", (self.ops / "flaky.txt").read_text())
+
+    def test_d19_exits_before_the_sweep(self):
+        self.lab("T23", {"tests/test_mod.py": GOOD_TEST.replace("== 1", "!= 2")})
+        self.assertEqual(self.land("T23").returncode, 4)
+        self.assertNotIn("sweep", self.log("T23"))
+        self.assertNotIn("check passed", self.log("T23"))
+
+    def test_failing_output_is_kept(self):
+        self.lab("T24", {"src/otto/mod.py": "def f():\n    return 2\n"})
+        self.assertRefused(self.land("T24"), "T24")
+        kept = self.ops / "runs" / "T24" / ".gate" / "fail-test_mod.py-run1.txt"
+        self.assertIn("assert 2 == 1", kept.read_text())
+        self.assertIn(str(kept), self.log("T24"))
+
     def test_changed_assertion_exits_4_then_d19_decides(self):
         changed = {"tests/test_mod.py": GOOD_TEST.replace("== 1", "!= 2")}
         self.lab("T4", changed)
