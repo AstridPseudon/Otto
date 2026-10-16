@@ -9,8 +9,11 @@ application supplies those dependencies.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
+import sys
 from typing import Any, Mapping, Optional, Sequence
 
 from herzchen.authoring.sessions import InvalidSessionError
@@ -1584,6 +1587,87 @@ def _exit_code(result: Any) -> int:
     if outcome in {"unknown", "partial", "conflict", "denied", "rejected", "not_found", "blocked", "pending", "held"}:
         return 4
     return 0
+
+
+OWNER_EDITOR_VERBS = frozenset({"open", "release"})  # the verbs that need the owner's editor host
+
+
+def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, Any]:
+    """One otto verb run inside the owner: its portfolio, editor host and status session.
+
+    The owner lane calls this for a request the thin client sent with caller ``otto``.
+    The verb's JSON output is returned as the structured result the lane carries.
+    """
+    from .document_editor_host import owner_editor_host
+    words = list(argv)
+    editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
+    out = StringIO()
+    try:
+        with redirect_stdout(out):
+            code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session)
+    except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
+        return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
+    text = out.getvalue()
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"outcome": "read" if code == 0 else "error", "text": text}
+
+
+def _client_options(tokens: list[str]) -> tuple[Optional[str], Optional[str], list[str]]:
+    """Leading ``--home H`` and ``--portfolio P`` (either spelling), then the verb's own argv."""
+    values: dict[str, str] = {}
+    rest = list(tokens)
+    while rest and rest[0].partition("=")[0] in {"--home", "--portfolio"}:
+        name, equals, value = rest[0].partition("=")
+        if equals:
+            rest = rest[1:]
+        elif len(rest) >= 2:
+            value, rest = rest[1], rest[2:]
+        else:
+            break
+        values[name] = value
+    return values.get("--home"), values.get("--portfolio"), rest
+
+
+def _absolute_directories(words: list[str]) -> list[str]:
+    # The owner writes the folder, so a relative --directory is made absolute by the client.
+    out = list(words)
+    for index, token in enumerate(out[:-1]):
+        if token == "--directory":
+            out[index + 1] = str(Path(out[index + 1]).absolute())
+    return out
+
+
+def client_main(argv: Optional[Sequence[str]] = None) -> int:
+    """The ``otto`` console entry: a thin client that forwards its verb through the owner lane.
+
+    It opens no Store. It parses the verb, which needs no Store, names the owner portfolio
+    with --portfolio, and sends the argv through the owner lane. The owner runs the verb with
+    its own portfolio, editor host and status session.
+    """
+    from otto.hostctl import config as host_config, lanes
+    from otto.hostctl.cli import _await
+    from otto.hostctl.service import owner_lane
+    home, portfolio, words = _client_options(list(sys.argv[1:] if argv is None else argv))
+    parser = build_parser()
+    if not words:
+        parser.print_help()
+        return 0
+    try:
+        parsed = parser.parse_args(words)
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    if portfolio is None:
+        _emit({"outcome": "error", "schema": "otto.cli-error.v1",
+               "error": {"code": "usage", "message": "name the owner portfolio with --portfolio P"}}, "json")
+        return 2
+    lane = owner_lane(host_config.otto_home(home))
+    body = {"schema": lanes.REQUEST_SCHEMA, "command": "portfolio", "sub": None,
+            "args": {"portfolio": portfolio, "portfolio_args": _absolute_directories(words), "caller": "otto"}}
+    result = _await(lane, {"command": "portfolio-operation", "args": body}, 60.0)
+    _emit(result, getattr(parsed, "format", "json"))
+    return _exit_code(result)
 
 
 if __name__ == "__main__":

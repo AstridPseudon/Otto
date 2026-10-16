@@ -1,13 +1,15 @@
 """The ``otto`` entry, ``open`` over the project folder, the late-writer finish and ``release`` of a parked session.
 
-The console script resolves to the portfolio CLI's ``main`` and runs a verb. A folder
-edit made through ``open folder`` round-trips into the project. A late writer's finish
-is refused with the base it lost to and never parks the session. ``otto release``
-frees a session the lifecycle parked for recovery. Real owner Stores, real lanes.
+``otto`` is a thin client: outside the owner it parses its verb and forwards the argv
+through the owner lane, and the owner runs the verb with its own portfolio, editor host
+and status session. The lane tests run a real owner service over real lanes
+(HostctlFixture) and open no Store in the client. The direct tests drive the owner-side
+verbs in-process with an injected portfolio and editor host.
 """
 from contextlib import redirect_stdout
 from hashlib import sha256
 from importlib import import_module
+import io
 from io import StringIO
 import json
 from pathlib import Path
@@ -21,42 +23,192 @@ from herzchen.content.model import ContentDocument, ContentRevision
 from herzchen.content.packets import domain_contribution as packets
 from herzchen.contracts import ResourceRef, TransactionContext
 from herzchen.domains.assessment.module import contribution as assessment
+from herzchen.kernel.store import Store
+from otto.hostctl import config as host_config
+from otto.hostctl.owner import HostSession
 from otto.portfolio import cli
 from otto.portfolio.document_editor_host import DocumentEditorHost
 from otto.portfolio.fixtures import project_authoring
 from otto.portfolio.fixtures.project_folder import ProjectFolderProof
 from otto.portfolio.herzchen_binding import ProjectReadGrant
 from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
+from test_hostctl_cli import HostctlFixture
 
-PROJECT_REF = {"authority": "owner", "kind": "work.project", "id": "p1", "revision": "r1"}
-
-
-class _ShowPortfolio:
-    """One project row, so the console verb runs without a Store."""
-
-    def list_work(self, *, actor, view, project_ref, limit):
-        return {"outcome": "listed", "projects": [{"project_ref": PROJECT_REF, "task_count": 0}], "items": []}
+PORTFOLIO = "claude-code-portfolio"
+OWNER = "otto-test-owner"
 
 
 class ConsoleEntryTests(unittest.TestCase):
-    def test_otto_script_resolves_to_the_portfolio_cli_and_runs_a_verb(self):
+    def test_otto_script_resolves_to_the_thin_client(self):
         root = Path(__file__).resolve().parents[1]
         with (root / "pyproject.toml").open("rb") as stream:
             scripts = tomllib.load(stream)["project"]["scripts"]
-        self.assertEqual(scripts["otto"], "otto.portfolio.cli:main")
+        self.assertEqual(scripts["otto"], "otto.portfolio.cli:client_main")
         module, _, attribute = scripts["otto"].partition(":")
         entry = getattr(import_module(module), attribute)
-        self.assertIs(entry, cli.main)
+        self.assertIs(entry, cli.client_main)
+
+    def test_client_without_a_portfolio_refuses_and_opens_no_store(self):
         out = StringIO()
+        with patch.object(Store, "open", wraps=Store.open) as opened, redirect_stdout(out):
+            code = cli.client_main(["show", "project", "--project-ref", "{}", "--actor", OWNER])
+        self.assertEqual(code, 2, out.getvalue())
+        self.assertEqual(opened.call_count, 0)
+        self.assertEqual(json.loads(out.getvalue())["error"]["code"], "usage")
+
+
+class OwnerRouteTests(HostctlFixture):
+    """``otto`` through the owner lane: the verb runs in the owner, the client opens no Store."""
+
+    def setUp(self):
+        super().setUp()
+        self._init()
+        self._register()
+
+    def otto(self, *argv):
+        out = io.StringIO()
         with redirect_stdout(out):
-            code = entry(["show", "project", "--project-ref", json.dumps(PROJECT_REF), "--actor", "owner"],
-                         portfolio=_ShowPortfolio())
-        self.assertEqual(code, 0, out.getvalue())
-        self.assertEqual(json.loads(out.getvalue())["schema"], "otto.show.project.v1")
+            code = cli.client_main(["--home", self.home, "--portfolio", PORTFOLIO, *argv])
+        return code, json.loads(out.getvalue())
+
+    def _owner_for(self, project_id, callback):
+        # The owner's read grant is for the one project under test; None grants none.
+        grant = (project_id,) if project_id else ()
+
+        def run():
+            config = host_config.load(Path(self.home))
+            with HostSession(config, host=config["hosts"]["claude-code"], project_ids=grant) as session:
+                return callback(session)
+        return self.owner_service.call(run)
+
+    def _project(self):
+        save_file = Path(self.bundle).parent / "open-plan.json"
+        save_file.write_text(json.dumps({"project": {"title": "Open plan", "outcome": "Edit from otto"},
+                                         "tasks": [{"id": "t1", "title": "Plan t1", "instructions": "Do t1",
+                                                    "acceptance": "Done t1"}]}))
+        code, saved = self.otto("save", str(save_file), "--actor", OWNER)
+        self.assertEqual(code, 0, saved)
+        return {k: v for k, v in saved["project_ref"].items() if k != "revision"}
+
+    def _document(self, project):
+        def create(session):
+            created = session.portfolio.create_document(project, actor=OWNER, request_id="open-doc",
+                content={"text": "Opening"}, access_mode="write", document_id="open-doc")
+            session.portfolio.link_document(project, {k: v for k, v in created["document_ref"].items() if k != "revision"},
+                actor=OWNER, request_id="open-link", access_mode="read")
+            return {k: v for k, v in created["document_ref"].items() if k != "revision"}
+        return self._owner_for(project["id"], create)
+
+    def _head(self, project, document):
+        return self._owner_for(project["id"], lambda session: session.owner.content.read(
+            ResourceRef.from_dict(document))["current_revision"]["revision"])
+
+    def _open_args(self, project, document):
+        return ["--project-ref", json.dumps(project), "--document-ref", json.dumps(document)]
+
+    def test_otto_show_runs_through_the_owner_lane_and_opens_no_store(self):
+        project = self._project()
+        with patch.object(Store, "open", wraps=Store.open) as opened:
+            code, shown = self.otto("show", "project", "--project-ref", json.dumps(project), "--actor", OWNER)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown["schema"], "otto.show.project.v1")
+        self.assertIn("Plan t1", json.dumps(shown))
+        self.assertEqual(opened.call_count, 0)
+
+    def test_otto_status_runs_through_the_owner_lane(self):
+        self._project()
+        code, status = self.otto("status")
+        self.assertEqual(code, 0, status)
+        self.assertNotIn("error", status)
+
+    def test_folder_edit_round_trips_through_otto_open_folder(self):
+        imported = self._owner_for(None, lambda session: session.portfolio.import_folder(
+            project_json={"title": "Folder plan", "outcome": "Edit in a folder"},
+            files={"README.md": "# Before\n"}, actor=OWNER, request_id="folder-import"))
+        ref = imported["project_ref"]
+        ref_json = json.dumps(ref)
+        directory = Path(self.bundle).parent / "folder-work"
+        code, opened = self.otto("open", "folder", "start", "--project-ref", ref_json, "--actor", OWNER,
+                                 "--request-key", "folder-open", "--directory", str(directory))
+        self.assertEqual(code, 0, opened)
+        self.assertEqual(opened["outcome"], "checked_out", opened)
+        (directory / "README.md").write_text("# Edited through otto\n", encoding="utf-8")
+        code, finished = self.otto("open", "folder", "finish", "--project-ref", ref_json, "--actor", OWNER,
+                                   "--session-id", opened["session_id"], "--request-key", "folder-check-in",
+                                   "--directory", str(directory))
+        self.assertEqual(code, 0, finished)
+        self.assertEqual(finished["outcome"], "finished", finished)
+        exported = self._owner_for(None, lambda session: session.portfolio.export_folder(
+            ref, actor=OWNER, request_id="folder-verify"))
+        self.assertEqual(exported["files"]["README.md"], "# Edited through otto\n")
+
+    def test_two_writers_racing_through_otto_open_refuse_the_late_one_and_never_park_it(self):
+        project = self._project()
+        document = self._document(project)
+        args = self._open_args(project, document)
+        code, opened = self.otto("open", "start", *args, "--request-key", "race-open")
+        self.assertEqual(code, 0, opened)
+        handle = opened["handle"]
+        code, saved = self.otto("open", "autosave", *args, "--request-key", "race-save", "--handle-json",
+                                json.dumps(handle), "--buffer-json", json.dumps({"content": {"text": "Stale draft"}}))
+        self.assertEqual(code, 0, saved)
+
+        def second_writer(session):
+            ref = ResourceRef.from_dict(document)
+            stored = ContentDocument.from_dict(session.store.get_identity(ref).payload["document"])
+            head = session.owner.content.read(ref)["current_revision"]["revision"]
+            other = ContentRevision(ref, "rev-other", {"text": "Other writer"}, session.owner.owner_actor,
+                                    parent_revision=head)
+            context = TransactionContext(session.owner.owner_actor, "other-writer",
+                                         sha256(b"other-writer").hexdigest(), expected_revision=head)
+            session.owner.content.execute(session.owner.content.build_append_revision(context, stored, other))
+            return session.owner.content.read(ref)["current_revision"]["revision"]
+        other_head = self._owner_for(project["id"], second_writer)
+        code, refused = self.otto("open", "finish", *args, "--request-key", "race-finish", "--handle-json",
+                                  json.dumps(handle))
+        self.assertEqual(code, 4, refused)
+        self.assertEqual(refused["outcome"], "conflict", refused)
+        self.assertEqual(refused["error"]["code"], "stale_base", refused)
+        self.assertEqual(refused["current_revision"], other_head)
+        self.assertFalse(refused["dat_revision_advanced"], refused)
+        code, released = self.otto("open", "release", *args, "--request-key", "race-release", "--handle-json",
+                                   json.dumps(handle))
+        self.assertEqual(code, 0, released)
+        self.assertTrue(released["nonpublishing"], released)
+
+    def test_parked_session_is_released_through_otto_release(self):
+        project = self._project()
+        document = self._document(project)
+        args = self._open_args(project, document)
+        code, opened = self.otto("open", "start", *args, "--request-key", "park-open")
+        self.assertEqual(code, 0, opened)
+        handle = opened["handle"]
+        code, saved = self.otto("open", "autosave", *args, "--request-key", "park-save", "--handle-json",
+                                json.dumps(handle), "--buffer-json", json.dumps({"content": {"text": "Parked draft"}}))
+        self.assertEqual(code, 0, saved)
+        original = DocumentAuthoringHandler.lifecycle_handler
+
+        def failing_apply(authoring, material, *, request_id):
+            handler = original(authoring, material, request_id=request_id)
+
+            def apply(*apply_args, **kwargs):
+                raise RuntimeError("injected failure after the finish claim")
+            return SimpleNamespace(validate=handler.validate, apply=apply)
+
+        with patch.object(DocumentAuthoringHandler, "lifecycle_handler", failing_apply):
+            code, parked = self.otto("open", "finish", *args, "--request-key", "park-finish", "--handle-json",
+                                     json.dumps(handle))
+        self.assertEqual(parked["outcome"], "recovery_pending", parked)
+        code, released = self.otto("release", "--session-id", handle["session_id"], "--request-key", "park-release")
+        self.assertEqual(code, 0, released)
+        self.assertEqual(released["outcome"], "released", released)
+        code, reopened = self.otto("open", "start", *args, "--request-key", "park-reopen")
+        self.assertEqual(code, 0, reopened)
+        self.assertEqual(reopened["outcome"], "opened", reopened)
 
 
 class FolderOpenTests(unittest.TestCase):
-    """``open folder`` checks a project folder out to disk, takes an edit back in and releases it."""
+    """``open folder`` in-process: the owner verb with an injected portfolio."""
 
     def setUp(self):
         self.f = ProjectFolderProof()
@@ -183,7 +335,7 @@ class LateWriterTests(unittest.TestCase):
         self.assertTrue(finished["dat_revision_advanced"], finished)
         self.assertNotEqual(self.head(), head)
 
-    def test_parked_session_is_freed_by_otto_release(self):
+    def test_parked_session_is_freed_by_release_parked(self):
         handle = self.open_handle("open-park")
         self.call("save", "draft-park", handle=handle, editor_buffer={"content": {"text": "Parked draft"}})
         original = DocumentAuthoringHandler.lifecycle_handler
@@ -199,12 +351,8 @@ class LateWriterTests(unittest.TestCase):
             parked = self.call("finish", "park-finish", handle=handle)
         self.assertEqual(parked["outcome"], "recovery_pending", parked)
         self.assertTrue(self.recovery(handle["session_id"])["recovery_pending"])
-        out = StringIO()
-        with redirect_stdout(out):
-            code = cli.main(["release", "--session-id", handle["session_id"], "--request-key", "release-park"],
-                            editor_host=self.editor)
-        released = json.loads(out.getvalue())
-        self.assertEqual(code, 0, released)
+        released = self.editor.dispatch({"command": "document-authoring", "operation": "release-parked",
+            "request_key": "release-park", "session_id": handle["session_id"]}, actor=self.editor.actor)
         self.assertEqual(released["outcome"], "released", released)
         self.assertFalse(self.recovery(handle["session_id"])["recovery_pending"])
         reopened = self.call("open", "open-after-release")

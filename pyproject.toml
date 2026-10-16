@@ -11,7 +11,7 @@ dependencies = []
 
 [project.scripts]
 ottoctl = "otto.hostctl.cli:main"
-otto = "otto.portfolio.cli:main"
+otto = "otto.portfolio.cli:client_main"
 otto-gateway = "otto.cli:main"
 
 [tool.setuptools.packages.find]

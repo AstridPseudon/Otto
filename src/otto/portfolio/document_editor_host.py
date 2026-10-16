@@ -363,3 +363,36 @@ class DocumentEditorHost:
                         **buffer["request"]})
                     buffer["published"] = True
         return [ingress.publish({"schema": ingress.schema, "request": request}) for request in requests]
+
+
+# One editor host per owner home, Store and project grant: its buffer capture state must
+# survive from one `open` request to the next, and its grant is the one the session holds.
+_OWNER_EDITORS: dict[tuple, tuple[Any, DocumentEditorHost]] = {}
+_OWNER_EDITORS_LOCK = threading.Lock()
+
+
+def _editor_secret(root: Path) -> bytes:
+    """The lease secret, created once under the owner home and then reused across restarts."""
+    path = root / "secret"
+    if not path.exists():
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return path.read_bytes()
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(os.urandom(32))
+    return path.read_bytes()
+
+
+def owner_editor_host(session: Any, home: str | Path) -> DocumentEditorHost:
+    """The owner's own editor host, built from the owner session the lane composed."""
+    key = (str(Path(home).resolve()), tuple(getattr(session, "project_ids", ())))
+    with _OWNER_EDITORS_LOCK:
+        cached = _OWNER_EDITORS.get(key)
+        if cached is not None and cached[0] is session.store:
+            return cached[1]
+        root = Path(home) / "editor"
+        host = DocumentEditorHost(owner=session.owner, directory=root, secret=_editor_secret(root))
+        _OWNER_EDITORS[key] = (session.store, host)
+        return host
