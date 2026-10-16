@@ -417,9 +417,13 @@ class _ProjectBatchesEngine:
             # The synthetic record supplies the project identity needed to
             # resolve local task refs; the parent and all children are then
             # committed by the one create transaction below.
-            provisional = self.graph._from_payload(project_ref, 0, initial)
-            plan = self._prepare_sheet(provisional, sheet, decision_ref=None, next_action=None)
-            self._validate_plan(provisional, plan)
+            provisional = WorkRecord(
+                project_ref, WorkKind.PROJECT, initial["title"], initial["name"],
+                tuple(initial.get("aliases", (project_id,))), None, (), None,
+                Lifecycle.PENDING, dict(initial.get("readiness", {})), initial, 0,
+            )
+            plan = self._prepare_sheet(provisional, sheet, decision_ref=None, next_action=None, creating=True)
+            self._validate_plan(provisional, plan, include_retained=False)
             initial = plan["project_payload"]
         if _owner_supervision is None and isinstance(initial.get("metadata"), Mapping) and "otto_orchestrator" in initial["metadata"]:
             raise WorkValidationError("otto_orchestrator supervision is owner-controlled")
@@ -592,7 +596,7 @@ class _ProjectBatchesEngine:
         sheet = {"tasks": [{"id": self.graph.current(item).id} for item in records], "manager_action": action}
         return self.apply_project_sheet(project, sheet, logical_request_key=logical_request_key, actor=actor, next_action=action)
 
-    def _prepare_sheet(self, project: WorkRecord, sheet: Mapping[str, Any], *, decision_ref: Any, next_action: Optional[str]) -> Dict[str, Any]:
+    def _prepare_sheet(self, project: WorkRecord, sheet: Mapping[str, Any], *, decision_ref: Any, next_action: Optional[str], creating: bool = False) -> Dict[str, Any]:
         allowed = {"title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata", "metadata_namespace", "tasks", "criteria", "documents", "document_links", "document_changes", "manager_action", "resources"}
         unknown = set(sheet).difference(allowed)
         if unknown:
@@ -600,7 +604,7 @@ class _ProjectBatchesEngine:
         task_entries = sheet.get("tasks", ())
         if not isinstance(task_entries, (list, tuple)):
             raise WorkValidationError("tasks must be an array")
-        existing_by_id = {record.id: record for record in self.graph.list(project=project)}
+        existing_by_id = {} if creating else {record.id: record for record in self.graph.list(project=project)}
         existing_by_alias = {alias: record for record in existing_by_id.values() for alias in record.aliases}
         # Sheet keys are task aliases, retained on task identities.
         mappings: Dict[str, ResourceRef] = {}
@@ -706,10 +710,11 @@ class _ProjectBatchesEngine:
         documents = self._prepare_documents(project, sheet, planned)
         return {"project_payload": project_payload, "planned": planned, "mappings": mappings, "documents": documents, "document_refs": tuple(documents["refs"]), "after_refs": tuple(list(mappings.values()) + list(documents["refs"]))}
 
-    def _validate_plan(self, project: WorkRecord, plan: Mapping[str, Any]) -> None:
+    def _validate_plan(self, project: WorkRecord, plan: Mapping[str, Any], *, include_retained: bool = True) -> None:
         adjacency: Dict[str, List[str]] = {}
-        for retained in self.graph.list(project=project, kind=WorkKind.TASK):
-            adjacency[retained.id] = [ref.id for ref in retained.dependencies]
+        if include_retained:
+            for retained in self.graph.list(project=project, kind=WorkKind.TASK):
+                adjacency[retained.id] = [ref.id for ref in retained.dependencies]
         for item in plan["planned"]:
             adjacency[item["ref"].id] = [ref.id for ref in (self._as_ref(value) for value in item["payload"].get("dependencies", ()))]
             if item["payload"].get("lifecycle") not in {value.value for value in Lifecycle}:

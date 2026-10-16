@@ -146,7 +146,7 @@ def diff_save(seed: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, 
     project_diff = {
         field: {"file": value, "current": authored_project.get(field)}
         for field, value in seed.get("project", {}).items()
-        if field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol")
+        if field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "criteria")
         and authored_project.get(field) != value
     }
     by_key: dict[str, Mapping[str, Any]] = {}

@@ -323,6 +323,7 @@ class FiniteWorkOperations:
                 if not isinstance(actual_parent, Mapping) or any(actual_parent.get(key) != parent_value[key] for key in ("authority", "kind", "id")):
                     continue
             selected.append({"project_ref": _json_value(ref), "title": payload.get("title") or payload.get("name"),
+                             "criteria": _json_value(payload.get("criteria", [])),
                              "lifecycle": payload.get("lifecycle", "unknown"), "parent_ref": _json_value(actual_parent),
                              "readiness": _json_value(payload.get("readiness", {}))})
         page = selected if limit is None else selected[:limit]
@@ -1713,7 +1714,9 @@ class FiniteWorkOperations:
             result_ref = self.port.set_readiness(self._record_ref(payload["project_ref"]), observation, logical_request_key=request_id, actor=self._actor(actor))
         except Exception as exc:
             if type(exc).__name__ == "ReplayConflictError":
-                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": operation}, "replayed": False, "event_ids": []}
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": operation},
+                        "next_action": "Inspect the original save; use a new request ID for intentionally changed content.",
+                        "retry": False, "replayed": False, "event_ids": []}
             raise
         return self._receipt_result(request_id, outcome="attention-created", project_ref=_json_value(self._record_ref(payload["project_ref"])), attention_ref=_json_value(result_ref), readiness={"dispatch": False}, executable=False, replayed=prior is not None)
 
@@ -2320,7 +2323,6 @@ class FiniteWorkOperations:
         A same-key replay is decided from its original receipt, before that check.
         """
         from herzchen.contracts import ResourceRef
-        from herzchen.domains.work.module import validate_metadata_namespaces
         from herzchen.kernel import VersionConflictError
         from .save import SAVE_TEMPLATE_ID, diff_save
 
@@ -2335,15 +2337,18 @@ class FiniteWorkOperations:
         before = self._owner_reader.get_receipt(request_id)
         try:
             sheet = self.sheet_port.sheet_from_seed(seed, SAVE_TEMPLATE_ID)
-            # Typed metadata is checked before anything is created, so a refused
-            # file leaves no empty project behind (the batch checks it again).
-            for task in seed["tasks"]:
-                namespaces = task.get("metadata_namespace", {})
-                validate_metadata_namespaces({"metadata_namespaces": namespaces}, tuple(namespaces))
             if payload.get("project_ref") is None:
-                title = (seed.get("project") or {}).get("title")
-                project = self.sheet_port.create_pending(title=title, logical_request_key=request_id + ":project", actor=actor_value).project
-                base_revision = None
+                project_values = seed.get("project") or {}
+                created = self.sheet_port.create_pending(
+                    title=project_values.get("title"), outcome=project_values.get("outcome", ""),
+                    sheet=sheet, logical_request_key=request_id, actor=actor_value,
+                )
+                return {"outcome": "replayed" if before is not None else "saved",
+                        "project_ref": _json_value(created.project.ref),
+                        "task_refs": {key: _json_value(value) for key, value in created.mappings.items()},
+                        "replayed": before is not None,
+                        "event_ids": list(getattr(created.receipt, "event_ids", ())),
+                        "dispatch": False, "launch": False}
             else:
                 project = ResourceRef.from_dict(payload["project_ref"])
                 base_revision = project.revision
@@ -2352,11 +2357,17 @@ class FiniteWorkOperations:
             current = self.sheet_port.export(project)
             return {"outcome": "conflict", "error": {"code": "stale_base", "message": str(exc), "operation": operation},
                     "base_revision": base_revision, "current_project_ref": _json_value(current["project"]["ref"]),
-                    "diff": _json_value(diff_save(seed, current)), "replayed": False, "event_ids": [], "dispatch": False, "launch": False}
+                    "diff": _json_value(diff_save(seed, current)),
+                    "next_action": "Reread the current project and its tasks with `otto show`, update the save file against those revisions, then apply it again.",
+                    "replayed": False, "event_ids": [], "dispatch": False, "launch": False}
         except Exception as exc:
             if type(exc).__name__ == "ReplayConflictError":
                 return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": operation}, "replayed": False, "event_ids": []}
-            return {"outcome": "error", "error": {"code": "save_refused", "message": str(exc), "operation": operation}, "replayed": False, "event_ids": []}
+            message = str(exc)
+            busy = any(token in message.casefold() for token in ("database is locked", "database is busy", "sqlite_busy", "sqlite_locked"))
+            return {"outcome": "error", "error": {"code": "store_busy" if busy else "save_refused", "message": message, "operation": operation},
+                    "next_action": "Retry the same save after the Store is available." if busy else "Correct the named save-file issue and submit the save again.",
+                    "retry": busy, "replayed": False, "event_ids": []}
         replayed = before is not None
         return {"outcome": "replayed" if replayed else "saved", "project_ref": _json_value(batch.project.ref),
                 "task_refs": {key: _json_value(value) for key, value in batch.mappings.items()},

@@ -112,9 +112,9 @@ class OtToSaveTests(unittest.TestCase):
 
     def test_malformed_first_save_leaves_no_project_or_task_or_receipt(self):
         counts = self._counts()
-        refused = self._save(_file(_task("A", unsupported_control="start")))
+        refused = self._save(_file({"id": "A"}))
         self.assertEqual(refused["outcome"], "error", refused)
-        self.assertIn("unsupported fields", refused["error"]["message"])
+        self.assertIn("title", refused["error"]["message"])
         self.assertEqual(self._counts(), counts)
 
     def test_second_save_detects_cycle_through_a_retained_task(self):
@@ -129,8 +129,53 @@ class OtToSaveTests(unittest.TestCase):
     def test_saved_criteria_are_present_in_the_authored_project_view(self):
         criteria = [{"id": "C1", "definition": "The saved result is reviewed"}]
         saved = self._created(_task("A"), criteria=criteria)
-        view = self.owner.sheet.export(ResourceRef.from_dict(saved["project_ref"]))
-        self.assertEqual(view.project["authored"]["criteria"], criteria)
+        from otto.portfolio.herzchen_binding import ProjectReadGrant
+        granted_owner = PortfolioOwnerBootstrap(
+            self.store, binding=self.owner.binding, owner_actor="owner",
+            project_read_grant=ProjectReadGrant(self.owner.owner_actor,
+                (saved["project_ref"]["id"],), "fixture-owner", "1"),
+        )
+        portfolio = OttoPortfolio(granted_owner.consumer_operations())
+        from otto.portfolio.show import show_project
+        shown = show_project(portfolio, actor="owner", project_ref=saved["project_ref"], limit=100)
+        self.assertEqual(shown.get("outcome"), "read", shown)
+        self.assertEqual(shown["project"]["criteria"], criteria)
+
+    def test_plan_namespace_accepts_replacement_and_null_key_removal(self):
+        created = self._created(_task("A", metadata_namespace={PLAN_NAMESPACE: GOOD_PLAN}))
+        replacement = dict(GOOD_PLAN, lines=72, size=1.25)
+        saved = self._save(_file(_task("A", metadata_namespace={PLAN_NAMESPACE: replacement}),
+                                 project_ref=created["project_ref"]))
+        self.assertEqual(saved["outcome"], "saved", saved)
+        task = self._tasks(saved["project_ref"])[0]
+        self.assertEqual(task.payload["metadata_namespaces"][PLAN_NAMESPACE], replacement)
+        removed = dict(replacement)
+        removed["lines"] = None
+        saved = self._save(_file(_task("A", metadata_namespace={PLAN_NAMESPACE: removed}),
+                                 project_ref=saved["project_ref"]))
+        self.assertEqual(saved["outcome"], "saved", saved)
+        task = self._tasks(saved["project_ref"])[0]
+        self.assertNotIn("lines", task.payload["metadata_namespaces"][PLAN_NAMESPACE])
+
+    def test_busy_store_refusal_offers_retry_guidance(self):
+        import sqlite3
+        from unittest import mock
+        created = self._created(_task("A"))
+        delegate = self.portfolio.operations.sheet_port
+
+        class BusySheetPort:
+            def __getattr__(self, name):
+                if name == "apply":
+                    raise sqlite3.OperationalError("database is locked")
+                return getattr(delegate, name)
+
+        with mock.patch.object(self.portfolio.operations, "sheet_port", BusySheetPort()):
+            refused = self._save(_file(_task("A", title="Plan A changed"),
+                                       project_ref=created["project_ref"]))
+        self.assertEqual(refused["outcome"], "error", refused)
+        self.assertEqual(refused["error"]["code"], "store_busy")
+        self.assertTrue(refused["retry"])
+        self.assertIn("Retry", refused["next_action"])
 
     def test_refused_typed_metadata_creates_no_project(self):
         counts = self._counts()
@@ -179,6 +224,21 @@ class OtToSaveTests(unittest.TestCase):
         self.assertEqual(self._project(newer["project_ref"]).payload["title"], "Plan two")
         self.assertEqual([task.title for task in self._tasks(newer["project_ref"])], ["Plan A two"])
 
+    def test_stale_save_can_be_reread_and_reapplied(self):
+        created = self._created(_task("A"), title="Plan one")
+        newer = self._save(_file(_task("A", title="Plan A two"), title="Plan two",
+                                 project_ref=created["project_ref"]))
+        stale = self._save(_file(_task("A", title="Plan A three"), title="Plan three",
+                                 project_ref=created["project_ref"]))
+        self.assertEqual(stale["outcome"], "conflict", stale)
+        current_ref = ResourceRef.from_dict(stale["current_project_ref"])
+        reread = self.owner.sheet.export(current_ref)
+        self.assertEqual(reread.project["authored"]["title"], "Plan two")
+        self.assertEqual(reread.project["ref"].revision, newer["project_ref"]["revision"])
+        reapplied = self._save(_file(_task("A", title="Plan A three"), title="Plan three",
+                                     project_ref=stale["current_project_ref"]))
+        self.assertEqual(reapplied["outcome"], "saved", reapplied)
+
     def test_save_file_refusals_happen_without_the_owner(self):
         for bad, reason in (
             ([], "JSON object"),
@@ -188,6 +248,7 @@ class OtToSaveTests(unittest.TestCase):
             ({"tasks": [_task("A", lifecycle="active")]}, "must be pending"),
             ({"tasks": [_task("A"), _task("A")]}, "appears twice"),
             ({"tasks": [{"title": "no id"}]}, "needs a non-blank id"),
+            ({"tasks": [_task("A", unsupported_control="start")]}, "unsupported fields"),
             ({"tasks": [_task("A", dependencies="B")]}, "dependencies must be an array"),
             ({"tasks": [_task("A", dependencies=[3])]}, "must name a task id"),
         ):

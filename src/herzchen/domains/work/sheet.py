@@ -255,12 +255,14 @@ class _ProjectSheetEngine:
     def create_pending(
         self, *, title: Optional[str] = None, outcome: str = "", curator: Any = None,
         creator: Any = None, metadata: Optional[Mapping[str, Any]] = None,
+        sheet: Optional[Mapping[str, Any]] = None,
         logical_request_key: Optional[str] = None, actor: Optional[AuthenticatedActor] = None,
     ) -> BatchResult:
-        """Save a durable, zero-task pending project without admission."""
+        """Save a pending project, optionally with its initial sheet in one transaction."""
+        normalized = self._validate_sheet(sheet) if sheet is not None else None
         return self.batches.create_pending_project(
             title=title, outcome=outcome, curator=curator, creator=creator,
-            metadata=metadata, logical_request_key=logical_request_key,
+            metadata=metadata, sheet=normalized, logical_request_key=logical_request_key,
             actor=actor or self.actor,
         )
 

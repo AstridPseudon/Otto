@@ -134,7 +134,8 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(second["task_refs"]["A"]["revision"], "rev-2", second)
         project = self._project(second["project_ref"])
         self.assertEqual(self._revision(project.payload["tasks"][0]), "rev-2")
-        self.assertEqual(self._revision(project.payload["batch_history"][-1]["mapping"]["A"]), "rev-2")
+        applied = self._events("work:" + project.id, "work.project-sheet.applied")[-1]
+        self.assertEqual(self._revision(applied.effects["mapping"]["A"]), "rev-2")
 
     def test_stale_task_after_direct_revision_is_refused_and_writes_nothing(self):
         created = self._created(_task("A"), _task("B"))
