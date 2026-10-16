@@ -36,7 +36,7 @@ def qualify_existing_view(router, service, *, expected_project_id, expected_supe
     if state['project_ref']['id'] != expected_project_id or state.get('run_id') != expected_run_id:
         raise PermissionError('registered project/run identity differs')
     stable = ResourceRef.from_dict({key: state['project_ref'][key] for key in ('authority', 'kind', 'id')})
-    project = owner.graph.get(stable)
+    project = owner.graph.current(stable)
     relation = project.payload.get('metadata', {}).get('otto_orchestrator', {})
     supervisor = owner.assignments.get(ResourceRef.from_dict(expected_supervisor_ref))
     if (project.ref.to_dict() != state['project_ref']
@@ -106,7 +106,7 @@ def attach_registered_view(*, router, service, native_ingress, view_key, expecte
 
 def qualify_existing_supervision(service, proof):
     owner, state = service.server.owner, service.server.state
-    project = owner.graph.get(ResourceRef.from_dict({key: proof['project_ref'][key]
+    project = owner.graph.current(ResourceRef.from_dict({key: proof['project_ref'][key]
                                for key in ('authority', 'kind', 'id')}))
     relation = project.payload.get('metadata', {}).get('otto_orchestrator', {})
     supervisor = owner.assignments.get(ResourceRef.from_dict(proof['supervisor_ref']))

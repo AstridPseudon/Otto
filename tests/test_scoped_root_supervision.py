@@ -81,7 +81,7 @@ class ScopedRootSupervisionTests(unittest.TestCase):
         return self.store.consumer().get_identity(ref)
 
     def test_second_own_root_transfers_one_project_without_changing_default(self):
-        before_project = self.owner.graph.get(self.project.ref)
+        before_project = self.owner.graph.current(self.project.ref)
         before_relation = before_project.payload["metadata"]["otto_orchestrator"]
         before_default = self._default_identity(before_relation)
         self.assertIsNotNone(before_default)
@@ -93,7 +93,7 @@ class ScopedRootSupervisionTests(unittest.TestCase):
         transferred = self._transfer(before_project, before_relation)
 
         self.assertEqual(transferred["outcome"], "transferred")
-        after_project = self.owner.graph.get(ResourceRef.from_dict(transferred["project_ref"]))
+        after_project = self.owner.graph.current(ResourceRef.from_dict(transferred["project_ref"]))
         after_relation = after_project.payload["metadata"]["otto_orchestrator"]
         self.assertEqual(after_relation["assignment_ref"], self.astrid_root.ref.to_dict())
         self.assertEqual(after_relation["portfolio_ref"], self.portfolio.to_dict())
@@ -102,7 +102,7 @@ class ScopedRootSupervisionTests(unittest.TestCase):
         self.assertEqual(self._default_identity(after_relation), before_default)
 
     def test_transfer_rejects_foreign_root_stale_pin_and_missing_overlap_ack(self):
-        project = self.owner.graph.get(self.project.ref)
+        project = self.owner.graph.current(self.project.ref)
         relation = project.payload["metadata"]["otto_orchestrator"]
         foreign_portfolio = ResourceRef("owner", "wrk.portfolio", "foreign-portfolio")
         foreign_root = self.owner.assignments.assign(
@@ -116,7 +116,7 @@ class ScopedRootSupervisionTests(unittest.TestCase):
         with self.assertRaisesRegex(WorkValidationError, "overlap acknowledgement"):
             self._transfer(project, relation, overlap_acknowledged=False,
                            request_id="unacknowledged-transfer")
-        current = self.owner.graph.get(self.project.ref)
+        current = self.owner.graph.current(self.project.ref)
         self.assertEqual(current.payload["metadata"]["otto_orchestrator"]["assignment_ref"],
                          self.default_root.ref.to_dict())
 

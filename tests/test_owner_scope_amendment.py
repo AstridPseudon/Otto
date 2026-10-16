@@ -24,7 +24,7 @@ class OwnerScopeAmendmentTests(unittest.TestCase):
         batch = self.f.owner.sheet.apply(self.project.ref, {'tasks':[{'id':self.initial_task.id,
             'outcome':'Mechanical only; no paid provider calls', 'acceptance':['after']}]},
             logical_request_key='changed-owner-task', actor=self.actor)
-        self.task = self.graph.get(self.initial_task.ref)
+        self.task = self.graph.current(self.initial_task.ref)
         self.key = 'owner-scope-amendment'
 
     def authorization(self, **changes):
@@ -69,6 +69,6 @@ class OwnerScopeAmendmentTests(unittest.TestCase):
     def test_current_completed_task_rejected(self):
         authority=self.authorization()
         self.graph.revise(self.task.ref,lifecycle='completed',logical_request_key='complete')
-        with self.assertRaises(AssessmentError):self.call(authority,parent_obligation=self.graph.get(self.task.ref).ref)
+        with self.assertRaises(AssessmentError):self.call(authority,parent_obligation=self.graph.current(self.task.ref).ref)
 
 if __name__=='__main__':unittest.main()

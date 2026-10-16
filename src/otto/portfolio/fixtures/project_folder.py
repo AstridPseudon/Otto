@@ -57,7 +57,7 @@ class ProjectFolderProof(ProjectAuthoringProof):
         reimported = self.portfolio.import_folder(actor='owner',request_id='roundtrip',
             project_json=exported['project_json'],files=exported['files'])
         self.assertEqual(reimported['outcome'],'imported',reimported)
-        project = self.owner.graph.get(ResourceRef.from_dict(ref))
+        project = self.owner.graph.current(ResourceRef.from_dict(ref))
         self.assertEqual(project.lifecycle.value, 'pending')
         self.assertNotIn('otto_transfer', project.payload['metadata'])
         for row in reader.list_documents(ref, actor=self.owner.owner_actor)['documents']:
@@ -210,7 +210,7 @@ class ProjectFolderProof(ProjectAuthoringProof):
         self.assertTrue((self.root/opened['session_id']/'README.md').exists())
         released = self.portfolio.release_project(ref, session_id=opened['session_id'],actor='owner',request_id='release-stale')
         self.assertEqual(released['outcome'],'released',released)
-        current = self.owner.graph.get(ResourceRef.from_dict(ref)).ref
+        current = self.owner.graph.current(ResourceRef.from_dict(ref)).ref
         rebased = self.open(current,'rebase-open')
         repaired = self.checkin(rebased,[changes[1]],'rebase-check-in')
         self.assertEqual(repaired['outcome'],'finished',repaired)

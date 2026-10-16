@@ -31,7 +31,7 @@ def preview(service,*,actor):
  pins=json.loads(read(FEATURES))['files'];manifest=json.loads(read(C/'runtime-manifest.json',262144))
  tasks=[];sources={}
  for alias,names in FILES.items():
-  task=owner.graph.get(ResourceRef.from_dict(service.server.state['task_refs'][alias]))
+  task=owner.graph.current(ResourceRef.from_dict(service.server.state['task_refs'][alias]))
   completion.require(task.lifecycle.value=='pending'and completion.same(task.payload['project_ref'],project.ref.to_dict()),'exact original pending W0 task required')
   selected={}
   for name in names:

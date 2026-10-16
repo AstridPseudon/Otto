@@ -12,7 +12,7 @@ def require(value,message):
 def snapshot(owner,*,due_port,activation_receipt):
  actor=owner.owner_actor
  require(actor.actor==OWNER,'authentic same physical service owner required')
- project=owner.graph.get(ResourceRef(owner.store.authority,'work.project',PROJECT))
+ project=owner.graph.current(ResourceRef(owner.store.authority,'work.project',PROJECT))
  require(activation_receipt.get('project_ref',{}).get('id')==PROJECT
   and activation_receipt.get('steps',{}).get('manager',{}).get('assignment_ref',{}).get('id')==MANAGER,
   'original same-project activation receipt required')

@@ -79,7 +79,7 @@ class ProjectOnboardingTests(unittest.TestCase):
         self.assertEqual(reopened["project_ref"]["id"], project_ref["id"])
         self.assertEqual(reopened["workspace"]["locator"], created["workspace"]["locator"])
 
-        record = granted_owner.graph.get(ResourceRef.from_dict(project_ref))
+        record = granted_owner.graph.current(ResourceRef.from_dict(project_ref))
         self.assertEqual(record.lifecycle.value, "pending")
         self.assertEqual(record.payload["tasks"], [])
         for field in ("manager", "worker", "budget", "execution"):

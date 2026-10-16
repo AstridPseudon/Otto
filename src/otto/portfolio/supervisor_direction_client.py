@@ -111,7 +111,7 @@ class SupervisorDirectionAuthoring:
     def call(self, request, root):
         service, owner = self.service, self.owner
         state = service.server.state
-        project = owner.graph.get(ResourceRef.from_dict(state['project_ref']))
+        project = owner.graph.current(ResourceRef.from_dict(state['project_ref']))
         relation = project.payload.get('metadata', {}).get('otto_orchestrator', {})
         current_root = owner.assignments.get(root.ref)
         if (current_root.ref != root.ref or current_root.generation != root.generation

@@ -21,6 +21,9 @@ STATE_FIELDS = ("parent", "project_ref", "project", "scope", "lifecycle", "statu
                 "session", "manager", "reporter", "launcher", "assignment",
                 "dependencies", "pins", "documents", "document", "current_revision", "subject", "active",
                 "delivery_state", "application_state", "native_result", "task_acceptance")
+# Work task content is not in STATE_FIELDS (so state() is unchanged), but an
+# edit to it is still a retained change. Only names are recorded, never values.
+CONTENT_FIELDS = ("title", "name", "instructions", "acceptance")
 
 
 def safe(value: Any) -> Any:
@@ -93,6 +96,17 @@ def transition(before_ref, before_payload, after_ref, after_payload, *, facet_ty
     before, after = state(before_ref, before_payload), state(after_ref, after_payload)
     changed = [k for k in STATE_FIELDS if before["fields"].get(k) != after["fields"].get(k) or
                (k in before["fields"]) != (k in after["fields"])]
+    if after_ref is not None and after_ref.kind == "work.task":
+        before_content, after_content = before_payload or {}, after_payload or {}
+        changed += [k for k in CONTENT_FIELDS
+                    if safe(before_content.get(k)) != safe(after_content.get(k))]
+        # Namespace names are data keys, not constants: report each changed one by name.
+        before_ns = safe(before_content.get("metadata_namespaces") or {})
+        after_ns = safe(after_content.get("metadata_namespaces") or {})
+        before_ns = before_ns if isinstance(before_ns, dict) else {}
+        after_ns = after_ns if isinstance(after_ns, dict) else {}
+        changed += [name for name in sorted(set(before_ns) | set(after_ns))
+                    if before_ns.get(name) != after_ns.get(name) and name not in changed]
     result = {"schema": HISTORY_SCHEMA, "facet_type": facet_type,
               "subject": safe(after_ref), "before": state(before_ref, before_payload),
               "after": after, "coverage": "captured-pre-post", "changed_fields": changed,

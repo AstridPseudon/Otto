@@ -444,7 +444,7 @@ def cmd_activate(args: argparse.Namespace) -> Any:
     with HostSession(config, host=entry) as session:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=entry, project_ids=(record.ref.id,)) as session:
-        record = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         from .portfolio import dependency_service
         readiness = dependency_service(session, args).activation_check(
             record.ref, override=getattr(args, "override_readiness", False),
@@ -452,7 +452,7 @@ def cmd_activate(args: argparse.Namespace) -> Any:
             request_id="activate-readiness:" + record.ref.id + ":" + str(record.version))
         if readiness.get("outcome") in {"blocked", "error"}:
             return readiness
-        record = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         bundle = stored_bundle(session, record)
         run_id = registration.get("run_id") or record.ref.id
@@ -502,7 +502,7 @@ def cmd_sync_docs(args: argparse.Namespace) -> Any:
     with HostSession(config, host=_host_opt(args, config)) as session:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
-        record = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         if getattr(args, "bundle_files", None) is None:
             # The client reads the run dir itself; tell it which one is registered.
@@ -521,11 +521,11 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
     with HostSession(config, host=_host_opt(args, config)) as session:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
-        record = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         tasks = []
         for raw in record.payload.get("tasks") or ():
             ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
-            task = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+            task = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
             megado = (task.payload.get("custom") or {}).get("megado") or {}
             tasks.append({"id": task.payload.get("alias") or task.ref.id, "title": task.title,
                           "lifecycle": task.lifecycle.value, "route": megado.get("route"),
@@ -638,7 +638,7 @@ def cmd_operating_setup(args: argparse.Namespace) -> Any:
             composition = {"ok": False, "error": type(exc).__name__ + ": " + str(exc)}
             adapter = UnavailableAdapter(IDENTITY, composition["error"])
         app = session.execution_application(adapter, manager_actor=_manager_handles(session, record)["principal"])
-        project = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        project = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         return {**app.read_operating_setup(project_ref=project.ref.to_dict()), "adapter_composition": composition,
                 "provider_called": False}
 
@@ -651,7 +651,7 @@ def _compose_setup(args: argparse.Namespace) -> Any:
     with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
         manager = _manager_handles(session, record)
         app = session.execution_application(_manager_adapter(session, config, manager), manager_actor=manager["principal"])
-        project = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        project = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         result = app.compose_operating_setup(project_ref=project.ref.to_dict(), operation=args.operation,
                                              setup=_manager_setup(manager),
                                              request_key="operating-setup:" + record.ref.id + ":v1")
@@ -672,7 +672,7 @@ def cmd_admission_dry_run(args: argparse.Namespace) -> Any:
     with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
         manager = _manager_handles(session, record)
         binding = manager["binding"]
-        project = session.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        project = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         checks["project"] = {"lifecycle": project.lifecycle.value, "ok": True,
                              "note": "pending by design; activation is a separate orchestrator step"}
         checks["selection"] = _check(lambda: adapter_selection(config).resolve(

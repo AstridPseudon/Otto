@@ -280,6 +280,7 @@ class _ProjectSheetEngine:
         actor: Optional[AuthenticatedActor] = None,
         decision_ref: Any = None,
         base_revision: Optional[str] = None,
+        base_task_revisions: Optional[Mapping[str, str]] = None,
         next_action: Optional[str] = None,
         with_view: bool = False,
     ) -> Any:
@@ -289,7 +290,7 @@ class _ProjectSheetEngine:
         batch = self.batches.apply_project_sheet(
             project, normalized, logical_request_key=logical_request_key,
             actor=actor or self.actor, decision_ref=decision_ref,
-            base_revision=base_revision, next_action=next_action,
+            base_revision=base_revision, base_task_revisions=base_task_revisions, next_action=next_action,
         )
         # Child writes may be dependency-topologically ordered by the adapter,
         # but the public mapping remains in the caller's stable alias order.
@@ -320,7 +321,7 @@ class _ProjectSheetEngine:
         document_refs: Optional[Sequence[Any]] = None,
     ) -> SheetView:
         """Build a fresh selected view; no cached or client-supplied facts."""
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         if record.kind is not WorkKind.PROJECT:
             raise SheetSelectionError("sheet view target must be a project")
         records = self._ordered_project_tasks(record)
@@ -361,7 +362,7 @@ class _ProjectSheetEngine:
         sheet. It includes eventless and historical assignments; append streams
         are not used as evidence of the current relationship.
         """
-        record = self.graph.get(project)
+        record = self.graph.current(project)
         if record.kind is not WorkKind.PROJECT:
             raise SheetSelectionError("assignment inventory target must be a project")
         tasks = self._ordered_project_tasks(record)
@@ -380,18 +381,18 @@ class _ProjectSheetEngine:
     # validator/batch operation as a sheet edit.  This gives direct and sheet
     # callers identical protected-field and lifecycle semantics.
     def revise(self, target: Any, *, logical_request_key: Optional[str] = None, base_revision: Optional[str] = None, **changes: Any) -> Any:
-        record = self.graph.get(target)
+        record = self.graph.current(target)
         self._validate_task_or_project_changes(changes, record)
         if record.kind is WorkKind.PROJECT:
             return self.apply(record, changes, logical_request_key=logical_request_key, base_revision=base_revision)
-        project = self.graph.get(record.project_ref)
+        project = self.graph.current(record.project_ref)
         changes = dict(changes, id=record.id)
         return self.apply(project, {"tasks": [changes]}, logical_request_key=logical_request_key, base_revision=base_revision)
 
     update = revise
 
     def withdraw(self, target: Any, *, logical_request_key: Optional[str] = None, base_revision: Optional[str] = None) -> Any:
-        record = self.graph.get(target)
+        record = self.graph.current(target)
         if record.kind is WorkKind.PROJECT:
             # The accepted graph command is the relevant semantic operation
             # for a project lifecycle transition; task withdrawal compiles to
@@ -402,9 +403,9 @@ class _ProjectSheetEngine:
         return self.revise(target, lifecycle=Lifecycle.WITHDRAWN.value, withdraw=True, logical_request_key=logical_request_key, base_revision=base_revision)
 
     def link_dependency(self, record: Any, prerequisite: Any, *, logical_request_key: Optional[str] = None, base_revision: Optional[str] = None) -> Any:
-        target = self.graph.get(record)
-        project = self.graph.get(target.project_ref)
-        dependency = self.graph.get(prerequisite)
+        target = self.graph.current(record)
+        project = self.graph.current(target.project_ref)
+        dependency = self.graph.current(prerequisite)
         if dependency.project_ref is None or dependency.project_ref.id != project.id:
             raise SheetError("direct dependency link must remain in the project scope")
         return self.apply(project, {"tasks": [{"id": target.id, "dependencies": [ref for ref in target.dependencies] + [dependency.ref]}]}, logical_request_key=logical_request_key, base_revision=base_revision)
@@ -412,7 +413,7 @@ class _ProjectSheetEngine:
     link = link_dependency
 
     def link_parent(self, child: Any, parent: Any, *, logical_request_key: Optional[str] = None, base_revision: Optional[str] = None) -> Any:
-        child_record, parent_record = self.graph.get(child), self.graph.get(parent)
+        child_record, parent_record = self.graph.current(child), self.graph.current(parent)
         if child_record.project_ref is None or parent_record.project_ref is None or child_record.project_ref.id != parent_record.project_ref.id:
             raise SheetError("direct parent link must remain in the project scope")
         if base_revision is not None and child_record.ref.revision != base_revision:
@@ -489,7 +490,7 @@ class _ProjectSheetEngine:
             raise PolicyAuthorityError("policy amendment authority is required")
         if required_authority is not None and authority != required_authority:
             raise PolicyAuthorityError("policy amendment authority is not authorised")
-        target = self.graph.get(project)
+        target = self.graph.current(project)
         if target.ref.revision != base_revision:
             raise VersionConflictError("policy amendment base revision is stale")
         if decision_ref is None:
@@ -526,7 +527,7 @@ class _ProjectSheetEngine:
         source_payload = dict(source.payload) if isinstance(source, WorkRecord) else dict(source) if isinstance(source, Mapping) else None
         if source_payload is None:
             raise SheetError("adopt-existing-effort source must be a typed mapping or WorkRecord")
-        target = self.graph.get(project) if project is not None else self.graph.get(source_payload.get("project")) if source_payload.get("project") else None
+        target = self.graph.current(project) if project is not None else self.graph.current(source_payload.get("project")) if source_payload.get("project") else None
         if target is None:
             raise SheetError("adopt-existing-effort requires a target project")
         raw_tasks = source_payload.get("tasks", ())

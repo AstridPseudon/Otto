@@ -50,7 +50,7 @@ class RetentionDependencyResolverTests(RetentionOwnerReadTests):
         root, _subject, _pin, project = self.setup_portfolio()
         project = self.complete_project_for_preview(project)
         task_ref = ResourceRef.from_dict(project.payload["tasks"][0])
-        current_task = self.owner.graph.get(task_ref)
+        current_task = self.owner.graph.current(task_ref)
         candidate = self._canonical_candidate(project, task_ref, root, "survivor")
         survivor = candidate
         task_revision = ResourceRef(current_task.ref.authority, current_task.ref.kind,
@@ -131,7 +131,7 @@ class RetentionDependencyResolverTests(RetentionOwnerReadTests):
         root, _subject, _pin, project = self.setup_portfolio()
         project = self.complete_project_for_preview(project)
         task_ref = ResourceRef.from_dict(project.payload["tasks"][0])
-        current_task = self.owner.graph.get(task_ref)
+        current_task = self.owner.graph.current(task_ref)
         task_revision = ResourceRef(current_task.ref.authority, current_task.ref.kind,
                                     current_task.ref.id, "rev-" + str(current_task.version + 1))
         survivor = ResourceRef(self.store.authority, "wrk.result", "active-survivor", "rev-1")

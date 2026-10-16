@@ -149,6 +149,6 @@ class ExternalOwnerContextTests(unittest.TestCase):
         self.assertFalse(adopted['assignment_resources_refreshed']);after=self.call('direction-read',request_key='after-adopt')
         self.assertEqual(after['scope_direction']['effective_ref'],pin);self.assertEqual(after['assignment_direction']['assignment_adopted_ref'],self.pin.to_dict())
         self.assertEqual(self.f.owner.assignments.get(self.root.ref).ref,root_before.ref)
-        self.assertEqual(self.f.owner.graph.get(self.project.ref).payload['lifecycle'],'pending')
+        self.assertEqual(self.f.owner.graph.current(self.project.ref).payload['lifecycle'],'pending')
 
 if __name__=='__main__':unittest.main()

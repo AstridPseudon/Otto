@@ -34,7 +34,7 @@ def legacy_attach(common, *, manifest):
     entry = config.get('hosts', {}).get('claude-code') or {}
     if entry.get('principal') != PRINCIPAL or entry.get('root_assignment_ref', {}).get('id') != SUPERVISOR:
         raise PermissionError('original admitted Claude host identity is required')
-    project = owner.graph.get(ResourceRef(owner.store.authority, 'work.project', PROJECT))
+    project = owner.graph.current(ResourceRef(owner.store.authority, 'work.project', PROJECT))
     registration = project.payload.get('custom', {}).get('otto_host_registration', {})
     if registration.get('run_id') != RUN:
         raise PermissionError('original W0 registration is required')

@@ -75,12 +75,12 @@ def server_class():
    current=self.owner.assignments.get(ResourceRef.from_dict(state['assignment_ref']))
    require(current.ref.to_dict()==state['assignment_ref']and current.generation==2
     and current.payload.get('manager')==migration.OWNER,'current W0 manager binding changed; preserve its own continuation')
-   state.update(project_ref=self.owner.graph.get(record.ref).ref.to_dict(),run_id=RUN,
+   state.update(project_ref=self.owner.graph.current(record.ref).ref.to_dict(),run_id=RUN,
     requested_model='gpt-6-luna',requested_reasoning='medium',requested_profile='workspace-write',
     original_schedule_id=migrated['original_schedule_id'],role_configuration_ref=state.get('role_configuration_ref',migrated['role_configuration_ref']),
     new_pool_refs=migrated['new_pool_refs'])
-   state['task_refs']={self.owner.graph.get(ResourceRef.from_dict(pin)).payload.get('alias')or pin['id']:
-    self.owner.graph.get(ResourceRef.from_dict(pin)).ref.to_dict()for pin in record.payload['tasks']}
+   state['task_refs']={self.owner.graph.current(ResourceRef.from_dict(pin)).payload.get('alias')or pin['id']:
+    self.owner.graph.current(ResourceRef.from_dict(pin)).ref.to_dict()for pin in record.payload['tasks']}
    return state
   def render_run_view(self):
    from otto.hostctl.lanes import private_dir
@@ -161,7 +161,7 @@ def attach(common,*,manifest):
  config=load(Path('/Users/hannahomalley/.otto'));port=router.due_port
  session=SimpleNamespace(config=config,owner=owner,binding=owner.binding,store=owner.store,due_port=port,
   actor=owner.owner_actor,portfolio=owner.portfolio(due_port=port))
- project=owner.graph.get(ResourceRef(owner.store.authority,'work.project',migration.PROJECT))
+ project=owner.graph.current(ResourceRef(owner.store.authority,'work.project',migration.PROJECT))
  require(project.payload.get('custom',{}).get('otto_host_registration',{}).get('run_id')==RUN,'original W0 registration identity differs')
  server=server_class()(session,project,adapter_factory=lambda **kw:None,shared_host=host,shared_native_ingress=host.caller_binding_reader)
  run=server.render_run_view().resolve();workspace=Path(migrated['source_path']).resolve()

@@ -38,7 +38,7 @@ def install(common):
   if request['command']!='project-authoring' or not isinstance(request['request_key'],str)or not request['request_key'].strip():
    raise ValueError('canonical completion authoring correlation required')
   pin=ResourceRef.from_dict(request['project_ref'])
-  current=target.server.owner.graph.get(pin)
+  current=target.server.owner.graph.current(pin)
   if pin!=current.ref or pin.id!=migration.PROJECT:raise PermissionError('exact current original W0 project required')
   # Existing nested-capability classification holds these newly defined
   # operations during another native turn. Require the same idle boundary here

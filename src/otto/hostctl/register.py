@@ -233,7 +233,7 @@ def register(session: Any, registration: Mapping[str, Any], *, key: Optional[str
     receipt["steps"]["draft"] = {"outcome": created["outcome"], "project_ref": project.to_dict(),
                                  "workspace": (created.get("workspace") or {}).get("locator")}
     # 2. Registration facts on the draft (custom), through its own workspace.
-    current = session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id))
+    current = session.owner.graph.current(ResourceRef(project.authority, project.kind, project.id))
     current_custom = current.payload.get("custom") or {}
     wanted_custom = {**current_custom, **registration["custom"]}
     if current_custom != wanted_custom:
@@ -248,7 +248,7 @@ def register(session: Any, registration: Mapping[str, Any], *, key: Optional[str
     # 3. Queue it in the host's own portfolio: the existing supervision
     #    relation (work.orchestrator.projects.attach). The host's orchestrator
     #    becomes the project's accountable supervisor (help is routed there).
-    current = session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id))
+    current = session.owner.graph.current(ResourceRef(project.authority, project.kind, project.id))
     relation = (current.payload.get("metadata") or {}).get("otto_orchestrator")
     if not relation:
         root = session.root_assignment()
@@ -260,12 +260,12 @@ def register(session: Any, registration: Mapping[str, Any], *, key: Optional[str
             request_id=key + ":enroll", actor=principal)
         if attached.get("outcome") not in {"attached", "replayed"}:
             raise RuntimeError("portfolio enrollment did not complete: " + json.dumps(attached, default=str)[:400])
-        relation = (session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id))
+        relation = (session.owner.graph.current(ResourceRef(project.authority, project.kind, project.id))
                     .payload.get("metadata") or {}).get("otto_orchestrator")
     receipt["steps"]["enrollment"] = {"portfolio_ref": (relation or {}).get("portfolio_ref"),
                                       "supervisor_assignment_ref": (relation or {}).get("assignment_ref"),
                                       "queued": True}
-    receipt["project_ref"] = session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id)).ref.to_dict()
+    receipt["project_ref"] = session.owner.graph.current(ResourceRef(project.authority, project.kind, project.id)).ref.to_dict()
     receipt["lifecycle"] = "pending"
     return receipt
 
@@ -291,11 +291,11 @@ def import_history(session: Any, registration: Mapping[str, Any], *, note: str,
     receipt = register(session, {**registration, "custom": custom,
                                  "title": "History: " + registration["title"]}, key=key)
     ref = ResourceRef.from_dict(receipt["project_ref"])
-    current = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+    current = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
     if current.lifecycle.value != "withdrawn":
         session.owner.sheet.withdraw(current.ref, logical_request_key=key + ":withdraw",
                                      base_revision=current.ref.revision)
-    current = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+    current = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
     session.owner.project_finished(current.ref)
     receipt.update(outcome="imported_history", lifecycle=current.lifecycle.value,
                    project_ref=current.ref.to_dict(), schema="otto.host-history-import.v1")
@@ -339,14 +339,14 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
     project = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
     receipt: dict[str, Any] = {"schema": REGISTRATION_SCHEMA + ".activation", "run_id": run_id, "request_key": key,
                                "provider_called": False, "dispatch": False, "steps": {}}
-    current = session.owner.graph.get(project)
+    current = session.owner.graph.current(project)
     if not current.payload.get("tasks"):
         _check_in(session, current.ref.to_dict(), principal, key + ":tasks",
                   lambda draft: draft.update(outcome=registration["outcome"], tasks=list(registration["tasks"])))
         receipt["steps"]["tasks"] = {"outcome": "applied", "count": len(registration["tasks"])}
     else:
         receipt["steps"]["tasks"] = {"outcome": "replayed", "count": len(current.payload["tasks"])}
-    project_record = session.owner.graph.get(project)
+    project_record = session.owner.graph.current(project)
     project_ref = project_record.ref.to_dict()
     task_refs = _task_refs(session, project_record)
     receipt["steps"]["tasks"]["task_refs"] = task_refs
@@ -430,8 +430,8 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
                           "interval_seconds": stored["interval_seconds"], "host_state": stored["host_state"],
                           "stop_state": stored["stop_state"], "version": stored["version"]})
     receipt["steps"]["orchestrator_checks"] = schedules
-    receipt["project_ref"] = session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id)).ref.to_dict()
-    receipt["lifecycle"] = session.owner.graph.get(ResourceRef(project.authority, project.kind, project.id)).lifecycle.value
+    receipt["project_ref"] = session.owner.graph.current(ResourceRef(project.authority, project.kind, project.id)).ref.to_dict()
+    receipt["lifecycle"] = session.owner.graph.current(ResourceRef(project.authority, project.kind, project.id)).lifecycle.value
     return receipt
 
 
@@ -448,7 +448,7 @@ def _task_refs(session: Any, project_record: Any) -> dict[str, Any]:
     refs = {}
     for raw in project_record.payload.get("tasks", ()):
         task_ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
-        task = session.owner.graph.get(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+        task = session.owner.graph.current(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
         alias = task.payload.get("alias") or task.payload.get("id") or task.ref.id
         refs[alias] = task.ref.to_dict()
     return refs

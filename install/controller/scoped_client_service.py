@@ -71,7 +71,7 @@ class ScopedViewClients:
   selected=[s for s in self.views.values()if s.server.state['project_ref']['id']==project_id]
   if len(selected)!=1:raise PermissionError('project has no unique installed fixed view')
   return selected[0]
- def _project(self,project_id):return self.owner.graph.get(ResourceRef(self.owner.binding.authority,'work.project',project_id))
+ def _project(self,project_id):return self.owner.graph.current(ResourceRef(self.owner.binding.authority,'work.project',project_id))
  def _owned(self,root):
   rows=[]
   for service in self.views.values():

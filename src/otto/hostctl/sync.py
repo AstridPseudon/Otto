@@ -80,7 +80,7 @@ def sync_documents(session: Any, record: Any, bundle_source: Any, *, apply: bool
     stored_tasks = {}
     for raw in record.payload.get("tasks") or ():
         ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
-        task = session.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+        task = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
         stored_tasks[task.payload.get("alias") or task.ref.id] = task.payload.get("outcome")
     parsed = {task["id"]: task["outcome"] for task in bundle["tasks"]}
     task_drift = {"added": sorted(set(parsed) - set(stored_tasks)),

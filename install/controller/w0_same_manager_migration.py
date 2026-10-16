@@ -33,7 +33,7 @@ def plan(owner,*,root_ref,due_port,activation_receipt,workspace,source_pins,allo
  root=owner.assignments.get(ResourceRef.from_dict(root_ref))
  require(root.ref.to_dict()==root_ref and root.ref.id==ROOT and root.role=='orchestrator'
   and root.principal==OWNER and root.session and root.generation==1,'exact unchanged own Root13 responsibility/conversation required')
- project=owner.graph.get(ResourceRef(owner.store.authority,'work.project',PROJECT))
+ project=owner.graph.current(ResourceRef(owner.store.authority,'work.project',PROJECT))
  assignment=owner.assignments.get(ResourceRef(owner.store.authority,'wrk.assignment',MANAGER))
  due=due_port.read_due(custody.ORIGINAL['schedule_id'])
  require(due is not None and due['project_ref']==PROJECT and due['assignment_ref']==assignment.ref.to_dict()
@@ -143,7 +143,7 @@ def apply(owner,*,due_port,immutable_plan,execution_factory,fail_before_report=F
   _read=lambda key:DueRecord.from_dict(due_port.read_due(key)))
  custody.retained(app,DueRecord.from_dict(original))
  assignment=owner.assignments.get(ResourceRef.from_dict(p['manager_ref']))
- project=owner.graph.get(ResourceRef.from_dict(p['project_ref']))
+ project=owner.graph.current(ResourceRef.from_dict(p['project_ref']))
  root=owner.assignments.get(ResourceRef.from_dict(p['root_ref']))
  former=owner.assignments.get(ResourceRef.from_dict(p['former_supervisor_ref']))
  require(assignment.ref.to_dict()==p['manager_ref']and assignment.generation==p['generation']
@@ -184,7 +184,7 @@ def apply(owner,*,due_port,immutable_plan,execution_factory,fail_before_report=F
    current_assignment_revision=p['former_supervisor_ref']['revision'],current_assignment_generation=p['former_supervisor_generation'],
    target_assignment_ref=supervisor.ref,target_assignment_revision=supervisor.revision,target_assignment_generation=supervisor.generation,
    overlap_acknowledged=True)
-  project=owner.graph.get(ResourceRef(owner.store.authority,'work.project',PROJECT))
+  project=owner.graph.current(ResourceRef(owner.store.authority,'work.project',PROJECT))
   binding={'principal':actor.actor,'assignment_ref':supervisor.ref.to_dict(),'generation':supervisor.generation,
    'conversation_ref':p['conversation_ref'],'project_ref':project.ref.to_dict()}
   limits=LimitService(owner.store);pools={}
@@ -248,7 +248,7 @@ def apply(owner,*,due_port,immutable_plan,execution_factory,fail_before_report=F
   require(due_port.read_due(original['schedule_id'])==original,'original UNKNOWN/Due changed during handoff')
   require(owner.assignments.get(root.ref).payload==root.payload and owner.assignments.get(former.ref).payload==former.payload,
    'Root13 or unrelated former Claude responsibility changed')
-  require(owner.graph.get(project.ref).payload['tasks']==p['task_refs'],'original W0 task identities changed')
+  require(owner.graph.current(project.ref).payload['tasks']==p['task_refs'],'original W0 task identities changed')
   for observed in p['allowance_snapshot']['pool_snapshots']:
    pool=original_limits.get_pool(ResourceRef.from_dict(observed['ref']))
    require(all(json_value(getattr(pool,key))==value for key,value in observed.items()),'migration changed original pools or reservations')

@@ -1590,7 +1590,7 @@ class _AmendmentOwnerEngine:
         self._task = current.scope
 
     def _views(self) -> dict[str, JSONValue]:
-        fresh_project = self._sheet.graph.get(self._project)
+        fresh_project = self._sheet.graph.current(self._project)
         fresh_assignment = self._assignments.get(self._assignment)
         fresh_sheet = self._sheet.export(fresh_project, task_refs=[self._task])
         usage_budget = fresh_project.payload.get("metadata", {}).get("ott04_usage_budget", {})

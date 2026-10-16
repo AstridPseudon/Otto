@@ -67,7 +67,7 @@ class RootDirectionAuthoring:
             payload_matches={('metadata','otto_orchestrator','assignment_ref','id'): root.ref.id})
         projects = []
         for ref in refs:
-            project = self.owner.graph.get(ref)
+            project = self.owner.graph.current(ref)
             relation = project.payload['metadata']['otto_orchestrator']
             if relation['assignment_ref'] != root.ref.to_dict() or relation['generation'] != root.generation:
                 raise PermissionError('current project supervision join changed')

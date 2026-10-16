@@ -60,7 +60,7 @@ class TaskMetadataWriterTests(unittest.TestCase):
 
     def test_create_stores_a_valid_plan(self):
         task = self._task("C1", metadata_namespaces={PLAN_NAMESPACE: GOOD_PLAN})
-        self.assertEqual(self.graph.get(task.ref).payload["metadata_namespaces"], {PLAN_NAMESPACE: GOOD_PLAN})
+        self.assertEqual(self.graph.current(task.ref).payload["metadata_namespaces"], {PLAN_NAMESPACE: GOOD_PLAN})
 
     def test_create_refuses_bad_plans_before_any_record(self):
         counts = self._counts()
@@ -77,7 +77,7 @@ class TaskMetadataWriterTests(unittest.TestCase):
         with self.assertRaises(WorkValidationError):
             self.graph.revise(task, metadata_namespaces={PLAN_NAMESPACE: {"route": "fast"}})
         self.assertEqual(self._counts(), counts)
-        unchanged = self.graph.get(task.ref)
+        unchanged = self.graph.current(task.ref)
         self.assertEqual(unchanged.revision, task.revision)
         self.assertEqual(unchanged.payload["metadata_namespaces"], {PLAN_NAMESPACE: GOOD_PLAN})
 
@@ -152,7 +152,7 @@ class TaskMetadataWriterTests(unittest.TestCase):
         self.batches.apply_project_sheet(self.project, _sheet("RB1", plan, title="Readback"),
                                          logical_request_key="readback-plan")
         (listed,) = self._tasks()
-        self.assertEqual(self.graph.get(listed.ref).payload["metadata_namespaces"], {PLAN_NAMESPACE: plan})
+        self.assertEqual(self.graph.current(listed.ref).payload["metadata_namespaces"], {PLAN_NAMESPACE: plan})
         self.assertEqual(listed.payload["metadata_namespaces"], {PLAN_NAMESPACE: plan})
         view = ProjectSheet(self.store).export(self.project)
         (exported,) = view["tasks"]
@@ -161,7 +161,7 @@ class TaskMetadataWriterTests(unittest.TestCase):
     def test_task_saved_without_metadata_still_reads(self):
         task = self._task("OLD1")
         self.assertNotIn("metadata_namespaces", task.payload)
-        read = self.graph.get(task.ref)
+        read = self.graph.current(task.ref)
         self.assertEqual((read.kind, read.lifecycle.value, read.title), (WorkKind.TASK, "pending", "Plan OLD1"))
         self.assertEqual([item.id for item in self._tasks()], [task.id])
 
