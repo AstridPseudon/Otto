@@ -10,7 +10,7 @@ from typing import Protocol
 from .rules import CHECK, DONE, TASK, FeedbackLedger, ToolRuleError, ToolSpec
 from .tokens import TokenBook, TokenError
 
-__all__ = ["OwnerPort", "ToolFacade"]
+__all__ = ["AllowlistedPort", "OwnerPort", "ToolFacade"]
 
 _STRIPPED_KEYS = frozenset({"accepted", "acceptance", "counts_as_acceptance"})
 _MAX_DEPTH = 32
@@ -21,6 +21,19 @@ class OwnerPort(Protocol):
 
     def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
         ...
+
+
+class AllowlistedPort:
+    """An owner port that forwards only the operations the owner has already put on its allowlist."""
+
+    def __init__(self, inner: OwnerPort, allowed: Sequence[str]) -> None:
+        self._inner = inner
+        self._allowed = frozenset(allowed)
+
+    def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
+        if operation not in self._allowed:
+            raise PermissionError("operation is not on the owner allowlist")
+        return self._inner.call(operation, assignment, args, feedback=feedback)
 
 
 def _refusal(code: str, detail: str) -> dict:

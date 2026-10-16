@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -21,6 +22,8 @@ MAX_STREAM = 2 * 1024 * 1024
 # Agent/Task and web tools are not in this list, so no provider-native child is ever admitted. MCP is
 # opt-in per turn and only through a caller-supplied McpGrant.
 BUILTIN_TOOLS = ('Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write')
+# The file tools a worker gets on every host (no Bash: a worker runs no commands of its own).
+WORKER_BUILTIN_TOOLS = ('Edit', 'Glob', 'Grep', 'Read', 'Write')
 EFFORTS = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
 PROTECTED_NAMES = ('.git', '.agents', '.codex', '.aws', '.claude')
 STRICT_EMPTY_MCP = ('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}')
@@ -66,20 +69,32 @@ def mcp_tool_names(grant: McpGrant) -> tuple:
 
 # -- the OS write fence ------------------------------------------------------------------------------
 def sandbox_policy(workspace: str, state_root: str, *, allow_subprocesses: bool = False,
-                   extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None) -> str:
+                   extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None,
+                   exec_allow: Sequence[str] = ()) -> str:
     """A Read/Write leaf may write its workspace and host state root, never its protected directories.
 
     A manager profile runs commands: its children inherit this same write fence, so only process
-    creation is relaxed, never file writes.
+    creation is relaxed, never file writes. ``exec_allow`` lets a leaf fork and exec exactly the listed
+    absolute binaries (its one MCP server) and nothing else; it has no effect when subprocesses are allowed.
     """
     quote = json.dumps
-    policy = ('(version 1)(allow default)(deny file-write*)'
-              + ('' if allow_subprocesses else '(deny process-fork)(deny process-exec)')
+    exec_allow = tuple(exec_allow)
+    for path in exec_allow:
+        if not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path:
+            raise ClaudeBindingError("exec_allow entries must be absolute paths")
+    leaf_exec = bool(exec_allow) and not allow_subprocesses
+    if leaf_exec:
+        spawn = '(deny process-exec)(allow process-fork)'
+    else:
+        spawn = '' if allow_subprocesses else '(deny process-fork)(deny process-exec)'
+    policy = ('(version 1)(allow default)(deny file-write*)' + spawn
               + ''.join('(allow file-write* (subpath ' + quote(root) + '))'
                         for root in (workspace, state_root, *extra_write_roots))
               + '(allow file-write* (literal "/dev/null"))'
               + ''.join('(deny file-write* (subpath ' + quote(str(Path(workspace) / name)) + '))'
                         for name in PROTECTED_NAMES))
+    if leaf_exec:
+        policy += ''.join('(allow process-exec (literal ' + quote(path) + '))' for path in exec_allow)
     if auth_lock:
         policy += (('' if allow_subprocesses else
                     '(allow process-fork)(allow process-exec (literal "/usr/bin/security"))')
@@ -103,15 +118,20 @@ class SandboxFence:
     flags: tuple = ()
 
     def __init__(self, workspace: str, state_root: str, *, allow_subprocesses: bool = False,
-                 extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None) -> None:
+                 extra_write_roots: Sequence[str] = (), auth_lock: Optional[str] = None,
+                 exec_allow: Sequence[str] = ()) -> None:
         if type(allow_subprocesses) is not bool:
             raise ClaudeBindingError('allow_subprocesses must be explicit')
         self.workspace = workspace
         self.policy = sandbox_policy(workspace, state_root, allow_subprocesses=allow_subprocesses,
-                                     extra_write_roots=tuple(extra_write_roots), auth_lock=auth_lock)
+                                     extra_write_roots=tuple(extra_write_roots), auth_lock=auth_lock,
+                                     exec_allow=tuple(exec_allow))
         self.pin = {"kind": self.kind, "workspace": workspace, "state_root": state_root,
                     "subprocesses": allow_subprocesses, "extra_write_roots": list(extra_write_roots),
                     "policy_sha256": hashlib.sha256(self.policy.encode()).hexdigest()}
+        if exec_allow:
+            # Pins without an exec allowance stay byte-identical; only a granted server adds the key.
+            self.pin["exec_allow"] = list(exec_allow)
 
     def wrap(self, argv: Sequence[str], *, initializer: bool = False) -> list:
         return sandbox_wrap(self.policy, self.workspace, argv, initializer=initializer)
@@ -304,7 +324,7 @@ class ClaudeHost(HostKind):
     kind = "claude-code"
     profiles = frozenset({"workspace-write"})
     option_names = frozenset({"tools", "allowed_tools", "max_turns", "state_root", "allow_subprocesses",
-                              "extra_write_roots", "auth_lock"})
+                              "extra_write_roots", "auth_lock", "exec_allow"})
 
     @staticmethod
     def tools_for(spec: TurnSpec) -> tuple:
@@ -322,7 +342,8 @@ class ClaudeHost(HostKind):
         return SandboxFence(spec.workspace, spec.options["state_root"],
                             allow_subprocesses=spec.options.get("allow_subprocesses", False),
                             extra_write_roots=tuple(spec.options.get("extra_write_roots", ())),
-                            auth_lock=spec.options.get("auth_lock"))
+                            auth_lock=spec.options.get("auth_lock"),
+                            exec_allow=tuple(spec.options.get("exec_allow", ())))
 
     def render_mcp(self, grant: McpGrant, spec: TurnSpec) -> tuple:
         if grant.empty or spec.initializer:
