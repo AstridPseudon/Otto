@@ -65,7 +65,8 @@ class LandingService:
                 "run_id": record["run_id"], "commit": record["commit"],
                 "exit_code": record["exit_code"], "outcome": record["outcome"]}
 
-    def done(self, lab_name: str, task_id: str, *, candidate: Any = None,
+    def done(self, lab_name: str, task_id: str, *, assignment_id: str | None = None,
+             candidate: Any = None,
              criterion: Any = None, parent_obligation: Any = None, actor: Any = None,
              gate_refs: Sequence[Any] = ()) -> dict[str, Any]:
         """Checkpoint, rebase, verify, assess and atomically advance the line."""
@@ -74,7 +75,8 @@ class LandingService:
                 or self.completion_blockers is None
                 or self.completion_gate is None):
             raise LandingError("assessment, criterion lookup, completion blockers and completion gate are required")
-        self._require_current_criterion(criterion)
+        if criterion is not None:
+            self._require_current_criterion(criterion)
         lab = self.lab_lookup(lab_name)
         repo = Path(self.fleet.repo)
         # Serialize the line worktree and branch update across landing services/processes.
@@ -90,7 +92,7 @@ class LandingService:
             prepared = self._prepare(lab_name, task_id, task, lab, repo, base)
         with _exclusive_lock(lock_path), self._lab_lock(lab_name):
             result = self._accept_and_advance(lab_name, task_id, lab, repo, base, prepared,
-                                              candidate, criterion, parent_obligation, actor,
+                                              assignment_id, candidate, criterion, parent_obligation, actor,
                                               tuple(gate_refs))
         cleanup_pending = False
         try:
@@ -141,7 +143,7 @@ class LandingService:
         return current_task, record, tuple(gate_records)
 
     def _accept_and_advance(self, lab_name: str, task_id: str, lab: Any, repo: Path, old_line: str,
-                            prepared: tuple, candidate: Any, criterion: Any, parent: Any,
+                            prepared: tuple, assignment_id: str | None, candidate: Any, criterion: Any, parent: Any,
                             actor: Any, gate_refs: Sequence[Any]) -> dict[str, Any]:
         task, record, gate_records = prepared
         self._assert_line_clean(repo)
@@ -149,40 +151,61 @@ class LandingService:
             raise LandingError("line advanced during landing; lab returned to worker")
         if lab.head() != record["commit"] or lab.dirty():
             raise LandingError("lab changed after its verified check; refusing acceptance")
-        self._require_current_criterion(criterion)
         context = self.assessment_context(record, task, candidate=candidate, criterion=criterion,
                                           parent_obligation=parent, actor=actor,
-                                          gate_refs=tuple(gate_refs), gate_records=tuple(gate_records))
+                                          assignment_id=assignment_id, gate_refs=tuple(gate_refs),
+                                          gate_records=tuple(gate_records))
         if not isinstance(context, Mapping):
             raise LandingError("assessment context did not provide the admitted scope, input and pool")
-        result = self.assessment.assess(
-            context["scope"], candidate=candidate, criterion=criterion,
-            input_packet=context["input_packet"], verdict="PASS",
-            protocol_result={
-                "runner": _runner_identity(record),
-                "gate_runners": [_runner_identity(gate_record) for gate_record in gate_records],
-            },
-            limit_pool=context["limit_pool"], actor=actor,
-            **dict(context.get("assess_kwargs", {})))
-        if (getattr(result, "verdict", None) != "PASS"
-                and getattr(getattr(result, "verdict", None), "value", None) != "PASS"):
-            raise LandingError("assessment did not record PASS for the verified runner result")
-        runner_identity = result.protocol_result.get("runner") if isinstance(result.protocol_result, Mapping) else None
-        if not isinstance(runner_identity, Mapping) or any(
-                runner_identity.get(key) != record.get(key)
-                for key in ("run_id", "commit", "binding", "argv", "cwd", "exit_code")):
-            raise LandingError("assessment result is not linked to the verified runner record")
-        decision = self.assessment.accept(
-            result.ref, candidate=candidate, criterion=criterion,
-            rationale="Admitted task check passed on rebased commit " + record["commit"], actor=actor)
-        if (getattr(decision, "result_ref", None) != result.ref
-                or getattr(decision, "disposition", None) not in {"accept", "accept-with-risk"}):
-            raise LandingError("assessment did not accept the exact passing result")
-        result_ref_json = _json_ref(result.ref)
-        decision_ref_json = _json_ref(decision.ref)
-        decision_gates = tuple(gate_refs) + (decision.ref,)
+        # Owner adapters may resolve identity pins only after the lab commit and
+        # its sealed check result are known.  Caller pins remain a compatibility
+        # input for existing injected services; the Otto owner adapter always
+        # returns these four trusted values itself.
+        candidate = context.get("candidate", candidate)
+        criterion = context.get("criterion", criterion)
+        parent = context.get("parent_obligation", parent)
+        actor = context.get("actor", actor)
+        assessment = context.get("assessment", self.assessment)
+        criteria = tuple(context.get("criteria", (criterion,)))
+        if not criteria or len(set(criteria)) != len(criteria):
+            raise LandingError("owner assessment criteria must be a nonempty distinct pinned set")
+        results, decisions = [], []
+        for selected in criteria:
+            self._require_current_criterion(selected)
+            assess_kwargs = dict(context.get("assess_kwargs", {}))
+            request_key = assess_kwargs.get("logical_request_key")
+            if isinstance(request_key, str) and len(criteria) > 1:
+                assess_kwargs["logical_request_key"] = request_key + ":criterion:" + str(getattr(selected, "id", ""))
+            result = assessment.assess(
+                context["scope"], candidate=candidate, criterion=selected,
+                input_packet=context["input_packet"], verdict="PASS",
+                protocol_result={
+                    "runner": _runner_identity(record),
+                    "gate_runners": [_runner_identity(gate_record) for gate_record in gate_records],
+                },
+                limit_pool=context["limit_pool"], actor=actor,
+                **assess_kwargs)
+            if (getattr(result, "verdict", None) != "PASS"
+                    and getattr(getattr(result, "verdict", None), "value", None) != "PASS"):
+                raise LandingError("assessment did not record PASS for the verified runner result")
+            runner_identity = result.protocol_result.get("runner") if isinstance(result.protocol_result, Mapping) else None
+            if not isinstance(runner_identity, Mapping) or any(
+                    runner_identity.get(key) != record.get(key)
+                    for key in ("run_id", "commit", "binding", "argv", "cwd", "exit_code")):
+                raise LandingError("assessment result is not linked to the verified runner record")
+            decision = assessment.accept(
+                result.ref, candidate=candidate, criterion=selected,
+                rationale="Admitted task check passed on rebased commit " + record["commit"], actor=actor)
+            if (getattr(decision, "result_ref", None) != result.ref
+                    or getattr(decision, "disposition", None) not in {"accept", "accept-with-risk"}):
+                raise LandingError("assessment did not accept the exact passing result")
+            results.append(result)
+            decisions.append(decision)
+        result_ref_json = [_json_ref(result.ref) for result in results]
+        decision_ref_json = [_json_ref(decision.ref) for decision in decisions]
+        decision_gates = tuple(gate_refs) + tuple(decision.ref for decision in decisions)
         blockers = self.completion_blockers(parent, candidate=candidate, gate_refs=decision_gates, actor=actor)
-        if not _clear_blockers(blockers, decision.ref):
+        if not _clear_blockers(blockers, tuple(decision.ref for decision in decisions)):
             raise LandingError("completion blockers remain")
         gate = self.completion_gate(parent, candidate=candidate, gate_refs=decision_gates, actor=actor)
         if not _clear_gate(gate):
@@ -196,8 +219,11 @@ class LandingService:
         if self._git(repo, "rev-parse", "HEAD").strip() != rebased:
             raise LandingError("line checkout did not advance to the verified lab commit")
         return {"ok": True, "landed": True, "task": task_id, "commit": rebased,
-                "runner_run_id": record["run_id"], "assessment_result": result_ref_json,
-                "acceptance": decision_ref_json}
+                "runner_run_id": record["run_id"],
+                "assessment_results": result_ref_json,
+                "acceptances": decision_ref_json,
+                "assessment_result": result_ref_json[0] if len(results) == 1 else result_ref_json,
+                "acceptance": decision_ref_json[0] if len(decisions) == 1 else decision_ref_json}
 
     def _checkpoint(self, lab: Any, name: str) -> None:
         # LabFleet owns the checkpoint callback and verification. Match park's path discovery but
@@ -366,7 +392,9 @@ def _clear_blockers(value: Any, decision_ref: Any) -> bool:
         accepted = value.get("accepted_decision_refs")
         if not isinstance(accepted, (list, tuple)):
             return False
-        return any(_ref_identity(ref) == _ref_identity(decision_ref) for ref in accepted)
+        decisions = decision_ref if isinstance(decision_ref, (tuple, list)) else (decision_ref,)
+        return all(any(_ref_identity(ref) == _ref_identity(decision) for ref in accepted)
+                   for decision in decisions)
     return value.get("required") is False
 
 

@@ -228,6 +228,8 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             "dispositions": {name: {"status": "qualified", "rationale": "Isolated fixture with no publication, remote or scheduled runtime obligation"}
                              for name in ("acceptance", "publication", "remote", "runtime")}}))
         self.assertEqual(closed["outcome"], "completed", closed)
+
+
         self.assertEqual(closed["readback"]["lifecycle"], "completed")
         self.assertEqual(len(application.provider.calls), 4, "anchor, worker, result inspection and terminal continuation")
         progress = lambda rows: [row for row in rows if row["value"].get("schema") == "otto.manager-progress.v1"]
@@ -900,6 +902,111 @@ class TaskSettlementDrainBoundaryTests(unittest.TestCase):
         self.assertEqual(service._retain_task_settlement(app),
             {"outcome": "admitted", "schedule_id": "exact-prepared-callback"})
 
+class ManagerJourneyWorkerWorkspaceTests(unittest.TestCase):
+    """Small direct checks that do not depend on an installed controller fixture."""
+
+    def _service(self, *, due=None, resolved=None, tracked_worker=False):
+        project, lab, run = Path("/owner/project"), Path("/owner/labs/J01"), Path("/owner/run")
+        observed = []
+
+        def execution(**options):
+            observed.append(options)
+            adapter = SimpleNamespace(worktree=options.get("workspace", project), source=run)
+            runtime = SimpleNamespace(adapter=adapter, native_result_verifier=object(), acceptance_readiness=None)
+            return SimpleNamespace(runtime=runtime)
+
+        due_port = SimpleNamespace(read_due=lambda schedule_id: due if due and due.get("schedule_id") == schedule_id else None)
+        owner = SimpleNamespace(owner_actor=SimpleNamespace(actor="owner"),
+            role_runtime=lambda **_kwargs: SimpleNamespace(acceptance_readiness="trusted"))
+        workers = {"J01": {"schedule_id": "worker-schedule", "principal": "worker"}} if tracked_worker else {}
+        server = SimpleNamespace(_execution=execution, state={"manager": "owner-manager", "workers": workers}, due_port=due_port,
+            owner=owner, worker_context_provider=lambda exact_due: resolved)
+        service = object.__new__(ManagerJourneyService)
+        service.server, service._host_execution = server, execution
+        service.workspace, service.run_path = project, run
+        service.commands, service.adapter_selection = SimpleNamespace(policy=None), None
+        return service, observed, lab
+
+    def test_worker_execution_uses_owner_supplied_lab_context(self):
+        service, observed, lab = self._service()
+        service._execution(principal="worker", model="fixture", reasoning="low", evidence_id="preflight",
+            _worker_context={"workspace": str(lab)}, project_ref={"id": "project"}, task_ref={"id": "J01"})
+        self.assertEqual(Path(observed[0]["workspace"]), lab)
+        self.assertEqual(Path(observed[0]["workspace"]), Path("/owner/labs/J01"))
+
+    def test_retained_worker_execution_resolves_lab_from_exact_due(self):
+        due = {"schedule_id": "worker-schedule", "role": "worker", "recipient": "worker",
+               "assignment_ref": {"id": "assignment-J01"}}
+        service, observed, lab = self._service(due=due, resolved={"workspace": "/owner/labs/J01"})
+        service._execution(principal="worker", model="fixture", reasoning="low", evidence_id="worker-schedule")
+        self.assertEqual(Path(observed[0]["workspace"]), lab)
+
+    def test_retained_worker_due_for_another_recipient_is_rejected(self):
+        due = {"schedule_id": "worker-schedule", "role": "worker", "recipient": "someone-else",
+               "assignment_ref": {"id": "assignment-J01"}}
+        service, observed, _lab = self._service(due=due, resolved={"workspace": "/owner/labs/J01"})
+        with self.assertRaisesRegex(PermissionError, "exact recipient and assignment"):
+            service._execution(principal="worker", model="fixture", reasoning="low", evidence_id="worker-schedule")
+        self.assertEqual(observed, [])
+
+    def test_tracked_worker_without_exact_due_cannot_fall_back_to_project(self):
+        service, observed, _lab = self._service(tracked_worker=True)
+        with self.assertRaisesRegex(PermissionError, "no exact worker Due"):
+            service._execution(principal="worker", model="fixture", reasoning="low", evidence_id="worker-schedule")
+        self.assertEqual(observed, [])
+
+    def test_execution_control_uses_worker_schedule_as_execution_binding(self):
+        due = {"schedule_id": "worker-schedule", "role": "worker", "recipient": "worker",
+               "project_ref": {"id": "project"}, "requested_model": "fixture", "requested_reasoning": "low",
+               "target": {"launch_request": {"selection": {"identity": "pinned"}}}}
+        service, _observed, _lab = self._service(due=due, tracked_worker=True)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        service.server.state.update(project_ref={"id": "project"})
+        captured = []
+        app = SimpleNamespace(_read=lambda _schedule: SimpleNamespace())
+        service._execution = lambda **options: (captured.append(options) or app)
+        service._execution_control({"command": "execution-control", "operation": "read",
+                                    "schedule_id": "worker-schedule"})
+        self.assertEqual(captured[0]["evidence_id"], "worker-schedule")
+
+    def test_startup_recovery_routes_worker_due_to_its_own_lab_app(self):
+        due = {"schedule_id": "worker-schedule", "role": "worker", "recipient": "worker",
+               "requested_model": "fixture", "requested_reasoning": "low",
+               "target": {"launch_request": {"selection": {"identity": "pinned"}}}}
+        service, _observed, _lab = self._service(due=due, tracked_worker=True)
+        service.server.state["reminder_schedule_ids"] = []
+        service._reminder_ids = lambda: ()
+        captured = []
+        worker_app = SimpleNamespace(recovery_status=lambda **_kw: {"state": "prepared"},
+                                     recover=lambda **_kw: {"outcome": "prepared"})
+        service._execution = lambda **options: (captured.append(options) or worker_app)
+        manager_app = SimpleNamespace(recover_startup=lambda **kw: {
+            "schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled",
+            "occurrences": [], "schedule_ids": kw["schedule_ids"]})
+        result = service._startup_recovery(manager_app, ["worker-schedule"], execute=False)
+        self.assertEqual(captured[0]["evidence_id"], "worker-schedule")
+        self.assertEqual(result["schedule_ids"], [])
+        self.assertEqual(result["occurrences"][0]["schedule_id"], "worker-schedule")
+
+    def test_startup_seed_worker_uses_exact_schedule_when_manager_pin_is_absent(self):
+        due = {"schedule_id": "worker-schedule", "role": "worker", "recipient": "worker",
+               "project_ref": {"id": "project"}, "requested_model": "fixture", "requested_reasoning": "low",
+               "target": {"launch_request": {}}}
+        service, _observed, _lab = self._service(due=due, tracked_worker=True)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        service.server.state.update(project_ref={"id": "project"})
+        service.server.state.pop("manager")
+        service.server.state["reminder_schedule_ids"] = []
+        service._reminder_ids = lambda: ()
+        captured = []
+        worker_app = SimpleNamespace(
+            recover_startup=lambda **_kw: {"schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled",
+                                           "occurrences": []},
+            recovery_status=lambda **_kw: {"state": "prepared"},
+            recover=lambda **_kw: {"outcome": "prepared"})
+        service._execution = lambda **options: (captured.append(options) or worker_app)
+        service._execution_control({"command": "execution-control", "operation": "startup"})
+        self.assertEqual(captured[0]["evidence_id"], "worker-schedule")
 
 if __name__ == "__main__":
     unittest.main()

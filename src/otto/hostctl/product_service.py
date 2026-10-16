@@ -358,6 +358,122 @@ class OwnerFleetRegistry:
         with self._lock:
             return self._resolve_assignment_context(assignment_id, token)
 
+    def assignment_lookup(self, assignment_id: str, token: Any = None) -> dict[str, Any]:
+        """Resolve exact assignment/task/project pins without constructing a fleet pair."""
+        with self._lock:
+            record = self._record_for_assignment(assignment_id)
+            if token is not None:
+                grant = self.tokens.resolve(token)
+                if grant.assignment != assignment_id or record.token != token:
+                    raise PermissionError("worker token does not belong to this assignment")
+            task_id = self._task_id(record.task)
+            task_ref = getattr(getattr(record, "task", None), "ref", None)
+            authority = getattr(task_ref, "authority", None) or self.config["store"]["authority"]
+            from herzchen.contracts import ResourceRef
+            current = self.owner.graph.current(ResourceRef(authority, "work.task", task_id))
+            from herzchen.domains.work.admission import admitted_revision
+            admitted = admitted_revision(current.payload)
+            if admitted != record.admitted_revision:
+                raise LookupError("task admission no longer matches the dispatch record")
+            project_ref = current.payload.get("project_ref") if isinstance(current.payload, Mapping) else None
+            if not isinstance(project_ref, Mapping):
+                raise LookupError("admitted task has no exact project reference")
+            assignment = self.owner.assignments.get(ResourceRef(authority, "wrk.assignment", assignment_id))
+            if (assignment.role != "executor"
+                    or (assignment.scope.authority, assignment.scope.kind, assignment.scope.id) !=
+                       (current.ref.authority, current.ref.kind, current.ref.id)):
+                raise PermissionError("dispatch record assignment does not own its admitted task")
+            views = self.views_provider()
+            view = views.get(project_ref.get("id")) if isinstance(views, Mapping) else None
+            return {"record": record, "assignment_id": record.assignment, "task": current, "task_id": task_id,
+                    "admitted_revision": admitted, "assignment_ref": assignment.ref.to_dict(),
+                    "generation": assignment.generation, "task_ref": current.ref.to_dict(),
+                    "project_ref": project_ref, "view": view,
+                    "project_state": getattr(getattr(view, "server", None), "state", None)}
+
+    def prepare_worker_lab(self, project_ref: Any, task_ref: Any) -> dict[str, Any]:
+        """Prepare the lab from the owner's current admitted task plan.
+
+        This is called before assignment creation so the worker adapter can be
+        constructed with its only writable workspace. The task pin is checked
+        against the project view and the current admission; no launch request
+        field participates in repository, branch, lab, or assessment selection.
+        """
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.admission import admitted_revision
+        project = ResourceRef.from_dict(project_ref) if isinstance(project_ref, Mapping) else project_ref
+        task = ResourceRef.from_dict(task_ref) if isinstance(task_ref, Mapping) else task_ref
+        if not isinstance(project, ResourceRef) or not isinstance(task, ResourceRef):
+            raise PermissionError("worker lab requires exact owner project and task references")
+        current = self.owner.graph.current(ResourceRef(task.authority, "work.task", task.id))
+        if current.ref.to_dict() != task.to_dict():
+            raise PermissionError("worker task reference is stale")
+        payload = current.payload
+        task_project = payload.get("project_ref") if isinstance(payload, Mapping) else None
+        if not isinstance(task_project, Mapping) or ResourceRef.from_dict(task_project) != project:
+            raise PermissionError("worker task does not belong to the requested project")
+        admitted = admitted_revision(payload)
+        if not isinstance(admitted, str) or admitted != current.ref.revision:
+            raise PermissionError("worker task has no current admitted revision")
+        metadata = payload.get("metadata_namespaces") if isinstance(payload, Mapping) else None
+        plan = metadata.get("otto.plan") if isinstance(metadata, Mapping) else None
+        if not isinstance(plan, Mapping):
+            raise LookupError("task plan metadata is missing otto.plan")
+        repo_name, branch = plan.get("repo"), plan.get("branch")
+        for key, value in (("repo", repo_name), ("branch", branch)):
+            if not isinstance(value, str) or not value.strip():
+                raise LookupError("task plan is missing otto.plan." + key)
+        repositories = self.config.get("repositories")
+        if not isinstance(repositories, Mapping) or repo_name not in repositories:
+            raise LookupError("unknown repo: " + repo_name)
+        repo = Path(repositories[repo_name]).resolve()
+        if not repo.is_dir():
+            raise LookupError("repo " + repo_name + " checkout does not exist")
+        check = subprocess.run(["git", "-C", str(repo), "check-ref-format", "--branch", branch],
+                               capture_output=True, text=True)
+        exists = subprocess.run(["git", "-C", str(repo), "show-ref", "--verify", "--quiet",
+                                 "refs/heads/" + branch])
+        if check.returncode != 0 or exists.returncode != 0:
+            raise LookupError("repo " + repo_name + " has no valid branch " + branch)
+        pair_key = (repo_name, branch)
+        with self._pair_lock:
+            fleet, landing = self._pair(pair_key, repo, branch)
+            lab_name = task.id
+            lab = (fleet.get(lab_name) if lab_name in fleet.names()
+                   else fleet.create(lab_name, base="refs/heads/" + branch))
+        return {"task_id": task.id, "admitted_revision": admitted, "repo_name": repo_name,
+                "repo_path": str(repo), "branch": branch, "line_ref": "refs/heads/" + branch,
+                "lab_name": lab_name, "lab": lab, "workspace": str(lab.path),
+                "fleet": fleet, "landing": landing, "service": landing}
+
+    def worker_context_for_due(self, due: Any) -> dict[str, Any]:
+        """Resolve and validate the exact owner Due before returning its lab."""
+        grant = self.grant_for_due(due)
+        assignment = due.get("assignment_ref") if isinstance(due, Mapping) else getattr(due, "assignment_ref", None)
+        assignment_id = assignment.get("id") if isinstance(assignment, Mapping) else getattr(assignment, "id", None)
+        if not isinstance(assignment_id, str) or not assignment_id:
+            raise PermissionError("worker Due has no assignment identity")
+        return self.assignment_context(assignment_id, token=grant.token)
+
+    def _pair(self, key: tuple[str, str], repo: Path, branch: str) -> tuple[Any, Any]:
+        pair = self._pairs.get(key)
+        if pair is not None:
+            return pair
+        from herzchen.fleet.labs import LabFleet
+        branch_key = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:20]
+        labs_root = repo.parent / (repo.name + ".otto-labs") / branch_key
+        fleet = LabFleet(repo, labs_root, checkpoint=self.checkpoint)
+        factory = self.landing_factory
+        if factory is None:
+            from .fleet_landing import make_landing_service
+            factory = make_landing_service
+        landing = factory(fleet=fleet, result_store=self.result_store, runner=self.runner,
+                          repo_name=key[0], repo_path=repo, branch=branch, owner=self.owner,
+                          views_provider=self.views_provider, assignment_lookup=self.assignment_lookup)
+        pair = (fleet, landing)
+        self._pairs[key] = pair
+        return pair
+
     def _resolve_assignment_context(self, assignment_id: str, token: Any = None) -> dict[str, Any]:
         record = self._record_for_assignment(assignment_id)
         if token is not None:
@@ -370,6 +486,15 @@ class OwnerFleetRegistry:
         from herzchen.contracts import ResourceRef
         current = self.owner.graph.current(ResourceRef(authority, "work.task", task_id))
         payload = current.payload
+        project_ref = payload.get("project_ref") if isinstance(payload, Mapping) else None
+        if not isinstance(project_ref, Mapping):
+            raise LookupError("admitted task has no exact project reference")
+        from herzchen.contracts import ResourceRef
+        assignment = self.owner.assignments.get(ResourceRef(authority, "wrk.assignment", assignment_id))
+        if (assignment.role != "executor"
+                or (assignment.scope.authority, assignment.scope.kind, assignment.scope.id) !=
+                   (current.ref.authority, current.ref.kind, current.ref.id)):
+            raise PermissionError("dispatch record assignment does not own its admitted task")
         from herzchen.domains.work.admission import admitted_revision
         admitted = admitted_revision(payload)
         if admitted != record.admitted_revision:
@@ -390,36 +515,27 @@ class OwnerFleetRegistry:
             raise LookupError("repo " + repo_name + " has no local checkout path")
         key = (repo_name, branch)
         with self._pair_lock:
-            pair = self._pairs.get(key)
-            if pair is None:
-                repo = Path(repo_path).resolve()
-                if not repo.is_dir():
-                    raise LookupError("repo " + repo_name + " checkout does not exist")
-                check = subprocess.run(["git", "-C", str(repo), "check-ref-format", "--branch", branch],
-                                       capture_output=True, text=True)
-                exists = subprocess.run(["git", "-C", str(repo), "show-ref", "--verify", "--quiet",
-                                         "refs/heads/" + branch])
-                if check.returncode != 0 or exists.returncode != 0:
-                    raise LookupError("repo " + repo_name + " has no valid branch " + branch)
-                # Put labs beside the line checkout, never inside its worktree.
-                branch_key = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:20]
-                labs_root = repo.parent / (repo.name + ".otto-labs") / branch_key
-                fleet = LabFleet(repo, labs_root, checkpoint=self.checkpoint)
-                factory = self.landing_factory
-                if factory is None:
-                    from .fleet_landing import make_landing_service
-                    factory = make_landing_service
-                landing = factory(fleet=fleet, result_store=self.result_store,
-                                  runner=self.runner, repo_name=repo_name, repo_path=repo,
-                                  branch=branch, owner=self.owner,
-                                  views_provider=self.views_provider)
-                pair = (fleet, landing)
-                self._pairs[key] = pair
+            repo = Path(repo_path).resolve()
+            if not repo.is_dir():
+                raise LookupError("repo " + repo_name + " checkout does not exist")
+            check = subprocess.run(["git", "-C", str(repo), "check-ref-format", "--branch", branch],
+                                   capture_output=True, text=True)
+            exists = subprocess.run(["git", "-C", str(repo), "show-ref", "--verify", "--quiet",
+                                     "refs/heads/" + branch])
+            if check.returncode != 0 or exists.returncode != 0:
+                raise LookupError("repo " + repo_name + " has no valid branch " + branch)
+            pair = self._pair(key, repo, branch)
         fleet, landing = pair
-        return {"record": record, "task": current, "task_id": task_id,
+        if task_id not in fleet.names():
+            raise LookupError("dispatch assignment has no prepared task lab")
+        lab = fleet.get(task_id)
+        trusted = self.assignment_lookup(assignment_id, token=token)
+        return {"record": record, "assignment_id": record.assignment, "task": current, "task_id": task_id,
                 "admitted_revision": admitted, "repo_name": repo_name, "repo_path": str(repo_path),
                 "branch": branch, "line_ref": "refs/heads/" + branch, "lab_name": task_id,
-                "fleet": fleet, "landing": landing, "service": landing}
+                "lab": lab, "workspace": str(lab.path),
+                "fleet": fleet, "landing": landing, "service": landing,
+                **{key: trusted[key] for key in ("assignment_ref", "generation", "task_ref", "project_ref", "view", "project_state")}}
 
     def grant_for_due(self, due: Any) -> Any:
         """Resolve a worker Due to the token held by its live dispatch record."""
@@ -433,13 +549,48 @@ class OwnerFleetRegistry:
             assignment_id = assignment.get("id") if isinstance(assignment, Mapping) else None
         if not isinstance(assignment_id, str) or not assignment_id:
             raise PermissionError("worker Due has no assignment identity")
+        assignment_ref = due.get("assignment_ref") if isinstance(due, Mapping) else getattr(due, "assignment_ref", None)
+        assignment_ref = (assignment_ref if isinstance(assignment_ref, Mapping) else
+                          assignment_ref.to_dict() if callable(getattr(assignment_ref, "to_dict", None)) else None)
+        generation = due.get("generation") if isinstance(due, Mapping) else getattr(due, "generation", None)
+        schedule_id = due.get("schedule_id") if isinstance(due, Mapping) else getattr(due, "schedule_id", None)
+        if (not isinstance(assignment_ref, Mapping) or assignment_ref.get("id") != assignment_id
+                or type(generation) is not int or generation < 1
+                or not isinstance(schedule_id, str) or not schedule_id):
+            raise PermissionError("worker Due lacks exact assignment, generation or schedule identity")
         dispatcher = self.dispatcher
         # A task match alone is not authority: a retry or a second assignment may target the
         # same task. The durable assignment identity must match the dispatch record exactly.
         target = due.get("target") if isinstance(due, Mapping) else getattr(due, "target", None)
         target = target if isinstance(target, Mapping) else {}
         task_ref = target.get("task_ref") or target.get("task")
-        task_id = task_ref.get("id") if isinstance(task_ref, Mapping) else None
+        if not isinstance(task_ref, Mapping) or not all(
+                isinstance(task_ref.get(key), str) and task_ref[key]
+                for key in ("authority", "id", "revision")):
+            raise PermissionError("worker Due lacks the exact task reference and revision")
+        task_id = task_ref["id"]
+        if target.get("assignment_ref") is not None and target.get("assignment_ref") != assignment_ref:
+            raise PermissionError("worker Due target assignment differs from its exact assignment reference")
+        from herzchen.contracts import ResourceRef
+        owner_assignment = self.owner.assignments.get(ResourceRef.from_dict(assignment_ref))
+        if owner_assignment.ref.to_dict() != dict(assignment_ref):
+            raise PermissionError("worker Due assignment reference is stale")
+        if owner_assignment.generation != generation or owner_assignment.role != "executor":
+            raise PermissionError("worker Due assignment generation or role is stale")
+        recipient = due.get("recipient") if isinstance(due, Mapping) else getattr(due, "recipient", None)
+        if recipient != owner_assignment.principal:
+            raise PermissionError("worker Due recipient does not match its assignment principal")
+        scope = owner_assignment.scope
+        if ((scope.authority, scope.kind, scope.id) !=
+                (task_ref.get("authority"), task_ref.get("kind", "work.task"), task_id)):
+            raise PermissionError("worker Due task does not match its assignment scope")
+        current = self.owner.graph.current(ResourceRef(task_ref["authority"], "work.task", task_id))
+        if current.ref.to_dict() != dict(task_ref):
+            raise PermissionError("worker Due task revision is stale")
+        from herzchen.domains.work.admission import admitted_revision
+        revision = admitted_revision(current.payload)
+        if not isinstance(revision, str) or revision != current.ref.revision:
+            raise PermissionError("worker task has no current admitted revision")
         with self._lock:
             record = self.records.get(assignment_id)
             due_key = (assignment_id, str(due.get("schedule_id") if isinstance(due, Mapping)
@@ -463,6 +614,10 @@ class OwnerFleetRegistry:
                     raise PermissionError("worker Due schedule or generation changed")
             if task_id is not None and self._task_id(record.task) != task_id:
                 raise PermissionError("worker Due task pin does not match its dispatch record")
+            record_task_ref = getattr(record.task, "ref", None)
+            if (record.admitted_revision != revision or record_task_ref is None
+                    or record_task_ref.to_dict() != current.ref.to_dict()):
+                raise PermissionError("worker dispatch record does not match the exact admitted task revision")
             if record.token is None:
                 raise PermissionError("worker dispatch has no live issued token")
             grant = self.tokens.resolve(record.token)
@@ -529,6 +684,11 @@ class OwnerFleetRegistry:
             raise PermissionError("worker Due schedule was already bound to another task")
         if assignment_id in self.records:
             raise PermissionError("worker assignment already has another live dispatch")
+        if any(getattr(other, "state", None) in {"admitted", "launched", "unknown"}
+               and getattr(other, "role", None) == "worker"
+               and self._task_id(other.task) == task_id
+               for other_id, other in self.records.items() if other_id != assignment_id):
+            raise PermissionError("task already has a live worker assignment bound to its lab")
         token = self.tokens.issue(assignment_id, "worker")
         record = DispatchRecord(assignment_id, current, "worker", revision,
                                 state="admitted", token=token)
@@ -719,7 +879,9 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
                     view_session.due_port = root.due_port
                     server = HostOwnerService(view_session, record, adapter_factory=adapter_factory,
                                               execution_host=host,
-                                              worker_mcp_provider=fleet_registry.grant_for_due)
+                                              worker_mcp_provider=fleet_registry.grant_for_due,
+                                              worker_lab_provider=fleet_registry.prepare_worker_lab,
+                                              worker_context_provider=fleet_registry.worker_context_for_due)
                     server._save_state()
                     service_view = ManagerJourneyService(
                         server=server, host=host, run_path=server.render_run_view(), workspace=server.worktree(),
@@ -794,8 +956,8 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
                             policy=policy, hold_dispatch=hold_dispatch, stale_stop=stale_stop,
                             fleet_registry=fleet_registry, result_store=result_store, runner=runner_core)
     except BaseException:
-        # Nothing was started, so only the sessions and the Store are released; the
-        # Store closes without a seal because this composition never completed.
+        # A partial composition may already own a facade socket and runner. Close
+        # them before releasing sessions and the unsealed Store.
         try:
             registry = locals().get("fleet_registry")
             if registry is not None:

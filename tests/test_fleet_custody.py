@@ -93,7 +93,9 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
     from otto.hostctl import product_service
 
     task_id = "task-owned-by-worker"
-    payload = {"kind": "task", "title": "Owned task", "fields": {"check": ["true"]},
+    project_ref = ResourceRef("fixture", "work.project", "project-owned", "project-r1")
+    payload = {"kind": "task", "title": "Owned task", "project_ref": project_ref.to_dict(),
+               "fields": {"check": ["true"]},
                "dependencies": [], "metadata_namespaces": {}}
     if plan is not None:
         payload["metadata_namespaces"]["otto.plan"] = dict(plan)
@@ -132,18 +134,28 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
         subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
         subprocess.run(["git", "-C", str(repository), "commit", "-m", "base"], check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    owner = SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: task))
+    assignment_ref = ResourceRef("fixture", "wrk.assignment", "assignment-owned-by-worker", "assignment-r1")
+    owner_assignment = SimpleNamespace(ref=assignment_ref, generation=1, role="executor", scope=task.ref)
+    owner = SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: task),
+                            assignments=SimpleNamespace(get=lambda _ref: owner_assignment))
     tokens = TokenBook()
     assignment = "assignment-owned-by-worker"
     token = tokens.issue(assignment, "worker")
     record = SimpleNamespace(assignment=assignment, task=task, admitted_revision="admitted-r1",
                              state="launched", role="worker", token=token)
     dispatcher = SimpleNamespace(tokens=tokens, records={assignment: record})
+    if landing_factory is None:
+        landing_factory = lambda **_kwargs: object()
     registry = product_service.OwnerFleetRegistry(
         owner, {"store": {"authority": "fixture"},
                 "repositories": {"repo-a": str(repository)}}, tmp_path / "otto-home", object(),
         checkpoint=lambda *_a, **_kw: None, landing_factory=landing_factory)
     registry.bind_dispatcher(dispatcher)
+    if (isinstance(plan, dict) and plan.get("repo") == "repo-a"
+            and isinstance(plan.get("branch"), str)
+            and subprocess.run(["git", "-C", str(repository), "show-ref", "--verify", "--quiet",
+                                "refs/heads/" + plan["branch"]]).returncode == 0):
+        registry.prepare_worker_lab(project_ref, task.ref)
     return registry, task, record, token, repository
 
 
@@ -259,6 +271,118 @@ def test_worker_facade_refuses_foreign_assignment_token(monkeypatch, tmp_path):
     assert refused["error"] == "owner_unavailable"
     assert record.assignment == "assignment-owned-by-worker"
     assert _run(line, "rev-parse", "refs/heads/main") == base, "foreign token advanced the project's line"
+
+
+def test_landing_owner_port_forwards_only_owner_assignment_identity():
+    from herzchen.fleet.tools.facade import LandingOwnerPort, ToolFacade
+    from herzchen.fleet.tools.rules import DONE, FeedbackLedger, ToolSpec
+    from herzchen.fleet.tools.tokens import TokenBook
+
+    seen = []
+    class Landing:
+        def done(self, lab_name, task_id, **pins):
+            seen.append((lab_name, task_id, pins))
+            return {"ok": True, "landed": False}
+
+    book = TokenBook()
+    token = book.issue("assignment-1", "worker")
+    port = LandingOwnerPort(lambda _assignment: {
+        "service": Landing(), "lab_name": "task-lab", "task_id": "task-1",
+        "assignment_id": "assignment-1"})
+    facade = ToolFacade((ToolSpec("done", DONE, "worker-done", ("task_id",)),),
+                        {"worker": ("done",)}, port, book, FeedbackLedger())
+
+    facade.call(token, "done", {"task_id": "other"})
+
+    assert seen == [("task-lab", "task-1", {"assignment_id": "assignment-1"})]
+
+
+def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(tmp_path):
+    from herzchen.contracts import AuthenticatedActor, ResourceRef
+    from herzchen.fleet.runner.store import ResultStore
+    from otto.hostctl.fleet_landing import make_landing_service
+    from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
+
+    project = ResourceRef("owner", "work.project", "project-1", "project-r1")
+    task = ResourceRef("owner", "work.task", "task-1", "task-r1")
+    assignment = ResourceRef("owner", "wrk.assignment", "dispatch-1", "assignment-r1")
+    manager = ResourceRef("owner", "wrk.assignment", "manager-1", "manager-r1")
+    criterion = ResourceRef("owner", "assessment.criterion", "criterion-1", "criterion-r1")
+    scope_ref = ResourceRef("owner", "assessment.scope", "scope-1", "scope-r1")
+    packet_ref = ResourceRef("owner", "assessment.input", "packet-1", "packet-r1")
+    candidate_ref = ResourceRef("owner", "wrk.result", "candidate-1", "candidate-r1")
+    actor = AuthenticatedActor("owner", "manager", "manager")
+    policy_config = {"kind": "owner_local_bookkeeping", "purpose": "fleet check assessment",
+        "local_only": True, "pool_id": "fleet-pool", "capacity_units": 1,
+        "cumulative_allowance_units": 1, "task_criterion_pairs": ["T/C"]}
+    state = {"authority": "owner", "project_ref": project.to_dict(),
+        "task_refs": {"T": task.to_dict()}, "criterion_refs": {"C": criterion.to_dict()},
+        "assessment_policy": policy_config, "assignment_ref": manager.to_dict(),
+        "manager": "manager", "manager_generation": 1}
+    policy = LocalAssessmentPolicy.from_run_config(policy_config, state=state)
+
+    class Reader:
+        authority = "owner"
+        def get_identity(self, ref):
+            known = {item.kind: item for item in (project, task, criterion)}
+            exact = known.get(ref.kind)
+            return SimpleNamespace(ref=exact) if exact is not None and exact.id == ref.id else None
+
+    scope = SimpleNamespace(ref=scope_ref, criterion_refs=(criterion,),
+        review_required=False, allow_no_review=True)
+    packet_requests = []
+    class Commands:
+        def required_scope(self, *, require):
+            assert require is True
+            return scope
+        def execute(self, request):
+            packet_requests.append(request)
+            return {"ref": packet_ref.to_dict()}
+    commands = Commands()
+    candidate_rows = []
+    class Assignments:
+        def append_result(self, target, value, **kwargs):
+            candidate_rows.append((target, value, kwargs))
+            return SimpleNamespace(ref=candidate_ref, value=value)
+
+    owner = SimpleNamespace(
+        graph=SimpleNamespace(reader=Reader()), owner_actor=AuthenticatedActor("owner", "host", "host"),
+        assignments=Assignments(), binding=SimpleNamespace(authenticated_actor=lambda _name: actor),
+        manager_assessment=lambda **kwargs: commands,
+        create_manager_assessment_pool=lambda **_kwargs: None)
+    dispatch = SimpleNamespace(assignment="dispatch-1", role="worker", admitted_revision="task-r1")
+    binding = {"record": dispatch, "task": SimpleNamespace(ref=task), "task_ref": task.to_dict(),
+        "project_ref": project.to_dict(), "assignment_ref": assignment.to_dict(),
+        "generation": 3, "project_state": state}
+    service = make_landing_service(fleet=SimpleNamespace(_lab=lambda _name: None), result_store=ResultStore(tmp_path / "results"),
+        repo_name="repo", repo_path=tmp_path, branch="main", owner=owner, runner=SimpleNamespace(call=lambda _r: {}),
+        views_provider=lambda: {}, assignment_lookup=lambda assignment_id: binding if assignment_id == "dispatch-1" else {})
+    runner_record = {"run_id": "run-1", "commit": "a" * 40, "binding": "b" * 64,
+        "argv": ["pytest", "-q"], "cwd": "/repo/lab", "exit_code": 0}
+    from herzchen.domains.work.admission import authoring_stamp
+    payload = {"kind": "task", "title": "Task", "project_ref": project.to_dict(),
+        "fields": {"check": {"argv": ["pytest", "-q"]}}, "dependencies": [],
+        "metadata_namespaces": {}}
+    payload["metadata_namespaces"]["work.admission"] = authoring_stamp("task-r1", payload, "reviewer")
+    admitted_task = {"id": task.id, "payload": payload}
+
+    context = service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1",
+        candidate="worker-forged-candidate", criterion="worker-forged-criterion",
+        parent_obligation="worker-forged-parent", actor="worker-forged-actor")
+
+    assert candidate_rows[0][0] == assignment
+    assert candidate_rows[0][1] == {
+        "task_ref": task.to_dict(), "admitted_revision": "task-r1",
+        "assignment_ref": assignment.to_dict(), "assignment_id": "dispatch-1",
+        "lab_commit": "a" * 40, "repo_name": "repo", "line_ref": "refs/heads/main",
+        "lab_name": task.id, "runner": runner_record}
+    packet_args = packet_requests[0]["arguments"]
+    assert packet_args["candidate_ref"] == candidate_ref.to_dict()
+    assert packet_args["criterion_refs"] == [criterion.to_dict()]
+    assert packet_args["packet"]["admitted_revision"] == "task-r1"
+    assert packet_args["packet"]["lab_commit"] == "a" * 40
+    assert context["candidate"] == candidate_ref and context["criterion"] == criterion
+    assert context["parent_obligation"] == task and context["actor"] == actor
 
 
 @pytest.mark.parametrize("plan, message", [

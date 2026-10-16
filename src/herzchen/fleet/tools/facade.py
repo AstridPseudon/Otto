@@ -45,7 +45,7 @@ class LandingOwnerPort:
     context. Worker arguments are never used to choose the lab, task, check, or acceptance pins.
     """
 
-    _PINS = ("candidate", "criterion", "parent_obligation", "actor", "gate_refs")
+    _PINS = ("assignment_id", "candidate", "criterion", "parent_obligation", "actor", "gate_refs")
 
     def __init__(
         self,
@@ -78,10 +78,12 @@ class LandingOwnerPort:
         service = context.get("service")
         lab_name = context.get("lab_name")
         task_id = context.get("task_id")
+        assignment_id = context.get("assignment_id", assignment)
         method = getattr(service, method_name, None)
         if not callable(method):
             raise TypeError("landing service does not implement %s" % method_name)
-        if not isinstance(lab_name, str) or not lab_name or not isinstance(task_id, str) or not task_id:
+        if (not isinstance(lab_name, str) or not lab_name or not isinstance(task_id, str) or not task_id
+                or assignment_id != assignment):
             raise TypeError("assignment context must name its lab and admitted task")
 
         # Do not pass worker-supplied values into landing, even when a tool schema allows them.

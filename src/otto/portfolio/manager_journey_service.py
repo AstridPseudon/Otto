@@ -173,13 +173,58 @@ class ManagerJourneyService:
             from .run_config import run_config_path
             run_config_path(self.run_path)
         selection = options.pop("selection", None)
+        # Worker workspaces are resolved only by the owner host. The initial
+        # dispatch uses a task-plan preflight because its assignment does not
+        # exist yet; every later execution resolves the exact persisted Due.
+        worker_context = options.pop("_worker_context", None)
+        if worker_context is None:
+            evidence_id = options.get("evidence_id")
+            if isinstance(evidence_id, str):
+                try:
+                    due = self.server.due_port.read_due(evidence_id)
+                except (LookupError, KeyError):
+                    due = None
+                known_worker_schedules = {
+                    row.get("schedule_id")
+                    for row in (self.server.state.get("workers") or {}).values()
+                    if isinstance(row, Mapping) and isinstance(row.get("schedule_id"), str)
+                }
+                known_worker_schedules.update(
+                    row.get("schedule_id")
+                    for history in (self.server.state.get("worker_history") or {}).values()
+                    if isinstance(history, list) for row in history
+                    if isinstance(row, Mapping) and isinstance(row.get("schedule_id"), str))
+                if evidence_id in known_worker_schedules and not (
+                        isinstance(due, Mapping) and due.get("schedule_id") == evidence_id and due.get("role") == "worker"):
+                    raise PermissionError("retained worker execution has no exact worker Due; refusing project workspace fallback")
+                if isinstance(due, Mapping) and due.get("schedule_id") == evidence_id and due.get("role") == "worker":
+                    assignment = due.get("assignment_ref")
+                    target = due.get("target")
+                    target_assignment = target.get("assignment_ref") if isinstance(target, Mapping) else None
+                    if (due.get("recipient") != options.get("principal")
+                            or not isinstance(assignment, Mapping) or not isinstance(assignment.get("id"), str)
+                            or not assignment["id"]
+                            or (target_assignment is not None and target_assignment != assignment)):
+                        raise PermissionError("worker Due does not bind this execution to its exact recipient and assignment")
+                    resolver = getattr(self.server, "worker_context_provider", None)
+                    if not callable(resolver):
+                        raise PermissionError("owner host cannot resolve the worker's assignment lab")
+                    worker_context = resolver(due)
+        if worker_context is not None:
+            if not isinstance(worker_context, Mapping) or not isinstance(worker_context.get("workspace"), (str, Path)):
+                raise PermissionError("owner host returned an invalid worker lab context")
+            execution_workspace = Path(worker_context["workspace"]).resolve()
+            options["workspace"] = str(execution_workspace)
+        else:
+            execution_workspace = self.workspace
         app = (self.adapter_selection.compose(selection, **{k: v for k, v in options.items() if k not in {"model", "reasoning"}})
                if selection is not None and self.adapter_selection is not None else self._host_execution(**options))
         if hasattr(self, "_fixed_project_binding"):
             from .project_services import ProjectServices
             ProjectServices._check(self)
-            if (Path(app.runtime.adapter.worktree).resolve() != self.workspace
-                    or Path(app.runtime.adapter.source).resolve() != self.run_path
+            expected_source = execution_workspace if worker_context is not None else self.run_path
+            if (Path(app.runtime.adapter.worktree).resolve() != execution_workspace
+                    or Path(app.runtime.adapter.source).resolve() != expected_source
                     or app.manager_actor != self.server.state["manager"]
                     or app.runtime.adapter.owner != options["principal"]
                     or app.actor != self.server.owner.owner_actor.actor
@@ -1116,6 +1161,24 @@ class ManagerJourneyService:
         diagnosis. No request can select host authority or reminder IDs.
         """
         ids = self._reminder_ids()
+        tracked_workers = {
+            row.get("schedule_id")
+            for row in (self.server.state.get("workers") or {}).values()
+            if isinstance(row, Mapping) and isinstance(row.get("schedule_id"), str)
+        }
+        worker_due_rows = []
+        ordinary_ids = []
+        for schedule_id in known:
+            due = self.server.due_port.read_due(schedule_id)
+            if isinstance(due, Mapping) and due.get("schedule_id") == schedule_id and due.get("role") == "worker":
+                worker_due_rows.append((schedule_id, due))
+            elif schedule_id in tracked_workers:
+                raise PermissionError("retained worker startup recovery has no exact worker Due")
+            else:
+                ordinary_ids.append(schedule_id)
+        if not self.server.state.get("manager") and ordinary_ids:
+            raise PermissionError("startup recovery has non-worker occurrences but no bound manager execution")
+        known = ordinary_ids
         attention = getattr(self.server, "reminder_attention", None)
         executor = getattr(self.server, "reminder_host_executor", None)
         if not ids or attention is None:
@@ -1134,16 +1197,55 @@ class ManagerJourneyService:
                 "rows": [{"schedule_id": sid, "status": reader.reminder_status(sid),
                           "bridge": {"outcome": "held", "reason": "owner_reminder_bridge_unavailable"}, "due": None} for sid in ids],
                 "next_action": "Owner supplies exact known reminder IDs and authenticated readback/attention ports; no timer or wake is inferred."}
+            result = self._recover_worker_startup_rows(result, worker_due_rows, execute=execute)
             return after_owner(result, lambda result: {**result, "reminder_reconciliation": reminder,
                     "reminder_admission": reminder["admission"]})
         if app is None:
             reminder = attention.startup_reconcile(ids, executor=executor, evaluate_due=True)
-            return {"schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled", "admission": "ready",
+            result = {"schema": "otto.owner-startup-recovery.v1", "outcome": "reconciled", "admission": "ready",
                 "occurrences": [], "execute": execute, "provider_called": False, "dispatch": False, "launch": False,
                 "reminder_reconciliation": reminder, "reminder_admission": reminder["admission"]}
-        return app.recover_startup(schedule_ids=known, execute=execute,
+            return self._recover_worker_startup_rows(result, worker_due_rows, execute=execute)
+        result = app.recover_startup(schedule_ids=known, execute=execute,
             reminder_attention=attention, host_executor=executor,
             reminder_schedule_ids=ids, evaluate_due=True)
+        return self._recover_worker_startup_rows(result, worker_due_rows, execute=execute)
+
+    def _recover_worker_startup_rows(self, result: Mapping[str, Any],
+                                     worker_due_rows: list[tuple[str, Mapping[str, Any]]],
+                                     *, execute: bool) -> Mapping[str, Any]:
+        """Recover worker occurrences using their exact owner-resolved lab apps."""
+        if not worker_due_rows:
+            return result
+        from .owner_completion import OwnerCompletion, after_owner
+        if isinstance(result, OwnerCompletion):
+            return after_owner(result, lambda settled: self._recover_worker_startup_rows(
+                settled, worker_due_rows, execute=execute))
+        output = dict(result)
+        rows = list(output.get("occurrences") or ())
+
+        def recover_next(index: int) -> Any:
+            if index >= len(worker_due_rows):
+                output["occurrences"] = rows
+                return output
+            schedule_id, due = worker_due_rows[index]
+            worker_app = self._execution(principal=due["recipient"], model=due["requested_model"],
+                reasoning=due["requested_reasoning"], evidence_id=schedule_id,
+                selection=((due.get("target") or {}).get("launch_request") or {}).get("selection"))
+            before = worker_app.recovery_status(schedule_id=schedule_id)
+            reconciled = worker_app.recover(schedule_id=schedule_id, execute=execute)
+            return after_owner(reconciled, lambda value: self._append_worker_recovery_row(
+                rows, worker_app, schedule_id, before, value, lambda: recover_next(index + 1)))
+
+        return recover_next(0)
+
+    @staticmethod
+    def _append_worker_recovery_row(rows: list[dict[str, Any]], app: Any, schedule_id: str,
+                                    before: Mapping[str, Any], result: Mapping[str, Any],
+                                    continue_recovery: Any) -> Any:
+        rows.append({"schedule_id": schedule_id, "before": before, "result": result,
+                     "after": app.recovery_status(schedule_id=schedule_id), "reminder": None})
+        return continue_recovery()
 
     def _execution_control(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Use current service bindings and existing Due/host recovery ports."""
@@ -1188,7 +1290,8 @@ class ManagerJourneyService:
             app = self._execution(principal=state.get("manager", seed["recipient"]),
                 model=state.get("requested_model", seed["requested_model"]),
                 reasoning=state.get("requested_reasoning", seed["requested_reasoning"]),
-                evidence_id="execution-startup-recovery")
+                evidence_id=(seed["schedule_id"] if not state.get("manager") and seed.get("role") == "worker"
+                             else "execution-startup-recovery"))
             return self._startup_recovery(app, known, execute=False)
         schedule = request.get("schedule_id")
         allowed = set(known)
@@ -1200,7 +1303,8 @@ class ManagerJourneyService:
         if (project.get("id") if isinstance(project, Mapping) else project) != project_id:
             raise PermissionError("occurrence belongs to another project")
         app = self._execution(principal=raw["recipient"], model=raw["requested_model"],
-            reasoning=raw["requested_reasoning"], evidence_id="execution-control-" + schedule,
+            reasoning=raw["requested_reasoning"],
+            evidence_id=(schedule if raw.get("role") == "worker" else "execution-control-" + schedule),
             selection=(raw["target"].get("launch_request") or {}).get("selection"))
         due = app._read(schedule)  # Existing authenticated owner fence.
         if operation == "stop":
@@ -1918,11 +2022,20 @@ class ManagerJourneyService:
                             "retry_provider": False,
                             "reason": "existing task worker is unstarted, active or uncertain; reconcile that occurrence before a new send"}
         task_ref = state["task_refs"][task]
+        worker_lab_provider = getattr(self.server, "worker_lab_provider", None)
+        if not callable(worker_lab_provider):
+            raise PermissionError("owner host cannot prepare the worker's assignment lab")
+        worker_context = worker_lab_provider(state["project_ref"], task_ref)
+        if (not isinstance(worker_context, Mapping)
+                or not isinstance(worker_context.get("workspace"), (str, Path))):
+            raise PermissionError("owner host returned an invalid worker lab context")
         app = self._execution(principal=principal, model=model, reasoning=reasoning,
-            evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20], selection=selection)
+            evidence_id="worker-" + hashlib.sha256(key.encode()).hexdigest()[:20], selection=selection,
+            _worker_context=worker_context, project_ref=state["project_ref"], task_ref=task_ref)
         instruction, contract, brief = compose_worker_operation(config=config, task=task, task_ref=task_ref,
             principal=principal, model=model, reasoning=reasoning, focus=focus,
-            workspace=self.workspace, run_path=self.run_path, adapter=app.runtime.adapter, leaf=parent is not None or read_only)
+            workspace=Path(worker_context["workspace"]).resolve(), run_path=self.run_path,
+            adapter=app.runtime.adapter, leaf=parent is not None or read_only)
         if read_only:
             contract["read_scope"] = "linked_context"
             contract["allowed_operations"] = ["read_project_context", "inspect_recorded_effect", "return_result"]

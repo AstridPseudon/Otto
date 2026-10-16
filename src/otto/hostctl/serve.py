@@ -77,7 +77,9 @@ class HostOwnerService:
                  adapter_factory: Optional[Callable[..., Any]] = None,
                  turn_admission: Optional[Callable[[], Any]] = None,
                  execution_host: Any = None,
-                 worker_mcp_provider: Optional[Callable[[Mapping[str, Any]], Any]] = None) -> None:
+                 worker_mcp_provider: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+                 worker_lab_provider: Optional[Callable[[Any, Any], Mapping[str, Any]]] = None,
+                 worker_context_provider: Optional[Callable[[Mapping[str, Any]], Mapping[str, Any]]] = None) -> None:
         """``execution_host`` is the ONE shared host of a ProjectServices composition.
 
         Then this view owns no host, lane or socket of its own: it serves from
@@ -112,6 +114,8 @@ class HostOwnerService:
         self._default_adapter_factory = adapter_factory is None
         self.adapter_factory = adapter_factory or self._claude_adapter
         self.worker_mcp_provider = worker_mcp_provider
+        self.worker_lab_provider = worker_lab_provider
+        self.worker_context_provider = worker_context_provider
         self.turn_admission = turn_admission
         if shared:
             # The composition assigns the router's ingress once the router exists.
@@ -235,17 +239,24 @@ class HostOwnerService:
                         "OTTO_PROJECT": self.run_id}}
 
     def _claude_adapter(self, *, principal: str, model: str, reasoning: str, service: Any = None,
-                        worker_mcp: Any = None) -> Any:
+                        worker_mcp: Any = None, workspace: Optional[str] = None,
+                        source: Optional[str] = None, roles: tuple = ("worker", "manager")) -> Any:
         from .adapters import compose_claude
         launch = self.manager_launch()
-        return compose_claude(self.config, worktree=self.worktree(), model=model, reasoning=reasoning,
-                              owner=principal, native_caller_socket=str(self.paths["socket"]),
-                              native_process_observer=self.native_callers.observe,
-                              manager_write_roots=launch["write_roots"], manager_env=launch["env"],
+        manager_role = "manager" in roles
+        return compose_claude(self.config, source=source or str(self.render_run_view()),
+                              worktree=workspace or self.worktree(), model=model, reasoning=reasoning,
+                              roles=roles, owner=principal,
+                              native_caller_socket=str(self.paths["socket"]) if manager_role else None,
+                              native_process_observer=self.native_callers.observe if manager_role else None,
+                              manager_write_roots=launch["write_roots"] if manager_role else (),
+                              manager_env=launch["env"] if manager_role else None,
                               worker_mcp=worker_mcp)
 
-    def _execution(self, *, principal: str, model: str, reasoning: str, evidence_id: str, **_: Any) -> Any:
+    def _execution(self, *, principal: str, model: str, reasoning: str, evidence_id: str,
+                   workspace: Optional[str] = None, **_: Any) -> Any:
         options = {"principal": principal, "model": model, "reasoning": reasoning, "service": self}
+        due = None
         if self.worker_mcp_provider is not None:
             # evidence_id is an owner-internal schedule handle. Resolve the
             # exact Due first; principals and request fields cannot select a
@@ -270,11 +281,22 @@ class HostOwnerService:
                 target_assignment = target.get("assignment_ref") if isinstance(target, Mapping) else None
                 if target_assignment is not None and target_assignment != assignment:
                     raise PermissionError("worker Due target assignment differs from its exact binding")
+                if self.worker_context_provider is None:
+                    raise PermissionError("worker assignment has no owner lab resolver")
+                context = self.worker_context_provider(due)
+                assigned_workspace = context.get("workspace") if isinstance(context, Mapping) else None
+                if not isinstance(assigned_workspace, str) or not assigned_workspace:
+                    raise PermissionError("worker assignment has no owner lab workspace")
+                if workspace is not None and os.path.realpath(workspace) != os.path.realpath(assigned_workspace):
+                    raise PermissionError("worker workspace differs from its exact assignment lab")
+                workspace = assigned_workspace
                 worker_mcp = self.worker_mcp_provider(due)
                 if worker_mcp is None:
                     raise PermissionError("worker assignment has no owner-issued worker_mcp grant")
                 if self._default_adapter_factory:
                     options["worker_mcp"] = worker_mcp
+                    options["roles"] = ("worker",)
+                    options["source"] = assigned_workspace
                 else:
                     import inspect
                     try:
@@ -284,6 +306,41 @@ class HostOwnerService:
                     if not accepts_grant:
                         raise TypeError("custom adapter_factory must explicitly accept worker_mcp for worker execution")
                     options["worker_mcp"] = worker_mcp
+                options["workspace"] = workspace
+            elif workspace is not None:
+                if self.worker_lab_provider is None:
+                    raise PermissionError("worker lab preparation is unavailable")
+                # Pre-dispatch calls come only from the owner manager journey;
+                # bind the requested path to the exact admitted project/task.
+                task_ref = _.get("task_ref")
+                project_ref = _.get("project_ref")
+                if not isinstance(task_ref, (Mapping, ResourceRef)) or not isinstance(project_ref, (Mapping, ResourceRef)):
+                    raise PermissionError("pre-dispatch worker workspace requires exact owner project and task references")
+                context = self.worker_lab_provider(project_ref, task_ref)
+                assigned_workspace = context.get("workspace") if isinstance(context, Mapping) else None
+                if not isinstance(assigned_workspace, str) or os.path.realpath(workspace) != os.path.realpath(assigned_workspace):
+                    raise PermissionError("worker workspace differs from the owner prepared task lab")
+                options["workspace"] = assigned_workspace
+                if self._default_adapter_factory:
+                    options["roles"] = ("worker",)
+                    options["source"] = assigned_workspace
+            if principal != self.state.get("manager") and workspace is None:
+                trusted_help_due = (isinstance(due, Mapping) and due.get("schedule_id") == evidence_id
+                                    and due.get("role") in {"orchestrator", "project_advisor"})
+                if trusted_help_due:
+                    assignment_ref = due.get("assignment_ref")
+                    generation = due.get("generation")
+                    if (due.get("recipient") != principal or not isinstance(assignment_ref, Mapping)
+                            or type(generation) is not int or generation < 1):
+                        raise PermissionError("help Due does not bind this execution to its exact recipient and assignment")
+                    assignment_value = self.owner.assignments.get(ResourceRef.from_dict(assignment_ref))
+                    if (assignment_value.ref.to_dict() != dict(assignment_ref)
+                            or assignment_value.generation != generation
+                            or assignment_value.role != due.get("role")
+                            or assignment_value.principal != principal):
+                        raise PermissionError("help Due recipient assignment is stale or foreign")
+                else:
+                    raise PermissionError("non-manager execution requires an exact worker or retained help Due")
         adapter = self.adapter_factory(**options)
         # Workers and continuations are owned by the project's manager, as in
         # the Codex service; review input checks that exact linkage.
@@ -292,7 +349,7 @@ class HostOwnerService:
     def _caller_context(self, caller: Any) -> Any:
         due = self.due_port.read_due(caller.schedule_id)
         return self._execution(principal=caller.actor.actor, model=due["requested_model"],
-                               reasoning=due["requested_reasoning"], evidence_id="caller-context").caller_context(caller)
+                               reasoning=due["requested_reasoning"], evidence_id=caller.schedule_id).caller_context(caller)
 
     def _authorize_caller(self, context: Mapping[str, Any], request: Mapping[str, Any]) -> Any:
         from otto.portfolio.manager_journey_service import ManagerJourneyService

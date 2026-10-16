@@ -112,6 +112,138 @@ finish("Manager turn %d: done." % turn)
 BRIEF_T1 = "# Brief: T1\n\nBuild the first outcome. Proof: tests pass.\n"
 
 
+class WorkerWorkspaceCompositionTests(unittest.TestCase):
+    def _service(self, due, workspace):
+        from types import SimpleNamespace
+        from otto.hostctl.serve import HostOwnerService
+        service = object.__new__(HostOwnerService)
+        service.due_port = SimpleNamespace(read_due=lambda schedule: due if schedule == due["schedule_id"] else None)
+        service.worker_mcp_provider = lambda _due: {"token": "owner grant"}
+        service.worker_context_provider = lambda _due: {"workspace": workspace}
+        service.worker_lab_provider = lambda _project, _task: {"workspace": workspace}
+        service._default_adapter_factory = False
+        def adapter_factory(*, principal, model, reasoning, service, worker_mcp=None, workspace=None):
+            return {"principal": principal, "model": model, "reasoning": reasoning,
+                    "worker_mcp": worker_mcp, "workspace": workspace}
+        service.adapter_factory = adapter_factory
+        service.session = SimpleNamespace(execution_application=lambda adapter, **_kwargs: adapter)
+        service.state = {"manager": "manager"}
+        return service
+
+    @staticmethod
+    def _fleet_registry_for_due():
+        import threading
+        from types import SimpleNamespace
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.admission import authoring_stamp
+        from herzchen.fleet.tools.tokens import TokenBook
+        from otto.hostctl.product_service import OwnerFleetRegistry
+
+        task_ref = ResourceRef("owner", "work.task", "task-a", "task-r1")
+        payload = {"kind": "task", "fields": {}, "metadata_namespaces": {}}
+        payload["metadata_namespaces"]["work.admission"] = authoring_stamp("task-r1", payload, "reviewer")
+        task = SimpleNamespace(ref=task_ref, payload=payload)
+        assignment_ref = ResourceRef("owner", "wrk.assignment", "assignment-a", "assignment-r2")
+        assignment = SimpleNamespace(ref=assignment_ref, generation=2, role="executor",
+                                      principal="worker-a", scope=task_ref)
+        owner = SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: task),
+                                assignments=SimpleNamespace(get=lambda _ref: assignment))
+        tokens = TokenBook()
+        token = tokens.issue("assignment-a", "worker")
+        record = SimpleNamespace(assignment="assignment-a", task=task, admitted_revision="task-r1",
+                                 state="launched", role="worker", token=token)
+        registry = object.__new__(OwnerFleetRegistry)
+        registry.owner = owner
+        registry.config = {"python": sys.executable}
+        registry.tokens = tokens
+        registry.records = {"assignment-a": record}
+        registry.dispatcher = SimpleNamespace()
+        registry._due_keys, registry._due_bindings = {}, {}
+        registry._lock = threading.RLock()
+        registry.facade_server = object()
+        registry.facade_socket = "/tmp/otto-worker.sock"
+        registry.assignment_context = lambda assignment_id, token=None: {
+            "assignment_id": assignment_id, "token": token}
+        due = {"schedule_id": "worker-run", "role": "worker", "recipient": "worker-a",
+               "assignment_ref": assignment_ref.to_dict(), "generation": 2,
+               "target": {"task_ref": task_ref.to_dict(), "assignment_ref": assignment_ref.to_dict()}}
+        return registry, due
+
+    def test_prepared_worker_workspace_is_verified_and_passed_to_adapter(self):
+        service = self._service({"schedule_id": "pre-dispatch", "role": "manager"}, "/owner/labs/task-a")
+        captured = service._execution(principal="worker", model="m", reasoning="high",
+            evidence_id="pre-dispatch", project_ref={"id": "p"}, task_ref={"id": "t"},
+            workspace="/owner/labs/task-a")
+        self.assertEqual(captured["workspace"], "/owner/labs/task-a")
+
+    def test_exact_worker_due_binds_lab_and_mcp_and_rejects_project_workspace_spoof(self):
+        due = {"schedule_id": "worker-run", "role": "worker", "recipient": "worker-a",
+               "assignment_ref": {"id": "assignment-a"}, "generation": 1,
+               "target": {"task_ref": {"id": "task-a"}}}
+        service = self._service(due, "/owner/labs/task-a")
+        execution = service._execution(principal="worker-a", model="m", reasoning="high",
+                                       evidence_id="worker-run")
+        self.assertEqual(execution["workspace"], "/owner/labs/task-a")
+        self.assertEqual(execution["worker_mcp"], {"token": "owner grant"})
+        with self.assertRaises(PermissionError):
+            service._execution(principal="worker-a", model="m", reasoning="high",
+                               evidence_id="worker-run", workspace="/project/workspace")
+
+    def test_non_manager_without_worker_due_cannot_fall_back_to_project_workspace(self):
+        service = self._service({"schedule_id": "manager-run", "role": "manager"}, "/owner/labs/task-a")
+        with self.assertRaises(PermissionError):
+            service._execution(principal="worker-a", model="m", reasoning="high", evidence_id="missing-worker")
+
+    def test_exact_project_advisor_help_due_keeps_non_worker_execution_available(self):
+        from types import SimpleNamespace
+        from herzchen.contracts import ResourceRef
+        assignment_ref = ResourceRef("owner", "wrk.assignment", "advisor-a", "rev-3")
+        assignment = SimpleNamespace(ref=assignment_ref, generation=2, role="project_advisor",
+                                     principal="advisor-a")
+        due = {"schedule_id": "help-run", "role": "project_advisor", "recipient": "advisor-a",
+               "assignment_ref": assignment_ref.to_dict(), "generation": 2}
+        service = self._service(due, "/owner/labs/task-a")
+        service.owner = SimpleNamespace(assignments=SimpleNamespace(get=lambda _ref: assignment))
+        execution = service._execution(principal="advisor-a", model="m", reasoning="high",
+                                       evidence_id="help-run")
+        self.assertEqual(execution["principal"], "advisor-a")
+
+    def test_caller_context_keeps_the_exact_help_due_identity(self):
+        from types import SimpleNamespace
+        from herzchen.contracts import ResourceRef
+        assignment_ref = ResourceRef("owner", "wrk.assignment", "advisor-a", "rev-3")
+        assignment = SimpleNamespace(ref=assignment_ref, generation=2, role="project_advisor",
+                                     principal="advisor-a")
+        due = {"schedule_id": "help-run", "role": "project_advisor", "recipient": "advisor-a",
+               "assignment_ref": assignment_ref.to_dict(), "generation": 2,
+               "requested_model": "m", "requested_reasoning": "high"}
+        service = self._service(due, "/owner/labs/task-a")
+        service.owner = SimpleNamespace(assignments=SimpleNamespace(get=lambda _ref: assignment))
+        service.session = SimpleNamespace(execution_application=lambda adapter, **_kwargs:
+            SimpleNamespace(caller_context=lambda _caller: {"identity": "advisor"}))
+        context = service._caller_context(SimpleNamespace(schedule_id="help-run",
+            actor=SimpleNamespace(actor="advisor-a")))
+        self.assertEqual(context, {"identity": "advisor"})
+        due["generation"] = 3
+        with self.assertRaises(PermissionError):
+            service._caller_context(SimpleNamespace(schedule_id="help-run",
+                actor=SimpleNamespace(actor="advisor-a")))
+
+    def test_dispatcher_due_requires_exact_owner_generation_principal_and_task_revision(self):
+        registry, due = self._fleet_registry_for_due()
+        grant = registry.grant_for_due(due)
+        self.assertEqual(grant.token, registry.records["assignment-a"].token)
+        for key, value in (("generation", 1), ("recipient", "other")):
+            registry, forged = self._fleet_registry_for_due()
+            forged[key] = value
+            with self.subTest(key=key), self.assertRaises(PermissionError):
+                registry.grant_for_due(forged)
+        registry, stale_task = self._fleet_registry_for_due()
+        stale_task["target"]["task_ref"] = {**stale_task["target"]["task_ref"], "revision": "task-old"}
+        with self.assertRaises(PermissionError):
+            registry.grant_for_due(stale_task)
+
+
 @unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"), "macOS fence")
 class ServeTests(HostctlFixture):
     dispatch = False
@@ -207,7 +339,7 @@ class ManagerLoopTests(ServeTests):
         self.skipTest("covered by ServeTests")
 
     @staticmethod
-    def service_adapter_factory(*, principal, model, reasoning, service):
+    def service_adapter_factory(*, principal, model, reasoning, service, worker_mcp=None, workspace=None, **_):
         """Real manager fence (children allowed); the worker leaf skips sandbox-exec.
 
         A scripted launcher is an interpreter script, which the leaf fence's
@@ -220,7 +352,7 @@ class ManagerLoopTests(ServeTests):
         pin = LauncherPin.inspect(claude_settings(service.config)["launcher"])
         state = str(native_state_root(service.config))
         launch = service.manager_launch()
-        worktree = service.worktree()
+        worktree = workspace or service.worktree()
         unfenced = type("UnfencedScope", (), {"identity": MacWriteScope.identity, "workspace": worktree,
             "state_root": state, "allow_subprocesses": False,
             "pin": {"identity": MacWriteScope.identity, "workspace": worktree, "state_root": state,
