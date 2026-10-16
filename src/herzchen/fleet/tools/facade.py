@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 from .rules import CHECK, DONE, TASK, FeedbackLedger, ToolRuleError, ToolSpec
 from .tokens import TokenBook, TokenError
 
-__all__ = ["AllowlistedPort", "OwnerPort", "ToolFacade"]
+__all__ = ["AllowlistedPort", "LandingOwnerPort", "OwnerPort", "ToolFacade"]
 
 _STRIPPED_KEYS = frozenset({"accepted", "acceptance", "counts_as_acceptance"})
 _MAX_DEPTH = 32
@@ -34,6 +34,61 @@ class AllowlistedPort:
         if operation not in self._allowed:
             raise PermissionError("operation is not on the owner allowlist")
         return self._inner.call(operation, assignment, args, feedback=feedback)
+
+
+class LandingOwnerPort:
+    """Bind worker check/done operations to owner-resolved landing state.
+
+    The resolver receives only the assignment from the live TokenBook grant and must return
+    ``service``, ``lab_name``, and ``task_id``.  Optional assessment pins (``candidate``,
+    ``criterion``, ``parent_obligation``, ``actor``, ``gate_refs``) also come from that owner
+    context. Worker arguments are never used to choose the lab, task, check, or acceptance pins.
+    """
+
+    _PINS = ("candidate", "criterion", "parent_obligation", "actor", "gate_refs")
+
+    def __init__(
+        self,
+        assignment_context: Callable[[str], Mapping[str, Any]],
+        *,
+        fallback: OwnerPort | None = None,
+    ) -> None:
+        if not callable(assignment_context):
+            raise TypeError("assignment_context must be callable")
+        self._assignment_context = assignment_context
+        self._fallback = fallback
+
+    def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
+        if operation not in {"worker-check", "worker-done"}:
+            if self._fallback is None:
+                raise PermissionError("operation is not a landing operation")
+            return self._fallback.call(operation, assignment, args, feedback=feedback)
+        if operation == "worker-check":
+            if feedback is not True:
+                raise PermissionError("worker check must be feedback only")
+            method_name = "check"
+        elif operation == "worker-done":
+            if feedback is not False:
+                raise PermissionError("worker done cannot be feedback")
+            method_name = "done"
+
+        context = self._assignment_context(assignment)
+        if not isinstance(context, Mapping):
+            raise TypeError("assignment context must be a mapping")
+        service = context.get("service")
+        lab_name = context.get("lab_name")
+        task_id = context.get("task_id")
+        method = getattr(service, method_name, None)
+        if not callable(method):
+            raise TypeError("landing service does not implement %s" % method_name)
+        if not isinstance(lab_name, str) or not lab_name or not isinstance(task_id, str) or not task_id:
+            raise TypeError("assignment context must name its lab and admitted task")
+
+        # Do not pass worker-supplied values into landing, even when a tool schema allows them.
+        if method_name == "check":
+            return method(lab_name, task_id)
+        pins = {name: context[name] for name in self._PINS if name in context}
+        return method(lab_name, task_id, **pins)
 
 
 def _refusal(code: str, detail: str) -> dict:
