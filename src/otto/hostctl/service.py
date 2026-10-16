@@ -357,11 +357,15 @@ class OwnerService:
             return self._status()
         if command == "portfolio-operation":
             from .cli import HOST_OPERATIONS
+            from .portfolio import OWNER_PORTFOLIO_COMMANDS, OWNER_PROJECT_OPERATIONS
             # Owner custody is established by this lane, never a client argument.
             operation = (args.get("command"), args.get("sub"))
-            allowed = {("portfolio", None), ("project", "depend"), ("project", "dependencies"),
-                       ("project", "detach"), ("project", "activate")}
-            if operation not in allowed:
+            if operation == ("portfolio", None):
+                # Any other portfolio subcommand (admit, complete-task, apply, ...) is refused, not run with owner authority.
+                first = (dict(args.get("args") or {}).get("portfolio_args") or [None])[0]
+                if not isinstance(first, str) or first not in OWNER_PORTFOLIO_COMMANDS:
+                    raise PermissionError("the owner lane admits only save, show and read for the portfolio command")
+            elif operation not in OWNER_PROJECT_OPERATIONS:
                 raise PermissionError("operation is not an owner portfolio command")
             values = {key: value for key, value in dict(args.get("args") or {}).items()
                       if key not in {"home", "host", "owner_authorized", "service_status", "project_operation"}}

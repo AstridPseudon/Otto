@@ -10,6 +10,16 @@ from herzchen.contracts import ResourceRef
 from . import config as host_config
 from .owner import HostSession
 
+# The portfolio subcommands the owner lane runs for a client that names --portfolio: save, show and read.
+OWNER_PORTFOLIO_COMMANDS = frozenset({"save", "show", "read"})
+# The project operations the owner lane runs; each is reached only through its `--portfolio` flag.
+OWNER_PROJECT_OPERATIONS = frozenset({
+    ("project", "activate"),      # ottoctl project activate --portfolio P (cli.py:90)
+    ("project", "depend"),        # ottoctl project depend --portfolio P (cli.py:100)
+    ("project", "dependencies"),  # ottoctl project dependencies --portfolio P (cli.py:100)
+    ("project", "detach"),        # ottoctl project detach --portfolio P (cli.py:100)
+})
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="ottoctl portfolio")
@@ -68,16 +78,33 @@ def save_parser() -> argparse.ArgumentParser:
     return result
 
 
-def _names_save(tokens: list) -> bool:
-    """True when the first word is `save`, with an optional `--portfolio P` (or `--portfolio=P`) in front of it."""
-    rest = tokens[2:] if tokens[:1] == ["--portfolio"] else tokens[1:] if tokens[:1] and tokens[0].startswith("--portfolio=") else tokens
-    return rest[:1] == ["save"]
+def _split_portfolio(tokens: list) -> tuple:
+    """(portfolio, rest): an optional `--portfolio P` (or `--portfolio=P`) in front of the command, and the command."""
+    if tokens[:1] == ["--portfolio"] and len(tokens) >= 2:
+        return tokens[1], tokens[2:]
+    if tokens[:1] and tokens[0].startswith("--portfolio="):
+        return tokens[0].split("=", 1)[1], tokens[1:]
+    return None, tokens
+
+
+def _owner_lane_command(tokens: list) -> Any:
+    """The owner-lane portfolio subcommand the words name (save, show or read), else None."""
+    rest = _split_portfolio(tokens)[1]
+    return rest[0] if rest[:1] and rest[0] in OWNER_PORTFOLIO_COMMANDS else None
 
 
 def prepare_portfolio_request(args: argparse.Namespace) -> None:
     if args.portfolio_args in (["--help"], ["-h"]):
         parser().parse_args(args.portfolio_args)
-    if _names_save(args.portfolio_args):
+    if _owner_lane_command(args.portfolio_args) in {"show", "read"}:
+        # Validated here like any command, then sent to the owner lane with the portfolio named once, as save is.
+        from otto.portfolio.cli import build_parser as portfolio_cli_parser
+        portfolio, rest = _split_portfolio(args.portfolio_args)
+        portfolio_cli_parser().parse_args(rest)
+        args.portfolio = portfolio
+        args.portfolio_args = rest
+        return
+    if _owner_lane_command(args.portfolio_args) == "save":
         # The owner reads the save file, so its path is made absolute here; the forwarded form is validated like any command.
         from otto.portfolio.cli import build_parser as portfolio_cli_parser
         options = save_parser().parse_args(args.portfolio_args)
