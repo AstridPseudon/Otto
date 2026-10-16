@@ -525,9 +525,10 @@ class WorkersSpend(unittest.TestCase):
         (runs / "A" / "worker.json").write_text(json.dumps({"total_cost_usd": 1.0}))
         (runs / "A" / "worker.1.json").write_text(json.dumps({"total_cost_usd": 2.5}))  # running total
         (runs / "B").mkdir()
-        for name in ("worker.jsonl", "worker.1.jsonl"):
-            (runs / "B" / name).write_text('{"type":"turn.completed","usage":{"input_tokens":10,'
-                                            '"cached_input_tokens":4,"output_tokens":3}}\n')
+        (runs / "B" / "worker.jsonl").write_text('{"type":"turn.completed","usage":{"input_tokens":10,'
+                                                 '"cached_input_tokens":4,"output_tokens":3}}\n')
+        (runs / "B" / "worker.1.jsonl").write_text('{"type":"turn.completed","usage":{"input_tokens":20,'
+                                                   '"cached_input_tokens":8,"output_tokens":6}}\n')  # running total
         r = subprocess.run([sys.executable, "-I", str(BOOT / "workers.py"), "spend", "--runs", str(runs)],
                            capture_output=True, text=True, check=True)
         self.assertIn("$2.5000", r.stdout.split("total (claude)")[1])
