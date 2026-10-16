@@ -7,7 +7,8 @@
                     --lab L --started ISO --deadline ISO
   workers.py remove --file F --task T           drop T's entry; exit 1 if its worker is alive
   workers.py list   --file F                    one line per recorded worker
-  workers.py spend  --runs DIR                  cost per task, from DIR/*/worker.json
+  workers.py spend  --runs DIR                  per task: claude cost (last run file), codex tokens
+  workers.py codex-session --events F --pid P  print the session id codex names in F
   workers.py wait   --file F --inbox R [--land-out P ...]
                     block until something needs the manager: a recorded worker exits, a
                     new "## Orchestrator" heading appears in R, or a P gets its LAND RESULT line;
@@ -152,39 +153,84 @@ def cmd_list(args):
     return 0
 
 
+def _run_number(name):
+    """worker.json is run 0; worker.N.json(l) is resume N of the same session."""
+    middle = name.split(".")[1] if name.count(".") == 2 else "0"
+    return int(middle) if middle.isdigit() else 0
+
+
+def codex_usage(path):
+    """Summed turn.completed usage of one Codex --json event file (each resume writes its own)."""
+    total = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0}
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "turn.completed":
+                for key in total:
+                    total[key] += int((event.get("usage") or {}).get(key) or 0)
+    return total
+
+
 def cmd_spend(args):
+    """Per task: claude's cost is the LAST run file's total_cost_usd (a resumed session reports its
+    running total, so the files must never be added up); codex's tokens are summed over its event files."""
     rows, total = [], 0.0
     names = sorted(os.listdir(args.runs)) if os.path.isdir(args.runs) else []
     for name in names:
-        # worker.json is the first run; worker.N.json are resumes of the same session.
         folder = os.path.join(args.runs, name)
-        outputs = sorted(f for f in (os.listdir(folder) if os.path.isdir(folder) else [])
-                         if f == "worker.json" or (f.startswith("worker.") and f.endswith(".json")))
-        for out in outputs:
-            label = name if out == "worker.json" else f"{name}+{out[7:-5]}"
-            path = os.path.join(folder, out)
-            if os.path.getsize(path) == 0:
-                rows.append((label, None, "no output (running or stopped)"))
-                continue
+        files = os.listdir(folder) if os.path.isdir(folder) else []
+        claude = sorted((f for f in files if f.startswith("worker.") and f.endswith(".json")), key=_run_number)
+        codex = sorted((f for f in files if f.startswith("worker.") and f.endswith(".jsonl")), key=_run_number)
+        if claude:
+            path = os.path.join(folder, claude[-1])
+            label = name if len(claude) == 1 else f"{name} ({len(claude)} runs)"
             try:
-                with open(path) as f:
-                    result = json.load(f)
+                result = json.load(open(path)) if os.path.getsize(path) else None
             except (ValueError, OSError):
-                rows.append((label, None, "output not readable"))
-                continue
-            cost = result.get("total_cost_usd") if isinstance(result, dict) else None
-            if isinstance(cost, (int, float)):
-                total += cost
-            state = "error" if isinstance(result, dict) and result.get("is_error") else "ok"
-            rows.append((label, cost, state))
+                result = None
+            if result is None:
+                rows.append((label, None, "no output (running, stopped or unreadable)"))
+            else:
+                cost = result.get("total_cost_usd") if isinstance(result, dict) else None
+                if isinstance(cost, (int, float)):
+                    total += cost
+                rows.append((label, cost, "error" if isinstance(result, dict) and result.get("is_error") else "ok"))
+        if codex:
+            usage = [codex_usage(os.path.join(folder, f)) for f in codex]
+            used = {key: sum(u[key] for u in usage) for key in usage[0]}
+            rows.append((f"{name} (codex, {len(codex)} runs)", None,
+                         "in %(input_tokens)d (cached %(cached_input_tokens)d), out %(output_tokens)d "
+                         "(reasoning %(reasoning_output_tokens)d)" % used))
     if not rows:
         print("  (no runs recorded)")
     for name, cost, state in rows:
         amount = f"${cost:.4f}" if isinstance(cost, (int, float)) else "-"
         print(f"  {name:<14} {amount:>10}  {state}")
     if rows:
-        print(f"  {'total':<14} {'$%.4f' % total:>10}")
+        print(f"  {'total (claude)':<14} {'$%.4f' % total:>10}")
     return 0
+
+
+def cmd_codex_session(args):
+    """Print the session id Codex names in its first event; fail if the process ends first."""
+    while True:
+        if os.path.exists(args.events):
+            with open(args.events, errors="replace") as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(event, dict) and event.get("type") == "thread.started" and event.get("thread_id"):
+                        print(event["thread_id"])
+                        return 0
+        if not alive(args.pid):
+            print(f"codex (pid {args.pid}) ended before naming a session", file=sys.stderr)
+            return 1
+        time.sleep(args.poll)
 
 
 def main(argv=None):
@@ -220,6 +266,12 @@ def main(argv=None):
     p.add_argument("--started", required=True)
     p.add_argument("--deadline", required=True)
     p.set_defaults(run=cmd_add)
+
+    p = sub.add_parser("codex-session")
+    p.add_argument("--events", required=True)
+    p.add_argument("--pid", type=int, required=True)
+    p.add_argument("--poll", type=float, default=0.5)
+    p.set_defaults(run=cmd_codex_session)
 
     p = sub.add_parser("spend")
     p.add_argument("--runs", required=True)

@@ -1,7 +1,12 @@
 #!/bin/bash
-# Start one worker: `claude -p` in the task's lab, detached, with a budget cap and a
-# wall-clock limit. The run is recorded in $OPS_DIR/workers.json.
-#   run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]
+# Start one worker in the task's lab, detached, with a wall-clock limit (and, on claude, a budget
+# cap). The run is recorded in $OPS_DIR/workers.json.
+#   run-task.sh TASK [--route normal|xhard] [--host claude|codex] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]
+# --host picks the agent CLI; the default is $OTTO_WORKER_HOST, else the program's choice in
+# $OPS_DIR/worker-host, else claude. On codex, normal is gpt-6-luna (high) and xhard gpt-6-sol
+# (xhigh), sandboxed to the lab (workspace-write). Codex keeps every .git read-only inside its
+# sandbox, so the worker can't commit: when it exits, this script commits what it left in the lab.
+# Codex has no budget flag; its usage is in worker.jsonl (turn.completed events).
 # --resume continues a stopped worker's session in the same lab, with FILE as its next prompt;
 # its output goes to worker.N.json beside the first run's, so spend sums over all of them.
 # The route picks the model and the budget per focused day: normal is claude-haiku-5-5
@@ -21,10 +26,11 @@ ISOLATION=(--disable-slash-commands --strict-mcp-config --mcp-config '{"mcpServe
 # A headless worker has no use for self-scheduling: each wake re-reads its whole context.
 ISOLATION+=(--disallowedTools "ScheduleWakeup CronCreate Monitor")  # workers never wait: no self-scheduling, no monitors
 
-valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]"
+valid_task "${1:-}" || die "usage: run-task.sh TASK [--route normal|xhard] [--host claude|codex] [--days N] [--wall-seconds N] [--resume SESSION --message FILE]"
 TASK="$1"
 shift
 ROUTE=normal
+HOST="$(default_worker_host)"
 DAYS=1
 WALL_OVERRIDE=""
 RESUME=""
@@ -32,6 +38,7 @@ MESSAGE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --route) ROUTE="${2:-}"; shift 2 ;;
+    --host) HOST="${2:-}"; shift 2 ;;
     --days) DAYS="${2:-}"; shift 2 ;;
     --wall-seconds) WALL_OVERRIDE="${2:-}"; shift 2 ;;
     --resume) RESUME="${2:-}"; shift 2 ;;
@@ -40,10 +47,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$ROUTE" in
-  normal) MODEL=claude-haiku-5-5; PER_DAY=5 ;;
-  xhard) MODEL=claude-sonnet-5-5; PER_DAY=20; ALLOWED_TOOLS="Agent $ALLOWED_TOOLS"; ROUTE_ARGS=(--agents "$HAIKU_WORKER_AGENTS") ;;
-  *) die "--route must be normal or xhard" ;;
+case "$HOST:$ROUTE" in
+  claude:normal) MODEL=claude-haiku-5-5; PER_DAY=5 ;;
+  claude:xhard) MODEL=claude-sonnet-5-5; PER_DAY=20; ALLOWED_TOOLS="Agent $ALLOWED_TOOLS"; ROUTE_ARGS=(--agents "$HAIKU_WORKER_AGENTS") ;;
+  codex:normal) MODEL=gpt-6-luna; EFFORT=high; PER_DAY=0 ;;
+  codex:xhard) MODEL=gpt-6-sol; EFFORT=xhigh; PER_DAY=0 ;;
+  claude:*|codex:*) die "--route must be normal or xhard" ;;
+  *) die "--host must be claude or codex" ;;
 esac
 case "$DAYS" in
   ""|*[!0-9.]*) die "--days must be a number" ;;
@@ -64,24 +74,47 @@ mkdir -p "$RUN"
 if [ -n "$RESUME" ]; then
   [ -f "$MESSAGE" ] || die "--resume needs --message FILE"
   SESSION="$RESUME"; SESSION_ARG=(--resume "$SESSION"); PROMPT="$(cd "$(dirname "$MESSAGE")" && pwd)/$(basename "$MESSAGE")"
-  N=1; while [ -e "$RUN/worker.$N.json" ]; do N=$((N + 1)); done
-  OUT="$RUN/worker.$N.json"; ERR="$RUN/worker.$N.err"
+  N=1; while [ -e "$RUN/worker.$N.json" ] || [ -e "$RUN/worker.$N.jsonl" ]; do N=$((N + 1)); done
+  OUT="$RUN/worker.$N.json"; ERR="$RUN/worker.$N.err"; LAST="$RUN/worker.$N.last.md"
 else
   SESSION="$(uuidgen | tr '[:upper:]' '[:lower:]')"; SESSION_ARG=(--session-id "$SESSION"); PROMPT="$LAB/.brief.md"
-  OUT="$RUN/worker.json"; ERR="$RUN/worker.err"
+  OUT="$RUN/worker.json"; ERR="$RUN/worker.err"; LAST="$RUN/worker.last.md"
   cp "$LAB/.brief.md" "$RUN/brief.md"
 fi
+[ "$HOST" = codex ] && OUT="${OUT%.json}.jsonl"
 read -r STARTED DEADLINE <<< "$("$PY" -I "$HERE/workers.py" times "$WALL")"
 
 # set -m gives the worker its own process group, so the watchdog can stop all of it.
 set -m
+if [ "$HOST" = claude ]; then
 ( cd "$LAB" && exec nohup env OTTO_WORKER_DEADLINE="$DEADLINE" claude -p \
     --model "$MODEL" --effort high "${SESSION_ARG[@]}" \
     --max-budget-usd "$BUDGET" --permission-mode acceptEdits \
     --allowedTools "$ALLOWED_TOOLS" "${ISOLATION[@]}" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} --output-format json \
     < "$PROMPT" > "$OUT" 2> "$ERR" ) &
 PID=$!
+else
+# The sandbox is set with -c, which `exec resume` also takes. The heavy pool's state must be writable.
+CODEX_ARGS=(-m "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" -c 'sandbox_mode="workspace-write"'
+  -c "sandbox_workspace_write.writable_roots=[\"$HEAVY_STATE_DIR\"]"
+  --ignore-user-config --skip-git-repo-check --json -o "$LAST")
+if [ -n "$RESUME" ]; then CODEX_RUN=(codex exec resume "${CODEX_ARGS[@]}" "$SESSION" -); else CODEX_RUN=(codex exec "${CODEX_ARGS[@]}" -); fi
+( cd "$LAB" || exit 1
+  # The watchdog's TERM stops codex; this shell still commits what it left (a handler, unlike
+  # an ignored signal, isn't inherited by codex), before the KILL that follows 30 s later.
+  trap 'echo "run-task.sh: stopped by the wall-clock watchdog" >&2' TERM
+  rc=0
+  nohup env OTTO_WORKER_DEADLINE="$DEADLINE" "${CODEX_RUN[@]}" < "$PROMPT" > "$OUT" 2> "$ERR" || rc=$?
+  commit_worker_changes "$LAB" "$TASK" "$OUT" >> "$ERR" 2>&1 || echo "run-task.sh: commit failed" >> "$ERR"
+  exit $rc ) &
+PID=$!
+fi
 set +m
+if [ "$HOST" = codex ] && [ -z "$RESUME" ]; then
+  # Codex names its own session: the first event is {"type":"thread.started","thread_id":...}.
+  SESSION="$("$PY" -I "$HERE/workers.py" codex-session --events "$OUT" --pid "$PID")" \
+    || { kill -TERM -- "-$PID" 2>/dev/null || true; die "codex didn't start a session; see $ERR"; }
+fi
 
 nohup bash -c '
   end=$(( $(date +%s) + $1 ))
@@ -104,3 +137,5 @@ nohup bash -c '
 echo "started $TASK: pid $PID, $MODEL, budget \$$BUDGET, wall-clock $WALL s"
 echo "session $SESSION; deadline $DEADLINE"
 echo "output: $OUT (errors: $ERR)"
+[ "$HOST" = codex ] && echo "last message: $LAST"
+true
