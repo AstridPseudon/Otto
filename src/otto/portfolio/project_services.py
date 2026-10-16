@@ -28,12 +28,20 @@ class ProjectServices:
         "manager-worker-result", "manager-task-settlement", "manager-help-result",
         "start-retained-child", "parent-child-result"})
 
-    def __init__(self, services: Mapping[str, Any], *, owner_route: Any = None) -> None:
-        if not services or len(services) > 16:
-            raise ValueError("install between one and sixteen explicit project views")
+    def __init__(self, services: Mapping[str, Any], *, owner_route: Any = None,
+                 host: Any = None, due_port: Any = None, store: Any = None) -> None:
+        if len(services) > 16:
+            raise ValueError("install between zero and sixteen explicit project views")
+        if not services and (host is None or due_port is None or store is None):
+            # An owner with no project registered yet still composes its host and
+            # router; it names the shared host, Due port and Store itself.
+            raise ValueError("install one explicit project view, or name the shared host, Due port and Store")
         self.services = MappingProxyType(dict(services))
-        first = next(iter(services.values()))
-        self.host, self.due_port, self.store = first.host, first.server.due_port, first.server.store
+        first = next(iter(services.values()), None)
+        if first is None:
+            self.host, self.due_port, self.store = host, due_port, store
+        else:
+            self.host, self.due_port, self.store = first.host, first.server.due_port, first.server.store
         if self.host._threads or not self.host.bounded_transports:
             raise RuntimeError("install fixed project views on a closed bounded host")
         if owner_route is not None and not callable(owner_route):
@@ -48,7 +56,7 @@ class ProjectServices:
             assignment = _identity(state["assignment_ref"])
             if (service.host is not self.host or server.due_port is not self.due_port
                     or server.store is not self.store
-                    or server.owner.owner_actor != first.server.owner.owner_actor):
+                    or (first is not None and server.owner.owner_actor != first.server.owner.owner_actor)):
                 raise ValueError("project views must share the same owner, Store, Due port and host")
             if project in projects or id(state) in states or assignment in assignments:
                 raise ValueError("project, assignment and mutable state views must be distinct")

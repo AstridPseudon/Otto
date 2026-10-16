@@ -283,9 +283,42 @@ def run_installed_supervisor(config: Mapping[str, Any], *, requested_limit: int)
             'store_opened_by_cli': False, 'provider_called_by_cli': False}
 
 
+PRODUCT_COMPOSITION = 'product-service'
+_PRODUCT_ENTRY = 'import sys; from otto.hostctl.cli import main; sys.exit(main())'
+
+
+def product_argv(config: Mapping[str, Any], *, hold_dispatch: bool = False) -> list[str]:
+    """The product start: ``ottoctl service run`` itself, with no wrapper between."""
+    selected = config.get('owner_composition') or {}
+    python, home = config.get('python'), config.get('home')
+    if (selected.get('kind') != PRODUCT_COMPOSITION or not isinstance(python, str) or not isinstance(home, str)
+            or not Path(python).is_absolute() or not Path(home).is_absolute()):
+        raise PermissionError('product composition needs an absolute interpreter and installation home')
+    return [python, '-c', _PRODUCT_ENTRY, '--home', home, 'service', 'run',
+            *(['--hold-dispatch'] if hold_dispatch else [])]
+
+
+def _product_launchd(config: Mapping[str, Any], label: str) -> bytes:
+    selected = config['owner_composition']
+    src = selected.get('src')
+    if not isinstance(src, str) or not Path(src).is_absolute() or not all(
+            isinstance(selected.get(key), str) for key in ('cwd', 'stdout', 'stderr')):
+        raise ValueError('product composition needs its absolute source tree, working directory and log paths')
+    # A start that fails restarts after the throttle and reconciles before it admits anything; an
+    # orderly stop and an explicit pause exit 0 and stay down.
+    return plistlib.dumps({'Label': label, 'ProgramArguments': product_argv(config,
+            hold_dispatch=bool(selected.get('hold_dispatch'))),
+        'WorkingDirectory': selected['cwd'], 'ProcessType': 'Interactive', 'RunAtLoad': True,
+        'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 60,
+        'StandardOutPath': selected['stdout'], 'StandardErrorPath': selected['stderr'],
+        'EnvironmentVariables': {'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONPATH': src}}, sort_keys=True)
+
+
 def launchd_definition(config: Mapping[str, Any], *, label: str) -> bytes:
     if not isinstance(label, str) or not label.startswith('org.otto.') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-' for c in label):
         raise ValueError('exact Otto launchd label required')
+    if (config.get('owner_composition') or {}).get('kind') == PRODUCT_COMPOSITION:
+        return _product_launchd(config, label)
     argv = installed_argv(config, requested_limit=config.get('max_active_manager_turns'))
     selected = config['owner_composition']
     # Retry only an unsuccessful supervisor exit. Its retained intent/exit
