@@ -106,7 +106,7 @@ if [ -n "$RESUME" ]; then CODEX_RUN=(codex exec resume "${CODEX_ARGS[@]}" "$SESS
   rc=0
   nohup env OTTO_WORKER_DEADLINE="$DEADLINE" "${CODEX_RUN[@]}" < "$PROMPT" > "$OUT" 2> "$ERR" || rc=$?
   commit_worker_changes "$LAB" "$TASK" "$OUT" >> "$ERR" 2>&1 || echo "run-task.sh: commit failed" >> "$ERR"
-  exit $rc ) &
+  exit $rc ) < /dev/null > /dev/null 2>> "$ERR" &  # detached: holds no pipe of the caller's (16 Oct: it hung the manager loop)
 PID=$!
 fi
 set +m

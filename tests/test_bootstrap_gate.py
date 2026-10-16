@@ -336,6 +336,18 @@ class RunTaskRoute(Scratch):
             self.assertIn("Monitor", denied)
 
 
+    def test_sweep_counts_the_checks_run_of_a_named_file(self):
+        self.lab("T10", {"tests/test_named.py": "def test_ok():\n    assert True\n"},
+                 brief_extra="")
+        lab = self.labs / "T10"
+        (lab / ".brief.md").write_text("**Title:** Do T10\nCheck command: `%s -m pytest -q tests/test_named.py`\n" % sys.executable)
+        r = self.land("T10")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.log("T10")
+        self.assertIn("sweep tests/test_named.py run 1/2: 0 failing (the check's run)", log)
+        self.assertIn("sweep tests/test_named.py run 2/2", log)
+
+
 class RunTaskCodex(Scratch):
     """--host codex: Luna or Sol in Codex's workspace-write sandbox; codex names the session; the
     launcher commits what the worker leaves, because the sandbox keeps .git read-only."""
@@ -390,6 +402,36 @@ class RunTaskCodex(Scratch):
         self.assertEqual(argv[:2], ["exec", "resume"])
         self.assertEqual([a for a in argv if a][-2:], ["thread-normal", "-"])
         self.assertTrue((self.ops / "runs" / task / "worker.1.jsonl").exists())
+
+    def test_commit_when_the_lab_ignores_the_brief(self):
+        # Real labs ignore .brief.md; naming it in `git add` made git refuse the whole add (16 Oct).
+        task = "Cignored"
+        lab = self.lab(task, {".gitignore": ".brief.md\n", "note.txt": "x\n"})
+        stub = self.bin / "codex"
+        stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-ign"}\'\necho made > made.txt\n')
+        stub.chmod(0o755)
+        r = sh(["bash", str(BOOT / "run-task.sh"), task, "--host", "codex", "--wall-seconds", "30"], env=self.env, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        while "made.txt" not in sh(["git", "ls-files"], cwd=lab, env=self.env).stdout.split():
+            pass  # only a hang fails
+        self.assertNotIn(".brief.md", sh(["git", "ls-files"], cwd=lab, env=self.env).stdout.split())
+
+    def test_launch_holds_no_pipe_of_the_caller(self):
+        # The manager loop read run-task.sh's output through a pipe; a detached worker that kept it open
+        # blocked the loop until the worker ended (16 Oct). Here the worker blocks until released.
+        task = "Cpipe"
+        self.lab(task, {"note.txt": "x\n"})
+        release = self.tmp / "release"
+        stub = self.bin / "codex"
+        stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-pipe"}\'\n'
+                        'while [ ! -e "%s" ]; do sleep 0.2; done\n' % release)
+        stub.chmod(0o755)
+        try:
+            r = subprocess.run(["bash", str(BOOT / "run-task.sh"), task, "--host", "codex", "--wall-seconds", "60"],
+                               env=self.env, capture_output=True, text=True)  # hangs here if a pipe is held
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        finally:
+            release.write_text("go")
 
     def test_program_default_host_file(self):
         (self.ops / "worker-host").write_text("codex\n")

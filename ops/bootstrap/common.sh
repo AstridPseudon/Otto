@@ -58,7 +58,10 @@ archive_manager_files() {  # LAB TASK
 # The manager's files never go in. Nothing to commit is not an error.
 commit_worker_changes() {  # LAB TASK EVENTS
   [ -n "$(uncommitted_work "$1")" ] || { echo "commit_worker_changes: nothing to commit in $1"; return 0; }
-  git -C "$1" add -A -- . ':!.brief.md' ':!.worker.json' ':!.worker.err' \
+  # `git add -A` skips ignored files; naming an ignored one (labs ignore .brief.md) makes git refuse the
+  # whole add (16 Oct: LAND's draft went uncommitted). Unstage the manager's files after instead.
+  git -C "$1" add -A \
+    && { git -C "$1" reset -q -- .brief.md .worker.json .worker.err 2>/dev/null || true; } \
     && git -C "$1" commit -q -m "$2: the worker's changes ($(basename "$3"))" \
          -m "Committed by run-task.sh after the Codex worker exited: its sandbox keeps .git read-only." \
     && echo "commit_worker_changes: $(git -C "$1" rev-parse --short HEAD)"
