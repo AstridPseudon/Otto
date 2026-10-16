@@ -62,12 +62,20 @@ def forbidden_runtime(path: str | Path) -> bool:
 
 
 def new_installation(home: Path, *, store_path: str, authority: str, owner_actor: str,
-                     credential_ref: str, python: str) -> dict[str, Any]:
+                     credential_ref: str, python: str,
+                     repositories: Optional[Mapping[str, str | Path]] = None) -> dict[str, Any]:
     for name, value in (("owner_actor", owner_actor), ("authority", authority), ("credential_ref", credential_ref)):
         if not isinstance(value, str) or not value.strip() or value != value.strip() or "/" in value:
             raise HostConfigError(name + " must be exact nonblank text without '/'")
     if forbidden_runtime(home):
         raise HostConfigError("refusing an Otto home inside another host's receiving tree: " + str(home))
+    repo_paths: dict[str, str] = {}
+    for name, local_path in (repositories or {}).items():
+        if not isinstance(name, str) or not name or name != name.strip() or "\x00" in name:
+            raise HostConfigError("repository names must be exact nonblank text")
+        if not isinstance(local_path, (str, Path)) or not str(local_path).strip() or "\x00" in str(local_path):
+            raise HostConfigError("repository path for " + repr(name) + " must be nonblank path text")
+        repo_paths[name] = str(Path(os.path.expanduser(str(local_path))).absolute())
     account = pwd.getpwuid(os.geteuid())
     return {
         "schema": SCHEMA,
@@ -78,6 +86,9 @@ def new_installation(home: Path, *, store_path: str, authority: str, owner_actor
                   "note": "The owner service principal holds the Store for every host. Hosts act as their own "
                           "principals; none borrows another's."},
         "hosts": {},
+        # Owner-local checkout map used by composed services. A missing or
+        # empty map admits no repository for fleet assignment work.
+        "repositories": repo_paths,
         "python": python,
     }
 
@@ -120,6 +131,13 @@ def load(home: Path) -> dict[str, Any]:
             raise HostConfigError(str(path) + " lacks " + key)
     if Path(value["home"]) != home:
         raise HostConfigError("installation belongs to " + value["home"] + ", not " + str(home))
+    repositories = value.setdefault("repositories", {})
+    if not isinstance(repositories, dict):
+        raise HostConfigError(str(path) + " repositories must be an object mapping repo names to local paths")
+    for name, local_path in repositories.items():
+        if (not isinstance(name, str) or not name or name != name.strip() or "\x00" in name
+                or not isinstance(local_path, str) or not local_path.strip() or "\x00" in local_path):
+            raise HostConfigError(str(path) + " contains an invalid repository name or local path")
     if value.get("machine", {}).get("uid") != os.geteuid():
         raise HostConfigError("installation belongs to another account")
     return value

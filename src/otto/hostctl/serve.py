@@ -76,7 +76,8 @@ class HostOwnerService:
     def __init__(self, session: HostSession, record: Any, *, command_lock: Any = None,
                  adapter_factory: Optional[Callable[..., Any]] = None,
                  turn_admission: Optional[Callable[[], Any]] = None,
-                 execution_host: Any = None) -> None:
+                 execution_host: Any = None,
+                 worker_mcp_provider: Optional[Callable[[Mapping[str, Any]], Any]] = None) -> None:
         """``execution_host`` is the ONE shared host of a ProjectServices composition.
 
         Then this view owns no host, lane or socket of its own: it serves from
@@ -108,7 +109,9 @@ class HostOwnerService:
         self.help_delivery = BoundHelpDelivery(readers=OwnerIssueReaders(self.owner.consumer_operations(),
                                                                          self.due_port))
         self.portfolio = self.owner.portfolio(due_port=self.due_port, issue_delivery=self.help_delivery)
+        self._default_adapter_factory = adapter_factory is None
         self.adapter_factory = adapter_factory or self._claude_adapter
+        self.worker_mcp_provider = worker_mcp_provider
         self.turn_admission = turn_admission
         if shared:
             # The composition assigns the router's ingress once the router exists.
@@ -231,16 +234,57 @@ class HostOwnerService:
                         "OTTO_CALLER_SOCKET": str(self.paths["socket"]),
                         "OTTO_PROJECT": self.run_id}}
 
-    def _claude_adapter(self, *, principal: str, model: str, reasoning: str, service: Any = None) -> Any:
+    def _claude_adapter(self, *, principal: str, model: str, reasoning: str, service: Any = None,
+                        worker_mcp: Any = None) -> Any:
         from .adapters import compose_claude
         launch = self.manager_launch()
         return compose_claude(self.config, worktree=self.worktree(), model=model, reasoning=reasoning,
                               owner=principal, native_caller_socket=str(self.paths["socket"]),
                               native_process_observer=self.native_callers.observe,
-                              manager_write_roots=launch["write_roots"], manager_env=launch["env"])
+                              manager_write_roots=launch["write_roots"], manager_env=launch["env"],
+                              worker_mcp=worker_mcp)
 
     def _execution(self, *, principal: str, model: str, reasoning: str, evidence_id: str, **_: Any) -> Any:
-        adapter = self.adapter_factory(principal=principal, model=model, reasoning=reasoning, service=self)
+        options = {"principal": principal, "model": model, "reasoning": reasoning, "service": self}
+        if self.worker_mcp_provider is not None:
+            # evidence_id is an owner-internal schedule handle. Resolve the
+            # exact Due first; principals and request fields cannot select a
+            # worker grant. Manager/caller evidence ids do not produce grants.
+            try:
+                due = self.due_port.read_due(evidence_id)
+            except (LookupError, KeyError):
+                # The port's normal contract is None for an unknown schedule.
+                # Some finite adapters signal that same condition by exception;
+                # keep ordinary manager evidence labels working while letting
+                # storage and validation failures propagate.
+                due = None
+            if (isinstance(due, Mapping) and due.get("schedule_id") == evidence_id
+                    and due.get("role") == "worker"):
+                assignment = due.get("assignment_ref")
+                generation = due.get("generation")
+                if (due.get("recipient") != principal
+                        or not isinstance(assignment, Mapping) or not assignment.get("id")
+                        or isinstance(generation, bool) or not isinstance(generation, int) or generation < 1):
+                    raise PermissionError("worker Due does not bind this execution to its exact recipient and assignment")
+                target = due.get("target")
+                target_assignment = target.get("assignment_ref") if isinstance(target, Mapping) else None
+                if target_assignment is not None and target_assignment != assignment:
+                    raise PermissionError("worker Due target assignment differs from its exact binding")
+                worker_mcp = self.worker_mcp_provider(due)
+                if worker_mcp is None:
+                    raise PermissionError("worker assignment has no owner-issued worker_mcp grant")
+                if self._default_adapter_factory:
+                    options["worker_mcp"] = worker_mcp
+                else:
+                    import inspect
+                    try:
+                        accepts_grant = "worker_mcp" in inspect.signature(self.adapter_factory).parameters
+                    except (TypeError, ValueError):
+                        accepts_grant = False
+                    if not accepts_grant:
+                        raise TypeError("custom adapter_factory must explicitly accept worker_mcp for worker execution")
+                    options["worker_mcp"] = worker_mcp
+        adapter = self.adapter_factory(**options)
         # Workers and continuations are owned by the project's manager, as in
         # the Codex service; review input checks that exact linkage.
         return self.session.execution_application(adapter, manager_actor=self.state["manager"])

@@ -4,12 +4,16 @@ Every test launches real processes and kills every group or pid it launched in a
 """
 import json
 import os
+from pathlib import Path
 import shlex
 import signal
 import subprocess
 import sys
 import time
 from unittest import mock
+from types import SimpleNamespace
+
+import pytest
 
 from herzchen.adapters import host as host_module
 from herzchen.contracts import HostIdentity, HostOperation, HostOutcome, HostRequest, ResourceRef
@@ -78,6 +82,195 @@ def _write_latch(path, pgid, leader_birth, members):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(record, handle, sort_keys=True)
     return str(path)
+
+
+def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory=None, repository_path=None):
+    """A live dispatch record and the exact task projection it admitted."""
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.work.admission import authoring_stamp
+    from herzchen.fleet.tools.tokens import TokenBook
+    from herzchen.fleet import tools as fleet_tools
+    from otto.hostctl import product_service
+
+    task_id = "task-owned-by-worker"
+    payload = {"kind": "task", "title": "Owned task", "fields": {"check": ["true"]},
+               "dependencies": [], "metadata_namespaces": {}}
+    if plan is not None:
+        payload["metadata_namespaces"]["otto.plan"] = dict(plan)
+    payload["metadata_namespaces"]["work.admission"] = authoring_stamp("admitted-r1", payload, "reviewer")
+    task = SimpleNamespace(id=task_id,
+        ref=ResourceRef("fixture", "work.task", task_id, "admitted-r1"), payload=payload)
+
+    class FleetStub:
+        def __init__(self, repo, labs_root, *, checkpoint):
+                self.repo, self.labs_root, self.checkpoint = repo, labs_root, checkpoint
+
+    class FacadeServerStub:
+        def __init__(self, *_args):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(product_service, "LabFleet", FleetStub, raising=False)
+    # The registry's internal MCP endpoint is outside this unit's boundary.
+    monkeypatch.setattr(product_service, "_OwnerExecutorPort",
+                        lambda port, *_args: port, raising=False)
+    monkeypatch.setattr(product_service, "_TaskContextPort", lambda _registry: None, raising=False)
+    monkeypatch.setattr(fleet_tools, "FacadeServer", FacadeServerStub)
+    repository = Path(repository_path) if repository_path is not None else tmp_path / "checkout"
+    repository.mkdir(exist_ok=True)
+    if not (repository / ".git").exists():
+        subprocess.run(["git", "-C", str(repository), "init", "-b", "project-line"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name", "COMPOSEFLEET test"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email", "composefleet@test.invalid"], check=True)
+        (repository / "README.md").write_text("owner registry test\n")
+        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-m", "base"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    owner = SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: task))
+    tokens = TokenBook()
+    assignment = "assignment-owned-by-worker"
+    token = tokens.issue(assignment, "worker")
+    record = SimpleNamespace(assignment=assignment, task=task, admitted_revision="admitted-r1",
+                             state="launched", role="worker", token=token)
+    dispatcher = SimpleNamespace(tokens=tokens, records={assignment: record})
+    registry = product_service.OwnerFleetRegistry(
+        owner, {"store": {"authority": "fixture"},
+                "repositories": {"repo-a": str(repository)}}, tmp_path / "otto-home", object(),
+        checkpoint=lambda *_a, **_kw: None, landing_factory=landing_factory)
+    registry.bind_dispatcher(dispatcher)
+    return registry, task, record, token, repository
+
+
+def test_owner_registry_binds_lab_and_line_to_dispatch_record_and_reuses_repo_branch_pair(monkeypatch, tmp_path):
+    registry, task, record, token, repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"route": "normal", "size": 1, "lines": 99,
+                                     "repo": "repo-a", "branch": "project-line"},
+        landing_factory=lambda **_kwargs: object())
+
+    first = registry.assignment_context(record.assignment, token=token)
+    # Worker request fields cannot select another task, checkout, or branch.
+    second = registry.assignment_context(record.assignment, token=token)
+
+    assert first["task"] is task
+    assert first["task_id"] == "task-owned-by-worker"
+    assert first["admitted_revision"] == "admitted-r1"
+    assert first["repo_path"] == str(repository)
+    assert first["branch"] == "project-line"
+    assert first["line_ref"] == "refs/heads/project-line"
+    assert first["lab_name"] == "task-owned-by-worker"
+    assert first["fleet"] is second["fleet"]
+    assert first["landing"] is second["landing"]
+
+
+def test_owner_registry_refuses_token_from_another_assignment(monkeypatch, tmp_path):
+    registry, _task, record, _token, _repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"})
+    foreign = registry.dispatcher.tokens.issue("another-assignment", "worker")
+
+    with pytest.raises(PermissionError, match="does not belong"):
+        registry.assignment_context(record.assignment, token=foreign)
+
+
+def test_worker_facade_check_is_feedback_and_done_lands_only_its_bound_lab_and_line(monkeypatch, tmp_path):
+    from herzchen.fleet.tools.facade import LandingOwnerPort, ToolFacade
+    from herzchen.fleet.tools.rules import CHECK, DONE, FeedbackLedger, ToolSpec
+    from test_landing import _Runner, _admitted_task, _project, _run, _service
+    from herzchen.fleet.runner.commit import git_commit_identity
+    from herzchen.fleet.runner.store import ResultStore
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    line, base, fleet = _project(project_root)
+    lab = fleet.labs.pop("one")
+    fleet.labs["task-owned-by-worker"] = lab
+    class DirtyAwareRunner(_Runner):
+        def call(self, request):
+            reply = super().call(request)
+            if request["op"] == "submit" and reply.get("ok"):
+                record = self.records[reply["run_id"]]
+                commit = git_commit_identity(request["cwd"])
+                record["commit"] = commit
+                record["binding"] = ResultStore.binding(record["argv"], record["cwd"], commit)
+            return reply
+
+    runner = DirtyAwareRunner()
+    landing, _landing_calls = _service(fleet, runner, task=_admitted_task())
+
+    class BoundLanding:
+        def check(self, lab_name, task_id):
+            return landing.check(lab_name, task_id)
+
+        def done(self, lab_name, task_id, **pins):
+            from test_landing import _criterion
+            return landing.done(lab_name, task_id, candidate="candidate@1", criterion=_criterion(),
+                                parent_obligation="obligation@1", actor="owner", **pins)
+
+    registry, _task, record, token, _repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "main"},
+        landing_factory=lambda **_kwargs: BoundLanding(), repository_path=line)
+    owner_port = LandingOwnerPort(registry.assignment_context)
+    specs = (ToolSpec("check", CHECK, "worker-check", ("lab_name", "task_id")),
+             ToolSpec("done", DONE, "worker-done", ("lab_name", "task_id")))
+    facade = ToolFacade(specs, {"worker": ("check", "done")}, owner_port,
+                        registry.dispatcher.tokens, FeedbackLedger())
+
+    checked = facade.call(token, "check", {"lab_name": "other-lab", "task_id": "other-task"})
+    assert checked.get("feedback") is True and checked.get("accepted") is False, checked
+    assert _run(line, "rev-parse", "refs/heads/main") == base, "check advanced the project's line"
+    landed = facade.call(token, "done", {"lab_name": "other-lab", "task_id": "other-task"})
+
+    assert landed.get("submitted") is True and landed.get("accepted") is False, landed
+    assert landed["result"]["landed"] is True
+    assert landed["result"]["task"] == "task-owned-by-worker"
+    assert _run(line, "rev-parse", "refs/heads/main") != base
+    assert (line / "one.txt").exists(), "the bound task lab did not land on its project line"
+    assert not (line / "two.txt").exists(), "another task's lab was landed"
+
+
+def test_worker_facade_refuses_foreign_assignment_token(monkeypatch, tmp_path):
+    from herzchen.fleet.tools.facade import LandingOwnerPort, ToolFacade
+    from herzchen.fleet.tools.rules import CHECK, FeedbackLedger, ToolSpec
+    from test_landing import _Runner, _admitted_task, _project, _run, _service
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    line, base, fleet = _project(project_root)
+    lab = fleet.labs.pop("one")
+    fleet.labs["task-owned-by-worker"] = lab
+    landing, _landing_calls = _service(fleet, _Runner(), task=_admitted_task())
+
+    registry, _task, record, _token, _repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "main"},
+        landing_factory=lambda **_kwargs: landing, repository_path=line)
+    foreign = registry.dispatcher.tokens.issue("another-assignment", "worker")
+    facade = ToolFacade((ToolSpec("check", CHECK, "worker-check"),), {"worker": ("check",)},
+                        LandingOwnerPort(registry.assignment_context), registry.dispatcher.tokens,
+                        FeedbackLedger())
+
+    refused = facade.call(foreign, "check")
+
+    assert refused["ok"] is False
+    assert refused["error"] == "owner_unavailable"
+    assert record.assignment == "assignment-owned-by-worker"
+    assert _run(line, "rev-parse", "refs/heads/main") == base, "foreign token advanced the project's line"
+
+
+@pytest.mark.parametrize("plan, message", [
+    ({"repo": "repo-a"}, "otto.plan.branch"),
+    ({"branch": "project-line"}, "otto.plan.repo"),
+    ({"repo": "missing", "branch": "project-line"}, "unknown repo: missing"),
+], ids=["missing-branch", "missing-repo", "unknown-repo"])
+def test_owner_registry_names_missing_or_unknown_project_plan_key(monkeypatch, tmp_path, plan, message):
+    registry, _task, record, token, _repository = _fleet_registry_fixture(monkeypatch, tmp_path, plan=plan)
+
+    with pytest.raises(LookupError, match=message):
+        registry.assignment_context(record.assignment, token=token)
 
 
 def test_empty_census_is_uncertain():
