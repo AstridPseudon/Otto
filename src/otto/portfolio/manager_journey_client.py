@@ -19,7 +19,8 @@ def requires_native_caller(command: str) -> bool:
     """
     return command in {"whoami", "effective-context", "compact-read", "task-list-author", "run-worker",
                        "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
-                       "report", "status", "review-input", "review-task", "finish-task", "finish-project",
+                       "report", "status", "show", "save", "answer", "route",
+                       "review-input", "review-task", "finish-task", "finish-project",
                        "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
                        "worker-status", "worker-readiness", "manager-assessment", "manager-assessment-pool", "completion-gate",
                        "complete-task", "manager-continue", "execution-control", "operating-setup", "vision"}
@@ -240,6 +241,7 @@ def command_result_summary(value: Any) -> Any:
               "physical_session_id", "context_digest_verified", "request_key", "delivery_state",
               "model", "reasoning", "native_session_id", "retained_handle", "response_path",
               "version", "in_flight_request", "stop_state", "completion_state", "role", "status", "manager",
+              "project_ref", "project_role_identity", "effective_manager_brief", "tool_request_key", "report",
               "project_completion_recorded", "settlement_pending", "canonical_lifecycle", "task_lifecycle", "review_eligible", "blocked_operation",
               "issue_id", "state", "delivery_id", "disposition", "request_id", "awaiting")
     summary = {key: item for key in fields if key in value
@@ -486,6 +488,21 @@ def add_manager_journey_parsers(commands: Any) -> None:
     compact.add_argument("--read", required=True, choices=READS)
     compact.add_argument("--task", default=argparse.SUPPRESS, help="required only for review-input")
     compact.add_argument("--delivery-id", default=argparse.SUPPRESS, help="required only for exact read-help; no broad issue scan")
+    commands.add_parser("show", help="read this manager's current project, tasks, and effective brief")
+    save = commands.add_parser("save", help="save a concise manager note to this project's canonical report history")
+    save.add_argument("--note", required=True)
+    save.add_argument("--task", help="optional current task alias")
+    answer = commands.add_parser("answer", help="record the manager's applied answer to a current help issue")
+    answer.add_argument("--issue-id", required=True)
+    answer.add_argument("--evidence", required=True, type=json.loads)
+    answer.add_argument("--next-action", required=True)
+    route = commands.add_parser("route", help="reroute ready work or resume one exact retained occurrence")
+    route.add_argument("--operation", required=True, choices=("reroute", "retry"))
+    route.add_argument("--task", help="required for reroute")
+    route.add_argument("--principal", help="required for reroute")
+    route.add_argument("--route", choices=("normal", "xhard"), help="required for reroute")
+    route.add_argument("--focus", help="required for reroute")
+    route.add_argument("--schedule-id", help="required for retry; exact current project occurrence")
     commands.add_parser("worker-readiness", help="bounded worker metadata read; no launch or admission verdict",
         description="Reads current metadata for this manager's own retained slots only. dispatch:false means this read launched nothing; it does not deny a separate authenticated run-worker request. Pending/unassigned/not-evaluated defaults and empty blocker lists are not admission verdicts. Missing/oversize/foreign pins remain unavailable, not zero. Named Due pools are observed accounting, never a promise that ordinary run-worker enforces a NORMAL pool or an assessment-budget grant.")
     add_help_parsers(commands)

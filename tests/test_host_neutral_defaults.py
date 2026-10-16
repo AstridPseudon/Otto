@@ -154,10 +154,10 @@ class LeafAdapterTests(unittest.TestCase):
 
 
 class RoleGuidanceTests(unittest.TestCase):
-    def test_codex_guidance_is_unchanged_and_a_host_names_its_own_command(self):
+    def test_manager_guidance_is_host_neutral_and_can_name_the_installed_command(self):
         from otto.portfolio import operating_brief
         self.assertEqual(operating_brief._host_role_guidance({}), operating_brief._CODEX_ADAPTER_ROLE_BASE_GUIDANCE)
-        self.assertIn("Documents/Codex", operating_brief._host_role_guidance({"OTTO_HOST_KIND": "codex"}))
+        self.assertNotIn("Documents/Codex", operating_brief._host_role_guidance({"OTTO_HOST_KIND": "codex"}))
         claude = operating_brief._host_role_guidance({"OTTO_HOST_KIND": "claude-code",
                                                       "OTTO_TOOL_ENTRYPOINT": "/home/u/.otto-claude/bin/ottoctl"})
         self.assertIn("`/home/u/.otto-claude/bin/ottoctl`", claude)

@@ -121,6 +121,13 @@ def resolve_caller_context(application: Any, binding: HostCallerBinding) -> dict
         "responsibility_ref": json_value(assignment.payload["responsibility_ref"]),
         "assignment_ref": assignment.ref.to_dict(), "generation": assignment.generation,
         "project_ref": project["ref"], "task_ref": task["ref"],
+        "project_role_identity": {
+            "schema": "otto.project-role-identity.v1",
+            "project_ref": project["ref"], "role": role,
+            "principal": assignment.principal,
+            "assignment_ref": assignment.ref.to_dict(), "generation": assignment.generation,
+            "scope": "one current role assignment within one project",
+        },
         "native_session": {"adapter": binding.adapter, "id": binding.native_session_id},
         "occurrence_ref": {"schedule_id": binding.schedule_id,
                            "assignment_ref": binding.assignment_ref.to_dict(),

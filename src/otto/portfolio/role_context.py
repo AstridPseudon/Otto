@@ -20,7 +20,7 @@ import json
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
-from .operating_brief import ROLE_OPERATING_CONTRACTS
+from .operating_brief import BASE_MANAGER_BRIEF, ROLE_OPERATING_CONTRACTS
 from .owner_readers import json_value, owner_ref
 
 
@@ -196,7 +196,9 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
         if isinstance(item, Mapping) and isinstance(item.get("ref"), Mapping):
             resources.append({"ref": dict(item["ref"]), "content_sha256": item.get("content_sha256"),
                               "source": item.get("source")})
-    return {
+    available_commands = {"tool_entrypoint": tool_entrypoint,
+                          "identity_reads": list(identity_commands)}
+    result = {
         "schema": "otto.effective-role-context.v1",
         "assignment_ref": snapshot.get("assignment_ref"),
         "responsibility_ref": snapshot.get("responsibility_ref"),
@@ -216,9 +218,36 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
         "dependencies": task_payload.get("dependencies", project_payload.get("dependencies", [])),
         "next_actor": next_actor,
         "next_action": next_action,
-        "available_commands": {"tool_entrypoint": tool_entrypoint,
-                               "identity_reads": list(identity_commands)},
+        "available_commands": available_commands,
     }
+    if canonical.get("role") == "manager":
+        result["manager_actions"] = ["whoami", "status", "show", "save", "answer", "route", "report"]
+        manager_notes = {
+            "priorities": brief.get("priorities", []),
+            "operational_constraints": brief.get("operational_constraints", []),
+            "continuation": brief.get("continuation"),
+            "links": brief.get("links", []),
+        }
+        result["effective_manager_brief"] = {
+            "schema": "otto.effective-manager-brief.v1",
+            "project_ref": project["ref"],
+            "assignment_ref": snapshot.get("assignment_ref"),
+            "generation": snapshot.get("generation"),
+            "base_manager_brief": {
+                **BASE_MANAGER_BRIEF,
+                "content_sha256": hashlib.sha256(json.dumps(BASE_MANAGER_BRIEF, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
+                "source": "Otto host-neutral manager brief",
+            },
+            "project_brief": {
+                "mandate": brief.get("mandate"),
+                "user_constraints": brief.get("user_constraints", []),
+                "source_ref": snapshot.get("mandate_ref"),
+            },
+            "manager_notes": manager_notes,
+            "precedence": "Current authority and adopted directions; project brief; manager notes; base manager guidance.",
+        }
+    return result
 
 
 def same_supervisor_authority_binding(declared: Any, current: Any) -> bool:
@@ -352,6 +381,7 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             "project_and_custom_context_refs": result["supporting_refs"],
             "mandate_ref": snapshot["mandate_ref"], "tool_entrypoint": tool_entrypoint,
             "instructions": ROLE_CONTEXT_GUIDANCE["manager"]["help"],
+            "effective_manager_brief": effective_context.get("effective_manager_brief"),
             "precedence": "Current authenticated authority and adopted directions govern; standard manager duties and selected pack policy accompany the custom mandate. Information pins grant no new authority.",
         }
         effective_context["manager_operating_context"] = result["manager_operating_context"]
