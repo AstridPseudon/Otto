@@ -112,11 +112,11 @@ class Custody:
 
     # -- birth -------------------------------------------------------------------------------
     @classmethod
-    def launch(cls, argv: Any, *, latch_path: Optional[str] = None, popen: Callable[..., Any] = subprocess.Popen,
+    def launch(cls, argv: Any, *, latch_path: Optional[str] = None, popen: Optional[Callable[..., Any]] = None,
                census_fn: Callable[[], Optional[dict]] = census, **kwargs: Any) -> "Custody":
         """Start ``argv`` as a fresh session leader and fence its identity at birth."""
         kwargs["start_new_session"] = True
-        process = popen(argv, **kwargs)
+        process = (subprocess.Popen if popen is None else popen)(argv, **kwargs)  # looked up now so patches apply
         custody = cls(process, process.pid, None, {}, latch_path, census_fn)
         snap = census_fn()
         leader = snap.get(process.pid) if snap else None
@@ -207,14 +207,15 @@ class Custody:
         if snap is None:
             return
         live = self.observe(snap) or {}
-        if self._group_state(snap) == "ours":
+        grouped = self._group_state(snap) == "ours"
+        if grouped:
             try:
                 os.killpg(self.pgid, sig)
             except OSError:
                 pass
         for pid in live:
             info = snap.get(pid)
-            if info is None or info.pgid == self.pgid and self._group_state(snap) == "ours":
+            if info is None or (info.pgid == self.pgid and grouped):
                 continue
             try:
                 os.kill(pid, sig)
