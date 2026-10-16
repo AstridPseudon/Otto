@@ -525,7 +525,7 @@ class ExecutionHost:
         # Admission is the single launch boundary. Re-read the owner task here:
         # the prepared DueRecord can outlive a task pause and must not authorize
         # a provider call from its earlier readiness snapshot.
-        if due.host_state in {"paused", "waiting"}:
+        if getattr(due, "host_state", None) in {"paused", "waiting"}:
             raise ExecutionAdmissionHeld("paused task cannot be admitted")
         from .owner_readers import task_reader
         task_ref = due.target.get("task_ref")
@@ -1072,16 +1072,37 @@ class ExecutionHost:
     def _serve_socket(self) -> None:
         # Optional compatibility for installed callers. File requests remain
         # the durable transport; both surfaces share one mutation custodian.
+        connections = {}
         while not self._commands_stop.is_set():
             try:
                 connection, _ = self._socket.accept()
             except socket.timeout:
                 continue
             with self._lock:
-                thread = threading.Thread(target=self._serve_socket_connection,
-                    args=(connection,), name="otto-caller-socket-request", daemon=False)
+                connection_id = id(connection)
+                # Real accept calls return a fresh socket object. A repeated
+                # object can come from a test or injected listener; never
+                # assign the same active stream to multiple readers.
+                if connection_id in connections:
+                    continue
+                def serve_admitted(connection=connection, connection_id=connection_id):
+                    try:
+                        self._serve_socket_connection(connection)
+                    finally:
+                        with self._lock:
+                            connections.pop(connection_id, None)
+                thread = threading.Thread(target=serve_admitted,
+                    name="otto-caller-socket-request", daemon=False)
                 self._children.add(thread)
+                connections[connection_id] = thread
                 thread.start()
+        # Receipt publication happens in the connection worker before it tries
+        # to send the response. Keep the listener alive through that settlement
+        # for every connection admitted before shutdown.
+        with self._lock:
+            admitted = tuple(connections.values())
+        for thread in admitted:
+            thread.join()
 
     def _serve_socket_connection(self, connection: socket.socket) -> None:
         try:
