@@ -95,7 +95,7 @@ class ProjectAuthoringProof(unittest.TestCase):
         self.assertEqual(conflict["outcome"], "conflict", conflict)
         self.assertEqual(conflict["error"]["code"], "replay_conflict")
         self.assertTrue(path.exists())
-        record = self.owner.graph.get(original)
+        record = self.owner.graph.current(original)
         self.assertEqual(record.lifecycle.value, "pending")
         for field in ("manager", "worker", "budget", "execution"):
             self.assertIsNone(record.payload[field])
@@ -125,7 +125,7 @@ class ProjectAuthoringProof(unittest.TestCase):
         task = self.owner.graph.create_task(ref, title="Task", logical_request_key="task")
         opened = self.open(ref)
         self.owner.graph.revise(task.ref, title="Concurrent task edit", logical_request_key="other-task")
-        self.assertEqual(self.owner.graph.get(ref).ref, ref)
+        self.assertEqual(self.owner.graph.current(ref).ref, ref)
         result = self.finish(opened)
         self.assertEqual(result["outcome"], "conflict", result)
         self.assertTrue((self.root / opened["session_id"] / "project.json").exists())
@@ -190,7 +190,7 @@ class ProjectAuthoringProof(unittest.TestCase):
         self.assertTrue(result["recovery_pending"])
         self.assertIsNone(result["sheet_receipt"])
         self.assertEqual(json.loads(self.owner.authoring.read_snapshot(ResourceRef.from_dict(result["snapshot_ref"]))), opened["project_json"])
-        self.assertEqual(self.owner.graph.get(ResourceRef.from_dict(opened["project_ref"])).revision, "rev-1")
+        self.assertEqual(self.owner.graph.current(ResourceRef.from_dict(opened["project_ref"])).revision, "rev-1")
         self.assertTrue((self.root / opened["session_id"] / "project.json").exists())
 
     def test_real_parser_and_sibling_authoring_in_live_owner_wait(self):

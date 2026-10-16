@@ -29,7 +29,7 @@ def current(service,actor):
   and state['project_ref']['id']==migration.PROJECT and state['assignment_ref']['id']==migration.MANAGER,
   'same original migrated W0 manager/context required')
  manager=owner.assignments.get(ResourceRef.from_dict(state['assignment_ref']))
- project=owner.graph.get(ResourceRef.from_dict(state['project_ref']))
+ project=owner.graph.current(ResourceRef.from_dict(state['project_ref']))
  require(manager.ref.to_dict()==state['assignment_ref']and manager.generation==2
   and manager.payload.get('manager')==actor.actor,'current same W0 receiving ownership differs')
  require(len(service.host._executions)<=64 and len(service.host._capacity_holds)<=64,'finite current native ledger required')
@@ -66,7 +66,7 @@ def plan(service,*,actor):
  for member in memberships:
   pin=ResourceRef.from_dict(member)
   require(pin.authority==project.ref.authority and pin.kind=='work.task','W0 task membership is foreign')
-  task=owner.graph.get(ResourceRef(pin.authority,pin.kind,pin.id))
+  task=owner.graph.current(ResourceRef(pin.authority,pin.kind,pin.id))
   require(same(task.payload.get('project_ref')or{},project.ref.to_dict())and task.lifecycle.value=='pending',
    'ordinary initial W0 task assessment requires same pending authored task')
   acceptance=task.payload.get('acceptance')

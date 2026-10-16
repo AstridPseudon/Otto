@@ -47,7 +47,7 @@ def install(common):
   final.require(actor==target.server.owner.owner_actor,'same physical owner input required')
   final.require(set(request)=={'command','operation','request_key','project_ref','arguments'}
    and request['command']=='project-authoring','finite exact W0 final owner fields required')
-  pin=ResourceRef.from_dict(request['project_ref']);current=target.server.owner.graph.get(pin)
+  pin=ResourceRef.from_dict(request['project_ref']);current=target.server.owner.graph.current(pin)
   final.require(pin==current.ref and pin.id==migration.PROJECT,'exact current original W0 project required')
   operation=request['operation'];arguments=request['arguments']
   final.require(isinstance(arguments,dict),'finite original final arguments required')

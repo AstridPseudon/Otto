@@ -14,7 +14,7 @@ def qualify(owner,state,due,prepared,*,view):
  if state['project_ref']['id']!=HELD_PROJECT or due.get('schedule_id')!=HELD_SCHEDULE or due.get('schedule_id')!=state['schedule_id']or due.get('assignment_ref')!=state['assignment_ref']or due.get('generation')!=state['manager_generation']or due.get('recipient')!=state['manager']or due.get('role')!='manager'or due.get('stop_state')!='active'or due.get('completion_state')!='none'or not planned or due.get('delivery_state')!='ready' or due.get('last_completed_request')is not None or due.get('last_result')is not None or due.get('completion_evidence') or (due.get('host_evidence')or{}).get('gateway_attempt')is not None:raise PermissionError('context hold requires exact original unattempted manager occurrence')
  target=due.get('target')or{}
  if identity(target.get('project_ref',{}))!=identity(state['project_ref']):raise PermissionError('context hold project differs')
- current=owner.assignments.get(ResourceRef.from_dict(state['assignment_ref']));root=owner.assignments.get(ResourceRef.from_dict(state['orchestrator_assignment_ref']));project=owner.graph.get(ResourceRef.from_dict(state['project_ref']))
+ current=owner.assignments.get(ResourceRef.from_dict(state['assignment_ref']));root=owner.assignments.get(ResourceRef.from_dict(state['orchestrator_assignment_ref']));project=owner.graph.current(ResourceRef.from_dict(state['project_ref']))
  relation=project.payload.get('metadata',{}).get('otto_orchestrator')or{}
  if current.ref.to_dict()!=state['assignment_ref']or current.generation!=state['manager_generation']or current.principal!=state['manager']or current.role!='manager'or identity(current.scope.to_dict())!=identity(project.ref.to_dict())or root.ref.to_dict()!=state['orchestrator_assignment_ref']or root.principal!=owner.owner_actor.actor or root.generation!=state['root_help_binding']['generation']or root.role!='orchestrator'or relation.get('assignment_ref')!=root.ref.to_dict()or relation.get('generation')!=root.generation:raise PermissionError('context hold current manager/project/root differs')
  configs=[]
@@ -42,7 +42,7 @@ def qualify_settled_idle(owner,state,due,terminal_projection):
  if state['project_ref']['id']!='project-65e3f08dd7a49f8ceca748ee6857':return None
  terminal=terminal_projection(due)
  if terminal is None:return None
- current=owner.assignments.get(ResourceRef.from_dict(state['assignment_ref']));root=owner.assignments.get(ResourceRef.from_dict(state['orchestrator_assignment_ref']));project=owner.graph.get(ResourceRef.from_dict(state['project_ref']));target=due.get('target')or{}
+ current=owner.assignments.get(ResourceRef.from_dict(state['assignment_ref']));root=owner.assignments.get(ResourceRef.from_dict(state['orchestrator_assignment_ref']));project=owner.graph.current(ResourceRef.from_dict(state['project_ref']));target=due.get('target')or{}
  relation=project.payload.get('metadata',{}).get('otto_orchestrator')or{}
  from otto.portfolio.operating_setup import authenticated_adoption_ancestor
  digest=(due.get('completion_evidence')or{}).get('result_digest')

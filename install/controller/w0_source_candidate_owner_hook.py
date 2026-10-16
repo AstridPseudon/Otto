@@ -15,7 +15,7 @@ def install(common):
   actor=self.authoring_authorizer(request)
   completion.require(actor==target.server.owner.owner_actor and set(request)=={'command','operation','request_key','project_ref','arguments'}
    and request['command']=='project-authoring','finite authenticated same-owner source publication required')
-  pin=ResourceRef.from_dict(request['project_ref']);current=target.server.owner.graph.get(pin)
+  pin=ResourceRef.from_dict(request['project_ref']);current=target.server.owner.graph.current(pin)
   completion.require(pin==current.ref and pin.id==migration.PROJECT,'exact current original W0 project required')
   completion.require(not host._closing and not host._executions and not host._capacity_holds,'ordinary shared native quiet boundary required; no shutdown needed')
   args=request['arguments'];completion.require(isinstance(args,dict),'finite source publication arguments required')

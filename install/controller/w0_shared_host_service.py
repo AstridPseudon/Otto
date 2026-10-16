@@ -130,7 +130,7 @@ class HostOwnerService:
             state = json.loads(self.state_path.read_text())
             if state.get("schema") != STATE_SCHEMA or state["project_ref"]["id"] != record.ref.id:
                 raise RuntimeError("retained service state belongs to another project or schema")
-            state["project_ref"] = self.owner.graph.get(ResourceRef(record.ref.authority, record.ref.kind,
+            state["project_ref"] = self.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind,
                                                                    record.ref.id)).ref.to_dict()
             state.setdefault("run_id", self.run_id)
             state.setdefault("owner", self.owner.owner_actor.actor)
@@ -142,7 +142,7 @@ class HostOwnerService:
         task_refs = {}
         for raw in record.payload.get("tasks") or ():
             ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
-            task = self.owner.graph.get(ResourceRef(ref.authority, ref.kind, ref.id))
+            task = self.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
             task_refs[task.payload.get("alias") or task.ref.id] = task.ref.to_dict()
         binding = manager["binding"]
         return {"schema": STATE_SCHEMA, "authority": self.config["store"]["authority"], "run_id": self.run_id,

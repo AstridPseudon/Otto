@@ -110,7 +110,7 @@ def compose_closeout_observer(owner,expected_project_id):
 def qualify_terminal_project_view(owner,state,due,terminal_projection):
  from herzchen.contracts import ResourceRef
  from otto.portfolio.operating_setup import authenticated_adoption_ancestor
- project=owner.graph.get(state['project_ref'])
+ project=owner.graph.current(state['project_ref'])
  if project.ref.to_dict()!=state['project_ref']:raise PermissionError('fixed current project differs')
  if project.payload.get('lifecycle')!='completed':return None
  terminal=terminal_projection(due)
@@ -212,7 +212,7 @@ def qualify_adopted_idle_view(owner,state,due,terminal_projection,app):
  if current.ref.to_dict()!=state['assignment_ref']or current.generation!=state['manager_generation']or current.principal!=state['manager']:raise PermissionError('current manager adoption anchor differs')
  receipt=owner.store.consumer().get_receipt(ADOPTION_KEY)
  if (receipt is None or receipt.operation!='work.assignment.adopt-resources'or receipt.target.to_dict()!=due['assignment_ref']or receipt.result_ref!=current.ref):raise PermissionError('exact resource-only assignment adoption receipt required')
- project=owner.graph.get(ResourceRef.from_dict(state['project_ref']));root=owner.assignments.get(ResourceRef.from_dict(state['root_help_binding']['assignment_ref']))
+ project=owner.graph.current(ResourceRef.from_dict(state['project_ref']));root=owner.assignments.get(ResourceRef.from_dict(state['root_help_binding']['assignment_ref']))
  relation=project.payload.get('metadata',{}).get('otto_orchestrator',{})
  if (project.ref.to_dict()!=state['project_ref']or root.ref.to_dict()!=state['root_help_binding']['assignment_ref']or root.generation!=state['root_help_binding']['generation']or root.principal!=owner.owner_actor.actor
   or root.role!='orchestrator'or relation.get('assignment_ref')!=root.ref.to_dict()or relation.get('generation')!=root.generation):raise PermissionError('current protected own-root supervision differs')
@@ -224,7 +224,7 @@ def qualify_adopted_idle_view(owner,state,due,terminal_projection,app):
 
 # END qualified Onboarding adopted idle read
 def validate_fixed_supervisor(owner,state,root):
- view_root=owner.assignments.get(state['orchestrator_assignment_ref']);supervisor=state['root_help_binding'];project=owner.graph.get(state['project_ref']);relation=project.payload.get('metadata',{}).get('otto_orchestrator',{})
+ view_root=owner.assignments.get(state['orchestrator_assignment_ref']);supervisor=state['root_help_binding'];project=owner.graph.current(state['project_ref']);relation=project.payload.get('metadata',{}).get('otto_orchestrator',{})
  if (view_root.ref.to_dict()!=state['orchestrator_assignment_ref']or view_root.role!='orchestrator'or getattr(view_root.status,'value',view_root.status)=='cancelled'or identity(view_root.scope.to_dict())!=identity(root.scope.to_dict())or view_root.principal!=supervisor['principal']or view_root.generation!=supervisor['generation']or view_root.ref.to_dict()!=supervisor['assignment_ref']or view_root.session!=supervisor['conversation_ref']or relation.get('assignment_ref')!=view_root.ref.to_dict()or relation.get('generation')!=view_root.generation or identity(supervisor['project_ref'])!=identity(state['project_ref'])):raise PermissionError('fixed view current canonical supervisor differs')
  return view_root
 
