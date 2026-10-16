@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from inspect import Parameter, signature
 from typing import Any, Mapping
 
 from .herzchen_binding import _json_value
@@ -163,23 +164,62 @@ class OwnerIssueReaders:
         else:
             view = self.operations.sheet_port.export(record.ref)
             scopes = {record.ref.id, *(item["ref"]["id"] for item in view["tasks"])}
-            assignment_refs = [assignment.get("ref") for row in (view["project"], *view["tasks"])
-                for assignment in row.get("observed", {}).get("assignments", ())]
+        owner_reader = self.operations._owner_reader
         result = []
         seen = set()
-        # Project/task assignment observations retain old manager identities.
-        # Exact project history also carries previous supervisor assignments.
-        # Select their immutable streams before hydrating report/result bodies;
-        # revision equality must NOT exclude pre-adoption observations.
-        owner_reader = self.operations._owner_reader
+
+        def consume(refs):
+            for ref in refs:
+                if ref.kind not in {"wrk.report", "wrk.result"} or ref.id in seen:
+                    continue
+                seen.add(ref.id)
+                observation = owner_reader.get_record(ref)
+                if observation is None:
+                    continue
+                payload = observation.payload
+                value = payload.get("value")
+                linked = value.get("project_ref") if isinstance(value, Mapping) else None
+                if isinstance(linked, Mapping):
+                    belongs = all(linked.get(key) == getattr(record.ref, key)
+                                  for key in ("authority", "kind", "id"))
+                else:
+                    assignment = self.operations.assignments_port.get(payload["assignment"])
+                    belongs = (assignment.scope.authority == record.ref.authority
+                               and assignment.scope.id in scopes)
+                if belongs:
+                    result.append({"ref": _json_value(observation.ref),
+                        "assignment": _json_value(payload.get("assignment")),
+                        "kind": payload.get("observation_kind"), "generation": payload.get("generation"),
+                        "version": observation.version, "value": _json_value(value)})
+
+        subjects = getattr(owner_reader, "list_event_subjects", None)
+        if not callable(subjects):
+            # Compatibility for a bounded filtered-index reader that exposes
+            # only **kwargs. Readers with explicit stream arguments continue
+            # through the scoped path below, never a global event hydration.
+            parameters = signature(owner_reader.list_events).parameters.values()
+            accepts_kwargs = any(item.kind == Parameter.VAR_KEYWORD for item in parameters)
+            if accepts_kwargs:
+                consume(event.subject for event in owner_reader.list_events(
+                    subject_kinds=("wrk.report", "wrk.result")))
+                return result
+
         assignments = {}
+
         def remember(value):
             value = _json_value(value)
             if (isinstance(value, Mapping) and value.get("authority") == record.ref.authority
                     and value.get("kind") == "wrk.assignment" and isinstance(value.get("id"), str)):
                 assignments[value["id"]] = value
-        for ref in assignment_refs:
-            remember(ref)
+
+        if callable(inventory):
+            for ref in assignment_refs:
+                remember(ref)
+        else:
+            assignment_refs = [assignment.get("ref") for row in (view["project"], *view["tasks"])
+                for assignment in row.get("observed", {}).get("assignments", ())]
+            for ref in assignment_refs:
+                remember(ref)
         relation = record.payload.get("metadata", {}).get("otto_orchestrator", {})
         if isinstance(relation, Mapping):
             remember(relation.get("assignment_ref"))
@@ -188,33 +228,15 @@ class OwnerIssueReaders:
                 remember(ref)
             for name in ("from_assignment", "to_assignment"):
                 remember(event.effects.get(name))
-        subjects = getattr(owner_reader, "list_event_subjects", None)
+
         def stream_subjects(stream):
             if callable(subjects):
                 return subjects(stream=stream)
             return (event.subject for event in owner_reader.list_events(stream=stream))
+
         refs = (ref for ident in sorted(assignments) for kind in ("report", "result")
                 for ref in stream_subjects(kind + ":" + ident))
-        for ref in refs:
-            if ref.kind not in {"wrk.report", "wrk.result"} or ref.id in seen:
-                continue
-            seen.add(ref.id)
-            observation = owner_reader.get_record(ref)
-            if observation is None:
-                continue
-            payload = observation.payload
-            value = payload.get("value")
-            linked = value.get("project_ref") if isinstance(value, Mapping) else None
-            if isinstance(linked, Mapping):
-                belongs = all(linked.get(key) == getattr(record.ref, key) for key in ("authority", "kind", "id"))
-            else:
-                assignment = self.operations.assignments_port.get(payload["assignment"])
-                belongs = assignment.scope.authority == record.ref.authority and assignment.scope.id in scopes
-            if belongs:
-                result.append({"ref": _json_value(observation.ref),
-                    "assignment": _json_value(payload.get("assignment")),
-                    "kind": payload.get("observation_kind"), "generation": payload.get("generation"),
-                    "version": observation.version, "value": _json_value(value)})
+        consume(refs)
         return result
 
     def due_records(self, project: Mapping[str, Any]) -> list[dict[str, Any]]:

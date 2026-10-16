@@ -102,9 +102,14 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
     if start > len(header): tail = tail.split(b"\n", 1)[-1]
     lines = [header.decode()] + [v.decode() for v in tail.splitlines() if v]
     events = [json.loads(line) for line in lines]
+    native_session_id = (events[0].get("payload", {}).get("id")
+                         or events[0].get("payload", {}).get("session_id"))
+    # The admission carries its session directly. Generation is retained on
+    # the same owner claim and its authorization, then repeated in the exact
+    # turn's invocation context below; observed_at is not identity evidence.
     require(events[0].get("type") == "session_meta"
-            and (events[0].get("payload", {}).get("id")
-                 or events[0].get("payload", {}).get("session_id")) == session,
+            and native_session_id == session
+            and admission.get("physical_session_id") == native_session_id,
             "native file header identifies a different session")
     active, starts, ends, user_texts = set(), [], [], []
     for event in events:
@@ -126,10 +131,6 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
             and (ends[0].get("type") == "turn_aborted" or ends[0].get("error") is None)
             and starts[0].get("started_at", -1) <= ends[0].get("completed_at", -1),
             "exact admitted native turn is missing, repeated, aborted or still active")
-    observed = datetime.fromisoformat(admission["observed_at"].replace("Z", "+00:00"))
-    require(observed.tzinfo is not None
-            and abs(starts[0]["started_at"] - observed.timestamp()) <= 1,
-            "native start differs from retained owner admission")
     text = user_texts[0]
     blocks = re.findall(r'<otto-resource-brief sha256="([a-f0-9]{64})">\s*(.*?)\s*</otto-resource-brief>', text, re.S)
     requests = re.findall(r'<otto-invocation-request[^>]*sha256="([a-f0-9]{64})">\s*(.*?)\s*</otto-invocation-request>', text, re.S)
@@ -146,7 +147,11 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
             and invocation.get("logical_request_key") == attempt["logical_request_key"]
             and invocation.get("prompt") == prompt
             and launch.get("assignment_ref") == capture.assignment_ref
-            and launch.get("generation") == capture.generation
+            and type(attempt.get("generation")) is int
+            and type(authorization.get("generation")) is int
+            and type(launch.get("generation")) is int
+            and launch.get("generation") == attempt.get("generation") == capture.generation
+            and authorization.get("generation") == attempt.get("generation")
             and launch.get("principal") == capture.principal and launch.get("role") == "manager"
             and launch.get("occurrence_ref") == {"schedule_id": schedule_id,
                                                 "logical_request_key": attempt["logical_request_key"]}
