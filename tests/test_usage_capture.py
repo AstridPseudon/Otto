@@ -233,14 +233,14 @@ class NativeAliasTests(unittest.TestCase):
         from otto.agents.claude_cli import ClaudeStream
         from otto.agents.tests import test_claude_binding as fixtures
         capture, port = owner_capture()
-        parser = ClaudeStream(prompt='input', cwd='/scope', model='gpt-test', tools=('Read', 'Write'),
+        parser = ClaudeStream(prompt='input', cwd='/scope', model='gpt-test', tools=('Edit', 'Glob', 'Grep', 'Read', 'Write'),
             on_usage=lambda o: capture.record_usage_observation('key', o))
         for event in fixtures.frames(session='session'): parser.feed(json.dumps(event).encode())
         observations = port.read_due('schedule')['host_evidence']['gateway_attempt']['usage_observations']
         self.assertEqual(len(observations), 1)
         self.assertEqual(observations[0]['identity']['turn_id'], 'native-input-uuid')
         self.assertEqual(parser.finish(0)['outcome'], 'succeeded')
-        parser = ClaudeStream(prompt='input', cwd='/scope', model='gpt-test', tools=('Read', 'Write'),
+        parser = ClaudeStream(prompt='input', cwd='/scope', model='gpt-test', tools=('Edit', 'Glob', 'Grep', 'Read', 'Write'),
             on_usage=lambda o: (_ for _ in ()).throw(OSError('optional failed')))
         for event in fixtures.frames(): parser.feed(json.dumps(event).encode())
         self.assertEqual(parser.finish(0)['outcome'], 'succeeded')
