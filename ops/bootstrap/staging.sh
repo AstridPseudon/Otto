@@ -196,8 +196,12 @@ up() {
   fi
   before="$(wc -l < "$LOG" | tr -d ' ')"
   cd "$TREE"
+  # The Otto itself is started, not through the ottoctl function: a function in the background forks a wrapper
+  # shell, so $! would name the wrapper and not the holder that status reports. env execs the Python process.
   set -m
-  ottoctl service run </dev/null >>"$LOG" 2>&1 &
+  env -u OTTO_HOST_KIND -u OTTO_MANAGER_IPC -u OTTO_CALLER_SOCKET -u OTTO_HOME PYTHONPATH="$TREE/src" \
+    "$PY" -c 'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$HOME_DIR" service run \
+    </dev/null >>"$LOG" 2>&1 &
   pid=$!
   set +m
   # Written at once, so down can find the process even if the wait below fails.
