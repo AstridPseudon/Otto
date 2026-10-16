@@ -44,21 +44,25 @@ phase() {
 }
 # A process this run started, so the census can tell a wrong kill from one perch made.
 started() { printf '%s\t%s\n' "$1" "$2" >> "$RAW/started.tsv"; }
+# A worker started (+1) or stopped (-1), with its time, in pool.tsv: the pool's peak comes from these.
+pool_mark() { printf '%s\t%s\n' "$("$PY" -I -c 'import time; print(time.time())')" "$1" >> "$RAW/pool.tsv"; }
 # A worker that holds a lab without finishing: seeded faults only.
 hold_worker() {  # LAB NAME
   "$PY" -I "$CANARY/fake_worker.py" --lab "$1" --task "$2" --project "$CANARY/project.json" \
     --events "$RAW/hold-$2.jsonl" --hold >/dev/null 2>&1 &
   started "$!" "seeded $2 hold"
+  pool_mark +1
   echo "$!"
 }
+stop_hold() { kill "$1" 2>/dev/null || true; pool_mark -1; }
 
 # Restart the staging Otto on the commit under test. A seeded staging fault gives it one second to report ready.
 restart_staging() {
-  local t rc=0 ready="${OTTO_STAGING_READY_SECONDS:-120}"
-  has_fault staging && ready=1
+  local t rc=0 ref="$STAGING_REF"
+  # A seeded staging fault pins a ref that does not exist, so the restart fails before it starts anything.
+  has_fault staging && ref="refs/heads/perch-seeded-missing-ref"
   t="$(date +%s)"
-  OTTO_STAGING_REF="$STAGING_REF" OTTO_STAGING_READY_SECONDS="$ready" "$STAGING" restart \
-    > "$RAW/staging-restart.log" 2>&1 || rc=$?
+  OTTO_STAGING_REF="$ref" bash "$STAGING" restart < /dev/null > "$RAW/staging-restart.log" 2>&1 || rc=$?
   phase staging-restart "" "$t"
   RESTART_RC=$rc
 }
@@ -83,10 +87,12 @@ run_task() {  # TASK FIRST LAST
   phase lab-create "$task" "$t"
 
   t="$(date +%s)"
+  pool_mark +1
   "$PY" -I "$CANARY/fake_worker.py" --lab "$lab" --task "$task" --project "$CANARY/project.json" \
-    --events "$RAW/worker-$task.jsonl" &
+    --events "$RAW/worker-$task.jsonl" >"$RAW/worker-$task.out" 2>&1 &
   started "$!" "worker $task"
   wait "$!" || rc=$?
+  pool_mark -1
   phase worker "$task" "$t"
   [ "$rc" -eq 0 ] || echo "worker $task exited $rc" >> "$RAW/worker-errors.txt"
 
@@ -130,7 +136,7 @@ run_stage() {  # STAGE
   RESTART_RC=0
 
   "$PY" -I "$REPORT_PY" census --out "$RAW/census.before.txt"
-  ( while :; do "$PY" -I "$REPORT_PY" sample --raw "$RAW" --stage-root "$STAGE_ROOT" --canary "$CANARY_DIR" || true; sleep 1; done ) &
+  ( while :; do "$PY" -I "$REPORT_PY" sample --raw "$RAW" --stage-root "$STAGE_ROOT" --canary "$CANARY_DIR" || true; sleep 0.5; done ) >/dev/null 2>&1 &
   SAMPLER=$!
 
   restart_staging
@@ -151,7 +157,7 @@ run_stage() {  # STAGE
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage "$stage"); do
     run_task "$task" "$([ "$task" = "$first" ] && echo yes || echo no)" "$([ "$task" = "$last" ] && echo yes || echo no)"
   done
-  for pid in $HOLD_POOL; do kill "$pid" 2>/dev/null || true; done
+  for pid in $HOLD_POOL; do stop_hold "$pid"; done
   HOLD_POOL=""
 
   if has_fault leak; then
@@ -160,11 +166,11 @@ run_stage() {  # STAGE
   fi
 
   t="$(date +%s)"
-  "$STAGING" down > "$RAW/staging-down.log" 2>&1 || true
+  bash "$STAGING" down < /dev/null > "$RAW/staging-down.log" 2>&1 || true
   phase staging-down "" "$t"
+  kill "$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true; SAMPLER=""
   "$PY" -I "$REPORT_PY" census --out "$RAW/census.after.txt"
   if [ -n "$HOLD_LEAK" ]; then kill "$HOLD_LEAK" 2>/dev/null || true; wait "$HOLD_LEAK" 2>/dev/null || true; HOLD_LEAK=""; fi
-  kill "$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true; SAMPLER=""
 
   "$PY" -I "$REPORT_PY" snapshot --canon "$CANON" --labs "$LABS" --out "$RAW/leftovers.txt"
   "$PY" -I "$REPORT_PY" timeline --src "$STAGE_ROOT/tree/src" --store "$STAGE_ROOT/store/staging.store" \
@@ -183,7 +189,7 @@ run_stage() {  # STAGE
 
   "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" --fake \
     --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
-    --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED"
+    --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
   STAGE_RC=0
   "$PY" -I "$REPORT_PY" check --raw "$RAW" || STAGE_RC=$?
   "$PY" -I "$REPORT_PY" render --raw "$RAW" --out "$run/report.md"

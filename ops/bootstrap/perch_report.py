@@ -72,7 +72,8 @@ def cmd_field(args):
 
 def cmd_census(args):
     mine = str(os.getpid())
-    lines = [line for line in ps_lines() if line.split(None, 1)[0] != mine
+    # perch's own tools (this script, sampling or reporting) are not the Otto's processes.
+    lines = [line for line in ps_lines() if line.split(None, 1)[0] != mine and "perch_report.py" not in line
              and any(marker in line for marker in CENSUS_MARKERS)]
     Path(args.out).write_text("".join(line + "\n" for line in lines), encoding="utf-8")
 
@@ -120,15 +121,18 @@ def cmd_snapshot(args):
 # ---- the Store's timelines (herzchen's read) ---------------------------------------------------
 
 def cmd_timeline(args):
+    # The Store is opened the way the owner opens it: with the host's complete domain set (Herzchen
+    # itself imports nothing from Otto; this bootstrap script may).
     sys.path.insert(0, args.src)
     from herzchen.domains.work.timeline import timelines
     from herzchen.kernel import Store
+    from otto.hostctl.owner import host_domains
 
     result = {"store": args.store, "store_events": 0, "tasks": [], "error": None}
     if not Path(args.store).exists():
         result["error"] = "no Store file"
     else:
-        store = Store.open(args.store, authority=args.authority)
+        store = Store.open(args.store, authority=args.authority, expected_domains=host_domains())
         try:
             result["store_events"] = len(store.list_events())
             for timeline in timelines(store):
@@ -148,7 +152,7 @@ def cmd_init(args):
     project = read_json(args.project)
     tasks = [{"name": name, "expect": project["tasks"][name]["expect"]} for name in project["stages"][args.stage]]
     config = {
-        "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"],
+        "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"], "stage_root": args.stage_root,
         "pool_limit": project["pool_limit"], "faults": [f for f in args.faults.split(",") if f],
         "staging_restart": args.staging_restart, "staging_sha": args.staging_sha,
         "canon_main_sha": args.canon_main_sha, "started_at": args.started_at, "finished_at": now_iso(),
@@ -180,6 +184,16 @@ def pids_of(lines):
     return {int(line.split(None, 1)[0]) for line in lines}
 
 
+def leaks(raw, config):
+    """Processes still running after down that belong to this run: under its own stage root.
+
+    Another run's Otto or worker is not this run's leak, so the census is matched on the root, not the marker.
+    """
+    root = config.get("stage_root")
+    return [line for line in read_lines(raw / "census.after.txt")
+            if (root and root in line) or (not root and any(m in line for m in LEAK_MARKERS))]
+
+
 # ---- assertions --------------------------------------------------------------------------------
 
 def assertions(raw):
@@ -193,7 +207,7 @@ def assertions(raw):
     add("staging-ready", [] if config.get("staging_restart") == 0
         else ["staging restart exited %s" % config.get("staging_restart")], "staging restart ready")
 
-    leaked = [line for line in read_lines(raw / "census.after.txt") if any(m in line for m in LEAK_MARKERS)]
+    leaked = leaks(raw, config)
     add("no-leaked-process", ["still running after down: " + line for line in leaked], "no process left after down")
 
     events = observed(raw)
@@ -215,7 +229,7 @@ def assertions(raw):
     add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")
 
     limit = config.get("pool_limit")
-    peak = max([s["pool_units"] for s in read_samples(raw)] or [0])
+    peak = pool_units_peak(raw)
     add("pool-units-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
         "peak %s of limit %s" % (peak, limit))
     return results
@@ -223,6 +237,19 @@ def assertions(raw):
 
 def read_samples(raw):
     return [json.loads(line) for line in read_lines(raw / "samples.jsonl")]
+
+
+def pool_peak(raw):
+    """The most workers running at once, from perch's own +1/-1 marks (exact, unlike the samples)."""
+    level = peak = 0
+    for line in sorted(read_lines(raw / "pool.tsv"), key=lambda l: float(l.split("\t")[0])):
+        level += int(line.split("\t")[1])
+        peak = max(peak, level)
+    return peak
+
+
+def pool_units_peak(raw):
+    return max([pool_peak(raw)] + [s["pool_units"] for s in read_samples(raw)])
 
 
 def cmd_check(args):
@@ -303,7 +330,7 @@ def cmd_render(args):
     out += ["Store timelines (herzchen read, after down):", ""] + render_store(timeline)
     out += ["", "## Process census", "",
             "- before: %d otto-related process(es); after: %d" % (len(before), len(after))]
-    leaked = [line for line in read_lines(raw / "census.after.txt") if any(m in line for m in LEAK_MARKERS)]
+    leaked = leaks(raw, config)
     if leaked:
         out.append("- leaks (still running after down):")
         out += ["    " + line for line in leaked]
@@ -315,8 +342,8 @@ def cmd_render(args):
     out += ["", "## Labs and scratch left over", ""]
     out += ["    " + line for line in read_lines(raw / "leftovers.txt")] or ["none"]
     out += ["", "## Pool units over time", ""]
-    peak = max([s["pool_units"] for s in samples] or [0])
-    out.append("peak %d of limit %s" % (peak, config.get("pool_limit", "?")))
+    out.append("peak %d of limit %s (perch's marks; samples peak %d)" % (
+        pool_units_peak(raw), config.get("pool_limit", "?"), max([s["pool_units"] for s in samples] or [0])))
     out += table(["at", "pool units", "staging state"],
                  [[s["at"], s["pool_units"], "%s (gen %s)" % (s["staging_state"], s["staging_generation"])]
                   for s in samples]) if samples else ["(no samples)"]
@@ -360,7 +387,8 @@ def build_parser():
     p.add_argument("--stage", required=True); p.add_argument("--fake", action="store_true")
     p.add_argument("--faults", default=""); p.add_argument("--staging-restart", type=int, required=True)
     p.add_argument("--staging-sha", default="?"); p.add_argument("--canon-main-sha", default="?")
-    p.add_argument("--started-at", default="?"); p.set_defaults(fn=cmd_init)
+    p.add_argument("--started-at", default="?"); p.add_argument("--stage-root", default="")
+    p.set_defaults(fn=cmd_init)
     p = sub.add_parser("check"); p.add_argument("--raw", required=True); p.set_defaults(fn=cmd_check)
     p = sub.add_parser("render"); p.add_argument("--raw", required=True); p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_render)
