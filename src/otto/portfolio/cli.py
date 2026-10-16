@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     vision.add_argument("--request-json", required=True, help="Vision command envelope as a JSON object")
     _add_format(vision)
 
+    save = sub.add_parser("save", help="save one project from a save file (template seed shape); a stale project_ref revision is refused with a diff")
+    save.add_argument("file", help="JSON save file: project, tasks, criteria, plus project_ref to save an existing project")
+    save.add_argument("--actor", required=True)
+    save.add_argument("--request-id", default=None, help="logical request key (default: derived from the file's content)")
+    _add_format(save)
+
     create = sub.add_parser("create-pending", help="create an inert pending project (legacy command)")
     create.add_argument("--actor", required=True)
     create.add_argument("--request-id", required=True)
@@ -1083,6 +1089,14 @@ def main(
                     )
             except (json.JSONDecodeError, PortfolioError, TypeError, ValueError) as exc:
                 result = _request_error(str(exc))
+        elif args.command == "save":
+            try:
+                with open(args.file, encoding="utf-8") as handle:
+                    document = json.load(handle)
+            except (OSError, json.JSONDecodeError) as exc:
+                result = _request_error(str(exc))
+            else:
+                result = portfolio.save_project(document, actor=args.actor, request_id=args.request_id)
         elif args.command == "create-pending":
             try:
                 edit = json.loads(args.edit_json)

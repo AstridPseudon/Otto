@@ -428,6 +428,8 @@ class FiniteWorkOperations:
             return self._project_folder(operation, payload, request_id=request_id, actor=actor)
         if operation in {"work.project.checkout", "work.project.check-in"}:
             return self._project_authoring(operation, payload, request_id=request_id, actor=actor)
+        if operation == "work.project.save":
+            return self._save_project(payload, request_id=request_id, actor=actor)
         if operation == "work.pending.edit":
             return self._revise(payload, request_id=request_id, actor=actor)
         if operation in {"work.pending.revisit", "work.pending.prerequisite-satisfied"}:
@@ -2309,6 +2311,53 @@ class FiniteWorkOperations:
                     continue
             records.append(record)
         return sorted(records, key=lambda record: (getattr(record, "id", ""), getattr(record, "version", 0)))
+
+    def _save_project(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        """Apply one save file (A2) as one ProjectSheet batch.
+
+        The save names the base revision it was read at. The batch refuses a stale
+        base before any write; the refusal carries the diff against the current view.
+        A same-key replay is decided from its original receipt, before that check.
+        """
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.module import validate_metadata_namespaces
+        from herzchen.kernel import VersionConflictError
+        from .save import SAVE_TEMPLATE_ID, diff_save
+
+        operation = "work.project.save"
+        if self.sheet_port is None:
+            return self._unsupported(operation, request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet command port was not injected")
+        seed = payload["seed"]
+        actor_value = self._actor(actor)
+        before = self._owner_reader.get_receipt(request_id)
+        try:
+            sheet = self.sheet_port.sheet_from_seed(seed, SAVE_TEMPLATE_ID)
+            # Typed metadata is checked before anything is created, so a refused
+            # file leaves no empty project behind (the batch checks it again).
+            for task in seed["tasks"]:
+                namespaces = task.get("metadata_namespace", {})
+                validate_metadata_namespaces({"metadata_namespaces": namespaces}, tuple(namespaces))
+            if payload.get("project_ref") is None:
+                title = (seed.get("project") or {}).get("title")
+                project = self.sheet_port.create_pending(title=title, logical_request_key=request_id + ":project", actor=actor_value).project
+                base_revision = None
+            else:
+                project = ResourceRef.from_dict(payload["project_ref"])
+                base_revision = project.revision
+            batch = self.sheet_port.apply(project, sheet, logical_request_key=request_id, actor=actor_value, base_revision=base_revision)
+        except VersionConflictError as exc:
+            current = self.sheet_port.export(project)
+            return {"outcome": "conflict", "error": {"code": "stale_base", "message": str(exc), "operation": operation},
+                    "base_revision": base_revision, "current_project_ref": _json_value(current["project"]["ref"]),
+                    "diff": _json_value(diff_save(seed, current)), "replayed": False, "event_ids": [], "dispatch": False, "launch": False}
+        except Exception as exc:
+            if type(exc).__name__ == "ReplayConflictError":
+                return {"outcome": "error", "error": {"code": "replay_conflict", "message": str(exc), "operation": operation}, "replayed": False, "event_ids": []}
+            return {"outcome": "error", "error": {"code": "save_refused", "message": str(exc), "operation": operation}, "replayed": False, "event_ids": []}
+        replayed = before is not None
+        return {"outcome": "replayed" if replayed else "saved", "project_ref": _json_value(batch.project.ref),
+                "task_refs": {key: _json_value(value) for key, value in batch.mappings.items()},
+                "replayed": replayed, "event_ids": list(getattr(batch.receipt, "event_ids", ())), "dispatch": False, "launch": False}
 
     def _revise(self, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
         from herzchen.contracts import ResourceRef
