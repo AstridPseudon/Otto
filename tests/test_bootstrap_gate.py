@@ -247,15 +247,26 @@ class LandGate(Scratch):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("D14", self.log("T6B").split("placement:")[-1].split("\n", 1)[1])
 
-    def test_staging_runs_the_tested_commits_scripts(self):
-        # The step ran nothing after PERCH landed (-x on 100644 files). Now it runs the lab's own scripts.
-        stub = "#!/bin/bash\necho \"$(basename \"$0\") $* $OTTO_COMMIT\" >> \"$OPS_DIR/staging-calls.txt\"\n"
-        self.lab("T8", {"src/otto/extra.py": "X = 1\n", "ops/bootstrap/staging.sh": stub, "ops/bootstrap/perch.sh": stub})
+    def test_staging_runs_the_tested_commit(self):
+        # STAGE0 F1: the gate passed OTTO_COMMIT, which nothing reads, so staging ran BASE. The stub perch
+        # writes a report naming the sha it was given, as the real one does.
+        perch = ("#!/bin/bash\nd=\"$PERCH_OUT/0/x\"; mkdir -p \"$d\"\n"
+                 "echo \"- staging tree sha $OTTO_STAGING_REF; canon/main x\" > \"$d/report.md\"\n"
+                 "echo \"perch: stage 0 report at $d/report.md\"\n")
+        self.lab("T8", {"src/otto/extra.py": "X = 1\n", "ops/bootstrap/staging.sh": "", "ops/bootstrap/perch.sh": perch})
+        sha = sh(["git", "rev-parse", "HEAD"], cwd=self.labs / "T8").stdout.strip()
         r = self.land("T8")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        calls = (self.ops / "staging-calls.txt").read_text().splitlines()
-        self.assertEqual([c.split()[:2] for c in calls], [["staging.sh", "restart"], ["perch.sh", "all"]])
-        self.assertIn("staging: restart and perch --fake passed", self.log("T8"))
+        self.assertIn("staging: perch --fake passed on", self.log("T8"))
+        report = (self.repo / "ops/perch/0/x/report.md").read_text()  # kept in the main checkout, not the lab
+        self.assertIn("staging tree sha " + sha[:7], report)
+
+    def test_staging_on_another_commit_is_refused(self):
+        perch = ("#!/bin/bash\nd=\"$PERCH_OUT/0/y\"; mkdir -p \"$d\"\n"
+                 "echo \"- staging tree sha 0000000; canon/main x\" > \"$d/report.md\"\n"
+                 "echo \"perch: stage 0 report at $d/report.md\"\n")
+        self.lab("T8B", {"src/otto/extra.py": "X = 1\n", "ops/bootstrap/staging.sh": "", "ops/bootstrap/perch.sh": perch})
+        self.assertRefused(self.land("T8B"), "T8B", "did not run the tested commit")
 
     def test_missing_layer_only_logs(self):
         self.lab("T7", {"src/otto/extra.py": "X = 1\n"})
