@@ -886,6 +886,154 @@ class _ResponsibilityAssignmentsEngine:
             raise admission.TaskNotAdmittedError(
                 f"task {scope.id} revision {current.ref.revision} is not admitted"
                 + ("" if stamp is None else f" (admitted: {stamp['revision']})"))
+        stamp = admission.stamp_of(current.payload)
+        reviewed = self.__writer.get_revision(ResourceRef(current.ref.authority, current.ref.kind, current.ref.id, admitted))
+        if reviewed is None:
+            raise admission.TaskNotAdmittedError(
+                f"task {scope.id} admitted revision {admitted} is not retained")
+        if admission.reviewed_content_diff(reviewed.payload, current.payload):
+            raise admission.TaskNotAdmittedError(
+                f"task {scope.id} authored content differs from admitted revision {admitted}")
+        basis = stamp.get("basis") if stamp is not None else None
+        if basis not in {admission.BASIS_POLICY, admission.BASIS_AUTHORING, admission.BASIS_REVIEW}:
+            raise admission.TaskNotAdmittedError(f"task {scope.id} has an unsupported admission basis")
+        project = None
+        if basis in {admission.BASIS_POLICY, admission.BASIS_AUTHORING, admission.BASIS_REVIEW}:
+            try:
+                project_ref = self._as_ref(current.payload.get("project_ref"))
+            except (WorkValidationError, TypeError, ValueError):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} admission has no valid pinned project") from None
+            if basis == admission.BASIS_POLICY:
+                evidence = stamp.get("policy_evidence")
+                base_revision = evidence.get("base_revision") if isinstance(evidence, Mapping) else None
+                project_revision = project_ref.revision or base_revision
+            else:
+                project_revision = project_ref.revision
+                if not project_revision:
+                    latest_project = self.__writer.get_identity(ResourceRef(
+                        project_ref.authority, project_ref.kind, project_ref.id))
+                    project_revision = None if latest_project is None else latest_project.ref.revision
+            if not project_revision:
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} admission has no retained project revision")
+            project_ref = ResourceRef(project_ref.authority, project_ref.kind, project_ref.id, project_revision)
+            project = self.__writer.get_revision(project_ref)
+            if (project is None or project.ref != project_ref
+                    or project.payload.get("kind") != "project"
+                    or project.payload.get("id") != project_ref.id):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} admission project revision is missing or malformed")
+        if basis == admission.BASIS_POLICY:
+            reviewed_stamp = admission.stamp_of(reviewed.payload)
+            if admitted != "rev-1" or reviewed_stamp != stamp:
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy admission does not name its original rev-1 task")
+            namespaces = project.payload.get("metadata_namespaces")
+            envelope = namespaces.get("work.policy") if isinstance(namespaces, Mapping) else None
+            policy = envelope.get("policy") if isinstance(envelope, Mapping) else None
+            evidence = stamp.get("policy_evidence")
+            if (not isinstance(envelope, Mapping) or not isinstance(policy, Mapping)
+                    or not isinstance(evidence, Mapping)):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy admission has no valid project policy")
+            authority = envelope.get("authority")
+            base_revision = envelope.get("base_revision")
+            decision_ref = envelope.get("decision_ref")
+            permitted = policy.get("permitted_task_additions")
+            if (not isinstance(authority, str) or not authority.strip()
+                    or not isinstance(base_revision, str) or not base_revision.strip()
+                    or decision_ref is None
+                    or evidence.get("authority") != authority
+                    or evidence.get("base_revision") != base_revision
+                    or evidence.get("decision_ref") != decision_ref
+                    or not isinstance(permitted, (list, tuple))):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy admission does not match its pinned project policy")
+            if not any(
+                    isinstance(key, str)
+                    and current.ref.id == "task-" + hashlib.sha256(
+                        (project_ref.id + ":" + key).encode()).hexdigest()[:28]
+                    for key in permitted):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} is not an allowed new task under its pinned project policy")
+            try:
+                decision_ref = self._as_ref(decision_ref)
+            except (WorkValidationError, TypeError, ValueError):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy decision reference is malformed") from None
+            decision = self.__writer.get_revision(decision_ref) if decision_ref.revision else None
+            if (decision is None or decision.ref != decision_ref
+                    or decision.payload.get("record_type") != "wrk.decision"
+                    or decision.payload.get("authority") != authority):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy decision is missing or malformed")
+            try:
+                decision_subject = ResourceRef.from_dict(decision.payload.get("subject_ref"))
+            except (TypeError, ValueError):
+                decision_subject = None
+            if (decision_subject is None or decision_subject.authority != project_ref.authority
+                    or decision_subject.kind != project_ref.kind or decision_subject.id != project_ref.id
+                    or decision_subject.revision != base_revision):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy decision does not bind its project")
+            decision_actor = any(
+                event.subject == decision_ref
+                and event.event_type == "work.decision.recorded"
+                and admission.is_user(project.payload, event.actor)
+                for event in self.__writer.list_events(stream="decision:" + project_ref.id)
+            )
+            if (str(decision.payload.get("disposition", "")).strip().lower() not in admission.APPROVED
+                    or not decision_actor):
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy decision was not approved by the project user")
+            try:
+                policy_revision_number = int(base_revision.removeprefix("rev-")) + 1
+            except (AttributeError, TypeError, ValueError):
+                policy_revision_number = -1
+            policy_project_ref = ResourceRef(
+                project_ref.authority, project_ref.kind, project_ref.id,
+                "rev-" + str(policy_revision_number))
+            policy_project = (self.__writer.get_revision(policy_project_ref)
+                              if policy_revision_number > 1 else None)
+            policy_namespaces = (policy_project.payload.get("metadata_namespaces")
+                                 if policy_project is not None else None)
+            policy_envelope = (policy_namespaces.get("work.policy")
+                               if isinstance(policy_namespaces, Mapping) else None)
+            policy_actor = any(
+                event.subject.authority == project_ref.authority
+                and event.subject.kind == project_ref.kind
+                and event.subject.id == project_ref.id
+                and event.subject.revision == policy_project_ref.revision
+                and event.event_type == "work.project-sheet.applied"
+                and admission.is_user(policy_project.payload, event.actor)
+                for event in self.__writer.list_events(stream="work:" + project_ref.id)
+            ) if (policy_project is not None and policy_project.ref == policy_project_ref
+                  and policy_envelope == envelope) else False
+            if not policy_actor:
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy revision was not written by the project user")
+        else:
+            matching_event = False
+            for event in self.__writer.list_events(stream="work:" + current.ref.id):
+                if (event.subject.authority != current.ref.authority
+                        or event.subject.kind != current.ref.kind
+                        or event.subject.id != current.ref.id
+                        or not admission.is_user(project.payload, event.actor)):
+                    continue
+                result_payload = (event.effects or {}).get("result_payload")
+                result_stamp = admission.stamp_of(result_payload) if isinstance(result_payload, Mapping) else None
+                if basis == admission.BASIS_AUTHORING:
+                    if (event.subject.revision == admitted
+                            or (result_stamp == stamp and result_stamp.get("revision") == admitted)):
+                        matching_event = True
+                        break
+                elif result_stamp == stamp:
+                    matching_event = True
+                    break
+            if not matching_event:
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} admission stamp has no matching project-user event")
         if scope.revision is not None and scope.revision not in {admitted, current.ref.revision}:
             raise admission.TaskNotAdmittedError(f"task {scope.id} revision {scope.revision} is not the admitted revision {admitted}")
         return ResourceRef(current.ref.authority, current.ref.kind, current.ref.id, admitted)

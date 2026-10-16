@@ -24,6 +24,7 @@ from herzchen.contracts import (
 from herzchen.kernel import VersionConflictError
 
 from .assignments import ASSIGNMENT_KIND, DISPATCH_KIND, RESULT_KIND, REPORT_KIND, ResponsibilityAssignments
+from . import admission
 from .batches import BatchResult, ProjectBatches, _ProjectBatchesEngine
 from .decisions import DECISION_KIND, WAIT_KIND, DecisionError, DecisionsModule
 from .model import Lifecycle, WorkKind, WorkRecord, WorkValidationError
@@ -288,6 +289,63 @@ class _ProjectSheetEngine:
     ) -> Any:
         """Validate editable fields then use the accepted single batch path."""
         normalized = self._validate_sheet(sheet)
+        prior = (self.__writer.get_receipt(logical_request_key)
+                 if isinstance(logical_request_key, str) and logical_request_key else None)
+        replay = prior is not None
+        if not replay:
+            record = self.graph.current(project)
+            if "work.policy" in normalized.get("metadata_namespace", {}):
+                self._validate_policy_amendment_context(
+                    record, normalized["metadata_namespace"]["work.policy"],
+                    decision_ref=decision_ref, base_revision=base_revision,
+                    actor=actor or self.actor,
+                )
+            # First plan the caller's authored sheet so that only identities the
+            # owner classifies as new can receive policy admission. Existing task
+            # rows are never upgraded by an allow-list entry.
+            initial_plan = self.batches.validate_project_sheet(
+                record, normalized, decision_ref=decision_ref, next_action=next_action,
+            )
+            policy = self._task_addition_policy(record)
+        else:
+            # Batches checks same-key receipts before current state, validation,
+            # and CAS fences. Recover only the internally generated stamp from
+            # the exact historical child revision named by the receipt event.
+            self._restore_replay_admission_stamps(normalized, prior)
+            policy = None
+        if not replay and policy is not None:
+            permitted = policy["permitted_task_additions"]
+            raw_tasks = list(normalized.get("tasks", ()))
+            by_key = {str(item.get("id") or item.get("alias")): item for item in raw_tasks}
+            for item in initial_plan["planned"]:
+                if item["existing"] or item["local_key"] not in permitted:
+                    continue
+                raw = by_key.get(item["local_key"])
+                if raw is None:
+                    continue
+                raw = dict(raw)
+                namespaces = dict(raw.get("metadata_namespace", {}))
+                namespaces[admission.NAMESPACE] = admission.policy_stamp(
+                    "rev-1", item["payload"], authority=policy["authority"],
+                    base_revision=policy["base_revision"],
+                    decision_ref=policy["decision_ref"],
+                )
+                raw["metadata_namespace"] = namespaces
+                by_key[item["local_key"]] = raw
+            normalized["tasks"] = [by_key.get(str(item.get("id") or item.get("alias")), item)
+                                    for item in normalized.get("tasks", ())]
+            # Validate the exact stamped payload through the owner planner.
+            # The ordinary sheet validator rejects caller-authored admission
+            # metadata, so stamps are inserted only after that trust boundary.
+            stamped_plan = self.batches.validate_project_sheet(
+                record, normalized, decision_ref=decision_ref, next_action=next_action,
+            )
+            for item in stamped_plan["planned"]:
+                if item["existing"] or item["local_key"] not in permitted:
+                    continue
+                stamp = item["payload"].get("metadata_namespaces", {}).get(admission.NAMESPACE)
+                if not isinstance(stamp, Mapping) or stamp.get("digest") != admission.content_digest(item["payload"]):
+                    raise PolicyAuthorityError("policy admission digest did not match the planned task")
         requested_keys = [str(item.get("id", item.get("alias"))) for item in sheet.get("tasks", ())] if isinstance(sheet.get("tasks", ()), (list, tuple)) else []
         batch = self.batches.apply_project_sheet(
             project, normalized, logical_request_key=logical_request_key,
@@ -303,6 +361,38 @@ class _ProjectSheetEngine:
         if with_view:
             return SheetApplication(batch, self.export(batch.project))
         return batch
+
+    def _restore_replay_admission_stamps(self, sheet: dict[str, Any], receipt: Any) -> None:
+        """Rebuild internal admission input so the batch receipt digest replays exactly."""
+        events = self.__writer.list_events(stream="work:" + receipt.target.id)
+        event_ids = set(getattr(receipt, "event_ids", ()))
+        mapping = {}
+        for event in events:
+            if event.event_id in event_ids:
+                mapping = dict(event.effects.get("mapping", {}))
+                break
+        tasks = []
+        for raw in sheet.get("tasks", ()):
+            key = str(raw.get("id") or raw.get("alias"))
+            ref = _ref(mapping.get(key))
+            if ref is None or ref.revision is None:
+                tasks.append(raw)
+                continue
+            try:
+                historic = self.graph.get(ref)
+            except WorkValidationError:
+                tasks.append(raw)
+                continue
+            stamp = historic.payload.get("metadata_namespaces", {}).get(admission.NAMESPACE)
+            if not isinstance(stamp, Mapping) or stamp.get("basis") != admission.BASIS_POLICY:
+                tasks.append(raw)
+                continue
+            copied = dict(raw)
+            namespaces = dict(copied.get("metadata_namespace", {}))
+            namespaces[admission.NAMESPACE] = _safe(stamp)
+            copied["metadata_namespace"] = namespaces
+            tasks.append(copied)
+        sheet["tasks"] = tasks
 
     def complete_managed_task(self, target: Any, **kwargs: Any) -> Mapping[str, Any]:
         """Use the shared owner completion guard for sheet-governed tasks."""
@@ -488,18 +578,24 @@ class _ProjectSheetEngine:
         """Apply a policy namespace only when authority and exact decision pins match."""
         if not isinstance(policy, Mapping):
             raise PolicyAuthorityError("policy amendment must be typed mapping data")
+        grants_task_additions = "permitted_task_additions" in policy
+        if grants_task_additions:
+            self._validate_permitted_task_additions(policy["permitted_task_additions"])
         if not isinstance(authority, str) or not authority.strip():
             raise PolicyAuthorityError("policy amendment authority is required")
         if required_authority is not None and authority != required_authority:
             raise PolicyAuthorityError("policy amendment authority is not authorised")
         target = self.graph.current(project)
+        selected_actor = actor or self.actor
+        if grants_task_additions and not admission.is_user(target.payload, selected_actor):
+            raise PolicyAuthorityError("only the project's user may grant task-addition policy")
         if target.ref.revision != base_revision:
             raise VersionConflictError("policy amendment base revision is stale")
         if decision_ref is None:
             raise PolicyAuthorityError("policy amendment requires its exact decision reference")
         try:
             decision = self.decisions.get_decision(decision_ref)
-        except DecisionError as exc:
+        except (DecisionError, TypeError, ValueError) as exc:
             raise PolicyAuthorityError("policy amendment decision reference is not valid") from exc
         if not _same_identity(decision.subject_ref, target.ref):
             raise PolicyAuthorityError("policy decision does not bind this project")
@@ -507,12 +603,107 @@ class _ProjectSheetEngine:
             raise PolicyAuthorityError("policy amendment authority does not match the decision")
         if decision.subject_ref.revision != base_revision:
             raise PolicyAuthorityError("policy decision does not bind the exact base revision")
+        if grants_task_additions:
+            self._require_user_approval_decision(target, decision)
         namespace = {"authority": authority, "base_revision": base_revision, "decision_ref": decision.ref, "policy": _safe(dict(policy))}
         return self.apply(
             target, {"metadata_namespace": {"work.policy": namespace}},
-            logical_request_key=logical_request_key, actor=actor or self.actor,
+            logical_request_key=logical_request_key, actor=selected_actor,
             decision_ref=decision.ref, base_revision=base_revision,
         )
+
+    @staticmethod
+    def _validate_permitted_task_additions(value: Any) -> Tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise PolicyAuthorityError("permitted_task_additions must be a finite array of task keys")
+        result = []
+        for key in value:
+            if (not isinstance(key, str) or not key.strip() or "\x00" in key
+                    or "/" in key or "\\" in key):
+                raise PolicyAuthorityError("permitted_task_additions must contain non-empty opaque task keys")
+            if key in result:
+                raise PolicyAuthorityError("permitted_task_additions cannot contain duplicate task keys")
+            result.append(key)
+        return tuple(result)
+
+    def _validate_policy_amendment_context(
+        self, project: WorkRecord, envelope: Mapping[str, Any], *,
+        decision_ref: Any, base_revision: Optional[str], actor: Any,
+    ) -> None:
+        if not isinstance(envelope, Mapping):
+            raise PolicyAuthorityError("work.policy amendment envelope must be a mapping")
+        authority = envelope.get("authority")
+        envelope_base = envelope.get("base_revision")
+        envelope_decision = envelope.get("decision_ref")
+        if (not isinstance(authority, str) or not authority.strip()
+                or envelope_base != project.ref.revision or base_revision != project.ref.revision
+                or envelope_decision is None or decision_ref is None
+                or not _same_identity(envelope_decision, decision_ref)):
+            raise PolicyAuthorityError("work.policy amendment must bind the exact current project decision and revision")
+        policy = envelope.get("policy")
+        grants_task_additions = isinstance(policy, Mapping) and "permitted_task_additions" in policy
+        if grants_task_additions and not admission.is_user(project.payload, actor):
+            raise PolicyAuthorityError("only the project's user may grant task-addition policy")
+        try:
+            decision = self.decisions.get_decision(decision_ref)
+        except (DecisionError, TypeError, ValueError) as exc:
+            raise PolicyAuthorityError("policy amendment decision reference is not valid") from exc
+        if (not _same_identity(decision.subject_ref, project.ref)
+                or decision.subject_ref.revision != project.ref.revision
+                or decision.authority != authority):
+            raise PolicyAuthorityError("policy decision does not bind this project's exact revision and authority")
+        if grants_task_additions:
+            self._require_user_approval_decision(project, decision)
+
+    def _require_user_approval_decision(self, project: WorkRecord, decision: Any) -> None:
+        """Require the decision's immutable event actor to be this project's user."""
+        if str(decision.disposition).strip().lower() not in admission.APPROVED:
+            raise PolicyAuthorityError("task-addition policy requires an approving decision")
+        receipt = getattr(decision, "receipt", None)
+        event_ids = set(getattr(receipt, "event_ids", ()))
+        if not event_ids:
+            raise PolicyAuthorityError("policy decision has no immutable event evidence")
+        events = self.__writer.list_events(stream="decision:" + project.id)
+        event = next((item for item in events
+                      if item.event_id in event_ids
+                      and item.event_type == "work.decision.recorded"
+                      and _same_identity(item.subject, decision.ref)), None)
+        if event is None or not admission.is_user(project.payload, event.actor):
+            raise PolicyAuthorityError("policy decision was not recorded by the project's user")
+
+    def _task_addition_policy(self, project: WorkRecord) -> Optional[Mapping[str, Any]]:
+        project_payload = project.payload
+        namespaces = project_payload.get("metadata_namespaces", {})
+        if not isinstance(namespaces, Mapping):
+            raise PolicyAuthorityError("project metadata_namespaces is malformed")
+        envelope = namespaces.get("work.policy")
+        if envelope is None:
+            return None
+        if not isinstance(envelope, Mapping):
+            return None
+        policy = envelope.get("policy")
+        if not isinstance(policy, Mapping) or "permitted_task_additions" not in policy:
+            return None
+        permitted = self._validate_permitted_task_additions(policy["permitted_task_additions"])
+        authority, base_revision, decision_ref = (
+            envelope.get("authority"), envelope.get("base_revision"), envelope.get("decision_ref")
+        )
+        if (not isinstance(authority, str) or not authority.strip()
+                or not isinstance(base_revision, str) or not base_revision.strip()
+                or decision_ref is None):
+            raise PolicyAuthorityError("project work.policy evidence is malformed")
+        # Recheck the persisted evidence on every use. A forged envelope or a
+        # decision for another project cannot authorize automatic admission.
+        try:
+            decision = self.decisions.get_decision(decision_ref)
+        except (AttributeError, DecisionError, TypeError, ValueError) as exc:
+            raise PolicyAuthorityError("project work.policy decision evidence is invalid") from exc
+        if (decision.authority != authority or decision.subject_ref.revision != base_revision
+                or not _same_identity(decision.subject_ref, project.ref)):
+            raise PolicyAuthorityError("project work.policy decision evidence does not bind this project")
+        self._require_user_approval_decision(project, decision)
+        return {"permitted_task_additions": permitted, "authority": authority,
+                "base_revision": base_revision, "decision_ref": decision_ref}
 
     # ---- explicit adoption and template operations -----------------------------
 
@@ -650,6 +841,12 @@ class _ProjectSheetEngine:
             for namespace, data in value["metadata_namespace"].items():
                 if not isinstance(namespace, str) or not namespace.strip() or not isinstance(data, Mapping):
                     raise SheetError("metadata namespace values must be typed mappings")
+                if namespace == "work.policy":
+                    policy = data.get("policy", {})
+                    if not isinstance(policy, Mapping):
+                        raise PolicyAuthorityError("work.policy policy must be a mapping")
+                    if "permitted_task_additions" in policy:
+                        self._validate_permitted_task_additions(policy["permitted_task_additions"])
                 if namespace != "work.adoption":
                     self._reject_protected(data, f"metadata namespace {namespace!r}")
         tasks = value.get("tasks", ())
@@ -684,6 +881,8 @@ class _ProjectSheetEngine:
                 for namespace, data in task["metadata_namespace"].items():
                     if not isinstance(data, Mapping):
                         raise SheetError(f"task[{index}].metadata_namespace values must be mappings")
+                    if namespace == "work.admission":
+                        raise ProtectedFieldError("task work.admission metadata is owner-controlled")
                     if namespace != "work.adoption":
                         self._reject_protected(data, f"task[{index}].metadata namespace {namespace!r}")
             self._validate_json(task, f"task[{index}]")

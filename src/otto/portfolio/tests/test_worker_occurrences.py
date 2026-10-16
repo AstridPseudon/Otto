@@ -13,7 +13,7 @@ from otto.portfolio.identity_context import HostCallerBinding, HostIngress
 from otto.portfolio.manager_journey_service import ManagerJourneyService
 from otto.portfolio.occurrence_reads import handle, lookup, result_view
 from otto.agents.trusted_selection import TrustedAdapter, TrustedAdapterSelection
-from . import test_role_context as fixtures
+from otto.portfolio.tests import test_role_context as fixtures
 
 
 class WorkerOccurrenceTests(unittest.TestCase):
