@@ -232,7 +232,11 @@ class ProjectOwnerService(OwnerService):
         The caller contract is the wrapper sequence: begin_draining();
         shared_host.close(); store.close(); finalize_closed().  In particular,
         this method never asks a released owner queue for a fresh projection.
+        A Store that is still open refuses it: closed means released, not asked for.
         """
+        if self._draining and (getattr(self.store, '_closed', True) is False
+                               or any(thread.is_alive() for thread in getattr(self.shared_host, '_threads', ()))):
+            raise RuntimeError('cannot publish closed while the shared host or owner Store is still open')
         with self._heartbeat_lock:
             if self._closed:
                 return
@@ -394,7 +398,8 @@ class ProjectOwnerService(OwnerService):
                 'provider_called': False, 'effects_started': False, 'retry': False}
 
     def _attached_projects(self) -> list[dict[str, Any]]:
-        return [{'project_id': v.server.state['project_ref']['id'], 'run_id': v.run_path.name,
+        return [{'project_id': v.server.state['project_ref']['id'],
+                 'run_id': getattr(v.server, 'run_id', None) or v.run_path.name,
                  'manager': v.server.state['manager']} for v in self.router.services.values()]
 
     def _attached(self) -> None:

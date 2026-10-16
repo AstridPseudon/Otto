@@ -75,7 +75,14 @@ class HostOwnerService:
 
     def __init__(self, session: HostSession, record: Any, *, command_lock: Any = None,
                  adapter_factory: Optional[Callable[..., Any]] = None,
-                 turn_admission: Optional[Callable[[], Any]] = None) -> None:
+                 turn_admission: Optional[Callable[[], Any]] = None,
+                 execution_host: Any = None) -> None:
+        """``execution_host`` is the ONE shared host of a ProjectServices composition.
+
+        Then this view owns no host, lane or socket of its own: it serves from
+        the shared host's directory and socket, and the router (not this view)
+        installs the host's handler and its native-caller ingress.
+        """
         from otto.portfolio.execution_host import ExecutionHost
         from otto.portfolio.native_caller_ingress import NativeProcessCallerIngress, managed_caller_binding
         self.session, self.config = session, session.config
@@ -86,7 +93,10 @@ class HostOwnerService:
         registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         self.run_id = registration.get("run_id") or record.ref.id
         self.paths = project_runtime(self.config, record.ref.id)
-        for key in ("base", "ipc", "grants"):
+        shared = execution_host is not None
+        if shared:
+            self.paths.update(ipc=execution_host.directory, socket=execution_host.socket_path)
+        for key in ("base", "grants") if shared else ("base", "ipc", "grants"):
             private_dir(self.paths[key])
         self.state_path = self.paths["state"]
         self.state = self._load_state(record, registration)
@@ -100,6 +110,10 @@ class HostOwnerService:
         self.portfolio = self.owner.portfolio(due_port=self.due_port, issue_delivery=self.help_delivery)
         self.adapter_factory = adapter_factory or self._claude_adapter
         self.turn_admission = turn_admission
+        if shared:
+            # The composition assigns the router's ingress once the router exists.
+            self.native_callers, self.execution_host = None, execution_host
+            return
         self.native_callers = NativeProcessCallerIngress(lambda authorization: managed_caller_binding(self, authorization))
         self.execution_host = ExecutionHost(directory=self.paths["ipc"], handler=self.handle,
             owner_path=self.paths["owner"], socket_path=self.paths["socket"],

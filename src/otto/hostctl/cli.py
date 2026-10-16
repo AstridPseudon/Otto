@@ -127,9 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     service_sub = service.add_subparsers(dest="service_command", required=True)
     run = service_sub.add_parser("run", help="OPERATOR: hold the Store and serve every host (foreground; "
                                  "starts no Due, calls no provider)")
-    run.add_argument("--project", help="also attach this activated project's manager lanes now (else on first use)")
-    run.add_argument("--max-active-manager-turns", type=int, default=3,
-                     help="maximum concurrent manager turns across attached projects (default: 3)")
+    run.add_argument("--project", help="require this activated project to be composed at start (it is refused otherwise)")
+    run.add_argument("--max-active-manager-turns", type=int, default=None,
+                     help="refuse to start if this exceeds the capacity pool's manager limit; the pool, not this "
+                          "flag, sets the limit (the onboarding wrapper still takes 3)")
+    run.add_argument("--hold-dispatch", action="store_true",
+                     help="serve status and retained reads only: settle nothing, admit nothing, call no provider")
     drain = service_sub.add_parser("drain", help="OPERATOR: drain one project's attached manager lanes")
     drain.add_argument("--project", required=True, help="project id or run id")
     admit = service_sub.add_parser("admit-host", help="OPERATOR: admit an agent CLI host as its OWN orchestrator "
@@ -742,13 +745,18 @@ def cmd_skills_install(args: argparse.Namespace) -> Any:
 
 def cmd_service_run(args: argparse.Namespace) -> Any:
     """OPERATOR: hold the Store and serve every admitted host until stopped."""
-    from .service import OwnerService
+    from .supervision import PRODUCT_COMPOSITION
     config = host_config.load(_home(args))
-    if config.get('owner_composition'):
+    selected = config.get('owner_composition')
+    if selected and selected.get('kind') != PRODUCT_COMPOSITION:
+        # The onboarding wrapper's installation; it retires at CUTOVER.
         from .supervision import run_installed_supervisor
-        return run_installed_supervisor(config, requested_limit=args.max_active_manager_turns)
-    return OwnerService(config, max_active_manager_turns=args.max_active_manager_turns).run(
-        emit=lambda value: print(json_out(value), flush=True), project=args.project)
+        return run_installed_supervisor(config, requested_limit=args.max_active_manager_turns or 3)
+    # The product start: the same owner the live start composes, so staging proves it.
+    from .product_service import run_product_service
+    return run_product_service(config, emit=lambda value: print(json_out(value), flush=True),
+                               project=args.project, hold_dispatch=args.hold_dispatch,
+                               requested_manager_limit=args.max_active_manager_turns)
 
 
 def cmd_service_drain(args: argparse.Namespace) -> Any:
