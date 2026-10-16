@@ -22,7 +22,7 @@ class RootDirectionClientTests(unittest.TestCase):
   self.owner=PortfolioOwnerBootstrap(self.f.store,binding=self.f.binding,owner_actor='owner',portfolio_ref=self.root.scope,main_assignment_ref=self.root.ref,expected_main_principal='owner')
   second=self.owner.graph.create_project(title='Other pending',logical_request_key='second')
   self.owner.consumer_operations().execute('work.orchestrator.projects.attach',{'target_assignment_ref':self.root.ref.to_dict(),'target_assignment_revision':self.root.revision,'target_assignment_generation':1,'projects':[{'project_ref':second.ref.to_dict(),'project_version':second.version,'assignment_ref':None,'assignment_revision':None,'assignment_generation':None}]},request_id='second-join',actor='owner')
-  self.projects=[self.owner.graph.get(project.ref),self.owner.graph.get(second.ref)]
+  self.projects=[self.owner.graph.current(project.ref),self.owner.graph.current(second.ref)]
   self.state={'orchestrator_assignment_ref':self.root.ref.to_dict(),'root_help_binding':{'assignment_ref':self.root.ref.to_dict(),'generation':1}}
   self.server=SimpleNamespace(owner=self.owner,state=self.state,_execution=None,portfolio=None,due_port=None,_save_state=lambda:None)
   self.service=ManagerJourneyService(server=self.server,host=None,run_path=self.f.path.parent,workspace=self.f.path.parent)
@@ -43,7 +43,7 @@ class RootDirectionClientTests(unittest.TestCase):
   self.assertEqual(result['project_join_count'],2);self.assertFalse(result['tasks_created']);self.assertFalse(result['allowances_changed']);self.assertFalse(result['project_activation'])
   self.assertEqual(result['assignment_ref']['id'],self.root.ref.id);self.assertEqual(result['generation'],1)
   for previous,p in zip(before,self.projects):
-   current=self.owner.graph.get(p.ref);self.assertEqual(current.payload['metadata']['otto_orchestrator']['assignment_ref'],result['assignment_ref'])
+   current=self.owner.graph.current(p.ref);self.assertEqual(current.payload['metadata']['otto_orchestrator']['assignment_ref'],result['assignment_ref'])
    previous['metadata'].pop('otto_orchestrator');now=deepcopy(current.payload);now['metadata'].pop('otto_orchestrator');self.assertEqual(previous,now)
    self.assertEqual(now['lifecycle'],'pending');self.assertFalse(now['tasks'])
   # Old policy cannot silently become authority over a later root revision.
@@ -176,7 +176,7 @@ class RootDirectionClientTests(unittest.TestCase):
    'target_assignment_generation':self.root.generation,
    'projects':[{'project_ref':p.ref.to_dict(),'project_version':p.version,'assignment_ref':None,'assignment_revision':None,'assignment_generation':None}for p in extra]},request_id='expand-owned-scope',actor='owner')
   ids=[p.id for p in self.projects]+[p.id for p in extra]
-  before={p.id:deepcopy(self.owner.graph.get(p.ref).payload)for p in self.projects+extra}
+  before={p.id:deepcopy(self.owner.graph.current(p.ref).payload)for p in self.projects+extra}
   seen=[]
   def handler(request,current):
    seen.append(request['project_id']);return {'read_only':True,'principal':current.principal}

@@ -53,7 +53,7 @@ class EventsCandidateProofTests(unittest.TestCase):
     def test_withdrawn_unused_record_is_retained_without_acceptance(self):
         planning = self.graph.create_task(self.project, title="Unused plan", logical_request_key="d05-plan")
         self.graph.withdraw(planning.ref, logical_request_key="d05-withdraw")
-        current = self.graph.get(planning.ref)
+        current = self.graph.current(planning.ref)
         self.assertEqual(current.lifecycle.value, "withdrawn")
         page = self.reader.read(projects=[self.project.ref], limit=50)
         withdrawn = [row for row in page["rows"] if row["subject_ref"]["id"] == planning.id

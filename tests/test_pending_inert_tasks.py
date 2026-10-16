@@ -50,7 +50,7 @@ class PendingInertTaskTests(unittest.TestCase):
         self.project_ref = created["project_ref"]
 
     def _record(self):
-        return self.owner.graph.get(ResourceRef.from_dict(self.project_ref))
+        return self.owner.graph.current(ResourceRef.from_dict(self.project_ref))
 
     def test_draft_edit_accepts_pending_task_without_activation_or_dispatch(self):
         edited = self.portfolio.edit_pending(self.project_ref, {"tasks": [_task("P01")]},

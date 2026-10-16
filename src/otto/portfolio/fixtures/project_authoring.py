@@ -142,7 +142,7 @@ class ProjectAuthoringProof(unittest.TestCase):
         self.assertEqual(self.finish(opened)["outcome"], "conflict")
         stale = self.portfolio.checkout_project(ref, actor="different", request_id="stale-open")
         self.assertEqual(stale["outcome"], "conflict", stale)
-        self.assertEqual(self.owner.graph.get(ref).title, "Concurrent project edit")
+        self.assertEqual(self.owner.graph.current(ref).title, "Concurrent project edit")
 
     def test_identity_replay_and_foreign_actor(self):
         ref = self.create()
@@ -170,7 +170,7 @@ class ProjectAuthoringProof(unittest.TestCase):
         self.assertEqual(stale["outcome"], "conflict", stale)
         changed = self.portfolio.edit_pending(ref, {"title": "Changed input"}, actor="owner", request_id="update")
         self.assertEqual(changed["error"]["code"], "replay_conflict", changed)
-        self.assertEqual(self.owner.graph.get(ResourceRef.from_dict(ref)).title, "Updated")
+        self.assertEqual(self.owner.graph.current(ResourceRef.from_dict(ref)).title, "Updated")
 
     def test_predecessor_pending_edit_receipt_remains_replayable(self):
         ref = ResourceRef.from_dict(self.create())

@@ -59,7 +59,7 @@ class OtToSaveTests(unittest.TestCase):
         return self.portfolio.save_project(document, actor="owner", **kwargs)
 
     def _project(self, ref):
-        return self.owner.graph.get(ResourceRef.from_dict(ref))
+        return self.owner.graph.current(ResourceRef.from_dict(ref))
 
     def _tasks(self, ref):
         return [self.owner.graph.get(ResourceRef.from_dict(value)) for value in self._project(ref).payload.get("tasks", ())]

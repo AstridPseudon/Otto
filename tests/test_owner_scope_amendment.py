@@ -24,7 +24,7 @@ class OwnerScopeAmendmentTests(unittest.TestCase):
         batch = self.f.owner.sheet.apply(self.project.ref, {'tasks':[{'id':self.initial_task.id,
             'outcome':'Mechanical only; no paid provider calls', 'acceptance':['after']}]},
             logical_request_key='changed-owner-task', actor=self.actor)
-        self.task = self.graph.get(self.initial_task.ref)
+        self.task = self.graph.current(self.initial_task.ref)
         self.key = 'owner-scope-amendment'
 
     def authorization(self, **changes):

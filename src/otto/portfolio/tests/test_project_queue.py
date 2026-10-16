@@ -60,7 +60,7 @@ class QueueTests(unittest.TestCase):
     def test_same_portfolio_nondefault_supervisor_is_visible_to_every_consumer(self):
         root = self.owner.assignments.assign(self.portfolio, role="orchestrator",
             principal="product-root", logical_request_key="product-root")
-        project = self.owner.graph.get(self.first.ref)
+        project = self.owner.graph.current(self.first.ref)
         relation = project.payload["metadata"]["otto_orchestrator"]
         default_before = self.ops._owner_reader.get_record(identity(relation["default_ref"]))
         self.owner.orchestration_port.transfer_supervision(
@@ -159,10 +159,10 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(failed["stage"], "publication")
         self.assertEqual(failed["enrollment_receipt"]["status"], "committed")
         self.assertFalse(failed["unknown_effect"])
-        self.assertIsNotNone(self.owner.graph.get(self.pending.ref).payload["metadata"]["otto_orchestrator"])
+        self.assertIsNotNone(self.owner.graph.current(self.pending.ref).payload["metadata"]["otto_orchestrator"])
         self.ops.content_port = original
         now = self.queue.read(actor="owner")
-        current_project = self.owner.graph.get(self.pending.ref).ref.to_dict()
+        current_project = self.owner.graph.current(self.pending.ref).ref.to_dict()
         finished = self.append(request_id="new-publication", expected_revision=now["queue_ref"]["revision"],
                                project_ref=current_project)
         self.assertEqual(finished["outcome"], "queued", finished)

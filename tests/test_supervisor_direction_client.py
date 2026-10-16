@@ -34,7 +34,7 @@ class SupervisorDirectionClientTests(unittest.TestCase):
   self.binding=admissions.admit(actor=f.owner.owner_actor,request_ref=req['request_ref'],project_ids=[f.project.id],operations=sorted(OPERATIONS),request_key='secondary-policy')
   self.root=f.owner.assignments.get(self.binding['assignment_ref'])
   f.owner.consumer_operations().execute('work.orchestrator.projects.attach',{'target_assignment_ref':self.root.ref.to_dict(),'target_assignment_revision':self.root.revision,'target_assignment_generation':1,'projects':[{'project_ref':f.project.ref.to_dict(),'project_version':f.project.version,'assignment_ref':None,'assignment_revision':None,'assignment_generation':None}]},request_id='supervision',actor='manager')
-  f.project=f.owner.graph.get(f.project.ref)
+  f.project=f.owner.graph.current(f.project.ref)
   delivery=SimpleNamespace(describe=lambda project:{'assignment_ref':self.root.ref.to_dict(),'generation':self.root.generation,'principal':self.root.principal,'conversation_ref':self.root.session})
   f.app=f.owner.execution_application(due_port=f.port,adapter=f.app.runtime.adapter,clock=f.app.clock,issue_delivery=delivery)
   manager,guide,mandate=f.role_handles('manager','manager','manager-session')

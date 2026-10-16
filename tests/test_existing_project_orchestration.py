@@ -80,7 +80,7 @@ class ExistingProjectOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "attached")
         self.assertEqual(result["writes"], 3)
         for original in self.projects:
-            current = self.owner.graph.get(original.ref)
+            current = self.owner.graph.current(original.ref)
             self.assertEqual(current.payload["outcome"], original.payload["outcome"])
             self.assertEqual(current.payload["metadata"]["preserve"], original.payload["metadata"]["preserve"])
             relation = current.payload["metadata"]["otto_orchestrator"]

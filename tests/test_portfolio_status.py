@@ -57,7 +57,7 @@ class PortfolioStatusTests(unittest.TestCase):
         """Re-point one attached project at a manager the host orchestrator does not hold."""
         assignment = self.owner.assignments.assign(self.projects[2].ref, role="manager", principal="other-manager",
                                                    logical_request_key="foreign-manager")
-        current = self.owner.graph.get(self.projects[2].ref)
+        current = self.owner.graph.current(self.projects[2].ref)
         next_ref = ResourceRef(current.ref.authority, current.ref.kind, current.ref.id,
                                "rev-" + str(current.version + 1))
         metadata = dict(current.payload.get("metadata", {}))

@@ -42,7 +42,7 @@ class PortfolioDirectionTests(unittest.TestCase):
             'target_assignment_generation': root.generation, 'projects': [{'project_ref': project.ref.to_dict(),
             'project_version': project.version, 'assignment_ref': None, 'assignment_revision': None, 'assignment_generation': None}]},
             request_id='enroll', actor='owner')
-        return root, subject, pin, owner.graph.get(project.ref)
+        return root, subject, pin, owner.graph.current(project.ref)
 
     def test_adopted_portfolio_direction_is_effective_only_for_canonical_selection(self):
         root, subject, pin, project = self.setup_portfolio()
