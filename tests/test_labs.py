@@ -756,3 +756,36 @@ def test_claude_policy_writes_only_under_its_lab(root, line, labs_root):
     assert write_roots <= {str(alpha.path), str(state)}
     assert str(bravo.path) not in policy
     assert str(line) not in policy
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"),
+                    reason="the Claude write fence is macOS sandbox-exec")
+def test_claude_fence_enforces_each_lab_and_never_the_line(root, line, labs_root):
+    """ASTRA0, Claude side: the production fence lets a worker write its own lab and nothing else."""
+    fleet = new_fleet(line, labs_root)
+    labs = {name: fleet.create(name) for name in ("alpha", "bravo")}
+    state = root / "state"
+    state.mkdir()
+    line_before = digest(line)
+
+    def attempt(owner: str, target: Path) -> subprocess.CompletedProcess:
+        spec = labs[owner].claude_turn_spec("claude", "model-x", "high", "work", state_root=str(state),
+                                            tools=("Read", "Edit"), allowed_tools=("Read", "Edit", "Write"))
+        fence = ClaudeHost().make_fence(spec)
+        command = fence.wrap(["/bin/dash", "-c", 'echo "$2" > "$1"', "sh", str(target / "src" / "pkg" / "edit.txt"), owner])
+        return subprocess.run(command, capture_output=True, text=True, timeout=60)
+
+    for owner, other in (("alpha", "bravo"), ("bravo", "alpha")):
+        own = attempt(owner, labs[owner].path)
+        assert own.returncode == 0, own.stderr           # positive control: the fence is live and permits the lab
+        assert (labs[owner].path / "src" / "pkg" / "edit.txt").read_text() == owner + "\n"
+    # Each lab holds only its own edit; the attempts at the other lab and at the line are refused.
+    for owner, other in (("alpha", "bravo"), ("bravo", "alpha")):
+        refused_lab = attempt(owner, labs[other].path)
+        refused_line = attempt(owner, line)
+        assert refused_lab.returncode != 0 and refused_line.returncode != 0
+    assert not (line / "src" / "pkg" / "edit.txt").exists()
+    assert digest(line) == line_before
+    for name, lab in labs.items():
+        assert (lab.path / "src" / "pkg" / "edit.txt").read_text() == name + "\n"   # not overwritten by the other worker
+        assert lab.dirty() == ["?? src/pkg/edit.txt"]
