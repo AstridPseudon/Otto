@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 
 from herzchen.command_ports import command_facade
 
+from . import admission
+
 from .model import (
     GraphCycleError,
     InvalidDependencyError,
@@ -473,6 +475,87 @@ class _WorkGraphEngine:
 
     update = revise
 
+    def admission_state(self, target: Any) -> Dict[str, Any]:
+        """Read one task's admission: the admitted revision id, or None while the current content is unadmitted."""
+        record = self._require(target)
+        stamp = admission.stamp_of(record.payload)
+        return {"task_ref": record.ref, "current_revision": record.revision,
+                "admitted_revision": admission.admitted_revision(record.payload),
+                "stamp": None if stamp is None else dict(stamp)}
+
+    def admit(
+        self,
+        target: Any,
+        *,
+        revision: str,
+        review_ref: Any,
+        disposition: str = "approved",
+        logical_request_key: Optional[str] = None,
+        actor: Any = None,
+    ) -> Dict[str, Any]:
+        """Pin the exact task revision a reviewer approved.
+
+        ``target`` only names the record; the revision admitted is ``revision``, never whatever an
+        alias resolves to now. Only the project's user admits, only on an approving review that
+        names an exact retained revision, and only while the sheet still reads as it did in that
+        revision. Admitting what is already admitted writes nothing, and a replay of the same
+        request key returns the first receipt.
+        """
+        key = self._request_key(logical_request_key)
+        ResourceRef = _contract_types()[3]
+        prior = self.__writer.get_receipt(key)
+        if prior is not None:
+            # A lost reply: the stamp is a work.revise, so the replay is that revise's own, answered from its receipt.
+            event = next((item for item in self.__writer.list_events(stream="work:" + prior.target.id) if item.event_id in prior.event_ids), None)
+            result = (event.effects or {}).get("result_payload") if event is not None else None
+            stamp = admission.stamp_of(result) if isinstance(result, Mapping) else None
+            if stamp is None or stamp["revision"] != revision:
+                raise WorkValidationError("logical request key was used for a different request")
+            record = self.revise(prior.target, metadata_namespaces={admission.NAMESPACE: stamp}, base_revision=prior.target.revision,
+                                 logical_request_key=key, actor=actor)
+            return {"outcome": "replayed", "task_ref": record.ref, "admitted_revision": revision, "stamp": dict(stamp)}
+        if not isinstance(revision, str) or not revision.startswith("rev-"):
+            raise WorkValidationError("admission names the exact revision id, not an alias")
+        if isinstance(target, ResourceRef) and target.revision not in (None, revision):
+            raise WorkValidationError("target revision differs from the revision to admit")
+        record = self._require(self._unPinned(target) if isinstance(target, ResourceRef) else target)
+        if record.kind is not WorkKind.TASK:
+            raise WorkValidationError("only a task is admitted")
+        selected = actor or self.default_actor
+        project = self._resolve(record.project_ref) if record.project_ref is not None else None
+        if project is None or not admission.is_user(project.payload, selected):
+            raise admission.TaskNotAdmittedError("only the project's user admits a task revision")
+        if not isinstance(disposition, str) or disposition.lower() not in admission.APPROVED:
+            raise admission.TaskNotAdmittedError("a revision is admitted only on an approving review")
+        review = review_ref if isinstance(review_ref, ResourceRef) else ResourceRef.from_dict(review_ref) if isinstance(review_ref, Mapping) else None
+        if review is None or not review.revision or self.__writer.get_identity(ResourceRef(review.authority, review.kind, review.id)) is None:
+            raise admission.TaskNotAdmittedError("an unreviewed revision cannot be admitted: the review must name an exact stored revision")
+        stamp = admission.stamp_of(record.payload)
+        if stamp is not None and stamp["revision"] == revision and stamp["digest"] == admission.content_digest(record.payload):
+            return {"outcome": "already-admitted", "task_ref": record.ref, "admitted_revision": revision}
+        if revision == record.revision:
+            reviewed = record.payload
+        else:
+            reviewed = self._payload_at(record, revision)
+            if reviewed is None:
+                raise admission.AdmissionDiffError(
+                    f"reviewed revision {revision} is superseded by {record.revision} and cannot be compared", {})
+            diff = admission.content_diff(reviewed, record.payload)
+            if diff:
+                raise admission.AdmissionDiffError(
+                    f"the sheet changed since {revision} was reviewed: " + json.dumps(diff, sort_keys=True, default=str), diff)
+        stamp = admission.review_stamp(revision, reviewed, selected, review, disposition.lower())
+        updated = self.revise(record.ref, metadata_namespaces={admission.NAMESPACE: stamp}, base_revision=record.revision,
+                              logical_request_key=key, actor=actor)
+        return {"outcome": "admitted", "task_ref": updated.ref, "admitted_revision": revision, "stamp": stamp}
+
+    def _payload_at(self, record: WorkRecord, revision: str) -> Optional[Mapping[str, Any]]:
+        for event in self.__writer.list_events(stream="work:" + record.id):
+            payload = (event.effects or {}).get("result_payload")
+            if event.subject.revision == revision and isinstance(payload, Mapping):
+                return payload
+        return None
+
     def link_parent(self, child: Any, parent: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         request_key = self._request_key(logical_request_key)
         request_payload = {"child": self._request_locator(child), "parent": self._request_locator(parent)}
@@ -582,7 +665,10 @@ class _WorkGraphEngine:
     def _write_create(self, tx: Any, kind: WorkKind, record_id: str, payload: Mapping[str, Any], request_key: str, actor: Any, event_type: str) -> Any:
         ref = self._ref(kind, record_id)
         envelope = self._envelope("work.create", ref, payload, request_key, actor, expected_version=0)
-        receipt = self.__writer.mutate(envelope, event_type=event_type, result_ref=self._pinned(ref, 1), effects={"kind": kind.value, "id": record_id}, stream="work:" + record_id, transaction=tx)
+        # The admission stamp is derived from the request, so it stays out of the request digest.
+        stamped = self._authoring_admission(None, payload, actor, 1)
+        extra = {} if stamped is payload else {"identity_payload": stamped}
+        receipt = self.__writer.mutate(envelope, event_type=event_type, result_ref=self._pinned(ref, 1), effects={"kind": kind.value, "id": record_id}, stream="work:" + record_id, transaction=tx, **extra)
         self._retain_links(tx, self._payload_ref(payload.get("parent")), tuple(self._payload_ref(value) for value in payload.get("dependencies", ())))
         return receipt
 
@@ -590,7 +676,22 @@ class _WorkGraphEngine:
         envelope = self._envelope("work.revise", record.ref, payload, request_key, actor, expected_version=record.version, expected_revision=record.revision)
         if request_payload is not None:
             envelope = self._envelope("work.revise", record.ref, request_payload, request_key, actor, expected_version=record.version, expected_revision=record.revision)
+        payload = self._authoring_admission(record, payload, actor, record.version + 1)
         return self.__writer.mutate(envelope, identity_payload=payload, event_type=event_type, effects={"kind": record.kind.value, "id": record.id, "result_payload": dict(payload)}, stream="work:" + record.id, transaction=tx)
+
+    def _authoring_admission(self, record: Optional[WorkRecord], payload: Mapping[str, Any], actor: Any, version: int) -> Mapping[str, Any]:
+        """Admit a task's content by the project user making the edit; any other writer leaves the stamp as it was."""
+        if payload.get("kind") != WorkKind.TASK.value or not payload.get("project_ref"):
+            return payload
+        if record is not None and admission.content_digest(record.payload) == admission.content_digest(payload):
+            return payload
+        project = self._resolve(self._payload_ref(payload["project_ref"]))
+        selected = actor or self.default_actor
+        if project is None or not admission.is_user(project.payload, selected):
+            return payload
+        stamp = admission.authoring_stamp("rev-" + str(version), payload, selected)
+        namespaces = merge_metadata_namespaces(payload.get("metadata_namespaces", {}), {admission.NAMESPACE: stamp})
+        return dict(payload, metadata_namespaces=namespaces)
 
     def _replay_revision(self, request_key: str, request_payload: Mapping[str, Any], actor: Any, event_type: str) -> Any:
         prior = self.__writer.get_receipt(request_key)

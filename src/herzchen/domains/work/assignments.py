@@ -18,6 +18,7 @@ from herzchen.command_ports import command_facade
 
 from herzchen.contracts import AuthenticatedActor, CommandEnvelope, DomainContribution, ResourceRef, TransactionContext, canonical_json
 
+from . import admission
 from .model import Lifecycle, WorkNotFoundError, WorkValidationError
 
 
@@ -799,9 +800,15 @@ class _ResponsibilityAssignmentsEngine:
         dispatch_id = "dispatch-" + hashlib.sha256((assignment.id + ":" + key).encode()).hexdigest()[:28]
         ref = ResourceRef(self.__writer.authority, DISPATCH_KIND, dispatch_id)
         payload = {"record_type": "work.dispatch", "assignment": assignment.ref, "generation": assignment.generation, "inputs": pins, "action": action_value, "status": "dispatched"}
+        effects = {"assignment": assignment.ref, "generation": assignment.generation, "pinned_inputs": pins, "action": action_value}
+        # A replayed key answers with the dispatch it already made; only a new dispatch is gated.
+        if self.__writer.get_receipt(key) is None:
+            admitted = self._admitted_scope(assignment)
+            if admitted is not None:
+                effects["admitted_task"] = admitted
         with self.__writer.transaction() as tx:
             envelope = self._envelope("work.assignment.dispatch", ref, payload, key, actor, expected_version=0)
-            self.__writer.mutate(envelope, event_type="work.assignment.dispatched", result_ref=ResourceRef(ref.authority, ref.kind, ref.id, "rev-1"), after_refs=pins + (assignment.ref,), effects={"assignment": assignment.ref, "generation": assignment.generation, "pinned_inputs": pins, "action": action_value}, stream="dispatch:" + assignment.id, transaction=tx)
+            self.__writer.mutate(envelope, event_type="work.assignment.dispatched", result_ref=ResourceRef(ref.authority, ref.kind, ref.id, "rev-1"), after_refs=pins + (assignment.ref,), effects=effects, stream="dispatch:" + assignment.id, transaction=tx)
         return DispatchRecord(ref, assignment.ref, assignment.generation, pins, "dispatched", action_value)
 
     def list_observations(self, target: Any, *, kind: Optional[str] = None,
@@ -860,6 +867,28 @@ class _ResponsibilityAssignmentsEngine:
         identity = self.__writer.get_identity(ref)
         assert identity is not None
         return ObservationRecord(identity.ref, assignment.ref, kind, assignment.generation, value, identity.version)
+
+    def _admitted_scope(self, assignment: ResponsibilityAssignment) -> Optional[ResourceRef]:
+        """The exact admitted revision of a task-scoped assignment, or a refusal.
+
+        The revision used is the admitted revision id the stamp names, never the revision an alias or
+        an unpinned scope resolves to now; a scope that pins any other revision is refused.
+        """
+        scope = assignment.scope
+        if scope.kind != "work.task":
+            return None
+        current = self.__writer.get_identity(ResourceRef(scope.authority, scope.kind, scope.id))
+        if current is None:
+            raise WorkNotFoundError(f"assignment scope not found: {scope!r}")
+        admitted = admission.admitted_revision(current.payload)
+        if admitted is None:
+            stamp = admission.stamp_of(current.payload)
+            raise admission.TaskNotAdmittedError(
+                f"task {scope.id} revision {current.ref.revision} is not admitted"
+                + ("" if stamp is None else f" (admitted: {stamp['revision']})"))
+        if scope.revision is not None and scope.revision not in {admitted, current.ref.revision}:
+            raise admission.TaskNotAdmittedError(f"task {scope.id} revision {scope.revision} is not the admitted revision {admitted}")
+        return ResourceRef(current.ref.authority, current.ref.kind, current.ref.id, admitted)
 
     def _pin_reference(self, value: Any) -> ResourceRef:
         ref = self._as_ref(value)

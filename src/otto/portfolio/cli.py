@@ -92,6 +92,13 @@ def build_parser() -> argparse.ArgumentParser:
             step_parser.add_argument("--buffer-json", required=True, help="the editor's current JSON content value")
         _add_format(step_parser)
 
+    admit = sub.add_parser("admit", help="pin the exact task revision a reviewer approved; an unreviewed agent revision or a changed sheet is refused (your own edits need no admit)")
+    admit.add_argument("--task-ref", required=True, help="canonical work.task ResourceRef as JSON")
+    admit.add_argument("--revision", required=True, help="the exact revision id that was reviewed, e.g. rev-3")
+    admit.add_argument("--review-ref", required=True, help="the approving review's ResourceRef as JSON, pinned to its revision")
+    admit.add_argument("--request-key", required=True, help="logical request key; a replay with the same key resumes without duplicates")
+    _add_format(admit)
+
     status = sub.add_parser("status", help="portfolio status: projects, tasks, pool, managers, lab count and slot kinds")
     status.add_argument("--portfolio-ref", help="canonical portfolio ResourceRef as JSON (default: this host's portfolio)")
     _add_format(status)
@@ -1166,6 +1173,8 @@ def main(
                     result = _request_error(str(exc), code="denied")
                 except InvalidSessionError as exc:
                     result = _request_error(str(exc), code="session_not_open")
+        elif args.command == "admit":
+            result = _admit_command(args, status_session)
         elif args.command == "status":
             result = _status_command(args, status_session, labs)
         elif args.command == "create-pending":
@@ -1259,6 +1268,20 @@ def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[s
     from .status import portfolio_status
     selected = _parse_ref(args.portfolio_ref, "portfolio_ref") if args.portfolio_ref else None
     return portfolio_status(session, selected, labs=labs)
+
+
+def _admit_command(args: argparse.Namespace, session: Any) -> dict[str, Any]:
+    if session is None:
+        return _surface_unavailable(
+            "otto.admit.v1", "owner_session_unavailable",
+            "Inject the owner session at cli.main(..., status_session=...).",
+        )
+    from .admit import admit_task
+    task_ref = _parse_ref(args.task_ref, "task_ref")
+    if task_ref.get("kind") != "work.task":
+        return _request_error("admit requires a work.task ref")
+    return admit_task(session, task_ref=task_ref, revision=args.revision,
+                      review_ref=_parse_ref(args.review_ref, "review_ref", pinned=True), request_key=args.request_key)
 
 
 def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[str, Any]:
