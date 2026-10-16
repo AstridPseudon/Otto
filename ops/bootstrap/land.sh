@@ -222,7 +222,10 @@ reproduces() {  # FILE ID
 NEW_FAILS=""
 for f in $SWEEP; do
   : > "$G/lab.ids"
-  for n in 1 2; do
+  first=1
+  # A file the passing check ran whole (named in it, with no -k or :: selection) has had its first run.
+  case " $CHECK " in *" -k "*|*::*) ;; *" $f "*) first=2; log "sweep $f run 1/2: 0 failing (the check's run)" ;; esac
+  for n in $(seq "$first" 2); do
     run_pytest "$LAB" "$f" "$G/run$n.txt"
     ids="$(ids_of "$G/run$n.txt" "$f")"; kept=""
     if [ -n "$ids" ]; then
