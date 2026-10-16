@@ -829,9 +829,22 @@ class ExecutionHost:
             return operation() if threading.get_ident() == self._owner_thread else self._owner_request(operation)
         current = getattr(_DISPATCH_CONTEXT, "value", None)
         if current is not None and current[0] is self and current[1] == threading.get_ident():
-            # A finite nested command is already on its serialized owner pump.
-            # Queuing it back to that same waiting pump would deadlock. Foreign
-            # readers still use the owner queue and cannot borrow this context.
+            # The command pump can run its own nested read directly. A socket
+            # reader also has a local dispatch context, but during a native
+            # wait it must hand work back to the owner instead of blocking the
+            # command lock that the owner is pumping.
+            with self._lock:
+                owner_waiting = bool(self._external_waiting)
+                owner_context = bool(current[2])
+                if owner_waiting and not owner_context:
+                    self._owner_calls.put((operation, completed, result))
+                else:
+                    owner_waiting = False
+            if owner_waiting:
+                completed.wait()
+                if "error" in result:
+                    raise result["error"]
+                return result["value"]
             with self._command_lock:
                 return operation()
         while True:
@@ -874,7 +887,8 @@ class ExecutionHost:
                 "assignment_ref": binding.assignment_ref.to_dict(), "generation": binding.generation,
                 "adapter": binding.adapter, "native_session_id": binding.native_session_id,
                 "schedule_id": binding.schedule_id},
-            "project_identity": {k: context["project_ref"][k] for k in ("authority", "kind", "id")}}
+            "project_identity": ({k: context["project_ref"][k] for k in ("authority", "kind", "id")}
+                if isinstance(context.get("project_ref"), Mapping) else None)}
         path = self.directory / ("socket-intent-" + token + ".json")
         response = self.directory / ("response-" + token + ".json")
         pending = self.directory / ("pending-" + token + ".json")

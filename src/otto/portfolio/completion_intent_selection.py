@@ -86,6 +86,17 @@ def read_journal(commands,key,stage,*,adopted_history):
   raise PermissionError('exact completion journal '+str(bounded.get('state'))+'; no replay/disposition inferred')
  ancestors=[r.to_dict()for r in commands._adopted_assignment_refs(assignment)]if adopted_history else [assignment.to_dict()]
  value=record.payload.get('value')
+ record_assignment=record.payload.get('assignment')
+ record_generation=record.payload.get('generation')
+ if (adopted_history and type(record_generation) is int
+     and type(state.get('manager_generation')) is int
+     and record_generation < state['manager_generation']
+     and isinstance(record_assignment, Mapping)
+     and _identity(ResourceRef.from_dict(record_assignment)) == _identity(assignment)):
+  # A reassignment ends the old manager's journal authority. Preserve the
+  # historical record, but it is not a current continuation under the newer
+  # generation and therefore has no current read result.
+  return None
  if (receipt is None or receipt.status.value!='committed'or receipt.operation!='work.report.append'
      or _identity(receipt.target)!=_identity(ref)or receipt.result_ref!=record.ref
      or record.payload.get('record_type')!='work.observation'or record.payload.get('observation_kind')!='report'

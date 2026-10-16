@@ -135,8 +135,17 @@ def lookup(port: Any, *, scope: Mapping[str, Any], request_key: str,
     if retained["scope"] != dict(scope) or (request_input is not None and retained["input"] != dict(request_input)):
         return {"outcome": "conflict", "pure": True, "retry": False,
                 "next_action": "inspect the original intent; changed input or parent cannot reuse this key"}
+    handles = dict((due.get("host_evidence") or {}).get("launch_handles", {}))
+    outer = handles.get("outer_command")
+    if isinstance(outer, Mapping) and outer.get("transport") == "unix-socket":
+        # A canonical occurrence proves the launch exists, but lookup cannot
+        # prove that the original socket caller received its reply. Preserve
+        # the caller's unconfirmed transport state; command-status reports the
+        # owner receipt independently.
+        handles["outer_command"] = {"transport": "unix-socket", "request_id": outer.get("request_id"),
+                                    "retained": None, "retention": "unconfirmed"}
     return {"outcome": "found", "pure": True, "occurrence": handle(due),
-            "selection": retained["selection"], "handles": (due.get("host_evidence") or {}).get("launch_handles", {}),
+            "selection": retained["selection"], "handles": handles,
             "request_fingerprint": retained["fingerprint"], "retry": False}
 
 

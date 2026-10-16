@@ -2024,7 +2024,7 @@ class ExecutionApplication:
         prevent their manager from receiving a committed intermediate finish.
         """
         prior = self._read(manager_schedule_id)
-        current = self._current(prior.assignment_ref, prior.generation)
+        current = self._manager_adoption_anchor(prior)
         if (prior.role != "manager" or current.role != "manager"
                 or current.principal != self.manager_actor
                 or _identity(current.scope.to_dict()) != _identity(prior.target["project_ref"])):

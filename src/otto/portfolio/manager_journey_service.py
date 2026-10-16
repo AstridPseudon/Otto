@@ -404,14 +404,23 @@ class ManagerJourneyService:
     def _current_manager_schedule(self) -> str:
         """Select current owner-issued preparation without discarding effects."""
         state = self.server.state
+        due_port = getattr(self.server, "due_port", None)
+        if not callable(getattr(due_port, "read_due", None)):
+            # Some retained host compositions expose the exact manager reader
+            # through the execution adapter only. The caller validates this
+            # handle with that adapter before it can produce an effect.
+            schedule = manager_head(state)
+            if isinstance(schedule, str) and schedule:
+                return schedule
+            raise PermissionError("no current owner-issued manager occurrence")
         historical = (state.get("manager_continuation") or {}).get("schedule_id")
         current_schedule = state.get("schedule_id")
-        # A retained continuation may be the live same-session head even when
-        # another prepared occurrence is also named by state. Qualify it first;
-        # a stale but settled predecessor yields to a newer schedule already
-        # pinned to the current adopted assignment.
-        for schedule in dict.fromkeys(filter(None, (historical, current_schedule))):
-            due = self.server.due_port.read_due(schedule)
+        schedules = tuple(dict.fromkeys(filter(None, (historical, state.get("schedule_id")))))
+        admissible = []
+        current_assignment_schedules = []
+        live = []
+        for schedule in schedules:
+            due = due_port.read_due(schedule)
             if not isinstance(due, Mapping):
                 raise PermissionError("retained manager occurrence is missing")
             if (due.get("role") != "manager" or due.get("recipient") != state["manager"]
@@ -422,7 +431,12 @@ class ManagerJourneyService:
                     or due.get("generation") != state["manager_generation"]):
                 raise PermissionError("retained manager occurrence is foreign")
             if due.get("assignment_ref") == state["assignment_ref"]:
-                return schedule
+                admissible.append(schedule)
+                current_assignment_schedules.append(schedule)
+                if (due.get("stop_state") in {"active", "running"}
+                        and due.get("in_flight_request") is not None):
+                    live.append(schedule)
+                continue
             # Only a verified finalized success can be historical under a new
             # adopted BASE. UNKNOWN or unattempted stale intent is held.
             evidence = due.get("completion_evidence") or {}
@@ -432,26 +446,79 @@ class ManagerJourneyService:
                     or not evidence.get("result_digest")):
                 raise PermissionError("stale manager effects require exact reconciliation")
             if schedule == historical and current_schedule and current_schedule != historical:
-                current = self.server.due_port.read_due(current_schedule)
-                if isinstance(current, Mapping):
-                    if (current.get("role") != "manager" or current.get("recipient") != state["manager"]
-                            or tuple(current["target"]["project_ref"][k] for k in ("authority", "kind", "id"))
-                            != tuple(state["project_ref"][k] for k in ("authority", "kind", "id"))
-                            or tuple(current["assignment_ref"][k] for k in ("authority", "kind", "id"))
-                            != tuple(state["assignment_ref"][k] for k in ("authority", "kind", "id"))
-                            or current.get("generation") != state["manager_generation"]):
-                        raise PermissionError("retained manager occurrence is foreign")
-                    if current.get("assignment_ref") == state["assignment_ref"]:
-                        return current_schedule
-            from otto.attention import DueRecord
-            app = self._execution(principal=state['manager'], model=state.get('requested_model', due.get('requested_model')),
-                reasoning=state.get('requested_reasoning', due.get('requested_reasoning')),
-                evidence_id='adopted-manager-read-anchor')
-            adopted = app._manager_adoption_anchor(DueRecord.from_dict(due))
-            from .operating_setup import authenticated_adoption_ancestor
-            if adopted.ref.to_dict() != state['assignment_ref'] and not authenticated_adoption_ancestor({'ref':adopted.ref.to_dict(),'principal':adopted.principal,'role':adopted.role,'generation':adopted.generation,'payload':adopted.payload},state['assignment_ref'],getattr(app.portfolio.operations,'_owner_reader',None)):
-                raise PermissionError('historical manager adoption differs from current state')
-            return schedule
+                # Canon may have already pinned a replacement manager intent
+                # to the current adopted assignment. Validate that exact Due
+                # before requiring an adoption anchor for the completed prior.
+                current_due = due_port.read_due(current_schedule)
+                if not isinstance(current_due, Mapping):
+                    raise PermissionError("retained manager occurrence is missing")
+                if (current_due.get("role") != "manager" or current_due.get("recipient") != state["manager"]
+                        or tuple(current_due["target"]["project_ref"][k] for k in ("authority", "kind", "id"))
+                        != tuple(state["project_ref"][k] for k in ("authority", "kind", "id"))
+                        or tuple(current_due["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                        != tuple(state["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                        or current_due.get("generation") != state["manager_generation"]):
+                    raise PermissionError("retained manager occurrence is foreign")
+                if current_due.get("assignment_ref") == state["assignment_ref"]:
+                    return current_schedule
+            owner = getattr(self.server, "owner", None)
+            assignments = getattr(owner, "assignments", None)
+            if assignments is not None and callable(getattr(assignments, "get", None)):
+                # The owner root gives the current assignment and authenticated
+                # event reader. Check both the state pin and the retained Due's
+                # pin against that same unchanged-generation adoption chain.
+                state_assignment = ResourceRef.from_dict(state["assignment_ref"])
+                current = assignments.get(ResourceRef(state_assignment.authority,
+                    state_assignment.kind, state_assignment.id))
+                from .operating_setup import authenticated_adoption_ancestor
+                owner_reader = getattr(getattr(owner, "graph", None), "reader", None)
+                trusted_owner = getattr(owner, "owner_actor", None)
+                authorized_adopters = ((trusted_owner.actor,)
+                    if isinstance(getattr(trusted_owner, "actor", None), str) else ())
+                current_projection = {"ref": current.ref.to_dict(), "principal": current.principal,
+                    "role": current.role, "generation": current.generation, "payload": current.payload}
+                if (current.principal != state["manager"] or current.role != "manager"
+                        or current.generation != state["manager_generation"]
+                        or not authenticated_adoption_ancestor(current_projection,
+                            state["assignment_ref"], owner_reader, authorized_adopters=authorized_adopters)
+                        or not authenticated_adoption_ancestor(current_projection,
+                            due["assignment_ref"], owner_reader, authorized_adopters=authorized_adopters)):
+                    raise PermissionError("historical manager adoption differs from current state")
+            else:
+                # Host-only compositions may not expose the assignment root.
+                # Use canon's execution adapter adoption anchor to authenticate
+                # the retained occurrence rather than accepting identity pins
+                # and a result digest alone.
+                from otto.attention import DueRecord
+                app = self._execution(principal=state["manager"],
+                    model=state.get("requested_model", due.get("requested_model")),
+                    reasoning=state.get("requested_reasoning", due.get("requested_reasoning")),
+                    evidence_id="adopted-manager-read-anchor")
+                adopted = app._manager_adoption_anchor(DueRecord.from_dict(due))
+                from .operating_setup import authenticated_adoption_ancestor
+                if (adopted.ref.to_dict() != state["assignment_ref"]
+                        and not authenticated_adoption_ancestor({"ref": adopted.ref.to_dict(),
+                            "principal": adopted.principal, "role": adopted.role,
+                            "generation": adopted.generation, "payload": adopted.payload},
+                            state["assignment_ref"], getattr(app.portfolio.operations, "_owner_reader", None))):
+                    raise PermissionError("historical manager adoption differs from current state")
+            admissible.append(schedule)
+        if live:
+            return live[0]
+        # Keep a continuation that is already pinned to this assignment ahead
+        # of the bootstrap schedule. If that continuation is a settled prior
+        # adoption, prefer a newer bootstrap handle only when it is itself
+        # pinned to the current assignment (canon behavior).
+        if historical in current_assignment_schedules:
+            return historical
+        if current_schedule in current_assignment_schedules:
+            return current_schedule
+        if historical in admissible:
+            return historical
+        if current_schedule in admissible:
+            return current_schedule
+        if admissible:
+            return admissible[0]
         raise PermissionError("no current owner-issued manager occurrence")
 
     @staticmethod
@@ -679,7 +746,7 @@ class ManagerJourneyService:
             return
         if request.get("command") == "operating-setup" and request.get("operation", "read") not in {"read", "preview"}:
             raise PermissionError("native setup callers may read or preview; setup mutations require owner custody")
-        if getattr(self.host, "bounded_transports", False) and (
+        if getattr(getattr(self, "host", None), "bounded_transports", False) and (
                 request.get("command") in {"start-manager", "start-retained-worker", "start-retained-help",
                     "manager-worker-result", "manager-task-settlement", "manager-help-result", "answer-session-result",
                     "start-retained-child", "parent-child-result"}
