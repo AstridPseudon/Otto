@@ -60,7 +60,7 @@ class ManagerJourneyCommands:
 
     def _journal(self, key: str, stage: str, value: Any = None, *, adopted_history: bool = False) -> Any:
         if value is None and stage in {"review", "intent", "finish-intent"}:
-            from completion_intent_selection import read_journal
+            from .completion_intent_selection import read_journal
             return read_journal(self, key, stage, adopted_history=adopted_history)
         actor = self._authorize()
         port = self.owner.assignments.command_port
@@ -804,7 +804,7 @@ class ManagerJourneyCommands:
             # One review owns one completion intent. A new correlation key
             # cannot create a second intent while the original awaits native
             # settlement, including after a same-generation resource adoption.
-            from completion_intent_selection import selected_reports
+            from .completion_intent_selection import selected_reports
             records, _selection = selected_reports(self, aliases=(request["task"],), review_key=request["review_key"])
             for record in records:
                 value = record.payload.get("value")

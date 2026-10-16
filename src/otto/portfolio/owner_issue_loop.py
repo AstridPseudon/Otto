@@ -159,43 +159,20 @@ class OwnerIssueReaders:
         if callable(inventory):
             selected = inventory(record.ref)
             scopes = {record.ref.id, *(ref["id"] for ref in selected["task_refs"])}
-            assignment_refs = selected["assignment_refs"]
         else:
             view = self.operations.sheet_port.export(record.ref)
             scopes = {record.ref.id, *(item["ref"]["id"] for item in view["tasks"])}
-            assignment_refs = [assignment.get("ref") for row in (view["project"], *view["tasks"])
-                for assignment in row.get("observed", {}).get("assignments", ())]
+        owner_reader = self.operations._owner_reader
         result = []
         seen = set()
-        # Project/task assignment observations retain old manager identities.
-        # Exact project history also carries previous supervisor assignments.
-        # Select their immutable streams before hydrating report/result bodies;
-        # revision equality must NOT exclude pre-adoption observations.
-        owner_reader = self.operations._owner_reader
-        assignments = {}
-        def remember(value):
-            value = _json_value(value)
-            if (isinstance(value, Mapping) and value.get("authority") == record.ref.authority
-                    and value.get("kind") == "wrk.assignment" and isinstance(value.get("id"), str)):
-                assignments[value["id"]] = value
-        for ref in assignment_refs:
-            remember(ref)
-        relation = record.payload.get("metadata", {}).get("otto_orchestrator", {})
-        if isinstance(relation, Mapping):
-            remember(relation.get("assignment_ref"))
-        for event in owner_reader.list_events(stream="work:" + record.ref.id, subjects=(record.ref,)):
-            for ref in (*event.before_refs, *event.after_refs):
-                remember(ref)
-            for name in ("from_assignment", "to_assignment"):
-                remember(event.effects.get(name))
-        subjects = getattr(owner_reader, "list_event_subjects", None)
-        def stream_subjects(stream):
-            if callable(subjects):
-                return subjects(stream=stream)
-            return (event.subject for event in owner_reader.list_events(stream=stream))
-        refs = (ref for ident in sorted(assignments) for kind in ("report", "result")
-                for ref in stream_subjects(kind + ":" + ident))
-        for ref in refs:
+        # Query the owner's event index once for report/result identities, then
+        # hydrate only those candidate records. Project-linked historical
+        # reports can belong to a supervisor assignment outside the project's
+        # current assignment inventory, so assignment streams are not a safe
+        # discovery index.
+        events = owner_reader.list_events(subject_kinds=("wrk.report", "wrk.result"))
+        for event in events:
+            ref = event.subject
             if ref.kind not in {"wrk.report", "wrk.result"} or ref.id in seen:
                 continue
             seen.add(ref.id)
