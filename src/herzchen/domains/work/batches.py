@@ -111,6 +111,24 @@ def _safe(value: Any) -> Any:
     return value
 
 
+def _merge_authored_namespaces(current: Any, incoming: Any) -> Dict[str, Any]:
+    """Merge namespace edits, with null deleting an individual key."""
+    if not isinstance(current, Mapping) or not isinstance(incoming, Mapping):
+        raise WorkValidationError("metadata_namespaces must be a mapping")
+    merged = {str(namespace): dict(values) for namespace, values in current.items()}
+    for namespace, values in incoming.items():
+        if not isinstance(values, Mapping):
+            raise WorkValidationError("metadata namespace values must be mappings")
+        target = dict(merged.get(str(namespace), {}))
+        for key, value in values.items():
+            if value is None:
+                target.pop(str(key), None)
+            else:
+                target[str(key)] = value
+        merged[str(namespace)] = target
+    return merged
+
+
 class _ProjectBatchesEngine:
     """Semantic batch and pending-project operations for one work scope."""
 
@@ -180,15 +198,6 @@ class _ProjectBatchesEngine:
             self._fence_task_bases(record, base_task_revisions)
             plan = self.validate_project_sheet(record, sheet, decision_ref=decision_ref, next_action=next_action)
             parent_payload = plan["project_payload"]
-            last_batch = dict(parent_payload["last_batch"])
-            last_batch["request_context"] = {
-                "expected_revision": base_revision if base_revision is not None else record.revision,
-                "expected_version": record.version,
-                "edit_token": None,
-                "correlation_id": None,
-                "causation_id": None,
-            }
-            parent_payload["last_batch"] = last_batch
             envelope = self._envelope(
                 "work.project-sheet.apply", record.ref, command_payload, request_key, actor,
                 expected_version=record.version, expected_revision=record.revision,
@@ -400,10 +409,18 @@ class _ProjectBatchesEngine:
         if _owner_supervision is not None and not isinstance(_owner_supervision, Mapping):
             raise WorkValidationError("owner supervision must be a mapping")
         initial = self._new_project_payload(project_id, title, outcome, curator, creator, metadata)
+        plan = None
         if sheet is not None:
             if not isinstance(sheet, Mapping):
                 raise WorkValidationError("project sheet must be a mapping")
-            initial.update(self._pending_projection(sheet))
+            # Validate and prepare every authored child before the first write.
+            # The synthetic record supplies the project identity needed to
+            # resolve local task refs; the parent and all children are then
+            # committed by the one create transaction below.
+            provisional = self.graph._from_payload(project_ref, 0, initial)
+            plan = self._prepare_sheet(provisional, sheet, decision_ref=None, next_action=None)
+            self._validate_plan(provisional, plan)
+            initial = plan["project_payload"]
         if _owner_supervision is None and isinstance(initial.get("metadata"), Mapping) and "otto_orchestrator" in initial["metadata"]:
             raise WorkValidationError("otto_orchestrator supervision is owner-controlled")
         if _owner_supervision is not None:
@@ -431,20 +448,28 @@ class _ProjectBatchesEngine:
                 self._envelope("work.project.create", project_ref, initial, request_key, actor, expected_version=0),
                 event_type="work.project.created",
                 result_ref=ResourceRef(project_ref.authority, project_ref.kind, project_ref.id, "rev-1"),
+                # The child references are admitted immediately below, after
+                # the parent receipt exists, within this same transaction.
                 after_refs=(),
-                effects={"pending": True, "tasks": (), "curator": curator, "authoring_reservation": reservation_ref},
+                effects={"pending": True, "tasks": tuple(plan["mappings"].values()) if plan is not None else (), "curator": curator, "authoring_reservation": reservation_ref, "mapping": plan["mappings"] if plan is not None else {}},
                 stream="work:" + project_id,
                 transaction=tx,
             )
             if existing_receipt is not None:
                 existing = self.graph.current(receipt.result_ref or project_ref)
-                return BatchResult(existing, receipt, {}, project_id=existing.id, materialisation=existing.payload.get("materialisation"))
+                replay_mappings: Dict[str, ResourceRef] = {}
+                for task in self.graph.list(project=existing, kind=WorkKind.TASK):
+                    for alias in task.aliases:
+                        replay_mappings[alias] = task.ref
+                return BatchResult(existing, receipt, replay_mappings, project_id=existing.id, materialisation=existing.payload.get("materialisation"))
             if reservation_ref is not None:
                 reservation_payload = {"record_type": "work.authoring-reservation", "project": project_ref, "actor": _safe(selected_actor), "status": "held", "request_key": request_key, "token": "token-" + uuid.uuid4().hex}
                 self.__writer.put_identity(ResourceRef(reservation_ref.authority, reservation_ref.kind, reservation_ref.id, "rev-1"), reservation_payload, version=1, transaction=tx)
                 self.__writer.put_reference(reservation_ref, transaction=tx)
+            if plan is not None:
+                self._write_child_rows(tx, plan, receipt.event_ids[0])
         project = self.graph.current(project_ref)
-        result = BatchResult(project, receipt, {}, project_id=project.id, materialisation=project.payload.get("materialisation"))
+        result = BatchResult(project, receipt, dict(plan["mappings"]) if plan is not None else {}, project_id=project.id, materialisation=project.payload.get("materialisation"))
         if materializer is not None:
             result = self._materialize(result, materializer, request_key, reservation_ref)
         return result
@@ -568,7 +593,7 @@ class _ProjectBatchesEngine:
         return self.apply_project_sheet(project, sheet, logical_request_key=logical_request_key, actor=actor, next_action=action)
 
     def _prepare_sheet(self, project: WorkRecord, sheet: Mapping[str, Any], *, decision_ref: Any, next_action: Optional[str]) -> Dict[str, Any]:
-        allowed = {"title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata", "metadata_namespace", "tasks", "documents", "document_links", "document_changes", "manager_action", "resources"}
+        allowed = {"title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata", "metadata_namespace", "tasks", "criteria", "documents", "document_links", "document_changes", "manager_action", "resources"}
         unknown = set(sheet).difference(allowed)
         if unknown:
             raise WorkValidationError("unknown project-sheet fields: " + ", ".join(sorted(unknown)))
@@ -577,15 +602,7 @@ class _ProjectBatchesEngine:
             raise WorkValidationError("tasks must be an array")
         existing_by_id = {record.id: record for record in self.graph.list(project=project)}
         existing_by_alias = {alias: record for record in existing_by_id.values() for alias in record.aliases}
-        # A sheet-local key is a durable alias for the lifetime of the
-        # project.  Keep resolving it from the parent's batch history even
-        # when the generated task identity is not itself human-readable.
-        for batch in project.payload.get("batch_history", ()):
-            for local_key, raw_ref in dict(batch.get("mapping", {})).items():
-                mapped = self._as_ref(raw_ref)
-                mapped_record = existing_by_id.get(mapped.id)
-                if mapped_record is not None:
-                    existing_by_alias[str(local_key)] = mapped_record
+        # Sheet keys are task aliases, retained on task identities.
         mappings: Dict[str, ResourceRef] = {}
         planned: List[Dict[str, Any]] = []
         for index, raw in enumerate(task_entries):
@@ -655,7 +672,7 @@ class _ProjectBatchesEngine:
                 item["new_ref"] = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id, self._next_identity_revision(record))
             mappings[item["local_key"]] = item["new_ref"]
         project_payload = dict(project.payload)
-        for field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "resources"):
+        for field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "resources", "criteria"):
             if field in sheet:
                 project_payload[field] = _safe(sheet[field])
         if "custom" in sheet:
@@ -671,7 +688,7 @@ class _ProjectBatchesEngine:
         if "metadata_namespace" in sheet:
             if not isinstance(sheet["metadata_namespace"], Mapping):
                 raise WorkValidationError("metadata_namespace must be a mapping")
-            project_payload["metadata_namespaces"] = merge_metadata_namespaces(project_payload.get("metadata_namespaces", {}), sheet["metadata_namespace"])
+            project_payload["metadata_namespaces"] = _merge_authored_namespaces(project_payload.get("metadata_namespaces", {}), sheet["metadata_namespace"])
             validate_metadata_namespaces(project_payload, tuple(sheet["metadata_namespace"]))
         if "tasks" in sheet:
             ordered = sorted(planned, key=lambda item: (int(item["payload"].get("order", item["raw"].get("order", 0))), item["local_key"]))
@@ -684,15 +701,15 @@ class _ProjectBatchesEngine:
                     kept = existing_by_id.get(old_ref.id)
                     retained.append(kept.ref if kept is not None else old_ref)
             project_payload["tasks"] = [_safe(item["new_ref"]) for item in ordered] + [_safe(value) for value in retained]
-        history = list(project_payload.get("batch_history", ()))
-        history.append({"task_keys": [item["local_key"] for item in planned], "mapping": mappings, "manager_action": next_action or sheet.get("manager_action"), "decision_ref": _safe(decision_ref)})
-        project_payload["batch_history"] = history
-        project_payload["last_batch"] = history[-1]
+        project_payload.pop("batch_history", None)
+        project_payload.pop("last_batch", None)
         documents = self._prepare_documents(project, sheet, planned)
         return {"project_payload": project_payload, "planned": planned, "mappings": mappings, "documents": documents, "document_refs": tuple(documents["refs"]), "after_refs": tuple(list(mappings.values()) + list(documents["refs"]))}
 
     def _validate_plan(self, project: WorkRecord, plan: Mapping[str, Any]) -> None:
         adjacency: Dict[str, List[str]] = {}
+        for retained in self.graph.list(project=project, kind=WorkKind.TASK):
+            adjacency[retained.id] = [ref.id for ref in retained.dependencies]
         for item in plan["planned"]:
             adjacency[item["ref"].id] = [ref.id for ref in (self._as_ref(value) for value in item["payload"].get("dependencies", ()))]
             if item["payload"].get("lifecycle") not in {value.value for value in Lifecycle}:
@@ -908,7 +925,7 @@ class _ProjectBatchesEngine:
         if "metadata_namespace" in raw:
             if not isinstance(raw["metadata_namespace"], Mapping):
                 raise WorkValidationError(f"task[{index}].metadata_namespace must be a mapping")
-            payload["metadata_namespaces"] = merge_metadata_namespaces(payload.get("metadata_namespaces", {}), raw["metadata_namespace"])
+            payload["metadata_namespaces"] = _merge_authored_namespaces(payload.get("metadata_namespaces", {}), raw["metadata_namespace"])
         if "aliases" in raw or "alias" in raw:
             values = list(payload.get("aliases", ()))
             additions = raw.get("aliases", ())
@@ -1022,8 +1039,11 @@ class _ProjectBatchesEngine:
                 mappings = {str(k): self._as_ref(v) for k, v in dict(event.effects.get("mapping", {})).items()}
                 break
         if not mappings:
-            last = project.payload.get("last_batch", {})
-            mappings = {str(k): self._as_ref(v) for k, v in dict(last.get("mapping", {})).items()}
+            aliases: Dict[str, ResourceRef] = {}
+            for task in self.graph.list(project=project, kind=WorkKind.TASK):
+                for alias in task.aliases:
+                    aliases[alias] = task.ref
+            mappings = aliases
         return BatchResult(project, receipt, mappings, project_id=project.id)
 
     def _document_ref(self, value: Any) -> ResourceRef:

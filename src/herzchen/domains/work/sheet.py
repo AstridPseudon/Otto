@@ -71,7 +71,7 @@ class SheetDefinitions:
 
     project_editable: Tuple[str, ...] = (
         "title", "name", "outcome", "scope", "approach", "acceptance",
-        "protocol", "custom", "metadata", "metadata_namespace", "documents",
+        "protocol", "custom", "metadata", "metadata_namespace", "documents", "criteria",
         "document_links", "document_changes", "tasks",
     )
     task_editable: Tuple[str, ...] = (
@@ -605,7 +605,7 @@ class _ProjectSheetEngine:
                     value.pop(key, None)
             tasks.append(value)
         template_project = seed.get("project", {})
-        sheet = {"tasks": tasks, "metadata_namespace": {"work.template": {"template_id": template_id, "parameters": _safe(dict(parameters or {})), "criteria": _safe(seed.get("criteria", ())), "auto_dispatch": False}}}
+        sheet = {"tasks": tasks, "criteria": _safe(seed.get("criteria", ())), "metadata_namespace": {"work.template": {"template_id": template_id, "parameters": _safe(dict(parameters or {})), "auto_dispatch": False}}}
         if isinstance(template_project, Mapping):
             for field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata"):
                 if field in template_project:
@@ -640,6 +640,10 @@ class _ProjectSheetEngine:
                 raise SheetError(f"{field} must be non-blank text")
         if "outcome" in value and not isinstance(value["outcome"], str):
             raise SheetError("outcome must be text")
+        if "criteria" in value:
+            if not isinstance(value["criteria"], (list, tuple)):
+                raise SheetError("criteria must be an array")
+            self._validate_json(value["criteria"], "criteria")
         if "metadata_namespace" in value:
             for namespace, data in value["metadata_namespace"].items():
                 if not isinstance(namespace, str) or not namespace.strip() or not isinstance(data, Mapping):
@@ -762,12 +766,12 @@ class _ProjectSheetEngine:
         return tuple(result)
 
     def _authored_project(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        fields = ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata", "metadata_namespaces", "tasks", "documents")
+        fields = ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata", "metadata_namespaces", "tasks", "documents", "criteria")
         return {key: _safe(payload[key]) for key in fields if key in payload}
 
     def _observed_project(self, project: WorkRecord) -> dict[str, Any]:
         payload = project.payload
-        fields = ("lifecycle", "readiness", "manager", "budget", "worker", "execution", "external_action", "admitted", "batch_history", "last_batch")
+        fields = ("lifecycle", "readiness", "manager", "budget", "worker", "execution", "external_action", "admitted")
         result = {key: _safe(payload[key]) for key in fields if key in payload}
         # Project-scoped assignments are the accountable manager binding.  Keep
         # them in the same read-only projection as task observations so a

@@ -110,6 +110,28 @@ class OtToSaveTests(unittest.TestCase):
         self.assertEqual(self._counts(), counts)
         self.assertEqual([task.title for task in self._tasks(created["project_ref"])], ["Plan A"])
 
+    def test_malformed_first_save_leaves_no_project_or_task_or_receipt(self):
+        counts = self._counts()
+        refused = self._save(_file(_task("A", unsupported_control="start")))
+        self.assertEqual(refused["outcome"], "error", refused)
+        self.assertIn("unsupported fields", refused["error"]["message"])
+        self.assertEqual(self._counts(), counts)
+
+    def test_second_save_detects_cycle_through_a_retained_task(self):
+        created = self._created(_task("A"), _task("B", dependencies=["A"]))
+        before = self._counts()
+        refused = self._save(_file(_task("A", dependencies=["B"]),
+                                   project_ref=created["project_ref"]))
+        self.assertEqual(refused["outcome"], "error", refused)
+        self.assertIn("cycle", refused["error"]["message"])
+        self.assertEqual(self._counts(), before)
+
+    def test_saved_criteria_are_present_in_the_authored_project_view(self):
+        criteria = [{"id": "C1", "definition": "The saved result is reviewed"}]
+        saved = self._created(_task("A"), criteria=criteria)
+        view = self.owner.sheet.export(ResourceRef.from_dict(saved["project_ref"]))
+        self.assertEqual(view.project["authored"]["criteria"], criteria)
+
     def test_refused_typed_metadata_creates_no_project(self):
         counts = self._counts()
         refused = self._save(_file(_task("A", metadata_namespace={PLAN_NAMESPACE: {"route": "fast"}})))
@@ -151,6 +173,7 @@ class OtToSaveTests(unittest.TestCase):
         self.assertEqual(stale["diff"]["tasks"]["changed"][0]["id"], "A")
         self.assertEqual(stale["diff"]["tasks"]["changed"][0]["fields"]["title"],
                          {"file": "Plan A three", "current": "Plan A two"})
+        self.assertIn("Reread", stale.get("next_action", ""))
         self.assertFalse(stale["dispatch"])
         self.assertEqual(self._counts(), counts)
         self.assertEqual(self._project(newer["project_ref"]).payload["title"], "Plan two")

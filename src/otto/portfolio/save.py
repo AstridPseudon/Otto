@@ -18,6 +18,8 @@ from typing import Any, Mapping, Sequence
 
 SAVE_TEMPLATE_ID = "otto.save"
 SAVE_KEYS = frozenset({"project_ref", "project", "tasks", "criteria", "documents"})
+PROJECT_KEYS = frozenset({"title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata"})
+TASK_KEYS = frozenset({"id", "alias", "aliases", "kind", "title", "name", "body", "instructions", "outcome", "acceptance", "fields", "metadata", "metadata_namespace", "custom", "order", "lifecycle", "dependencies", "depends_on", "documents", "document_links", "revision", "withdraw"})
 DIFF_SKIP = frozenset({"id", "local_id", "key", "dependencies", "depends_on", "metadata_namespace", "documents", "document_links", "revision"})
 
 
@@ -44,6 +46,9 @@ def parse_save_file(document: Any) -> dict[str, Any]:
     project = document.get("project", {})
     if not isinstance(project, Mapping):
         raise SaveFileError("project must be an object")
+    unknown_project = sorted(str(key) for key in set(project) - PROJECT_KEYS)
+    if unknown_project:
+        raise SaveFileError("unknown project fields: " + ", ".join(unknown_project))
     tasks = document.get("tasks", [])
     if not isinstance(tasks, list):
         raise SaveFileError("tasks must be an array")
@@ -54,6 +59,11 @@ def parse_save_file(document: Any) -> dict[str, Any]:
     for index, task in enumerate(tasks):
         if not isinstance(task, Mapping):
             raise SaveFileError(f"task[{index}] must be an object")
+        unknown_task = sorted(str(key) for key in set(task) - TASK_KEYS)
+        if unknown_task:
+            raise SaveFileError(f"task[{index}] has unsupported fields: " + ", ".join(unknown_task))
+        if task.get("kind", "task") not in ("task", "work.task"):
+            raise SaveFileError(f"task[{index}] has unsupported kind")
         local_id = task.get("id")
         if not isinstance(local_id, str) or not local_id.strip():
             raise SaveFileError(f"task[{index}] needs a non-blank id")
