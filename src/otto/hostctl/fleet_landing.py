@@ -6,6 +6,7 @@ record. Review-required scopes remain blocked until an owner review exists.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -124,6 +125,15 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
         binding = assignment_lookup(assignment_id)
         if not isinstance(binding, Mapping) or binding.get("record") is None:
             raise LandingError("dispatch record is unavailable for assessment")
+        view = binding.get("view")
+        server = getattr(view, "server", None)
+        assert_policy_current = getattr(server, "assert_assessment_policy_current", None)
+        if not callable(assert_policy_current):
+            raise LandingError("owner project view cannot verify current assessment policy")
+        try:
+            assert_policy_current()
+        except Exception as exc:
+            raise LandingError("owner assessment policy is no longer current: " + str(exc)) from exc
         dispatch = binding["record"]
         if (getattr(dispatch, "assignment", None) != assignment_id
                 or getattr(dispatch, "role", None) != "worker"
@@ -228,10 +238,26 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                 "request_key": execution_key + ":" + suffix, **expected})
 
         try:
-            scope = commands.required_scope(require=True)
+            # Only the trusted policy may authorize a fleet check scope.
+            scope = commands.required_scope(require=False)
+            if scope is None:
+                if getattr(policy, "scope_mode", None) != "check-accepted":
+                    raise LandingError("owner assessment setup has no required scope for this task")
+                scope_id = "fleet-check-" + sha256(json.dumps(
+                    task_ref.to_dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+                declared_ref = ResourceRef(task_ref.authority, "assessment.scope", scope_id)
+                execute("declare-scope", {"scope_ref": declared_ref.to_dict(),
+                    "criterion_refs": [item.to_dict() for item in criteria],
+                    "protocol": "check-accepted"}, "scope")
+                scope = commands.required_scope(require=True)
+            if scope is None:
+                raise LandingError("owner assessment scope declaration did not produce a required scope")
             if set(scope.criterion_refs) != set(criteria):
                 raise LandingError("assessment scope criteria differ from the owner policy pins")
-            if scope.review_required is not False or scope.allow_no_review is not True:
+            if (scope.review_required is not False or scope.allow_no_review is not True
+                    or getattr(policy, "scope_mode", None) != "check-accepted"
+                    or scope.protocol != "check-accepted"
+                    or scope.policy.get("acceptance_mode") != "check-accepted"):
                 raise LandingError(
                     "owner assessment scope requires a separate review; fleet check evidence cannot substitute for review"
                 )
@@ -334,6 +360,9 @@ class _FleetAssessmentCommands:
         if (candidate != self.candidate or criterion not in self.criteria
                 or actor.actor != self.manager_actor):
             raise LandingError("acceptance request differs from the owner-frozen fleet pins")
+        payload = getattr(result, "payload", None)
+        if not isinstance(payload, Mapping) or payload.get("role") != "fleet-check":
+            raise LandingError("fleet acceptance requires a retained fleet-check result")
         self.commands._authorize()
         scope = self.commands._scope(result.scope_ref)
         self.commands._policy.require_pair(self.commands._task, criterion)

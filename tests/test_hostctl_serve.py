@@ -113,6 +113,80 @@ BRIEF_T1 = "# Brief: T1\n\nBuild the first outcome. Proof: tests pass.\n"
 
 
 class WorkerWorkspaceCompositionTests(unittest.TestCase):
+    def test_fresh_project_view_loads_owner_policy_and_exact_criterion_aliases(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from herzchen.contracts import ResourceRef
+        from otto.hostctl.serve import HostOwnerService
+
+        project = ResourceRef("owner", "work.project", "project-a", "project-r2")
+        prior_task = ResourceRef("owner", "work.task", "task-a", "task-r2")
+        task = ResourceRef("owner", "work.task", "task-a", "task-r3")
+        criterion = ResourceRef("owner", "assessment.criterion", "criterion-a", "criterion-r1")
+        identities = {ref.id: SimpleNamespace(ref=ref, payload=payload)
+                      for ref, payload in ((project, {"tasks": [prior_task.to_dict()]}),
+                                           (task, {"alias": "T1"}),
+                                           (criterion, {"definition": {"source_alias": "C01"}}))}
+        reader = SimpleNamespace(get_identity=lambda ref: identities.get(ref.id))
+        scope = SimpleNamespace(parent_obligation_ref=prior_task, criterion_refs=(criterion,))
+        assessed = SimpleNamespace(coverage=lambda parent: {"scopes": [{"ref": {"id": "scope-a"}}]
+                                   if parent.id == task.id else []},
+                                   get_scope=lambda _ref: scope)
+        service = object.__new__(HostOwnerService)
+        service.state = {"authority": "owner", "project_ref": project.to_dict(),
+                         "task_refs": {"T1": prior_task.to_dict()}, "manager": "manager"}
+        service.owner = SimpleNamespace(
+            binding=SimpleNamespace(authenticated_actor=lambda principal: principal),
+            graph=SimpleNamespace(reader=reader, current=lambda _ref: identities[project.id]),
+            evidence_payload_resolver=object())
+        service.store = object()
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
+                "task_criterion_pairs": ["T1/C01"]}})}]
+
+        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
+             patch("herzchen.domains.assessment.AssessmentModule"):
+            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+
+        self.assertEqual(service.state["assessment_policy"]["scope_mode"], "check-accepted")
+        self.assertEqual(service.state["task_refs"], {"T1": task.to_dict()})
+        self.assertEqual(service.state["criterion_refs"], {"C01": criterion.to_dict()})
+        self.assertIsNone(service.assert_assessment_policy_current())
+        policy = __import__("otto.portfolio.local_assessment_policy", fromlist=["LocalAssessmentPolicy"])
+        parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
+        self.assertEqual(parsed.task_criterion_pairs, ((task, criterion),))
+
+        hydrated_state = json.loads(json.dumps(service.state))
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "changed owner policy",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
+                "task_criterion_pairs": ["T1/C01"]}})}]
+        with self.assertRaisesRegex(RuntimeError, "changed after owner view hydration"):
+            service.assert_assessment_policy_current()
+        self.assertEqual(service.state, hydrated_state, "freshness check must not mutate trusted service state")
+
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C01"]}})}]
+        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
+             patch("herzchen.domains.assessment.AssessmentModule"):
+            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+        parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
+        self.assertEqual(parsed.scope_mode, "review-required")
+
+        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
+            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
+                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+                "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C99"]}})}]
+        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
+             patch("herzchen.domains.assessment.AssessmentModule"):
+            with self.assertRaisesRegex(RuntimeError, "does not bind current owner records"):
+                service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+
     def _service(self, due, workspace):
         from types import SimpleNamespace
         from otto.hostctl.serve import HostOwnerService

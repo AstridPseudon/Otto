@@ -153,6 +153,14 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.commands.review_task({**request, "inspection": {"different": True}})
 
+    def test_same_key_review_replay_rejects_changed_scope_mode(self):
+        request = {**self.request(key="scope-mode-replay"), "finish": False}
+        first = self.commands.review_task(request)
+        self.assertEqual(first["outcome"], "accepted")
+        self.fixture.state["assessment_policy"]["scope_mode"] = "check-accepted"
+        with self.assertRaisesRegex(PermissionError, "policy differs"):
+            self.commands.review_task(request)
+
     def test_project_view_retains_committed_acceptance_independently_of_native_result(self):
         from herzchen.kernel import ProjectHistoryGrant
         from otto.portfolio.observability_views import ObservabilityViews

@@ -314,7 +314,8 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
     actor = AuthenticatedActor("owner", "manager", "manager")
     policy_config = {"kind": "owner_local_bookkeeping", "purpose": "fleet check assessment",
         "local_only": True, "pool_id": "fleet-pool", "capacity_units": 1,
-        "cumulative_allowance_units": 1, "task_criterion_pairs": ["T/C"]}
+        "cumulative_allowance_units": 1, "task_criterion_pairs": ["T/C"],
+        "scope_mode": "check-accepted"}
     state = {"authority": "owner", "project_ref": project.to_dict(),
         "task_refs": {"T": task.to_dict()}, "criterion_refs": {"C": criterion.to_dict()},
         "assessment_policy": policy_config, "assignment_ref": manager.to_dict(),
@@ -328,15 +329,20 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
             exact = known.get(ref.kind)
             return SimpleNamespace(ref=exact) if exact is not None and exact.id == ref.id else None
 
-    scope = SimpleNamespace(ref=scope_ref, criterion_refs=(criterion,),
-        review_required=False, allow_no_review=True)
+    scope = SimpleNamespace(ref=scope_ref, criterion_refs=(criterion,), protocol="check-accepted",
+        review_required=False, allow_no_review=True,
+        policy={"required_for_completion": True, "acceptance_mode": "check-accepted"})
     packet_requests = []
     class Commands:
+        declared = False
         def required_scope(self, *, require):
-            assert require is True
-            return scope
+            assert require in {True, False}
+            return scope if self.declared else None
         def execute(self, request):
             packet_requests.append(request)
+            if request["operation"] == "declare-scope":
+                self.declared = True
+                return {"ref": scope_ref.to_dict()}
             return {"ref": packet_ref.to_dict()}
     commands = Commands()
     candidate_rows = []
@@ -351,9 +357,15 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         manager_assessment=lambda **kwargs: commands,
         create_manager_assessment_pool=lambda **_kwargs: None)
     dispatch = SimpleNamespace(assignment="dispatch-1", role="worker", admitted_revision="task-r1")
+    policy_changed = [False]
+    def assert_policy_current():
+        if policy_changed[0]:
+            raise ValueError("run document assessment policy changed")
     binding = {"record": dispatch, "task": SimpleNamespace(ref=task), "task_ref": task.to_dict(),
         "project_ref": project.to_dict(), "assignment_ref": assignment.to_dict(),
-        "generation": 3, "project_state": state}
+        "generation": 3, "project_state": state,
+        "view": SimpleNamespace(server=SimpleNamespace(
+            assert_assessment_policy_current=assert_policy_current))}
     service = make_landing_service(fleet=SimpleNamespace(_lab=lambda _name: None), result_store=ResultStore(tmp_path / "results"),
         repo_name="repo", repo_path=tmp_path, branch="main", owner=owner, runner=SimpleNamespace(call=lambda _r: {}),
         views_provider=lambda: {}, assignment_lookup=lambda assignment_id: binding if assignment_id == "dispatch-1" else {})
@@ -366,9 +378,27 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
     payload["metadata_namespaces"]["work.admission"] = authoring_stamp("task-r1", payload, "reviewer")
     admitted_task = {"id": task.id, "payload": payload}
 
+    policy_changed[0] = True
+    from herzchen.fleet.landing import LandingError
+    with pytest.raises(LandingError, match="assessment policy is no longer current"):
+        service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
+    assert candidate_rows == [], "stale assessment policy must fail before recording a candidate"
+    policy_changed[0] = False
+
     context = service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1",
         candidate="worker-forged-candidate", criterion="worker-forged-criterion",
         parent_obligation="worker-forged-parent", actor="worker-forged-actor")
+
+    declaration = packet_requests[0]
+    assert declaration["operation"] == "declare-scope"
+    assert declaration["arguments"]["protocol"] == "check-accepted"
+    assert declaration["arguments"]["criterion_refs"] == [criterion.to_dict()]
+    import hashlib
+    import json
+    expected_scope_id = "fleet-check-" + hashlib.sha256(json.dumps(
+        task.to_dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+    assert declaration["arguments"]["scope_ref"] == ResourceRef(
+        "owner", "assessment.scope", expected_scope_id).to_dict()
 
     assert candidate_rows[0][0] == assignment
     assert candidate_rows[0][1] == {
@@ -376,13 +406,123 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         "assignment_ref": assignment.to_dict(), "assignment_id": "dispatch-1",
         "lab_commit": "a" * 40, "repo_name": "repo", "line_ref": "refs/heads/main",
         "lab_name": task.id, "runner": runner_record}
-    packet_args = packet_requests[0]["arguments"]
+    packet_args = packet_requests[1]["arguments"]
     assert packet_args["candidate_ref"] == candidate_ref.to_dict()
     assert packet_args["criterion_refs"] == [criterion.to_dict()]
     assert packet_args["packet"]["admitted_revision"] == "task-r1"
     assert packet_args["packet"]["lab_commit"] == "a" * 40
     assert context["candidate"] == candidate_ref and context["criterion"] == criterion
     assert context["parent_obligation"] == task and context["actor"] == actor
+
+    # An existing review-required scope stays separate from fleet check
+    # acceptance, even when the controller policy permits check-accepted.
+    scope.review_required = True
+    with pytest.raises(LandingError, match="separate review"):
+        service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
+
+
+def test_fleet_accept_rejects_result_with_non_fleet_role():
+    from herzchen.contracts import ResourceRef
+    from herzchen.fleet.landing import LandingError
+    from otto.hostctl.fleet_landing import _FleetAssessmentCommands
+
+    candidate = ResourceRef("owner", "wrk.result", "candidate", "candidate-r1")
+    criterion = ResourceRef("owner", "assessment.criterion", "criterion", "criterion-r1")
+    commands = SimpleNamespace()
+    adapter = _FleetAssessmentCommands(commands, candidate, (criterion,),
+        ResourceRef("owner", "assessment.input", "packet", "packet-r1"),
+        ResourceRef("owner", "limit", "pool"), "manager", "request")
+    result = SimpleNamespace(payload={"role": "review"})
+
+    with pytest.raises(LandingError, match="retained fleet-check result"):
+        adapter.accept(result, candidate=candidate, criterion=criterion,
+            rationale="fleet check passed", actor=SimpleNamespace(actor="manager"))
+
+
+def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path):
+    """Exercise the fleet adapter against the real owner assessment command and store."""
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.assessment import AssessmentModule
+    from otto.hostctl.fleet_landing import _FleetAssessmentCommands
+    from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy, compose_manager_assessment_state
+    from otto.portfolio.manager_assessment_command import manager_assessment_pool_from_command
+
+    fixture = None
+    try:
+        # Reuse the owner/store composition that creates a disposable project,
+        # exact manager assignment, tasks and criteria without mocking assessment.
+        from tests.test_local_assessment_composition import LocalAssessmentCompositionTests
+        fixture = LocalAssessmentCompositionTests()
+        fixture.setUp()
+        f = fixture.f
+        criterion = ResourceRef.from_dict(fixture.state["criterion_refs"]["C09"])
+        task = ResourceRef.from_dict(fixture.state["task_refs"]["PA06"])
+
+        check_config = {**fixture.config, "scope_mode": "check-accepted"}
+        fixture.config_path.write_text(json.dumps({"assessment_accounting": check_config}))
+        fixture.state = compose_manager_assessment_state(fixture.state, config_path=fixture.config_path)
+        policy = LocalAssessmentPolicy.from_run_config(check_config, state=fixture.state)
+        manager_assessment_pool_from_command(f.owner, state=fixture.state,
+            request=fixture.request("PA06", key="fleet-adapter-pool"))
+
+        candidate_row = f.owner.assignments.command_port.append_result(
+            fixture.manager.ref, {"task_ref": task.to_dict(), "candidate": "verified-lab"},
+            expected_generation=fixture.manager.generation, logical_request_key="fleet-adapter-candidate",
+            actor=f.actor)
+        candidate = candidate_row.ref
+        scope_ref = fixture.call("PA06", "declare-scope", {"scope_ref": ResourceRef(
+            f.actor.authority, "assessment.scope", "fleet-adapter-check").to_dict(),
+            "criterion_refs": [criterion.to_dict()], "protocol": "check-accepted"}, "fleet-adapter-scope")["ref"]
+        scope = AssessmentModule(f.store, actor=f.actor).get_scope(ResourceRef.from_dict(scope_ref))
+        packet_ref = fixture.call("PA06", "freeze-input", {"scope_ref": scope_ref,
+            "candidate_ref": candidate.to_dict(), "criterion_refs": [criterion.to_dict()],
+            "source_refs": [candidate.to_dict()], "evidence_refs": [candidate.to_dict()],
+            "packet": {"candidate": "verified-lab"}}, "fleet-adapter-input")["ref"]
+
+        commands = f.owner.manager_assessment(project_ref=fixture.state["project_ref"],
+            task_ref=fixture.state["task_refs"]["PA06"],
+            manager_assignment_ref=fixture.state["assignment_ref"], manager_actor="manager",
+            manager_generation=1, assessment_policy=policy)
+        actor = f.owner.binding.authenticated_actor("manager")
+        adapter = _FleetAssessmentCommands(commands, candidate, (criterion,),
+            ResourceRef.from_dict(packet_ref), policy.pool_ref, "manager", "fleet-adapter")
+        result = adapter.assess(scope.ref, candidate=candidate, criterion=criterion,
+            input_packet=ResourceRef.from_dict(packet_ref), verdict="PASS",
+            protocol_result={"passed": True}, limit_pool=policy.pool_ref, actor=actor)
+        accepted = adapter.accept(result, candidate=candidate, criterion=criterion,
+            rationale="retained fleet check passed", actor=actor)
+        assert accepted.payload["candidate_ref"] == candidate.to_dict()
+        assert accepted.payload["criterion_ref"] == criterion.to_dict()
+        assert accepted.payload["result_ref"] == result.ref.to_dict()
+        assert not accepted.payload["review_evidence"]
+        assert result.payload["role"] == "fleet-check"
+        assert result.payload["protocol_result"] == {"passed": True}
+
+        # A retained fleet check cannot satisfy an ordinary review-required scope.
+        review_scope = AssessmentModule(f.store, actor=f.actor).declare_scope(
+            "fleet-adapter-review-required", parent_obligation=task, protocol="review-required",
+            criteria=[criterion], designated_approver="manager", authority=f.actor.authority,
+            logical_request_key="fleet-adapter-review-scope")
+        review_packet_ref = fixture.call("PA06", "freeze-input", {"scope_ref": review_scope.ref.to_dict(),
+            "candidate_ref": candidate.to_dict(), "criterion_refs": [criterion.to_dict()],
+            "source_refs": [candidate.to_dict()], "evidence_refs": [candidate.to_dict()],
+            "packet": {"candidate": "verified-lab"}}, "fleet-adapter-review-input")["ref"]
+        review_packet = ResourceRef.from_dict(review_packet_ref)
+        review_result = commands._assessment._assessment.assess(review_scope.ref,
+            candidate=candidate, criterion=criterion, input_packet=review_packet,
+            verdict="PASS", limit_pool=policy.pool_ref, role="fleet-check",
+            protocol_result={"passed": True}, logical_request_key="fleet-adapter-review-result",
+            actor=actor)
+        review_adapter = _FleetAssessmentCommands(commands, candidate,
+            (criterion,), review_packet, policy.pool_ref,
+            "manager", "fleet-adapter-review")
+        from herzchen.domains.assessment.model import AssessmentAuthorityError
+        with pytest.raises(AssessmentAuthorityError, match="required review evidence"):
+            review_adapter.accept(review_result, candidate=candidate,
+                criterion=criterion, rationale="fleet check only", actor=actor)
+    finally:
+        if fixture is not None:
+            fixture.doCleanups()
 
 
 @pytest.mark.parametrize("plan, message", [

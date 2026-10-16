@@ -71,6 +71,48 @@ class LocalAssessmentCompositionTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             stale.validate_binding(policy.scope_project_ref, policy.task_criterion_pairs[0][0], self.f.owner.graph.reader)
 
+    def test_scope_mode_is_owner_configured_and_review_required_by_default(self):
+        criterion = self.state["criterion_refs"]["C01"]
+        review_ref = self.call("PA01", "declare-scope", {"scope_ref": {"authority": self.f.actor.authority,
+            "kind": "assessment.scope", "id": "review-mode"}, "criterion_refs": [criterion],
+            "protocol": "inspection"}, "review-mode")
+        review_scope = AssessmentModule(self.f.store, actor=self.f.actor).get_scope(ResourceRef.from_dict(review_ref["ref"]))
+        self.assertTrue(review_scope.review_required)
+        self.assertFalse(review_scope.allow_no_review)
+        self.assertNotIn("acceptance_mode", review_scope.policy)
+
+        check_config = {**self.config, "scope_mode": "check-accepted"}
+        self.config_path.write_text(json.dumps({"assessment_accounting": check_config}))
+        self.state = compose_manager_assessment_state(self.state, config_path=self.config_path)
+        check_ref = self.call("PA06", "declare-scope", {"scope_ref": {"authority": self.f.actor.authority,
+            "kind": "assessment.scope", "id": "check-mode"}, "criterion_refs": [self.state["criterion_refs"]["C09"]],
+            "protocol": "inspection"}, "check-mode")
+        check_scope = AssessmentModule(self.f.store, actor=self.f.actor).get_scope(ResourceRef.from_dict(check_ref["ref"]))
+        self.assertFalse(check_scope.review_required)
+        self.assertTrue(check_scope.allow_no_review)
+        self.assertEqual(check_scope.policy["acceptance_mode"], "check-accepted")
+        self.assertEqual(check_scope.protocol, "check-accepted")
+
+        self.config_path.write_text(json.dumps({"assessment_accounting": self.config}))
+        self.state = compose_manager_assessment_state(self.state, config_path=self.config_path)
+        with self.assertRaises(PermissionError):
+            self.call("PA06", "resolve-required-scope", {}, "mode-drift")
+
+        with self.assertRaises(ValueError):
+            LocalAssessmentPolicy.from_run_config({**check_config, "scope_mode": "free-pass"}, state=self.state)
+        with self.assertRaises(ValueError):
+            self.call("PA06", "declare-scope", {"scope_ref": {"authority": self.f.actor.authority,
+                "kind": "assessment.scope", "id": "transport-mode"}, "criterion_refs": [self.state["criterion_refs"]["C09"]],
+                "protocol": "inspection", "scope_mode": "review-required"}, "transport-mode")
+
+    def test_check_accepted_rejects_generic_manager_assess_and_accept(self):
+        check_config = {**self.config, "scope_mode": "check-accepted"}
+        self.config_path.write_text(json.dumps({"assessment_accounting": check_config}))
+        self.state = compose_manager_assessment_state(self.state, config_path=self.config_path)
+        for operation in ("assess", "accept"):
+            with self.subTest(operation=operation), self.assertRaisesRegex(PermissionError, "verified fleet adapter"):
+                self.call("PA01", operation, {}, "generic-" + operation)
+
     def test_transport_cannot_create_arbitrary_budget_or_use_other_pool(self):
         with self.assertRaises(ValueError):
             manager_assessment_pool_from_command(self.f.owner, state=self.state,

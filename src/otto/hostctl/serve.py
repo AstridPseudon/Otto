@@ -111,6 +111,10 @@ class HostOwnerService:
         self.help_delivery = BoundHelpDelivery(readers=OwnerIssueReaders(self.owner.consumer_operations(),
                                                                          self.due_port))
         self.portfolio = self.owner.portfolio(due_port=self.due_port, issue_delivery=self.help_delivery)
+        # The run document is the owner's maintained policy source. Hydrate it
+        # after help_delivery exists because _documents uses the accountable
+        # project supervisor to read those canonical records.
+        self._hydrate_assessment_policy(record)
         self._default_adapter_factory = adapter_factory is None
         self.adapter_factory = adapter_factory or self._claude_adapter
         self.worker_mcp_provider = worker_mcp_provider
@@ -169,6 +173,183 @@ class HostOwnerService:
 
     def _save_state(self) -> None:
         atomic_json(self.state_path, self.state)
+
+    def _canonical_assessment_policy(self, project_ref: ResourceRef) -> Optional[dict[str, Any]]:
+        """Read the sole canonical run document's owner-declared policy."""
+        run_documents = [row for row in self._documents(project_ref)
+                         if row.get("path") in {"run.json", "run.yaml"}]
+        if len(run_documents) > 1:
+            raise RuntimeError("project has ambiguous run policy documents")
+        if not run_documents:
+            return None
+        raw_run = run_documents[0]["text"]
+        try:
+            run = dict(raw_run) if isinstance(raw_run, Mapping) else json.loads(raw_run)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("canonical project run document is invalid JSON") from exc
+        if not isinstance(run, Mapping):
+            raise RuntimeError("canonical project run document must be an object")
+        configured = run.get("assessment_accounting")
+        if configured is None:
+            return None
+        if not isinstance(configured, Mapping):
+            raise RuntimeError("canonical project assessment_accounting must be an object")
+        return dict(configured)
+
+    def assert_assessment_policy_current(self) -> None:
+        """Refuse assessment if the canonical run policy changed after hydration.
+
+        This check is read-only. It reads the current project document through
+        the owner document reader and compares the declaration exactly with
+        the policy already hydrated into trusted service state.
+        """
+        project_ref = ResourceRef.from_dict(self.state["project_ref"])
+        current = self.owner.graph.reader.get_identity(
+            ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
+        if (current is None or (current.ref.authority, current.ref.kind, current.ref.id) !=
+                (project_ref.authority, project_ref.kind, project_ref.id)):
+            raise RuntimeError("assessment policy project is unavailable")
+        configured = self._canonical_assessment_policy(current.ref)
+        hydrated = self.state.get("assessment_policy")
+        if not isinstance(hydrated, Mapping) or configured is None or dict(hydrated) != configured:
+            raise RuntimeError("canonical project assessment policy changed after owner view hydration")
+
+    def _hydrate_assessment_policy(self, record: Any) -> None:
+        """Project the canonical run policy and owner-record criterion aliases.
+
+        Alias names in assessment_accounting are only labels. Resolve them
+        from current assessment scopes over this exact project or its linked
+        tasks, using the criterion's source_alias or its exact record ID.
+        Retained owner bindings may preserve current criterion refs across a
+        completed task's revision change. Task acceptance prose is never a
+        criterion source.
+        """
+        from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
+
+        project_ref = ResourceRef.from_dict(self.state["project_ref"])
+        configured = self._canonical_assessment_policy(project_ref)
+        if configured is None:
+            self.state.pop("assessment_policy", None)
+            self.state["criterion_refs"] = {}
+            return
+
+        from herzchen.domains.assessment import AssessmentModule
+        from otto.portfolio.assessment import OttoAssessment
+
+        pairs = configured.get("task_criterion_pairs")
+        if not isinstance(pairs, list) or not 1 <= len(pairs) <= 256:
+            raise RuntimeError("canonical project assessment policy exceeds the bounded task/criterion scope")
+        requested_tasks: set[str] = set()
+        configured_aliases: set[str] = set()
+        for pair in pairs:
+            if isinstance(pair, str) and pair.count("/") == 1:
+                task_alias, criterion_alias = pair.split("/")
+            elif isinstance(pair, Mapping) and set(pair) == {"task", "criterion"}:
+                task_alias, criterion_alias = pair["task"], pair["criterion"]
+            else:
+                raise RuntimeError("canonical project assessment policy has an invalid task/criterion pair")
+            if not all(isinstance(value, str) and value.strip() for value in (task_alias, criterion_alias)):
+                raise RuntimeError("canonical project assessment policy has an empty task/criterion alias")
+            requested_tasks.add(task_alias)
+            configured_aliases.add(criterion_alias)
+
+        current_project = self.owner.graph.reader.get_identity(
+            ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
+        if current_project is None or current_project.ref != project_ref:
+            raise RuntimeError("assessment policy project pin is not the exact current project")
+        linked_tasks: dict[str, dict[str, Any]] = {}
+        if len(record.payload.get("tasks") or ()) > 4096:
+            raise RuntimeError("project task links exceed the owner view bound")
+        for raw in (record.payload.get("tasks") or ()):
+            ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
+            current = self.owner.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+            if current is None:
+                raise RuntimeError("project assessment task is no longer current")
+            alias = current.payload.get("alias") or current.ref.id
+            linked_tasks[alias] = current.ref.to_dict()
+        prior_tasks = self.state.get("task_refs") or {}
+        if linked_tasks:
+            if set(linked_tasks) != set(prior_tasks):
+                raise RuntimeError("assessment task aliases differ from the current project task links")
+            for alias, current_ref in linked_tasks.items():
+                prior_ref = ResourceRef.from_dict(prior_tasks[alias])
+                if prior_ref.id != current_ref["id"]:
+                    raise RuntimeError("assessment task alias was remapped to another owner record")
+            # A retained view can outlive task revisions; refresh exact pins
+            # from the current project links before resolving policy aliases.
+            self.state["task_refs"] = linked_tasks
+
+        actor = self.owner.binding.authenticated_actor(self.state["manager"])
+        assessed = OttoAssessment(AssessmentModule(self.store, actor=actor,
+            payload_resolver=self.owner.evidence_payload_resolver), actor)
+        missing_tasks = requested_tasks - set(self.state["task_refs"])
+        if missing_tasks:
+            raise RuntimeError("assessment policy names a task outside the exact current project")
+        parents = [project_ref]
+        parents.extend(ResourceRef.from_dict(self.state["task_refs"][alias])
+                       for alias in sorted(requested_tasks))
+        aliases: dict[str, dict[str, Any]] = {}
+        scoped_criteria: dict[tuple[str, str, str], ResourceRef] = {}
+        for parent in parents:
+            coverage = assessed.coverage(parent)
+            scope_rows = coverage.get("scopes", ())
+            if not isinstance(scope_rows, (list, tuple)) or len(scope_rows) > 256:
+                raise RuntimeError("assessment scopes exceed the bounded owner view")
+            for scope_row in scope_rows:
+                scope = assessed.get_scope(scope_row["ref"])
+                if (scope.parent_obligation_ref.authority, scope.parent_obligation_ref.kind,
+                        scope.parent_obligation_ref.id) != (parent.authority, parent.kind, parent.id):
+                    continue
+                for ref in scope.criterion_refs:
+                    if len(scoped_criteria) >= 256 and (ref.authority, ref.kind, ref.id) not in scoped_criteria:
+                        raise RuntimeError("assessment criteria exceed the bounded owner view")
+                    current = self.owner.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+                    if current is None or current.ref != ref:
+                        raise RuntimeError("assessment scope contains a stale criterion")
+                    scoped_criteria[(ref.authority, ref.kind, ref.id)] = ref
+                    definition = current.payload.get("definition") or {}
+                    alias = definition.get("source_alias") if isinstance(definition, Mapping) else None
+                    # Reviewed activation may create owner criteria without a
+                    # source_alias. Their canonical record id is usable only
+                    # when the owner run document names that exact id.
+                    if not isinstance(alias, str) or not alias.strip():
+                        alias = ref.id if ref.id in configured_aliases else None
+                    if alias is None:
+                        continue
+                    if alias in aliases and aliases[alias] != ref.to_dict():
+                        raise RuntimeError("assessment criterion alias is ambiguous: " + alias)
+                    aliases[alias] = ref.to_dict()
+
+        # A retained alias may come from a prior canonical hydration for an
+        # older criterion whose definition lacks source_alias. Preserve it
+        # only when this run document still names the alias and its exact ref
+        # remains current. This also survives a task revision after completion,
+        # when the original scope remains pinned to the prior task revision.
+        retained_criteria = self.state.get("criterion_refs") or {}
+        if not isinstance(retained_criteria, Mapping):
+            raise RuntimeError("retained assessment criterion aliases are malformed")
+        for alias, raw_ref in retained_criteria.items():
+            if alias not in configured_aliases:
+                continue
+            try:
+                ref = ResourceRef.from_dict(raw_ref)
+            except (TypeError, ValueError):
+                continue
+            identity = self.owner.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+            if identity is not None and identity.ref == ref:
+                if alias in aliases and aliases[alias] != ref.to_dict():
+                    raise RuntimeError("retained assessment criterion alias is ambiguous: " + str(alias))
+                aliases[alias] = ref.to_dict()
+
+        policy_state = {**self.state, "criterion_refs": aliases}
+        try:
+            policy = LocalAssessmentPolicy.from_run_config(configured, state=policy_state)
+            for task_ref, _criterion_ref in policy.task_criterion_pairs:
+                policy.validate_binding(project_ref, task_ref, self.owner.graph.reader)
+        except Exception as exc:
+            raise RuntimeError("canonical project assessment policy does not bind current owner records: " + str(exc)) from exc
+        self.state["criterion_refs"] = aliases
+        self.state["assessment_policy"] = dict(configured)
 
     # -- generated run view --------------------------------------------------------
     def render_run_view(self) -> Path:

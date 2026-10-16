@@ -17,6 +17,7 @@ class LocalAssessmentPolicy:
     cumulative_allowance_units: int
     scope_project_ref: ResourceRef
     task_criterion_pairs: tuple[tuple[ResourceRef, ResourceRef], ...]
+    scope_mode: str = "review-required"
 
     def __post_init__(self) -> None:
         project, pool = self.scope_project_ref, self.pool_ref
@@ -26,6 +27,9 @@ class LocalAssessmentPolicy:
                 or not isinstance(pool, ResourceRef) or pool.kind != "limit" or pool.revision is not None
                 or pool.authority != project.authority):
             raise ValueError("local assessment policy requires purpose, local_only and exact owner pool/project refs")
+        if (not isinstance(self.scope_mode, str)
+                or self.scope_mode not in {"review-required", "check-accepted"}):
+            raise ValueError("local assessment scope_mode must be review-required or check-accepted")
         pairs = self.task_criterion_pairs
         if not isinstance(pairs, tuple) or not 1 <= len(pairs) <= 256:
             raise ValueError("local assessment policy requires 1..256 task/criterion pairs")
@@ -102,7 +106,7 @@ class LocalAssessmentPolicy:
         return cls(configured["purpose"], configured["local_only"],
                    ResourceRef.from_dict(pool_value), configured["capacity_units"],
                    configured["cumulative_allowance_units"], project,
-                   tuple(pairs))
+                   tuple(pairs), configured.get("scope_mode", "review-required"))
 
     def validate_binding(self, project: ResourceRef, task: ResourceRef, reader: Any) -> None:
         if project != self.scope_project_ref or not any(pair[0] == task for pair in self.task_criterion_pairs):
