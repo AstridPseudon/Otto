@@ -106,7 +106,10 @@ def scan_candidates(directory: str | Path, *, now: float | None = None,
                 if token is not None:
                     live.add(token)
             if _token_of(name, "response-") is not None and entry.is_file(follow_symlinks=False):
-                responses.append((entry.stat(follow_symlinks=False).st_mtime, name, entry))
+                try:
+                    responses.append((entry.stat(follow_symlinks=False).st_mtime, name, entry))
+                except FileNotFoundError:
+                    continue  # answered and removed since the scan
     responses.sort()
     for mtime, name, entry in responses:
         token = _token_of(name, "response-")
