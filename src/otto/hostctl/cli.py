@@ -304,6 +304,14 @@ def _assignments(session: HostSession, record: Any) -> list:
 def cmd_portfolio(args: argparse.Namespace) -> Any:
     """Otto's portfolio CLI with this owner's ports injected (one entry, no second CLI)."""
     from .portfolio import portfolio_command
+    if getattr(args, "caller", None) == "otto":
+        # The otto thin client: this owner runs the verb with its own portfolio, editor host and status session.
+        from otto.portfolio.cli import owner_verb
+        config = host_config.load(_home(args))
+        entry = host_config.host(config, getattr(args, "host", None)) if config.get("hosts") else None
+        project_ids = tuple(_flag_values(args.portfolio_args, "--project-ref"))
+        with HostSession(config, host=entry, project_ids=project_ids) as session:
+            return owner_verb(list(args.portfolio_args), session=session, home=_home(args))
     if args.portfolio_args and args.portfolio_args[0] in {
             "status", "documents", "retire", "sync-docs", "apply", "gate", "prerequisite"}:
         return portfolio_command(args)

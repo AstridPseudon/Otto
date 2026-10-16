@@ -1694,6 +1694,39 @@ class _AuthoringSessionServiceEngine:
         """Release one named session through the canonical release receipt."""
         return self.release(self._owner_handle(actor, session_id), request_id=request_id)
 
+    def release_parked(self, handle: SessionHandle, *, request_id: str) -> FinishResult:
+        """Free a session the lifecycle parked for recovery, without publication.
+
+        ``release`` and ``discard`` only close an open session, so a parked one
+        had no release path. This clears its recovery flag and keeps its retained
+        draft and checkout files for cleanup; nothing is published.
+        """
+        request_payload = {"session": handle.session_id, "parked": True}
+        digest = self._request_digest("release", request_id, request_payload, target=handle.scope, actor=handle.actor)
+        prior = self._prior_receipt(request_id, digest)
+        if prior is not None:
+            return FinishResult("released", handle.scope, handle.session_id, receipt=prior, durable=True)
+        record = _as_record(self.__writer.get_identity(handle.scope))
+        if record is None:
+            raise InvalidSessionError("scope is not admitted")
+        checkout = self._validate_record(handle, record, require_open=False)
+        if checkout.state == AuthoringState.OPEN or not record.payload.get("recovery_pending"):
+            raise InvalidSessionError("authoring session is not parked for recovery")
+        with self.__writer.transaction() as tx:
+            current = _as_record(self.__writer.get_identity(handle.scope))
+            if current is None:
+                raise InvalidSessionError("scope is not admitted")
+            payload = dict(current.payload)
+            payload["recovery_pending"] = False
+            payload["failure_status"] = "released"
+            payload["recovery_actions"] = list(_recovery_actions("released"))
+            receipt = self._mutate(tx, actor=handle.actor, operation="release", request_id=request_id, target=handle.scope, digest=digest, record=current, payload=payload, effects={"status": "released", "parked": True}, request_payload=request_payload)
+        return FinishResult("released", handle.scope, handle.session_id, receipt=receipt, checkout=checkout, cleanup=checkout.cleanup, failure_status="released", recovery_actions=_recovery_actions("released"), durable=receipt is not None)
+
+    def owner_release_parked(self, actor: AuthenticatedActor, session_id: str, *, request_id: str) -> FinishResult:
+        """Free one named session the lifecycle parked for recovery."""
+        return self.release_parked(self._owner_handle(actor, session_id), request_id=request_id)
+
     def validate_retirement_handoff(self, handle: SessionHandle, retirement_guard: object) -> Tuple[str, ...]:
         """Validate the exact durable snapshot, manifest, fence, and held lease."""
         if not isinstance(retirement_guard, HeldRetirementLease):

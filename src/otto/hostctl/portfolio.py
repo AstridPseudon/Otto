@@ -14,10 +14,12 @@ from .owner import HostSession
 # The client's forward (prepare_portfolio_request) and the owner's check (service.py) both read it;
 # anything else (admit, complete-task, an unnamed subcommand) is refused with PermissionError.
 OWNER_PORTFOLIO_COMMANDS = frozenset({
-    "save",          # client: ottoctl portfolio --portfolio P save FILE (STAGE1 F7)
-    "show",          # client: ottoctl portfolio --portfolio P show ... (STAGE1 F7)
-    "read",          # client: ottoctl portfolio --portfolio P read ... (STAGE1 F7)
-    "status",        # operator: ottoctl portfolio status --portfolio P (parser() below)
+    "save",          # client: ottoctl portfolio --portfolio P save FILE (STAGE1 F7); otto --portfolio P save FILE
+    "show",          # client: ottoctl portfolio --portfolio P show ... (STAGE1 F7); otto --portfolio P show ...
+    "read",          # client: ottoctl portfolio --portfolio P read ... (STAGE1 F7); otto --portfolio P read ...
+    "open",          # client: otto --portfolio P open ... (A3FIX thin client; the owner's editor host runs it)
+    "release",       # client: otto --portfolio P release --session-id ... (A3FIX thin client; parked-session release)
+    "status",        # operator: ottoctl portfolio status --portfolio P (parser() below); client: otto --portfolio P status
     "documents",     # operator: ottoctl portfolio documents --portfolio P (parser() below)
     "retire",        # operator: ottoctl portfolio retire PATH --portfolio P (parser() below)
     "sync-docs",     # operator: ottoctl portfolio sync-docs --dir D --portfolio P (parser() below)

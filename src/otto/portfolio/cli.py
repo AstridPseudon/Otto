@@ -9,7 +9,11 @@ application supplies those dependencies.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
+from io import StringIO
 import json
+from pathlib import Path
+import sys
 from typing import Any, Mapping, Optional, Sequence
 
 from herzchen.authoring.sessions import InvalidSessionError
@@ -91,8 +95,28 @@ def build_parser() -> argparse.ArgumentParser:
         if step == "autosave":
             step_parser.add_argument("--buffer-json", required=True, help="the editor's current JSON content value")
         _add_format(step_parser)
+    folder_parser = open_sub.add_parser("folder", help="export, check out, check in or release a project folder through the project checkout")
+    folder_sub = folder_parser.add_subparsers(dest="folder_command", required=True)
+    for step, step_help in (
+        ("export", "read the canonical project folder files (work.project.folder-export)"),
+        ("start", "check the project out and write its folder into --directory"),
+        ("finish", "check the edited --directory back in; only changed files commit"),
+        ("release", "release the folder checkout; the local files are kept"),
+    ):
+        folder_step = folder_sub.add_parser(step, help=step_help)
+        _add_project_actor(folder_step)
+        folder_step.add_argument("--request-key", required=True)
+        if step in {"start", "finish"}:
+            folder_step.add_argument("--directory", required=True, help="the local project folder")
+        if step in {"finish", "release"}:
+            folder_step.add_argument("--session-id", required=True, help="the session id that start returned")
+        _add_format(folder_step)
+    release_parser = sub.add_parser("release", help="free a session the lifecycle parked for recovery; its retained files are kept and nothing is published")
+    release_parser.add_argument("--session-id", required=True)
+    release_parser.add_argument("--request-key", required=True)
+    _add_format(release_parser)
 
-    admit = sub.add_parser("admit", help="pin the exact task revision a reviewer approved; an unreviewed agent revision or a changed sheet is refused (your own edits need no admit)")
+    admit = sub.add_parser("admit",help="pin the exact task revision a reviewer approved; an unreviewed agent revision or a changed sheet is refused (your own edits need no admit)")
     admit.add_argument("--task-ref", required=True, help="canonical work.task ResourceRef as JSON")
     admit.add_argument("--revision", required=True, help="the exact revision id that was reviewed, e.g. rev-3")
     admit.add_argument("--review-ref", required=True, help="the approving review's ResourceRef as JSON, pinned to its revision")
@@ -1160,6 +1184,10 @@ def main(
                 else:
                     result = _task_detail(portfolio, actor=args.actor, project_ref=project_ref,
                                           task_ref=task_ref, limit=args.limit)
+        elif args.command == "open" and args.open_command == "folder":
+            result = _open_folder_command(args, portfolio)
+        elif args.command == "release":
+            result = _release_command(args, editor_host)
         elif args.command == "open":
             if editor_host is None:
                 result = _surface_unavailable(
@@ -1257,6 +1285,89 @@ def main(
         result = _request_error(str(exc))
     _emit(result, getattr(args, "format", "json"))
     return _exit_code(result)
+
+
+FOLDER_SCHEMA = "otto.open-folder.v1"
+PROJECT_JSON_FILE = "project.json"
+
+
+def _write_folder(root: Path, project_json: Mapping[str, Any], files: Mapping[str, str]) -> None:
+    # Created fresh: a checkout never lands on an existing path.
+    root.mkdir(parents=True)
+    base = root.resolve()
+    (base / PROJECT_JSON_FILE).write_text(json.dumps(project_json, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    for path, text in files.items():
+        target = (base / path).resolve()
+        if base not in target.parents:
+            raise ValueError("folder path escapes the checkout: " + path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("x", encoding="utf-8", newline="") as stream:
+            stream.write(text)
+
+
+def _read_folder(root: Path) -> dict[str, str]:
+    base = root.resolve()
+    if not base.is_dir():
+        raise ValueError("folder directory does not exist: " + str(root))
+    return {path.relative_to(base).as_posix(): path.read_text(encoding="utf-8")
+            for path in sorted(base.rglob("*")) if path.is_file() and not path.is_symlink()}
+
+
+def _open_folder_command(args: argparse.Namespace, portfolio: Any) -> dict[str, Any]:
+    """``open folder``: the project folder through the existing folder export, check-in and release."""
+    project_ref = _parse_ref(args.project_ref, "project_ref")
+    try:
+        if args.folder_command == "export":
+            return portfolio.export_folder(project_ref, actor=args.actor, request_id=args.request_key)
+        if args.folder_command == "release":
+            return portfolio.release_project(project_ref, session_id=args.session_id, actor=args.actor,
+                                             request_id=args.request_key)
+        directory = Path(args.directory)
+        if args.folder_command == "start":
+            if directory.exists():
+                return _request_error("folder directory already exists; choose a new --directory")
+            opened = portfolio.checkout_project(project_ref, actor=args.actor, request_id=args.request_key)
+            if opened.get("outcome") != "opened":
+                return opened
+            _write_folder(directory, opened["project_json"], opened["document_files"])
+            return {"outcome": "checked_out", "schema": FOLDER_SCHEMA, "session_id": opened["session_id"],
+                    "project_ref": project_ref, "directory": str(directory.resolve()),
+                    "files": sorted([PROJECT_JSON_FILE, *opened["document_files"]]), "read_only": False}
+        local = _read_folder(directory)
+        if PROJECT_JSON_FILE not in local:
+            return _request_error("folder has no project.json; start a checkout first")
+        project_json = json.loads(local.pop(PROJECT_JSON_FILE))
+        exported = portfolio.export_folder(project_ref, actor=args.actor, request_id=args.request_key + ":baseline")
+        if exported.get("outcome") != "exported":
+            return exported
+        canonical = exported["files"]
+        removed = sorted(set(canonical) - set(local))
+        if removed:
+            return _request_error("files removed from the folder cannot be checked in here: " + ", ".join(removed),
+                                  code="unsupported_change")
+        changes = [{"operation": "edit" if path in canonical else "add", "path": path, "content": text}
+                   for path, text in sorted(local.items()) if canonical.get(path) != text]
+        return portfolio.check_in_project(project_ref, session_id=args.session_id, project_json=project_json,
+                                         document_changes=changes, actor=args.actor, request_id=args.request_key)
+    except PermissionError as exc:
+        return _request_error(str(exc), code="denied")
+    except (OSError, ValueError, PortfolioError) as exc:
+        return _request_error(str(exc))
+
+
+def _release_command(args: argparse.Namespace, editor_host: Any) -> dict[str, Any]:
+    """``release``: free a session the lifecycle parked for recovery; nothing is published."""
+    if editor_host is None:
+        return _surface_unavailable("otto.release.v1", "editor_host_unavailable",
+                                    "Inject the owner's DocumentEditorHost at cli.main(..., editor_host=...).")
+    try:
+        return dict(editor_host.dispatch({"command": "document-authoring", "operation": "release-parked",
+                                          "request_key": args.request_key, "session_id": args.session_id},
+                                         actor=editor_host.actor))
+    except PermissionError as exc:
+        return _request_error(str(exc), code="denied")
+    except InvalidSessionError as exc:
+        return _request_error(str(exc), code="session_not_open")
 
 
 def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[str, Any]:
@@ -1476,6 +1587,87 @@ def _exit_code(result: Any) -> int:
     if outcome in {"unknown", "partial", "conflict", "denied", "rejected", "not_found", "blocked", "pending", "held"}:
         return 4
     return 0
+
+
+OWNER_EDITOR_VERBS = frozenset({"open", "release"})  # the verbs that need the owner's editor host
+
+
+def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, Any]:
+    """One otto verb run inside the owner: its portfolio, editor host and status session.
+
+    The owner lane calls this for a request the thin client sent with caller ``otto``.
+    The verb's JSON output is returned as the structured result the lane carries.
+    """
+    from .document_editor_host import owner_editor_host
+    words = list(argv)
+    editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
+    out = StringIO()
+    try:
+        with redirect_stdout(out):
+            code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session)
+    except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
+        return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
+    text = out.getvalue()
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"outcome": "read" if code == 0 else "error", "text": text}
+
+
+def _client_options(tokens: list[str]) -> tuple[Optional[str], Optional[str], list[str]]:
+    """Leading ``--home H`` and ``--portfolio P`` (either spelling), then the verb's own argv."""
+    values: dict[str, str] = {}
+    rest = list(tokens)
+    while rest and rest[0].partition("=")[0] in {"--home", "--portfolio"}:
+        name, equals, value = rest[0].partition("=")
+        if equals:
+            rest = rest[1:]
+        elif len(rest) >= 2:
+            value, rest = rest[1], rest[2:]
+        else:
+            break
+        values[name] = value
+    return values.get("--home"), values.get("--portfolio"), rest
+
+
+def _absolute_directories(words: list[str]) -> list[str]:
+    # The owner writes the folder, so a relative --directory is made absolute by the client.
+    out = list(words)
+    for index, token in enumerate(out[:-1]):
+        if token == "--directory":
+            out[index + 1] = str(Path(out[index + 1]).absolute())
+    return out
+
+
+def client_main(argv: Optional[Sequence[str]] = None) -> int:
+    """The ``otto`` console entry: a thin client that forwards its verb through the owner lane.
+
+    It opens no Store. It parses the verb, which needs no Store, names the owner portfolio
+    with --portfolio, and sends the argv through the owner lane. The owner runs the verb with
+    its own portfolio, editor host and status session.
+    """
+    from otto.hostctl import config as host_config, lanes
+    from otto.hostctl.cli import _await
+    from otto.hostctl.service import owner_lane
+    home, portfolio, words = _client_options(list(sys.argv[1:] if argv is None else argv))
+    parser = build_parser()
+    if not words:
+        parser.print_help()
+        return 0
+    try:
+        parsed = parser.parse_args(words)
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    if portfolio is None:
+        _emit({"outcome": "error", "schema": "otto.cli-error.v1",
+               "error": {"code": "usage", "message": "name the owner portfolio with --portfolio P"}}, "json")
+        return 2
+    lane = owner_lane(host_config.otto_home(home))
+    body = {"schema": lanes.REQUEST_SCHEMA, "command": "portfolio", "sub": None,
+            "args": {"portfolio": portfolio, "portfolio_args": _absolute_directories(words), "caller": "otto"}}
+    result = _await(lane, {"command": "portfolio-operation", "args": body}, 60.0)
+    _emit(result, getattr(parsed, "format", "json"))
+    return _exit_code(result)
 
 
 if __name__ == "__main__":

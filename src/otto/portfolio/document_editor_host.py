@@ -138,7 +138,7 @@ class DocumentEditorHost:
         fields = {
             "help": set(), "read": {"document_ref"},
             "open": {"document_ref"}, "inventory": set(),
-            "recover": {"session_id"}, "discard-lost": {"session_id"},
+            "recover": {"session_id"}, "discard-lost": {"session_id"}, "release-parked": {"session_id"},
             "resume": session, "status": session, "discard": session,
             "save": session | {"editor_buffer"},
             "finish": session, "idle-close": session,
@@ -148,6 +148,8 @@ class DocumentEditorHost:
             allowed.add("project_ref")
         if operation in {"open", "save", "resume"}:
             allowed.add("inactivity_seconds")
+        if operation == "finish":
+            allowed.add("expected_base_revision")
         if operation not in fields or set(request) - allowed or not (common | fields[operation]) <= set(request):
             raise ValueError("editor operation fields differ from the finite installed contract")
         key = request["request_key"]
@@ -157,7 +159,8 @@ class DocumentEditorHost:
             return {"outcome": "help", "command": "document-authoring",
                 "transport": "exact owner-authoring grant through protected host input; caller IPC alone cannot grant authority",
                 "fields": {name: sorted(common | required) for name, required in fields.items()},
-                "optional_fields": {name: (["inactivity_seconds"] if name in {"open", "resume", "save"} else []) + ["project_ref"]
+                "optional_fields": {name: (["inactivity_seconds"] if name in {"open", "resume", "save"} else [])
+                                    + (["expected_base_revision"] if name == "finish" else []) + ["project_ref"]
                                     for name in ("read", "open", "resume", "status", "discard", "save", "finish", "idle-close")},
                 "default_inactivity_seconds": DEFAULT_IDLE_SECONDS,
                 "buffer_format": {"content": "the editor's current JSON content value"},
@@ -182,6 +185,11 @@ class DocumentEditorHost:
             return dict(_json(self.authoring.recover_session(self.actor, request["session_id"])))
         if operation == "discard-lost":
             result = self.authoring.discard_session(self.actor, request["session_id"], request_id=key)
+            return {"outcome": result.status, "nonpublishing": True,
+                    "receipt": json_value(result.receipt), "cleanup_status": result.cleanup.value}
+        if operation == "release-parked":
+            # Frees a session the lifecycle parked for recovery; its retained files stay for cleanup.
+            result = self.sessions.owner_release_parked(self.actor, request["session_id"], request_id=key)
             return {"outcome": result.status, "nonpublishing": True,
                     "receipt": json_value(result.receipt), "cleanup_status": result.cleanup.value}
         threshold = request.get("inactivity_seconds", DEFAULT_IDLE_SECONDS)
@@ -264,10 +272,21 @@ class DocumentEditorHost:
                 registered_files=("document.json",), inactivity_seconds=seconds,
                 now=self.clock(), writer_check=lambda: self._quiescent(material))
         else:
+            # The base is compared inside the owner lane, before the claim: a late
+            # writer is refused with nothing claimed and the session stays open,
+            # instead of failing the DAT apply after the claim and parking it. An
+            # exact replay of a committed finish is left to the lifecycle receipt.
+            expected = request.get("expected_base_revision", material.handle.base_revision)
+            if self.sessions.reader.get_receipt(key) is None:
+                refusal = self._stale_base(request, expected, material.handle.base_revision)
+                if refusal is not None:
+                    return refusal
+            # Only an explicit base reaches the lifecycle: its request digest then
+            # matches every finish retained before this field existed.
             result = self.lifecycle.finish(material.handle, request_id=key, mode="manual",
                 checkout_root=material.handle.checkout_path, registered_files=("document.json",),
                 handler=self.authoring.lifecycle_handler(material, request_id=key),
-                writer_check=lambda: self._quiescent(material))
+                expected_base_revision=request.get("expected_base_revision"), writer_check=lambda: self._quiescent(material))
             applied = result.finish.application
             revision = getattr(applied, "revision", None)
             document = getattr(applied, "document", None)
@@ -291,6 +310,33 @@ class DocumentEditorHost:
             with self._lock:
                 self._buffers.pop(material.handle.session_id, None)
         return _json(result)
+
+    def _current_revision(self, request: Mapping[str, Any]) -> Any:
+        document = ResourceRef.from_dict(request["document_ref"])
+        if "project_ref" not in request:
+            return self.authoring.content.read(document)["current_revision"]["revision"]
+        ref = {key: value for key, value in request["document_ref"].items() if key != "revision"}
+        read = self.operations.document_reader.read_document(request["project_ref"], ref, actor=self.actor)
+        revision = (read.get("revision_ref") or {}).get("revision")
+        if read.get("outcome") != "read" or revision is None:
+            raise PermissionError("editor document revision is not readable under the current project grant")
+        return revision
+
+    def _stale_base(self, request: Mapping[str, Any], expected: Any, session_base: Any) -> Any:
+        """A refusal naming the base the finish lost to, or None when the base is current."""
+        current = self._current_revision(request)
+        if current == expected == session_base:
+            return None
+        if expected != current:
+            message = ("expected_base_revision %s is not the document's current revision %s; "
+                       "the late writer is refused and the session stays open" % (expected, current))
+        else:
+            message = ("expected_base_revision %s is not the base this session opened on, %s; "
+                       "release the session and open it again" % (expected, session_base))
+        return {"outcome": "conflict", "error": {"code": "stale_base", "message": message},
+                "expected_base_revision": expected, "session_base_revision": session_base,
+                "current_revision": current, "dat_revision_advanced": False, "session_open": True,
+                "nonpublishing": True, "publication": "not_published"}
 
     @staticmethod
     def operations_publication(committed: bool, revision_ref: Any, receipt: Any) -> Mapping[str, Any]:
@@ -317,3 +363,36 @@ class DocumentEditorHost:
                         **buffer["request"]})
                     buffer["published"] = True
         return [ingress.publish({"schema": ingress.schema, "request": request}) for request in requests]
+
+
+# One editor host per owner home, Store and project grant: its buffer capture state must
+# survive from one `open` request to the next, and its grant is the one the session holds.
+_OWNER_EDITORS: dict[tuple, tuple[Any, DocumentEditorHost]] = {}
+_OWNER_EDITORS_LOCK = threading.Lock()
+
+
+def _editor_secret(root: Path) -> bytes:
+    """The lease secret, created once under the owner home and then reused across restarts."""
+    path = root / "secret"
+    if not path.exists():
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return path.read_bytes()
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(os.urandom(32))
+    return path.read_bytes()
+
+
+def owner_editor_host(session: Any, home: str | Path) -> DocumentEditorHost:
+    """The owner's own editor host, built from the owner session the lane composed."""
+    key = (str(Path(home).resolve()), tuple(getattr(session, "project_ids", ())))
+    with _OWNER_EDITORS_LOCK:
+        cached = _OWNER_EDITORS.get(key)
+        if cached is not None and cached[0] is session.store:
+            return cached[1]
+        root = Path(home) / "editor"
+        host = DocumentEditorHost(owner=session.owner, directory=root, secret=_editor_secret(root))
+        _OWNER_EDITORS[key] = (session.store, host)
+        return host
