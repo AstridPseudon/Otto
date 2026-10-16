@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping, Optional
 
+from herzchen.contracts import ResourceRef
+
 SHOW_PROJECT_SCHEMA = "otto.show.project.v1"
 
 # CLI step -> the editor host's finite operation name. ``release`` is the host's ``discard``: it
@@ -40,6 +42,22 @@ def show_project(portfolio: Any, *, actor: str, project_ref: Mapping[str, Any], 
                 "error": {"code": "project_not_found", "message": "no project with that ref is visible to this read"}}
     items = [row for row in listed.get("items", ())
              if (row.get("project_ref") or {}).get("id") == project_ref.get("id")]
+    reader = getattr(getattr(portfolio, "operations", None), "reader", None)
+    if reader is not None:
+        try:
+            project_record = reader.get_record(ResourceRef(project_ref["authority"], project_ref["kind"], project_ref["id"]))
+            project_payload = (getattr(project_record, "payload", None) if project_record is not None
+                               else None) or (project_record.get("payload", project_record) if isinstance(project_record, Mapping) else {})
+            if project_payload.get("retirement"):
+                rows[0]["retirement"] = dict(project_payload["retirement"])
+            for row in items:
+                ref = row.get("ref")
+                record = reader.get_record(ResourceRef(ref["authority"], ref["kind"], ref["id"])) if isinstance(ref, Mapping) else None
+                record_payload = (getattr(record, "payload", None) if record is not None else None) or (record.get("payload", record) if isinstance(record, Mapping) else {})
+                if record_payload.get("retirement"):
+                    row["retirement"] = dict(record_payload["retirement"])
+        except (AttributeError, TypeError, ValueError):
+            pass
     return {"outcome": "read", "schema": SHOW_PROJECT_SCHEMA, "project": rows[0], "tasks": items,
             "pagination": listed.get("pagination"), "read_only": True, "writes": 0,
             "dispatch": False, "launch": False}

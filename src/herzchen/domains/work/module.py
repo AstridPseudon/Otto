@@ -172,6 +172,7 @@ def contribution() -> Any:
             "work.link-parent",
             "work.link-dependency",
             "work.withdraw",
+            "work.retire",
             "work.state-view",
         ),
         event_types=(
@@ -180,6 +181,7 @@ def contribution() -> Any:
             "work.parent-linked",
             "work.dependency-linked",
             "work.withdrawn",
+            "work.retired",
             "work.state-changed",
         ),
         schema_revision=SCHEMA_REVISION,
@@ -195,6 +197,7 @@ def contribution() -> Any:
                 ("work.revise", "work.parent-linked"),
                 ("work.revise", "work.dependency-linked"),
                 ("work.revise", "work.state-changed"),
+                ("work.revise", "work.retired"),
             )
             if not (kind == "work.project" and event == "work.parent-linked")
         ),
@@ -461,6 +464,8 @@ class _WorkGraphEngine:
         if replay is not None:
             return self._replay_result(replay)
         record = self._require(target)
+        if record.payload.get("retirement"):
+            raise WorkValidationError("retired work is terminal and cannot be revised")
         if base_revision is not None and record.revision != base_revision:
             from herzchen.kernel import VersionConflictError
             raise VersionConflictError("work revision base is stale")
@@ -608,7 +613,38 @@ class _WorkGraphEngine:
         return self.current(current.ref)
 
     def withdraw(self, target: Any, *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
-        return self.revise(target, lifecycle=Lifecycle.WITHDRAWN, logical_request_key=logical_request_key, actor=actor)
+        # Compatibility for older callers; new callers should retain the
+        # reason and successor through retire().
+        return self.retire(target, reason="withdrawn", logical_request_key=logical_request_key, actor=actor)
+
+    def retire(self, target: Any, *, reason: str, by: Any = None,
+               logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
+        """Retire a work record as a terminal, auditable revision."""
+        reason = reason.strip() if isinstance(reason, str) else ""
+        if not reason:
+            raise WorkValidationError("retirement requires a non-blank reason")
+        record = self._require(target)
+        successor = self._require(by) if by is not None else None
+        if successor is not None:
+            if record.lifecycle is Lifecycle.COMPLETED:
+                raise WorkValidationError("completed work cannot be retired into a successor")
+            if (successor.ref.authority, successor.ref.kind, successor.ref.id) == (record.ref.authority, record.ref.kind, record.ref.id):
+                raise WorkValidationError("retirement successor must be a different record")
+        request_key = self._request_key(logical_request_key)
+        request_payload = {"target": self._request_locator(target), "reason": reason,
+                           "by": None if successor is None else self._request_locator(successor.ref)}
+        replay = self._replay_revision(request_key, request_payload, actor, "work.retired")
+        if replay is not None:
+            return self._replay_result(replay)
+        # Re-resolve after replay admission so stale objects cannot supply data.
+        record = self._require(target)
+        payload = dict(record.payload)
+        payload["lifecycle"] = Lifecycle.WITHDRAWN.value
+        payload["retirement"] = {"reason": reason, "by": None if successor is None else self._ref_dict(successor.ref)}
+        payload["readiness"] = {"status": "retired", "ready": False, "dispatch": False}
+        with self.__writer.transaction() as tx:
+            self._write_revision(tx, record, payload, request_key, actor, "work.retired", request_payload=request_payload)
+        return self.current(record.ref)
 
     def set_lifecycle(self, target: Any, lifecycle: Union[Lifecycle, str], *, logical_request_key: Optional[str] = None, actor: Any = None) -> WorkRecord:
         return self.revise(target, lifecycle=lifecycle, logical_request_key=logical_request_key, actor=actor)
@@ -620,6 +656,8 @@ class _WorkGraphEngine:
         if replay is not None:
             return self._replay_result(replay)
         record = self._require(target)
+        if record.payload.get("retirement"):
+            raise WorkValidationError("retired work is terminal for readiness and dispatch")
         if not isinstance(observation, Mapping):
             raise WorkValidationError("readiness observation must be a mapping")
         readiness = dict(observation)

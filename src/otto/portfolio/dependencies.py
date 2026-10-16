@@ -104,6 +104,11 @@ class PortfolioDependencies:
 
     def _validate_link(self, project: Any, prerequisite: Any, cache: Optional[dict] = None) -> Any:
         prerequisite = self._current(prerequisite, cache)
+        if prerequisite.payload.get("retirement"):
+            retirement = prerequisite.payload["retirement"]
+            successor = retirement.get("by")
+            named = "" if not successor else "; successor is " + str(successor.get("id", "unknown"))
+            raise WorkValidationError("dependency is retired" + named + "; dependencies are not redirected")
         if prerequisite.ref.kind not in {"work.project", "work.gate"}:
             raise WorkValidationError("dependency_scope_mismatch: projects may depend only on projects or gates")
         upstream = prerequisite if prerequisite.ref.kind == "work.project" else self._current(prerequisite.payload.get("project_ref"), cache)
@@ -158,6 +163,11 @@ class PortfolioDependencies:
         cache = {} if cache is None else cache
         # Only an observation writes, so only it needs supervision.
         project = self.authorize(project, cache) if observe else self.scope(project, cache)
+        if project.payload.get("retirement"):
+            blocker = {"ref": project.ref.to_dict(), "satisfied": False,
+                       "reason": "project_retired", "retirement": dict(project.payload["retirement"])}
+            return {"project_ref": project.ref.to_dict(), "status": "retired", "ready": False,
+                    "dispatch": False, "blockers": [blocker], "dependencies": []}
         dependencies = []
         for value in project.payload.get("dependencies", ()):
             ref = identity(value)

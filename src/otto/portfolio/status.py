@@ -231,6 +231,7 @@ def portfolio_status(session: Any, portfolio_ref: Any = None, *,
         override = readiness.get("override")
         row = {"project_ref": record.ref.to_dict(), "title": record.payload.get("title"),
                "lifecycle": record.payload.get("lifecycle"), "supervised": supervised, "readiness": readiness,
+               "retirement": record.payload.get("retirement"),
                "manager": manager, "task_counts": dict(Counter(item["lifecycle"] for item in grouped["tasks"][pid])),
                "open_help_requests": issues, "allowances": list(pools.values()),
                "last_activity_at": max(stamps), "readiness_override": override}
