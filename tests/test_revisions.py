@@ -102,6 +102,19 @@ class RevisionTests(unittest.TestCase):
         revised = self._events("work:" + created["task_refs"]["A"]["id"], "work.revised")[-1]
         self.assertIn("title", revised.effects["history_summary"]["primary"]["changed_fields"])
 
+    def test_mapping_form_of_a_pinned_ref_reads_its_own_revision(self):
+        created = self._created(_task("A"))
+        self.owner.graph.revise(self._ref(created), title="Direct edit", logical_request_key="direct-m")
+        ref = self._ref(created)
+        form = dict(ref.to_dict(), revision="rev-1")
+        self.assertEqual(self.owner.graph.get(form).title, "Plan A")
+        self.assertEqual(self.owner.graph.get({"ref": form}).title, "Plan A")
+        self.assertEqual(self.owner.graph.get(dict(form, revision="rev-2")).title, "Direct edit")
+        self.assertEqual(self.owner.graph.current(form).title, "Direct edit")
+        for missing in (dict(form, revision="rev-99"), {"id": ref.id, "revision": "rev-99"}):
+            with self.assertRaises(WorkNotFoundError):
+                self.owner.graph.get(missing)
+
     def test_sheet_revision_keeps_the_old_content(self):
         created = self._created(_task("A"))
         second = self._save(_file(_task("A", title="Plan A two"), project_ref=created["project_ref"]))

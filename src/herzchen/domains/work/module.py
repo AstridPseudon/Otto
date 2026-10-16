@@ -643,7 +643,8 @@ class _WorkGraphEngine:
         ResourceRef = _contract_types()[3]
         record = self._resolve(target, exact=True)
         if record is None:
-            if isinstance(target, ResourceRef) and target.revision is not None:
+            pinned = target.revision if isinstance(target, ResourceRef) else target.get("revision") if isinstance(target, Mapping) else None
+            if pinned is not None:
                 raise WorkNotFoundError(f"work revision not kept: {target!r}")
             raise WorkNotFoundError(f"work record not found: {target!r}")
         return record
@@ -829,6 +830,12 @@ class _WorkGraphEngine:
                 identity = self.__writer.get_record(target)
             return None if identity is None else self._from_identity(identity)
         if isinstance(target, Mapping):
+            if exact and target.get("revision") is not None and "id" in target:
+                # The mapping form of a pinned ref reads its own revision, like the ResourceRef form.
+                located = self._resolve(target["id"])
+                if located is None or any(key in target and target[key] != getattr(located.ref, key) for key in ("authority", "kind")):
+                    return None
+                return self._resolve(ResourceRef(located.ref.authority, located.ref.kind, located.ref.id, target["revision"]), exact=True)
             if "id" in target:
                 return self._resolve(target["id"], exact=exact)
             if "ref" in target:
