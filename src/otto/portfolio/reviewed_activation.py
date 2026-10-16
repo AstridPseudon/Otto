@@ -374,7 +374,8 @@ class ReviewedPlanActivation:
                     raise ReviewedActivationError("owner policy task/criterion pair is stale or foreign")
                 tasks.append(task.ref.to_dict()); criteria.append(criterion_ref.to_dict())
         else:
-            assessment = AssessmentModule(self.owner.store, actor=self.owner.owner_actor)
+            assessment = AssessmentModule(self.owner.store, actor=self.owner.owner_actor,
+                payload_resolver=self.owner.evidence_payload_resolver)
             for index, spec in enumerate(specs):
                 title = spec.get("title", spec.get("name"))
                 if not isinstance(title, str) or not title.strip():

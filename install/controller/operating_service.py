@@ -81,6 +81,8 @@ def native_body_capability(state,owner,store):
   if not stat.S_ISDIR(mode.st_mode) or mode.st_uid!=os.getuid() or stat.S_IMODE(mode.st_mode)!=0o700:raise PermissionError('native Evidence root is not owner-protected')
  if NATIVE_EVIDENCE_ROOT.resolve().is_relative_to(WORK.resolve()) or NATIVE_EVIDENCE_ROOT.resolve().is_relative_to(HERE.resolve()):raise PermissionError('native Evidence body root overlaps native writable scope')
  handler=EvidenceCommandHandler(store,NATIVE_EVIDENCE_ROOT,pack=pack,adopted_pins=selected['pins'])
+ # The owner's manager assessment verifies managed DAT evidence through this same handler.
+ owner.evidence_payload_resolver=handler
  return RetainedNativeBodies(handler,actor)
 
 def read_preflight(state,owner,port):

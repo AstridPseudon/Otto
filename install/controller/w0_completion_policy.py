@@ -103,7 +103,7 @@ def adopt(service,*,actor,immutable_plan):
   criteria={};scopes={};tasks={}
   for row in p['tasks']:
    alias=row['alias'];name=migration.PROJECT+':'+alias+':original-authored-acceptance'
-   scope=AssessmentModule(owner.store,actor=actor).declare_scope(migration.PROJECT+':'+alias+':ordinary-local-completion',
+   scope=AssessmentModule(owner.store,actor=actor,payload_resolver=owner.evidence_payload_resolver).declare_scope(migration.PROJECT+':'+alias+':ordinary-local-completion',
     parent_obligation=ResourceRef.from_dict(row['task_ref']),protocol='ordinary-authored-task-acceptance',
     criteria=[{'id':name,'definition':row['acceptance'],'task_ref':row['task_ref'],'provenance':'canonical original W0 authored task acceptance'}],
     designated_approver=state['manager'],policy={'required_for_completion':True,'local_only':True},
