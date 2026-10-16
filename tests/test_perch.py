@@ -164,7 +164,10 @@ class AssertionKindTests(unittest.TestCase):
         raw = clean_raw(self.tmp / "raw")
         (raw / "timeline.json").write_text(json.dumps({"store_events": 3, "error": None, "tasks": [{
             "task_id": "t1", "complete": False, "gaps": [["assignment:t1", 1, 1]], "events": []}]}), encoding="utf-8")
-        self.assertEqual(statuses(raw)["timeline-events"], "fail")
+        self.assertEqual(statuses(raw)["store-matches-stage"], "fail")
+        self.assertEqual(statuses(raw)["timeline-events"], "pass", "a Store gap is the Store check's, not the event check's")
+        detail = {r["name"]: r["detail"] for r in perch_report.assertions(raw)}["store-matches-stage"]
+        self.assertIn("store timeline t1 has gaps", detail)
 
     def test_a_failed_check_is_a_red_run_exit(self):
         raw = clean_raw(self.tmp / "raw")
@@ -367,13 +370,13 @@ class FakeRunTests(unittest.TestCase):
 
 
 # The assertions each seeded fault turns red in a real run. A lab left behind also leaves its lab-deleted
-# event unrecorded; a staging that never came up leaves no Store to read, and its lifecycle is skipped.
+# event unrecorded; a staging that never came up has no Store to read, so its Store and lifecycle checks skip.
 EXPECTED_RED = {
     "leak": {"no-leaked-process"},
     "lab": {"labs-left-behind", "timeline-events"},
     "pool": {"harness-pool-within-limit"},
     "timeline": {"timeline-events"},
-    "staging": {"staging-ready", "timeline-events", "store-matches-stage"},
+    "staging": {"staging-ready"},
     "status": {"status-after-kill-is-stale"},
     "restart": {"restart-after-kill-keeps-store"},
     "refuse": {"refused-start-names-its-reason"},

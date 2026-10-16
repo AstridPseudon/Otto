@@ -435,13 +435,7 @@ def assertions(raw):
         missing = [k for k in REQUIRED[task["expect"]] if k not in kinds]
         if missing:
             failures.append("%s missing %s" % (task["name"], ", ".join(missing)))
-    timeline = read_json(raw / "timeline.json", {}) or {}
-    for task in timeline.get("tasks", []):
-        if not task["complete"]:
-            failures.append("store timeline %s has gaps %s" % (task["task_id"], task["gaps"]))
-    if timeline.get("error"):
-        failures.append("store timeline: " + timeline["error"])
-    add("timeline-events", failures, "every task has its events; no Store gaps")
+    add("timeline-events", failures, "every task has its events")
 
     left = read_lines(raw / "leftovers.txt")
     add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")
@@ -452,7 +446,8 @@ def assertions(raw):
     add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
         "peak %s of limit %s" % (peak, limit))
 
-    # The Store must hold what the stage says it holds, both ways; a read that failed is not a match.
+    # The Store must hold what the stage says it holds, both ways, with no gap in a task's timeline; a read that
+    # failed is not a match. A staging that did not start has no Store to read: staging-ready says so.
     expect = config.get("store")
     recorded = read_json(raw / "timeline.json", None)
     store_at_rest = read_json(raw / "store-at-rest.json", None)
@@ -463,19 +458,24 @@ def assertions(raw):
         failures.append("the Store timeline was not recorded")
     elif recorded.get("error"):
         failures.append("the Store was not read: " + recorded["error"])
-    elif expect is not None:
-        if recorded.get("store_events") != expect["store_events"]:
-            failures.append("%s events in the Store, the stage expects %s" % (recorded.get("store_events"), expect["store_events"]))
-        if len(recorded.get("tasks", [])) != expect["store_tasks"]:
-            failures.append("%d tasks in the Store, the stage expects %s" % (len(recorded.get("tasks", [])), expect["store_tasks"]))
+    else:
+        if expect is not None:
+            if recorded.get("store_events") != expect["store_events"]:
+                failures.append("%s events in the Store, the stage expects %s" % (recorded.get("store_events"), expect["store_events"]))
+            if len(recorded.get("tasks", [])) != expect["store_tasks"]:
+                failures.append("%d tasks in the Store, the stage expects %s" % (len(recorded.get("tasks", [])), expect["store_tasks"]))
+        for task in recorded.get("tasks", []):
+            if not task["complete"]:
+                failures.append("store timeline %s has gaps %s" % (task["task_id"], task["gaps"]))
     if store_at_rest is None:
         failures.append("the Store at rest was not recorded")
     elif store_at_rest.get("error"):
         failures.append("the Store at rest: " + store_at_rest["error"])
     elif expect is not None and "store_bytes_max" in expect and store_at_rest["bytes"] > expect["store_bytes_max"]:
         failures.append("the Store is %d bytes at rest, the stage allows %d" % (store_at_rest["bytes"], expect["store_bytes_max"]))
+    skip = "skipped: staging did not start" if config.get("staging_restart") != 0 else None
     add("store-matches-stage", failures, "%s events and %s tasks in the Store, as the stage expects"
-        % (expect and expect["store_events"], expect and expect["store_tasks"]))
+        % (expect and expect["store_events"], expect and expect["store_tasks"]), skip=skip)
 
     # After down the staging root holds only what a closed Otto leaves: no socket, no Store holder, no canary scratch.
     rest = read_json(raw / "at-rest.json", None)
