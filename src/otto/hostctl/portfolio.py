@@ -10,6 +10,29 @@ from herzchen.contracts import ResourceRef
 from . import config as host_config
 from .owner import HostSession
 
+# The ONE set of portfolio subcommands the owner lane runs for a request that names --portfolio.
+# The client's forward (prepare_portfolio_request) and the owner's check (service.py) both read it;
+# anything else (admit, complete-task, an unnamed subcommand) is refused with PermissionError.
+OWNER_PORTFOLIO_COMMANDS = frozenset({
+    "save",          # client: ottoctl portfolio --portfolio P save FILE (STAGE1 F7)
+    "show",          # client: ottoctl portfolio --portfolio P show ... (STAGE1 F7)
+    "read",          # client: ottoctl portfolio --portfolio P read ... (STAGE1 F7)
+    "status",        # operator: ottoctl portfolio status --portfolio P (parser() below)
+    "documents",     # operator: ottoctl portfolio documents --portfolio P (parser() below)
+    "retire",        # operator: ottoctl portfolio retire PATH --portfolio P (parser() below)
+    "sync-docs",     # operator: ottoctl portfolio sync-docs --dir D --portfolio P (parser() below)
+    "apply",         # operator: ottoctl portfolio apply --root R --portfolio P (parser() below)
+    "gate",          # operator: ottoctl portfolio gate complete --portfolio P (parser() below)
+    "prerequisite",  # operator: ottoctl portfolio prerequisite complete --portfolio P (parser() below)
+})
+# The project operations the owner lane runs; each is reached only through its `--portfolio` flag.
+OWNER_PROJECT_OPERATIONS = frozenset({
+    ("project", "activate"),      # ottoctl project activate --portfolio P (cli.py:90)
+    ("project", "depend"),        # ottoctl project depend --portfolio P (cli.py:100)
+    ("project", "dependencies"),  # ottoctl project dependencies --portfolio P (cli.py:100)
+    ("project", "detach"),        # ottoctl project detach --portfolio P (cli.py:100)
+})
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="ottoctl portfolio")
@@ -68,16 +91,32 @@ def save_parser() -> argparse.ArgumentParser:
     return result
 
 
-def _names_save(tokens: list) -> bool:
-    """True when the first word is `save`, with an optional `--portfolio P` (or `--portfolio=P`) in front of it."""
-    rest = tokens[2:] if tokens[:1] == ["--portfolio"] else tokens[1:] if tokens[:1] and tokens[0].startswith("--portfolio=") else tokens
-    return rest[:1] == ["save"]
+def _split_portfolio(tokens: list) -> tuple:
+    """(portfolio, rest): an optional `--portfolio P` (or `--portfolio=P`) in front of the command, and the command."""
+    if tokens[:1] == ["--portfolio"] and len(tokens) >= 2:
+        return tokens[1], tokens[2:]
+    if tokens[:1] and tokens[0].startswith("--portfolio="):
+        return tokens[0].split("=", 1)[1], tokens[1:]
+    return None, tokens
 
 
 def prepare_portfolio_request(args: argparse.Namespace) -> None:
+    """Validate a `portfolio` request here and name the owner lane when it names --portfolio.
+
+    The owner refuses every subcommand outside OWNER_PORTFOLIO_COMMANDS, so a refused command
+    named with --portfolio reaches the owner and is refused there, with nothing written.
+    """
     if args.portfolio_args in (["--help"], ["-h"]):
         parser().parse_args(args.portfolio_args)
-    if _names_save(args.portfolio_args):
+    portfolio, words = _split_portfolio(args.portfolio_args)
+    command = words[0] if words else None
+    if command in {"show", "read"}:
+        # Validated here like any command, then sent to the owner lane with the portfolio named once, as save is.
+        from otto.portfolio.cli import build_parser as portfolio_cli_parser
+        portfolio_cli_parser().parse_args(words)
+        args.portfolio, args.portfolio_args = portfolio, words
+        return
+    if command == "save":
         # The owner reads the save file, so its path is made absolute here; the forwarded form is validated like any command.
         from otto.portfolio.cli import build_parser as portfolio_cli_parser
         options = save_parser().parse_args(args.portfolio_args)
@@ -88,16 +127,17 @@ def prepare_portfolio_request(args: argparse.Namespace) -> None:
         args.portfolio = options.portfolio
         args.portfolio_args = forwarded
         return
-    if not args.portfolio_args or args.portfolio_args[0] not in {
-            "status", "documents", "retire", "sync-docs", "apply", "gate", "prerequisite"}:
-        if args.portfolio_args:
+    if command not in OWNER_PORTFOLIO_COMMANDS - {"save", "show", "read"}:
+        if words:
             # Validate every forwarded command here, so --help and usage errors are answered by
             # the client and never parsed inside the shared owner.
             from otto.portfolio.cli import build_parser as portfolio_cli_parser
-            portfolio_cli_parser().parse_args(args.portfolio_args)
+            portfolio_cli_parser().parse_args(words)
+            if portfolio is not None:
+                args.portfolio, args.portfolio_args = portfolio, words
         return
-    options = parser().parse_args(args.portfolio_args)
-    args.portfolio = options.portfolio
+    options = parser().parse_args(words)
+    args.portfolio, args.portfolio_args = portfolio or options.portfolio, words
     if options.operation in {"documents", "retire"} and options.root:
         # The owner service may have a different working directory from this
         # client. Carry the same canonical root used by apply's file ingestion.

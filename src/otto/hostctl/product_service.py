@@ -211,6 +211,24 @@ def _supervising_kind(record: Any, hosts: Mapping[str, Any]) -> Optional[str]:
                  if (entry.get('root_assignment_ref') or {}).get('id') == supervisor['id']), None)
 
 
+HISTORY_BATCH = 100  # the bounded batch the installed controller uses too (install/controller/operating_service.py)
+
+
+def start_history_projection(store: Any) -> dict[str, Any]:
+    """Attach the project-history projection and catch it up before the owner serves (D03).
+
+    Once attached, the Store projects each commit as it lands; this first pass
+    projects the history that was already there, so at rest the checkpoint equals
+    the last append position. A projection error refuses startup rather than
+    serving a lagged history.
+    """
+    projection = store.configure_history_projection(batch_size=HISTORY_BATCH)
+    result = projection.maintain(raise_on_error=True)
+    while result['outcome'] == 'advanced':
+        result = projection.maintain(raise_on_error=True)
+    return result
+
+
 def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: Optional[str] = None,
             adapter_factory: Optional[Callable[..., Any]] = None,
             trace: Optional[dict[str, Any]] = None) -> ProductOwner:
@@ -261,6 +279,7 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
     sessions: list[HostSession] = []
     root: Optional[HostSession] = None
     try:
+        start_history_projection(store)
         with service_store(store):
             root = HostSession(config).__enter__()
         owner = root.owner
