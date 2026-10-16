@@ -5,12 +5,10 @@ record. It names the exact revision id that was admitted and the digest of the
 reviewed content at that revision. The stamp rides on the existing ``work.revise``
 port, so no new operation, resource kind or domain descriptor is needed.
 
-Content is what a reviewer reads: the title, name, outcome, fields, parent and
-dependencies. Lifecycle, readiness, aliases and the stamp itself are not content,
-so writing the stamp, or moving a task through its lifecycle, leaves it admitted.
-Any other edit changes the digest and the stamp no longer matches: the record is
-unadmitted until a reviewer admits the new revision, or the project's user makes
-the edit, which admits it by being made.
+The legacy stamp digest covers a narrow, stable subset of task fields. New stamps
+also carry a full reviewer-visible digest so edits to any authored task field can
+invalidate admission. Lifecycle, readiness, and the stamp itself are excluded.
+Older stamps without the full digest retain their historical comparison behavior.
 """
 
 from __future__ import annotations
@@ -25,8 +23,15 @@ NAMESPACE = "work.admission"
 APPROVED = frozenset({"approved", "accept", "accepted", "pass", "passed"})
 BASIS_REVIEW = "review"
 BASIS_AUTHORING = "authoring"
+BASIS_POLICY = "policy"
 
 _CONTENT_KEYS = ("kind", "project_ref", "title", "name", "outcome", "fields", "parent", "dependencies")
+_REVIEWED_CONTENT_KEYS = (
+    "kind", "project_ref", "title", "name", "body", "instructions",
+    "outcome", "acceptance", "fields", "parent", "dependencies", "custom",
+    "metadata", "metadata_namespaces", "order", "alias", "aliases", "documents",
+    "document_links",
+)
 
 
 class TaskNotAdmittedError(WorkValidationError):
@@ -51,8 +56,39 @@ def content_digest(payload: Mapping[str, Any]) -> str:
 
 
 def content_diff(reviewed: Mapping[str, Any], current: Mapping[str, Any]) -> Dict[str, Any]:
-    left, right = content(reviewed), content(current)
-    return {key: {"reviewed": left[key], "current": right[key]} for key in _CONTENT_KEYS if left[key] != right[key]}
+    """Compare the complete reviewer-visible authored task content."""
+    return reviewed_content_diff(reviewed, current)
+
+
+def reviewed_content_diff(reviewed: Mapping[str, Any], current: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return field-level changes to authored task content since a review.
+
+    The historic stamp digest intentionally remains narrower for compatibility.
+    Admission comparisons include all reviewer-visible authored fields, while
+    excluding lifecycle/readiness state and the admission stamp itself.
+    """
+    left, right = reviewed_content(reviewed), reviewed_content(current)
+    return {
+        key: {"reviewed": left[key], "current": right[key]}
+        for key in _REVIEWED_CONTENT_KEYS if left[key] != right[key]
+    }
+
+
+def reviewed_content(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    result = {key: payload.get(key) for key in _REVIEWED_CONTENT_KEYS}
+    namespaces = result.get("metadata_namespaces")
+    if isinstance(namespaces, Mapping):
+        result["metadata_namespaces"] = {
+            key: value for key, value in namespaces.items() if key != NAMESPACE
+        }
+    elif "metadata_namespaces" not in payload:
+        result["metadata_namespaces"] = {}
+    return result
+
+
+def reviewed_content_digest(payload: Mapping[str, Any]) -> str:
+    text = json.dumps(reviewed_content(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def stamp_of(payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
@@ -62,10 +98,13 @@ def stamp_of(payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
 
 
 def admitted_revision(payload: Mapping[str, Any]) -> Optional[str]:
-    """The admitted revision id when the current content is the admitted content, else None."""
+    """The admitted revision when its stored content digests still match."""
 
     stamp = stamp_of(payload)
     if stamp is None or stamp["digest"] != content_digest(payload):
+        return None
+    if ("reviewed_digest" in stamp
+            and stamp["reviewed_digest"] != reviewed_content_digest(payload)):
         return None
     return str(stamp["revision"])
 
@@ -97,12 +136,30 @@ def is_user(project_payload: Optional[Mapping[str, Any]], actor: Any) -> bool:
 
 def authoring_stamp(revision: str, payload: Mapping[str, Any], actor: Any) -> Dict[str, Any]:
     authority, name = actor_pair(actor) or (None, None)
-    return {"revision": revision, "digest": content_digest(payload), "basis": BASIS_AUTHORING,
+    return {"revision": revision, "digest": content_digest(payload),
+            "reviewed_digest": reviewed_content_digest(payload), "basis": BASIS_AUTHORING,
             "admitted_by": {"authority": authority, "actor": name}}
 
 
 def review_stamp(revision: str, payload: Mapping[str, Any], actor: Any, review_ref: Any, disposition: str) -> Dict[str, Any]:
     authority, name = actor_pair(actor) or (None, None)
-    return {"revision": revision, "digest": content_digest(payload), "basis": BASIS_REVIEW,
+    return {"revision": revision, "digest": content_digest(payload),
+            "reviewed_digest": reviewed_content_digest(payload), "basis": BASIS_REVIEW,
             "review_ref": review_ref.to_dict() if hasattr(review_ref, "to_dict") else review_ref,
             "disposition": disposition, "admitted_by": {"authority": authority, "actor": name}}
+
+
+def policy_stamp(revision: str, payload: Mapping[str, Any], *, authority: str,
+                 base_revision: str, decision_ref: Any) -> Dict[str, Any]:
+    """Stamp a new task admitted by the project's current task-addition policy."""
+    return {
+        "revision": revision,
+        "digest": content_digest(payload),
+        "reviewed_digest": reviewed_content_digest(payload),
+        "basis": BASIS_POLICY,
+        "policy_evidence": {
+            "authority": authority,
+            "base_revision": base_revision,
+            "decision_ref": decision_ref.to_dict() if hasattr(decision_ref, "to_dict") else decision_ref,
+        },
+    }
