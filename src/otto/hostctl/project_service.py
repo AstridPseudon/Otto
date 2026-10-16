@@ -2,10 +2,9 @@
 
 This adapter owns no Store, per-project host or native semaphore. Its only
 thread is the short-lived cached-status pulse started after the shared host
-starts. Its
-finite poll runs on the existing serialized owner; all execution remains in
-the installed shared host. New projects stay pending until an ordinary closed
-composition installs their view, preserving original activation and budgets.
+starts. Its finite poll runs on the existing serialized owner; all execution
+remains in the installed shared host. Activation waits in its owner lane while
+shared execution custody is active, then installs its view on the same router.
 """
 from __future__ import annotations
 
@@ -85,6 +84,41 @@ class ProjectOwnerService(OwnerService):
             if time.monotonic() - self._last_status >= self.heartbeat_seconds:
                 self._publish(); self._last_status = time.monotonic()
         self.shared_host._status_read({'command': 'host-client-poll'}, finite)
+
+    def _defer_request(self, lane: Path, who: str, token: str, request: Mapping[str, Any]) -> bool:
+        args = request.get('args') or {}
+        if not isinstance(args, Mapping):
+            return False
+        operation = (request.get('command'), request.get('sub'))
+        if request.get('command') == 'portfolio-operation':
+            operation = (args.get('command'), args.get('sub'))
+        is_activation = operation == ('project', 'activate')
+        is_attach = who == 'owner' and request.get('command') == 'attach'
+        if not (is_activation or is_attach):
+            return False
+        if not (self.shared_host._executions or self.shared_host._capacity_holds):
+            return False
+        pending = lane / ('pending-' + token + '.json')
+        try:
+            exists = pending.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            try:
+                lanes.mark_pending(lane, token, 'queued', command='project/activate' if is_activation else 'attach')
+            except OSError:
+                pass
+        return True
+
+    def _run_operation(self, handler: Callable[..., Any], namespace: Any, operation: tuple) -> Any:
+        result = super()._run_operation(handler, namespace, operation)
+        if (operation == ('project', 'activate') and isinstance(result, Mapping)
+                and result.get('outcome') == 'prepared'):
+            builder = getattr(self, '_build_activated_view', None)
+            if not callable(builder):
+                raise RuntimeError('prepared activation has no shared project view builder')
+            builder(getattr(namespace, 'project', None))
+        return result
 
     def start_heartbeat(self) -> None:
         """Project status on the owner, then start the embedded pulse.
@@ -390,7 +424,16 @@ class ProjectOwnerService(OwnerService):
 
     def _attach(self, project: str, *, host_kind: str | None) -> Any:
         if host_kind is None:
-            raise PermissionError('attach cannot replace an already installed project view; recompose at closed custody')
+            existing = next((view for view in self.router.services.values()
+                             if project in {view.server.state['project_ref']['id'],
+                                            getattr(view.server, 'run_id', None)}), None)
+            if existing is not None:
+                self.router._check(existing)
+                return existing
+            builder = getattr(self, '_build_activated_view', None)
+            if not callable(builder):
+                raise PermissionError('owner attachment requires the installed activation view builder')
+            return builder(project)
         return self._view_for(host_kind, project)
 
     def _drain_project(self, project: str) -> Mapping[str, Any]:

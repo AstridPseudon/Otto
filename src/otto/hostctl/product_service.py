@@ -311,39 +311,61 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         if project is not None and not any(project in {record.ref.id, run_id} for run_id, record, _ in resolved):
             raise LookupError('project ' + project + ' is not registered, activated and supervised by an admitted host')
 
-        # The caller socket serves launched managers, so an owner with no project view binds none
-        # (and the 103-byte socket address limit applies only once a project is composed).
+        # Bind the ingress at composition time so a later activation can attach
+        # its view to this same host without replacing the socket/router.
         # Reservations stay in memory, as in the live start: a Store-backed ledger would write a
         # pool event into an empty Store at first start and pin the policy across restarts.
+        try:
+            caller_socket = socket_path(config, 'shared-project-services')
+        except ValueError:
+            if resolved:
+                raise
+            # Long staging homes have no callers yet. Keep the legacy empty
+            # owner start available; any later project view still requires a
+            # valid caller socket address.
+            caller_socket = None
         host = ExecutionHost(directory=host_dir, handler=lambda request: None,
                              owner_path=home / 'run' / 'shared-host-owner.json',
-                             socket_path=socket_path(config, 'shared-project-services') if resolved else None,
+                             socket_path=caller_socket,
                              owner_file_compatibility=True, bounded_transports=True,
                              capacity_policy=policy)
         if hold_dispatch:
             host.hold_admission()
 
         views: dict[str, Any] = {}
-        for run_id, record, kind in resolved:
-            checkpoint('view-' + run_id)
+
+        def build_view(run_id: str, record: Any, kind: str,
+                       installation: Mapping[str, Any] = config) -> Any:
             project_id = record.ref.id
+            installed_hosts = installation.get('hosts') or {}
+            view_session = None
             with service_store(store):
-                view_session = HostSession(config, host=hosts[kind], project_ids=(project_id,)).__enter__()
+                try:
+                    view_session = HostSession(installation, host=installed_hosts[kind], project_ids=(project_id,)).__enter__()
+                    # One Due port for the whole composition: ProjectServices requires identity, not equality.
+                    view_session.due_port = root.due_port
+                    server = HostOwnerService(view_session, record, adapter_factory=adapter_factory,
+                                              execution_host=host)
+                    server._save_state()
+                    service_view = ManagerJourneyService(
+                        server=server, host=host, run_path=server.render_run_view(), workspace=server.worktree(),
+                        orchestrator_principal=view_session.actor.actor,
+                        observe_schedules=closeout_observer(view_session.owner, project_id),
+                        help_reply_authorizer=server.reply_authorizer(),
+                        delegation_policy=(installation.get('policies') or {}).get('delegation'),
+                        external_execution_policy=(installation.get('policies') or {}).get('external_execution'))
+                except BaseException:
+                    if view_session is not None:
+                        view_session.__exit__(None, None, None)
+                    raise
                 sessions.append(view_session)
-                # One Due port for the whole composition: ProjectServices requires identity, not equality.
-                view_session.due_port = root.due_port
-                server = HostOwnerService(view_session, record, adapter_factory=adapter_factory,
-                                          execution_host=host)
-                server._save_state()
-                service_view = ManagerJourneyService(
-                    server=server, host=host, run_path=server.render_run_view(), workspace=server.worktree(),
-                    orchestrator_principal=view_session.actor.actor,
-                    observe_schedules=closeout_observer(view_session.owner, project_id),
-                    help_reply_authorizer=server.reply_authorizer(),
-                    delegation_policy=(config.get('policies') or {}).get('delegation'),
-                    external_execution_policy=(config.get('policies') or {}).get('external_execution'))
             server._execution = service_view._execution
             views[project_id] = service_view
+            return service_view
+
+        for run_id, record, kind in resolved:
+            checkpoint('view-' + run_id)
+            build_view(run_id, record, kind)
 
         checkpoint('router-install')
         relay = SharedLaneRelay(home, host)
@@ -362,6 +384,28 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         checkpoint('client-issuance')
         service = ProjectOwnerService({**config, 'max_active_manager_turns': min(policy.manager_units, MAX_PROJECT_VIEWS)},
                                       router=router, protected_relay=relay.protected_relay)
+        def build_activated_view(project: str) -> Any:
+            from .cli import _resolve_project
+            installation = service.config
+            live_hosts = installation.get('hosts') or {}
+            with service_store(store), HostSession(installation) as listing:
+                record = _resolve_project(listing, project)
+            if record.ref.id in router.services:
+                return router._project(record.ref.to_dict())
+            kind = _supervising_kind(record, live_hosts)
+            if kind is None:
+                raise LookupError('activated project is not supervised by an admitted host')
+            view = build_view(project, record, kind, installation)
+            view.server.native_callers = ingress
+            try:
+                router.add_view(record.ref.id, view)
+            except BaseException:
+                views.pop(record.ref.id, None)
+                sessions[-1].__exit__(None, None, None)
+                sessions.pop()
+                raise
+            return view
+        service._build_activated_view = build_activated_view
         relay.service = service
 
         if hold_dispatch:

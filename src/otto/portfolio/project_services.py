@@ -66,6 +66,37 @@ class ProjectServices:
                 state["manager_generation"], service.workspace, service.run_path)
         self._projects = MappingProxyType(projects)
 
+    def add_view(self, key: str, service: Any) -> None:
+        """Install one newly activated view on the live serialized owner queue."""
+        if not isinstance(key, str) or not key:
+            raise ValueError("project view keys must be nonempty text")
+        current = dict(self.services)
+        if key in current:
+            raise ValueError("project view key is already installed")
+        if len(current) >= 16:
+            raise ValueError("install between zero and sixteen explicit project views")
+        if self.host._executions or self.host._capacity_holds:
+            raise RuntimeError("install a project view only after shared execution custody clears")
+        server, state = service.server, service.server.state
+        project, assignment = _identity(state["project_ref"]), _identity(state["assignment_ref"])
+        first = next(iter(current.values()), None)
+        owner_actor = first.server.owner.owner_actor if first is not None else None
+        if (service.host is not self.host or server.due_port is not self.due_port
+                or server.store is not self.store
+                or (owner_actor is not None and server.owner.owner_actor != owner_actor)):
+            raise ValueError("project views must share the same owner, Store, Due port and host")
+        if (project in self._projects or any(id(v.server.state) == id(state) for v in current.values())
+                or any(_identity(v.server.state["assignment_ref"]) == assignment
+                       for v in current.values())):
+            raise ValueError("project and assignment views must be distinct")
+        service._fixed_project_binding = (project, state["manager"], assignment,
+            state["manager_generation"], service.workspace, service.run_path)
+        current[key] = service
+        projects = dict(self._projects)
+        projects[project] = service
+        self.services = MappingProxyType(current)
+        self._projects = MappingProxyType(projects)
+
     def _project(self, ref: Mapping[str, Any]) -> Any:
         service = self._projects.get(_identity(ref))
         if service is None:

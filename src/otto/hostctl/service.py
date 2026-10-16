@@ -262,6 +262,13 @@ class OwnerService:
                     continue
                 if not isinstance(request, Mapping) or request.get("command") not in allowed_commands:
                     continue
+            if request is None:
+                try:
+                    request = lanes.read_private_json(path)
+                except (OSError, ValueError):
+                    request = None
+            if isinstance(request, Mapping) and self._defer_request(lane, who, token, request):
+                continue
             pending = None
             try:
                 pending = lanes.read_private_json(lane / ("pending-" + token + ".json"))
@@ -319,6 +326,10 @@ class OwnerService:
             if result is not _RELAYED:
                 lanes.respond(lane, token, result if isinstance(result, Mapping) else {"outcome": "ok", "value": result})
             self._publish()
+
+    def _defer_request(self, lane: Path, who: str, token: str, request: Mapping[str, Any]) -> bool:
+        """Subclasses may leave eligible requests untouched until custody clears."""
+        return False
 
     def _poll_relays(self) -> None:
         for token, relay in list(self.relays.items()):
