@@ -38,18 +38,20 @@ class ManagerReentrantIPCTests(unittest.TestCase):
             {"command": "task-state", "task": "PA06", "lifecycle": "active", "request_key": "native-pa06-active"},
             {"command": "report", "task": "PA06", "summary": "Assessment evidence retained", "next_action": "Review owner acceptance", "request_key": "native-assessment-report"},
             {"command": "project-lifecycle-read", "task": "PA06"}]))
-        self.native_child.write_text('''import importlib.util,json,sys,time
+        self.native_child.write_text('''import importlib.util,json,os,sys,time
 from pathlib import Path
+def write_atomic(path,text):
+    path=Path(path);tmp=path.with_name("."+path.name+".tmp");tmp.write_text(text);os.replace(tmp,path)
 spec=importlib.util.spec_from_file_location("owner_manager_ctl",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
 client.IPC=Path(sys.argv[2]);client.STATUS_OWNER=client.IPC/"owner.json";client.SERVICE=client.IPC/"unused.sock"
-Path(sys.argv[5]).write_text(json.dumps({"ready":True}))
+write_atomic(sys.argv[5],json.dumps({"ready":True}))
 deadline=time.monotonic()+30
 while not Path(sys.argv[6]).exists() and time.monotonic()<deadline:time.sleep(.01)
 if not Path(sys.argv[6]).exists():raise RuntimeError("child command admission expired")
 results=[]
 for request in json.loads(Path(sys.argv[7]).read_text()):
     results.append(client.call(request))
-Path(sys.argv[3]).write_text(json.dumps(results))
+write_atomic(sys.argv[3],json.dumps(results))
 deadline=time.monotonic()+30
 while not Path(sys.argv[4]).exists() and time.monotonic()<deadline:time.sleep(.01)
 if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline expired")
@@ -207,6 +209,10 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.host = ExecutionHost(directory=self.directory, handler=self.handle)
         self.host.start()
         replay = self.wait_file(queued)
+        # The host writes the response, then removes the pending file; wait for that removal.
+        deadline = time.monotonic() + 30
+        while (self.directory / "pending-ffffff.json").exists() and time.monotonic() < deadline:
+            time.sleep(.01)
         self.assertEqual(replay["outcome"], "replayed", replay)
         self.assertEqual(len(f.provider.calls), calls)
         self.assertFalse((self.directory / "pending-ffffff.json").exists())
