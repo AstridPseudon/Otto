@@ -46,7 +46,8 @@ LIFECYCLE = ("status-while-up", "status-after-kill-is-stale", "restart-after-kil
 # Stage 1's save-through-socket scenario and the assertions it feeds. Each assertion reads the responses and
 # Store snapshots the scenario wrote to raw/, and each has one seeded fault (seed --fault) that only it reads.
 SAVE_SCENARIO = "save-through-socket"
-STAGE1 = ("portfolio-admitted-before-saves", "tasks-are-typed-records", "nothing-runs", "edit-makes-revision",
+STAGE1 = ("portfolio-admitted-before-saves", "canary-has-three-planned-tasks", "show-readback-available",
+          "store-has-typed-tasks", "edit-is-persisted", "nothing-runs", "edit-makes-revision", "project-history-keeps-old-revision",
           "stale-save-refused", "store-growth-per-save")
 # The events of a lab run: a save starts none of them.
 RUN_EVENTS = ("lab-created", "turn", "done", "check-passed", "check-failed", "landed", "refused", "lab-deleted")
@@ -214,7 +215,42 @@ def store_snapshot(store):
 
 
 def cmd_store(args):
-    Path(args.out).write_text(json.dumps(store_snapshot(args.store), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    snapshot = store_snapshot(args.store)
+    if args.admission:
+        admission = read_json(args.admission, {}) or {}
+        snapshot["admission_outcome"] = admission.get("outcome")
+    if args.refs:
+        refs_docs = [read_json(path, {}) or {} for path in args.refs]
+        refs_doc = refs_docs[-1]
+        refs = [ref for document in refs_docs for ref in
+                (document.get("project_ref"), *(document.get("task_refs") or {}).values())]
+        snapshot["records"] = {}
+        try:
+            con = sqlite3.connect(Path(args.store).resolve().as_uri() + "?mode=ro", uri=True)
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    continue
+                key = "%s:%s@%s" % (ref.get("kind"), ref.get("id"), ref.get("revision"))
+                row = con.execute("SELECT current_revision,payload_json FROM identities WHERE authority=? AND kind=? AND id=?",
+                                  (ref.get("authority"), ref.get("kind"), ref.get("id"))).fetchone()
+                payload = None
+                if row and (not ref.get("revision") or row[0] == ref.get("revision")):
+                    payload = json.loads(row[1])
+                elif ref.get("revision"):
+                    kept = con.execute("SELECT reference_json FROM record_references WHERE reference_key LIKE 'content:%' AND authority=? AND kind=? AND id=? AND revision=?",
+                                       (ref.get("authority"), ref.get("kind"), ref.get("id"), ref.get("revision"))).fetchone()
+                    if kept:
+                        payload = json.loads(kept[0]).get("content")
+                snapshot["records"][key] = {"ref": ref, "payload": payload} if payload is not None else None
+                if ref.get("kind", "").endswith("project") and payload is not None:
+                    current = con.execute("SELECT current_revision FROM identities WHERE authority=? AND kind=? AND id=?",
+                                          (ref.get("authority"), ref.get("kind"), ref.get("id"))).fetchone()
+                    snapshot["project_revision"] = current[0] if current else None
+            snapshot["event_types"] = [row[0] for row in con.execute("SELECT event_type FROM events ORDER BY append_position")]
+            con.close()
+        except sqlite3.DatabaseError as exc:
+            snapshot["records_error"] = str(exc)
+    Path(args.out).write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def cmd_at_rest(args):
@@ -268,33 +304,65 @@ def seed(raw, kind):
         rows[table] -= 1
         (raw / "store-restarted.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "typed":
-        # A task ref with no record type: the create save's first task is not a typed record.
-        save = seeded_read(raw / "save-create.json")
-        refs = save.get("task_refs") or {}
-        if not refs:
-            raise ValueError("no saved task refs to seed a typed-record fault into")
-        next(iter(refs.values()))["kind"] = ""
-        (raw / "save-create.json").write_text(json.dumps(save, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        snap = seeded_read(raw / "store-after-edit.json")
+        records = snap.get("records") or {}
+        ids = {str(ref.get("id")) for ref in (seeded_read(raw / "save-edit.json").get("task_refs") or {}).values()
+               if isinstance(ref, dict)}
+        key = next((key for key in records if key.split(":", 1)[-1].split("@", 1)[0] in ids and records[key]), None)
+        if key is None:
+            raise ValueError("no typed task record in the Store snapshot")
+        records[key]["ref"]["kind"] = ""
+        (raw / "store-after-edit.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "canary":
+        snap = seeded_read(raw / "store-after-create.json")
+        records = snap.get("records") or {}
+        ids = {str(ref.get("id")) for ref in (seeded_read(raw / "save-create.json").get("task_refs") or {}).values()
+               if isinstance(ref, dict)}
+        row = next((value for key, value in records.items() if key.split(":", 1)[-1].split("@", 1)[0] in ids and value), None)
+        if not row:
+            raise ValueError("no task record in the create Store snapshot")
+        row["payload"].setdefault("metadata_namespaces", {})["otto.plan"] = {}
+        (raw / "store-after-create.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "readback":
+        snap = seeded_read(raw / "store-after-edit.json")
+        snap["readback_available"] = False
+        (raw / "store-after-edit.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "edit":
+        snap = seeded_read(raw / "store-after-edit.json")
+        refs = (seeded_read(raw / "save-edit.json").get("task_refs") or {})
+        a_id = (refs.get("A") or {}).get("id")
+        key = next((key for key in (snap.get("records") or {})
+                    if key.split(":", 1)[-1].split("@", 1)[0] == str(a_id)), None)
+        if key is None:
+            raise ValueError("no edited A record in the Store snapshot")
+        snap["records"][key]["payload"]["title"] = "corrupted title"
+        (raw / "store-after-edit.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "nothing":
-        # The create save claims it dispatched a run.
-        save = seeded_read(raw / "save-create.json")
-        save["dispatch"] = True
-        (raw / "save-create.json").write_text(json.dumps(save, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        snap = seeded_read(raw / "store-after-edit.json")
+        snap.setdefault("event_types", []).append("work.dispatched")
+        (raw / "store-after-edit.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "revision":
-        # The edit's project ref is the create's revision: the edit did not move the project.
-        created = seeded_read(raw / "save-create.json")
-        edited = seeded_read(raw / "save-edit.json")
-        edited["project_ref"] = dict(edited.get("project_ref") or {}, revision=(created.get("project_ref") or {}).get("revision"))
-        (raw / "save-edit.json").write_text(json.dumps(edited, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    elif kind == "admit":
-        # The owner's answer to admit-host is an unavailable outcome: no portfolio was admitted before the saves.
-        seeded_read(raw / "admission.json")
-        (raw / "admission.json").write_text(json.dumps({"outcome": "unavailable"}) + "\n", encoding="utf-8")
+        snap = seeded_read(raw / "store-after-edit.json")
+        snap["project_revision"] = (seeded_read(raw / "save-create.json").get("project_ref") or {}).get("revision")
+        (raw / "store-after-edit.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "history":
+        snap = seeded_read(raw / "store-after-edit.json")
+        ref = (seeded_read(raw / "save-create.json").get("project_ref") or {})
+        key = "%s:%s@%s" % (ref.get("kind"), ref.get("id"), ref.get("revision"))
+        if key not in (snap.get("records") or {}):
+            key = next((key for key in (snap.get("records") or {}) if key.endswith(":" + str(ref.get("id")) + "@" + str(ref.get("revision")))), None)
+        if key is None:
+            raise ValueError("no project history record in the edit Store snapshot")
+        del snap["records"][key]
+        (raw / "store-after-edit.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "stale":
-        # The save from the old base is reported as saved, not refused.
-        stale = seeded_read(raw / "save-stale.json")
-        stale["outcome"] = "saved"
-        (raw / "save-stale.json").write_text(json.dumps(stale, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        snap = seeded_read(raw / "store-after-stale.json")
+        snap["stale_refused"] = False
+        (raw / "store-after-stale.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "admit":
+        snap = seeded_read(raw / "store-before-saves.json")
+        snap["admission_outcome"] = "unavailable"
+        (raw / "store-before-saves.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "growth":
         # The Store after the stale save holds one row more than after the edit, so a refused save appears to write.
         snap = seeded_read(raw / "store-after-stale.json")
@@ -493,9 +561,13 @@ def lifecycle_failures(raw, notes):
 
 STAGE1_OK = {
     "portfolio-admitted-before-saves": "the owner admitted the stage's host, naming its portfolio, before the first save",
-    "tasks-are-typed-records": "the created project's tasks are typed refs (authority, kind, id), one record kind",
+    "canary-has-three-planned-tasks": "the three-task create and edit fixtures satisfy the plan and dependency contract",
+    "show-readback-available": "owner-lane show read-back returned all three persisted tasks",
+    "store-has-typed-tasks": "the Store snapshot contains the three typed task records at their saved refs",
+    "edit-is-persisted": "the Store's current task records contain the title, size and dependency edits",
     "nothing-runs": "every save reports dispatch and launch false, and no lab, worker or turn ran",
     "edit-makes-revision": "saving one edited task moved the project to a later revision",
+    "project-history-keeps-old-revision": "the Store still reads the create revision after the edit",
     "stale-save-refused": "a save from the create's base is refused as stale_base with a diff",
     "store-growth-per-save": "the create and the edit each added rows, the stale save added none, none over the stage's limit",
 }
@@ -534,22 +606,122 @@ def stage1_failures(raw, config):
     limit = (config.get("store") or {}).get("rows_per_save_max")
     found = {name: [] for name in STAGE1}
     found["portfolio-admitted-before-saves"] = admission_failures(raw, config.get("host"))
+    if (snaps.get("before-saves") or {}).get("admission_outcome") not in (None, "admitted", "replayed"):
+        found["portfolio-admitted-before-saves"].append("Store snapshot says host admission outcome is unavailable")
 
-    if created is None:
-        found["tasks-are-typed-records"].append("the create save was not recorded")
+    project = read_json(HERE / "canary" / "project.json", {}) or {}
+    saves = (project.get("stages", {}).get("1", {}).get("saves") or {})
+    create_tasks = {task.get("id"): task for task in (saves.get("create", {}).get("tasks") or [])}
+    edit_tasks = {task.get("id"): task for task in (saves.get("edit", {}).get("tasks") or [])}
+    failures = []
+    if set(create_tasks) != {"A", "B", "C"}:
+        failures.append("create fixture task ids are %s, expected A, B and C" % sorted(create_tasks))
+    if create_tasks.get("B", {}).get("dependencies") != ["A"]:
+        failures.append("create fixture does not declare B -> A")
+    if edit_tasks.get("C", {}).get("dependencies") != ["B"]:
+        failures.append("edit fixture does not declare C -> B")
+    if create_tasks.get("A", {}).get("title") == edit_tasks.get("A", {}).get("title"):
+        failures.append("edit fixture did not change A's title")
+    if (create_tasks.get("B", {}).get("metadata_namespace", {}).get("otto.plan") or {}).get("size") == (edit_tasks.get("B", {}).get("metadata_namespace", {}).get("otto.plan") or {}).get("size"):
+        failures.append("edit fixture did not change B's plan size")
+    for alias, task in create_tasks.items():
+        plan = (task.get("metadata_namespace") or {}).get("otto.plan") or {}
+        if not all(k in plan for k in ("route", "size", "lines")):
+            failures.append("create fixture task %s lacks otto.plan route, size or lines" % alias)
+        if not task.get("acceptance"):
+            failures.append("create fixture task %s lacks criteria" % alias)
+    create_records = (snaps.get("after-create") or {}).get("records") or {}
+    create_ids = {str(ref.get("id")) for ref in ((created or {}).get("task_refs") or {}).values() if isinstance(ref, dict)}
+    persisted = [row for key, row in create_records.items() if key.split(":", 1)[-1].split("@", 1)[0] in create_ids and row]
+    if len(persisted) != 3:
+        failures.append("create Store snapshot has %d task records, expected 3" % len(persisted))
+    persisted_by_alias = {(row.get("payload") or {}).get("alias"): row.get("payload") or {} for row in persisted}
+    if set(persisted_by_alias) != {"A", "B", "C"}:
+        failures.append("create Store records have aliases %s, expected A, B and C" % sorted(persisted_by_alias))
+    create_ref_by_alias = {alias: ref for alias, ref in ((created or {}).get("task_refs") or {}).items()
+                           if isinstance(ref, dict)}
+    for row in persisted:
+        payload = row.get("payload") or {}
+        alias = payload.get("alias")
+        metadata = (payload.get("metadata_namespaces") or {}).get("otto.plan") or {}
+        if not all(key in metadata for key in ("route", "size", "lines")):
+            failures.append("persisted task record lacks plan route, size or lines")
+        if alias in create_tasks:
+            expected = (create_tasks[alias].get("metadata_namespace") or {}).get("otto.plan") or {}
+            if metadata != expected:
+                failures.append("persisted task %s plan metadata differs from the create fixture" % alias)
+            if payload.get("acceptance") != create_tasks[alias].get("acceptance"):
+                failures.append("persisted task %s criteria differ from the create fixture" % alias)
+    a_id = (create_ref_by_alias.get("A") or {}).get("id")
+    b_dependencies = persisted_by_alias.get("B", {}).get("dependencies") or []
+    if not any(isinstance(dep, dict) and dep.get("id") == a_id for dep in b_dependencies):
+        failures.append("create Store does not persist B -> A")
+    found["canary-has-three-planned-tasks"] = failures
+
+    readback = read_json(raw / "read-back.json", None)
+    rb_failures = []
+    if ((snaps.get("after-edit") or {}).get("readback_available") is False
+            or not isinstance(readback, dict) or readback.get("outcome") != "read"):
+        rb_failures.append("owner-lane show read-back is unavailable or did not return read")
     else:
-        refs = created.get("task_refs") or {}
-        if not refs:
-            found["tasks-are-typed-records"].append("the create save recorded no task refs")
-        types = set()
-        for alias, ref in sorted(refs.items()):
-            # A ResourceRef serializes as {authority, kind, id, revision}: its record type is `kind`.
-            if not isinstance(ref, dict) or not all(str(ref.get(k) or "").strip() for k in ("authority", "kind", "id")):
-                found["tasks-are-typed-records"].append("task %s is not a typed ref (authority, kind, id)" % alias)
-            else:
-                types.add(ref["kind"])
-        if len(types) > 1:
-            found["tasks-are-typed-records"].append("the tasks have %d record kinds" % len(types))
+        tasks = readback.get("tasks") or []
+        aliases = {str((row.get("authored") or {}).get("alias") or row.get("alias") or "") for row in tasks}
+        if len(tasks) != 3 or not {"A", "B", "C"}.issubset(aliases):
+            rb_failures.append("owner-lane show returned %d tasks with aliases %s" % (len(tasks), sorted(aliases)))
+        if readback.get("dispatch") is not False or readback.get("launch") is not False:
+            rb_failures.append("owner-lane show claims dispatch or launch")
+    found["show-readback-available"] = rb_failures
+
+    snapshot = snaps.get("after-edit") or {}
+    records = snapshot.get("records") or {}
+    typed_failures = []
+    task_ids = {str(ref.get("id")) for ref in ((edited or {}).get("task_refs") or {}).values() if isinstance(ref, dict)}
+    typed_rows = []
+    for ref in ((edited or {}).get("task_refs") or {}).values():
+        if not isinstance(ref, dict):
+            continue
+        prefix = "%s:%s@" % (ref.get("kind"), ref.get("id"))
+        exact = prefix + str(ref.get("revision")) if ref.get("revision") else None
+        record = records.get(exact) if exact else None
+        if record is None and not ref.get("revision"):
+            record = next((value for key, value in reversed(list(records.items())) if key.startswith(prefix)), None)
+        if record:
+            typed_rows.append(record)
+    if len(typed_rows) != 3:
+        typed_failures.append("Store snapshot has %d typed assignment records, expected 3" % len(typed_rows))
+    if not all(all(str((entry.get("ref") or {}).get(field) or "").strip() for field in ("authority", "kind", "id"))
+               for entry in typed_rows):
+        typed_failures.append("Store snapshot contains an untyped task record")
+    found["store-has-typed-tasks"] = typed_failures
+
+    edit_failures = []
+    edited_refs = (edited or {}).get("task_refs") or {}
+    edited_by_alias = {alias: ref for alias, ref in edited_refs.items() if isinstance(ref, dict)}
+    edited_records = {key.split(":", 1)[-1].split("@", 1)[0]: value for key, value in records.items()
+                      if value and key.split(":", 1)[-1].split("@", 1)[0] in
+                      {str(ref.get("id")) for ref in edited_by_alias.values()}}
+    if len(edited_records) != 3:
+        edit_failures.append("the Store snapshot has %d edited task records, expected 3" % len(edited_records))
+    else:
+        by_id = {ref.get("id"): alias for alias, ref in edited_by_alias.items()}
+        by_alias = {}
+        for record in edited_records.values():
+            payload = record.get("payload") or {}
+            by_alias[payload.get("alias")] = payload
+        if (by_alias.get("A", {}).get("title") or by_alias.get("A", {}).get("name")) != edit_tasks.get("A", {}).get("title"):
+            edit_failures.append("the Store does not contain A's edited title")
+        bplan = (by_alias.get("B", {}).get("metadata_namespaces") or {}).get("otto.plan") or {}
+        if bplan.get("size") != (edit_tasks.get("B", {}).get("metadata_namespace", {}).get("otto.plan") or {}).get("size"):
+            edit_failures.append("the Store does not contain B's edited plan size")
+        b_id = (edited_by_alias.get("B") or {}).get("id")
+        a_id = (edited_by_alias.get("A") or {}).get("id")
+        b_dependencies = (by_alias.get("B") or {}).get("dependencies") or []
+        if not any(isinstance(dep, dict) and dep.get("id") == a_id for dep in b_dependencies):
+            edit_failures.append("the Store no longer contains A -> B")
+        c_dependencies = (by_alias.get("C") or {}).get("dependencies") or []
+        if not any(isinstance(dep, dict) and dep.get("id") == b_id for dep in c_dependencies):
+            edit_failures.append("the Store does not contain C -> B")
+    found["edit-is-persisted"] = edit_failures
 
     for name, save in (("save-create", created), ("save-edit", edited), ("save-stale", stale)):
         if save is None:
@@ -562,6 +734,9 @@ def stage1_failures(raw, config):
         found["nothing-runs"].append("run events during the saves: " + ", ".join(ran))
     if pool_peak(raw):
         found["nothing-runs"].append("the pool peaked at %d workers during the saves" % pool_peak(raw))
+    store_events = (snaps.get("after-edit") or {}).get("event_types") or []
+    if any("dispatch" in str(event).lower() or "launch" in str(event).lower() for event in store_events):
+        found["nothing-runs"].append("Store snapshot contains execution event types: " + ", ".join(map(str, store_events)))
 
     if created is None or edited is None:
         found["edit-makes-revision"].append("the create or the edit save was not recorded")
@@ -573,10 +748,27 @@ def stage1_failures(raw, config):
         # Revisions are opaque (rev-2, rev-3): the edit moved the project if it is at a different one than the create.
         if not new or new == base:
             found["edit-makes-revision"].append("the edit is at revision %s, the create's revision %s" % (new, base))
+        snap_revision = (snaps.get("after-edit") or {}).get("project_revision", new)
+        if snap_revision != new:
+            found["edit-makes-revision"].append("Store project revision is %s, save reply says %s" % (snap_revision, new))
+
+    history_failures = []
+    old_revision = (created or {}).get("project_ref") or {}
+    old_key = "%s:%s@%s" % (old_revision.get("kind"), old_revision.get("id"), old_revision.get("revision"))
+    old_record = (snaps.get("after-edit") or {}).get("records", {}).get(old_key)
+    if not old_record or not old_record.get("payload"):
+        history_failures.append("Store snapshot cannot read the create project revision %s" % old_key)
+    else:
+        old_title = old_record["payload"].get("title") or old_record["payload"].get("name")
+        if old_title != "Canary plan":
+            history_failures.append("create revision project title is %s, not Canary plan" % old_title)
+    found["project-history-keeps-old-revision"] = history_failures
 
     if stale is None:
         found["stale-save-refused"].append("the stale save was not recorded")
     else:
+        if (snaps.get("after-stale") or {}).get("stale_refused") is False:
+            found["stale-save-refused"].append("Store snapshot says the stale save was not refused")
         if stale.get("outcome") != "conflict":
             found["stale-save-refused"].append("the stale save outcome is %s, not conflict" % stale.get("outcome"))
         code = (stale.get("error") or {}).get("code")
@@ -899,6 +1091,7 @@ def build_parser():
     p.add_argument("--canon", required=True); p.add_argument("--labs", required=True)
     p.add_argument("--out", required=True); p.set_defaults(fn=cmd_snapshot)
     p = sub.add_parser("store"); p.add_argument("--store", required=True); p.add_argument("--out", required=True)
+    p.add_argument("--refs", action="append", default=[]); p.add_argument("--src", default=""); p.add_argument("--admission", default="")
     p.set_defaults(fn=cmd_store)
     p = sub.add_parser("at-rest"); p.add_argument("--stage-root", required=True); p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_at_rest)

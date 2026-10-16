@@ -21,8 +21,10 @@ sys.path.insert(0, str(HERE))
 import perch_report as report  # noqa: E402
 
 
-SAVE_DOCUMENT = {"project": {"title": "Canary plan", "outcome": "One creation route"},
-                 "tasks": [{"id": "A", "title": "Plan A", "instructions": "Do A", "acceptance": "Done A"}]}
+SAVE_DOCUMENT = {"project": {"title": "Canary plan", "outcome": "One creation route"}, "tasks": [
+    {"id": "A", "title": "Plan A", "instructions": "Do A", "acceptance": "Done A"},
+    {"id": "B", "title": "Plan B", "instructions": "Do B", "acceptance": "Done B", "dependencies": ["A"]},
+    {"id": "C", "title": "Plan C", "instructions": "Do C", "acceptance": "Done C"}]}
 
 
 def _save_file(home, name, document, project_ref=None):
@@ -63,11 +65,56 @@ class OwnerSocketSaveTests(HostctlFixture):
         # The shape the staging gate reads: a ResourceRef's dict, with its record type under `kind`.
         created = self._save("create.json")
         self.assertEqual(created.get("outcome"), "saved", created)
-        self.assertEqual(set(created["task_refs"]), {"A"}, created)
-        ref = created["task_refs"]["A"]
-        self.assertEqual(set(ref) - {"revision"}, {"authority", "kind", "id"}, ref)
-        for key in ("authority", "kind", "id"):
-            self.assertTrue(str(ref[key]).strip(), ref)
+        self.assertEqual(set(created["task_refs"]), {"A", "B", "C"}, created)
+        self.assertEqual({ref["kind"] for ref in created["task_refs"].values()}, {"work.task"}, created)
+        for ref in created["task_refs"].values():
+            self.assertEqual(set(ref) - {"revision"}, {"authority", "kind", "id"}, ref)
+            for key in ("authority", "kind", "id"):
+                self.assertTrue(str(ref[key]).strip(), ref)
+
+    def test_show_readback_through_owner_lane_returns_the_saved_tasks(self):
+        created = self._save("create.json")
+        self.assertEqual(created.get("outcome"), "saved", created)
+        project_ref = json.dumps(created["project_ref"], separators=(",", ":"))
+        code, shown = self._ottoctl("portfolio", "--portfolio", "claude-code-portfolio", "show", "project",
+                                    "--project-ref", project_ref, "--actor", "otto-test-owner")
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown.get("outcome"), "read", shown)
+        self.assertEqual(len(shown.get("tasks", [])), 3, shown)
+        self.assertFalse(shown["dispatch"], shown)
+        self.assertFalse(shown["launch"], shown)
+
+    def test_store_snapshot_reads_saved_task_records_and_kept_project_revision(self):
+        canary = json.loads((HERE / "canary" / "project.json").read_text(encoding="utf-8"))["stages"]["1"]["saves"]
+        created = self._save("create.json", canary["create"])
+        self.assertEqual(created.get("outcome"), "saved", created)
+        edit = copy.deepcopy(canary["edit"])
+        edit["project_ref"] = created["project_ref"]
+        edited = self._save("edit.json", edit, created["project_ref"])
+        self.assertEqual(edited.get("outcome"), "saved", edited)
+        refs = Path(self.home) / "refs.json"
+        refs.write_text(json.dumps(created), encoding="utf-8")
+        edited_refs = Path(self.home) / "edited-refs.json"
+        edited_refs.write_text(json.dumps(edited), encoding="utf-8")
+        snapshot_path = Path(self.home) / "store-snapshot.json"
+        from otto.hostctl import config as host_config
+        report.cmd_store(type("Args", (), {"store": host_config.load(Path(self.home))["store"]["path"],
+                                             "refs": [str(refs), str(edited_refs)], "src": "", "admission": "",
+                                             "out": str(snapshot_path)})())
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        self.assertEqual(snapshot.get("project_revision"), edited["project_ref"]["revision"], snapshot)
+        for alias, ref in edited["task_refs"].items():
+            key = "%s:%s@%s" % (ref["kind"], ref["id"], ref["revision"])
+            self.assertIsNotNone(snapshot["records"].get(key), (alias, snapshot))
+        b_ref = edited["task_refs"]["B"]
+        b_key = "%s:%s@%s" % (b_ref["kind"], b_ref["id"], b_ref["revision"])
+        self.assertEqual(snapshot["records"][b_key]["payload"]["metadata_namespaces"]["otto.plan"]["size"], 0.75)
+        c_ref, b_ref = edited["task_refs"]["C"], edited["task_refs"]["B"]
+        c_key = "%s:%s@%s" % (c_ref["kind"], c_ref["id"], c_ref["revision"])
+        self.assertIn(b_ref["id"], {dep["id"] for dep in snapshot["records"][c_key]["payload"]["dependencies"]})
+        project_ref = created["project_ref"]
+        history_key = "%s:%s@%s" % (project_ref["kind"], project_ref["id"], project_ref["revision"])
+        self.assertEqual(snapshot["records"][history_key]["payload"]["title"], "Canary plan", snapshot)
 
     def test_stale_save_sent_through_the_owner_socket_is_refused(self):
         created = self._save("create.json")
@@ -117,9 +164,13 @@ class OwnerSocketSaveTests(HostctlFixture):
 
 STAGE1_FAULTS = {
     "admit": "portfolio-admitted-before-saves",
-    "typed": "tasks-are-typed-records",
+    "canary": "canary-has-three-planned-tasks",
+    "readback": "show-readback-available",
+    "typed": "store-has-typed-tasks",
+    "edit": "edit-is-persisted",
     "nothing": "nothing-runs",
     "revision": "edit-makes-revision",
+    "history": "project-history-keeps-old-revision",
     "stale": "stale-save-refused",
     "growth": "store-growth-per-save",
 }
@@ -133,32 +184,53 @@ def stage_one_run(root):
     def put(name, value):
         (raw / name).write_text(value if isinstance(value, str) else json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
-    ref = {"authority": "otto-staging-owner-v1", "kind": "wrk.project", "id": "p1"}
-    task = {"authority": "otto-staging-owner-v1", "kind": "wrk.assignment", "id": "t1"}
+    ref = {"authority": "otto-staging-owner-v1", "kind": "work.project", "id": "p1"}
+    tasks = {alias: {"authority": "otto-staging-owner-v1", "kind": "work.task", "id": "t" + alias}
+             for alias in ("A", "B", "C")}
     put("admission.json", {"outcome": "admitted", "host": {"portfolio_ref": dict(ref, id=report.portfolio_id("claude-code"))}})
     put("config.json", {"stage": "1", "fake": True, "tasks": [], "check": "true", "stage_root": "", "pool_limit": 1, "host": "claude-code",
-                        "store": {"store_events": 4, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},
+                        "store": {"store_events": 3, "store_tasks": 1, "store_bytes_max": 262144, "rows_per_save_max": 50},
                         "faults": [], "staging_restart": 0, "staging_sha": "x", "canon_main_sha": "x",
                         "started_at": "x", "finished_at": "x"})
     put("notes.json", {"save-through-socket": "ran"})
     put("events.tsv", "")
     put("census.after.txt", "")
     put("leftovers.txt", "")
-    put("timeline.json", {"store_events": 4, "error": None, "tasks": [{"task_id": "A", "complete": True, "gaps": [], "events": []}]})
+    put("timeline.json", {"store_events": 3, "error": None, "tasks": [{"task_id": "boot", "complete": True, "gaps": [], "events": []}]})
     put("store-at-rest.json", {"error": None, "bytes": 90000, "rows": {"events": 4}})
     put("at-rest.json", {"home_run": ["generation", "service-stop", "service.json"], "service_state": "closed",
                          "sockets": [], "store_holders": {}, "perch_canary": [], "error": None})
     put("save-create.json", {"outcome": "saved", "dispatch": False, "launch": False,
-                             "project_ref": dict(ref, revision="rev-2"), "task_refs": {"A": task}})
-    put("read-back.json", {"outcome": "read"})
+                             "project_ref": dict(ref, revision="rev-2"), "task_refs": tasks})
+    put("read-back.json", {"outcome": "read", "dispatch": False, "launch": False,
+                            "tasks": [{"authored": {"alias": alias}} for alias in tasks]})
     put("save-edit.json", {"outcome": "saved", "dispatch": False, "launch": False,
-                           "project_ref": dict(ref, revision="rev-3"), "task_refs": {"A": task}})
+                           "project_ref": dict(ref, revision="rev-3"), "task_refs": tasks})
     put("save-stale.json", {"outcome": "conflict", "dispatch": False, "launch": False, "project_ref": dict(ref, revision="rev-3"),
                             "error": {"code": "stale_base"}, "diff": {"project": {}, "tasks": {"changed": []}}})
-    put("store-before-saves.json", {"error": None, "rows": {"events": 1}})
-    put("store-after-create.json", {"error": None, "rows": {"events": 3}})
-    put("store-after-edit.json", {"error": None, "rows": {"events": 4}})
-    put("store-after-stale.json", {"error": None, "rows": {"events": 4}})
+    project_old = {"ref": dict(ref, revision="rev-2"), "payload": {"title": "Canary plan"}}
+    project_new = {"ref": dict(ref, revision="rev-3"), "payload": {"title": "Canary plan"}}
+    task_records = {}
+    create_task_records = {}
+    for alias, value in tasks.items():
+        payload = {"alias": alias, "title": {"A": "Plan A edited", "B": "Plan B", "C": "Plan C"}[alias],
+                   "metadata_namespaces": {"otto.plan": {"route": "normal", "size": 0.75 if alias == "B" else 0.25, "lines": 12}},
+                   "dependencies": ([dict(tasks["B"], revision=None)] if alias == "C" else
+                                   [dict(tasks["A"], revision=None)] if alias == "B" else [])}
+        task_records["work.task:%s@rev-2" % value["id"]] = {"ref": dict(value, revision="rev-2"), "payload": payload}
+        create_payload = {"alias": alias, "acceptance": "Done " + alias,
+                          "metadata_namespaces": {"otto.plan": {"route": "normal", "size": 0.5 if alias == "B" else 0.25,
+                                                                  "lines": {"A": 20, "B": 30, "C": 15}[alias]}},
+                          "dependencies": ([dict(tasks["A"], revision=None)] if alias == "B" else [])}
+        create_task_records["work.task:%s@rev-2" % value["id"]] = {
+            "ref": dict(value, revision="rev-2"), "payload": create_payload}
+    put("store-before-saves.json", {"error": None, "rows": {"events": 1}, "admission_outcome": "admitted"})
+    put("store-after-create.json", {"error": None, "rows": {"events": 3}, "records": {
+        "work.project:p1@rev-2": project_old, **create_task_records}})
+    put("store-after-edit.json", {"error": None, "rows": {"events": 4}, "records": {
+        "work.project:p1@rev-2": project_old, "work.project:p1@rev-3": project_new, **task_records},
+        "project_revision": "rev-3", "event_types": []})
+    put("store-after-stale.json", {"error": None, "rows": {"events": 4}, "records": task_records})
     return raw
 
 
@@ -239,6 +311,21 @@ class StageOneProjectFileTests(unittest.TestCase):
         wipe = subprocess.run([sys.executable, "-I", str(HERE / "perch_report.py"), "stage", "--project", str(self.PROJECT),
                                "--stage", "1", "--key", "wipe"], capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(wipe, "true")
+
+    def test_three_task_canary_has_plan_metadata_and_edits_dependency_and_values(self):
+        project = json.loads(self.PROJECT.read_text(encoding="utf-8"))
+        saves = project["stages"]["1"]["saves"]
+        create = {row["id"]: row for row in saves["create"]["tasks"]}
+        edit = {row["id"]: row for row in saves["edit"]["tasks"]}
+        self.assertEqual(set(create), {"A", "B", "C"})
+        self.assertEqual(create["B"]["dependencies"], ["A"])
+        self.assertEqual(edit["C"]["dependencies"], ["B"])
+        self.assertNotEqual(create["A"]["title"], edit["A"]["title"])
+        self.assertNotEqual(create["B"]["metadata_namespace"]["otto.plan"]["size"],
+                            edit["B"]["metadata_namespace"]["otto.plan"]["size"])
+        for task in create.values():
+            self.assertTrue(all(key in task["metadata_namespace"]["otto.plan"] for key in ("route", "size", "lines")))
+            self.assertTrue(task["acceptance"])
 
     def test_save_documents_edit_and_stale_keep_the_create_base(self):
         temporary = tempfile.TemporaryDirectory(prefix="perch-stage1-doc-")
