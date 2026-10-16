@@ -1,0 +1,23 @@
+{
+  "name": "perch-canary",
+  "check": "{python} -m unittest discover -q -s tests -t .",
+  "pool_limit": 1,
+  "stages": {
+    "0": ["canary-add-sub", "canary-refused"]
+  },
+  "tasks": {
+    "canary-add-sub": {
+      "expect": "landed",
+      "turns": [
+        {"path": "toy/mathx.py", "append": "\n\ndef sub(a, b):\n    return a - b\n"},
+        {"path": "tests/test_mathx.py", "append": "\n\nclass SubTests(unittest.TestCase):\n    def test_sub(self):\n        self.assertEqual(mathx.sub(5, 2), 3)\n"}
+      ]
+    },
+    "canary-refused": {
+      "expect": "refused",
+      "turns": [
+        {"path": "toy/mathx.py", "replace": ["return a + b", "return a - b"]}
+      ]
+    }
+  }
+}
