@@ -41,6 +41,18 @@
         }
       },
       "wipe": true
+    },
+    "2": {
+      "tasks": ["A", "B", "C"],
+      "host": "claude-code",
+      "pool_limit": 2,
+      "manager_reserve": 1,
+      "store": {"store_events": 6, "store_tasks": 3, "store_bytes_max": 262144},
+      "scenarios": ["admit-and-dispatch"],
+      "admission": {"admitted": ["A", "B", "C"],
+        "unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": false}},
+      "dependencies": {"A": [], "B": ["A"], "C": ["B"]},
+      "wipe": true
     }
   },
   "tasks": {

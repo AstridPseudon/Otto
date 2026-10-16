@@ -49,6 +49,9 @@ SAVE_SCENARIO = "save-through-socket"
 STAGE1 = ("portfolio-admitted-before-saves", "canary-has-three-planned-tasks", "show-readback-available",
           "store-has-typed-tasks", "edit-is-persisted", "nothing-runs", "edit-makes-revision", "project-history-keeps-old-revision",
           "stale-save-refused", "store-growth-per-save")
+STAGE2 = ("admit-and-dispatch-ran", "stage2-canary-valid", "admitted-ready-dependency-order",
+          "unadmitted-revision-refused", "pool-and-manager-reserve-held", "worker-kill-recovery",
+          "stage2-store-snapshots", "stage2-census")
 # The events of a lab run: a save starts none of them.
 RUN_EVENTS = ("lab-created", "turn", "done", "check-passed", "check-failed", "landed", "refused", "lab-deleted")
 # The events a task must show, by how it ends. "lab-created" and "lab-deleted" are the lab's life;
@@ -372,6 +375,36 @@ def seed(raw, kind):
             raise ValueError("no table with rows to seed a growth fault into")
         rows[table] += 1
         (raw / "store-after-stale.json").write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "stage2_canary":
+        config = read_json(raw / "config.json", {}) or {}
+        config["stage2_dependencies"] = {"B": []}
+        (raw / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "stage2_scenario":
+        notes = read_json(raw / "notes.json", {}) or {}
+        notes["admit-and-dispatch"] = "skipped: seeded scenario omission"
+        (raw / "notes.json").write_text(json.dumps(notes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind in {"admit_order", "unadmitted", "reserve", "worker_kill", "store_snapshot", "stage2_census"}:
+        stage2 = read_json(raw / "stage2-observations.json", {}) or {}
+        key = {"admit_order": "dispatch", "unadmitted": "unadmitted_refusal", "reserve": "capacity",
+               "worker_kill": "worker_kill", "store_snapshot": "store_snapshots", "stage2_census": "census"}[kind]
+        if key not in stage2:
+            raise ValueError("no %s observation in this run to seed a fault into" % key)
+        value = stage2[key]
+        if kind == "store_snapshot" and value:
+            value = value[-1]
+        if kind == "admit_order":
+            value["dispatched"] = ["B", "A", "C"]
+        elif kind == "unadmitted":
+            value["outcome"] = "admitted"
+        elif kind == "reserve":
+            value["manager_reserve_remaining"] = 0
+        elif kind == "worker_kill":
+            value["slot_released"] = False
+        elif kind == "store_snapshot":
+            value["integrity"] = "corrupt"
+        else:
+            value["unrelated_started_pids"] = []
+        (raw / "stage2-observations.json").write_text(json.dumps(stage2, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     else:
         raise ValueError("no seeded observation fault called %s" % kind)
 
@@ -423,11 +456,20 @@ def cmd_timeline(args):
 def cmd_init(args):
     project = read_json(args.project)
     stage = project["stages"][args.stage]
-    tasks = [{"name": name, "expect": project["tasks"][name]["expect"]} for name in stage["tasks"]]
+    # Stage 2 is driven through the staging owner; its task lifecycle is in stage2-observations.json,
+    # not in the local fake-worker timeline used by stages 0 and 1.
+    tasks = [] if args.stage == "2" else [{"name": name, "expect": project["tasks"][name]["expect"]}
+                                          for name in stage["tasks"]]
     config = {
         "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"], "stage_root": args.stage_root,
         "host": stage.get("host"),
-        "pool_limit": project["pool_limit"], "store": stage.get("store"), "faults": [f for f in args.faults.split(",") if f],
+        "pool_limit": stage.get("pool_limit", project["pool_limit"]), "manager_reserve": stage.get("manager_reserve"),
+        "scenarios": stage.get("scenarios", []),
+        "stage2_tasks": stage.get("tasks") if args.stage == "2" else None,
+        "stage2_admitted": (stage.get("admission") or {}).get("admitted") if args.stage == "2" else None,
+        "stage2_dependencies": stage.get("dependencies") if args.stage == "2" else None,
+        "stage2_unadmitted_revision": (stage.get("admission") or {}).get("unadmitted_revision") if args.stage == "2" else None,
+        "store": stage.get("store"), "faults": [f for f in args.faults.split(",") if f],
         "staging_restart": args.staging_restart, "staging_sha": args.staging_sha,
         "canon_main_sha": args.canon_main_sha, "started_at": args.started_at, "finished_at": now_iso(),
     }
@@ -796,6 +838,77 @@ def stage1_failures(raw, config):
     return found
 
 
+def stage2_failures(raw, config):
+    """The admit-and-dispatch scenario is accepted only from recorded staging observations."""
+    observations = read_json(raw / "stage2-observations.json", {}) or {}
+    found = {name: [] for name in STAGE2}
+    if read_json(raw / "notes.json", {}).get("admit-and-dispatch") != "ran":
+        found["admit-and-dispatch-ran"].append("scenario did not run against staging COMPOSEFLEET")
+
+    tasks = config.get("stage2_tasks", [])
+    dependencies = config.get("stage2_dependencies", {})
+    if len(tasks) != 3 or config.get("stage2_admitted") != tasks:
+        found["stage2-canary-valid"].append("canary must admit exactly three tasks")
+    if dependencies.get("B") != ["A"]:
+        found["stage2-canary-valid"].append("canary B must depend on A")
+    revision = config.get("stage2_unadmitted_revision")
+    if (not isinstance(revision, dict) or revision.get("admitted") is not False
+            or revision.get("task") not in tasks or not revision.get("revision")):
+        found["stage2-canary-valid"].append("canary has no explicit unadmitted task revision")
+
+    dispatch = observations.get("dispatch") or {}
+    records = dispatch.get("records") or []
+    if dispatch.get("dispatched") != tasks:
+        found["admitted-ready-dependency-order"].append("dispatched %s, expected ready tasks in order %s" % (dispatch.get("dispatched"), tasks))
+    if [row.get("alias") for row in records] != tasks or any(
+            row.get("admitted") is not True or row.get("ready") is not True for row in records):
+        found["admitted-ready-dependency-order"].append("dispatch records include a task that was unadmitted or dependency-blocked")
+    order = {name: i for i, name in enumerate(dispatch.get("dispatched") or [])}
+    for name, prereqs in dependencies.items():
+        for prereq in prereqs:
+            if name in order and prereq in order and order[prereq] >= order[name]:
+                found["admitted-ready-dependency-order"].append("%s dispatched before dependency %s" % (name, prereq))
+
+    refusal = observations.get("unadmitted_refusal") or {}
+    if refusal.get("outcome") != "refused" or refusal.get("reason") != "unadmitted_revision":
+        found["unadmitted-revision-refused"].append("unadmitted revision outcome/reason was %s/%s" %
+                                                     (refusal.get("outcome"), refusal.get("reason")))
+    expected_revision = config.get("stage2_unadmitted_revision") or {}
+    if refusal.get("task") != expected_revision.get("task") or refusal.get("revision") != expected_revision.get("revision"):
+        found["unadmitted-revision-refused"].append("refusal names %s@%s, expected %s@%s" %
+            (refusal.get("task"), refusal.get("revision"), expected_revision.get("task"), expected_revision.get("revision")))
+
+    capacity = observations.get("capacity") or {}
+    if capacity.get("pool_peak", 0) > config.get("pool_limit", 0):
+        found["pool-and-manager-reserve-held"].append("pool peak %s exceeds limit %s" %
+                                                     (capacity.get("pool_peak"), config.get("pool_limit")))
+    if capacity.get("manager_reserve_remaining", -1) < config.get("manager_reserve", 0):
+        found["pool-and-manager-reserve-held"].append("manager reserve remaining %s, expected at least %s" %
+                                                     (capacity.get("manager_reserve_remaining"), config.get("manager_reserve")))
+
+    killed = observations.get("worker_kill") or {}
+    if killed.get("slot_released") is not True or killed.get("killed_worker_absent") is not True:
+        found["worker-kill-recovery"].append("killed worker slot was not released")
+    if killed.get("unrelated_processes_alive") is not True:
+        found["worker-kill-recovery"].append("worker recovery killed or lost an unrelated process")
+
+    snapshots = observations.get("store_snapshots") or []
+    if len(snapshots) < 2 or any(s.get("integrity") != "ok" for s in snapshots):
+        found["stage2-store-snapshots"].append("expected at least two readable, integrity-ok Store snapshots")
+    else:
+        final = snapshots[-1]
+        if final.get("dispatch_events", 0) < 3 or final.get("admitted_tasks") != tasks:
+            found["stage2-store-snapshots"].append("final Store snapshot does not contain three admitted tasks and dispatch events")
+
+    census = observations.get("census") or {}
+    if census.get("killed_worker_pid") in census.get("after_pids", []):
+        found["stage2-census"].append("killed worker remains in the after census")
+    if not census.get("unrelated_started_pids") or not set(census.get("unrelated_started_pids", [])).issubset(
+            set(census.get("after_pids", []))):
+        found["stage2-census"].append("census does not show unrelated started processes survived")
+    return found
+
+
 def assertions(raw):
     config = read_json(raw / "config.json", {}) or {}
     notes = read_json(raw / "notes.json", {}) or {}
@@ -896,6 +1009,14 @@ def assertions(raw):
         found = {} if skip else stage1_failures(raw, config)
         for name in STAGE1:
             add(name, found.get(name, []), STAGE1_OK[name], skip=skip)
+    if "admit-and-dispatch" in (config.get("scenarios") or []):
+        ran = notes.get("admit-and-dispatch") == "ran"
+        found = stage2_failures(raw, config) if ran else {}
+        add("admit-and-dispatch-ran", stage2_failures(raw, config)["admit-and-dispatch-ran"],
+            "staging COMPOSEFLEET dispatch scenario ran")
+        for name in STAGE2[1:]:
+            add(name, found.get(name, []), "staging observation matches the stage-2 contract",
+                skip=None if ran else (notes.get("admit-and-dispatch") or "skipped: scenario did not run"))
     return results
 
 
@@ -980,6 +1101,7 @@ def staging_lines(raw):
     return table(["observed", "outcome", "generation", "holder alive"], rows) + [
         "",
         "- scenario: %s" % notes.get("staging-lifecycle", "not declared by this stage"),
+        "- admit-and-dispatch scenario: %s" % notes.get("admit-and-dispatch", "not declared by this stage"),
         "- the start after the KILL exited %s" % notes.get("restart_after_kill_rc", "not run"),
         "- the second start exited %s; its refusal record: %s" % (notes.get("refused_start_rc", "not run"), refusal),
     ]

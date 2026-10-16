@@ -11,6 +11,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
@@ -218,6 +219,72 @@ class AssertionKindTests(unittest.TestCase):
             self.assertEqual(got[name]["status"], "skip", name)
             self.assertIn("staging did not start", got[name]["detail"])
         self.assertEqual(perch_report.cmd_check(Namespace(raw=str(raw))), 0, "a skipped check is not a red run")
+
+    def test_stage_two_canary_declares_three_tasks_dependency_and_unadmitted_revision(self):
+        project = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))
+        stage = project["stages"]["2"]
+        self.assertEqual(stage["tasks"], ["A", "B", "C"])
+        self.assertEqual(stage["admission"]["admitted"], ["A", "B", "C"])
+        self.assertEqual(stage["dependencies"]["B"], ["A"])
+        self.assertTrue(stage["admission"]["unadmitted_revision"])
+        self.assertEqual(stage["scenarios"], ["admit-and-dispatch"])
+
+    def test_stage_two_scenario_skip_is_explicit_and_gate_fails(self):
+        raw = self.tmp / "raw-stage2-skip"
+        raw.mkdir()
+        (raw / "config.json").write_text(json.dumps({"stage": "2", "scenarios": ["admit-and-dispatch"],
+                    "staging_restart": 0, "tasks": [], "pool_limit": 2, "manager_reserve": 1,
+                    "stage2_tasks": ["A", "B", "C"], "stage2_admitted": ["A", "B", "C"],
+                    "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
+                    "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}}), encoding="utf-8")
+        (raw / "notes.json").write_text(json.dumps({"admit-and-dispatch": "skipped: COMPOSEFLEET has not landed"}), encoding="utf-8")
+        got = {row["name"]: row for row in perch_report.assertions(raw)}
+        self.assertEqual(got["admit-and-dispatch-ran"]["status"], "fail")
+        self.assertIn("did not run", got["admit-and-dispatch-ran"]["detail"])
+        self.assertEqual(got["admitted-ready-dependency-order"]["status"], "skip")
+
+    def test_stage_two_seeded_faults_fail_their_matching_assertions_only(self):
+        cases = {
+            "stage2_scenario": "admit-and-dispatch-ran",
+            "stage2_canary": "stage2-canary-valid",
+            "admit_order": "admitted-ready-dependency-order",
+            "unadmitted": "unadmitted-revision-refused",
+            "reserve": "pool-and-manager-reserve-held",
+            "worker_kill": "worker-kill-recovery",
+            "store_snapshot": "stage2-store-snapshots",
+            "stage2_census": "stage2-census",
+        }
+        for fault, target in cases.items():
+            with self.subTest(fault=fault):
+                raw = self.tmp / ("stage2-" + fault)
+                raw.mkdir()
+                (raw / "config.json").write_text(json.dumps({"stage": "2", "scenarios": ["admit-and-dispatch"],
+                    "staging_restart": 0, "tasks": [], "pool_limit": 2, "manager_reserve": 1,
+                    "stage2_tasks": ["A", "B", "C"], "stage2_admitted": ["A", "B", "C"],
+                    "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
+                    "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}}), encoding="utf-8")
+                (raw / "notes.json").write_text(json.dumps({"admit-and-dispatch": "ran"}), encoding="utf-8")
+                (raw / "stage2-observations.json").write_text(json.dumps({
+                    "dispatch": {"dispatched": ["A", "B", "C"], "records": [
+                        {"alias": name, "admitted": True, "ready": True} for name in ("A", "B", "C")]},
+                    "unadmitted_refusal": {"outcome": "refused", "reason": "unadmitted_revision",
+                                            "task": "C", "revision": "rev-unadmitted"},
+                    "capacity": {"pool_peak": 2, "manager_reserve_remaining": 1},
+                    "worker_kill": {"slot_released": True, "killed_worker_absent": True,
+                                    "unrelated_processes_alive": True},
+                    "store_snapshots": [{"integrity": "ok"}, {"integrity": "ok", "dispatch_events": 3,
+                                         "admitted_tasks": ["A", "B", "C"]}],
+                    "census": {"killed_worker_pid": 101, "after_pids": [202], "unrelated_started_pids": [202]},
+                }), encoding="utf-8")
+                green = {row["name"]: row["status"] for row in perch_report.assertions(raw)
+                         if row["name"] in perch_report.STAGE2}
+                self.assertEqual(green, {name: "pass" for name in perch_report.STAGE2}, green)
+                subprocess.run([sys.executable, "-I", str(BOOTSTRAP / "perch_report.py"), "seed", "--raw", str(raw),
+                                "--fault", fault], check=True)
+                got = {row["name"]: row["status"] for row in perch_report.assertions(raw)
+                       if row["name"] in perch_report.STAGE2}
+                self.assertEqual(got[target], "fail", got)
+                self.assertEqual({name for name, status in got.items() if status == "fail"}, {target}, got)
 
 
 class RenderTests(unittest.TestCase):
@@ -432,4 +499,3 @@ class PerchExitStatus(unittest.TestCase):
     def test_init_args_expand_when_empty(self):
         # Without --fake the array is empty; bash 3.2 under set -u calls "${a[@]}" unbound.
         self.assertIn('${INIT_ARGS[@]+"${INIT_ARGS[@]}"}', PERCH.read_text())
-
