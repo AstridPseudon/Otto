@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from herzchen.command_ports import command_facade
 
@@ -89,6 +89,68 @@ def _opaque(value: str, field: str) -> str:
     if not isinstance(value, str) or not value.strip() or "\x00" in value or "/" in value or "\\" in value:
         raise WorkValidationError(f"{field} must be a non-blank opaque identifier")
     return value
+
+
+# A metadata namespace type is a registered validator, called with the merged
+# values of that namespace before any writer saves them.  Registration is
+# process-wide and idempotent: a host registers its types before it opens the
+# Store it writes through.  The work.* namespaces are owned here and are not
+# validated by a hook.
+MetadataValidator = Callable[[Mapping[str, Any]], None]
+_METADATA_VALIDATORS: Dict[str, MetadataValidator] = {}
+
+
+def _is_work_namespace(namespace: str) -> bool:
+    return namespace == "work" or namespace.startswith("work.")
+
+
+def register_metadata_namespace(namespace: str, validator: MetadataValidator) -> None:
+    """Register the validator for one metadata namespace type outside work.*."""
+
+    _opaque(namespace, "metadata namespace")
+    if _is_work_namespace(namespace):
+        raise WorkValidationError(f"metadata namespace {namespace!r} is owned by the work domain")
+    if not callable(validator):
+        raise TypeError("metadata namespace validator must be callable")
+    current = _METADATA_VALIDATORS.get(namespace)
+    if current is not None and current is not validator:
+        raise WorkValidationError(f"metadata namespace already registered: {namespace!r}")
+    _METADATA_VALIDATORS[namespace] = validator
+
+
+def merge_metadata_namespaces(current: Any, incoming: Any) -> Dict[str, Any]:
+    """Merge incoming values into each namespace; no namespace is replaced whole."""
+
+    if not isinstance(current, Mapping) or not isinstance(incoming, Mapping):
+        raise WorkValidationError("metadata_namespaces must be a mapping")
+    merged = {str(namespace): dict(values) for namespace, values in current.items()}
+    for namespace, values in incoming.items():
+        if not isinstance(values, Mapping):
+            raise WorkValidationError("metadata namespace values must be mappings")
+        key = str(namespace)
+        merged[key] = {**merged.get(key, {}), **values}
+    return merged
+
+
+def validate_metadata_namespaces(payload: Mapping[str, Any], namespaces: Optional[Iterable[str]] = None) -> None:
+    """Refuse a payload whose namespace values fail their registered validator.
+
+    ``namespaces`` limits the check to the namespaces one write touched; by
+    default every namespace in the payload is checked.  A non-work namespace
+    with no registered validator is refused, so it cannot bypass the hook.
+    """
+
+    values_by_namespace = payload.get("metadata_namespaces", {})
+    if not isinstance(values_by_namespace, Mapping):
+        raise WorkValidationError("metadata_namespaces must be a mapping")
+    for namespace in (values_by_namespace if namespaces is None else namespaces):
+        key = str(namespace)
+        if _is_work_namespace(key):
+            continue
+        validator = _METADATA_VALIDATORS.get(key)
+        if validator is None:
+            raise WorkValidationError(f"unregistered metadata namespace: {key!r}")
+        validator(values_by_namespace.get(key, {}))
 
 
 def contribution() -> Any:
@@ -302,9 +364,12 @@ class _WorkGraphEngine:
         logical_request_key: Optional[str] = None,
         actor: Any = None,
         fields: Optional[Mapping[str, Any]] = None,
+        metadata_namespaces: Optional[Mapping[str, Any]] = None,
     ) -> WorkRecord:
         work_kind = self._kind(kind)
         if work_kind is WorkKind.PROJECT:
+            if metadata_namespaces is not None:
+                raise WorkValidationError("project creation does not accept metadata namespaces")
             return self.create_project(title=title or name, alias=alias, aliases=aliases, logical_request_key=logical_request_key, actor=actor, metadata=fields)
         project_record = self._require(project) if project is not None else None
         parent_record = self._require(parent) if parent is not None else project_record
@@ -329,6 +394,8 @@ class _WorkGraphEngine:
             readiness={"status": "not-evaluated", "ready": False, "dispatch": False},
         )
         payload["fields"] = dict(fields or {})
+        if metadata_namespaces is not None:
+            payload["metadata_namespaces"] = merge_metadata_namespaces({}, metadata_namespaces)
         self._validate_new_graph(payload, parent_record, dep_records)
         with self.__writer.transaction() as tx:
             self._write_create(tx, work_kind, record_id, payload, logical_request_key, actor, "work.created")
@@ -366,6 +433,7 @@ class _WorkGraphEngine:
         base_revision: Optional[str] = None,
         logical_request_key: Optional[str] = None,
         actor: Any = None,
+        metadata_namespaces: Optional[Mapping[str, Any]] = None,
     ) -> WorkRecord:
         request_key = self._request_key(logical_request_key)
         request_payload = {
@@ -378,6 +446,10 @@ class _WorkGraphEngine:
             "fields": None if fields is None else dict(fields),
             "lifecycle": lifecycle.value if isinstance(lifecycle, Lifecycle) else lifecycle,
         }
+        # Only a revision that names namespaces digests them, so receipts from
+        # before this argument existed still replay.
+        if metadata_namespaces is not None:
+            request_payload["metadata_namespaces"] = merge_metadata_namespaces({}, metadata_namespaces)
         # A revisioned target already binds this base in the original request
         # digest. Keep earlier finite-edit receipts replayable after adoption.
         if base_revision is not None and (not isinstance(request_payload["target"], Mapping)
@@ -390,9 +462,11 @@ class _WorkGraphEngine:
         if base_revision is not None and record.revision != base_revision:
             from herzchen.kernel import VersionConflictError
             raise VersionConflictError("work revision base is stale")
-        changes = self._revision_changes(record, title=title, name=name, outcome=outcome, add_alias=add_alias, aliases=aliases, fields=fields, lifecycle=lifecycle)
+        changes = self._revision_changes(record, title=title, name=name, outcome=outcome, add_alias=add_alias, aliases=aliases, fields=fields, lifecycle=lifecycle, metadata_namespaces=metadata_namespaces)
         ensure_completed_task_unchanged(record, changes)
-        self._validate_payload(changes)
+        # Only the namespaces this revision writes are checked; the stored ones
+        # were accepted when they were written.
+        self._validate_payload(changes, namespaces=tuple(metadata_namespaces or ()))
         with self.__writer.transaction() as tx:
             self._write_revision(tx, record, changes, request_key, actor, "work.revised", request_payload=request_payload)
         return self.get(record.ref)
@@ -717,7 +791,7 @@ class _WorkGraphEngine:
             "readiness": dict(readiness),
         }
 
-    def _revision_changes(self, record: WorkRecord, *, title: Optional[str] = None, name: Optional[str] = None, outcome: Optional[str] = None, add_alias: Optional[str] = None, aliases: Sequence[str] = (), fields: Optional[Mapping[str, Any]] = None, lifecycle: Optional[Union[Lifecycle, str]] = None) -> Dict[str, Any]:
+    def _revision_changes(self, record: WorkRecord, *, title: Optional[str] = None, name: Optional[str] = None, outcome: Optional[str] = None, add_alias: Optional[str] = None, aliases: Sequence[str] = (), fields: Optional[Mapping[str, Any]] = None, lifecycle: Optional[Union[Lifecycle, str]] = None, metadata_namespaces: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         payload = dict(record.payload)
         if title is not None:
             payload["title"] = self._title(title, "title")
@@ -740,9 +814,11 @@ class _WorkGraphEngine:
             payload["fields"] = dict(fields)
         if lifecycle is not None:
             payload["lifecycle"] = self._lifecycle(lifecycle).value
+        if metadata_namespaces is not None:
+            payload["metadata_namespaces"] = merge_metadata_namespaces(payload.get("metadata_namespaces", {}), metadata_namespaces)
         return payload
 
-    def _validate_payload(self, payload: Mapping[str, Any]) -> None:
+    def _validate_payload(self, payload: Mapping[str, Any], *, namespaces: Optional[Iterable[str]] = None) -> None:
         if payload.get("kind") not in WORK_KINDS:
             raise WorkValidationError("payload has an unknown work kind")
         _opaque(payload.get("id", ""), "id")
@@ -755,6 +831,7 @@ class _WorkGraphEngine:
         self._lifecycle(payload.get("lifecycle", Lifecycle.PENDING))
         if not isinstance(payload.get("readiness", {}), Mapping):
             raise WorkValidationError("readiness must be a mapping")
+        validate_metadata_namespaces(payload, namespaces)
 
     def _validate_new_graph(self, payload: Mapping[str, Any], parent: Optional[WorkRecord], dependencies: Sequence[WorkRecord]) -> None:
         self._validate_payload(payload)
