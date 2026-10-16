@@ -126,7 +126,7 @@ wait_ready() {
     if [ "$(tail -n +"$((before + 1))" "$LOG" | grep -c '"outcome": "ready"' || true)" -gt 0 ]; then
       return 0
     fi
-    kill -0 "$pid" 2>/dev/null || return 1
+    [ -n "$(running_pid)" ] || return 1
     sleep 0.2
   done
   return 1
@@ -204,7 +204,7 @@ up() {
   start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true)"
   printf '%s\n%s\n' "$pid" "$start" > "$PIDFILE"
   if ! wait_ready "$pid" "$before"; then
-    if kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$(running_pid)" ]; then
       stop_group "$pid" || die "up: the staging Otto did not report ready and group $pid survived KILL; pidfile kept; see $LOG"
       rm -f "$PIDFILE"
       die "up: the staging Otto did not report ready; see $LOG"
