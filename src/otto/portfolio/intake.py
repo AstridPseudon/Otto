@@ -1142,6 +1142,22 @@ class OttoPortfolio:
             return {"outcome": "error", "error": {"code": "task_list_authoring_failed",
                                                         "message": str(exc), "operation": "work.tasklist.apply"}}
 
+    def save_project(self, document: Any, *, actor: str, request_id: Optional[str] = None) -> dict[str, Any]:
+        """Save one project from a save file (A2) through the work command lane.
+
+        The file's project_ref carries the revision it was read at, which is the
+        base the save applies to. Without a request_id the key is derived from the
+        file, so the same file replays and a changed file is a new request.
+        """
+        from .save import SaveFileError, parse_save_file, save_request_key
+
+        try:
+            parsed = parse_save_file(document)
+            key = request_id if request_id is not None else save_request_key(document)
+        except SaveFileError as exc:
+            return {"outcome": "error", "error": {"code": "invalid_save_file", "message": str(exc), "operation": "work.project.save"}}
+        return self._execute("work.project.save", parsed, request_id=key, actor=actor)
+
     def read_work(
         self,
         project_ref: Any,

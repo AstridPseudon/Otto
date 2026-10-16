@@ -576,6 +576,14 @@ class _ProjectSheetEngine:
             project = project_result.project
         if template_id == BLANK_TEMPLATE_ID:
             return project_result if "project_result" in locals() else self.export(project)
+        sheet = self.sheet_from_seed(seed, template_id, parameters)
+        return self.apply(project, sheet, logical_request_key=logical_request_key, actor=actor or self.actor)
+
+    def sheet_from_seed(self, seed: Mapping[str, Any], template_id: str, parameters: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """Map a template seed to one pending project sheet; the sheet never dispatches.
+
+        A save file has the same seed shape (A2), so both routes share this mapping.
+        """
         tasks = []
         nodes = seed.get("tasks", seed.get("task_bundle", ()))
         if not isinstance(nodes, (list, tuple)):
@@ -601,7 +609,7 @@ class _ProjectSheetEngine:
             for field in ("title", "name", "outcome", "scope", "approach", "acceptance", "protocol", "custom", "metadata"):
                 if field in template_project:
                     sheet[field] = template_project[field]
-        return self.apply(project, sheet, logical_request_key=logical_request_key, actor=actor or self.actor)
+        return sheet
 
     instantiate_template = instantiate_new_template
 
