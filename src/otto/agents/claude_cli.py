@@ -267,6 +267,8 @@ class ClaudeCliTransport:
         env.update(CLAUDE_CODE_SAFE_MODE='1',
                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
                    TMPDIR=self.scope.state_root, **getattr(self, 'extra_env', {}))
+        # An agent never inherits heavy-lease markers: the runner knows a nested call by its lease, not by these.
+        env = {key: value for key, value in env.items() if not key.startswith('OTTO_HEAVY_')}
         if self.authentication == 'isolated':
             env['CLAUDE_CONFIG_DIR'] = self.scope.state_root
         return env
