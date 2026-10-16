@@ -33,7 +33,7 @@ def _dispatcher(ready, launch, *, counts=(0, 0), make_spec=_spec):
     book = TokenBook()
     dispatcher = FleetDispatcher(pool, book, ready=ready, role_for=lambda _task: "worker",
         policy_for=lambda _role: pool.policy, active_counts=lambda: counts,
-        make_spec=make_spec, launch=launch, otto_tools=("task", "check", "done"),
+        make_spec=make_spec, launch=launch, mcp_server_name="otto", mcp_tools=("task", "check", "done"),
         read_current=lambda task, **_context: task)
     return dispatcher, pool, book
 
@@ -172,7 +172,7 @@ def test_manager_not_woken_for_routine():
         role_for=lambda _task: routine_role_calls.append("worker") or "worker",
         policy_for=lambda _role: pool.policy, active_counts=lambda: (0, 0),
         make_spec=_spec, launch=lambda _spec, _context: "run",
-        otto_tools=("task", "check", "done"), read_current=lambda task, **_ctx: task)
+        mcp_server_name="otto", mcp_tools=("task", "check", "done"), read_current=lambda task, **_ctx: task)
     # Manager waking is an owner scheduling action and is not an input to routine dispatch.
     record = dispatcher.dispatch(_task("routine"))
     assert record.role == "worker"
@@ -183,7 +183,7 @@ def test_manager_not_woken_for_routine():
         role_for=lambda _task: "manager", policy_for=lambda _role: pool.policy,
         active_counts=lambda: (0, 0), make_spec=_spec,
         launch=lambda *_a: pytest.fail("routine manager launch called"),
-        otto_tools=("task", "check", "done"), read_current=lambda task, **_ctx: task)
+        mcp_server_name="otto", mcp_tools=("task", "check", "done"), read_current=lambda task, **_ctx: task)
     with pytest.raises(DispatchError, match="cannot launch or wake a manager"):
         manager_dispatcher.dispatch(_task("manager-routine"))
     assert wakes == []
@@ -231,7 +231,7 @@ def test_current_record_lookup_is_required_and_used_at_final_readiness_check():
     book = TokenBook()
     dispatcher = FleetDispatcher(pool, book, ready=_ready_with({}), role_for=lambda _task: "worker",
         policy_for=lambda _role: pool.policy, active_counts=lambda: (0, 0), make_spec=_spec,
-        launch=lambda *_a: pytest.fail("launch called"), otto_tools=("task", "check", "done"),
+        launch=lambda *_a: pytest.fail("launch called"), mcp_server_name="otto", mcp_tools=("task", "check", "done"),
         read_current=read_current)
     with pytest.raises(DispatchError, match="admission changed"):
         dispatcher.dispatch(_task("current-changed"))

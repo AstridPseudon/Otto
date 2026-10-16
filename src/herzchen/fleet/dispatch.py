@@ -1,7 +1,7 @@
 """Owner independent admission and launch mechanics for fleet assignments.
 
-Otto supplies role selection, role policy, readiness, assignment context and the actual
-host launch. This module only orders those decisions and records what was admitted.
+The integrating product supplies role selection, readiness, assignment context and the
+actual host launch. This module orders those decisions and records what was admitted.
 """
 from __future__ import annotations
 
@@ -43,7 +43,8 @@ class FleetDispatcher:
                  role_for: Callable[[Any], str], policy_for: Callable[[str], Any],
                  active_counts: Callable[[], tuple[int, int]],
                  make_spec: Callable[..., TurnSpec], launch: Callable[..., Any],
-                 otto_tools: tuple[str, ...], assignment_id: Callable[[Any], str] | None = None,
+                 mcp_server_name: str, mcp_tools: tuple[str, ...],
+                 assignment_id: Callable[[Any], str] | None = None,
                  read_current: Callable[..., Any]):
         for name, value in (("ready", ready), ("role_for", role_for), ("policy_for", policy_for),
                             ("active_counts", active_counts), ("make_spec", make_spec), ("launch", launch),
@@ -52,12 +53,14 @@ class FleetDispatcher:
                 raise TypeError(name + " must be callable")
         if not isinstance(tokens, TokenBook):
             raise TypeError("tokens must be a TokenBook")
-        if not isinstance(otto_tools, tuple) or any(not isinstance(t, str) or not t for t in otto_tools):
-            raise TypeError("otto_tools must be a tuple of tool names")
+        if not isinstance(mcp_server_name, str) or not mcp_server_name:
+            raise TypeError("mcp_server_name must be a nonempty string")
+        if not isinstance(mcp_tools, tuple) or any(not isinstance(t, str) or not t for t in mcp_tools):
+            raise TypeError("mcp_tools must be a tuple of tool names")
         self.capacity, self.tokens = capacity, tokens
         self.ready, self.role_for, self.policy_for = ready, role_for, policy_for
         self.active_counts, self.make_spec, self.launch = active_counts, make_spec, launch
-        self.otto_tools = otto_tools
+        self.mcp_server_name, self.mcp_tools = mcp_server_name, mcp_tools
         self.assignment_id = assignment_id or self._default_assignment
         self.read_current = read_current
         self.records: dict[str, DispatchRecord] = {}
@@ -191,12 +194,12 @@ class FleetDispatcher:
             raise DispatchError("routine worker dispatch cannot use an inert initializer")
         grant = spec.mcp
         try:
-            require_sole_server(grant, "otto")
+            require_sole_server(grant, self.mcp_server_name)
         except (TypeError, ValueError) as exc:
-            raise DispatchError("dispatch requires exactly the Otto MCP server") from exc
+            raise DispatchError("dispatch requires exactly the %s MCP server" % self.mcp_server_name.capitalize()) from exc
         server = grant.servers[0]
-        if server.name != "otto" or tuple(server.tools) != self.otto_tools:
-            raise DispatchError("dispatch MCP grant must expose only the configured Otto TOOLS")
+        if server.name != self.mcp_server_name or tuple(server.tools) != self.mcp_tools:
+            raise DispatchError("dispatch MCP grant must expose only the configured tools")
         if grant.token != token or not grant.token_env or not grant.token_env_prefix:
             raise DispatchError("the issued token must be delivered through the MCP environment")
 
