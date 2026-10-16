@@ -57,6 +57,33 @@ class OwnerLaneTests(HostctlFixture):
             self.assertEqual(refused["error"]["code"], "PermissionError", refused)
         self.assertEqual(self._store_state(), before)
 
+    def test_a_client_admit_named_with_the_portfolio_is_refused_by_the_owner_and_writes_nothing(self):
+        before = self._store_state()
+        admit = ["admit", "--task-ref", "{}", "--revision", "r1", "--review-ref", "{}", "--request-key", "k1"]
+        for portfolio_args in (admit,
+                               ["complete-task", "--input-json", "{}"]):
+            code, refused = self._ottoctl("portfolio", "--portfolio", PORTFOLIO, *portfolio_args)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(refused["error"]["code"], "PermissionError", refused)
+        self.assertEqual(self._store_state(), before)
+
+    def test_client_show_and_read_never_open_the_store_outside_the_owner(self):
+        from unittest.mock import patch
+        from herzchen.kernel.store import Store
+        save_file = Path(self.bundle).parent / "direct-open-plan.json"
+        save_file.write_text(json.dumps({"project": {"title": "Direct plan", "outcome": "One route"},
+                                         "tasks": [{"id": "t1", "title": "Plan d1", "instructions": "Do d1",
+                                                    "acceptance": "Done d1"}]}))
+        code, saved = self._ottoctl("portfolio", "--portfolio", PORTFOLIO, "save", str(save_file), "--actor", OWNER)
+        self.assertEqual(code, 0, saved)
+        ref = json.dumps(saved["project_ref"])
+        with patch.object(Store, "open", wraps=Store.open) as opened:
+            for argv in (["portfolio", "--portfolio", PORTFOLIO, "show", "project", "--project-ref", ref, "--actor", OWNER],
+                         ["portfolio", "show", "project", "--project-ref", ref, "--actor", OWNER],
+                         ["portfolio", "--portfolio", PORTFOLIO, "read", "no-such-project", "--actor", OWNER]):
+                self._ottoctl(*argv)
+        self.assertEqual(opened.call_count, 0)
+
     def test_show_through_the_owner_lane_returns_saved_tasks(self):
         save_file = Path(self.bundle).parent / "lane-plan.json"
         save_file.write_text(json.dumps({"project": {"title": "Lane plan", "outcome": "One route"},
