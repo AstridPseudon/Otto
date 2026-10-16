@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+_REAL_POPEN = subprocess.Popen     # the census must keep working when a caller patches subprocess.Popen
+
 GONE = "gone"
 UNCERTAIN = "uncertain"
 
@@ -59,14 +61,21 @@ def census() -> Optional[dict]:
     """
     ps = next((p for p in ("/bin/ps", "/usr/bin/ps") if os.path.isfile(p)), "ps")
     try:
-        result = subprocess.run([ps, "-axo", "pid=,ppid=,pgid=,stat=,lstart="], capture_output=True,
-                                text=True, check=False, timeout=2.0)
+        with _REAL_POPEN([ps, "-axo", "pid=,ppid=,pgid=,stat=,lstart="], stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True) as proc:
+            try:
+                out, _ = proc.communicate(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return None
+            code = proc.returncode
     except (OSError, subprocess.SubprocessError):
         return None
-    if result.returncode != 0:
+    if code != 0:
         return None
     table: dict = {}
-    for line in result.stdout.splitlines():
+    for line in out.splitlines():
         fields = line.strip().split(None, 4)
         if len(fields) != 5:
             continue
@@ -100,25 +109,26 @@ class Custody:
     """One launched tree: its group, its leader's birth, and every descendant identity seen so far."""
 
     def __init__(self, process: Any, pgid: int, leader_birth: Optional[str], members: Mapping[int, str],
-                 latch_path: Optional[str] = None, census_fn: Callable[[], Optional[dict]] = census,
+                 latch_path: Optional[str] = None, census_fn: Optional[Callable[[], Optional[dict]]] = None,
                  doubt: Optional[str] = None) -> None:
         self.process = process
         self.pgid = pgid
         self.leader_birth = leader_birth
         self.known: dict = dict(members)
         self.latch_path = latch_path
+        census_fn = census_fn or (lambda: census())     # looked up per call so a patched census applies
         self._census = lambda: census_fn() or None     # an empty census is no census
         self.doubt = doubt
 
     # -- birth -------------------------------------------------------------------------------
     @classmethod
     def launch(cls, argv: Any, *, latch_path: Optional[str] = None, popen: Optional[Callable[..., Any]] = None,
-               census_fn: Callable[[], Optional[dict]] = census, **kwargs: Any) -> "Custody":
+               census_fn: Optional[Callable[[], Optional[dict]]] = None, **kwargs: Any) -> "Custody":
         """Start ``argv`` as a fresh session leader and fence its identity at birth."""
         kwargs["start_new_session"] = True
         process = (subprocess.Popen if popen is None else popen)(argv, **kwargs)  # looked up now so patches apply
         custody = cls(process, process.pid, None, {}, latch_path, census_fn)
-        snap = census_fn()
+        snap = custody._census()
         leader = snap.get(process.pid) if snap else None
         if leader is None or leader.pgid != process.pid:
             custody.doubt = "leader identity not captured at birth"
@@ -129,7 +139,7 @@ class Custody:
         return custody
 
     @classmethod
-    def from_latch(cls, latch_path: str, census_fn: Callable[[], Optional[dict]] = census) -> "Custody":
+    def from_latch(cls, latch_path: str, census_fn: Optional[Callable[[], Optional[dict]]] = None) -> "Custody":
         """Rebuild custody from a latch a crashed owner left behind."""
         try:
             with open(latch_path, encoding="utf-8") as handle:
@@ -292,7 +302,7 @@ class Custody:
 
 
 def resume_cleanup(latch_path: str, grace_seconds: float = 1.0,
-                   census_fn: Callable[[], Optional[dict]] = census) -> Disposition:
+                   census_fn: Optional[Callable[[], Optional[dict]]] = None) -> Disposition:
     """Finish a cleanup a crashed owner began. Identities that no longer match are left alone."""
     if not os.path.exists(latch_path):
         return Disposition(GONE, "no latch")

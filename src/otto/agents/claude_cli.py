@@ -28,6 +28,7 @@ from typing import Any, Callable, Mapping
 
 from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.contract import HostContractError
+from herzchen.fleet.custody import Custody
 # Re-exported: the owner-side adapters import these names from this module.
 from herzchen.fleet.hosts.claude import (MAX_LINE, MAX_STREAM, ClaudeBindingError, ClaudeStream, sandbox_policy,
                                          sandbox_wrap, text, validate_effort, validate_max_turns, validate_tools)
@@ -289,9 +290,11 @@ class ClaudeCliTransport:
             raise ClaudeBindingError(str(exc)) from exc
         command, data = list(plan.argv), plan.stdin
         env = {**self.environment(), **plan.env}
-        process = self.process_factory(list(plan.command()), cwd=self.scope.workspace,
-            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        custody = Custody.launch(list(plan.command()), popen=self.process_factory, cwd=self.scope.workspace,
+            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = custody.process
         cleanup = None
+        disposition = None
         if on_process is not None and not initializer:
             # Host registration of the owned native process (for example the
             # managed caller socket's peer ancestry). Failure stops the turn.
@@ -300,8 +303,7 @@ class ClaudeCliTransport:
                 if not callable(cleanup):
                     raise ClaudeBindingError("native process registration must return its cleanup")
             except BaseException:
-                try: os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError: pass
+                custody.terminate()
                 process.wait(timeout=5)
                 raise
         selector = selectors.DefaultSelector()
@@ -337,17 +339,23 @@ class ClaudeCliTransport:
                 raise ClaudeBindingError("incomplete JSONL framing")
             code = process.wait(timeout=max(.01, deadline - time.monotonic()))
             turn = parser.finish(code)
-            return {**dict(turn.native), 'usage': turn.usage, 'usage_capture': turn.usage_capture, 'scope': proof,
+            disposition = custody.release()     # sweeps stragglers the CLI left in its tree
+            result = {**dict(turn.native), 'usage': turn.usage, 'usage_capture': turn.usage_capture, 'scope': proof,
                     'command': command, 'exit_status': code, 'stderr': stderr.decode('utf-8', errors='replace')[:4096],
                     'launcher': vars(self.pin), 'parser_schema': PARSER_SCHEMA}
+            if not disposition.gone:
+                result['custody'] = {'state': disposition.state, 'reason': disposition.reason}
+            return result
         finally:
             selector.close()
             if cleanup is not None:
                 cleanup()
-            if process.poll() is None:
-                # Only this owned process group; no provider-session deletion.
-                try: os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError: pass
-                process.wait(timeout=5)
+            if disposition is None:
+                # Only this owned process tree; no provider-session deletion.
+                if process.poll() is None:
+                    custody.terminate()
+                    process.wait(timeout=5)
+                else:
+                    custody.release()
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream and not stream.closed: stream.close()

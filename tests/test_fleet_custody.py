@@ -81,8 +81,11 @@ def test_empty_census_is_uncertain():
     snap = custody.census()
     assert isinstance(snap, dict) and os.getpid() in snap, "the real census lists this very process"
 
-    empty = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-    with mock.patch.object(custody.subprocess, "run", return_value=empty):
+    blank = mock.MagicMock()
+    blank.__enter__.return_value = blank
+    blank.communicate.return_value = ("", None)
+    blank.returncode = 0
+    with mock.patch.object(custody, "_REAL_POPEN", return_value=blank):
         assert custody.census() is None, "an empty table is a broken census, not an empty machine"
 
     owner = None

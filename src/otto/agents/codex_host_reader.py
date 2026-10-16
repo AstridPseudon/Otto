@@ -18,6 +18,8 @@ import sys
 import time
 from typing import Any
 
+from herzchen.fleet.custody import Custody
+
 # Independently qualified initialize/thread-read stdio implementations. A new
 # version/path alone does not admit a binary; its exact digest must be qualified.
 SUPPORTED_CLI_SHA256 = frozenset({
@@ -192,6 +194,7 @@ class CodexAppServerThreadReader:
         if not isinstance(issued_session, str) or not issued_session or len(issued_session) > 256 or any(c.isspace() or ord(c) < 32 for c in issued_session):
             _fail("issued_session_missing_or_malformed")
         process = None
+        custody = None
         deadline = time.monotonic() + self.timeout_seconds
         if _deadline is not None: deadline = min(deadline, _deadline)
         try:
@@ -210,9 +213,10 @@ class CodexAppServerThreadReader:
                     _fail("launcher_size_limit")
             if digest.hexdigest() not in SUPPORTED_CLI_SHA256:
                 _fail("unsupported_cli_identity")
-            process = subprocess.Popen([self.launcher, "app-server", "--listen", "stdio://"],
+            custody = Custody.launch([self.launcher, "app-server", "--listen", "stdio://"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                cwd="/private/tmp", close_fds=True, start_new_session=True, bufsize=0)
+                cwd="/private/tmp", close_fds=True, bufsize=0)
+            process = custody.process
             rpc = _StdioRPC(process, deadline)
             rpc.send({"id": 1, "method": "initialize", "params": {
                 "clientInfo": {"name": "otto-exact-session-reader", "version": "0.1"},
@@ -246,5 +250,11 @@ class CodexAppServerThreadReader:
                     if not lookup_failed:
                         raise HostThreadReadError("app_server_cleanup_failed") from None
                 finally:
+                    if custody is not None:
+                        # Sweep leftovers after the reap; the disposition never changes the propagating error.
+                        try:
+                            custody.release()
+                        except Exception:
+                            pass
                     process.stdin.close()
                     process.stdout.close()

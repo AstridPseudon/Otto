@@ -59,9 +59,11 @@ class CodexStream:
         self.turn_completed = False
         self.usage: Optional[Mapping[str, Any]] = None
         self.model = model
+        self.usage_stream = UsageStream("codex-host")
 
     def feed(self, raw: Any) -> tuple:
         line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        self.usage_stream.feed(line)
         try:
             event = json.loads(line)
         except (TypeError, ValueError):
@@ -85,13 +87,14 @@ class CodexStream:
     def finish(self, exit_code: Optional[int]) -> TurnResult:
         if exit_code == 0 and self.session_id:
             outcome = "succeeded"
-        elif exit_code == 0 or exit_code is None:
-            outcome = "unknown"
+        elif exit_code is None or exit_code <= 0:
+            outcome = "unknown"     # a negative code is a signal: interrupted, never a failure
         else:
             outcome = "failed"
         usage = ({"state": "observed", "metrics": dict(self.usage)} if self.usage
                  else {"state": "unavailable", "reason": "turn.completed carried no usage"})
-        return TurnResult(self.session_id, self.turn_id, outcome, usage=usage, exit_status=exit_code)
+        return TurnResult(self.session_id, self.turn_id, outcome, usage=usage,
+                          usage_capture=self.usage_stream.snapshot(), exit_status=exit_code)
 
 
 class CodexHost(HostKind):

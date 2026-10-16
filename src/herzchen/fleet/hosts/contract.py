@@ -21,6 +21,8 @@ import re
 import subprocess
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
+from ..custody import Custody
+
 OUTCOMES = frozenset({"succeeded", "failed", "unknown"})
 EVENT_KINDS = frozenset({"session", "turn", "done", "other"})
 
@@ -313,15 +315,19 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
     plan = host.launch(spec, fence)
     parser = host.make_parser(spec)
     events: list = []
-    process = process_factory(list(plan.command()), cwd=plan.cwd, env={**os.environ, **plan.env},
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              start_new_session=True)
+    custody = Custody.launch(list(plan.command()), popen=process_factory, cwd=plan.cwd,
+                             env={**os.environ, **plan.env},
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = custody.process
     try:
         stdout, stderr = process.communicate(plan.stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
+        custody.terminate()
+        if process.poll() is None:
+            process.kill()      # our unreaped leader: a direct kill is safe even when the census is blind
         process.communicate()
         return TurnResult(None, None, "unknown", error="host process timed out", plan=plan)
+    custody.release()
     code = process.returncode
     try:
         for line in stdout.splitlines():
