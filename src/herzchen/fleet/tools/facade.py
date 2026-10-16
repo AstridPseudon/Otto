@@ -1,0 +1,157 @@
+"""The tool facade: what a worker may call, with its assignment taken from its token and never from its arguments."""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping, Sequence
+from typing import Protocol
+
+from .rules import CHECK, DONE, TASK, FeedbackLedger, ToolRuleError, ToolSpec
+from .tokens import TokenBook, TokenError
+
+__all__ = ["OwnerPort", "ToolFacade"]
+
+_STRIPPED_KEYS = frozenset({"accepted", "acceptance", "counts_as_acceptance"})
+_MAX_DEPTH = 32
+
+
+class OwnerPort(Protocol):
+    """The owner's side of a tool call. The facade never sees the owner's internals."""
+
+    def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
+        ...
+
+
+def _refusal(code: str, detail: str) -> dict:
+    return {"ok": False, "error": code, "detail": detail}
+
+
+def _json_safe(value: object, depth: int = 0) -> bool:
+    if depth > _MAX_DEPTH:
+        return False
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_json_safe(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _json_safe(item, depth + 1) for key, item in value.items())
+    return False
+
+
+def _clean(node: object) -> object:
+    """A copy with acceptance-claiming keys removed at every depth."""
+
+    if isinstance(node, dict):
+        return {key: _clean(value) for key, value in node.items() if key not in _STRIPPED_KEYS}
+    if isinstance(node, list):
+        return [_clean(item) for item in node]
+    return node
+
+
+class ToolFacade:
+    """Lists and calls the tools a token's role may use. Caller mistakes return refusals; nothing raises."""
+
+    def __init__(
+        self,
+        tools: Sequence[ToolSpec],
+        roles: Mapping[str, Sequence[str]],
+        owner: OwnerPort,
+        book: TokenBook,
+        ledger: FeedbackLedger,
+    ) -> None:
+        by_name: dict[str, ToolSpec] = {}
+        for spec in tools:
+            if not isinstance(spec, ToolSpec):
+                raise ToolRuleError("tools must be ToolSpec instances")
+            if spec.name in by_name:
+                raise ToolRuleError("tool names must be distinct")
+            by_name[spec.name] = spec
+        role_tools: dict[str, tuple[ToolSpec, ...]] = {}
+        for role, names in roles.items():
+            if not isinstance(role, str) or not role:
+                raise ToolRuleError("role names must be non-empty strings")
+            specs = []
+            for name in names:
+                if not isinstance(name, str) or name not in by_name:
+                    raise ToolRuleError("a role lists a tool that does not exist")
+                specs.append(by_name[name])
+            role_tools[role] = tuple(specs)
+        self._role_tools = role_tools
+        self._owner = owner
+        self._book = book
+        self._ledger = ledger
+
+    def listing(self, token: object) -> list[dict] | dict:
+        """The tools the token's role may call, in the role's order. A bad token returns a refusal."""
+
+        try:
+            grant = self._book.resolve(token)
+        except TokenError:
+            return _refusal("unauthorized", "unknown token")
+        return [
+            {"name": spec.name, "kind": spec.kind, "description": spec.description, "args": list(spec.args)}
+            for spec in self._role_tools.get(grant.role, ())
+        ]
+
+    def call(self, token: object, tool: object, args: object = None) -> dict:
+        """Run one tool for the token's assignment and shape the reply by the tool's kind."""
+
+        try:
+            grant = self._book.resolve(token)
+        except TokenError:
+            return _refusal("unauthorized", "unknown token")
+
+        spec = self._allowed(grant.role, tool)
+        if spec is None:
+            return _refusal("forbidden", "tool is not available to this worker")
+
+        if args is None:
+            args = {}
+        if not isinstance(args, Mapping):
+            return _refusal("bad_args", "arguments must be a mapping")
+        for key, value in args.items():
+            if not isinstance(key, str) or key not in spec.args:
+                return _refusal("bad_args", "argument is not declared for this tool")
+            if not _json_safe(value):
+                return _refusal("bad_args", "argument value must be JSON data")
+        payload = json.loads(json.dumps(dict(args)))
+
+        assignment = grant.assignment
+        try:
+            reply = self._owner.call(spec.operation, assignment, payload, feedback=(spec.kind == CHECK))
+            if not isinstance(reply, Mapping):
+                raise TypeError("owner reply must be a mapping")
+            result = _clean(json.loads(json.dumps(reply)))
+            if spec.kind == TASK:
+                return {"ok": True, "tool": spec.name, "kind": TASK, "result": result}
+            if spec.kind == CHECK:
+                self._ledger.record(assignment, spec.name, reply)
+                return {
+                    "ok": True,
+                    "tool": spec.name,
+                    "kind": CHECK,
+                    "feedback": True,
+                    "accepted": False,
+                    "result": result,
+                }
+            return {
+                "ok": True,
+                "tool": spec.name,
+                "kind": DONE,
+                "submitted": True,
+                "accepted": False,
+                "result": result,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": "owner_unavailable", "detail": type(exc).__name__}
+
+    def _allowed(self, role: str, tool: object) -> ToolSpec | None:
+        if not isinstance(tool, str):
+            return None
+        for spec in self._role_tools.get(role, ()):
+            if spec.name == tool:
+                return spec
+        return None
