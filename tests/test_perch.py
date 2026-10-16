@@ -23,7 +23,7 @@ spec = importlib.util.spec_from_file_location("perch_report", BOOTSTRAP / "perch
 perch_report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(perch_report)
 
-NAMES = ("staging-ready", "no-leaked-process", "timeline-events", "labs-left-behind", "pool-units-within-limit")
+NAMES = ("staging-ready", "no-leaked-process", "timeline-events", "labs-left-behind", "harness-pool-within-limit")
 
 
 def clean_raw(root):
@@ -85,7 +85,7 @@ SEEDED_FAULTS = {
     "timeline-events": lambda raw: edit(raw, "events.tsv", lambda t: "".join(
         line for line in t.splitlines(keepends=True) if "check-passed" not in line)),
     "labs-left-behind": lambda raw: edit(raw, "leftovers.txt", lambda t: t + "worktree /x/labs/canary-refused\n"),
-    "pool-units-within-limit": lambda raw: edit(raw, "samples.jsonl", lambda t: t.replace('"pool_units": 1', '"pool_units": 2')),
+    "harness-pool-within-limit": lambda raw: edit(raw, "samples.jsonl", lambda t: t.replace('"pool_units": 1', '"pool_units": 2')),
 }
 
 
@@ -224,7 +224,7 @@ class FakeRunTests(unittest.TestCase):
 EXPECTED_RED = {
     "leak": {"no-leaked-process"},
     "lab": {"labs-left-behind", "timeline-events"},
-    "pool": {"pool-units-within-limit"},
+    "pool": {"harness-pool-within-limit"},
     "timeline": {"timeline-events"},
     "staging": {"staging-ready", "timeline-events"},
 }

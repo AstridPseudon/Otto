@@ -230,7 +230,7 @@ def assertions(raw):
 
     limit = config.get("pool_limit")
     peak = pool_units_peak(raw)
-    add("pool-units-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
+    add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
         "peak %s of limit %s" % (peak, limit))
     return results
 
