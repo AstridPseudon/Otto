@@ -202,6 +202,19 @@ class OtToSaveTests(unittest.TestCase):
         self.assertEqual(sorted(by_title), ["Plan A two", "Plan B"])
         self.assertEqual(by_title["Plan B"].lifecycle.value, "pending")
 
+    def test_partial_sheet_update_resolves_id_and_preserves_existing_task_fields(self):
+        created = self._created()
+        port = self.portfolio.operations.sheet_port
+        first = port.apply(ResourceRef.from_dict(created["project_ref"]),
+                           {"tasks": [{"id": "A", "title": "Alpha", "body": "Keep this"}]},
+                           logical_request_key="partial-sheet-first")
+        second = port.apply(first.project.ref, {"tasks": [{"id": "A", "lifecycle": "active"}]},
+                            logical_request_key="partial-sheet-second")
+        task = self.owner.graph.current(second.mappings["A"])
+        self.assertEqual(task.title, "Alpha")
+        self.assertEqual(task.payload["body"], "Keep this")
+        self.assertEqual(task.lifecycle.value, "active")
+
     def test_save_from_an_old_revision_after_a_newer_one_is_refused_with_a_diff(self):
         created = self._created(_task("A"), title="Plan one")
         newer = self._save(_file(_task("A", title="Plan A two"), title="Plan two",

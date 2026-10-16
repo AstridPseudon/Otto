@@ -955,7 +955,9 @@ class _ProjectBatchesEngine:
         title = raw.get("title", raw.get("name"))
         if not isinstance(title, str) or not title.strip():
             raise WorkValidationError(f"task[{index}] title must be non-blank")
-        return {"schema_revision": SCHEMA_REVISION, "kind": "task", "id": task_id, "title": title, "name": raw.get("name", title), "alias": raw.get("alias", task_id), "aliases": [raw.get("alias", task_id)], "parent": project.ref, "project_ref": project.ref, "dependencies": [], "lifecycle": Lifecycle.PENDING.value, "readiness": {"status": "not-evaluated", "ready": False, "dispatch": False}, "fields": {}, "metadata": {}, "custom": {}, "documents": [], "results": [], "order": index, "body": ""}
+        alias = raw.get("alias") or raw.get("id") or task_id
+        aliases = list(dict.fromkeys(value for value in (alias, raw.get("id")) if value))
+        return {"schema_revision": SCHEMA_REVISION, "kind": "task", "id": task_id, "title": title, "name": raw.get("name", title), "alias": alias, "aliases": aliases, "parent": project.ref, "project_ref": project.ref, "dependencies": [], "lifecycle": Lifecycle.PENDING.value, "readiness": {"status": "not-evaluated", "ready": False, "dispatch": False}, "fields": {}, "metadata": {}, "custom": {}, "documents": [], "results": [], "order": index, "body": ""}
 
     def _resolve_task_ref(self, value: Any, local_refs: Mapping[str, ResourceRef], project: WorkRecord) -> ResourceRef:
         if isinstance(value, str) and value in local_refs:
