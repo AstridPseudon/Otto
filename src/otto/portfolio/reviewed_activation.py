@@ -14,7 +14,11 @@ from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
 from herzchen.domains.assessment import AssessmentModule
+from herzchen.domains.work.admission import admitted_revision
+from herzchen.domains.work.model import WorkError
 from herzchen.kernel import LimitService
+
+from .admit import admit_revision
 
 
 SCHEMA = "otto.reviewed-activation.v1"
@@ -120,6 +124,33 @@ class ReviewedPlanActivation:
         if record is None or (ref.revision is not None and record.ref != ref):
             raise ReviewedActivationError(f"{field} is missing or stale")
         return record
+
+    def _reviewed_task(self, value: Any) -> Any:
+        """The task at the revision the owner policy names.
+
+        Admission stamps the record one revision on, so a replay finds the pinned revision behind the
+        current one. The pin still holds when the stamp admits exactly that revision.
+        """
+        try:
+            return self._current_work(value, "task_ref")
+        except ReviewedActivationError:
+            ref = _ref(value, "task_ref")
+            record = self.owner.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
+            if record is None or admitted_revision(record.payload) != ref.revision:
+                raise
+            return record
+
+    def _admit(self, task: Any, revision: str | None, review_ref: Any, request_key: str) -> Any:
+        """Admission is the one gate: the reviewed revision is pinned here, and no task is created again.
+
+        A task the owner wrote is already admitted by being made, so this writes nothing for it.
+        """
+        try:
+            admit_revision(self.owner, task_ref=task.ref, revision=revision or task.ref.revision,
+                           review_ref=_ref(review_ref, "review_ref"), request_key=f"{request_key}:admit:{task.ref.id}")
+        except WorkError as exc:
+            raise ReviewedActivationError(f"task {task.ref.id} cannot be admitted: {exc}") from exc
+        return self._current_work(ResourceRef(task.ref.authority, task.ref.kind, task.ref.id), "task_ref")
 
     def _read_pin(self, value: Any, field: str) -> tuple[ResourceRef, Any, Mapping[str, Any]]:
         ref = _ref(value, field)
@@ -368,10 +399,12 @@ class ReviewedPlanActivation:
         criteria = []
         if pairs:
             for task_ref, criterion_ref in pairs:
-                task = self._current_work(task_ref, "task_ref")
+                task = self._reviewed_task(task_ref)
                 criterion = self.owner.store.consumer().get_identity(criterion_ref)
-                if task.payload.get("project_ref") != project.ref.to_dict() or criterion is None or criterion.ref != criterion_ref:
+                # A task records its project without a revision, so compare the identity, not the pin.
+                if not _same(task.payload.get("project_ref"), project.ref) or criterion is None or criterion.ref != criterion_ref:
                     raise ReviewedActivationError("owner policy task/criterion pair is stale or foreign")
+                task = self._admit(task, task_ref.revision, review_ref, request_key)
                 tasks.append(task.ref.to_dict()); criteria.append(criterion_ref.to_dict())
         else:
             assessment = AssessmentModule(self.owner.store, actor=self.owner.owner_actor,
@@ -385,6 +418,7 @@ class ReviewedPlanActivation:
                     fields={"activation_key": request_key, "activation_index": index,
                             "acceptance": spec.get("acceptance", spec.get("criteria", []))},
                     logical_request_key=f"{request_key}:task:{stable}", actor=self.owner.owner_actor)
+                task = self._admit(task, task.ref.revision, review_ref, request_key)
                 criterion_spec = spec.get("criterion", {"id": f"{stable}-criterion", "definition": spec.get("acceptance", title)})
                 scope = assessment.declare_scope(f"{request_key}:scope:{stable}", parent_obligation=task.ref,
                     protocol="otto-reviewed-plan", criteria=[criterion_spec], review_required=True,
