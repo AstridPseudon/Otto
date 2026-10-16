@@ -107,7 +107,7 @@ class Custody:
         self.leader_birth = leader_birth
         self.known: dict = dict(members)
         self.latch_path = latch_path
-        self._census = census_fn
+        self._census = lambda: census_fn() or None     # an empty census is no census
         self.doubt = doubt
 
     # -- birth -------------------------------------------------------------------------------
