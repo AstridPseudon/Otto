@@ -149,8 +149,8 @@ ids_of() {  # OUT FILE
 # otto_gate_exit (beside this script): a run is over when pytest has reported, even if a test leaked a thread.
 ( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit" \
     "$HEAVY" --weight 1 --purpose "$TASK check" -- \
-    bash -c "$CHECK" ) > "$G/check.txt" 2>&1 || fail "the task's check failed: $CHECK (output: $G/check.txt)"
-log "check passed: $CHECK"
+    bash -c "$CHECK" ) > "$G/check.txt" 2>&1 || CHECK_FAILED=1
+[ -n "${CHECK_FAILED:-}" ] || log "check passed: $CHECK"
 
 # a. Sweep
 CHANGED_SRC="$(gitl diff --name-only "$BASE...$BRANCH" -- src | grep '\.py$' || true)"
@@ -221,6 +221,22 @@ reproduces() {  # FILE ID
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $TASK $flaky" >> "$OPS_DIR/flaky.txt"
   return 1
 }
+
+# A check that failed only on tests canon fails too (the same ids, red on BASE) is not refused for them:
+# they are pre-existing, as in the sweep, and go to canon-reds.txt for REDS. Anything else refuses
+# (16 Oct: canon's manager-loop red refused CHANGE, A4 and COMPOSEFLEET until the check was narrowed).
+if [ -n "${CHECK_FAILED:-}" ]; then
+  check_ids="$(ids_of "$G/check.txt" check)"
+  [ -n "$check_ids" ] || fail "the task's check failed: $CHECK (output: $G/check.txt)"
+  for id in $check_ids; do
+    f="${id%%::*}"
+    case "$id" in *::exit-*) fail "the task's check failed: $CHECK (output: $G/check.txt)" ;; esac
+    gitl cat-file -e "$BASE:$f" 2>/dev/null || fail "the task's check failed: $id (output: $G/check.txt)"
+    ids_of "$(baseline_out "$f")" "$f" | grep -qxF "$id" || fail "the task's check failed: $id (output: $G/check.txt)"
+  done
+  for id in $check_ids; do echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $TASK $id (check; also red on BASE)" >> "$OPS_DIR/canon-reds.txt"; done
+  log "check passed except failures also red on BASE: $(echo $check_ids) (listed in ops/canon-reds.txt)"
+fi
 
 NEW_FAILS=""
 for f in $SWEEP; do
