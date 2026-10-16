@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from .contract import (HostContractError, HostEvent, HostKind, McpGrant, TurnResult, TurnSpec)
+from .contract import (ContinuationRequest, HostContractError, HostEvent, HostKind, McpGrant, TurnResult, TurnSpec)
 
 MAX_LINE = 256 * 1024
 MAX_STREAM = 2 * 1024 * 1024
@@ -342,6 +343,13 @@ class ClaudeHost(HostKind):
     profiles = frozenset({"workspace-write"})
     option_names = frozenset({"tools", "allowed_tools", "max_turns", "state_root", "allow_subprocesses",
                               "extra_write_roots", "auth_lock", "exec_allow"})
+
+    def prepare_continuation(self, spec: TurnSpec, request: ContinuationRequest) -> TurnSpec:
+        if spec.initializer or spec.options.get("allow_subprocesses", False) or "Bash" in self.tools_for(spec):
+            raise HostContractError("Claude continuation requires a command-free worker turn")
+        prompt = (spec.prompt + "\n\n[Landing log from the prior settled attempt]\n"
+                  + request.landing_log + "\n[End landing log]")
+        return replace(spec, prompt=prompt, session=request.session_id)
 
     @staticmethod
     def tools_for(spec: TurnSpec) -> tuple:

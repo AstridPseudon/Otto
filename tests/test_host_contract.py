@@ -598,7 +598,6 @@ class FakeHarness(Workspace):
         self.assertEqual(again.outcome, "succeeded")
         self.assertIn("--resume", again.plan.argv)
         self.assertEqual(again.plan.argv[again.plan.argv.index("--model") + 1], "fake-large")
-
     def test_run_turn_reports_a_failed_process_without_inventing_success(self):
         H = hosts()
         script = Path(self.root, "dies")
@@ -635,6 +634,97 @@ class FakeHarness(Workspace):
             H.HostRegistry(NotAHost())
         with self.assertRaises(H.HostContractError):
             H.HostRegistry(FakeHost(), FakeHost())          # one kind, one implementation
+
+
+# ---------------------------------------------------------------------------
+# continued worker sessions
+# ---------------------------------------------------------------------------
+class ContinuationContract(Workspace):
+    def test_claude_continuation_uses_exact_parked_session_and_landing_log(self):
+        H = hosts()
+        C = importlib.import_module("herzchen.fleet.hosts.contract")
+        W, M = otto_tools()
+        spec = H.TurnSpec(executable="/L/claude", workspace=self.root, prompt="retry this work",
+                          model="claude-sonnet-5-5", reasoning="high", profile="workspace-write",
+                          session="native-parked", options={"tools": W, "allowed_tools": M,
+                          "state_root": self.state})
+        request = C.ContinuationRequest(session_id="native-parked", workspace=self.root,
+                         attempt_id="attempt-1", landing_log="merge conflict: exact detail\nnext line",
+                         settled=True, landing_outcome="conflict")
+        authorized = []
+        captured = {}
+        def fake_run_turn(host, resumed, **kwargs):
+            captured["spec"] = resumed
+            captured["plan"] = host.launch(resumed, kwargs.get("fence"))
+            return object()
+        with mock.patch("herzchen.fleet.hosts.contract.run_turn", fake_run_turn):
+            result = C.run_continuation(H.ClaudeHost(), spec, request,
+                                        authorize=lambda r: authorized.append(r.attempt_id) or True)
+        self.assertIsNotNone(result)
+        self.assertEqual(authorized, ["attempt-1"])
+        plan = captured["plan"]
+        self.assertEqual(plan.cwd, self.root)
+        self.assertEqual(plan.session, "native-parked")
+        self.assertEqual(plan.argv[-2:], ("--resume", "native-parked"))
+        frame = json.loads(plan.stdin.decode())
+        admitted = frame["message"]["content"][0]["text"]
+        self.assertIn(request.landing_log, admitted)
+        self.assertIn("[Landing log from the prior settled attempt]", admitted)
+
+    def test_authorization_is_fresh_and_owner_enforces_retry_bound(self):
+        H = hosts()
+        C = importlib.import_module("herzchen.fleet.hosts.contract")
+        W, M = otto_tools()
+        spec = H.TurnSpec(executable="/L/claude", workspace=self.root, prompt="p", model="m",
+                          reasoning="high", profile="workspace-write", session="s",
+                          options={"tools": W, "allowed_tools": M, "state_root": self.state})
+        req = C.ContinuationRequest("s", self.root, "attempt", "failed", True, "failed")
+        calls, launches = [], []
+        def authorize(request):
+            calls.append(request.attempt_id)
+            return len(calls) < 2
+        def fake_run_turn(*args, **kwargs):
+            launches.append(1)
+            return object()
+        with mock.patch("herzchen.fleet.hosts.contract.run_turn", fake_run_turn):
+            C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize)
+            with self.assertRaises(H.HostContractError):
+                C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize)
+        self.assertEqual(calls, ["attempt", "attempt"])
+        self.assertEqual(launches, [1])
+
+    def test_unsettled_and_mismatched_requests_refuse_before_authorize(self):
+        H = hosts()
+        C = importlib.import_module("herzchen.fleet.hosts.contract")
+        W, M = otto_tools()
+        spec = H.TurnSpec(executable="/L/claude", workspace=self.root, prompt="p", model="m",
+                          reasoning="high", profile="workspace-write", session="s",
+                          options={"tools": W, "allowed_tools": M, "state_root": self.state})
+        authorize = mock.Mock(return_value=True)
+        with self.assertRaises(H.HostContractError):
+            C.run_continuation(H.ClaudeHost(), spec, C.ContinuationRequest(
+                "s", self.root, "a", "log", False, "failed"), authorize=authorize)
+        with self.assertRaises(H.HostContractError):
+            C.run_continuation(H.ClaudeHost(), spec, C.ContinuationRequest(
+                "other", self.root, "a", "log", True, "failed"), authorize=authorize)
+        with self.assertRaises(H.HostContractError):
+            C.run_continuation(H.ClaudeHost(), spec, C.ContinuationRequest(
+                "s", self.extra, "a", "log", True, "failed"), authorize=authorize)
+        self.assertEqual(authorize.call_count, 0)
+
+    def test_claude_continuation_refuses_command_capable_specs(self):
+        H = hosts()
+        C = importlib.import_module("herzchen.fleet.hosts.contract")
+        _, manager_tools = otto_tools()
+        spec = H.TurnSpec(executable="/L/claude", workspace=self.root, prompt="p", model="m",
+                          reasoning="high", profile="workspace-write", session="s",
+                          options={"tools": manager_tools, "allowed_tools": manager_tools,
+                                   "state_root": self.state, "allow_subprocesses": True})
+        request = C.ContinuationRequest("s", self.root, "a", "failed log", True, "failed")
+        authorize = mock.Mock(return_value=True)
+        with self.assertRaises(H.HostContractError):
+            C.run_continuation(H.ClaudeHost(), spec, request, authorize=authorize)
+        self.assertEqual(authorize.call_count, 0)
 
 
 # ---------------------------------------------------------------------------
