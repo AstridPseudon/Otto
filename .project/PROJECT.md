@@ -33,6 +33,14 @@ The focused manager-brief projection regression failed before implementation on 
 
 Astra reviewed `4dee01c..task/SL1` before merge and found no concrete defects. It confirmed the brief projection uses the canonical adopted revision, the new replacement regression covers newer drafts and foreign responsibility directions, the removed adapter has no retained production caller, DueRecord delivery/wake and canonical resolution are unchanged, and the SL4 removals remain absent. The manager accepted the review without additional changes. 
 
+## SL8 worker evidence
+
+Added `otto status --friction`, generated from the same injected authorized Events reader used by the Events views. The query is scoped to the projects in the selected portfolio, uses a fixed 30-day window, and reads at most 200 rows. If the reader/grant is unavailable, denied, behind, or returns another page, counts are unavailable rather than treated as zero. Explicit evidence supports counts for questions, refusals, `next_action`, reworks, unknown effects, and answer waits; heavy seconds and tokens per accepted task remain unavailable when their retained measurements are absent. No manual friction state or deletion was introduced.
+
+Changed files: `src/otto/portfolio/cli.py`, `src/otto/portfolio/observability_views.py`, `tests/test_status_friction.py`, `.project/PROJECT.md`.
+
+The focused CLI regression was added before implementation and passes: `/opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_status_friction.py` (2 passed). It seeds retained event rows for every friction category and verifies the portfolio project scope, grant forwarding, bounded limit, and unavailable values for denied/missing measurements. No tests were weakened. No gate-only checks were needed for this task.
+
 ## Questions for the orchestrator
 
 1. **SL5 Vision / Native5:** Do you want these surfaces kept or retired? The code scan shows live production composition: Vision is injected in `install/controller/shared_operating_service.py:399-413`; Native5 packets are imported by `shared_operating_service.py:157,365,368,389,589` and `scoped_client_service.py:41`, with an additional prepared-context route at `install/controller/prepared_context_hold.py:50`. The finite Vision CLI and manager read paths also remain. Code evidence favors keeping both pending actual Store-event usage data. Obtaining that event data requires owner access, which this session is explicitly forbidden to start or query. I will leave code unchanged until your keep/retire decision.
