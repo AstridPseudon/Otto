@@ -273,9 +273,9 @@ def clean_stage2_raw(root):
         "stage2-manager-start.json": {"outcome": "pending"},
         "stage2-repository-map.json": {"repositories": {"toy": "/tmp/perch/canon"}},
         "stage2-owner-labs-before.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [],
-                                          "labs": [], "unexpected": [], "exists": False},
+                                          "labs": [], "controls": {}, "unexpected": [], "exists": False},
         "stage2-owner-labs-after.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [],
-                                         "labs": [], "unexpected": [], "exists": True},
+                                         "labs": [], "controls": {}, "unexpected": [], "exists": True},
     }
     for name, value in extra.items():
         (raw / name).write_text(json.dumps(value), encoding="utf-8")
@@ -289,6 +289,20 @@ def clean_stage2_raw(root):
 
 def statuses(raw):
     return {r["name"]: r["status"] for r in perch_report.assertions(Path(raw))}
+
+
+def seed_retained_stage2_owner_lab(raw):
+    branch = "branch-key"
+    task = branch + "/task-C"
+    patch(raw, "stage2-owner-labs-after.json", lambda value: value.update(
+        entries=[branch], labs=[task], controls={
+            branch + "/.creating": [], branch + "/.landed": [],
+            branch + "/.locks": [{"name": "task-A.lock", "kind": "file"},
+                                   {"name": "task-C.lock", "kind": "file"}]}))
+    (raw / "stage2-killed-worker.json").write_text(json.dumps({
+        "pid": 101, "owner_pid": 202,
+        "marker": "/tmp/perch/canon.otto-labs/" + task + "/.perch-worker-C.pid"}), encoding="utf-8")
+    return task
 
 
 def edit(raw, name, fn):
@@ -1206,6 +1220,40 @@ class AssertionKindTests(unittest.TestCase):
             if task["id"] == "C")["dispatch"].update(state="landed"))
         self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
 
+    def test_stage_two_control_directories_are_recorded_and_stale_markers_fail(self):
+        root = self.tmp / "control-tree" / "canon.otto-labs"
+        namespace = root / "branch-key"
+        for name in (".creating", ".landed", ".locks"):
+            (namespace / name).mkdir(parents=True)
+        (namespace / ".locks" / "task-A.lock").touch()
+        snapshot = perch_report.stage2_owner_labs_snapshot(root)
+        self.assertEqual(snapshot["labs"], [])
+        self.assertEqual(snapshot["controls"]["branch-key/.creating"], [])
+        self.assertEqual(snapshot["controls"]["branch-key/.locks"],
+                         [{"name": "task-A.lock", "kind": "file"}])
+        (namespace / ".creating" / "task-A").touch()
+        self.assertEqual(perch_report.stage2_owner_labs_snapshot(root)["controls"]["branch-key/.creating"],
+                         [{"name": "task-A", "kind": "file"}])
+        for label, control, entry in (
+            ("creating", ".creating", {"name": "task-A", "kind": "file"}),
+            ("landed", ".landed", {"name": "task-B", "kind": "file"}),
+            ("bad-lock", ".locks", {"name": "task-B", "kind": "file"}),
+        ):
+            with self.subTest(label=label):
+                raw = clean_stage2_raw(self.tmp / label)
+                seed_retained_stage2_owner_lab(raw)
+                self.assertEqual(statuses(raw)["labs-left-behind"], "pass")
+                patch(raw, "stage2-owner-labs-after.json", lambda value: value["controls"][
+                    "branch-key/" + control].append(entry))
+                detail = next(row["detail"] for row in perch_report.assertions(raw)
+                              if row["name"] == "labs-left-behind")
+                self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
+                self.assertIn(entry["name"], detail)
+        raw = clean_stage2_raw(self.tmp / "missing-control-contents")
+        seed_retained_stage2_owner_lab(raw)
+        patch(raw, "stage2-owner-labs-after.json", lambda value: value.pop("controls"))
+        self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
+
 
 class FakePresenceLauncherTests(unittest.TestCase):
     def test_fake_owner_launcher_injects_approval_before_product_cli(self):
@@ -1900,6 +1948,43 @@ class RenderTests(unittest.TestCase):
         out = self.tmp / "report.md"
         perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
         self.assertIn("fake_worker.py", out.read_text(encoding="utf-8"))
+
+    def test_stage_two_leftovers_summary_shows_owner_snapshot_and_retained_C(self):
+        raw = clean_stage2_raw(self.tmp / "owner-summary")
+        retained = seed_retained_stage2_owner_lab(raw)
+        (raw / "timeline.json").write_text(json.dumps({"error": "no Store file", "tasks": []}), encoding="utf-8")
+        self.assertEqual(statuses(raw)["labs-left-behind"], "pass")
+        out = self.tmp / "report.md"
+        perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
+        section = out.read_text(encoding="utf-8").split("## Labs and scratch left over\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("harness leftovers: none", section)
+        self.assertIn("owner lab root before the first harness step", section)
+        self.assertIn("owner lab root after down", section)
+        self.assertIn(retained, section)
+        self.assertIn("expected retained C lab: worker killed; task pending, dispatch unknown", section)
+        self.assertIn("branch-key/.locks", section)
+        self.assertIn("task-A.lock", section)
+        patch(raw, "stage2-dispatch-status.json", lambda value: next(task for task in value["tasks"]
+            if task["id"] == "C")["dispatch"].update(state="landed"))
+        self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
+        perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
+        section = out.read_text(encoding="utf-8").split("## Labs and scratch left over\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(retained + "` (unexpected)", section)
+        self.assertNotIn("expected retained C lab", section)
+        patch(raw, "stage2-dispatch-status.json", lambda value: next(task for task in value["tasks"]
+            if task["id"] == "C")["dispatch"].update(state="unknown"))
+        def old_snapshot(value):
+            value["labs"].extend(["branch-key/.creating", "branch-key/.landed", "branch-key/.locks"])
+            value.pop("controls")
+        patch(raw, "stage2-owner-labs-after.json", old_snapshot)
+        self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
+        perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
+        section = out.read_text(encoding="utf-8").split("## Labs and scratch left over\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(retained, section)
+        self.assertIn("expected retained C lab", section)
+        self.assertIn("branch-key/.creating`: contents not recorded", section)
+        self.assertIn("owner task labs after down:", section)
+        self.assertNotIn("branch-key/.creating` (unexpected)", section)
 
     def test_stage_two_report_records_held_receipt_and_same_key_retry(self):
         raw = clean_raw(self.tmp / "raw")

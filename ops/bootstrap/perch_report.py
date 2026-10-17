@@ -482,9 +482,10 @@ def cmd_stage2_observations(args):
 
 
 def stage2_owner_labs_snapshot(root):
-    """List actual task labs below each owner branch namespace."""
+    """List task labs and the contents of the owner's control directories."""
     root = Path(root)
-    result = {"root": str(root), "exists": root.exists(), "entries": [], "labs": [], "unexpected": []}
+    result = {"root": str(root), "exists": root.exists(), "entries": [], "labs": [],
+              "controls": {}, "unexpected": []}
     if not root.exists():
         return result
     if not root.is_dir():
@@ -499,9 +500,113 @@ def stage2_owner_labs_snapshot(root):
             relative = str(child.relative_to(root))
             if child.is_symlink() or not child.is_dir():
                 result["unexpected"].append(relative)
+            elif child.name in {".creating", ".landed", ".locks"}:
+                result["controls"][relative] = [
+                    {"name": entry.name, "kind": ("symlink" if entry.is_symlink() else
+                     "directory" if entry.is_dir() else "file" if entry.is_file() else "other")}
+                    for entry in sorted(child.iterdir())]
             else:
                 result["labs"].append(relative)
     return result
+
+
+def stage2_owner_lab_evidence(raw):
+    """Judge owner lab snapshots and describe the same evidence for the report."""
+    mapped = (read_json(raw / "stage2-repository-map.json", {}) or {}).get("repositories", {}).get("toy")
+    expected_root = str(mapped) + ".otto-labs" if isinstance(mapped, str) and mapped else None
+    activation = read_json(raw / "stage2-activation.json", {}) or {}
+    task_refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
+    c_task_id = (task_refs.get("C") or {}).get("id")
+    killed_marker = (read_json(raw / "stage2-killed-worker.json", {}) or {}).get("marker")
+    final_status = read_json(raw / "stage2-dispatch-status.json", {}) or {}
+    c_status = next((task for task in final_status.get("tasks") or []
+                     if isinstance(task, dict) and task.get("id") == "C"), {})
+    retained_c = None
+    if (expected_root and c_task_id and isinstance(killed_marker, str)
+            and Path(killed_marker).name == ".perch-worker-C.pid"
+            and (c_status.get("dispatch") or {}).get("state") == "unknown"
+            and c_status.get("lifecycle") == "pending"):
+        try:
+            relative = Path(killed_marker).parent.relative_to(expected_root)
+            if (len(relative.parts) == 2 and relative.name == c_task_id
+                    and all(part not in {".", ".."} for part in relative.parts)):
+                retained_c = str(relative)
+        except ValueError:
+            pass
+
+    failures, summary, retained = [], [], []
+    for label, when in (("before", "before the first harness step"), ("after", "after down")):
+        snapshot_name = "stage2-owner-labs-" + label + ".json"
+        owner_labs = read_json(raw / snapshot_name, {}) or {}
+        if (owner_labs.get("root") != expected_root or not isinstance(owner_labs.get("exists"), bool)
+                or not isinstance(owner_labs.get("entries"), list)
+                or not isinstance(owner_labs.get("labs"), list)
+                or not isinstance(owner_labs.get("unexpected"), list)):
+            failures.append("owner %s lab-root listing missing, incomplete or names another root" % label)
+            summary.append("- owner lab root %s: snapshot missing or incomplete ([raw snapshot](raw/%s))"
+                           % (when, snapshot_name))
+            continue
+        summary.append("- owner lab root %s: `%s` (%s; [raw snapshot](raw/%s))" % (
+            when, expected_root, "present" if owner_labs["exists"] else "absent", snapshot_name))
+        if not owner_labs["exists"] and (owner_labs["entries"] or owner_labs["labs"]
+                                         or owner_labs["unexpected"] or owner_labs.get("controls")):
+            failures.append("owner %s absent lab root has listed entries" % label)
+        failures.extend("owner %s unexpected lab-root entry %s" % (label, name)
+                        for name in owner_labs["unexpected"])
+        task_labs = []
+        for name in owner_labs["labs"]:
+            if (not isinstance(name, str) or len(Path(name).parts) != 2
+                    or any(part in {".", ".."} for part in Path(name).parts)):
+                failures.append("owner %s invalid lab entry %r" % (label, name))
+            elif Path(name).name in {".creating", ".landed", ".locks"}:
+                failures.append("owner %s control directory %s was listed as a lab; its contents were not recorded"
+                                % (label, name))
+                summary.append("- owner control directory %s `%s`: contents not recorded" % (when, name))
+            elif label == "after" and name == retained_c:
+                retained.append("C %s" % name)
+                task_labs.append("`%s` (expected retained C lab: worker killed; task pending, dispatch unknown)" % name)
+            else:
+                failures.append("owner %s lab %s" % (label, name))
+                task_labs.append("`%s` (unexpected)" % name)
+        summary.append("- owner task labs %s: %s" % (when, ", ".join(task_labs) or "none"))
+        controls = owner_labs.get("controls")
+        if not isinstance(controls, dict):
+            if owner_labs["exists"]:
+                failures.append("owner %s control directory contents not recorded" % label)
+                summary.append("- owner control directory contents %s: not recorded" % when)
+            else:
+                summary.append("- owner control directories %s: none (root absent)" % when)
+            controls = {}
+        elif not controls:
+            summary.append("- owner control directories %s: none" % when)
+        for path, contents in sorted(controls.items()):
+            parts = Path(path).parts if isinstance(path, str) else ()
+            if (len(parts) != 2 or parts[0] not in owner_labs["entries"]
+                    or parts[1] not in {".creating", ".landed", ".locks"}
+                    or not isinstance(contents, list)):
+                failures.append("owner %s invalid control directory %r" % (label, path))
+                summary.append("- owner control directory %s: invalid entry %r" % (when, path))
+                continue
+            described = []
+            for entry in contents:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                kind = entry.get("kind") if isinstance(entry, dict) else None
+                if (not isinstance(name, str) or not name or Path(name).name != name
+                        or name in {".", ".."} or kind not in {"file", "directory", "symlink", "other"}):
+                    failures.append("owner %s invalid control entry in %s: %r" % (label, path, entry))
+                    described.append("invalid entry %r" % entry)
+                    continue
+                described.append("`%s` (%s)" % (name, kind))
+                if parts[1] in {".creating", ".landed"}:
+                    failures.append("owner %s stale %s marker %s/%s" % (label, parts[1], path, name))
+                elif kind != "file" or not name.endswith(".lock") or name == ".lock":
+                    failures.append("owner %s unexpected lock control entry %s/%s (%s)" % (
+                        label, path, name, kind))
+            summary.append("- owner control directory %s `%s`: %s" % (
+                when, path, ", ".join(described) or "empty"))
+    detail = ("no unexpected owner labs or stale control markers; retained recovery lab " + ", ".join(retained)
+              if retained else "no owner task labs or stale control markers left")
+    return failures, detail, summary
 
 
 def cmd_stage2_owner_labs(args):
@@ -1759,47 +1864,8 @@ def assertions(raw):
 
     left = read_lines(raw / "leftovers.txt")
     if config.get("stage") == "2":
-        mapped = (read_json(raw / "stage2-repository-map.json", {}) or {}).get("repositories", {}).get("toy")
-        expected_root = str(mapped) + ".otto-labs" if isinstance(mapped, str) and mapped else None
-        activation = read_json(raw / "stage2-activation.json", {}) or {}
-        c_task = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
-        c_task_id = (c_task.get("C") or {}).get("id")
-        killed_marker = (read_json(raw / "stage2-killed-worker.json", {}) or {}).get("marker")
-        final_status = read_json(raw / "stage2-dispatch-status.json", {}) or {}
-        c_status = next((task for task in final_status.get("tasks") or []
-                         if isinstance(task, dict) and task.get("id") == "C"), {})
-        retained_c = None
-        if (expected_root and c_task_id and isinstance(killed_marker, str)
-                and Path(killed_marker).name == ".perch-worker-C.pid"
-                and (c_status.get("dispatch") or {}).get("state") == "unknown"
-                and c_status.get("lifecycle") != "completed"):
-            try:
-                relative = Path(killed_marker).parent.relative_to(expected_root)
-                if (len(relative.parts) == 2 and relative.name == c_task_id
-                        and all(part not in {".", ".."} for part in relative.parts)):
-                    retained_c = str(relative)
-            except ValueError:
-                pass
-        retained = []
-        for label in ("before", "after"):
-            owner_labs = read_json(raw / ("stage2-owner-labs-" + label + ".json"), {}) or {}
-            if (owner_labs.get("root") != expected_root or not isinstance(owner_labs.get("entries"), list)
-                    or not isinstance(owner_labs.get("labs"), list)
-                    or not isinstance(owner_labs.get("unexpected"), list)):
-                left.append("owner %s lab-root listing missing or names another root" % label)
-            else:
-                left.extend("owner %s unexpected lab-root entry %s" % (label, name)
-                            for name in owner_labs["unexpected"])
-                for name in owner_labs["labs"]:
-                    if (not isinstance(name, str) or len(Path(name).parts) != 2
-                            or any(part in {".", ".."} for part in Path(name).parts)):
-                        left.append("owner %s invalid lab entry %r" % (label, name))
-                    elif label == "after" and name == retained_c:
-                        retained.append("C %s" % name)
-                    else:
-                        left.append("owner %s lab %s" % (label, name))
-        lab_detail = ("no unexpected owner labs; retained recovery lab " + ", ".join(retained)
-                      if retained else "no owner task labs left")
+        owner_failures, lab_detail, _ = stage2_owner_lab_evidence(raw)
+        left.extend(owner_failures)
     else:
         lab_detail = "no lab, lab branch or lab folder left"
     add("labs-left-behind", ["left: " + line for line in left], lab_detail)
@@ -2085,7 +2151,11 @@ def cmd_render(args):
     out.append("- gone during the run without perch starting them (wrong-kill candidates): %s"
                % (", ".join(map(str, gone)) if gone else "none"))
     out += ["", "## Labs and scratch left over", ""]
-    out += ["    " + line for line in read_lines(raw / "leftovers.txt")] or ["none"]
+    leftovers = read_lines(raw / "leftovers.txt")
+    out += ["- harness leftovers: " + line for line in leftovers] or ["- harness leftovers: none"]
+    if config.get("stage") == "2":
+        _, _, owner_summary = stage2_owner_lab_evidence(raw)
+        out += owner_summary
     if config.get("stage") != "2":
         out += ["", "## Pool units over time", ""]
         out.append("peak %d of limit %s (perch's marks; samples peak %d)" % (
