@@ -31,7 +31,8 @@ class PackagingTests(unittest.TestCase):
     def test_console_scripts_declared_with_exact_targets(self):
         scripts = _section(self.text, "project.scripts")
         self.assertRegex(scripts, r'(?m)^ottoctl\s*=\s*"otto\.hostctl\.cli:main"\s*$')
-        self.assertRegex(scripts, r'(?m)^otto-gateway\s*=\s*"otto\.cli:main"\s*$')
+        self.assertNotRegex(scripts, r'(?m)^otto-gateway\s*=')
+        self.assertFalse(os.path.exists(os.path.join(SRC, "otto", "cli.py")))
 
     def test_package_discovery_uses_src_and_namespaces(self):
         find = _section(self.text, "tool.setuptools.packages.find")
