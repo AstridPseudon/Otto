@@ -1198,6 +1198,96 @@ def test_reused_pgid_never_signalled(tmp_path):
         _reap_tree(bystander)
 
 
+def test_private_group_scope_never_signals_an_ancestry_or_tag_bystander(monkeypatch):
+    leader = custody.Proc(41001, 1, 41001, "leader")
+    escaped = custody.Proc(41002, leader.pid, 41002, "escaped")
+    tagged = custody.Proc(41003, 1, 41003, "tagged")
+    snapshots = [{leader.pid: leader, escaped.pid: escaped, tagged.pid: tagged}]
+    process = mock.Mock(pid=leader.pid)
+    process.poll.return_value = None
+    owner = custody.Custody(process, leader.pid, leader.birth, {leader.pid: leader.birth},
+                            census_fn=lambda: snapshots[0])
+    monkeypatch.setenv("OTTO_HEAVY_LEASE", "same-as-owner")
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        owner._send(signal.SIGTERM)
+    killpg.assert_called_once_with(leader.pid, signal.SIGTERM)
+    kill.assert_not_called()
+    assert escaped.pid not in owner.known
+    assert tagged.pid not in owner.known
+
+
+def test_recorded_escaped_identity_blocks_settlement_without_authorizing_pid_signal(tmp_path):
+    latch = _write_latch(tmp_path / "scope.json", 42001, "leader",
+                         {42001: "leader", 42002: "escaped"})
+    escaped = custody.Proc(42002, 1, 42002, "escaped")
+    snapshot = {escaped.pid: escaped}
+    owner = custody.Custody.from_latch(latch, census_fn=lambda: snapshot)
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        verdict = owner.terminate(0)
+    assert not verdict.gone
+    assert os.path.exists(latch)
+    kill.assert_not_called()
+    killpg.assert_not_called()
+    snapshot.clear()
+    snapshot[42003] = custody.Proc(42003, 1, 42003, "unrelated")
+    assert owner.terminate(0).gone
+    assert not os.path.exists(latch)
+
+
+def test_recycled_group_is_never_signalled_from_a_record(monkeypatch, tmp_path):
+    latch = _write_latch(tmp_path / "recycled.json", 43001, "old-birth", {43001: "old-birth"})
+    snapshot = {43001: custody.Proc(43001, 1, 43001, "new-birth")}
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        verdict = custody.resume_cleanup(latch, 0, census_fn=lambda: snapshot)
+    assert verdict.gone
+    kill.assert_not_called()
+    killpg.assert_not_called()
+
+
+def test_launch_intent_is_durable_before_process_creation(tmp_path):
+    latch = tmp_path / "launch.json"
+    process = mock.Mock(pid=44001)
+    process.poll.return_value = None
+
+    def start(_argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        assert json.loads(latch.read_text())["state"] == "launching"
+        return process
+
+    snapshot = {44001: custody.Proc(44001, 1, 44001, "birth")}
+    owner = custody.Custody.launch(["fake"], latch_path=str(latch), popen=start,
+                                   census_fn=lambda: snapshot)
+    assert owner.pgid == 44001
+    assert json.loads(latch.read_text())["state"] == "running"
+
+
+def test_launch_refuses_to_replace_an_unresolved_scope_record(tmp_path):
+    latch = tmp_path / "held.json"
+    original = _write_latch(latch, 44101, "held", {44101: "held"})
+    original_bytes = Path(original).read_bytes()
+    start = mock.Mock()
+    with pytest.raises(FileExistsError):
+        custody.Custody.launch(["fake"], latch_path=str(latch), popen=start)
+    start.assert_not_called()
+    assert latch.read_bytes() == original_bytes
+
+
+def test_cleanup_intent_remains_recorded_when_new_group_member_is_observed(tmp_path):
+    latch = str(tmp_path / "cleanup.json")
+    leader = custody.Proc(45001, 1, 45001, "leader")
+    child = custody.Proc(45002, leader.pid, leader.pgid, "child")
+    process = mock.Mock(pid=leader.pid)
+    process.poll.return_value = None
+    owner = custody.Custody(process, leader.pgid, leader.birth, {leader.pid: leader.birth},
+                            latch_path=latch, census_fn=lambda: {leader.pid: leader, child.pid: child})
+    owner._persist("terminating")
+    with mock.patch.object(custody.os, "killpg") as killpg:
+        owner._send(signal.SIGTERM)
+    killpg.assert_called_once_with(leader.pgid, signal.SIGTERM)
+    assert json.loads(Path(latch).read_text())["state"] == "terminating"
+    assert json.loads(Path(latch).read_text())["members"][str(child.pid)] == child.birth
+
+
 def test_group_kill_takes_grandchildren_and_setsid_escapees(tmp_path):
     pidfile = tmp_path / "escapee.pid"
     script = "\n".join([

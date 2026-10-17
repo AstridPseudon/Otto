@@ -1,7 +1,7 @@
-"""Process-tree custody: a birth-fenced group kill, a fail-closed census and a cleanup latch.
+"""Private process-group custody with a birth-fenced recovery record.
 
-A caller that launches a command through ``Custody.launch`` owns the whole tree the command grows, not
-just the direct process. The rules that keep "no process leaked, none wrongly killed" true:
+A caller that launches a command through ``Custody.launch`` owns its private process group.
+The rules for group signal authority and settlement are:
 
 * Identity is ``(pid, birth)``, never a bare pid. ``birth`` is the process start time from the census.
 * A group id is signalled only while it is provably ours: our unreaped leader still holds it, or a
@@ -11,10 +11,13 @@ just the direct process. The rules that keep "no process leaked, none wrongly ki
   now belongs to someone else and is never signalled.
 * The census is evidence only when it is non-empty and contains this very process. An empty or missing
   census is *uncertain*, never "all gone". Only a clean census with nothing of ours left is ``gone``.
-* A gap in the census while tracked members live latches doubt: ancestry may have been lost to a detached
-  child, and a later clean census cannot recover it.
-* The latch file records the group and the tracked identities before any signal is sent, so a crashed
-  cleanup resumes with ``resume_cleanup`` using the same identity checks, and is removed only on ``gone``.
+* A census gap while a group is live latches doubt; a later clean census cannot erase that gap.
+* The latch records launch intent before spawning and group identity before cleanup signals. A crashed
+  cleanup resumes with ``resume_cleanup`` and the latch is removed only on ``gone``.
+
+An accidentally detached process that was not recorded while it belonged to the group is outside this
+scope's evidence. An already recorded escaped identity keeps settlement unresolved, but is not signalled
+through ancestry or a bare pid; it needs its own private-group scope for cleanup.
 """
 from __future__ import annotations
 
@@ -96,6 +99,24 @@ def _write_latch(path: str, record: Mapping[str, Any]) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
+    _sync_parent(path)
+
+
+def _sync_parent(path: str) -> None:
+    directory = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _write_launch_intent(path: str) -> None:
+    # Exclusive creation preserves any previous unresolved scope at this path.
+    with open(path, "x", encoding="utf-8") as handle:
+        json.dump({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    _sync_parent(path)
 
 
 def _remove(path: str) -> None:
@@ -110,7 +131,7 @@ class Custody:
 
     def __init__(self, process: Any, pgid: int, leader_birth: Optional[str], members: Mapping[int, str],
                  latch_path: Optional[str] = None, census_fn: Optional[Callable[[], Optional[dict]]] = None,
-                 doubt: Optional[str] = None) -> None:
+                 doubt: Optional[str] = None, state: str = "running") -> None:
         self.process = process
         self.pgid = pgid
         self.leader_birth = leader_birth
@@ -119,12 +140,16 @@ class Custody:
         census_fn = census_fn or (lambda: census())     # looked up per call so a patched census applies
         self._census = lambda: census_fn() or None     # an empty census is no census
         self.doubt = doubt
+        self.state = state
 
     # -- birth -------------------------------------------------------------------------------
     @classmethod
     def launch(cls, argv: Any, *, latch_path: Optional[str] = None, popen: Optional[Callable[..., Any]] = None,
                census_fn: Optional[Callable[[], Optional[dict]]] = None, **kwargs: Any) -> "Custody":
-        """Start ``argv`` as a fresh session leader and fence its identity at birth."""
+        """Record intent, then start ``argv`` as a fresh session leader and fence its identity."""
+        if latch_path is not None:
+            # A crash between spawn and identity capture leaves an unresolved launch intent.
+            _write_launch_intent(latch_path)
         kwargs["start_new_session"] = True
         process = (subprocess.Popen if popen is None else popen)(argv, **kwargs)  # looked up now so patches apply
         custody = cls(process, process.pid, None, {}, latch_path, census_fn)
@@ -145,16 +170,20 @@ class Custody:
             with open(latch_path, encoding="utf-8") as handle:
                 record = json.load(handle)
             members = {int(pid): str(birth) for pid, birth in record["members"].items()}
-            return cls(None, int(record["pgid"]), record.get("leader_birth"), members, latch_path, census_fn)
+            return cls(None, int(record["pgid"]), record.get("leader_birth"), members, latch_path,
+                       census_fn, state=record.get("state", "running"))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             return cls(None, -1, None, {}, latch_path, census_fn, doubt="latch unreadable: %s" % type(exc).__name__)
 
     def _persist(self, state: str) -> None:
         if self.latch_path is None or self.pgid < 0:
             return
+        if self.state == "terminating":
+            state = "terminating"
         try:
             _write_latch(self.latch_path, {"pgid": self.pgid, "leader_birth": self.leader_birth, "state": state,
                                            "members": {str(pid): birth for pid, birth in self.known.items()}})
+            self.state = state
         except OSError:
             self.doubt = self.doubt or "cleanup latch could not be written"
 
@@ -168,19 +197,20 @@ class Custody:
         if self.pgid < 0:
             return "unproven"
         members = [i for i in snap.values() if i.pgid == self.pgid and not i.zombie]
+        leader = snap.get(self.pgid)
+        if leader is not None and self.leader_birth is not None and leader.birth != self.leader_birth:
+            return "reused"                    # the leader pid was recycled: the old group was empty
         if self.process is not None and self.process.poll() is None:
             return "ours"                      # our unreaped leader still holds the group id
         if any(self._live(snap, i.pid) for i in members):
             return "ours"
-        leader = snap.get(self.pgid)
-        if leader is not None and self.leader_birth is not None and leader.birth != self.leader_birth:
-            return "reused"                    # the leader pid was recycled: the old group was empty
         return "unproven" if members else "empty"
 
     def observe(self, snap: Optional[Mapping[int, Proc]] = None) -> Optional[dict]:
-        """Adopt group members and descendants of tracked identities; return the live tracked set.
+        """Record proven group members and return live recorded identities.
 
-        ``None`` means the census failed. If tracked members were alive, ancestry may be lost: doubt latches.
+        ``None`` means the census failed and latches doubt for a previously recorded live group.
+        A parent pid or environment tag alone never grants signal authority.
         """
         snap = self._census() if snap is None else snap
         if snap is None:
@@ -192,20 +222,6 @@ class Custody:
             for info in snap.values():
                 if info.pgid == self.pgid and not info.zombie and info.pid not in self.known:
                     self.known[info.pid] = info.birth
-        children: dict = {}
-        for info in snap.values():
-            children.setdefault(info.ppid, []).append(info)
-        pending = [pid for pid in self.known if self._live(snap, pid)]
-        while pending:
-            parent = pending.pop()
-            for info in children.get(parent, ()):      # a recycled parent pid never passes _live
-                if info.pid not in self.known and not info.zombie:
-                    self.known[info.pid] = info.birth
-                    pending.append(info.pid)
-        for pid in self.known:
-            if not self._live(snap, pid) and any(c.pid not in self.known and not c.zombie
-                                                 for c in children.get(pid, ())):
-                self.doubt = self.doubt or "unverified child of a missing tracked parent"
         if len(self.known) != before:
             self._persist("running")
         return {pid: birth for pid, birth in self.known.items() if self._live(snap, pid)}
@@ -216,19 +232,11 @@ class Custody:
         snap = self._census()
         if snap is None:
             return
-        live = self.observe(snap) or {}
+        self.observe(snap)
         grouped = self._group_state(snap) == "ours"
         if grouped:
             try:
                 os.killpg(self.pgid, sig)
-            except OSError:
-                pass
-        for pid in live:
-            info = snap.get(pid)
-            if info is None or (info.pgid == self.pgid and grouped):
-                continue
-            try:
-                os.kill(pid, sig)
             except OSError:
                 pass
 
