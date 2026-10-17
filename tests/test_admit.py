@@ -4,10 +4,7 @@ The project's user (USER) creates the project; a different actor (AGENT) edits
 the task. Content edits by AGENT leave the task unadmitted until USER admits the
 exact reviewed revision; USER's own edits are admitted by being made.
 """
-from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
-import json
 import tempfile
 import types
 import unittest
@@ -20,7 +17,6 @@ from herzchen.domains.work.admission import AdmissionDiffError, TaskNotAdmittedE
 from herzchen.domains.work.assignments import ResponsibilityAssignments
 from herzchen.domains.work.model import Lifecycle
 from herzchen.kernel.store import Store
-from otto.portfolio import cli
 from otto.portfolio.tests import test_reviewed_activation as reviewed_fixture
 from tests import test_execution_application as owner_fixture
 
@@ -208,72 +204,6 @@ class AdmissionTests(unittest.TestCase):
         events = self.dispatch_events(assignment)
         self.assertEqual(len(events), 1)
         self.assertNotIn("admitted_task", events[0].effects)
-
-
-class AdmitVerbTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="admit-verb-test-")
-        self.addCleanup(self.temporary.cleanup)
-        self.store = Store.create(Path(self.temporary.name) / "admit.sqlite", authority=AUTHORITY)
-        self.addCleanup(self.store.close)
-        self.store.register_domain_handler(contributions())
-        self.graph = WorkGraph(self.store)
-        self.project = self.graph.create_project(title="Admission", logical_request_key="project", actor=USER)
-        self.task = self.graph.create_task(self.project, title="Plan", logical_request_key="task", actor=USER)
-        self.review = self.graph.create_effort(self.project, title="Review", logical_request_key="review", actor=USER)
-        self.session = types.SimpleNamespace(owner=types.SimpleNamespace(graph=self.graph, owner_actor=USER))
-
-    # ---- helpers -----------------------------------------------------------------
-
-    def argv(self, revision, key):
-        return ["admit", "--task-ref", json.dumps(unpinned(self.task.ref).to_dict()), "--revision", revision,
-                "--review-ref", json.dumps(self.review.ref.to_dict()), "--request-key", key]
-
-    def run_admit(self, revision, key):
-        out = StringIO()
-        with redirect_stdout(out):
-            code = cli.main(self.argv(revision, key), status_session=self.session)
-        return code, json.loads(out.getvalue())
-
-    def agent_revise(self, title, key):
-        return self.graph.revise(unpinned(self.task.ref), title=title, actor=AGENT, logical_request_key=key)
-
-    def admitted_revision(self):
-        return self.graph.admission_state(unpinned(self.task.ref))["admitted_revision"]
-
-    def revised_event_ids(self):
-        return [event.event_id for event in self.store.list_events(stream="work:" + self.task.id)
-                if event.event_type == "work.revised"]
-
-    # ---- tests -------------------------------------------------------------------
-
-    def test_generic_admit_verb_is_denied_even_with_injected_owner_session(self):
-        revised = self.agent_revise("Plan revised by agent", "agent-1")
-        writes = self.revised_event_ids()
-        code, out = self.run_admit(revised.revision, "verb-1")
-        self.assertEqual(code, 4, out)
-        self.assertEqual(out["error"]["code"], "owner_presence_required", out)
-        self.assertEqual(self.revised_event_ids(), writes)
-        self.assertIsNone(self.admitted_revision())
-
-    def test_admit_verb_refuses_a_changed_sheet_with_the_diff(self):
-        reviewed = self.agent_revise("Plan A", "agent-a")
-        self.agent_revise("Plan B", "agent-b")
-        code, out = self.run_admit(reviewed.revision, "verb-diff")
-        self.assertEqual(code, 4, out)
-        self.assertEqual(out["outcome"], "denied", out)
-        self.assertEqual(out["error"]["code"], "owner_presence_required", out)
-        self.assertIsNone(self.admitted_revision())
-
-    def test_admit_verb_refuses_without_an_owner_session(self):
-        revised = self.agent_revise("Plan revised by agent", "agent-1")
-        out = StringIO()
-        with redirect_stdout(out):
-            code = cli.main(self.argv(revised.revision, "verb-none"))
-        result = json.loads(out.getvalue())
-        self.assertEqual(result["outcome"], "denied", result)
-        self.assertEqual(code, 4, result)
-        self.assertIsNone(self.admitted_revision())
 
 
 class ReviewedActivationAdmitsTests(unittest.TestCase):

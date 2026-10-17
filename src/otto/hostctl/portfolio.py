@@ -106,6 +106,11 @@ def prepare_portfolio_request(args: argparse.Namespace) -> None:
         parser().parse_args(args.portfolio_args)
     portfolio, words = _split_portfolio(args.portfolio_args)
     command = words[0] if words else None
+    if command == "admit" and portfolio is not None:
+        # Keep the existing owner-lane PermissionError for this forbidden
+        # operator forwarding request after retiring its dead portfolio parser.
+        args.portfolio, args.portfolio_args = portfolio, words
+        return
     if command in {"show", "read"}:
         # Validated here like any command, then sent to the owner lane with the portfolio named once, as save is.
         from otto.portfolio.cli import build_parser as portfolio_cli_parser

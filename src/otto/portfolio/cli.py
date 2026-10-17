@@ -185,13 +185,6 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     release_parser.add_argument("--request-key", required=True)
     _add_format(release_parser)
 
-    admit = sub.add_parser("admit", help="unavailable here; the owner service admits after local operator presence")
-    admit.add_argument("--task-ref", required=True, help="canonical work.task ResourceRef as JSON")
-    admit.add_argument("--revision", required=True, help="the exact revision id that was reviewed, e.g. rev-3")
-    admit.add_argument("--review-ref", required=True, help="the approving review's ResourceRef as JSON, pinned to its revision")
-    admit.add_argument("--request-key", required=True, help="logical request key; a replay with the same key resumes without duplicates")
-    _add_format(admit)
-
     status = sub.add_parser("status", help="portfolio status: projects, tasks, pool, managers, lab count and slot kinds")
     status.add_argument("--portfolio-ref", help="canonical portfolio ResourceRef as JSON (default: this host's portfolio)")
     status.add_argument("--project-ref", action="append", default=[],
@@ -1271,8 +1264,6 @@ def main(
                     result = _request_error(str(exc), code="denied")
                 except InvalidSessionError as exc:
                     result = _request_error(str(exc), code="session_not_open")
-        elif args.command == "admit":
-            result = _admit_command(args, status_session)
         elif args.command == "status":
             result = _status_command(args, status_session, labs, observability_views, observability_grant)
         elif args.command == "create-pending":
@@ -1477,12 +1468,6 @@ def _status_command(args: argparse.Namespace, session: Any, labs: Any,
     return result
 
 
-def _admit_command(args: argparse.Namespace, session: Any) -> dict[str, Any]:
-    return {"outcome": "denied", "schema": "otto.admit.v1", "dispatch": False,
-            "error": {"code": "owner_presence_required",
-                      "message": "admission requires the dedicated owner service admit command"}}
-
-
 def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[str, Any]:
     if views is None:
         return _surface_unavailable(
@@ -1678,6 +1663,30 @@ def _exit_code(result: Any) -> int:
 
 
 OWNER_EDITOR_VERBS = frozenset({"open", "release"})  # the verbs that need the owner's editor host
+CLIENT_LOCAL_VERBS = frozenset({"help", "ask", "wait"})
+CLIENT_OWNER_VERBS = frozenset({"save", "show", "read", "open", "release", "status", "retire"})
+
+
+def build_client_parser() -> argparse.ArgumentParser:
+    """Expose only verbs that the installed client can execute on its actual lanes.
+
+    The injected ``main`` entry retains its broader parser for bound callers.
+    ``ottoctl portfolio`` owns the operator documents/apply/gate routes.
+    """
+    from otto.hostctl.portfolio import OWNER_PORTFOLIO_COMMANDS
+    if not CLIENT_OWNER_VERBS <= OWNER_PORTFOLIO_COMMANDS:
+        raise RuntimeError("installed Otto route is missing its owner allowance")
+    parser = build_parser()
+    parser.prog = "otto"
+    parser.description = "installed Otto client over the owner portfolio and native caller lanes"
+    parser.epilog = None
+    routes = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+    accepted = CLIENT_LOCAL_VERBS | CLIENT_OWNER_VERBS
+    for name in tuple(routes.choices):
+        if name not in accepted:
+            del routes.choices[name]
+    routes._choices_actions[:] = [choice for choice in routes._choices_actions if choice.dest in accepted]
+    return parser
 
 
 def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, Any]:
@@ -1782,7 +1791,7 @@ def client_main(argv: Optional[Sequence[str]] = None) -> int:
     from otto.hostctl.cli import _await
     from otto.hostctl.service import owner_lane
     home, portfolio, words = _client_options(list(sys.argv[1:] if argv is None else argv))
-    parser = build_parser()
+    parser = build_client_parser()
     if not words:
         parser.print_help()
         return 0
@@ -1790,6 +1799,12 @@ def client_main(argv: Optional[Sequence[str]] = None) -> int:
         parsed = parser.parse_args(words)
     except SystemExit as exc:
         return int(exc.code or 0)
+    if parsed.command == "help":
+        _emit({"outcome": "read", "schema": "otto.client-help.v1",
+               "commands": sorted(CLIENT_LOCAL_VERBS | CLIENT_OWNER_VERBS),
+               "portfolio_required": sorted(CLIENT_OWNER_VERBS),
+               "caller_socket_required": ["ask", "wait"]}, parsed.format)
+        return 0
     if parsed.command in {"wait", "ask"}:
         try:
             caller_socket = os.environ.get("OTTO_CALLER_SOCKET")
