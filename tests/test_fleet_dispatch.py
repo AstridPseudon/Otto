@@ -5,18 +5,21 @@ import threading
 import time
 import os
 import tempfile
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from herzchen.fleet.capacity import CapacityPool, CapacityPolicy
 from herzchen.fleet.dispatch import DispatchError, FleetDispatcher
 from herzchen.fleet.hosts.contract import McpGrant, McpServer, TurnSpec
 from herzchen.fleet.tools.tokens import TokenBook
-from herzchen.domains.work.admission import authoring_stamp
+from herzchen.domains.work.admission import TaskNotAdmittedError, admitted_revision, authoring_stamp
 from herzchen.domains.work.readiness import ready as work_ready
 from herzchen.contracts import ResourceRef
 from otto.hostctl.product_service import bind_automatic_dispatch
 from otto.portfolio.execution_host import ExecutionHost
 from otto.portfolio.owner_completion import OwnerCompletion
+from otto.portfolio.manager_journey_service import ManagerJourneyService
 from unittest.mock import patch
 
 
@@ -374,6 +377,84 @@ def _staging_dispatch_fixture(task_specs, submit_worker, tmp_path):
                return_value=SimpleNamespace(readiness=lambda _ref, **_kw: {"ready": True})):
         dispatcher = bind_automatic_dispatch(host, registry, {"project": view})
     return host, view, due_rows, dispatcher
+
+
+def _real_owner_automatic_worker():
+    """Disposable Store owner with an inert host start queue and no provider turn."""
+    from tests.test_execution_application import ExecutionApplicationTests
+
+    fixture = ExecutionApplicationTests()
+    fixture.setUp()
+    manager, _guide, _mandate = fixture.role_handles("manager", "manager", "manager-session")
+    root = Path(fixture.temporary.name).resolve()
+    (root / "run.yaml").write_text(json.dumps({"roles": {
+        "worker_normal": {"model": "gpt-test", "reasoning": "high"},
+        "worker_xhard": {"model": "gpt-test", "reasoning": "high"}}}))
+    state = {"project_ref": fixture.project.ref.to_dict(),
+             "task_refs": {"A": fixture.task.ref.to_dict()},
+             "assignment_ref": manager.ref.to_dict(), "manager_generation": manager.generation,
+             "manager": "manager", "workers": {}}
+    queued = []
+    host = SimpleNamespace(_closing=False, command_handle=lambda: None)
+    server = SimpleNamespace(owner=fixture.owner, portfolio=fixture.app.portfolio,
+        state=state, due_port=fixture.port, _execution=lambda **_kw: fixture.app,
+        _save_state=lambda: None,
+        worker_lab_provider=lambda project, task: {"workspace": root})
+    service = ManagerJourneyService(server=server, host=host, run_path=root, workspace=root)
+    def submit(request):
+        assignment = state["workers"]["A"]["assignment_ref"]
+        events = fixture.store.list_events(stream="dispatch:" + assignment["id"])
+        queued.append((request, events))
+        return {"outcome": "admitted", "retained_handle": "inert-start"}
+    host.submit = submit
+    request = {"command": "run-worker", "task": "A", "route": "normal",
+               "principal": "worker-A", "request_key": "autodispatch-fixture-A",
+               "focus": "Implement the admitted task"}
+    return fixture, service, request, queued
+
+
+def test_automatic_worker_records_one_domain_dispatch_before_start_and_replay():
+    fixture, service, request, queued = _real_owner_automatic_worker()
+    try:
+        revision = admitted_revision(fixture.task.payload)
+        first = service._submit_worker(request, automatic=True, automatic_revision=revision)
+        assignment = first["assignment_ref"]
+        events = fixture.store.list_events(stream="dispatch:" + assignment["id"])
+        assert first["outcome"] == "admitted"
+        assert len(queued) == 1
+        assert len(queued[0][1]) == 1
+        assert len(events) == 1
+        assert events[0].event_type == "work.assignment.dispatched"
+        assert events[0].effects["admitted_task"]["revision"] == revision
+        assert service._submit_worker(request, automatic=True, automatic_revision=revision)["outcome"] in {"retained", "replayed"}
+        assert len(queued) == 1
+        assert fixture.store.list_events(stream="dispatch:" + assignment["id"]) == events
+        assert fixture.provider.calls == []
+    finally:
+        fixture.doCleanups()
+
+
+def test_automatic_worker_refuses_unadmitted_revision_before_start():
+    fixture, service, request, queued = _real_owner_automatic_worker()
+    try:
+        prior_revision = admitted_revision(fixture.task.payload)
+        agent = fixture.binding.authenticated_actor("other-agent")
+        changed = fixture.owner.graph.revise(fixture.task.ref, title="Unreviewed change",
+            logical_request_key="unadmitted-automatic-revision", actor=agent)
+        service.server.state["task_refs"]["A"] = changed.ref.to_dict()
+        before = {event.event_id for event in fixture.store.list_events()
+            if event.event_type == "work.assignment.created"}
+        with pytest.raises(TaskNotAdmittedError):
+            service._submit_worker(request, automatic=True, automatic_revision=prior_revision)
+        assert queued == []
+        assert fixture.provider.calls == []
+        assert service.server.state["workers"] == {}
+        created = [event for event in fixture.store.list_events()
+            if event.event_type == "work.assignment.created" and event.event_id not in before]
+        assert len(created) == 1
+        assert fixture.store.list_events(stream="dispatch:" + created[0].subject.id) == ()
+    finally:
+        fixture.doCleanups()
 
 
 def test_automatic_dispatch_admits_serially_skips_unadmitted_and_lands_each_generation(tmp_path):

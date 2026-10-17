@@ -2177,7 +2177,7 @@ class ManagerJourneyService:
     def _submit_worker(self, request: Mapping[str, Any], *, external_parent: Mapping[str, Any] | None = None,
                        resource_assignment_ref: Mapping[str, Any] | None = None, read_only: bool = False,
                        automatic: bool = False, automatic_revision: str | None = None) -> Mapping[str, Any]:
-        self.commands._authorize()
+        manager_actor = self.commands._authorize()
         if self.host._closing:
             return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
         if set(request) - {"command", "task", "route", "principal", "request_key", "focus"}:
@@ -2390,6 +2390,14 @@ class ManagerJourneyService:
             return {**prepared, **{name: previous[name] for name in ("retained_handle", "response_path")
                                   if name in previous and previous.get("schedule_id") == prepared.get("schedule_id")},
                     "retry_provider": False}
+        if automatic:
+            # The retained Due is still inert here. The work domain must admit
+            # its exact task scope and record the dispatch before any start is
+            # queued; its logical key makes a replay of this preparation safe.
+            self.server.owner.assignments.command_port.dispatch(
+                ResourceRef.from_dict(prepared["assignment_ref"]),
+                expected_generation=prepared["generation"],
+                logical_request_key=key + ":dispatch", actor=manager_actor)
         if parent is not None:
             retained = self.host.submit({"command": "start-retained-child", "schedule_id": prepared["schedule_id"]})
             due = app._read(prepared["schedule_id"])
