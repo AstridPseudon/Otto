@@ -435,10 +435,8 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
         planned_row.update(outcome=receipt.get("outcome"), project_ref=receipt.get("project_ref"), receipt=receipt)
     if import_history and payload.get("history"):
         history_bundle = payload["history"]
-        run_id = _run_id(history_bundle)
-        history_plan = plan(history_bundle, profile=profile, manager_principal=run_id + "-manager",
-            worktree=str(Path(history_bundle.get("root") or payload.get("history_root")).resolve().parent),
-            tool_entrypoint=str(Path(session.config["home"]) / "bin" / "ottoctl"))
+        from .register import plan_history
+        history_plan = plan_history(history_bundle)
         register_history(session, history_plan, note="Closed timeline-platform-r3 history; Phase 2 port moved to Codex.")
     gate_rows = _ensure_gates(session, index, gates, dry_run=False)
     dep_rows = _ensure_dependencies(session, index, dependencies, dry_run=False)

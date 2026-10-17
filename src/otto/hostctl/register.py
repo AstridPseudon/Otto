@@ -17,6 +17,7 @@ Steps (each idempotent):
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -161,24 +162,35 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     if isinstance(oracle, int) and oracle > 0:
         allowances.append({"id": "oracle", "purpose": "oracle decision requests (scheduled checks excluded)",
                            "units": oracle})
-    for stage in run.get("review_stages") or ():
+    for stage in (run["review_stages"] if "review_stages" in run else profile.get("review_stages")) or ():
         units = int(stage.get("max_calls", 0)) + int(stage.get("repeat_allowance", 0))
         if units > 0:
             allowances.append({"id": _slug(stage["id"]), "purpose": stage["id"] + " review: " + stage.get("scope", ""),
                                "units": units, "reviewer": stage.get("reviewer"), "trigger": stage.get("trigger")})
     checks = []
-    for check in run.get("scheduled_checks") or ():
+    for check in (run["scheduled_checks"] if "scheduled_checks" in run else profile.get("scheduled_checks")) or ():
         interval = _interval(check)
         if interval is None:
             continue
         checks.append({"id": check["id"], "interval_seconds": interval, "who": check.get("who"),
                        "cadence": check.get("cadence"), "purpose": check.get("purpose")})
     manager_brief = bundle["files"].get("manager-brief.md") or bundle["files"]["agent_goal.md"]
+    profile_selection = {
+        "schema": "otto.profile-selection.v1", "name": profile["name"],
+        "adapter": profile["adapter"], "host_kinds": list(profile["host_kinds"]),
+        "roles": copy.deepcopy(profile["roles"]), "oracle": copy.deepcopy(profile.get("oracle") or {}),
+        "review_stages": copy.deepcopy(profile.get("review_stages") or []),
+        "scheduled_checks": copy.deepcopy(profile.get("scheduled_checks") or []),
+        "pin": copy.deepcopy(profile.get("pin")),
+        "resolved_roles": copy.deepcopy(slot_bindings),
+        "run_file": bundle["run_file"], "run_sha256": bundle["raw_sha256"][bundle["run_file"]],
+    }
     custom = {"otto_host_registration": {
         "schema": REGISTRATION_SCHEMA, "run_id": run_id, "mode": run.get("mode"),
         "activation_trigger": run.get("activation_trigger"), "control_root": run.get("control_root"),
         "assessment_scope": run.get("assessment_accounting"),
         "source_bundle": bundle.get("root"), "raw_sha256": bundle["raw_sha256"],
+        "profile_selection": profile_selection,
         "activation": "pending: no role occurrence is prepared, no schedule is active, nothing is dispatched"}}
     brief = "\n".join(line for line in [
         "Megado run " + run_id + " (" + str(run.get("mode") or "draft") + ").",
@@ -193,6 +205,70 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                         "binding": slot_bindings["coordinator"], "brief": manager_brief,
                         "worktree": worktree, "first_task": tasks[0]["id"] if tasks else None},
             "phases": bundle["phases"]}
+
+
+def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping[str, Any],
+                  manager_principal: str, worktree: str, tool_entrypoint: str) -> dict[str, Any]:
+    """Materialize only the profile and role choice retained on registration."""
+    selection = facts.get("profile_selection")
+    if not isinstance(selection, Mapping) or selection.get("schema") != "otto.profile-selection.v1":
+        raise ValueError("registered profile selection is missing; re-register the pending run")
+    if isinstance(bundle_source, (str, Path)):
+        bundle = read_bundle(bundle_source)
+    else:
+        bundle = {**bundle_source, **parse_files(dict(bundle_source["files"]))}
+    run_file = bundle["run_file"]
+    if (run_file != selection.get("run_file")
+            or bundle["raw_sha256"].get(run_file) != selection.get("run_sha256")):
+        raise ValueError("registered run model choices changed after profile selection")
+    run = bundle["run"]
+    if run.get("model_profile") and run["model_profile"] != selection.get("name"):
+        raise ValueError("registered model profile differs from retained selection")
+    if run.get("profile_pack") is not None and run["profile_pack"] != selection.get("pin"):
+        raise ValueError("registered profile pack pin is stale or inconsistent")
+    kind = host.get("kind")
+    adapter = selection.get("adapter")
+    host_settings = (host.get("adapters") or {}).get(adapter)
+    roles = selection.get("roles")
+    if (not isinstance(kind, str) or kind not in selection.get("host_kinds", ())
+            or not isinstance(adapter, str) or not isinstance(host_settings, Mapping)
+            or not isinstance(roles, Mapping) or not isinstance(selection.get("pin"), Mapping)):
+        raise ValueError("retained profile is not qualified by this host")
+    allowed_models = host_settings.get("models")
+    if allowed_models is not None and any(not isinstance(value, Mapping)
+                                          or value.get("model") not in allowed_models
+                                          for value in roles.values()):
+        raise ValueError("retained profile model is unsupported by this host")
+    retained_profile = {"name": selection["name"], "adapter": adapter,
+                        "host_kinds": list(selection["host_kinds"]),
+                        "roles": copy.deepcopy(dict(roles)), "oracle": copy.deepcopy(selection.get("oracle") or {}),
+                        "review_stages": copy.deepcopy(selection.get("review_stages") or []),
+                        "scheduled_checks": copy.deepcopy(selection.get("scheduled_checks") or []),
+                        "pin": copy.deepcopy(selection["pin"])}
+    computed = plan(bundle, profile=retained_profile, manager_principal=manager_principal,
+                    worktree=worktree, tool_entrypoint=tool_entrypoint)
+    if computed["configuration"]["roles"] != selection.get("resolved_roles"):
+        raise ValueError("registered run role bindings differ from retained selection")
+    return computed
+
+
+def plan_history(bundle_source: Any) -> dict[str, Any]:
+    """Prepare a document-only withdrawn import without qualifying old agents."""
+    if isinstance(bundle_source, (str, Path)):
+        bundle = read_bundle(bundle_source)
+    else:
+        bundle = {**bundle_source, **parse_files(dict(bundle_source["files"]))}
+    run = bundle["run"]
+    run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
+    heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
+    title = heading if heading.startswith(run_id) else (run_id + ": " + heading if heading else run_id)
+    brief = "Historical Megado run " + run_id + ". Documents retained; no role is prepared."
+    custom = {"otto_host_registration": {
+        "schema": REGISTRATION_SCHEMA, "run_id": run_id, "mode": "history",
+        "model_profile": run.get("model_profile"), "source_bundle": bundle.get("root"),
+        "raw_sha256": bundle["raw_sha256"], "activation": "withdrawn history; nothing is dispatched"}}
+    return {"run_id": run_id, "title": title, "brief": brief,
+            "files": bundle["files"], "raw_sha256": bundle["raw_sha256"], "custom": custom}
 
 
 def _document(session: Any, project: Mapping[str, Any], key: str, document_id: str, content: Any, role: str) -> dict:

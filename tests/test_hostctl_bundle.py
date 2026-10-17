@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from otto.hostctl.bundle import BundleError, parse_tasklist, read_bundle
@@ -280,6 +281,107 @@ class ParseTasklistTests(unittest.TestCase):
               "## Dispatch log\n| id | model | state |\n|---|---|---|\n| S0 | haiku | dispatched |\n"
               "| CK2, OPS1 | haiku | waiting |\n")
         self.assertEqual([task["id"] for task in parse_tasklist(md)], ["S0"])
+
+
+class RegistrationProfileRetentionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = write_bundle(Path(self.temporary.name) / "run")
+
+    def test_registration_records_resolved_profile_pin_defaults_and_role_bindings(self):
+        from otto.agents import host_profiles
+        from otto.hostctl.register import plan
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        registration = plan(bundle, profile=selected, manager_principal="manager",
+                            worktree=str(self.root), tool_entrypoint="ottoctl")
+        selection = registration["custom"]["otto_host_registration"]["profile_selection"]
+        self.assertEqual(selection["pin"], selected["pin"])
+        self.assertEqual(selection["name"], selected["name"])
+        self.assertEqual(selection["roles"], selected["roles"])
+        self.assertEqual(selection["resolved_roles"], registration["configuration"]["roles"])
+
+    def test_retained_activation_uses_registration_defaults_after_pack_defaults_change(self):
+        from otto.agents import host_profiles
+        from otto.hostctl.register import plan, plan_retained
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        registration = plan(bundle, profile=selected, manager_principal="manager",
+                            worktree=str(self.root), tool_entrypoint="ottoctl")
+        facts = registration["custom"]["otto_host_registration"]
+        changed_pack = json.loads(json.dumps(host_profiles.load_profile_pack()))
+        changed_pack["profiles"]["codex"]["roles"]["coordinator"]["model"] = "gpt-6-astra"
+        joined_host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        with mock.patch.object(host_profiles, "load_profile_pack", return_value=changed_pack):
+            retained = plan_retained(bundle, facts=facts, host=joined_host,
+                                     manager_principal="manager", worktree=str(self.root),
+                                     tool_entrypoint="ottoctl")
+        self.assertEqual(retained["configuration"]["roles"], registration["configuration"]["roles"])
+
+    def test_changed_stored_run_or_stale_source_pin_is_refused(self):
+        from otto.agents import host_profiles
+        from otto.hostctl.register import plan, plan_retained
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        registration = plan(bundle, profile=selected, manager_principal="manager",
+                            worktree=str(self.root), tool_entrypoint="ottoctl")
+        facts = registration["custom"]["otto_host_registration"]
+        host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        changed_files = dict(bundle["files"])
+        changed_files[bundle["run_file"]] = json.dumps({**bundle["run"], "roles": {
+            "coordinator": {"model": "gpt-6-astra", "reasoning": "high"}}})
+        with self.assertRaisesRegex(ValueError, "model choices changed"):
+            plan_retained({**bundle, "files": changed_files}, facts=facts, host=host,
+                          manager_principal="manager", worktree=str(self.root), tool_entrypoint="ottoctl")
+        stale = {**bundle, "run": {**bundle["run"], "profile_pack": {"resource_digest": "stale"}}}
+        with self.assertRaisesRegex(ValueError, "stale"):
+            plan(stale, profile=selected, manager_principal="manager", worktree=str(self.root),
+                 tool_entrypoint="ottoctl")
+
+    def test_history_plan_preserves_unqualified_foreign_profile_declaration(self):
+        from otto.hostctl.register import plan_history
+        from otto.hostctl.bundle import parse_files
+
+        bundle = read_bundle(self.root)
+        files = dict(bundle["files"])
+        files[bundle["run_file"]] = json.dumps({**bundle["run"], "model_profile": "profile-from-retired-host"})
+        bundle = {**bundle, **parse_files(files), "root": bundle["root"]}
+        history = plan_history(bundle)
+        self.assertEqual(history["run_id"], bundle["run"]["run_id"])
+        self.assertEqual(history["files"], bundle["files"])
+        self.assertEqual(history["custom"]["otto_host_registration"]["mode"], "history")
+        self.assertEqual(history["custom"]["otto_host_registration"]["model_profile"],
+                         "profile-from-retired-host")
+
+    def test_cli_history_import_does_not_qualify_archived_profile(self):
+        from otto.agents import host_profiles
+        from otto.hostctl import cli
+        from otto.hostctl.bundle import parse_files
+        from otto.hostctl import register as registration_module
+
+        bundle = read_bundle(self.root)
+        files = dict(bundle["files"])
+        files[bundle["run_file"]] = json.dumps({**bundle["run"], "model_profile": "retired-host-only"})
+        bundle = {**bundle, **parse_files(files), "root": bundle["root"]}
+        receipt = {"outcome": "imported_history", "run_id": bundle["run"]["run_id"]}
+        session = mock.MagicMock()
+        session.__enter__.return_value = object()
+        args = type("Args", (), {"note": "closed"})()
+        with mock.patch.object(cli, "_home", return_value=Path(self.temporary.name)), \
+             mock.patch.object(cli.host_config, "load", return_value={}), \
+             mock.patch.object(cli, "_client_bundle", return_value=bundle), \
+             mock.patch.object(cli, "_host", return_value={"kind": "codex", "model_profile": "codex"}), \
+             mock.patch.object(cli, "HostSession", return_value=session), \
+             mock.patch.object(cli, "_receipt"), \
+             mock.patch.object(registration_module, "import_history", return_value=receipt) as imported, \
+             mock.patch.object(host_profiles, "profile_for_run", side_effect=AssertionError("history is inert")):
+            self.assertEqual(cli.cmd_import_history(args), receipt)
+        self.assertEqual(imported.call_args.args[1]["custom"]["otto_host_registration"]["model_profile"],
+                         "retired-host-only")
 
 
 if __name__ == "__main__":
