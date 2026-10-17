@@ -573,6 +573,7 @@ def test_uncertain_scope_holds_only_its_own_units(harness):
     wait_until(lambda: runner.status()["used"] == 2, "uncertain lease to retain two units")
     assert harness.store.get(first)["custody"] == "uncertain"
     assert runner.status(first).get("next_action")
+    assert runner.status(first)["recovery"]["claim_held"] is True
     assert runner.await_run(first).get("next_action")
     assert "Do not resubmit" in runner.await_run(first)["next_action"]
 
@@ -608,6 +609,13 @@ def test_restart_restores_exact_lease_for_unresolved_scope(harness):
         runner = harness.runner(store=harness.new_store(), launch=lambda argv, **kw: Scope())
         assert runner.status()["used"] == 2
         assert runner.await_run("unresolved-restart")["record"]["custody"] == "uncertain"
+        status = runner.status("unresolved-restart")
+        assert status["recovery"] == {"scope_run_id": "unresolved-restart", "latch_present": True,
+                                      "claim_run_id": "unresolved-restart", "claim_held": True,
+                                      "claim_units": 2}
+        assert "unresolved-restart" in status["next_action"]
+        assert "claim held" in status["next_action"]
+        assert "claim held" in runner.await_run("unresolved-restart")["next_action"]
         clean = harness.submit(runner, ["fake", "new"], weight=1)
         assert runner.await_run(clean, timeout=10)["record"]["state"] == "settled"
         assert runner.status()["used"] == 2
@@ -632,6 +640,14 @@ def test_restart_does_not_restore_lease_after_latch_cleanup(harness, monkeypatch
     monkeypatch.setattr("herzchen.fleet.runner.runner.custody.resume_cleanup", cleanup)
     first = harness.runner(store=harness.new_store())
     assert first.status()["used"] == 0 and not latch.exists()
+    status = first.status("cleaned-restart")
+    assert status["record"]["custody"] == "uncertain"
+    assert status["recovery"] == {"scope_run_id": "cleaned-restart", "latch_present": False,
+                                  "claim_run_id": "cleaned-restart", "claim_held": False,
+                                  "claim_units": 0}
+    assert "claim released" in status["next_action"]
+    assert "keep its capacity claim held" not in status["next_action"]
+    assert "claim released" in first.await_run("cleaned-restart")["next_action"]
     harness.retire(first)
     second = harness.runner(store=harness.new_store())
     assert second.status()["used"] == 0
@@ -787,6 +803,27 @@ def test_restart_nested_scope_uses_verified_parent_claim(harness):
     pool.ensure_turn("independent-turn")
     assert pool.snapshot()["turns"]["reserved"] == 1
     pool.release_turn("independent-turn")
+
+
+def test_legacy_grandchild_guidance_uses_held_root_claim(harness):
+    store = harness.store
+    store.put(harness.record(store, "root", ["fake", "root"], "c1", "unknown",
+                             units=2, custody="gone", outcome="lost_in_restart"))
+    store.put(harness.record(store, "child", ["fake", "child"], "c1", "unknown",
+                             units=0, nested_in="root", custody="gone", outcome="lost_in_restart"))
+    store.put(harness.record(store, "grandchild", ["fake", "grandchild"], "c1", "unknown",
+                             units=0, nested_in="child", custody="uncertain", outcome="lost_in_restart"))
+    latches = harness.state / "latches"
+    latches.mkdir(exist_ok=True)
+    (latches / "grandchild.json").write_text(
+        json.dumps({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}))
+
+    runner = harness.runner(store=harness.new_store())
+    assert runner.status()["used"] == 2
+    recovery = runner.status("grandchild")["recovery"]
+    assert recovery == {"scope_run_id": "grandchild", "latch_present": True,
+                        "claim_run_id": "root", "claim_held": True, "claim_units": 2}
+    assert "claim held for root" in runner.await_run("grandchild")["next_action"]
 
 
 def test_restart_queued_record_with_unresolved_latch_is_not_relaunched(harness):

@@ -708,6 +708,56 @@ def test_status_shows_capacity_and_what_is_running(tmp_path):
     assert status["holders"][0]["purpose"] == "journey X"
 
 
+def test_status_exposes_unresolved_lease_and_recovery_action(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    for sub in ("slots", "holders", "waiting"):
+        (directory / sub).mkdir(parents=True)
+    unresolved = {"reaped": [42], "remaining": ["identity-unavailable:43", "group:42"],
+                  "sweep": "unavailable"}
+    (directory / "holders" / "lease-42.json").write_text(json.dumps({
+        "lease_id": "lease-42", "owner": "worker", "purpose": "render", "weight": 2,
+        "unresolved": unresolved,
+    }))
+    monkeypatch.setattr(module, "state_dir", lambda: directory)
+    monkeypatch.setattr(module, "machine_state", lambda: {})
+    monkeypatch.setattr(module, "capacity", lambda _directory: 3)
+
+    status = module.status()
+    holder = status["holders"][0]
+    assert holder["lease_id"] == "lease-42"
+    assert holder["unresolved"] == unresolved
+    assert "lease-42" in holder["next_action"]
+    assert "identity-unavailable:43" in holder["next_action"]
+    assert "claim held" in holder["next_action"]
+
+
+def test_status_does_not_call_dead_holder_active_without_unresolved_detail(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    for sub in ("slots", "holders", "waiting"):
+        (directory / sub).mkdir(parents=True)
+    (directory / "holders" / "stale.json").write_text(json.dumps({
+        "lease_id": "stale", "owner": "worker", "purpose": "render", "weight": 1,
+        "holder_pid": 99999999,
+    }))
+    monkeypatch.setattr(module, "state_dir", lambda: directory)
+    monkeypatch.setattr(module, "machine_state", lambda: {})
+    monkeypatch.setattr(module, "capacity", lambda _directory: 2)
+
+    status = module.status()
+    holder = status["holders"][0]
+    assert status["used"] == 1
+    assert holder["holder_state"] == "dead"
+    assert holder["unresolved"] is None
+    assert "stale" in holder["next_action"]
+    assert "claim held" in holder["next_action"]
+    assert "recovery" in holder["next_action"]
+    assert "active" not in holder["next_action"]
+
+
 def admitted(tmp_path: Path) -> list[str]:
     """Purposes in the order the pool admitted them (the log's admission stamp, not a racy child write)."""
     lines = (tmp_path / "state" / "heavy.log").read_text().splitlines()
