@@ -868,7 +868,9 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with mock_patch.dict(sys.modules, modules), mock_patch.object(self.launcher, "_seed_scopes",
                   side_effect=lambda _, value: order.append("scopes") or {"criterion_refs": {}}), \
                 mock_patch.object(self.launcher, "_seed_admitted_scope",
-                  side_effect=lambda _, value: order.append("task_scope") or {"task_ref": value}):
+                  side_effect=lambda _, value: order.append("task_scope") or {"task_ref": value}), \
+                mock_patch.object(self.launcher, "_refresh_manager_setup",
+                  side_effect=lambda _, value: order.append("manager_setup") or {"task_ref": value}):
             self.launcher.install_scope_setup()
             owner = ProjectOwnerService()
             owner._build_activated_view = lambda name: order.append("view")
@@ -876,8 +878,9 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             self.assertEqual(order, ["activate", "scopes", "view"])
             self.assertIn("bootstrap_assessment", result)
             admitted = owner._admit_revision({"task_ref": refs["A"]})
-            self.assertEqual(order, ["activate", "scopes", "view", "admit", "task_scope"])
+            self.assertEqual(order, ["activate", "scopes", "view", "admit", "task_scope", "manager_setup"])
             self.assertEqual(admitted["bootstrap_assessment"]["task_ref"], refs["A"])
+            self.assertEqual(admitted["bootstrap_manager_setup"]["task_ref"], refs["A"])
             self.assertEqual(owner._run_operation(None, SimpleNamespace(project="other"),
                                                   ("project", "activate"))["outcome"], "original")
             owner.router = SimpleNamespace(services={"project": SimpleNamespace(server=SimpleNamespace(
@@ -919,6 +922,230 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         del observed["workers"]
         with self.assertRaisesRegex(ValueError, "lacks the owner's retained dispatch state"):
             perch_report.stage2_dispatch_no_failure(observed, "A")
+
+    def test_admitted_task_rebinds_unstarted_manager_due_and_preserves_setup(self):
+        from dataclasses import dataclass
+
+        class Ref:
+            def __init__(self, value, kind=None, ident=None, revision=None):
+                self.value = value if isinstance(value, dict) else {
+                    "authority": value, "kind": kind, "id": ident, "revision": revision}
+                self.authority, self.kind = self.value["authority"], self.value["kind"]
+                self.id, self.revision = self.value["id"], self.value["revision"]
+
+            @classmethod
+            def from_dict(cls, value):
+                return cls(value)
+
+            def to_dict(self):
+                return self.value
+
+            def __eq__(self, other):
+                return isinstance(other, Ref) and self.value == other.value
+
+        def ref(kind, ident, revision):
+            return {"authority": "owner", "kind": kind, "id": ident, "revision": revision}
+
+        task = ref("work.task", "task-A", "rev-2")
+        project = ref("work.project", "project", "rev-5")
+        assignment = ref("wrk.assignment", "manager", "rev-2")
+        old_mandate = ref("dat.content.document", "old-mandate", "rev-1")
+        new_mandate = ref("dat.content.document", "new-mandate", "rev-1")
+        setup_ref = ref("dat.content.document", "setup", "rev-1")
+        old_task = ref("work.task", "task-A", "rev-1")
+        old_content = {"role": "manager", "task_ref": old_task,
+                       "instruction_contract": {"task_ref": old_task, "authority": {"source": "canonical_owner"}}}
+        events = []
+        current_task = [task]
+
+        class Graph:
+            def current(self, value):
+                if value.kind == "work.task":
+                    return SimpleNamespace(ref=Ref(current_task[0]), payload={
+                        "alias": "B" if current_task[0]["id"] == "task-B" else "A"})
+                return SimpleNamespace(ref=Ref(project))
+
+        due = {"old": {"role": "manager", "assignment_ref": assignment,
+                       "execution_mode": "fresh_manager", "stop_state": "active",
+                       "completion_state": "none", "host_evidence": {}, "version": 2,
+                       "context_refs": [old_mandate],
+                       "target": {"task_ref": old_task, "mandate_ref": old_mandate}}}
+
+        @dataclass
+        class StubDue:
+            version: int
+            target: dict
+            context_refs: tuple
+
+            @classmethod
+            def from_dict(cls, value):
+                return cls(value["version"], value["target"], tuple(value["context_refs"]))
+
+            def to_dict(self):
+                return {**due["old"], "version": self.version,
+                        "target": self.target, "context_refs": self.context_refs}
+
+        def save_due(schedule, value, *, request_id, expected_version):
+            self.assertEqual(schedule, "old")
+            self.assertEqual(expected_version, 2)
+            events.append(("due", value, request_id))
+            due[schedule] = {**value, "version": expected_version + 1}
+            return due[schedule]
+
+        class App:
+            actor = "owner"
+            runtime = object()
+
+            def __init__(self):
+                self.portfolio = SimpleNamespace(create_document=self.create_document)
+
+            def read_operating_setup(self, *, project_ref):
+                self.assert_project(project_ref)
+                return {"setup_ref": setup_ref, "setup": {"mode": "manual", "roles": {"manager": "old"},
+                        "advisor_policy": {"mode": "disabled", "reason": "manual"}, "acceptance_tasks": []}}
+
+            def assert_project(self, value):
+                if value != project:
+                    raise AssertionError("wrong project")
+
+            def create_document(self, project_ref, **kwargs):
+                self.assert_project(project_ref)
+                events.append(("mandate", kwargs))
+                return {"record": {"payload": {"current_revision": new_mandate}}}
+
+            def _document_revision(self, response, field):
+                return response["record"]["payload"]["current_revision"]
+
+        app = App()
+        state = {"project_ref": project, "task_refs": {"A": old_task}, "manager": "manager",
+                 "assignment_ref": assignment, "manager_generation": 1,
+                 "requested_model": "claude-haiku-5-5", "requested_reasoning": "medium",
+                 "schedule_id": "old"}
+        owner = SimpleNamespace(graph=Graph(), content=SimpleNamespace(
+            read=lambda value: {"content": old_content}))
+        server = SimpleNamespace(run_id="perch-stage2", state=state, owner=owner,
+                                 due_port=SimpleNamespace(read_due=lambda schedule: due.get(schedule),
+                                                          save_due=save_due),
+                                 _save_state=lambda: events.append(("saved", dict(state))))
+        view = SimpleNamespace(server=server, _execution=lambda **kwargs: app)
+        service = SimpleNamespace(router=SimpleNamespace(services={"project": view}))
+        module = ModuleType("herzchen.contracts")
+        module.ResourceRef = Ref
+        attention = ModuleType("otto.attention")
+        attention.DueRecord = StubDue
+        operating = ModuleType("otto.portfolio.operating_setup")
+        operating.evaluate_setup = lambda runtime, project_ref, setup: {
+            "ready": due["old"]["target"]["task_ref"] == task, "blockers": []}
+        with mock_patch.dict(sys.modules, {"herzchen": ModuleType("herzchen"),
+                                          "herzchen.contracts": module,
+                                          "otto": ModuleType("otto"),
+                                          "otto.attention": attention,
+                                          "otto.portfolio": ModuleType("otto.portfolio"),
+                                          "otto.portfolio.operating_setup": operating}):
+            updated = self.launcher._refresh_manager_setup(service, task)
+            self.assertEqual(updated["outcome"], "rebound")
+            self.assertEqual(updated["task_ref"], task)
+            self.assertEqual(events[0][1]["content"]["task_ref"], task)
+            self.assertEqual(events[0][1]["content"]["instruction_contract"]["task_ref"], task)
+            self.assertEqual(old_content["task_ref"], old_task)
+            self.assertEqual(events[1][0], "due")
+            self.assertEqual(events[1][1]["target"]["task_ref"], task)
+            self.assertEqual(events[1][1]["target"]["mandate_ref"], new_mandate)
+            self.assertEqual(events[1][1]["context_refs"], (new_mandate,))
+            self.assertEqual(updated["setup_ref"], setup_ref)
+            self.assertEqual(state["schedule_id"], "old")
+            self.assertEqual(state["mandate_ref"], new_mandate)
+            self.assertEqual(events[-1][0], "saved")
+            replay = self.launcher._refresh_manager_setup(service, task)
+            self.assertEqual(replay["outcome"], "already-current")
+            self.assertEqual([event[0] for event in events].count("due"), 1)
+            # Admission of B does not move the manager off its selected A task.
+            b_task = ref("work.task", "task-B", "rev-2")
+            state["task_refs"]["B"] = ref("work.task", "task-B", "rev-1")
+            current_task[0] = b_task
+            before = len(events)
+            self.assertIsNone(self.launcher._refresh_manager_setup(service, b_task))
+            self.assertEqual(len(events), before)
+            # Seed the gate's stale canonical task: setup must go red before
+            # publishing another mandate or claiming a refreshed binding.
+            current_task[0] = old_task
+            before = len(events)
+            with self.assertRaisesRegex(RuntimeError, "exact admitted task revision"):
+                self.launcher._refresh_manager_setup(service, task)
+            self.assertEqual(len(events), before)
+            current_task[0] = task
+            due["old"]["target"] = {"task_ref": old_task, "mandate_ref": old_mandate}
+            due["old"]["host_evidence"] = {"gateway_attempt": {"state": "started"}}
+            with self.assertRaisesRegex(RuntimeError, "already begun a native effect"):
+                self.launcher._refresh_manager_setup(service, task)
+            self.assertEqual(len(events), before)
+
+    def test_real_due_port_rebind_is_ready_without_a_second_manager_occurrence(self):
+        src = str(ROOT / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+            self.addCleanup(sys.path.remove, src)
+        from tests.test_execution_application import ExecutionApplicationTests
+        from otto.portfolio.operating_setup import evaluate_setup
+
+        fixture = ExecutionApplicationTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        manager, _, mandate = fixture.role_handles("manager", "manager", None)
+        project = fixture.project.ref.to_dict()
+        task = fixture.task.ref.to_dict()
+        composition = {
+            "schema": "otto.operating-composition.v1", "mode": "manual",
+            "defaults": {"model": "gpt-test", "reasoning": "high"},
+            "roles": {"manager": {"assignment_ref": manager.ref.to_dict(), "generation": 1,
+                                  "task_ref": task, "mandate_ref": mandate, "fresh_manager": True}},
+            "advisor_policy": {"mode": "disabled", "reason": "canary fixture"},
+            "acceptance_tasks": [],
+        }
+        applied = fixture.app.compose_operating_setup(
+            project_ref=project, operation="apply", setup=composition, request_key="canary-setup")
+        self.assertEqual(applied["outcome"], "applied", applied)
+        schedule = applied["setup"]["roles"]["manager"]
+        admitted = fixture.owner.graph.revise(
+            fixture.task.ref, title="Admitted canary task", logical_request_key="canary-admitted").ref.to_dict()
+        graph = fixture.owner.graph
+        observed = [task]
+
+        class CanaryGraph:
+            def current(self, ref):
+                record = graph.current(ref)
+                if ref.kind == "work.task":
+                    return SimpleNamespace(ref=type(record.ref).from_dict(observed[0]),
+                                           payload={"alias": "A"})
+                return record
+
+        state = {"project_ref": project, "task_refs": {"A": task}, "manager": "manager",
+                 "assignment_ref": manager.ref.to_dict(), "manager_generation": 1,
+                 "requested_model": "gpt-test", "requested_reasoning": "high", "schedule_id": schedule}
+        saved = []
+        server = SimpleNamespace(run_id="perch-stage2", state=state,
+                                 owner=SimpleNamespace(graph=CanaryGraph(), content=fixture.owner.content),
+                                 due_port=fixture.port, _save_state=lambda: saved.append(dict(state)))
+        view = SimpleNamespace(server=server, _execution=lambda **kwargs: fixture.app)
+        service = SimpleNamespace(router=SimpleNamespace(services={"project": view}))
+        counts = fixture.store.consumer().snapshot_counts()
+        with self.assertRaisesRegex(RuntimeError, "exact admitted task revision"):
+            self.launcher._refresh_manager_setup(service, admitted)
+        self.assertEqual(fixture.store.consumer().snapshot_counts(), counts)
+        observed[0] = admitted
+        rebound = self.launcher._refresh_manager_setup(service, admitted)
+        self.assertEqual(rebound["outcome"], "rebound")
+        self.assertEqual(rebound["schedule_id"], schedule)
+        self.assertEqual(rebound["setup_ref"], applied["setup_ref"])
+        due = fixture.port.read_due(schedule)
+        self.assertEqual(due["target"]["task_ref"], admitted)
+        self.assertEqual(due["target"]["mandate_ref"], state["mandate_ref"])
+        self.assertEqual(due["context_refs"].count(state["mandate_ref"]), 1)
+        self.assertTrue(evaluate_setup(fixture.app.runtime, project, applied["setup"])["ready"])
+        self.assertEqual(self.launcher._refresh_manager_setup(service, admitted)["outcome"], "already-current")
+        self.assertEqual(len(saved), 2)
+        started = fixture.app.start(schedule_id=schedule)
+        self.assertEqual(started["outcome"], "succeeded", started)
 
     def test_stage_two_preserves_operator_log_and_copies_raw_evidence(self):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")

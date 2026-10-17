@@ -119,6 +119,110 @@ def _status_with_dispatch(service, result):
                 server.state.get("automatic_dispatch_failures") or {})}
 
 
+def _refresh_manager_setup(service, admitted_ref):
+    """Rebind the unstarted staging manager to its operator-admitted task.
+
+    Activation pins its first task in an immutable mandate and a retained Due.
+    Operator admission advances that task's revision. The product forbids a
+    second fresh manager while the first holds native custody, so replace the
+    unattempted occurrence's task and mandate pins through the versioned Due
+    port, then let the product's operating readiness validate the result.
+    """
+    from dataclasses import replace
+    from herzchen.contracts import ResourceRef
+    from otto.attention import DueRecord
+    from otto.portfolio.operating_setup import evaluate_setup
+
+    admitted = ResourceRef.from_dict(admitted_ref)
+    if admitted.kind != "work.task" or admitted.revision is None:
+        raise RuntimeError("stage-2 manager setup requires an exact admitted work task")
+    views = getattr(getattr(service, "router", None), "services", {})
+    if not isinstance(views, Mapping):
+        raise RuntimeError("stage-2 manager setup has no composed canary owner views")
+    for view in views.values():
+        server = getattr(view, "server", None)
+        if server is None or getattr(server, "run_id", None) != "perch-stage2":
+            continue
+        state = server.state
+        if admitted.id not in {ref.get("id") for ref in (state.get("task_refs") or {}).values()}:
+            continue
+        current = server.owner.graph.current(ResourceRef(admitted.authority, admitted.kind, admitted.id))
+        if current.ref != admitted:
+            raise RuntimeError("stage-2 manager setup requires the exact admitted task revision")
+        alias = current.payload.get("alias")
+        if alias not in {"A", "B", "C"}:
+            raise RuntimeError("stage-2 manager setup found an unexpected canary task")
+        project_pin = ResourceRef.from_dict(state["project_ref"])
+        project = server.owner.graph.current(ResourceRef(project_pin.authority, project_pin.kind, project_pin.id))
+        project_ref = project.ref.to_dict()
+        app = view._execution(principal=state["manager"], model=state["requested_model"],
+                              reasoning=state["requested_reasoning"],
+                              evidence_id=state.get("schedule_id") or "perch-stage2-manager-setup")
+        before = app.read_operating_setup(project_ref=project_ref)
+        setup = before.get("setup") or {}
+        schedule = (setup.get("roles") or {}).get("manager")
+        old_due = server.due_port.read_due(schedule) if isinstance(schedule, str) else None
+        target = old_due.get("target") if isinstance(old_due, Mapping) else None
+        if (not isinstance(target, Mapping) or old_due.get("role") != "manager"
+                or old_due.get("assignment_ref") != state["assignment_ref"]
+                or schedule != state.get("schedule_id")
+                or not isinstance(before.get("setup_ref"), Mapping)):
+            raise RuntimeError("stage-2 manager has no exact adopted operating setup")
+        pinned_task = target.get("task_ref")
+        if not isinstance(pinned_task, Mapping) or pinned_task.get("id") != admitted.id:
+            return None
+        if (old_due.get("execution_mode") != "fresh_manager"
+                or old_due.get("stop_state") != "active"
+                or old_due.get("completion_state") != "none"
+                or (old_due.get("host_evidence") or {}).get("gateway_attempt") is not None):
+            raise RuntimeError("stage-2 manager has already begun a native effect")
+        if target.get("task_ref") == admitted_ref:
+            readiness = evaluate_setup(app.runtime, project_ref, setup)
+            if not readiness["ready"]:
+                raise RuntimeError("stage-2 manager setup is blocked: " + repr(readiness["blockers"]))
+            state.update(project_ref=project_ref, mandate_ref=target["mandate_ref"], schedule_id=schedule)
+            server._save_state()
+            return {"outcome": "already-current", "task_ref": admitted_ref,
+                    "setup_ref": before["setup_ref"], "schedule_id": schedule}
+        old_mandate = target.get("mandate_ref")
+        if not isinstance(old_mandate, Mapping):
+            raise RuntimeError("stage-2 manager occurrence has no exact mandate")
+        content = copy.deepcopy(server.owner.content.read(ResourceRef.from_dict(old_mandate))["content"])
+        contract = content.get("instruction_contract") if isinstance(content, Mapping) else None
+        if (not isinstance(contract, Mapping) or content.get("task_ref") != target.get("task_ref")
+                or contract.get("task_ref") != target.get("task_ref")):
+            raise RuntimeError("stage-2 manager mandate does not match its retained task pin")
+        retained = DueRecord.from_dict(old_due)
+        if sum(ref == old_mandate for ref in retained.context_refs) != 1:
+            raise RuntimeError("stage-2 manager occurrence has no unique mandate context")
+        content["task_ref"] = admitted_ref
+        content["instruction_contract"]["task_ref"] = admitted_ref
+        key = "perch-stage2-manager-" + alias + "-" + admitted.revision
+        made = app.portfolio.create_document(project_ref, actor=app.actor, request_id=key + ":mandate",
+                                             document_id=key, role="mandate", content=content)
+        mandate_ref = app._document_revision(made, "stage-2 manager mandate")
+        rebound = replace(retained, target={**retained.target, "task_ref": admitted_ref,
+                                            "mandate_ref": mandate_ref},
+                          context_refs=tuple(mandate_ref if ref == old_mandate else ref
+                                             for ref in retained.context_refs))
+        server.due_port.save_due(schedule, rebound.to_dict(), request_id=key + ":due",
+                                 expected_version=retained.version)
+        new_due = server.due_port.read_due(schedule)
+        if (not isinstance(new_due, Mapping) or new_due.get("target", {}).get("task_ref") != admitted_ref
+                or new_due.get("target", {}).get("mandate_ref") != mandate_ref
+                or sum(ref == mandate_ref for ref in new_due.get("context_refs", ())) != 1):
+            raise RuntimeError("stage-2 manager setup has no exact retained admitted-task occurrence")
+        readiness = evaluate_setup(app.runtime, project_ref, setup)
+        if not readiness["ready"]:
+            raise RuntimeError("stage-2 manager setup is blocked: " + repr(readiness["blockers"]))
+        state.update(project_ref=project_ref, mandate_ref=mandate_ref, schedule_id=schedule)
+        server._save_state()
+        return {"outcome": "rebound", "task_ref": admitted_ref,
+                "mandate_ref": mandate_ref, "setup_ref": before["setup_ref"],
+                "schedule_id": schedule}
+    raise RuntimeError("stage-2 manager setup has no composed canary owner view")
+
+
 def install_scope_setup():
     from otto.hostctl.project_service import ProjectOwnerService
     from otto.hostctl.service import OwnerService
@@ -149,7 +253,9 @@ def install_scope_setup():
         if answer.get("outcome") not in {"admitted", "replayed", "already-admitted"}:
             return answer
         scope = _seed_admitted_scope(self, answer["task_ref"])
-        return {**answer, **({"bootstrap_assessment": scope} if scope is not None else {})}
+        manager = _refresh_manager_setup(self, answer["task_ref"]) if scope is not None else None
+        return {**answer, **({"bootstrap_assessment": scope} if scope is not None else {}),
+                **({"bootstrap_manager_setup": manager} if manager is not None else {})}
 
     ProjectOwnerService._admit_revision = admission_with_scope
 
