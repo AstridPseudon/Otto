@@ -29,6 +29,12 @@ from herzchen.contracts import ResourceRef, canonical_json
 from .bundle import parse_files, read_bundle
 
 REGISTRATION_SCHEMA = "otto.host-registration.v1"
+ROLE_PACK_PIN_FIELDS = frozenset({"pack_id", "pack_version", "source_revision",
+    "source_inventory_identity", "resource_path", "resource_digest"})
+
+
+def _is_exact_role_pack_pin(value: Any) -> bool:
+    return isinstance(value, Mapping) and set(value) == ROLE_PACK_PIN_FIELDS
 
 
 def _digest(value: Any) -> str:
@@ -230,8 +236,10 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     selection = facts.get("profile_selection")
     if not isinstance(selection, Mapping) or selection.get("schema") != "otto.profile-selection.v1":
         raise ValueError("registered profile selection is missing; re-register the pending run")
-    if not isinstance(selection.get("role_pack"), Mapping):
+    if "role_pack" not in selection:
         raise ValueError("registered role pack pin is missing; migrate the inert pending selection")
+    if not _is_exact_role_pack_pin(selection["role_pack"]):
+        raise ValueError("registered role pack pin is malformed")
     if isinstance(bundle_source, (str, Path)):
         bundle = read_bundle(bundle_source)
     else:
@@ -286,7 +294,9 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
     """
     facts = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
     existing = facts.get("profile_selection")
-    if isinstance(existing, Mapping) and isinstance(existing.get("role_pack"), Mapping):
+    if isinstance(existing, Mapping) and "role_pack" in existing:
+        if not _is_exact_role_pack_pin(existing["role_pack"]):
+            raise ValueError("registered role pack pin is malformed")
         return record, facts
     lifecycle = getattr(getattr(record, "lifecycle", None), "value", None)
     if (lifecycle != "pending" or record.payload.get("tasks")

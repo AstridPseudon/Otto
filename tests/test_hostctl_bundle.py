@@ -382,6 +382,13 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         with mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not write")):
             with self.assertRaisesRegex(ValueError, "changed"):
                 registration_module.ensure_profile_selection(session, project, altered, host=host, **kwargs)
+        for invalid in (None, "otto-roles", {"pack_id": "otto-roles"}):
+            project.payload = {"custom": {"otto_host_registration": {**facts,
+                "profile_selection": {**prior, "role_pack": invalid}}}}
+            with self.subTest(invalid=invalid), mock.patch.object(
+                    registration_module, "_check_in", side_effect=AssertionError("must not write")):
+                with self.assertRaisesRegex(ValueError, "role pack pin"):
+                    registration_module.ensure_profile_selection(session, project, bundle, host=host, **kwargs)
 
     def test_registration_accepts_template_resource_pin_and_retains_full_selection(self):
         from otto.agents import host_profiles
