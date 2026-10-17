@@ -1499,6 +1499,19 @@ class ExecutionApplication:
             return {**handle, "assignment_ref": due.assignment_ref, "due_version": due.version,
                     "outcome": "prepared", "next_action": "start this exact occurrence"}
         self._current(due.assignment_ref, due.generation)
+        from .execution_host import retained_pre_input_registration_failure
+        if retained_pre_input_registration_failure(due):
+            completed = replace(due, stop_state="completed", completion_state="failed",
+                in_flight_request=None, delivery_state="returned",
+                last_completed_request=due.in_flight_request, completed_at=self._now(),
+                last_result={"outcome": "failed", "delivery_state": "failed",
+                             "error": dict(result["error"])})
+            saved = self.due_port.save_due(schedule_id, completed.to_dict(),
+                request_id=due.invocation_identity + ":pre-input-registration-finalize",
+                expected_version=due.version)
+            return {**handle, "due_version": saved["version"], "outcome": "failed",
+                    "result": dict(result), "provider_called": True, "retry": False,
+                    "next_action": "inspect the failed launch; a new occurrence is required"}
         from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
         if retained_aborted_manager_capture(due, self.actor):
             # The original turn cannot be retried. This settles only its exact

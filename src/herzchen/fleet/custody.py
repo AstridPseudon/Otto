@@ -264,6 +264,18 @@ class Custody:
             return Disposition(UNCERTAIN, "no identity was ever captured")
         return Disposition(GONE)
 
+    def proven_group_empty(self) -> bool:
+        """Check an owned, reaped launch's group at the kernel boundary."""
+        if self.pgid <= 0 or self.process is None or self.process.poll() is None:
+            return False
+        try:
+            os.killpg(self.pgid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return False
+
     def terminate(self, grace_seconds: float = 1.0) -> Disposition:
         """Stop the whole tree: TERM, a bounded wait, KILL, then prove it absent."""
         if self.pgid < 0:
@@ -281,6 +293,34 @@ class Custody:
             time.sleep(0.02)
             verdict = self.status()
         return self._settle(verdict)
+
+    def terminate_before_input(self) -> Disposition:
+        """Stop an owned launch after registration fails, before stdin is written.
+
+        A still-unreaped child pins its session group even if the process census
+        is unavailable. Only a reaped leader and an absent kernel group prove
+        this pre-input launch gone; a surviving group stays uncertain.
+        """
+        if self.process is not None and self.process.poll() is None:
+            try:
+                if os.getpgid(self.process.pid) == self.pgid:
+                    os.killpg(self.pgid, signal.SIGKILL)
+            except OSError:
+                pass
+        disposition = self.terminate()
+        if self.process is None:
+            return disposition
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return Disposition(UNCERTAIN, "leader survived bounded termination")
+        disposition = self.status()
+        if disposition.gone:
+            return disposition
+        if self.proven_group_empty():
+            return Disposition(GONE)
+        return disposition if disposition.state == UNCERTAIN else Disposition(
+            UNCERTAIN, "group members remain", disposition.remaining)
 
     def release(self) -> Disposition:
         """The leader finished on its own: sweep anything it left behind and retire the latch."""

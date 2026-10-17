@@ -406,22 +406,51 @@ class WorkerPinTests(unittest.TestCase):
         self.assertEqual(self.host._process_groups[schedule]["pgid"], process.pid)
         self.assertFalse(hasattr(adapter, "native_process_observer"), "the caller-socket observer is never touched")
 
-    def test_pin_failure_never_breaks_the_launch(self):
+    def test_recorded_group_is_force_stopped_by_owner_cleanup(self):
+        schedule = "w"
+        self.running_turn(schedule)
+        adapter = SimpleNamespace()
+        _pin_process_group(adapter, schedule)
+        process = self.group()
+        self.host._owned(lambda: adapter.process_pin(process))
+        self.assertEqual(self.host._terminate_recorded_process_groups(), {schedule: True})
+        process.wait(timeout=5)
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+
+    def test_live_group_cannot_be_replaced_by_a_new_pin(self):
+        schedule = "w"
+        self.running_turn(schedule)
+        adapter = SimpleNamespace()
+        _pin_process_group(adapter, schedule)
+        first = self.group()
+        second = self.group()
+        self.host._owned(lambda: adapter.process_pin(first))
+        with self.assertRaisesRegex(RuntimeError, "previous process group"):
+            self.host._owned(lambda: adapter.process_pin(second))
+        self.assertEqual(self.host._process_groups[schedule]["pid"], first.pid)
+        saved = json.loads((self.host.directory / "capacity-process-groups.json").read_text())
+        self.assertEqual(saved[schedule]["pid"], first.pid)
+
+    def test_pin_failure_aborts_registration(self):
         schedule = "pin-failure-worker"
         self.running_turn(schedule)
         exited = subprocess.Popen(["true"])
         exited.wait()
         adapter = SimpleNamespace()
         _pin_process_group(adapter, schedule)
-        self.assertIsNone(self.host._owned(lambda: adapter.process_pin(exited)), "an exited pid raises nothing")
+        with self.assertRaises(PermissionError):
+            self.host._owned(lambda: adapter.process_pin(exited))
         self.assertNotIn(schedule, self.host._process_groups, "an exited pid pins nothing")
 
         live = self.group()
         unknown = SimpleNamespace()
         _pin_process_group(unknown, "no-such-occurrence")
-        self.assertIsNone(self.host._owned(lambda: unknown.process_pin(live)), "an unknown occurrence raises nothing")
+        with self.assertRaises(RuntimeError):
+            self.host._owned(lambda: unknown.process_pin(live))
         self.assertNotIn("no-such-occurrence", self.host._process_groups, "an unknown occurrence pins nothing")
-        self.assertIsNone(adapter.process_pin(live), "outside the owner context the hook does nothing")
+        with self.assertRaises(RuntimeError):
+            adapter.process_pin(live)
         self.assertNotIn(schedule, self.host._process_groups)
 
     def test_dead_worker_group_frees_its_reservation(self):
@@ -450,13 +479,6 @@ class WorkerPinTests(unittest.TestCase):
         adapter = SimpleNamespace()
         process = self.group()
         seen = {}
-        recorded = []
-        real_record = self.host.record_process_group
-
-        def recording(schedule_id, pid):
-            recorded.append(threading.get_ident())
-            return real_record(schedule_id, pid)
-        self.host.record_process_group = recording
 
         def transport_operation():
             seen["transport"] = threading.get_ident()
@@ -469,10 +491,9 @@ class WorkerPinTests(unittest.TestCase):
 
         self.host._owned(owner_work)
         self.assertNotEqual(seen["transport"], seen["owner"], "the adapter pins from its transport thread")
-        self.assertEqual(recorded, [seen["owner"]], "the pin is recorded on the owner thread")
         self.assertEqual(self.host._process_groups[schedule]["pgid"], process.pid)
 
-    def test_pin_from_a_foreign_thread_outside_a_transport_wait_is_silent(self):
+    def test_pin_from_a_foreign_thread_outside_a_transport_wait_fails(self):
         schedule = "w"
         self.running_turn(schedule)
         adapter = SimpleNamespace()
@@ -483,13 +504,14 @@ class WorkerPinTests(unittest.TestCase):
         def foreign():
             try:
                 adapter.process_pin(process)
-            except BaseException as exc:  # the hook must never raise into the launch
+            except BaseException as exc:
                 errors.append(exc)
         thread = threading.Thread(target=foreign)
         thread.start()
         thread.join(10)
         self.assertFalse(thread.is_alive())
-        self.assertEqual(errors, [], "a foreign pin outside any transport wait raises nothing")
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RuntimeError)
         self.assertNotIn(schedule, self.host._process_groups, "and pins nothing")
 
     def test_claude_worker_turn_is_pinned(self):
