@@ -613,13 +613,11 @@ class ManagerLoopTests(ServeTests):
 
     @staticmethod
     def service_adapter_factory(*, principal, model, reasoning, service, worker_mcp=None, workspace=None, **_):
-        """Synthetic manager scope (children allowed); the worker leaf skips sandbox-exec.
+        """Real manager fence (children allowed); the worker leaf skips sandbox-exec.
 
         A scripted launcher is an interpreter script, which the leaf fence's
         single-executable exec rule correctly refuses; the leaf fence itself is
-        proven in test_claude_binding and test_claude_manager_admission. The
-        manager journey tests exercise owner routing and continuation, so their
-        scope preflight is synthetic and independent of nested sandbox support.
+        proven in test_claude_binding and test_claude_manager_admission.
         """
         from otto.agents.claude_adapter import ClaudeWorkerAdapter
         from otto.agents.claude_cli import ClaudeCliTransport, LauncherPin, MANAGER_TOOLS, MacWriteScope
@@ -634,16 +632,8 @@ class ManagerLoopTests(ServeTests):
                     "evidence_kind": "SYNTHETIC-UNFENCED-LEAF"},
             "preflight": lambda self: {**self.pin, "verified": True}, "wrap": lambda self, command, **o: command})()
         worker = ClaudeCliTransport(pin, unfenced, model=model, reasoning=reasoning, timeout_seconds=60)
-        class SyntheticManagerScope(MacWriteScope):
-            def preflight(self):
-                return {**self.pin, "verified": True}
-
-            def wrap(self, command, **options):
-                return command
-
-        manager_scope = SyntheticManagerScope(worktree, state, allow_subprocesses=True,
-                                               extra_write_roots=launch["write_roots"])
-        manager = ClaudeCliTransport(pin, manager_scope,
+        manager = ClaudeCliTransport(pin, MacWriteScope(worktree, state, allow_subprocesses=True,
+                                                        extra_write_roots=launch["write_roots"]),
             model=model, reasoning=reasoning, timeout_seconds=120, tools=MANAGER_TOOLS, max_turns=200,
             extra_env=launch["env"])
         return ClaudeWorkerAdapter(owner=principal, source=worktree, worktree=worktree, launcher_pin=pin,
