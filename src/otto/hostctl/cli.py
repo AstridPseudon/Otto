@@ -354,9 +354,14 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
 def _flag_values(argv: list, flag: str) -> list:
     values = []
     for index, item in enumerate(argv):
+        raw = None
         if item == flag and index + 1 < len(argv):
+            raw = argv[index + 1]
+        elif item.startswith(flag + "="):
+            raw = item[len(flag) + 1:]
+        if raw is not None:
             try:
-                values.append(json.loads(argv[index + 1])["id"])
+                values.append(json.loads(raw)["id"])
             except (ValueError, KeyError, TypeError):
                 pass
     return values
