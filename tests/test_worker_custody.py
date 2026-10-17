@@ -439,7 +439,7 @@ class RestartProcessScopeTests(unittest.TestCase):
                 self.assertEqual(host._group_state(host._process_groups['old']), 'unproven')
                 self.assertFalse(host._reconcile_hold('old'))
 
-    def test_replacement_leader_of_same_group_frees_only_physical_hold(self):
+    def test_replacement_leader_of_same_group_keeps_physical_hold(self):
         from otto.portfolio.execution_host import ExecutionHost
         with tempfile.TemporaryDirectory(prefix='worker-group-') as root:
             host = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
@@ -449,8 +449,8 @@ class RestartProcessScopeTests(unittest.TestCase):
                     mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None), \
                     mock.patch('otto.portfolio.execution_host.os.getpgid', return_value=123):
                 self.assertEqual(host._group_state(host._process_groups['old']), 'reused')
-                self.assertTrue(host._reconcile_hold('old'))
-                self.assertIn('old', host._capacity_freed)
+                self.assertFalse(host._reconcile_hold('old'))
+                self.assertNotIn('old', host._capacity_freed)
 
     def test_empty_group_does_not_free_scope_with_unsettled_setsid_escapee(self):
         from otto.portfolio.execution_host import ExecutionHost
@@ -467,7 +467,7 @@ class RestartProcessScopeTests(unittest.TestCase):
                 self.assertFalse(host._reconcile_hold('work'))
             self.assertNotIn('work', host._capacity_freed)
 
-    def test_restart_reuses_group_without_killing_it_and_frees_only_physical_capacity(self):
+    def test_restart_reuses_group_without_killing_it_or_freeing_capacity(self):
         from otto.portfolio.execution_host import ExecutionHost
         with tempfile.TemporaryDirectory(prefix='worker-restart-') as root:
             directory = Path(root)
@@ -495,7 +495,7 @@ class RestartProcessScopeTests(unittest.TestCase):
                 try:
                     self.assertEqual(signals, [124])
                     self.assertIn('old', host._capacity_holds)
-                    self.assertNotIn('old', host.capacity_holds())
+                    self.assertIn('old', host.capacity_holds())
                     other = {**old, 'schedule_id': 'new', 'project': 'project-b', 'session': 'b',
                              'assignment': ('b', 1), 'workspace': str(directory / 'b')}
                     self.assertTrue(host._eligible(other))

@@ -14,6 +14,7 @@ import time
 from dataclasses import replace
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from herzchen.contracts import ResourceRef
 from otto.portfolio.execution_host import ExecutionHost
@@ -24,6 +25,50 @@ def spawn_group(command=("sleep", "60")):
     # Own session, so the leader's pid is also its pgid (as the adapters spawn).
     return subprocess.Popen(list(command), start_new_session=True,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class CapacityReconciliationUnitTests(unittest.TestCase):
+    """The owner cannot return a slot while PID reuse obscures the old group."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.host = ExecutionHost(directory=self.temporary.name,
+                                  handler=lambda _request: None, bounded_transports=True)
+        self.host._capacity_holds['old'] = {'schedule_id': 'old', 'role': 'worker',
+                                            'project': 'project-a'}
+        self.host._process_groups['old'] = {'pid': 123, 'pgid': 123, 'birth': [7]}
+
+    def test_reused_leader_in_live_group_keeps_capacity(self):
+        with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                        return_value={'birth': [8]}), \
+                mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None), \
+                mock.patch('otto.portfolio.execution_host.os.getpgid', return_value=123):
+            self.assertFalse(self.host._reconcile_hold('old'))
+        self.assertIn('old', self.host.capacity_holds())
+
+    def test_reused_leader_after_group_death_keeps_capacity(self):
+        with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                        return_value={'birth': [8]}), \
+                mock.patch('otto.portfolio.execution_host.os.killpg', side_effect=ProcessLookupError):
+            self.assertFalse(self.host._reconcile_hold('old'))
+        self.assertIn('old', self.host.capacity_holds())
+
+    def test_empty_group_and_absent_leader_returns_capacity(self):
+        with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                        side_effect=ProcessLookupError), \
+                mock.patch('otto.portfolio.execution_host.os.killpg', side_effect=ProcessLookupError):
+            self.assertTrue(self.host._reconcile_hold('old'))
+        self.assertNotIn('old', self.host.capacity_holds())
+
+    def test_reused_leader_cannot_authorize_a_new_process_scope(self):
+        self.host._owns_owner_file = True
+        with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                        return_value={'birth': [8]}), \
+                mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None), \
+                mock.patch('otto.portfolio.execution_host.os.getpgid', return_value=123):
+            with self.assertRaisesRegex(RuntimeError, 'prior process scope is unresolved'):
+                self.host.record_process_launch_intent('old')
 
 
 class CapacityHoldTests(unittest.TestCase):
