@@ -18,6 +18,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:34Z | PK3R-UX7 | merged 551cc7f41313a40c695a642ca460d8cd9dfd7474 | +24/-4 | test_host_onboarding_docs.py 1 passed; diff --check passed | Host onboarding now points to managed profile/host resources and keeps the Megado template steps. No deletions.
 2026-10-17T21:42Z | PK3R-UX6 | merged c03dfd882ad5f54cf363f83755cbe9448421ebed | +46/-13 | test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Retained run digest, selected-profile name, resolved-role and legacy migration integrity refusals now carry a reconciliation action through the service and CLI envelopes. No deletions.
 2026-10-17T21:49Z | PK3R-UX8 | merged 433c59d9668e83f998be03cf84fe1196a31c630c | +69/-13 | test_host_neutral_defaults.py 21 passed; diff --check passed | Managed loader/provenance and invalid profile/host resource refusals now explain how to restore/correct the pinned source. No deletions.
+2026-10-17T21:52Z | PK3R-UX9 | merged 03990a9a970dfd2176a758962b8fcfcb735a5ad2 | +58/-8 | test_host_neutral_defaults.py 22 passed/3 subtests; diff --check passed | Malformed default-profile, host-profile and adapter-model field types now fail closed with recovery guidance. No deletions.
 
 ## Questions for the orchestrator
 
@@ -40,7 +41,7 @@ Astra's fourth pass found two remaining defects: retained run/binding/migration 
 
 Astra's fifth pass found one remaining new-path refusal: missing, changed or structurally invalid `otto-profiles` sources failed closed but returned no `next_action`. PK3R-UX8 retains the PackAuthoringError and schema/qualification checks while making the recovery path explicit. Its socket-free test covers provenance failure, malformed schema and a missing default profile through both error envelopes.
 
-Astra's sixth pass found malformed JSON field types that can raise TypeError before the recovery-aware checks (for example, non-string defaults/host profile names and a non-list allowed-model field). PK3R-UX9 will validate these resource shapes explicitly and route them through the same fail-closed recovery refusal.
+Astra's sixth pass found malformed JSON field types that could raise TypeError before the recovery-aware checks (for example, non-string defaults/host profile names and a non-list allowed-model field). PK3R-UX9 validates these resource shapes explicitly and routes them through the same fail-closed recovery refusal. Tests cover all three malformed types and exercise both CLI/service envelope helpers.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
