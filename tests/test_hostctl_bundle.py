@@ -434,8 +434,15 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         project.payload = {"custom": {"otto_host_registration": facts}}
         altered = {**bundle, "raw_sha256": {**bundle["raw_sha256"], bundle["run_file"]: "changed"}}
         with mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not write")):
-            with self.assertRaisesRegex(ValueError, "changed"):
+            with self.assertRaisesRegex(ValueError, "changed") as refusal:
                 registration_module.ensure_profile_selection(session, project, altered, host=host, **kwargs)
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.service import _owner_exception_result
+        for serialize in (registration_module.refusal_result, _cli_exception_result, _owner_exception_result):
+            envelope = serialize(refusal.exception)
+            self.assertEqual(envelope["error"]["code"], "ValueError")
+            self.assertIs(envelope["provider_called"], False)
+            self.assertIn("Reconcile the stored run and retained profile selection", envelope["next_action"])
         for invalid in (None, "otto-roles", {"pack_id": "otto-roles"}):
             project.payload = {"custom": {"otto_host_registration": {**facts,
                 "profile_selection": {**prior, "role_pack": invalid}}}}
@@ -572,6 +579,25 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "model choices changed"):
             plan_retained({**bundle, "files": changed_files}, facts=facts, host=host,
                           manager_principal="manager", worktree=str(self.root), tool_entrypoint="ottoctl")
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.service import _owner_exception_result
+        changed = {**bundle, "files": changed_files}
+        with self.assertRaisesRegex(ValueError, "model choices changed") as refusal:
+            plan_retained(changed, facts=facts, host=host, manager_principal="manager",
+                          worktree=str(self.root), tool_entrypoint="ottoctl")
+        for serialize in (_cli_exception_result, _owner_exception_result):
+            envelope = serialize(refusal.exception)
+            self.assertEqual(envelope["error"], {"code": "ValueError", "message": str(refusal.exception)})
+            self.assertIs(envelope["provider_called"], False)
+            self.assertIn("Reconcile the stored run and retained profile selection", envelope["next_action"])
+        altered_selection = {**facts, "profile_selection": {**facts["profile_selection"],
+                              "resolved_roles": {"coordinator": {"model": "other", "reasoning": "high"}}}}
+        with self.assertRaisesRegex(ValueError, "role bindings differ") as binding_refusal:
+            plan_retained(bundle, facts=altered_selection, host=host, manager_principal="manager",
+                          worktree=str(self.root), tool_entrypoint="ottoctl")
+        for serialize in (_cli_exception_result, _owner_exception_result):
+            self.assertIn("Reconcile the stored run and retained profile selection",
+                          serialize(binding_refusal.exception)["next_action"])
         stale = {**bundle, "run": {**bundle["run"], "profile_pack": {"resource_digest": "stale"}}}
         with self.assertRaisesRegex(ValueError, "stale"):
             plan(stale, profile=selected, manager_principal="manager", worktree=str(self.root),

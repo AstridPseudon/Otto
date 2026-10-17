@@ -40,11 +40,18 @@ class RegistrationPinError(ValueError):
                    "correct the stale or malformed pin, then retry registration or activation.")
 
 
+class RetainedSelectionError(ValueError):
+    """Stored run bytes or role bindings no longer match the retained selection."""
+
+    next_action = ("Reconcile the stored run and retained profile selection so their run digest and resolved role "
+                   "bindings agree, then retry activation.")
+
+
 def refusal_result(exc: Exception) -> dict[str, Any]:
     """Serialize registration pin refusals without changing their public ValueError code."""
     result = {"outcome": "error", "error": {"code": "ValueError", "message": str(exc)},
               "provider_called": False}
-    if isinstance(exc, RegistrationPinError):
+    if isinstance(exc, (RegistrationPinError, RetainedSelectionError)):
         result["next_action"] = exc.next_action
     else:
         from otto.agents.host_profiles import ProfileSelectionError
@@ -267,10 +274,10 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     run_file = bundle["run_file"]
     if (run_file != selection.get("run_file")
             or bundle["raw_sha256"].get(run_file) != selection.get("run_sha256")):
-        raise ValueError("registered run model choices changed after profile selection")
+        raise RetainedSelectionError("registered run model choices changed after profile selection")
     run = bundle["run"]
     if run.get("model_profile") and run["model_profile"] != selection.get("name"):
-        raise ValueError("registered model profile differs from retained selection")
+        raise RetainedSelectionError("registered model profile differs from retained selection")
     if run.get("profile_pack") is not None:
         from otto.agents.host_profiles import profile_pin_matches
         if not profile_pin_matches(run["profile_pack"], selection.get("pin") or {}):
@@ -301,7 +308,7 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     if selection["role_pack"] != computed["configuration"]["role_pack"]:
         raise RegistrationPinError("registered role pack pin is stale or inconsistent")
     if computed["configuration"]["roles"] != selection.get("resolved_roles"):
-        raise ValueError("registered run role bindings differ from retained selection")
+        raise RetainedSelectionError("registered run role bindings differ from retained selection")
     return computed
 
 
@@ -327,13 +334,13 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
     run_file = bundle["run_file"]
     original_digest = (facts.get("raw_sha256") or {}).get(run_file)
     if original_digest is not None and original_digest != bundle["raw_sha256"][run_file]:
-        raise ValueError("registered run model choices changed before profile selection")
+        raise RetainedSelectionError("registered run model choices changed before profile selection")
     if existing is not None:
         if (not isinstance(existing, Mapping) or existing.get("schema") != "otto.profile-selection.v1"
                 or existing.get("run_file") != run_file
                 or existing.get("run_sha256") != bundle["raw_sha256"][run_file]
                 or original_digest != existing.get("run_sha256")):
-            raise ValueError("registered run model choices changed after profile selection")
+            raise RetainedSelectionError("registered run model choices changed after profile selection")
         selected = {**existing, "role_pack": copy.deepcopy(_role_pack_pin(bundle["run"]))}
         project = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
         key = "legacy-role-pack-selection:" + record.ref.id + ":" + _digest(selected)[:20]
@@ -342,7 +349,7 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
             custom = dict(draft.get("custom") or {})
             current_facts = dict(custom.get("otto_host_registration") or {})
             if current_facts.get("profile_selection") not in (existing, selected):
-                raise ValueError("registered profile selection changed during role pack migration")
+                raise RetainedSelectionError("registered profile selection changed during role pack migration")
             current_facts["profile_selection"] = copy.deepcopy(selected)
             custom["otto_host_registration"] = current_facts
             draft["custom"] = custom
@@ -375,7 +382,7 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
         custom = dict(draft.get("custom") or {})
         current_facts = dict(custom.get("otto_host_registration") or {})
         if current_facts.get("profile_selection") not in (None, selected):
-            raise ValueError("registered profile selection changed during migration")
+            raise RetainedSelectionError("registered profile selection changed during migration")
         current_facts["profile_selection"] = copy.deepcopy(selected)
         custom["otto_host_registration"] = current_facts
         draft["custom"] = custom
