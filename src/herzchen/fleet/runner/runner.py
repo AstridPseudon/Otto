@@ -15,6 +15,8 @@ from .. import custody
 from .admission import Entry, Holder, pick
 from .commit import git_commit_identity
 from .store import RUN_ID, ResultStore, StoreError
+from .effect_ledger import RunnerEffectLedger
+from herzchen.kernel import OperationState
 
 EXIT_UNKNOWN = 70
 _TIMEOUT_EXIT = 124
@@ -31,6 +33,7 @@ class Lease:
         self.units = units
         self.backfill = backfill
         self.record = record
+        self.effect_record: Any = None
         self.custody: Any = None
         self.children: list[str] = []
         self.lock = threading.Lock()
@@ -47,7 +50,8 @@ class Runner:
                  resolve_commit: Callable[[str], str | None] = git_commit_identity,
                  census_fn: Callable[[], dict | None] | None = None, environ: Mapping[str, str] | None = None,
                  grace_seconds: float = 1.0, clock: Callable[[], float] = time.time,
-                 launch: Callable[..., Any] | None = None, poll_seconds: float = 0.5) -> None:
+                 launch: Callable[..., Any] | None = None, poll_seconds: float = 0.5,
+                 effect_ledger: RunnerEffectLedger | None = None) -> None:
         self._pool = pool
         self._store = store
         self._state_dir = os.fspath(state_dir)
@@ -61,6 +65,7 @@ class Runner:
         self._grace = grace_seconds
         self._clock = clock
         self._launch = launch
+        self._effect_ledger = effect_ledger
         self._poll = poll_seconds
         self._capacity = pool.policy.heavy_headroom
         self._cond = threading.Condition(threading.RLock())
@@ -97,8 +102,16 @@ class Runner:
             if existing is not None:
                 if existing["binding"] != binding:
                     return _error("binding_mismatch", "run_id %s names a different command" % run_id)
-                return {"ok": True, "run_id": run_id, "state": existing["state"], "existing": True,
-                        "binding": binding, "commit": commit}
+                response = {"ok": True, "run_id": run_id, "state": existing["state"], "existing": True,
+                            "binding": binding, "commit": commit}
+                if existing["state"] == "unknown" and self._effect_ledger is not None:
+                    effect = self._effect_ledger.get(run_id)
+                    if effect is not None:
+                        if not self._effect_ledger.matches(existing, effect):
+                            return _error("evidence_invalid", "held effect does not match the sealed runner request")
+                        response["effect_ref"] = effect.effect_ref.to_dict()
+                        response["next_action"] = "inspect retained process evidence; resolve only with exact terminal proof"
+                return response
             parent = self._parent_lease(peer_pid, snap)
             units = 0 if parent is not None else req["units"]
             record = {
@@ -194,11 +207,34 @@ class Runner:
         for record in records:
             if record["state"] == "running":
                 disposition = custody.resume_cleanup(self._latch_path(record["run_id"]), self._grace, self._census_fn)
+                effect = None if self._effect_ledger is None else self._effect_ledger.get(record["run_id"])
+                if effect is not None and not self._effect_ledger.matches(record, effect):
+                    self._put_record(record, state="unknown", outcome="effect_binding_mismatch", exit_code=None,
+                                     custody=_custody_state(disposition), settled_at=self._clock())
+                    continue
+                if effect is not None and self._mirror_terminal_effect(record, effect):
+                    continue
                 self._put_record(record, state="unknown", outcome="lost_in_restart", exit_code=None,
                                  custody=_custody_state(disposition), settled_at=self._clock())
         for record in records:
             if record["state"] != "queued":
                 continue
+            if self._effect_ledger is not None:
+                effect = self._effect_ledger.get(record["run_id"])
+                if effect is not None and not self._effect_ledger.matches(record, effect):
+                    self._put_record(record, state="unknown", outcome="effect_binding_mismatch", exit_code=None,
+                                     settled_at=self._clock())
+                    continue
+                if effect is not None and effect.state in (OperationState.COMMITTED, OperationState.FAILED):
+                    if self._mirror_terminal_effect(record, effect):
+                        continue
+                    self._put_record(record, state="unknown", outcome="terminal_evidence_mismatch", exit_code=None,
+                                     settled_at=self._clock())
+                    continue
+                if effect is not None and effect.state is not OperationState.PREPARED:
+                    self._put_record(record, state="unknown", outcome="lost_in_restart", exit_code=None,
+                                     settled_at=self._clock())
+                    continue
             if record["nested_in"] is not None:
                 self._put_record(record, state="unknown", outcome="lost_in_restart", exit_code=None,
                                  settled_at=self._clock())
@@ -279,6 +315,14 @@ class Runner:
                             settled_at=self._clock())
             return
         started = self._clock()
+        if self._effect_ledger is not None:
+            try:
+                lease.effect_record = self._effect_ledger.claim(record)
+            except Exception:
+                with self._cond:
+                    self._write(lease, state="unknown", outcome="start_claim_held", exit_code=None,
+                                settled_at=self._clock())
+                return
         with self._cond:
             if not self._write(lease, state="running", started_at=started, backfill=lease.backfill,
                                units=lease.units):
@@ -300,6 +344,9 @@ class Runner:
                 except Exception:
                     failed = True
         if failed:
+            if self._effect_ledger is not None and lease.effect_record is not None:
+                self._effect_ledger.finish(lease.effect_record, OperationState.UNKNOWN,
+                                           {"outcome": "launch_failed"})
             with self._cond:
                 self._write(lease, state="unknown", outcome="launch_failed", exit_code=None,
                             settled_at=self._clock())
@@ -328,14 +375,27 @@ class Runner:
             outcome, exit_code, state = "exited", (code if code >= 0 else 128 - code), "settled"
         seconds, unit_seconds = self._elapsed(lease)
         digest, size = _digest(self._store.output_path(run_id))
+        settled_at = self._clock()
+        custody_state = _custody_state(disposition)
+        tokens = _usage_tokens(self._usage_path(run_id))
         with self._cond:
+            result = {"outcome": outcome, "exit_code": exit_code, "output_sha256": digest,
+                      "output_bytes": size, "seconds": seconds, "unit_seconds": unit_seconds,
+                      "tokens": tokens, "custody": custody_state, "backfill": lease.backfill,
+                      "settled_at": settled_at}
+            if self._effect_ledger is not None and lease.effect_record is not None:
+                effect_state = OperationState.UNKNOWN if state == "unknown" else OperationState.COMMITTED
+                self._effect_ledger.finish(lease.effect_record, effect_state, result)
             self._write(lease, state=state, outcome=outcome, exit_code=exit_code,
-                        custody=_custody_state(disposition), tokens=_usage_tokens(self._usage_path(run_id)),
-                        output_sha256=digest, output_bytes=size, settled_at=self._clock(),
+                        custody=custody_state, tokens=tokens,
+                        output_sha256=digest, output_bytes=size, settled_at=settled_at,
                         seconds=seconds, unit_seconds=unit_seconds)
 
     def _abandon(self, lease: Lease) -> None:
         try:
+            if self._effect_ledger is not None and lease.effect_record is not None:
+                self._effect_ledger.finish(lease.effect_record, OperationState.UNKNOWN,
+                                           {"outcome": "interrupted"})
             with self._cond:
                 self._write(lease, state="unknown", outcome="interrupted", exit_code=None,
                             settled_at=self._clock())
@@ -368,6 +428,12 @@ class Runner:
             disposition = None if lease.custody is None else lease.custody.terminate(self._grace)
         seconds, unit_seconds = self._elapsed(lease)
         with self._cond:
+            if self._effect_ledger is not None and lease.effect_record is not None:
+                try:
+                    self._effect_ledger.finish(lease.effect_record, OperationState.UNKNOWN,
+                                               {"outcome": "interrupted"})
+                except Exception:
+                    pass
             self._write(lease, state="unknown", outcome="interrupted", exit_code=None,
                         custody=_custody_state(disposition), settled_at=self._clock(),
                         seconds=seconds, unit_seconds=unit_seconds)
@@ -387,6 +453,35 @@ class Runner:
     def _put_record(self, record: dict[str, Any], **fields: Any) -> None:
         record.update(fields)
         self._store.put(record)
+
+    def _mirror_terminal_effect(self, record: dict[str, Any], effect: Any) -> bool:
+        """Mirror a retained terminal kernel result only when its output file proves the digest."""
+        if effect.state not in (OperationState.COMMITTED, OperationState.FAILED):
+            return False
+        if self._effect_ledger is not None and not self._effect_ledger.matches(record, effect):
+            return False
+        result = effect.result
+        try:
+            digest, size = _digest(self._store.output_path(record["run_id"]))
+        except OSError:
+            return False
+        if (not digest or digest != result.get("output_sha256") or size != result.get("output_bytes")
+                or not isinstance(result.get("exit_code"), int)
+                or not isinstance(result.get("seconds"), (int, float))
+                or not isinstance(result.get("unit_seconds"), (int, float))
+                or type(result.get("tokens")) is not int or result.get("tokens") < 0
+                or result.get("custody") not in ("gone", "uncertain")
+                or type(result.get("backfill")) is not bool
+                or not isinstance(result.get("settled_at"), (int, float))
+                or result.get("outcome") not in ("exited", "timed_out")):
+            return False
+        self._put_record(record, state="settled", outcome=result["outcome"],
+                         exit_code=result["exit_code"], tokens=result.get("tokens", 0),
+                         output_sha256=digest, output_bytes=size,
+                         seconds=result["seconds"], unit_seconds=result["unit_seconds"],
+                         custody=result["custody"], backfill=result["backfill"],
+                         settled_at=result["settled_at"])
+        return True
 
     def _elapsed(self, lease: Lease) -> tuple[float | None, float | None]:
         if lease.started_at is None:

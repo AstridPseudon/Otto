@@ -5,6 +5,7 @@ from .admission import Entry, Holder, pick
 from .client import RunnerClient, RunnerUnavailable
 from .commit import git_commit_identity
 from .runner import EXIT_UNKNOWN, Runner
+from .effect_ledger import RunnerEffectLedger
 from .server import RunnerServer
 from .session_resume import AskingSessionMismatch, require_asking_session
 from .store import ResultStore, StoreError
@@ -16,6 +17,7 @@ __all__ = [
     "AskingSessionMismatch",
     "ResultStore",
     "Runner",
+    "RunnerEffectLedger",
     "RunnerClient",
     "RunnerServer",
     "RunnerUnavailable",

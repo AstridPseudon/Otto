@@ -13,11 +13,7 @@ from typing import Any, Iterable, Mapping
 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _TERMINAL = ("settled", "unknown")
-_NEXT = {
-    None: ("queued", "running", "settled", "unknown"),
-    "queued": ("queued", "running", "settled", "unknown"),
-    "running": ("running", "settled", "unknown"),
-}
+_STATES = frozenset(("queued", "running", "settled", "unknown"))
 
 
 class StoreError(RuntimeError):
@@ -173,8 +169,10 @@ class ResultStore:
                 raise StoreError("record %s is already %s and is never overwritten" % (run_id, old))
             if previous["binding"] != record["binding"]:
                 raise StoreError("record %s cannot change its binding" % run_id)
-        if record.get("state") not in _NEXT.get(old, ()):
-            raise StoreError("record %s may not go from %s to %s" % (run_id, old, record.get("state")))
+        if record.get("state") not in _STATES:
+            raise StoreError("record %s has an invalid state" % run_id)
+        if old == "running" and record.get("state") == "queued":
+            raise StoreError("record %s may not return to queued" % run_id)
         body = {key: value for key, value in record.items() if key != "seal"}
         try:
             data = json.dumps(dict(body, seal=self._seal(body)), sort_keys=True).encode("utf-8")
