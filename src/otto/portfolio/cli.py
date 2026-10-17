@@ -14,6 +14,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 import uuid
 from typing import Any, Mapping, Optional, Sequence
@@ -1106,7 +1107,7 @@ def _effect_command(args: Any, manager: Any, resolver: Any = None) -> dict[str, 
             if held:
                 next_action = (
                     "inspect the effect's source evidence, then use `otto effects resolve --effect-ref "
-                    + json.dumps(ref.to_dict(), separators=(",", ":"))
+                    + shlex.quote(json.dumps(ref.to_dict(), separators=(",", ":")))
                     + " --state committed --evidence-key RECEIPT_KEY --result-json RESULT_JSON` (use failed "
                     "when the proof says failed); the owner accepts only an exact retained effect.terminal proof "
                     "and generates the resolution request key"

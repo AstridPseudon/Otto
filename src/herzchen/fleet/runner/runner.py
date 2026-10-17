@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -503,7 +504,7 @@ class Runner:
             return {"effect_ref": effect.effect_ref.to_dict(),
                     "error": "held effect does not match the sealed runner request",
                     "next_action": "retain this exact effect hold and inspect its request binding"}
-        ref = json.dumps(effect.effect_ref.to_dict(), separators=(",", ":"))
+        ref = shlex.quote(json.dumps(effect.effect_ref.to_dict(), separators=(",", ":")))
         return {"effect_ref": effect.effect_ref.to_dict(), "evidence_status": "required",
                 "next_action": "inspect retained process evidence, then run `otto effects read --effect-ref " + ref +
                                "`; resolve only with exact terminal proof from this effect"}
