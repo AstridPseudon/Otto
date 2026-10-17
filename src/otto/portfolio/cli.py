@@ -1759,7 +1759,7 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
     words = list(argv)
     editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
     effect_manager = OperationManager(session.store) if words[:1] and words[0] == "effects" else None
-    effect_resolver = session.owner.owner_actor.actor if effect_manager is not None else None
+    effect_resolver = session.owner.owner_actor if effect_manager is not None else None
     out = StringIO()
     try:
         with redirect_stdout(out):
