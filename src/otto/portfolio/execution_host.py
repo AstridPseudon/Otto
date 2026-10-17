@@ -410,6 +410,46 @@ class ExecutionHost:
                 self.capacity.settle_turn(due.schedule_id)  # a disposition ends custody of used capacity
             self._forget_process_group(due.schedule_id)
 
+    def recover_capacity_failed_worker(self, app: Any, *, schedule_id: str) -> Mapping[str, Any] | None:
+        """Settle one manager-qualified terminal worker UNKNOWN and clear its fence.
+
+        Process death alone never qualifies. The existing exact retained native
+        disposition is required, and the normal restore path remains the sole
+        place that removes the in-memory fence.
+        """
+        from .worker_custody import (SCHEMA, inspect_capacity_failed_worker,
+            retained_capacity_release)
+
+        due = app._read(schedule_id)
+        marker = (due.host_evidence or {}).get("worker_custody_release")
+        if marker:
+            if marker.get("schema") != SCHEMA:
+                return None  # Other retained releases keep their own recovery path.
+            # Verify and recover the durable disposition idempotently after a
+            # prior manager call or owner restart.
+            body = retained_capacity_release(app, due)
+            scope = body["scope"]
+        else:
+            try:
+                qualified = inspect_capacity_failed_worker(app, schedule_id=schedule_id)
+            except (ValueError, KeyError, TypeError, OSError, PermissionError):
+                return None
+            scope = qualified
+
+        # The exact Due and UNKNOWN digest bind both retained request keys. A
+        # retry resolves through the immutable marker; it cannot mint another
+        # disposition or authorize a provider replay.
+        pin = hashlib.sha256(json.dumps([schedule_id, scope["due_sha256"],
+            scope["unknown_result_sha256"]], separators=(",", ":")).encode()).hexdigest()
+        request_key = "manager-recover-capacity:" + pin
+        fresh_request_key = "manager-recover-fresh:" + pin
+        result = app.release_capacity_failed_worker(schedule_id=schedule_id,
+            request_key=request_key, fresh_request_key=fresh_request_key,
+            expected_due_sha256=scope["due_sha256"],
+            expected_unknown_result_sha256=scope["unknown_result_sha256"])
+        self.restore_execution(app, app._read(schedule_id))
+        return result
+
     _PROCESS_GROUPS = "capacity-process-groups.json"
 
     def _load_process_groups(self) -> dict[str, dict[str, Any]]:
@@ -571,6 +611,16 @@ class ExecutionHost:
     def _eligible(self, scope: Mapping[str, Any]) -> bool:
         # Capacity follows processes: a hold whose group is provably gone no
         # longer counts, though it stays in the custody fence.
+        # The custody fence blocks new work in its project even after a dead
+        # process has returned its capacity units. Recovery itself is a finite
+        # manager command and does not enter this admission path.
+        if scope["role"] == "worker":
+            for key, row in self._capacity_holds.items():
+                if key == scope["schedule_id"]:
+                    continue
+                if (row.get("project") is None or scope.get("project") is None
+                        or row["project"] == scope["project"]):
+                    return False
         active_by_id = {**self.capacity_holds(),
             **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
         active = list(active_by_id.values())
@@ -578,6 +628,8 @@ class ExecutionHost:
         if not self.capacity.policy.admits_turn(scope["role"], len(active) - managers, managers):
             return False
         for row in active:
+            # Project scope applies only to the custody fence above. Physical
+            # session and writer/workspace conflicts remain shared resources.
             if (row["assignment"] == scope["assignment"]
                     or scope["session"] and row["session"] == scope["session"]):
                 return False

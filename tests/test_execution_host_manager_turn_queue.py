@@ -12,11 +12,56 @@ from herzchen.contracts import ResourceRef
 from herzchen.domains.work.admission import authoring_stamp
 from herzchen.fleet.tools.tokens import TokenBook
 from otto.hostctl.product_service import bind_automatic_dispatch
+from otto.hostctl.project_service import ProjectOwnerService
 from otto.hostctl.service import OwnerService
 from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.project_services import ProjectServices
 
 
 class ManagerTurnQueueTests(unittest.TestCase):
+    def test_capacity_fence_does_not_block_activation_of_another_project(self):
+        host = SimpleNamespace(_threads=[], bounded_transports=True, _executions={},
+                               _capacity_holds={"worker-a": {"project": "project-a",
+                                   "role": "worker", "schedule_id": "worker-a"}})
+        due_port, store = object(), object()
+        owner = SimpleNamespace(owner_actor="owner")
+
+        def view(project, assignment):
+            state = {"project_ref": {"authority": "fixture", "kind": "project", "id": project},
+                     "assignment_ref": {"authority": "fixture", "kind": "assignment", "id": assignment},
+                     "manager": project + "-manager", "manager_generation": 1}
+            server = SimpleNamespace(state=state, due_port=due_port, store=store, owner=owner)
+            return SimpleNamespace(host=host, server=server, workspace=Path("/tmp"),
+                                   run_path=Path("/tmp") / project)
+
+        first = view("project-a", "assignment-a")
+        router = ProjectServices({"project-a": first}, host=host, due_port=due_port, store=store)
+        second = view("project-b", "assignment-b")
+
+        router.add_view("project-b", second)
+
+        self.assertIn("worker-a", host._capacity_holds,
+                      "activating an unrelated project must retain the original worker fence")
+        self.assertIs(router.services["project-b"], second)
+
+    def test_activation_queue_scopes_the_fence_to_its_project(self):
+        with tempfile.TemporaryDirectory(prefix="otto-project-fence-") as temporary:
+            service = ProjectOwnerService.__new__(ProjectOwnerService)
+            service.shared_host = SimpleNamespace(_executions={}, _capacity_holds={
+                "worker-a": {"project": "project-a", "role": "worker"}})
+            service.router = SimpleNamespace(services={"project-a": SimpleNamespace(server=
+                SimpleNamespace(run_id="run-a", state={"project_ref": {"id": "project-a"}}))})
+            lane = Path(temporary)
+
+            def activation(project):
+                return {"command": "portfolio-operation", "args": {"command": "project",
+                    "sub": "activate", "args": {"project": project}}}
+
+            self.assertFalse(service._defer_request(lane, "owner", "project-b", activation("project-b")))
+            self.assertTrue(service._defer_request(lane, "owner", "project-a", activation("project-a")))
+            self.assertTrue(service._defer_request(lane, "owner", "run-a", activation("run-a")))
+            self.assertTrue((lane / "pending-project-a.json").exists())
+
     def test_hold_during_turn_operations_remain_held_at_owner_boundary(self):
         host = SimpleNamespace(_external_waiting=1,
                                _status_read=lambda *_args: self.fail("held operation reached the host"))

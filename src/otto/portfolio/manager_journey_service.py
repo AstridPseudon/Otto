@@ -1564,6 +1564,15 @@ class ManagerJourneyService:
                     "occurrence": {key: raw.get(key) for key in ("schedule_id", "version",
                         "assignment_ref", "generation", "stop_state", "host_state",
                         "completion_state", "in_flight_request")}, "provider_called": False}
+        if operation == "recover" and due.role == "worker":
+            # One explicit manager recovery action may settle only the exact
+            # retained terminal capacity-failure disposition. Process death or
+            # a generic UNKNOWN never qualifies and follows normal recovery.
+            settled = self.host.recover_capacity_failed_worker(app, schedule_id=schedule)
+            if settled is not None:
+                return {**settled, "manager_recovery": True,
+                        "historical_unknown_preserved": True, "provider_called": False,
+                        "retry": False}
         # Read the retained projection before checking admission.  Only a
         # genuinely prepared occurrence needs the operating-setup gate; a
         # stopped, paused, active, or already-captured occurrence must remain

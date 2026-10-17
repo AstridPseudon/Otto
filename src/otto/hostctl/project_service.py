@@ -62,12 +62,27 @@ class ProjectOwnerService(OwnerService):
 
     def call(self, operation: Callable[[], Any], *, hold_during_turn: bool = False) -> Any:
         def finite():
-            if hold_during_turn and (self.shared_host._executions or self.shared_host._capacity_holds):
+            project_id = getattr(getattr(self, "_dispatch_context", None), "project_id", None)
+            if hold_during_turn and self._project_has_custody(project_id):
                 return {'outcome': 'held', 'reason': 'execution-changing operation requires a closed owner boundary',
                         'retry': False, 'effects_started': False, 'provider_called': False}
             with service_store(self.store):
                 return operation()
         return self.shared_host._status_read({'command': 'host-client-operation'}, finite)
+
+    def _project_has_custody(self, project_id: Any) -> bool:
+        active = {**self.shared_host._capacity_holds,
+            **{schedule: value['scope'] for schedule, value in self.shared_host._executions.items()}}
+        if project_id is None:
+            return bool(active)  # Unknown target keeps the conservative shared fence.
+        # The operator may name an already installed project by its run ID.
+        # Resolve that alias before comparing it with Due project IDs.
+        for view in getattr(getattr(self, 'router', None), 'services', {}).values():
+            if project_id == getattr(view.server, 'run_id', None):
+                project_id = view.server.state['project_ref']['id']
+                break
+        return any(scope.get('project') is None or scope.get('project') == project_id
+                   for scope in active.values())
 
     def poll(self) -> None:
         def finite():
@@ -92,11 +107,15 @@ class ProjectOwnerService(OwnerService):
         operation = (request.get('command'), request.get('sub'))
         if request.get('command') == 'portfolio-operation':
             operation = (args.get('command'), args.get('sub'))
+            args = args.get('args') or {}
         is_activation = operation == ('project', 'activate')
         is_attach = who == 'owner' and request.get('command') == 'attach'
         if not (is_activation or is_attach):
             return False
-        if not (self.shared_host._executions or self.shared_host._capacity_holds):
+        project_id = args.get('project') if isinstance(args, Mapping) else None
+        if project_id is None and isinstance(args, Mapping) and isinstance(args.get('request'), Mapping):
+            project_id = args['request'].get('project')
+        if not self._project_has_custody(project_id):
             return False
         pending = lane / ('pending-' + token + '.json')
         try:

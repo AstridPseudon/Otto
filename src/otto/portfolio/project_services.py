@@ -75,10 +75,15 @@ class ProjectServices:
             raise ValueError("project view key is already installed")
         if len(current) >= 16:
             raise ValueError("install between zero and sixteen explicit project views")
-        if self.host._executions or self.host._capacity_holds:
-            raise RuntimeError("install a project view only after shared execution custody clears")
         server, state = service.server, service.server.state
         project, assignment = _identity(state["project_ref"]), _identity(state["assignment_ref"])
+        project_id = state["project_ref"]["id"]
+        # Retained execution custody fences its own project. A held worker in
+        # another project must not prevent this view from being installed.
+        active = {**self.host._capacity_holds,
+            **{schedule: value["scope"] for schedule, value in self.host._executions.items()}}
+        if any(scope.get("project") in (None, project_id) for scope in active.values()):
+            raise RuntimeError("install a project view only after its execution custody clears")
         first = next(iter(current.values()), None)
         owner_actor = first.server.owner.owner_actor if first is not None else None
         if (service.host is not self.host or server.due_port is not self.due_port
