@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from otto.agents import codex_host_reader as reader_module
+from otto.agents.orchestrator_route import compose_owner_resource_herzchen_adapter
 
 
 class CodexHostReaderTests(unittest.TestCase):
@@ -38,7 +39,8 @@ class CodexHostReaderTests(unittest.TestCase):
         self.allowed.start()
         self.addCleanup(self.allowed.stop)
         return reader_module.CodexAppServerThreadReader(
-            launcher=str(self.launcher), sessions_root=str(self.root), timeout_seconds=3)
+            launcher=str(self.launcher), sessions_root=str(self.root), timeout_seconds=3,
+            scope_latch_path=str(self.root / 'reader-scope.json'))
 
     def test_qualified_binary_reads_only_the_exact_session_metadata(self):
         reader = self.fixture_reader()
@@ -83,42 +85,41 @@ class CodexHostReaderTests(unittest.TestCase):
         self.assertEqual([request["method"] for request in requests], ["initialize"])
 
 
-    def test_exhausted_rpc_deadline_still_gets_bounded_term_and_kill_reap(self):
+    def test_rpc_failure_uses_birth_fenced_custody_cleanup(self):
+        from herzchen.fleet.custody import Disposition
+        reader = self.fixture_reader()
         process = MagicMock(pid=1234)
-        process.wait.side_effect = [reader_module.subprocess.TimeoutExpired("reader", 1), 0]
-        with patch.object(reader_module.os, "killpg") as kill, patch.object(
-                reader_module.time, "monotonic", return_value=100000):
-            reader_module._reap_app_server(process)
-        self.assertEqual([call.kwargs["timeout"] for call in process.wait.call_args_list], [1.0, 1.0])
-        self.assertEqual([call.args[1] for call in kill.call_args_list],
-                         [reader_module.signal.SIGTERM, reader_module.signal.SIGKILL])
-
-    def test_term_exit_needs_no_kill(self):
-        process = MagicMock(pid=1234)
-        with patch.object(reader_module.os, "killpg") as kill:
-            reader_module._reap_app_server(process)
-        process.wait.assert_called_once_with(timeout=1.0)
-        kill.assert_called_once_with(1234, reader_module.signal.SIGTERM)
+        custody = MagicMock(process=process)
+        custody.release.return_value = Disposition('gone')
+        with patch.object(reader_module.Custody, 'launch', return_value=custody), patch.object(
+                reader_module, '_StdioRPC', side_effect=reader_module.HostThreadReadError('app_server_timeout')), patch.object(
+                reader_module.os, 'killpg') as raw_signal:
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, '^app_server_timeout$'):
+                reader('issued-session')
+        custody.release.assert_called_once_with()
+        raw_signal.assert_not_called()
 
     def test_cleanup_failure_preserves_original_rpc_timeout(self):
+        from herzchen.fleet.custody import Custody
         reader = self.fixture_reader()
-        reap = reader_module._reap_app_server
-        def failed_reap(process):
-            reap(process)
+        release = Custody.release
+        def failed_release(custody):
+            release(custody)
             raise OSError("fixture secondary failure")
         with patch.object(reader_module._StdioRPC, "response", side_effect=
                 reader_module.HostThreadReadError("app_server_timeout")), patch.object(
-                reader_module, "_reap_app_server", side_effect=failed_reap):
+                Custody, "release", autospec=True, side_effect=failed_release):
             with self.assertRaisesRegex(reader_module.HostThreadReadError, "^app_server_timeout$"):
                 reader("issued-session")
 
     def test_valid_metadata_does_not_bypass_failed_cleanup(self):
+        from herzchen.fleet.custody import Custody
         reader = self.fixture_reader()
-        reap = reader_module._reap_app_server
-        def failed_reap(process):
-            reap(process)
+        release = Custody.release
+        def failed_release(custody):
+            release(custody)
             raise OSError("fixture secondary failure")
-        with patch.object(reader_module, "_reap_app_server", side_effect=failed_reap):
+        with patch.object(Custody, "release", autospec=True, side_effect=failed_release):
             with self.assertRaisesRegex(reader_module.HostThreadReadError, "^app_server_cleanup_failed$"):
                 reader("issued-session")
 
@@ -135,6 +136,50 @@ class CodexHostReaderTests(unittest.TestCase):
         with patch.object(Custody, 'release', side_effect=OSError('fixture cleanup failure')):
             with self.assertRaisesRegex(reader_module.HostThreadReadError, '^app_server_cleanup_failed$'):
                 reader('issued-session')
+
+    def test_production_reader_recovers_crashed_scope_before_another_spawn(self):
+        from herzchen.fleet.custody import Disposition
+        self.fixture_reader()  # Qualify the fake CLI digest for the production composition.
+        context = self.root / 'owner-context.json'
+        latch = Path(str(context) + '.metadata-reader-scope.json')
+
+        def production_reader():
+            adapter = compose_owner_resource_herzchen_adapter(
+                owner='test-owner', source='test-source', worktree=str(self.root),
+                launcher=str(self.launcher), host_context_path=str(context),
+                trusted_sessions_root=str(self.root))
+            return adapter.trusted_thread_reader
+
+        first = production_reader()
+        def died_after_intent(_argv, **kwargs):
+            self.assertEqual(kwargs['latch_path'], str(latch))
+            latch.write_text(json.dumps({'pgid': None, 'leader_birth': None,
+                                         'state': 'launching', 'members': {}}))
+            raise SystemExit('owner died after durable launch intent')
+        with patch.object(reader_module.Custody, 'launch', side_effect=died_after_intent):
+            with self.assertRaises(SystemExit):
+                first('issued-session')
+        self.assertTrue(latch.exists())
+
+        restarted = production_reader()
+        with patch.object(reader_module.Custody, 'launch') as launch, patch.object(
+                reader_module, 'resume_cleanup', return_value=Disposition('uncertain', 'identity missing')) as resume:
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, '^app_server_cleanup_unresolved$'):
+                restarted('issued-session')
+            resume.assert_called_once_with(str(latch))
+            launch.assert_not_called()
+        self.assertTrue(latch.exists())
+
+        def settled(path):
+            self.assertEqual(path, str(latch))
+            latch.unlink()
+            return Disposition('gone')
+        with patch.object(reader_module, 'resume_cleanup', side_effect=settled) as resume, patch.object(
+                reader_module.Custody, 'launch', side_effect=OSError('fixture stops before spawn')) as launch:
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, '^host_metadata_lookup_failed$'):
+                restarted('issued-session')
+            resume.assert_called_once_with(str(latch))
+            launch.assert_called_once()
 
 
 if __name__ == "__main__":

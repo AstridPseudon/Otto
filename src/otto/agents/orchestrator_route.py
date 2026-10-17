@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from otto.portfolio.resource_sync import (
@@ -217,11 +218,13 @@ def compose_owner_resource_herzchen_adapter(
     host-attested.
     """
 
-    if not isinstance(host_context_path, str) or not host_context_path.strip():
-        raise OrchestratorRouteError("host_context_path is required for the owner-resource host path")
+    if (not isinstance(host_context_path, str) or not Path(host_context_path).is_absolute()
+            or ".." in Path(host_context_path).parts):
+        raise OrchestratorRouteError("absolute host_context_path is required for the owner-resource host path")
     if trusted_thread_reader is None:
         trusted_thread_reader = CodexAppServerThreadReader(
             launcher=launcher, sessions_root=trusted_sessions_root,
+            scope_latch_path=host_context_path + ".metadata-reader-scope.json",
         )
     return HerzchenCodexAdapter(
         owner=owner,

@@ -17,11 +17,12 @@ import abc
 import copy
 from dataclasses import dataclass, field, replace
 import os
+from pathlib import Path
 import re
 import subprocess
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
-from ..custody import Custody
+from ..custody import Custody, Disposition, resume_cleanup
 
 OUTCOMES = frozenset({"succeeded", "failed", "unknown"})
 EVENT_KINDS = frozenset({"session", "turn", "done", "other"})
@@ -332,17 +333,34 @@ class HostKind(abc.ABC):
         return LaunchPlan(argv, self.build_stdin(spec), env, spec.workspace, fence, spec.session, spec.initializer)
 
 
-def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = None,
+def _durable_latch_path(latch_path: Optional[str]) -> str:
+    if (not isinstance(latch_path, str) or not os.path.isabs(latch_path)
+            or ".." in Path(latch_path).parts):
+        raise HostContractError("a durable custody latch path is required before spawn")
+    return latch_path
+
+
+def recover_turn_scope(latch_path: str) -> Disposition:
+    """Recover one retained host turn without replaying its provider effect."""
+    return resume_cleanup(_durable_latch_path(latch_path))
+
+
+def run_turn(host: HostKind, spec: TurnSpec, *, latch_path: Optional[str] = None,
+             fence: Optional[WriteFence] = None,
              process_factory: Any = subprocess.Popen, timeout: float = 120.0) -> TurnResult:
     """The whole loop for any harness: launch, feed the stream to the parser, finish.
 
     A parser error or a timeout never reads as success: the outcome is ``unknown`` and the turn is
     never replayed here.
     """
+    latch_path = _durable_latch_path(latch_path)
+    if os.path.exists(latch_path):
+        raise HostContractError("prior custody latch is unresolved; recover the exact turn before a new admission")
     plan = host.launch(spec, fence)
     parser = host.make_parser(spec)
     events: list = []
-    custody = Custody.launch(list(plan.command()), popen=process_factory, cwd=plan.cwd,
+    custody = Custody.launch(list(plan.command()), latch_path=latch_path,
+                             popen=process_factory, cwd=plan.cwd,
                              env={**os.environ, **plan.env},
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     process = custody.process
@@ -371,7 +389,8 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
 
 
 def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationRequest, *,
-                     authorize: Any, fence: Optional[WriteFence] = None,
+                     authorize: Any, latch_path: Optional[str] = None,
+                     fence: Optional[WriteFence] = None,
                      process_factory: Any = subprocess.Popen, timeout: float = 120.0) -> TurnResult:
     """Run one exact-session continuation; the owner rechecks the receipt and retry bound in ``authorize``."""
     if not isinstance(request, ContinuationRequest):
@@ -384,13 +403,15 @@ def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationReques
         raise HostContractError("continuation must resume the exact TurnSpec session")
     if spec.workspace != request.workspace:
         raise HostContractError("continuation must use the exact parked workspace")
+    latch_path = _durable_latch_path(latch_path)
     resumed = host.prepare_continuation(spec, request)
     if (not isinstance(resumed, TurnSpec) or resumed.session != request.session_id
             or resumed.workspace != request.workspace or resumed.initializer):
         raise HostContractError("host continuation must preserve session and parked workspace for a work turn")
     if not callable(authorize) or authorize(request) is not True:
         raise HostContractError("continuation was not authorized")
-    return run_turn(host, resumed, fence=fence, process_factory=process_factory, timeout=timeout)
+    return run_turn(host, resumed, latch_path=latch_path, fence=fence,
+                    process_factory=process_factory, timeout=timeout)
 
 
 class HostRegistry:
