@@ -17,10 +17,24 @@ from herzchen.usage.contract import (
 
 
 class UsageContractTests(unittest.TestCase):
+    @staticmethod
+    def _contract_definition():
+        return contract_definition(
+            selected_pack_ref={"authority": "fixture-owner", "id": "selected", "kind": "dat.content.document", "revision": "rev-1"},
+            selected_pack_root="/fixture/selected-pack",
+            source_root="/fixture/source",
+            runtime_interpreter="/fixture/python",
+            runtime_command="/fixture/python /fixture/manager.py",
+        )
+
     def test_contract_freezes_adapters_seams_pins_and_explicit_coverage(self):
-        contract = contract_definition()
+        contract = self._contract_definition()
         self.assertEqual(contract["schema"], "otto.usage-cost.contract.v1")
         self.assertEqual(contract["provenance"]["source"]["commit"], SOURCE_COMMIT)
+        self.assertEqual(contract["provenance"]["resource"]["selected_pack_ref"]["authority"], "fixture-owner")
+        self.assertEqual(contract["provenance"]["resource"]["selected_pack_root"], "/fixture/selected-pack")
+        self.assertEqual(contract["provenance"]["source"]["root"], "/fixture/source")
+        self.assertEqual(contract["provenance"]["runtime"]["command"], "/fixture/python /fixture/manager.py")
         self.assertEqual(set(contract["adapters"]), {"codex-direct", "codex-host", "claude-code"})
         self.assertEqual(contract["adapters"]["codex-direct"]["coverage"], {"mechanical": "supported", "live": "supported"})
         self.assertEqual(contract["adapters"]["codex-host"]["coverage"], {"mechanical": "supported", "live": "supported"})

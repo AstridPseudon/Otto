@@ -30,6 +30,36 @@ def _otto_imports(path: Path) -> list[str]:
 
 
 OTTO_OR_MEGADO = re.compile(r"otto|megado", re.IGNORECASE)
+MACHINE_PATHS = re.compile(r"/Users/|Documents/Codex")
+
+
+def _product_imports(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        found.extend(name for name in names if name.split(".", 1)[0] in {"otto", "astrid"})
+    return found
+
+
+def _boundary_offenders(source_root: Path) -> dict[str, list[str]]:
+    offenders = {}
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file() or "tests" in path.parts or path.suffix in {".pyc", ".sqlite"}:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        matches = []
+        if path.suffix == ".py":
+            matches.extend(_product_imports(path))
+        matches.extend(match.group(0) for match in MACHINE_PATHS.finditer(text))
+        if matches:
+            offenders[str(path.relative_to(source_root))] = sorted(set(matches))
+    return offenders
 
 
 def _docstring_ids(tree: ast.AST) -> set[int]:
@@ -102,3 +132,17 @@ def test_fleet_carries_no_otto_or_megado_names():
         for lineno, text in _otto_names(path):
             offenders.setdefault(f"{path.relative_to(ROOT)}:{lineno}", []).append(text[:80])
     assert offenders == {}
+
+
+def test_herzchen_source_has_no_upstream_imports_or_machine_paths(tmp_path):
+    assert _boundary_offenders(HERZCHEN) == {}
+
+    doctored_source = tmp_path / "herzchen"
+    doctored_source.mkdir()
+    (doctored_source / "doctored.py").write_text(
+        "import otto\nfrom astrid.core.pack import loader\n"
+        "RESOURCE_ROOT = '/Users/example/Documents/Codex/source'\n", encoding="utf-8"
+    )
+    assert _boundary_offenders(doctored_source) == {
+        "doctored.py": ["/Users/", "Documents/Codex", "astrid.core.pack", "otto"]
+    }

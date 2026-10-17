@@ -1,6 +1,5 @@
 import hashlib
 import builtins
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -106,6 +105,43 @@ def _copy_native_pack_tree(destination):
     return target_root
 
 
+def _prepare_recorded_provenance_checkout():
+    """Materialize the checked-in pack at its recorded root with a fixed Git commit."""
+    fixture_root = Path(__file__).parent / "fixtures" / "managed_source_provenance" / "checkout"
+    git_dir = fixture_root / ".git"
+    if git_dir.exists():
+        import shutil
+        shutil.rmtree(git_dir)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Pack Parity Fixture",
+        "GIT_AUTHOR_EMAIL": "pack-parity@example.invalid",
+        "GIT_AUTHOR_DATE": "2020-01-02T03:04:05+00:00",
+        "GIT_COMMITTER_NAME": "Pack Parity Fixture",
+        "GIT_COMMITTER_EMAIL": "pack-parity@example.invalid",
+        "GIT_COMMITTER_DATE": "2020-01-02T03:04:05+00:00",
+    }
+    authoring_path = fixture_root / "src/herzchen/packs/authoring.py"
+    import shutil
+    shutil.copy2(Path(__file__).parents[1] / "src/herzchen/packs/authoring.py", authoring_path)
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=fixture_root, env=env, check=True)
+    subprocess.run(
+        ["git", "add", "src/herzchen/packs/authoring.py",
+         "src/herzchen/packs/evidence_resource_pack"],
+        cwd=fixture_root, env=env, check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.name=Pack Parity Fixture", "-c",
+         "user.email=pack-parity@example.invalid", "commit", "-qm", "recorded source fixture"],
+        cwd=fixture_root, env=env, check=True,
+    )
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=fixture_root, env=env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return fixture_root, authoring_path, revision
+
+
 def _copy_installed_runtime_source(controller_root):
     """Build an installed controller tree authenticated by runtime-manifest.json."""
     import shutil
@@ -179,6 +215,27 @@ class EvidenceLifecycleTests(unittest.TestCase):
             original_creator="creator",
             **kwargs,
         )
+
+    def test_otto_source_state_path_matches_explicit_and_default_astrid_locations(self):
+        from otto.hostctl.owner import _managed_source_state_path
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            configured = root / "configured" / "pack-sources.json"
+            state_home = root / "xdg-state"
+            with patch.dict(os.environ, {
+                "ASTRID_SOURCE_STATE": str(configured),
+                "XDG_STATE_HOME": str(state_home),
+            }):
+                self.assertEqual(_managed_source_state_path(), configured.resolve())
+            with patch.dict(os.environ, {
+                "ASTRID_SOURCE_STATE": "",
+                "XDG_STATE_HOME": str(state_home),
+            }):
+                self.assertEqual(
+                    _managed_source_state_path(),
+                    (state_home / "astrid" / "default" / "pack-sources.json").resolve(),
+                )
 
     def test_text_binary_capture_bindings_resolution_and_replay_boundaries(self):
         text = ("line-0123456789\n" * 140_000).encode("utf-8")
@@ -335,56 +392,54 @@ class EvidenceLifecycleTests(unittest.TestCase):
                 with self.assertRaises(EvidencePackError):
                     load_evidence_pack(project_root=controller_root)
 
-    @unittest.skipUnless(importlib.util.find_spec("astrid") is not None,
-                         "Astrid is not installed in this test environment")
-    def test_native_source_provenance_matches_astrid_for_same_pack(self):
-        from astrid.core.pack.discovery import discover_canonical_pack_metadata
-        from astrid.core.pack.loader import load_pack_manifest
-        from astrid.core.pack.source_setup import _tree_digest
+    def test_native_source_provenance_matches_recorded_astrid_fixture_field_by_field(self):
         from herzchen.packs import authoring
 
-        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as state_temporary:
-            copied_herzchen = _copy_native_pack_tree(temporary)
-            repo_root = Path(temporary)
-            pack_root = copied_herzchen / "packs" / "evidence_resource_pack"
-            copied_authoring = copied_herzchen / "packs" / "authoring.py"
-            revision = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True,
-                capture_output=True, text=True,
-            ).stdout.strip()
-            tree_digest = _tree_digest(pack_root)
-            manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-            state_path = Path(state_temporary) / "astrid-source-state.json"
-            state_path.write_text(json.dumps({
+        fixture_dir = Path(__file__).parent / "fixtures" / "managed_source_provenance"
+        recording = json.loads((fixture_dir / "recorded_source.json").read_text(encoding="utf-8"))
+        recorded_source = recording["source"]
+        fixture_root = fixture_dir / recording["fixture_root"] / "checkout"
+        pack_root = fixture_root / recorded_source["pack_root"]
+        with tempfile.TemporaryDirectory() as temporary:
+            source_state_path = Path(temporary) / "pack-sources.json"
+            state_record = {
+                **recorded_source,
+                "pack_root": str(pack_root.resolve()),
+            }
+            source_state_path.write_text(json.dumps({
                 "version": 1,
-                "active": {
-                    "evidence": {
-                        "pack_id": "evidence",
-                        "pack_root": str(pack_root.resolve()),
-                        "repository": "https://example.invalid/packload.git",
-                        "revision": revision,
-                        "pack_subpath": pack_root.relative_to(repo_root).as_posix(),
-                        "manifest_sha256": manifest_digest,
-                        "tree_sha256": tree_digest,
-                        "source_kind": "managed",
-                    }
-                },
+                "active": {recorded_source["pack_id"]: state_record},
                 "cached": {},
                 "disabled": [],
             }), encoding="utf-8")
-            with patch.dict(os.environ, {"ASTRID_SOURCE_STATE": str(state_path)}), \
-                    patch.object(authoring, "__file__", str(copied_authoring)):
-                astrid_items = discover_canonical_pack_metadata(project_root=repo_root)
-                matching = [item for item in astrid_items if item.id == "evidence"]
-                self.assertEqual(len(matching), 1)
-                self.assertEqual(matching[0].source_kind, "managed")
-                astrid_pack = read_managed_pack(
-                    "evidence", project_root=repo_root,
-                    discoverer=lambda *, project_root: matching,
-                    loader=load_pack_manifest,
-                )
-                native_pack = read_managed_pack("evidence", project_root=repo_root)
-        self.assertEqual(native_pack.source.to_dict(), astrid_pack.source.to_dict())
+            repo_root, copied_authoring, revision = _prepare_recorded_provenance_checkout()
+            expected_revision = recorded_source["revision"]
+            self.assertEqual(revision, expected_revision)
+            expected = {
+                "pack_id": recorded_source["pack_id"],
+                "source_kind": recorded_source["source_kind"],
+                "source_revision": recorded_source["revision"],
+                "source_tree_sha256": recorded_source["tree_sha256"],
+                "source_manifest_sha256": recorded_source["manifest_sha256"],
+                "source_inventory_identity": recording["source_inventory_identity"],
+                "pack_root": str(pack_root.resolve()),
+                "manifest_path": str((fixture_root / recording["manifest_path"]).resolve()),
+            }
+            try:
+                with patch.object(authoring, "__file__", str(copied_authoring)):
+                    managed = read_managed_pack(
+                        recorded_source["pack_id"], project_root=repo_root,
+                        source_state_path=source_state_path,
+                    )
+                actual = managed.source.to_dict()
+                self.assertEqual(set(actual), set(expected))
+                for field, value in expected.items():
+                    with self.subTest(field=field):
+                        self.assertEqual(actual[field], value)
+            finally:
+                import shutil
+                shutil.rmtree(repo_root / ".git", ignore_errors=True)
+                copied_authoring.unlink(missing_ok=True)
 
     def test_native_loader_refuses_tampered_manifest_and_tree(self):
         from herzchen.packs import authoring

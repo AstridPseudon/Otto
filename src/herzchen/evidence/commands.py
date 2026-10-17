@@ -234,6 +234,7 @@ class _EvidenceCommandHandlerEngine:
         selection: Optional[EvidenceSelection] = None,
         adopted_pins: Optional[Sequence[Mapping[str, Any]]] = None,
         project_root: Optional[str | os.PathLike[str]] = None,
+        source_state_path: Optional[str | os.PathLike[str]] = None,
         authorize: Optional[Callable[[Mapping[str, Any], AuthenticatedActor, ResourceRef], bool]] = None,
         workflow_enabled: bool = True,
         authorize_lifecycle: Optional[Callable[[Mapping[str, Any], AuthenticatedActor, ResourceRef, str], bool]] = None,
@@ -259,7 +260,9 @@ class _EvidenceCommandHandlerEngine:
         self._authorize_lifecycle = authorize_lifecycle
         self._resolve_dependencies = resolve_dependencies
         self.workflow_enabled = bool(workflow_enabled)
-        self.pack = pack or load_evidence_pack(project_root=project_root)
+        self.pack = pack or load_evidence_pack(
+            project_root=project_root, source_state_path=source_state_path
+        )
         if selection is not None and adopted_pins is not None:
             raise EvidencePackError("provide either an Evidence selection or adopted resource pins, not both")
         self.selection = selection or self.pack.select(adopted_pins)

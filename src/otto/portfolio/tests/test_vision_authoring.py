@@ -49,7 +49,7 @@ class VisionAuthoringTests(unittest.TestCase):
         source = ManagedSourceIdentity("vision", "managed", "a" * 40, "b" * 64,
             hashlib.sha256(manifest.read_bytes()).hexdigest(), "c" * 64, str(self.pack_root), str(manifest))
         resource = ManagedResource(RESOURCE_PATH, "vision_schema", schema, digest,
-                                  ResourceRef("astrid-managed", "managed_pack", "vision", "a" * 40))
+                                  ResourceRef("managed-source", "managed_pack", "vision", "a" * 40))
         self.pack = ManagedPack("vision", "1.0.0", source, {}, (resource,), (), ())
         self.pin = ExecutionPin("vision/" + RESOURCE_PATH, "vision_schema", "a" * 40, digest)
         self.definition = {"pack_id": "vision", "source_revision": "a" * 40,
@@ -193,7 +193,7 @@ class VisionAuthoringTests(unittest.TestCase):
         bad = {**self.definition, "resource_sha256": "0" * 64}
         with self.assertRaisesRegex(VisionValidationError, "digest mismatch"):
             self.definitions.resolve(bad)
-        wrong_resource = replace(self.pack.resources[0], source_ref=ResourceRef("astrid-managed", "managed_pack", "vision", "b" * 40))
+        wrong_resource = replace(self.pack.resources[0], source_ref=ResourceRef("managed-source", "managed_pack", "vision", "b" * 40))
         with self.assertRaisesRegex(VisionValidationError, "provenance"):
             ManagedVisionDefinitions((replace(self.pack, resources=(wrong_resource,)),), (self.pin,)).resolve(self.definition)
         unsafe = {**DEFINITION_CONTRACT, "hook": "os.system('never run')"}

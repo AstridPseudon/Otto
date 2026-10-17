@@ -138,7 +138,7 @@ class VisionResourcePack:
         for item in self.resources:
             if EXPECTED_RESOURCES[item.path] != item.kind:
                 raise VisionPackError(f"Vision resource kind mismatch: {item.path}")
-            if item.source_ref != ResourceRef("astrid-managed", "managed_pack", self.pack_id, self.source.source_revision):
+            if item.source_ref != ResourceRef("managed-source", "managed_pack", self.pack_id, self.source.source_revision):
                 raise VisionPackError(f"Vision resource source pin is foreign or stale: {item.path}")
 
     @classmethod
@@ -294,6 +294,7 @@ def load_vision_pack(
     managed_pack: ManagedPack | None = None,
     discoverer: Any = None,
     loader: Any = None,
+    source_state_path: str | Path | None = None,
 ) -> VisionResourcePack:
     """Use the existing public managed discovery/loader boundary."""
     try:
@@ -303,6 +304,7 @@ def load_vision_pack(
                 project_root=project_root or Path(__file__).resolve().parents[3],
                 discoverer=discoverer,
                 loader=loader,
+                source_state_path=source_state_path,
             )
         else:
             managed = managed_pack

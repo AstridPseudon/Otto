@@ -131,7 +131,7 @@ class ManagedVisionDefinitions:
         if expected not in self._pins:
             _fail("definition", "exact resource is not selected by owner adoption", "definition_unavailable")
         if (resource.kind != "vision_schema" or resource.source_ref != ResourceRef(
-                "astrid-managed", "managed_pack", "vision", pack.source.source_revision)
+                "managed-source", "managed_pack", "vision", pack.source.source_revision)
                 or resource.source_digest != descriptor["resource_sha256"]
                 or hashlib.sha256(resource.content).hexdigest() != resource.source_digest):
             _fail("definition", "resource provenance or byte digest mismatch", "definition_mismatch")

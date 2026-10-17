@@ -1,7 +1,7 @@
 """Managed pack compatibility and content-only authoring.
 
 Packs shipped in Herzchen's own source tree are admitted here without importing
-Astrid. Explicit discovery/loader adapters remain available for external packs.
+another product. Explicit discovery/loader adapters remain available for external packs.
 The authoring handler only snapshots admitted resource bytes through the
 supplied FND store; it never creates a database or owns a second writer.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -74,7 +73,7 @@ class PackAuthoringError(ValueError):
 
 
 class PackLoaderUnavailableError(PackAuthoringError):
-    """Astrid's supported public loader/discovery API is unavailable."""
+    """The configured public loader/discovery API is unavailable."""
 
 
 class PackProvenanceError(PackAuthoringError):
@@ -99,7 +98,7 @@ class PublicPackLoader(Protocol):
 
 @dataclass(frozen=True)
 class ManagedSourceIdentity:
-    """The identity attached by Astrid's verified managed-source inventory."""
+    """The identity attached by a verified managed-source inventory."""
 
     pack_id: str
     source_kind: str
@@ -364,8 +363,8 @@ def _native_tree(repo_root: Path, pack_root: Path) -> tuple[str, str, str]:
     return revision, digest.hexdigest(), subpath
 
 
-def _astrid_recorded_tree_digest(pack_root: Path) -> str:
-    """Reproduce Astrid's source_setup._tree_digest path selection exactly.
+def _recorded_source_tree_digest(pack_root: Path) -> str:
+    """Reproduce the recorded source tree path selection exactly.
 
     `_native_tree` separately validates the complete tracked tree against Git
     object bytes and a clean checkout, so the compatibility calculation can
@@ -375,7 +374,7 @@ def _astrid_recorded_tree_digest(pack_root: Path) -> str:
     root = pack_root.resolve()
     try:
         git_root = Path(_git(root, "rev-parse", "--show-toplevel")).resolve()
-        tracked = _git(root, "ls-files", "-z").split("\0")
+        tracked = _git(root, "ls-files", "-z", "--full-name").split("\0")
         paths: list[tuple[str, Path]] = []
         for item in tracked:
             if not item:
@@ -558,7 +557,10 @@ def _runtime_source_record(
     )
 
 
-def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -> ManagedSourceIdentity:
+def _native_source_record(
+    pack_id: str, pack_root: Path, manifest_digest: str,
+    source_state_path: str | Path | None = None,
+) -> ManagedSourceIdentity:
     module_pack_root = Path(__file__).resolve().parent
     repo_root = module_pack_root.parents[2]
     runtime_context = _runtime_manifest_context(module_pack_root)
@@ -568,7 +570,7 @@ def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -
     if module_pack_root != expected_source_packs.resolve():
         raise PackProvenanceError("native pack loader is not running from Herzchen's source tree")
     revision, verified_tree_digest, _ = _native_tree(repo_root, pack_root)
-    tree_digest = _astrid_recorded_tree_digest(pack_root)
+    tree_digest = _recorded_source_tree_digest(pack_root)
     repository = _native_repository(repo_root)
     source_entries: list[dict[str, str]] = []
     matching_ids: set[str] = set()
@@ -584,7 +586,7 @@ def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -
         if not isinstance(candidate_id, str) or not candidate_id.strip():
             raise PackProvenanceError(f"native pack inventory contains a manifest without an ID: {candidate}")
         candidate_revision, candidate_verified_tree, candidate_subpath = _native_tree(repo_root, candidate)
-        candidate_tree = _astrid_recorded_tree_digest(candidate)
+        candidate_tree = _recorded_source_tree_digest(candidate)
         if candidate_revision != revision:
             raise PackProvenanceError("native packs resolved to different source revisions")
         candidate_manifest_digest = hashlib.sha256(candidate_manifest.read_bytes()).hexdigest()
@@ -605,7 +607,8 @@ def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -
     if matching_ids != {pack_id} or len({item["pack_id"] for item in source_entries}) != len(source_entries):
         raise PackProvenanceError("native pack inventory has missing or duplicate pack identities")
     inventory_identity = _configured_inventory_identity(
-        pack_id, pack_root, revision, tree_digest, manifest_digest, source_entries
+        pack_id, pack_root, revision, tree_digest, manifest_digest, source_entries,
+        source_state_path=source_state_path,
     )
     return ManagedSourceIdentity(
         pack_id=pack_id,
@@ -626,22 +629,20 @@ def _configured_inventory_identity(
     tree_digest: str,
     manifest_digest: str,
     fallback_entries: list[dict[str, str]],
+    *,
+    source_state_path: str | Path | None,
 ) -> str:
-    """Use a configured Astrid inventory only when it names this exact root.
-
-    This reads only an explicitly configured state path. It does not probe the
-    user's default Astrid state location, and the native loader itself never
-    imports Astrid.
-    """
-    raw_state_path = os.environ.get("ASTRID_SOURCE_STATE", "").strip()
-    if not raw_state_path:
+    """Use a caller-supplied source inventory only when it names this exact root."""
+    if source_state_path is None:
         entries = sorted(fallback_entries, key=lambda item: item["pack_id"])
         payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
-    state_candidate = Path(raw_state_path).expanduser()
+    state_candidate = Path(source_state_path).expanduser()
     if state_candidate.is_symlink():
         raise PackProvenanceError("configured managed-source state must not be a symlink")
     state_path = state_candidate.resolve()
+    if not state_path.exists():
+        return hashlib.sha256(b"[]").hexdigest()
     if not state_path.is_file():
         raise PackProvenanceError("configured managed-source state is unavailable")
     try:
@@ -739,7 +740,7 @@ def _verify_configured_source_record(record: Mapping[str, str]) -> None:
         raise PackProvenanceError("configured managed-source manifest is unavailable or symlinked")
     manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     revision, _verified_tree_digest, actual_subpath = _native_tree(checkout, pack_root)
-    tree_digest = _astrid_recorded_tree_digest(pack_root)
+    tree_digest = _recorded_source_tree_digest(pack_root)
     if (revision != record["revision"] or actual_subpath != record["pack_subpath"]
             or manifest_digest != record["manifest_sha256"]
             or tree_digest != record["tree_sha256"]):
@@ -797,7 +798,12 @@ def _native_manifest(pack_root: Path, expected_pack_id: str) -> tuple[dict[str, 
     return manifest, tuple(result)
 
 
-def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> ManagedPack:
+def _read_native_managed_pack(
+    pack_id: str,
+    project_root: str | Path,
+    *,
+    source_state_path: str | Path | None = None,
+) -> ManagedPack:
     module_pack_root = Path(__file__).resolve().parent
     repo_root = module_pack_root.parents[2]
     supplied_root = Path(project_root).expanduser().resolve()
@@ -821,7 +827,7 @@ def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> Managed
     pack_root = candidates[0]
     manifest, declarations = _native_manifest(pack_root, pack_id)
     manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-    source = _native_source_record(pack_id, pack_root, manifest_digest)
+    source = _native_source_record(pack_id, pack_root, manifest_digest, source_state_path)
     runtime_context = _runtime_manifest_context(module_pack_root)
     # Re-read admission after provenance calculation so a concurrent edit is
     # refused before any resource bytes enter the returned pack.
@@ -843,10 +849,12 @@ def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> Managed
                 raise PackProvenanceError(f"native managed resource differs from Git HEAD: {path}")
         resources.append(ManagedResource(
             path, kind, content, hashlib.sha256(content).hexdigest(),
-            ResourceRef("astrid-managed", MANAGED_PACK_KIND, pack_id, source.source_revision),
+            ResourceRef("managed-source", MANAGED_PACK_KIND, pack_id, source.source_revision),
         ))
     manifest_after_read = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-    source_after_read = _native_source_record(pack_id, pack_root, manifest_after_read)
+    source_after_read = _native_source_record(
+        pack_id, pack_root, manifest_after_read, source_state_path
+    )
     if (source_after_read.source_revision != source.source_revision
             or source_after_read.source_tree_sha256 != source.source_tree_sha256
             or source_after_read.source_manifest_sha256 != source.source_manifest_sha256
@@ -902,16 +910,19 @@ def read_managed_pack(
     project_root: str | Path,
     discoverer: PublicPackDiscoverer | None = None,
     loader: PublicPackLoader | None = None,
+    source_state_path: str | Path | None = None,
 ) -> ManagedPack:
     """Read a bundled Herzchen pack, or an injected external managed source."""
     if not isinstance(pack_id, str) or not pack_id.strip():
         raise PackAuthoringError("pack_id must be non-blank")
     if (discoverer is None) != (loader is None):
         raise PackAuthoringError(
-            "discoverer and loader must be supplied together; do not mix an admission adapter with the Astrid default"
+            "discoverer and loader must be supplied together; do not mix an admission adapter with native discovery"
         )
     if discoverer is None:
-        return _read_native_managed_pack(pack_id, project_root)
+        return _read_native_managed_pack(
+            pack_id, project_root, source_state_path=source_state_path
+        )
     discover, load = discoverer, loader
     try:
         discovered = tuple(discover(project_root=project_root))
@@ -944,7 +955,7 @@ def read_managed_pack(
         kind = handle.kind.split(":", 1)[1] if ":" in handle.kind else handle.kind
         resources.append(ManagedResource(
             path, kind, content, handle.sha256,
-            ResourceRef("astrid-managed", MANAGED_PACK_KIND, pack_id, source.source_revision),
+            ResourceRef("managed-source", MANAGED_PACK_KIND, pack_id, source.source_revision),
         ))
     if not resources:
         raise PackContentError(f"managed pack {pack_id!r} declares no resources")

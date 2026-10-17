@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "id": "evidence",
+  "name": "Recorded evidence provenance fixture",
+  "version": "1.0.0",
+  "resources": [
+    {"path": "policy.json", "kind": "evidence_policy"}
+  ]
+}

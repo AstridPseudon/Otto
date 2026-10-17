@@ -481,7 +481,7 @@ class CodexCliBinding(HostPort):
     invents a session: a physical session is taken only from native JSONL.
     """
 
-    def __init__(self, worktree: str, *, launcher: str = "/Users/hannahomalley/.local/bin/codex",
+    def __init__(self, worktree: str, *, launcher: str = "codex",
                  model: str = "gpt-5.6-luna", reasoning: str = "high",
                  receipt_path: Optional[str] = None, prompt: str = "",
                  evidence_path: Optional[str] = None,
