@@ -329,8 +329,13 @@ class BoundedProjectHostTests(unittest.TestCase):
             "schedule_id": before["schedule_id"], "request_key": "cancel-original", "expected_version": before["version"]}))
         self.assertEqual(stopped["record"]["stop_state"], "stopped", stopped)
         self.assertIn(before["schedule_id"], self.host._capacity_holds)
+        self.assertIn(second["schedule_id"], self.host._executions)
         self.host.close()
-        self.assertFalse(pending.exists())
+        held = self.response(pending)
+        self.assertEqual(held["outcome"], "held", held)
+        self.assertIs(held["provider_called"], False)
+        self.assertIs(held["effects_started"], False)
+        self.assertIs(held["retry"], False)
         self.host = ExecutionHost(directory=self.directory, handler=lambda request: None, bounded_transports=True)
         for service in self.services.values():
             service.host = self.host
@@ -347,7 +352,7 @@ class BoundedProjectHostTests(unittest.TestCase):
         after = self.read("A", before["schedule_id"])
         self.assertEqual(after["host_evidence"]["gateway_attempt"], before["host_evidence"]["gateway_attempt"])
         self.assertEqual(self.native.counts["manager-A"], 1)
-        self.assertFalse(pending.exists())
+        self.assertEqual(self.response(pending), held)
         self.assertIsNone(self.read("A", second["schedule_id"]).get("host_evidence", {}).get("gateway_attempt"))
 
     def test_authenticated_projects_and_adapters_cannot_cross_views(self):

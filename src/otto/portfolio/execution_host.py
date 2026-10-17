@@ -28,6 +28,7 @@ from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correl
 from .owner_completion import OwnerCompletion, after_owner
 from .ipc_retention import prune_answered_responses
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
+from herzchen.fleet.draining import QueuedAdmissionDrain
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -251,6 +252,8 @@ class ExecutionHost:
         self._owner_thread: int | None = None
         # These are continuations of retained requests, not durable new work.
         self._executions: dict[str, dict[str, Any]] = {}
+        self._execution_drain = QueuedAdmissionDrain(
+            self._executions, lock=self._lock, closing=lambda: self._closing)
         # _capacity_holds is the custody fence: it lists every hold until an
         # exact disposition releases it. _capacity_freed names the holds whose
         # process group is provably gone; they keep the fence, not a slot.
@@ -928,9 +931,19 @@ class ExecutionHost:
         job["scope"]["session"] = session
 
     def _start_ready_executions(self) -> None:
-        if self._dispatch_held or self._closing:
-            return
-        while not self._closing:
+        def drain_held(schedule: str) -> dict[str, Any]:
+            return {"outcome": "held", "reason": "owner host is draining",
+                "schedule_id": schedule, "provider_called": False,
+                "effects_started": False, "retry": False,
+                "next_action": "Start this same prepared occurrence explicitly after owner restart."}
+
+        while True:
+            if self._execution_drain.settle_unstarted(
+                    running=lambda job: job["running"],
+                    settle=lambda schedule, job: job["completion"].resolve(drain_held(schedule))):
+                return
+            if self._dispatch_held:
+                return
             ready = [value for value in self._executions.values()
                      if not value["running"] and self._eligible(value["scope"])]
             if not ready:
@@ -952,7 +965,10 @@ class ExecutionHost:
                 self.capacity.ensure_turn(job["scope"]["schedule_id"])
             except Exception as error:
                 self._executions.pop(job["scope"]["schedule_id"])
-                job["completion"].resolve(error=error)
+                if self._closing:
+                    job["completion"].resolve(drain_held(job["scope"]["schedule_id"]))
+                else:
+                    job["completion"].resolve(error=error)
                 continue
             job["running"] = True
             job["admission_binding"] = admission_binding
@@ -994,7 +1010,9 @@ class ExecutionHost:
                     from .execution_operations import recheck_execution_admission
                     if recheck_execution_admission(job["app"], due) != job["admission_binding"]:
                         raise PermissionError("worker admission or dependency state changed before launch")
-                    job["operation_started"] = True
+                    if not self._execution_drain.mark_started_if_open(
+                            lambda: job.__setitem__("operation_started", True)):
+                        return drain_held(schedule)
                     token = _ACTIVE_EXECUTION.set((self, job))
                     try:
                         return job["operation"]()
@@ -1003,7 +1021,10 @@ class ExecutionHost:
                 result = job["context"].run(admitted_operation)
                 after_owner(result, finish, lambda error, finish=finish: finish(error=error))
             except BaseException as error:
-                finish(error=error)
+                if self._closing and not job.get("operation_started"):
+                    finish(drain_held(schedule))
+                else:
+                    finish(error=error)
 
     @staticmethod
     def adapter_transport(operation: Callable[[], Any]) -> Any:
@@ -1711,6 +1732,7 @@ class ExecutionHost:
                 # Authenticated reads already admitted must still resolve.
                 while not self._owner_calls.empty():
                     self._owned(self._pump_owner_calls)
+                self._owned(self._start_ready_executions)
             # An inert owner preserves all queued business requests for a later
             # explicit operator decision; shutdown never turns into a replay.
             if not self._dispatch_held:
