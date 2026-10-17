@@ -123,3 +123,11 @@ Changed files: `src/otto/portfolio/observability_views.py`, `tests/test_status_f
 The socket-free regression failed before this edit because held replacement results lacked `next_action`. All structured held paths in `OwnerManagerReplacement.replace` now tell the caller to ask the owner to inspect the original retained intent, reconcile manager/native custody, and submit a new accepted schedule only after resolution. The guidance explicitly forbids another acquisition under the same assignment generation and native session. An unavailable intent readback now returns a held result with this guidance; mismatched retained attribution still raises `PermissionError`. No acquisition or generation fence was relaxed.
 
 Changed files: `src/otto/portfolio/manager_replacement.py`, `tests/test_manager_replacement_unit.py`, `.project/PROJECT.md`. Focused check: `/opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_manager_replacement_unit.py` (5 passed). No gate-only test was required for this follow-up.
+
+### SL9B paused advisor host prototype retirement
+
+- Deleted `src/otto/portfolio/advisor_host_command.py` (115 lines) and its only importing test, `tests/test_manager_advisor_paused_host.py` (190 lines), for 305 gross lines removed. Before deletion, `git grep` across `src`, `tests`, `ops`, and `install` found only the dedicated test import outside runtime manifests; no production or ops caller existed. External imports were not verifiable in this clone.
+- Removed the active `install/runtime-manifest.json` digest entry for the deleted module. The prepared antecedent manifest remains historical and unchanged.
+- Added `tests/test_advisor_host_retirement.py` with a focused absence assertion. `advisor_delivery` and `DueRecord` were not changed; their maintained behavior tests remain intact.
+- Changed files: `.project/PROJECT.md`, `install/runtime-manifest.json`, `src/otto/portfolio/advisor_host_command.py` (deleted), `tests/test_manager_advisor_paused_host.py` (deleted), `tests/test_advisor_host_retirement.py`.
+- Focused validation: `tests/test_advisor_host_retirement.py` (1 passed). `tests/test_project_advisor_delivery.py` ran 28 passed and 1 failed at owner-service AF_UNIX bind (`PermissionError`); this case needs the gate. No assertions were weakened.
