@@ -111,10 +111,13 @@ class Runner:
                         "binding": binding, "commit": commit}
             parent = self._parent_lease(request)
             units = 0 if parent is not None else req["units"]
+            claim_run_id = run_id if parent is None else parent.record.get("claim_run_id", parent.run_id)
+            claim_units = units if parent is None else parent.record.get("claim_units", parent.units)
             record = {
                 "run_id": run_id, "seq": self._store.next_seq(), "binding": binding,
                 "argv": req["argv"], "cwd": req["cwd"], "commit": commit,
                 "task": req["task"], "purpose": req["purpose"], "units": units,
+                "claim_run_id": claim_run_id, "claim_units": claim_units,
                 "weight_requested": req["weight"], "max_seconds": req["max_seconds"],
                 "state": "queued", "outcome": None, "exit_code": None,
                 "nested_in": None if parent is None else parent.run_id, "backfill": False,
@@ -242,13 +245,17 @@ class Runner:
             else:
                 self._put_record(record, state="unknown", outcome="stale_commit", exit_code=None,
                                  settled_at=self._clock())
+        records_by_id = {record["run_id"]: record for record in records}
         for name in sorted(os.listdir(self._latches)):
             if name.endswith(".json") and name[:-len(".json")] not in cleaned:
                 disposition = custody.resume_cleanup(os.path.join(self._latches, name), self._grace,
                                                       self._census_fn)
                 if not disposition.gone:
-                    unresolved.add(name[:-len(".json")])
-        records_by_id = {record["run_id"]: record for record in records}
+                    run_id = name[:-len(".json")]
+                    unresolved.add(run_id)
+                    claim = _latch_claim(self._latch_path(run_id), self._capacity)
+                    if claim is not None and claim[0] in records_by_id:
+                        unresolved.add(claim[0])
         unaccounted: set[str] = set()
         for run_id in tuple(unresolved):
             current = run_id
@@ -281,21 +288,47 @@ class Runner:
             lease = Lease(record["run_id"], ticket, units, False, record)
             lease.done = lease.closed = True
             self._leases[record["run_id"]] = lease
-        if unaccounted:
-            # A nested scope's zero units only mean that its parent held the claim.
-            # Without a verified parent (or any result for a surviving latch), the
-            # claim size is unknown. Retain the unclaimed heavy headroom for it.
+        claims: dict[str, tuple[int, str]] = {}
+        legacy = False
+        for run_id in sorted(unaccounted):
+            record = records_by_id.get(run_id)
+            claim = (_claim_fields(record, self._capacity) if record is not None else
+                     _latch_claim(self._latch_path(run_id), self._capacity))
+            if claim is None:
+                legacy = True
+                continue
+            claim_id, units = claim
+            if claim_id in self._leases:
+                if self._leases[claim_id].units != units:
+                    legacy = True
+                continue
+            previous = claims.get(claim_id)
+            if previous is not None and previous[0] != units:
+                legacy = True
+                continue
+            claims[claim_id] = (units, run_id)
+        for claim_id, (units, run_id) in sorted(claims.items()):
+            record = records_by_id.get(run_id, {"task": "unverified", "purpose": "unmatched custody latch"})
+            self._restore_claim(run_id, units, record)
+        if legacy:
+            # Older records and latches did not carry a claim size. Their surviving
+            # scope still occupies whatever heavy headroom cannot be proved free.
             remaining = self._capacity - sum(lease.units for lease in self._leases.values()
                                              if lease.ticket is not None)
             if remaining > 0:
                 run_id = sorted(unaccounted)[0]
-                ticket = self._pool.queue_heavy("runner:" + run_id, remaining, pid=None)
-                if not self._pool.claim_heavy(ticket):
-                    raise RuntimeError("cannot restore unresolved runner capacity for %s" % run_id)
-                record = records_by_id.get(run_id, {"task": "unverified", "purpose": "unmatched custody latch"})
-                lease = Lease(run_id, ticket, remaining, False, record)
-                lease.done = lease.closed = True
-                self._leases[run_id] = lease
+                if run_id in self._leases:
+                    run_id = "legacy:" + run_id
+                record = records_by_id.get(run_id, {"task": "unverified", "purpose": "legacy custody claim"})
+                self._restore_claim(run_id, remaining, record)
+
+    def _restore_claim(self, run_id: str, units: int, record: dict[str, Any]) -> None:
+        ticket = self._pool.queue_heavy("runner:" + run_id, units, pid=None)
+        if not self._pool.claim_heavy(ticket):
+            raise RuntimeError("cannot restore unresolved runner capacity for %s" % run_id)
+        lease = Lease(run_id, ticket, units, False, record)
+        lease.done = lease.closed = True
+        self._leases[run_id] = lease
 
     def start(self) -> None:
         """Begin admitting queued runs, and keep pumping while any wait."""
@@ -379,8 +412,10 @@ class Runner:
                     return
                 try:
                     lease.custody = launcher(record["argv"], latch_path=self._latch_path(run_id),
-                                             cwd=record["cwd"], env=env, stdin=subprocess.DEVNULL,
-                                             stdout=out, stderr=subprocess.STDOUT, **extra)
+                                            claim_run_id=record.get("claim_run_id", run_id),
+                                            claim_units=record.get("claim_units", lease.units),
+                                            cwd=record["cwd"], env=env, stdin=subprocess.DEVNULL,
+                                            stdout=out, stderr=subprocess.STDOUT, **extra)
                 except Exception:
                     failed = True
         if failed:
@@ -558,6 +593,24 @@ class Runner:
 
 def _error(code: str, detail: str) -> dict[str, Any]:
     return {"ok": False, "error": code, "detail": detail}
+
+
+def _claim_fields(record: Mapping[str, Any], capacity: int) -> tuple[str, int] | None:
+    run_id, units = record.get("claim_run_id"), record.get("claim_units")
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+        return None
+    if type(units) is not int or not 1 <= units <= capacity:
+        return None
+    return run_id, units
+
+
+def _latch_claim(path: str, capacity: int) -> tuple[str, int] | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return _claim_fields(record, capacity) if isinstance(record, dict) else None
 
 
 def _optional(request: Mapping[str, Any], key: str, default: Any) -> Any:

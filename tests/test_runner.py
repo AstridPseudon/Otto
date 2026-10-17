@@ -638,8 +638,8 @@ def test_restart_does_not_restore_lease_after_latch_cleanup(harness, monkeypatch
     harness.retire(second)
 
 
-@pytest.mark.parametrize("parent_evidence", ["missing", "invalid"])
-def test_restart_retains_nested_claim_without_verifiable_parent(harness, parent_evidence):
+@pytest.mark.parametrize("parent_evidence,claim_units", [("missing", 1), ("invalid", 2)])
+def test_restart_retains_nested_claim_without_verifiable_parent(harness, parent_evidence, claim_units):
     store = harness.store
     parent_id = "lost-parent"
     if parent_evidence == "invalid":
@@ -650,6 +650,7 @@ def test_restart_retains_nested_claim_without_verifiable_parent(harness, parent_
     child_id = "live-child"
     store.put(harness.record(store, child_id, ["fake", "child"], "c1", "running",
                              units=0, weight_requested=1, nested_in=parent_id,
+                             claim_run_id=parent_id, claim_units=claim_units,
                              started_at=time.time()))
     latches = harness.state / "latches"
     latches.mkdir(exist_ok=True)
@@ -658,12 +659,28 @@ def test_restart_retains_nested_claim_without_verifiable_parent(harness, parent_
                             cwd=str(harness.cwd), stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
+        class Process:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class Scope:
+            process = Process()
+
+            def release(self):
+                return Disposition("gone")
+
         pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
-        runner = harness.runner(pool=pool, store=harness.new_store(), census_fn=lambda: None)
+        runner = harness.runner(pool=pool, store=harness.new_store(), census_fn=lambda: None,
+                                launch=lambda argv, **kw: Scope())
         assert latch.exists()
         assert runner.await_run(child_id)["record"]["custody"] == "uncertain"
-        assert runner.status()["used"] == 3
-        blocked = harness.submit(runner, QUICK, weight=1, request_id="other-heavy")
+        assert runner.status()["used"] == claim_units
+        fitting = harness.submit(runner, ["fake", "fits"], weight=3 - claim_units,
+                                 request_id="fitting-heavy")
+        assert runner.await_run(fitting, timeout=10)["record"]["state"] == "settled"
+        blocked = harness.submit(runner, QUICK, weight=3, request_id="other-heavy")
         assert store.get(blocked)["state"] == "queued"
         pool.ensure_turn("independent-turn")
         assert pool.snapshot()["turns"]["reserved"] == 1
@@ -681,14 +698,31 @@ def test_restart_retains_unmatched_unresolved_latch_claim(harness):
     latches.mkdir(exist_ok=True)
     latch = latches / "unmatched-scope.json"
     leader = Custody.launch(gate_cmd(harness.tmp / "unmatched-gate"), latch_path=str(latch),
+                            claim_run_id="unmatched-scope", claim_units=1,
                             cwd=str(harness.cwd), stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
+        class Process:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class Scope:
+            process = Process()
+
+            def release(self):
+                return Disposition("gone")
+
         pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
-        runner = harness.runner(pool=pool, census_fn=lambda: None)
+        runner = harness.runner(pool=pool, census_fn=lambda: None,
+                                launch=lambda argv, **kw: Scope())
         assert latch.exists()
-        assert runner.status()["used"] == 3
-        blocked = harness.submit(runner, QUICK, weight=1, request_id="behind-unmatched")
+        assert json.loads(latch.read_text())["claim_units"] == 1
+        assert runner.status()["used"] == 1
+        fitting = harness.submit(runner, ["fake", "fits"], weight=2, request_id="fits-unmatched")
+        assert runner.await_run(fitting, timeout=10)["record"]["state"] == "settled"
+        blocked = harness.submit(runner, QUICK, weight=3, request_id="behind-unmatched")
         assert harness.store.get(blocked)["state"] == "queued"
         pool.ensure_turn("independent-turn")
         assert pool.snapshot()["turns"]["reserved"] == 1
@@ -802,6 +836,8 @@ def test_peer_without_parent_credential_needs_own_lease(harness):
                                 "parent_token": token}, peer_pid=4242)
         assert linked["ok"] and linked["nested"] is True
         assert harness.store.get("linked-peer")["units"] == 0
+        assert harness.store.get("linked-peer")["claim_run_id"] == first
+        assert harness.store.get("linked-peer")["claim_units"] == 3
         gate.set()
         wait_until(lambda: first not in runner._leases, "parent lease to finish")
         stale = runner.submit({"argv": ["fake", "stale"], "cwd": str(harness.cwd),
