@@ -574,6 +574,7 @@ class CanonicalRoleRuntime:
                  acceptance_readiness: Any = None, allowance_readiness: Any = None,
                  completed_task_readiness: Any = None, native_result_verifier: Any = None,
                  native_bodies: Any = None,
+                 effect_ledger: Any = None,
                  landed_worker_settler: Optional[Callable[..., Mapping[str, Any]]] = None) -> None:
         required = ("reader", "assignments_port", "content_port", "binding")
         if operations is None or any(getattr(operations, name, None) is None for name in required):
@@ -601,6 +602,7 @@ class CanonicalRoleRuntime:
         from .native_result_verifier import CodexNativeResultVerifier, require_native_verifier
         self.native_result_verifier = require_native_verifier(native_result_verifier or CodexNativeResultVerifier())
         self.native_bodies = native_bodies
+        self.effect_ledger = effect_ledger
         if landed_worker_settler is not None and not callable(landed_worker_settler):
             raise TypeError("landed_worker_settler must be a trusted owner callback")
         self.landed_worker_settler = landed_worker_settler
@@ -959,7 +961,8 @@ class CanonicalRoleRuntime:
                        "logical_request_key": logical_request_key,
                        "expected_project_ref": _json(project_ref), "expected_role": role,
                        "expected_principal": principal, "expected_lifecycle_owner": self.actor}
-        gateway = OttoGateway(adapter, attempt_capture=capture, require_owner_binding=True)
+        gateway = OttoGateway(adapter, attempt_capture=capture,
+                              effect_ledger=self.effect_ledger, require_owner_binding=True)
         result = invoke_canonical_assignment(
             gateway=gateway, role=role, project_ref=project_ref, task_ref=task_ref,
             assignment_ref=assignment_ref, mandate_ref=mandate_ref,
@@ -1133,6 +1136,8 @@ class CanonicalRoleRuntime:
             capture.source_result_validator = getattr(self.adapter, "verify_source_result", None)
             published = capture.publish_analytical_result(result, result_owner)
         accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
+        if accepted.get("accepted") is True:
+            self._settle_reconciled_native_effect(schedule_id)
         response = {**accepted, "published_analytical_result": published}
         if (role == "worker" and published is not None
                 and callable(self.landed_worker_settler)):
@@ -1155,9 +1160,12 @@ class CanonicalRoleRuntime:
                                           expected_unknown_sha256: str,
                                           validate_only: bool = False) -> Mapping[str, Any]:
         """Reparse an exact completed authorized resume; retain failed transport."""
-        from .manager_capture_reconciliation import reconcile_completed_resume_capture
-        return reconcile_completed_resume_capture(self, schedule_id=schedule_id,
+        from .native_terminal_proof import reconcile_completed_resume_capture
+        result = reconcile_completed_resume_capture(self, schedule_id=schedule_id,
             expected_unknown_sha256=expected_unknown_sha256, validate_only=validate_only)
+        if not validate_only and result.get("outcome") == "reconciled":
+            self._settle_reconciled_native_effect(schedule_id)
+        return result
 
     def reconcile_missing_manager_capture(self, *, schedule_id: str,
                                           expected_claim_sha256: str,
@@ -1168,9 +1176,35 @@ class CanonicalRoleRuntime:
         the exact retained admission, delivered brief and successful native
         terminal record can all be verified under current owner custody.
         """
-        from .manager_capture_reconciliation import reconcile_missing_manager_capture
-        return reconcile_missing_manager_capture(self, schedule_id=schedule_id,
+        from .native_terminal_proof import reconcile_missing_manager_capture
+        result = reconcile_missing_manager_capture(self, schedule_id=schedule_id,
             expected_claim_sha256=expected_claim_sha256, validate_only=validate_only)
+        if not validate_only and result.get("outcome") == "reconciled":
+            self._settle_reconciled_native_effect(schedule_id)
+        return result
+
+    def _settle_reconciled_native_effect(self, schedule_id: str) -> None:
+        """Use a validated owner capture as exact terminal ledger evidence."""
+        if self.effect_ledger is None:
+            return
+        due = self.due_port.read_due(schedule_id) or {}
+        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+        result = attempt.get("result") or {}
+        key = attempt.get("logical_request_key")
+        if not isinstance(key, str) or not isinstance(result, Mapping):
+            raise OwnerRoleRuntimeError("reconciled native result has no exact owner capture")
+        held = self.effect_ledger.get(key)
+        if held is None:
+            return  # Historical capture predates the ledger.
+        from herzchen.kernel.operations import OperationState
+        if held.state is OperationState.UNKNOWN:
+            self.effect_ledger.settle_verified(key, result)
+        elif (held.state is not (OperationState.COMMITTED if result.get("outcome") == "succeeded"
+                                 else OperationState.FAILED)
+              or held.result.get("attempt_sha256") != hashlib.sha256(json.dumps(
+                _json(result), ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest()):
+            raise OwnerRoleRuntimeError("settled native effect differs from owner capture")
 
     def reconcile_fresh_manager_result(self, *, schedule_id: str,
                                        expected_unknown_sha256: str,
@@ -1322,6 +1356,7 @@ class CanonicalRoleRuntime:
         reconciled = capture.reconcile_unknown_result(prior["logical_request_key"], replacement,
             resolver=self.actor, trace_sha256=proof["trace_sha256"],
             parser_revision="otto.fresh-manager-native-admission.v1")
+        self._settle_reconciled_native_effect(schedule_id)
         return {"outcome": "reconciled", "provider_called": False,
                 "admission_reconciliation": proof, "result_reconciliation": reconciled["reconciliation"]}
 
@@ -1477,6 +1512,7 @@ class CanonicalRoleRuntime:
             logical_request_key, replacement, resolver=self.actor,
             trace_sha256=trace_sha256, parser_revision=parser_revision,
         )
+        self._settle_reconciled_native_effect(schedule_id)
         result_owner = self.result_capture_factory(
             project_ref=project_ref, task_ref=task_ref,
             assignment_ref=assignment_ref, generation=expected_generation,

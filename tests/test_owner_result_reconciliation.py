@@ -1,5 +1,13 @@
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
+import tempfile
+
+from herzchen.contracts import AuthenticatedActor
+from herzchen.kernel import Store
+from herzchen.kernel.operations import OperationState, UnknownOutcomeError
+from otto.agents.effect_ledger import NativeEffectLedger
+from otto.agents.gateway import Responsibility
 
 from otto.agents.owner_runtime import OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
 
@@ -66,6 +74,28 @@ class FixtureCapture(OwnerAuthorizedRoleCapture):
 
 
 class OwnerResultReconciliationTests(unittest.TestCase):
+    def test_native_start_claim_survives_reconstruction_and_unknown_stays_held(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "effect.sqlite"
+            store = Store.create(path, authority="owner")
+            actor = AuthenticatedActor("owner", "owner-principal", "credential")
+            ledger = NativeEffectLedger(store, actor)
+            responsibility = Responsibility(owner="owner-principal", logical_agent_id="worker-1",
+                operation="resume", packet_digest="a" * 64, physical_session_id="session-1",
+                logical_request_key="turn-1", project_ref={"authority": "owner", "kind": "wrk.project", "id": "p-1"},
+                task_ref={"authority": "owner", "kind": "wrk.task", "id": "t-1"},
+                assignment_ref=ASSIGNMENT, generation=1)
+            started = ledger.begin(responsibility, "f" * 64)
+            self.assertEqual(started.state, OperationState.STARTED)
+            store.close()
+            store = Store.open(path, authority="owner")
+            self.addCleanup(store.close)
+            recovered = NativeEffectLedger(store, actor)
+            self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+            with self.assertRaises(UnknownOutcomeError):
+                recovered.begin(responsibility, "f" * 64)
+            self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+
     def test_exact_retained_success_reconciles_without_provider_retry(self):
         capture = FixtureCapture()
         result = capture.reconcile_unknown_result(
