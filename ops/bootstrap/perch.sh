@@ -218,9 +218,9 @@ stage2_admit_tasks() {
   local host task ref review_ref rc=0
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
   review_ref="$(cat "$RAW/stage2-review-ref.json")"
-  # Admit every activated task before observing dispatch. Dependencies select
-  # execution order; waiting for A here used to leave B and C unadmitted when
-  # the first owner turn remained pending.
+  # An operator admission changes execution state and requires a closed owner
+  # boundary. Wait for A and B to finish and release capacity before sending
+  # the next task's single admission request; C runs until the recovery probe.
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
@@ -240,8 +240,6 @@ stage2_admit_tasks() {
       return 1
     fi
     "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value ran
-  done
-  for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     stage2_wait_worker "$host" "$task" || return $?
   done
   return 0

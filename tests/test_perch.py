@@ -818,54 +818,67 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
 
-    def test_all_exact_operator_admissions_precede_dispatch_wait(self):
+    def test_operator_admission_waits_for_each_closed_owner_boundary(self):
         import re
         import shlex
 
         root = Path(tempfile.mkdtemp(prefix="perch-stage2-admit-order-"))
         self.addCleanup(shutil.rmtree, root, True)
-        raw = root / "raw"
-        raw.mkdir()
         refs = {alias: {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
                         "revision": "rev-" + alias} for alias in ("A", "B", "C")}
-        (raw / "stage2-activation.json").write_text(json.dumps(
-            {"activation": {"steps": {"tasks": {"task_refs": refs}}}}), encoding="utf-8")
-        (raw / "stage2-review-ref.json").write_text(json.dumps(
-            {"authority": "owner", "kind": "dat.content.document",
-             "id": "plan-review-document", "revision": "rev-review"}), encoding="utf-8")
         shell = PERCH.read_text(encoding="utf-8")
         admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(admit)
-        script = "\n".join((
-            "set -uo pipefail",
-            "RAW=" + shlex.quote(str(raw)),
-            "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
-            "PY=" + shlex.quote(sys.executable),
-            "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
-            "cold_client() {",
-            '  case "$*" in *task-A*) alias=A ;; *task-B*) alias=B ;; *task-C*) alias=C ;; *) return 31 ;; esac',
-            '  case "$*" in *plan-review-document*) ;; *) return 32 ;; esac',
-            '  echo "admit-$alias" >> "$RAW/trace"',
-            '  if [ "${SEED_REJECT_B:-0}" = 1 ] && [ "$alias" = B ]; then return 33; fi',
-            '  printf \'{"outcome":"admitted","admitted_revision":"rev-%s"}\\n\' "$alias"',
-            "}",
-            "stage2_wait_worker() {",
-            '  for alias in A B C; do [ -f "$RAW/stage2-admit-$alias.json" ] || return 34; done',
-            '  echo "wait-$2" >> "$RAW/trace"',
-            "}",
-            admit.group(),
-            "stage2_admit_tasks",
-        ))
-        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+
+        def run(seed_open_boundary=False):
+            raw = root / ("held" if seed_open_boundary else "closed")
+            raw.mkdir()
+            (raw / "stage2-activation.json").write_text(json.dumps(
+                {"activation": {"steps": {"tasks": {"task_refs": refs}}}}), encoding="utf-8")
+            (raw / "stage2-review-ref.json").write_text(json.dumps(
+                {"authority": "owner", "kind": "dat.content.document",
+                 "id": "plan-review-document", "revision": "rev-review"}), encoding="utf-8")
+            script = "\n".join((
+                "set -uo pipefail",
+                "RAW=" + shlex.quote(str(raw)),
+                "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
+                "PY=" + shlex.quote(sys.executable),
+                "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+                "cold_client() {",
+                '  case "$*" in *task-A*) alias=A ;; *task-B*) alias=B ;; *task-C*) alias=C ;; *) return 31 ;; esac',
+                '  case "$*" in *plan-review-document*) ;; *) return 32 ;; esac',
+                '  echo "admit-$alias" >> "$RAW/trace"',
+                '  if { [ "$alias" = B ] && [ ! -f "$RAW/wait-A" ]; } ||',
+                '     { [ "$alias" = C ] && [ ! -f "$RAW/wait-B" ]; } ||',
+                '     { [ "${SEED_OPEN_BOUNDARY_C:-0}" = 1 ] && [ "$alias" = C ]; }; then',
+                '    printf \'%s\\n\' \'{"outcome":"held","reason":"execution-changing operation requires a closed owner boundary","retry":false,"effects_started":false}\'',
+                '    return 0',
+                '  fi',
+                '  printf \'{"outcome":"admitted","admitted_revision":"rev-%s"}\\n\' "$alias"',
+                "}",
+                "stage2_wait_worker() {",
+                '  [ -f "$RAW/stage2-admit-$2.json" ] || return 34',
+                '  echo "wait-$2" >> "$RAW/trace"',
+                '  : > "$RAW/wait-$2"',
+                "}",
+                admit.group(),
+                "stage2_admit_tasks",
+            ))
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                    env={**os.environ, "SEED_OPEN_BOUNDARY_C": "1" if seed_open_boundary else "0"},
+                                    timeout=30)
+            return raw, result
+
+        raw, result = run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
-                         ["admit-A", "admit-B", "admit-C", "wait-A", "wait-B", "wait-C"])
-        (raw / "trace").unlink()
-        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                                env={**os.environ, "SEED_REJECT_B": "1"}, timeout=30)
-        self.assertEqual(result.returncode, 33, result.stderr)
+                         ["admit-A", "wait-A", "admit-B", "wait-B", "admit-C", "wait-C"])
+        raw, result = run(seed_open_boundary=True)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
-                         ["admit-A", "admit-B"])
+                         ["admit-A", "wait-A", "admit-B", "wait-B", "admit-C"])
+        self.assertEqual(json.loads((raw / "stage2-admit-C.json").read_text())["outcome"], "held")
+        self.assertFalse((raw / "wait-C").exists())
 
     def test_dispatch_poll_resolves_one_pending_request_before_read(self):
         import re
