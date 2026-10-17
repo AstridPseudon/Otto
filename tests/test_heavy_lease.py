@@ -231,6 +231,67 @@ def test_missing_exact_birth_for_known_pid_keeps_lease_unresolved(monkeypatch):
     assert module.stop_lease(record)["remaining"] == ["identity-unavailable:43210"]
 
 
+def test_unidentified_descendant_is_retried_and_removed_after_complete_scan():
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 100, "pgid": 100,
+              "processes": {"100": {"birth": [1], "pgid": 100}}}
+    first = {100: {"ppid": 1, "pgid": 100, "birth": [1]},
+             101: {"ppid": 100, "pgid": 101, "birth": None}}
+    assert module._observe(record, first)
+    assert record["unidentified"] == [101]
+    readable = {100: first[100], 101: {"ppid": 100, "pgid": 101, "birth": [2]}}
+    assert module._observe(record, readable)
+    assert record["processes"]["101"]["birth"] == [2]
+    assert record.get("unidentified", []) == []
+
+    record["unidentified"] = [102]
+    assert module._observe(record, {100: first[100]})
+    assert record.get("unidentified", []) == []
+
+
+def test_unidentified_root_can_settle_after_complete_empty_scan(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 43210, "pgid": 43210, "processes": {}}
+    monkeypatch.setattr(module, "_processes", lambda: {})
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    assert module.stop_lease(record)["remaining"] == []
+
+
+def test_reused_pid_is_recorded_when_it_is_a_verified_new_descendant():
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 100, "pgid": 100,
+              "processes": {"100": {"birth": [1], "pgid": 100},
+                            "101": {"birth": [2], "pgid": 100}}}
+    snapshot = {100: {"ppid": 1, "pgid": 100, "birth": [1]},
+                101: {"ppid": 100, "pgid": 101, "birth": [3]}}
+    assert module._observe(record, snapshot)
+    assert record["processes"]["101"] == {"birth": [3], "pgid": 101}
+
+
+def test_unreadable_linux_stat_for_tracked_pid_is_unresolved(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(module.Path, "is_dir", lambda path: str(path) == "/proc" or original_is_dir(path))
+    monkeypatch.setattr(module.os, "listdir", lambda _path: ["43210"])
+    original_read = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if str(path) == "/proc/43210/stat":
+            raise PermissionError("stat temporarily unreadable")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.Path, "read_text", read_text)
+    assert module._processes()[43210]["birth"] is None
+    record = {"pid": 43210, "pgid": 43210,
+              "processes": {"43210": {"birth": [1], "pgid": 43210}}}
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    assert "identity-unavailable:43210" in module.stop_lease(record)["remaining"]
+
+
 def test_unresolved_dead_holder_keeps_capacity_claim_until_settled(tmp_path, monkeypatch):
     from otto.hostctl import heavy as module
 

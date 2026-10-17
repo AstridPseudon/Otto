@@ -1,4 +1,4 @@
-"""ottoctl heavy: many agents share the machine's heavy capacity, and nothing a job started outlives it.
+"""ottoctl heavy: many agents share the machine's heavy capacity with recorded process custody.
 
 Heavy jobs (frame captures, renders, real-film journeys, full test suites) take slots from the
 machine's capacity; light work (edits, checks, show) takes none:
@@ -24,6 +24,9 @@ machine).
 process birth identities in the holder record. TERM + CONT, a grace period, then KILL apply only to
 verified members of that lease. An unresolved dead holder keeps its capacity claim until recovery
 can verify that its processes are gone. ``OTTO_HEAVY_LEASE`` only lets nested heavy calls reuse slots.
+An arbitrary child that forks, leaves the group, and is reparented entirely between observations
+cannot be attributed by portable process-table APIs. Such commands need cooperative custody or
+kernel containment to guarantee cleanup; the lease never signals a process based on its environment.
 
 Exit codes: CMD's own; 75 no capacity (with --no-wait); 124 time ran out; 130/143 interrupted.
 Every lease appends one JSON line to ``<dir>/heavy.log``: who, what, weight, waited, ran, and the
@@ -141,9 +144,12 @@ def _processes() -> dict[int, dict] | None:
                     processes[int(entry)] = {"ppid": int(stat[1]), "pgid": int(stat[2]),
                                              "birth": None}
             except (OSError, IndexError, ValueError):
-                continue
+                # The PID was in the complete /proc listing. An unreadable stat is
+                # uncertain for a tracked process, not proof that it disappeared.
+                processes[int(entry)] = {"ppid": None, "pgid": None, "birth": None}
         for pid, info in processes.items():
-            info["birth"] = _birth_at(pid, info["ppid"], info["pgid"])
+            if info["ppid"] is not None:
+                info["birth"] = _birth_at(pid, info["ppid"], info["pgid"])
         return processes
     try:
         result = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="],
@@ -171,21 +177,33 @@ def _observe(record: dict, processes: dict[int, dict], *, seed_root: bool = Fals
     if seed_root and root in processes and processes[root]["birth"] is not None and str(root) not in known:
         known[str(root)] = {"birth": processes[root]["birth"], "pgid": processes[root]["pgid"]}
         changed = True
+    pending = set(record.get("unidentified", []))
+    present = pending & processes.keys()
+    if present != pending:
+        changed = True
+    pending = present
     while True:
         live = {int(pid) for pid, identity in known.items()
                 if int(pid) in processes and processes[int(pid)]["birth"] == identity["birth"]}
         group_anchored = any(processes[pid]["pgid"] == record.get("pgid") for pid in live)
-        unidentified = set(record.get("unidentified", []))
         found = {pid: info for pid, info in processes.items()
-                 if str(pid) not in known and pid not in unidentified and (info["ppid"] in live or
-                     (info["pgid"] == record.get("pgid") and group_anchored))}
+                 if (info["ppid"] in live or
+                     (info["pgid"] == record.get("pgid") and group_anchored))
+                 and ((info["birth"] is None and pid not in pending)
+                      or (info["birth"] is not None and
+                          known.get(str(pid), {}).get("birth") != info["birth"]))}
         if not found:
+            if pending:
+                record["unidentified"] = sorted(pending)
+            else:
+                record.pop("unidentified", None)
             return changed
         for pid, info in found.items():
             if info["birth"] is None:
-                record.setdefault("unidentified", []).append(pid)
+                pending.add(pid)
             else:
                 known[str(pid)] = {"birth": info["birth"], "pgid": info["pgid"]}
+                pending.discard(pid)
         changed = True
 
 
@@ -232,10 +250,10 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
     """Signal only live identities in this record and its verified private process group."""
     pgid = record.get("pgid")
 
-    def targets() -> tuple[set[int], bool, bool, set[int]]:
+    def targets() -> tuple[set[int], bool, bool, set[int], bool]:
         processes = _processes()
         if processes is None:
-            return set(), False, False, set()
+            return set(), False, False, set(), False
         if _observe(record, processes) and holder_file is not None:
             _write_holder(holder_file, record)
         live = {int(pid) for pid, identity in record.get("processes", {}).items()
@@ -243,10 +261,12 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
         unverified = {int(pid) for pid in record.get("processes", {})
                       if int(pid) in processes and processes[int(pid)]["birth"] is None}
         group = bool(pgid and any(processes[pid]["pgid"] == pgid for pid in live))
-        return live, group, True, unverified
+        root = record.get("pid")
+        root_unverified = bool(root and int(root) in processes and str(root) not in record.get("processes", {}))
+        return live, group, True, unverified, root_unverified
 
     def signal_all(sig: int) -> None:
-        live, group, scanned, _ = targets()
+        live, group, scanned, _, _ = targets()
         if not scanned:
             return
         if group:
@@ -265,28 +285,28 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
                 except (ProcessLookupError, PermissionError):
                     pass
 
-    before, group, scanned, unverified = targets()
+    before, group, scanned, unverified, root_unverified = targets()
     if before or group:
         signal_all(signal.SIGTERM)
         signal_all(signal.SIGCONT)
         deadline = time.monotonic() + GRACE_SECONDS
         while time.monotonic() < deadline:
-            live, group, scanned, unverified = targets()
+            live, group, scanned, unverified, root_unverified = targets()
             if not live and not group:
                 break
             time.sleep(0.2)
-    killed, group, scanned, unverified = targets()
+    killed, group, scanned, unverified, root_unverified = targets()
     if killed or group:
         signal_all(signal.SIGKILL)
         time.sleep(0.2)
-    remaining, group, scanned, unverified = targets()
+    remaining, group, scanned, unverified, root_unverified = targets()
     unresolved = sorted(remaining) + [f"identity-unavailable:{pid}" for pid in sorted(unverified)]
     unresolved += [f"unidentified:{pid}" for pid in record.get("unidentified", [])]
-    if record.get("pid") and str(record["pid"]) not in record.get("processes", {}):
+    if root_unverified:
         unresolved.append("root-identity-unavailable")
     if pgid and not group and _group_alive(pgid):
         unresolved.append(f"group:{pgid}")
-    if not scanned and (record.get("processes") or (pgid and _group_alive(pgid))):
+    if not scanned and (record.get("pid") or record.get("processes") or (pgid and _group_alive(pgid))):
         unresolved.append("process-table-unavailable")
     return {"reaped": sorted(before), "needed_kill": sorted(killed), "remaining": unresolved,
             "sweep": "complete" if scanned else "unavailable"}
