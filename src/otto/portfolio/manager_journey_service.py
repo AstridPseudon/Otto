@@ -2427,9 +2427,10 @@ class ManagerJourneyService:
                                   if name in previous and previous.get("schedule_id") == prepared.get("schedule_id")},
                     "retry_provider": False}
         if automatic:
-            # The retained Due is still inert here. The work domain must admit
-            # its exact task scope and record the dispatch before any start is
-            # queued; its logical key makes a replay of this preparation safe.
+            # Automatic work is admitted by the owner before its start enters
+            # the bounded queue. ExecutionApplication._start repeats this
+            # exact logical key at the provider boundary; WorkAssignments
+            # returns the retained receipt without adding another event.
             self.server.owner.assignments.command_port.dispatch(
                 ResourceRef.from_dict(prepared["assignment_ref"]),
                 expected_generation=prepared["generation"],

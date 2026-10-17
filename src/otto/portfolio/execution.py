@@ -1252,6 +1252,22 @@ class ExecutionApplication:
                     "next_action": "resolve the current worker admission or dependency blocker before retrying"}
         return self._start(schedule_id=schedule_id, settle=settle, due=due)
 
+    def _record_assignment_dispatch(self, due: DueRecord, *, logical_request_key: str | None = None) -> None:
+        """Record the exact owner dispatch, reusing WorkAssignments receipts."""
+        if logical_request_key is None:
+            launch_request = due.target.get("launch_request") or {}
+            request = launch_request.get("input") or {}
+            request_key = request.get("request_key")
+            logical_request_key = (request_key + ":dispatch"
+                if isinstance(request_key, str) and request_key.strip()
+                else "execution-start:" + due.schedule_id)
+        self.assignments.dispatch(
+            ResourceRef.from_dict(due.assignment_ref),
+            expected_generation=due.generation,
+            logical_request_key=logical_request_key,
+            actor=self.binding.authenticated_actor(self.manager_actor),
+        )
+
     def _start(self, *, schedule_id: str, settle: bool, due: DueRecord | None = None) -> Any:
         # Re-read at admission: queued work does not pin stale authorization,
         # debit allowance, or claim a provider until a slot is actually ready.
@@ -1321,6 +1337,13 @@ class ExecutionApplication:
                     raise OccurrencePreparationError(
                         "worker admission or dependencies changed before provider launch"
                     )
+            if due.role == "worker":
+                # Dispatch is an owner work-domain fact. Key it to this exact
+                # request when available (automatic launches can record it
+                # before queueing), or to this exact occurrence otherwise, so
+                # a start retry reuses its receipt and cannot append another
+                # dispatch event.
+                self._record_assignment_dispatch(due)
             result = self.runtime.invoke_role(role=due.role, mode="direct", **kwargs)
         except Exception as exc:
             observed = self._read(schedule_id)
@@ -2017,6 +2040,11 @@ class ExecutionApplication:
             binding_schedule_id=asking_schedule_id, timeout_seconds=prior.timeout_seconds,
             allowance_ref=prior.allowance_ref)
         if execute and prepared.get("outcome") in {"committed", "prepared", "replayed"}:
+            # Answer continuations resume an existing asking session through a
+            # fresh retained occurrence. Their dispatch is keyed to the exact
+            # answer request and replayed by WorkAssignments on retry.
+            self._record_assignment_dispatch(self._read(prepared["schedule_id"]),
+                logical_request_key=request_key + ":dispatch")
             return self.start(schedule_id=prepared["schedule_id"])
         return prepared
 
