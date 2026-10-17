@@ -89,10 +89,14 @@ Claude Code.
    records the adapter (launcher, qualified versions, roles, profiles,
    efforts, models). `otto.hostctl.adapters` turns that into a
    `TrustedAdapterSelection`.
-5. **Model profile.** Add a profile to `otto/agents/host_profiles.py`, binding
-   the seven Megado slots. Add the skill template
-   `src/otto/packs/megado/skill/templates/run.<host>.json`.
-   `tests/test_megado_templates.py` keeps the two equal.
+5. **Model profile and host definition.** Add the host's seven-slot model
+   profile binding to `src/otto/packs/otto-profiles/profiles.json`. Add its
+   host qualification and launcher data (adapter, roles, profiles, efforts,
+   models, and qualified launcher version) to
+   `src/otto/packs/otto-profiles/hosts.json`. `otto/agents/host_profiles.py`
+   reads these managed resources; do not edit it to add profiles. Add the
+   skill template `src/otto/packs/megado/skill/templates/run.<host>.json`.
+   `tests/test_megado_templates.py` keeps the profile and run template equal.
 6. **Conformance.** Copy these tests:
    - `src/otto/agents/tests/test_claude_binding.py`;
    - `tests/test_claude_manager_admission.py`;
