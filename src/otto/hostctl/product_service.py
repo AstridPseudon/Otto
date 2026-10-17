@@ -55,8 +55,11 @@ def _start_owner_host(owner: Any) -> None:
     owner.host.start()
     if owner.host._owns_owner_file and owner.fleet_registry is not None:
         owner.fleet_registry.startup_landed_sweep = owner.fleet_registry.sweep_landed_at_start()
-    if not owner.hold_dispatch:
-        owner.runner.start()
+    runner = getattr(owner, 'runner', None)
+    if runner is not None and not owner.hold_dispatch:
+        if not owner.host._owns_owner_file:
+            raise RuntimeError('runner admission requires host owner-file custody')
+        runner.start()
 
 
 def capacity_policy(config: Mapping[str, Any]) -> CapacityPolicy:
