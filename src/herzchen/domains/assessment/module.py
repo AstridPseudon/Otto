@@ -248,7 +248,8 @@ class _AssessmentModuleEngine:
     """One shared assessment surface for Megado and creative protocols."""
 
     def __init__(self, store: Store, *, actor: Optional[AuthenticatedActor] = None,
-                 payload_resolver: Any = None, evidence_read_grant_issuer: Any = None) -> None:
+                 payload_resolver: Any = None, evidence_read_grant_issuer: Any = None,
+                 _limits: Any = None, _operations: Any = None) -> None:
         if not isinstance(store, Store):
             raise TypeError("store must be the supplied FND Store")
         try:
@@ -260,8 +261,11 @@ class _AssessmentModuleEngine:
         self._evidence_store = store
         self._payload_resolver = payload_resolver
         self._evidence_read_grant_issuer = evidence_read_grant_issuer
-        self.limits = LimitService(store)
-        self.operations = OperationManager(store)
+        # Owner compositions may retain these store-owned facades across
+        # request-scoped AssessmentModule instances. Actor and evidence grants
+        # above intentionally remain bound to this instance.
+        self.limits = _limits if _limits is not None else LimitService(store)
+        self.operations = _operations if _operations is not None else OperationManager(store)
 
     def _evidence_scopes(self, parent: ResourceRef) -> tuple[ResourceRef, ...]:
         record = self.__writer.get_identity(parent)

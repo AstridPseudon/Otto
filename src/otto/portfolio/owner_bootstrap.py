@@ -601,6 +601,8 @@ class PortfolioOwnerBootstrap:
     __slots__ = (
         "store",
         "_limit_service",
+        "_assessment_operations",
+        "_consumer_transport",
         "binding",
         "owner_actor",
         "operator_actor",
@@ -679,6 +681,9 @@ class PortfolioOwnerBootstrap:
         # role calls would retain a pair of descriptors for every invocation.
         from herzchen.kernel import LimitService
         self._limit_service = LimitService(store)
+        from herzchen.kernel import OperationManager
+        self._assessment_operations = OperationManager(store)
+        self._consumer_transport = None
         # These owner capabilities own command transports.  Keep one for the
         # lifetime of this bootstrap instead of binding a fresh listening
         # socket each time a manager asks for its direction surface.
@@ -778,7 +783,10 @@ class PortfolioOwnerBootstrap:
 
         from herzchen.command_ports import connect_consumer_facade
 
-        transport = self.create_and_open_bridge.consumer_transport()
+        transport = self._consumer_transport
+        if transport is None:
+            transport = self.create_and_open_bridge.consumer_transport()
+            self._consumer_transport = transport
         create_open_port = connect_consumer_facade(transport.to_dict())
         return FiniteWorkOperations(
             port=self.graph.command_port,
@@ -800,6 +808,13 @@ class PortfolioOwnerBootstrap:
             queue_binding=self.queue_binding,
             on_lifecycle=self.project_finished,
         )
+
+    def close_consumer_operations(self) -> None:
+        """Close the bridge transports activated by this owner's consumers."""
+        from herzchen.command_ports import close_consumer_facade
+        transport, self._consumer_transport = self._consumer_transport, None
+        if transport is not None:
+            close_consumer_facade(transport)
 
     def _direction_context_reader(self) -> Any:
         # Read capability only: neither registering domains nor exposing bind
@@ -1072,7 +1087,8 @@ class PortfolioOwnerBootstrap:
         return ManagerAssessmentCommands(
             assessment=OttoAssessment(AssessmentModule(self.store, actor=actor,
                 payload_resolver=self.evidence_payload_resolver,
-                evidence_read_grant_issuer=issue_evidence_read_grant), actor),
+                evidence_read_grant_issuer=issue_evidence_read_grant,
+                _limits=self._limit_service, _operations=self._assessment_operations), actor),
             reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
             generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
 

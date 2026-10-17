@@ -177,6 +177,13 @@ class HostSession:
         self.project_ids = tuple(project_ids)
         self.store = None
         self._owns_store = False
+        self.owner = None
+
+    def _close_owner_transports(self) -> None:
+        owner = self.owner
+        close = getattr(owner, "close_consumer_operations", None)
+        if callable(close):
+            close()
 
     def __enter__(self) -> "HostSession":
         from herzchen.kernel.store import Store
@@ -236,11 +243,13 @@ class HostSession:
             self.portfolio = OttoPortfolio(self.owner.consumer_operations())
             return self
         except BaseException:
+            self._close_owner_transports()
             if self._owns_store:
                 self.store.close()
             raise
 
     def __exit__(self, *_: Any) -> None:
+        self._close_owner_transports()
         if self.store is not None and self._owns_store:
             self.store.close()
 

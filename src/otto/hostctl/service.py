@@ -183,6 +183,7 @@ class OwnerService:
         self._turn_context = threading.local()
         self._draining_projects: set[str] = set()
         self.store: Any = None
+        self._service_session: Any = None
         self.relays: dict[str, dict[str, Any]] = {}
         self.in_flight: dict[str, dict[str, Any]] = {}
         self.last_completed: Optional[dict[str, Any]] = None
@@ -203,6 +204,7 @@ class OwnerService:
             stale_stop = stop.exists()
             stop.unlink(missing_ok=True)
             self.store = root.store
+            self._service_session = root
             self.generation = self._next_generation()
             self.started_at = _now()
             heartbeat = threading.Thread(target=self._heartbeat, name="otto-service-status", daemon=True)
@@ -233,6 +235,7 @@ class OwnerService:
                 for session in self._project_sessions.values():
                     session.__exit__(None, None, None)
                 self._project_sessions.clear()
+                self._service_session = None
                 self._publish(state="closed")
         return {"outcome": "closed", "generation": self.generation, "requests_served": self.served,
                 "relays_open": len(self.relays), "owner_exit_requested": stop.exists(),
@@ -650,8 +653,12 @@ class OwnerService:
         """Attach one activated project's isolated manager lanes once."""
         from .cli import _resolve_project
         from .serve import attach
-        with HostSession(self.config) as session:
+        session = self._service_session
+        if session is not None:
             record = _resolve_project(session, project)
+        else:
+            with HostSession(self.config) as session:
+                record = _resolve_project(session, project)
         supervisor = ((record.payload.get("metadata") or {}).get("otto_orchestrator") or {}).get("assignment_ref") or {}
         hosts = self.config.get("hosts") or {}
         owner_kind = next((kind for kind, entry in hosts.items()
@@ -725,8 +732,12 @@ class OwnerService:
         """Stop accepting work on one project's lanes and close its retained view."""
         from .cli import _resolve_project
         with self.lock, service_store(self.store):
-            with HostSession(self.config) as session:
+            session = self._service_session
+            if session is not None:
                 record = _resolve_project(session, project)
+            else:
+                with HostSession(self.config) as session:
+                    record = _resolve_project(session, project)
             project_id = record.ref.id
             journey = self.journeys.get(project_id)
             if journey is not None:
