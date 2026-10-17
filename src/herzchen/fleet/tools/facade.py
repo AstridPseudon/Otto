@@ -93,8 +93,8 @@ class LandingOwnerPort:
         return method(lab_name, task_id, **pins)
 
 
-def _refusal(code: str, detail: str) -> dict:
-    return {"ok": False, "error": code, "detail": detail}
+def _refusal(code: str, detail: str, next_action: str) -> dict:
+    return {"ok": False, "error": code, "detail": detail, "next_action": next_action}
 
 
 def _json_safe(value: object, depth: int = 0) -> bool:
@@ -160,7 +160,11 @@ class ToolFacade:
         try:
             grant = self._book.resolve(token)
         except TokenError:
-            return _refusal("unauthorized", "unknown token")
+            return _refusal(
+                "unauthorized",
+                "unknown token",
+                "Use the current token for this assignment; ask the owner to issue a replacement if it was revoked or lost.",
+            )
         return [
             {"name": spec.name, "kind": spec.kind, "description": spec.description, "args": list(spec.args)}
             for spec in self._role_tools.get(grant.role, ())
@@ -172,21 +176,41 @@ class ToolFacade:
         try:
             grant = self._book.resolve(token)
         except TokenError:
-            return _refusal("unauthorized", "unknown token")
+            return _refusal(
+                "unauthorized",
+                "unknown token",
+                "Use the current token for this assignment; ask the owner to issue a replacement if it was revoked or lost.",
+            )
 
         spec = self._allowed(grant.role, tool)
         if spec is None:
-            return _refusal("forbidden", "tool is not available to this worker")
+            return _refusal(
+                "forbidden",
+                "tool is not available to this worker",
+                "Call tools/list with this token and choose one of the tools listed for your role.",
+            )
 
         if args is None:
             args = {}
         if not isinstance(args, Mapping):
-            return _refusal("bad_args", "arguments must be a mapping")
+            return _refusal(
+                "bad_args",
+                "arguments must be a mapping",
+                "Send arguments as a JSON object matching the selected tool's args schema.",
+            )
         for key, value in args.items():
             if not isinstance(key, str) or key not in spec.args:
-                return _refusal("bad_args", "argument is not declared for this tool")
+                return _refusal(
+                    "bad_args",
+                    "argument is not declared for this tool",
+                    "Remove undeclared fields; use only arguments listed by tools/list.",
+                )
             if not _json_safe(value):
-                return _refusal("bad_args", "argument value must be JSON data")
+                return _refusal(
+                    "bad_args",
+                    "argument value must be JSON data",
+                    "Replace the value with JSON data, such as a string, number, boolean, null, array, or object.",
+                )
         payload = json.loads(json.dumps(dict(args)))
 
         assignment = grant.assignment
