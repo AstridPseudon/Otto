@@ -96,11 +96,32 @@ class FNDPacketWriter(Protocol):
 
     def get_identity(self, ref: ResourceRef) -> Any: ...
 
+    def find_identity_refs(self, *, kind: str,
+                           payload_matches: Mapping[Tuple[str, ...], str]) -> Sequence[ResourceRef]: ...
+
     def put_reference(self, ref: ResourceRef, **kwargs: Any) -> ResourceRef: ...
 
     def get_reference(self, ref: ResourceRef) -> Optional[ResourceRef]: ...
 
     def list_events(self, **kwargs: Any) -> Sequence[Any]: ...
+
+    def page_events(self, *, cursor: Optional[str] = None, limit: int = 100,
+                    stream: Optional[str] = None,
+                    event_types: Optional[Sequence[str]] = None,
+                    subjects: Optional[Sequence[ResourceRef]] = None,
+                    effect_text: Optional[Mapping[str, Sequence[str]]] = None,
+                    after_sequence: Optional[int] = None) -> Any: ...
+
+
+def _paged_events(writer: FNDPacketWriter, **scope: Any) -> Iterable[Any]:
+    """Read a bounded selector to completion, preserving store order."""
+    cursor = None
+    while True:
+        page = writer.page_events(cursor=cursor, limit=500, **scope)
+        yield from page.events
+        if page.next_cursor is None:
+            return
+        cursor = page.next_cursor
 
 
 def _tuple_text(values: Iterable[Any], field: str) -> Tuple[str, ...]:
@@ -458,8 +479,18 @@ class _ContextPacketServiceEngine:
         writer = self._require_writer()
         requested, _ = _binding_parts(document, "document")
         access = self._context(context, actor, roles, scopes)
+        association_refs = writer.find_identity_refs(kind="document-association", payload_matches={
+            ("association", "document", "ref", "authority"): requested.authority,
+            ("association", "document", "ref", "kind"): requested.kind,
+            ("association", "document", "ref", "id"): requested.id,
+        })
+        association_ids = tuple(ref.id for ref in association_refs)
+        if not association_ids:
+            return ()
         visible = []
-        for event in writer.list_events():
+        for event in _paged_events(writer,
+                event_types=("dat.content.linked", "dat.content.unlinked"),
+                effect_text={"association": association_ids}):
             if event.event_type not in {"dat.content.linked", "dat.content.unlinked"}:
                 continue
             association_id = event.effects.get("association")
@@ -635,7 +666,11 @@ class _ContextPacketServiceEngine:
 
     def list_attention(self, recipient: Optional[str] = None) -> Tuple[Mapping[str, Any], ...]:
         latest: dict[str, Mapping[str, Any]] = {}
-        for event in self._require_writer().list_events():
+        writer = self._require_writer()
+        scope = {"event_types": ("dat.context.attention.created", "dat.context.attention.resolved")}
+        if recipient is not None:
+            scope["effect_text"] = {"recipient": (recipient,)}
+        for event in _paged_events(writer, **scope):
             if event.event_type not in {"dat.context.attention.created", "dat.context.attention.resolved"}:
                 continue
             effects = dict(event.effects)
@@ -651,12 +686,19 @@ class _ContextPacketServiceEngine:
         value = self.read_packet(packet, context, actor=actor, roles=roles, scopes=scopes)["content"]
         responsibility = dict(value.get("responsibility", {}))
         provenance = dict(value.get("provenance", {}))
-        refs = tuple(item.get("resolved_ref") for item in value.get("inputs", ()) if item.get("resolved_ref") is not None)
-        events = tuple(self._require_writer().list_events())
+        refs = tuple(
+            ResourceRef.from_dict(item["resolved_ref"])
+            if isinstance(item.get("resolved_ref"), Mapping) else item.get("resolved_ref")
+            for item in value.get("inputs", ()) if item.get("resolved_ref") is not None
+        )
+        refs = tuple(ref for ref in refs if isinstance(ref, ResourceRef))
+        writer = self._require_writer()
         if cursor is None:
-            delta = tuple(event.event_id for event in events if event.subject in refs)
+            local_refs = tuple(ref for ref in refs if ref.authority == writer.authority)
+            delta = tuple(event.event_id for event in _paged_events(writer, subjects=local_refs)) if local_refs else ()
         else:
-            delta = tuple(event.event_id for event in events if event.stream == cursor.stream and event.sequence > cursor.sequence)
+            delta = tuple(event.event_id for event in _paged_events(
+                writer, stream=cursor.stream, after_sequence=cursor.sequence))
         allowed = {"mandate", "outcome", "adopted", "adopted_task", "adopted_protocol", "profile", "criteria_refs", "missing_prerequisites", "open_decisions", "evidence_links", "supported_operations", "scope_coverage", "omissions"}
         bounded = {key: responsibility.get(key, ()) for key in allowed}
         bounded["mandate"] = responsibility.get("mandate")

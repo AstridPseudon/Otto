@@ -79,7 +79,15 @@ def task_timeline(store: Store, task_id: str, *, limit: int = PAGE_LIMIT) -> Tas
 
 def task_ids(store: Store) -> Tuple[str, ...]:
     """The assignment ids the Store holds, from its assignment streams, in id order."""
-    ids = {e.stream[len(TASK_STREAM_PREFIX):] for e in store.list_events() if e.stream.startswith(TASK_STREAM_PREFIX)}
+    streams = set()
+    cursor = None
+    while True:
+        page = store.page_event_streams(TASK_STREAM_PREFIX, cursor=cursor, limit=PAGE_LIMIT)
+        streams.update(page.streams)
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+    ids = {stream[len(TASK_STREAM_PREFIX):] for stream in streams}
     return tuple(sorted(ids))
 
 

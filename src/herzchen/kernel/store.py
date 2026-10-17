@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -49,6 +51,32 @@ FND02_CONTRACT_DIGEST = "28ee051bef55163e79be8acf17513eccd258769f9cebcb5a2608bdb
 
 class StoreError(RuntimeError):
     """Base error for store admission, ownership, and transaction failures."""
+
+
+@dataclass(frozen=True)
+class EventPage:
+    events: Tuple[EventEnvelope, ...]
+    next_cursor: Optional[str]
+
+
+@dataclass(frozen=True)
+class EventStreamPage:
+    streams: Tuple[str, ...]
+    next_cursor: Optional[str]
+
+
+def _validated_event_subjects(subjects: Optional[Sequence[ResourceRef]], authority: str,
+                              *, pinned: bool = False) -> Optional[Tuple[ResourceRef, ...]]:
+    if subjects is None:
+        return None
+    if isinstance(subjects, (str, bytes)):
+        raise ValueError("event subjects must be local typed references")
+    refs = tuple(subjects)
+    if not all(isinstance(ref, ResourceRef) and ref.authority == authority
+               and (not pinned or isinstance(ref.revision, str) and bool(ref.revision.strip()))
+               for ref in refs):
+        raise ValueError("event subjects must be local typed references" + (" with pinned revisions" if pinned else ""))
+    return refs
 
 
 class StoreAdmissionError(StoreError):
@@ -2677,6 +2705,161 @@ class Store:
                 (self.authority, stream)).fetchall()
             return tuple(ResourceRef(*row) for row in rows)
 
+    @staticmethod
+    def _page_limit(limit: int) -> int:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 1000:
+            raise ValueError("page limit must be an integer from 1 to 1000")
+        return limit
+
+    @staticmethod
+    def _page_token(scope: Mapping[str, Any], watermark: int, key: Sequence[Any]) -> str:
+        payload = {"scope": hashlib.sha256(_json(scope).encode("utf-8")).hexdigest(),
+                   "watermark": watermark, "key": list(key)}
+        return base64.urlsafe_b64encode(_json(payload).encode("utf-8")).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _read_page_token(cursor: str, scope: Mapping[str, Any], key_length: int) -> Tuple[int, Tuple[Any, ...]]:
+        try:
+            if not isinstance(cursor, str) or not cursor or len(cursor) > 8192:
+                raise ValueError
+            raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            payload = json.loads(raw)
+            expected = hashlib.sha256(_json(scope).encode("utf-8")).hexdigest()
+            if (not isinstance(payload, dict) or payload.get("scope") != expected
+                    or isinstance(payload.get("watermark"), bool) or not isinstance(payload.get("watermark"), int)
+                    or payload["watermark"] < 0
+                    or not isinstance(payload.get("key"), list)
+                    or len(payload["key"]) != key_length):
+                raise ValueError
+            return payload["watermark"], tuple(payload["key"])
+        except (ValueError, TypeError, binascii.Error, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("invalid or mismatched event page cursor") from exc
+
+    def page_events(self, *, stream: Optional[str] = None,
+                    event_types: Optional[Sequence[str]] = None,
+                    subjects: Optional[Sequence[ResourceRef]] = None,
+                    effect_text: Optional[Mapping[str, Sequence[str]]] = None,
+                    after_sequence: Optional[int] = None,
+                    cursor: Optional[str] = None, limit: int = 100) -> EventPage:
+        """Read bounded event history using metadata predicates before hydration."""
+        limit = self._page_limit(limit)
+        if stream is not None and (not isinstance(stream, str) or not stream.strip()):
+            raise ValueError("stream must be a nonblank exact stream")
+        if event_types is not None:
+            if isinstance(event_types, (str, bytes)):
+                raise ValueError("event_types must be a sequence of nonempty names")
+            event_types = tuple(event_types)
+            if not all(isinstance(item, str) and item.strip() for item in event_types):
+                raise ValueError("event_types must be a sequence of nonempty names")
+        subjects = _validated_event_subjects(subjects, self.authority, pinned=True)
+        if effect_text is not None:
+            if not isinstance(effect_text, Mapping) or not effect_text:
+                raise ValueError("effect_text must map top-level effect names to text values")
+            clean_effects = {}
+            for key, values in effect_text.items():
+                if key not in ("association", "recipient") or isinstance(values, (str, bytes)):
+                    raise ValueError("effect_text supports association and recipient text predicates")
+                values = tuple(values)
+                if not values or not all(isinstance(value, str) for value in values):
+                    raise ValueError("effect_text values must be nonempty text sequences")
+                clean_effects[key] = values
+            effect_text = clean_effects
+        if stream is None and not event_types and not subjects:
+            raise ValueError("event pages require stream, event_types, or subjects")
+        if after_sequence is not None and (stream is None
+                or isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0):
+            raise ValueError("after_sequence requires a nonnegative initial exact-stream read")
+        scope = {"authority": self.authority, "stream": stream, "event_types": event_types,
+                 "subjects": [ref.to_dict() for ref in subjects] if subjects is not None else None,
+                 "effect_text": effect_text, "after_sequence": after_sequence}
+        if event_types == () or subjects == ():
+            if cursor is not None:
+                self._read_page_token(cursor, scope, 2)
+            return EventPage((), None)
+        if cursor is not None:
+            watermark, key = self._read_page_token(cursor, scope, 2)
+            last_stream, last_sequence = key
+            if not isinstance(last_stream, str) or isinstance(last_sequence, bool) or not isinstance(last_sequence, int) or last_sequence < 0:
+                raise ValueError("invalid or mismatched event page cursor")
+        else:
+            watermark, last_stream, last_sequence = None, "", after_sequence or 0
+        clauses = ["e.store_authority = ?"]
+        args: list[Any] = [self.authority]
+        if stream is not None:
+            clauses.append("e.stream = ?"); args.append(stream)
+        if event_types:
+            clauses.append("e.event_type IN (SELECT value FROM json_each(?))"); args.append(_json(event_types))
+        if subjects:
+            if len(subjects) == 1:
+                clauses.extend(["e.subject_authority = ?", "e.subject_kind = ?",
+                                "e.subject_id = ?", "e.subject_revision = ?"])
+                args.extend([subjects[0].authority, subjects[0].kind,
+                             subjects[0].id, subjects[0].revision])
+            else:
+                clauses.append("e.rowid IN (SELECT matched.rowid FROM json_each(?) wanted "
+                    "CROSS JOIN events matched WHERE "
+                    "matched.subject_authority = json_extract(wanted.value, '$.authority') AND "
+                    "matched.subject_kind = json_extract(wanted.value, '$.kind') AND "
+                    "matched.subject_id = json_extract(wanted.value, '$.id') AND "
+                    "matched.subject_revision = json_extract(wanted.value, '$.revision'))")
+                args.append(_json([ref.to_dict() for ref in subjects]))
+        if effect_text:
+            for name, values in effect_text.items():
+                clauses.append("json_type(e.effects_json, '$." + name + "') = 'text' AND json_extract(e.effects_json, '$." + name + "') IN (SELECT value FROM json_each(?))")
+                args.append(_json(values))
+        if watermark is None:
+            with self._transaction_lock:
+                self._require_open()
+                watermark = self._connection.execute("SELECT COALESCE(MAX(append_position),0) FROM events WHERE store_authority = ?", (self.authority,)).fetchone()[0]
+        clauses.append("e.append_position <= ?"); args.append(watermark)
+        if cursor is not None:
+            clauses.append("(e.stream > ? OR (e.stream = ? AND e.sequence > ?))")
+            args.extend([last_stream, last_stream, last_sequence])
+        elif after_sequence is not None:
+            clauses.append("e.sequence > ?"); args.append(after_sequence)
+        with self._transaction_lock:
+            self._require_open()
+            meta = self._connection.execute("SELECT e.rowid, e.stream, e.sequence FROM events e WHERE " + " AND ".join(clauses) + " ORDER BY e.store_authority,e.stream,e.sequence LIMIT ?", (*args, limit + 1)).fetchall()
+            has_more = len(meta) > limit
+            returned = meta[:limit]
+            events = tuple(self._event_from_row(self._connection.execute("SELECT * FROM events WHERE rowid = ?", (row[0],)).fetchone()) for row in returned)
+            next_cursor = self._page_token(scope, watermark, (returned[-1][1], returned[-1][2])) if has_more and returned else None
+            return EventPage(events, next_cursor)
+
+    def page_event_streams(self, prefix: str, *, cursor: Optional[str] = None,
+                           limit: int = 100) -> EventStreamPage:
+        limit = self._page_limit(limit)
+        if not isinstance(prefix, str) or not prefix.strip():
+            raise ValueError("prefix must be nonblank text")
+        scope = {"authority": self.authority, "prefix": prefix}
+        if cursor is None:
+            watermark = None; after = ""
+        else:
+            watermark, key = self._read_page_token(cursor, scope, 1); after = key[0]
+            if not isinstance(after, str):
+                raise ValueError("invalid or mismatched stream page cursor")
+        with self._transaction_lock:
+            self._require_open()
+            if watermark is None:
+                watermark = self._connection.execute("SELECT COALESCE(MAX(append_position),0) FROM events WHERE store_authority = ?", (self.authority,)).fetchone()[0]
+            query = "SELECT stream FROM events WHERE store_authority = ? AND append_position <= ? AND stream > ?"
+            args: list[Any] = [self.authority, watermark, after]
+            if prefix:
+                query += " AND stream >= ? AND substr(stream, 1, length(?)) = ?"
+                args.extend([prefix, prefix, prefix])
+                upper = None
+                for index in range(len(prefix) - 1, -1, -1):
+                    if ord(prefix[index]) < 0x10ffff:
+                        upper = prefix[:index] + chr(ord(prefix[index]) + 1)
+                        break
+                if upper is not None:
+                    query += " AND stream < ?"; args.append(upper)
+            query += " GROUP BY stream ORDER BY stream LIMIT ?"; args.append(limit + 1)
+            rows = self._connection.execute(query, args).fetchall()
+            more = len(rows) > limit; streams = tuple(row[0] for row in rows[:limit])
+            next_cursor = self._page_token(scope, watermark, (streams[-1],)) if more and streams else None
+            return EventStreamPage(streams, next_cursor)
+
     def list_events(self, *, stream: Optional[str] = None,
                     subjects: Optional[Sequence[ResourceRef]] = None,
                     subject_kinds: Optional[Sequence[str]] = None,
@@ -2694,8 +2877,7 @@ class Store:
             args.extend([self.authority, stream])
         if subjects is not None:
             subjects = tuple(subjects)
-            if not all(isinstance(ref, ResourceRef) and ref.authority == self.authority for ref in subjects):
-                raise ValueError("event subjects must be local typed references")
+            subjects = _validated_event_subjects(subjects, self.authority)
             if not subjects:
                 return ()
             if len(subjects) == 1:
@@ -2865,6 +3047,12 @@ class DomainHandler:
             kwargs["assessment_parent"] = assessment_parent
         return self._owner.list_events(**kwargs)
 
+    def page_events(self, **kwargs: Any) -> EventPage:
+        return self._owner.page_events(**kwargs)
+
+    def page_event_streams(self, prefix: str, **kwargs: Any) -> EventStreamPage:
+        return self._owner.page_event_streams(prefix, **kwargs)
+
     def put_identity(self, *args: Any, **kwargs: Any) -> IdentityRecord:
         return self._owner.put_identity(*args, **kwargs)
 
@@ -2974,6 +3162,12 @@ class ConsumerStore:
         if assessment_parent is not None:
             kwargs["assessment_parent"] = assessment_parent
         return self.__owner.list_events(**kwargs)
+
+    def page_events(self, **kwargs: Any) -> EventPage:
+        return self.__owner.page_events(**kwargs)
+
+    def page_event_streams(self, prefix: str, **kwargs: Any) -> EventStreamPage:
+        return self.__owner.page_event_streams(prefix, **kwargs)
 
     def project_history_reader(self, *, grant=None, grant_reader=None, evidence_reader=None):
         """Return the bounded D03 reader without exposing the owner SQL port."""
