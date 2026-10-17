@@ -64,13 +64,26 @@ The focused CLI regression was added before implementation and passes: `/opt/hom
 - Changed files: `.project/PROJECT.md`, `src/otto/portfolio/cli.py`, `tests/test_owner_observability_cli.py`, `tests/test_status_friction.py`.
 - `tests/test_status_friction.py`: 3 passed. `tests/test_owner_observability_cli.py`: 6 passed. Ran each file in a separate pytest process; no owner or staging run was started.
 
+## SL5 decision: keep Vision and Native5 until CUTOVER
+
+The orchestrator decided on 17 Oct 2026 to keep Vision and Native5 until CUTOVER/PROGRAM DELETE. DELETE should recheck these exact installed callers after controller retirement and remove the surfaces only when no caller remains outside the retired controller:
+
+- Vision owner composition: `install/controller/shared_operating_service.py:412-413`; exact adopted selection pin comparison: `src/otto/portfolio/owner_vision.py:38`.
+- Native5 shared composition and packet loading: `install/controller/shared_operating_service.py:157,365,368,389,589` and `install/controller/scoped_client_service.py:41`.
+- Prepared-context Native5 path: `install/controller/prepared_context_hold.py:50`.
+- Adjacent retained paths checked during the same scan: root lane loading at `install/controller/scoped_client_service.py:36`, and `OwnerAuthoringIngress` at `install/controller/operating_service.py:210`.
+
+The Vision disablement candidate is not caller-free: `vision_command.py:143` invokes `disable_guidance`, `vision_pack.py:234,279` controls the field/record, tests assert it, and `owner_vision.py:38` compares the entire selection to adopted pins. Leave that contract in place pending a separately scoped pin migration.
+
 ## Questions for the orchestrator
 
-1. **SL5 Vision / Native5:** Do you want these surfaces kept or retired? The code scan shows live production composition: Vision is injected in `install/controller/shared_operating_service.py:399-413`; Native5 packets are imported by `shared_operating_service.py:157,365,368,389,589` and `scoped_client_service.py:41`, with an additional prepared-context route at `install/controller/prepared_context_hold.py:50`. The finite Vision CLI and manager read paths also remain. Code evidence favors keeping both pending actual Store-event usage data. Obtaining that event data requires owner access, which this session is explicitly forbidden to start or query. I will leave code unchanged until your keep/retire decision.
+1. **SL2 replacement wiring:** `OwnerManagerReplacement` and `ManagerContinuity.replace_session` have zero production callers in this clone; the live manager handoff is a read projection through `manager_journey_service.py`. Wiring a native replacement entrypoint would overlap PROGRAM's in-flight owner/manager work. SL2 closes the live queued-generation admission defect and hardens the existing replacement composition, but cannot claim a live route consolidation or delete a redundant route until the owner entrypoint lands. This task remains blocked as instructed.
 
-2. **SL2 replacement wiring:** `OwnerManagerReplacement` and `ManagerContinuity.replace_session` have zero production callers in this clone; the live manager handoff is a read projection through `manager_journey_service.py`. Wiring a native replacement entrypoint would overlap PROGRAM's in-flight owner/manager work. SL2 closes the live queued-generation admission defect and hardens the existing replacement composition, but cannot claim a live route consolidation or delete a redundant route until the owner entrypoint lands. Which PROGRAM-owned entrypoint should call the retained replacement composition after integration?
+## Audit follow-up (17 Oct 2026)
 
-3. **SLIM deletion budget:** the current diff removes a net 654 lines from top-level `src/otto/portfolio` Python (308 added / 962 deleted) against the 11,980-line target, leaving 11,326 lines. The current inventory is 47,266 lines across 96 modules. This uses the same top-level module scope as the baseline; tests and documentation are outside the portfolio deletion measure. Remaining candidates in the refreshed ledger are gross footprints with overlapping callers and retained behavior, not credible net savings yet. SL6 depends on SL2's unlanded production replacement route; SL7 also depends on the unanswered Vision/Native5 decision. Should the 25% budget remain a hard requirement after those upstream blocks clear, and may SLIM touch paths still owned by PROGRAM if the measured untouched candidates cannot meet it? No candidate is deleted on assumption.
+Reviewed `/Users/hannahomalley/Developer/otto-program/ops/audits/20261017b/DEADCODE.md` and `CLISURFACE.md`; the audit snapshot is canon/main `eb9b6cd`. The read-only source checkout is at `2212569`; the SLIM line remains based at `163925e`. Updated `.project/tasklist.md` with scoped deletion and UX tasks, using `git grep` across `src`, `tests`, `ops`, and `install`. In-scope caller findings: `current_packet.py` and `execution_resume.py` have no named callers beyond three `execution_resume` package exports; `advisor_host_command.py` is referenced only by its dedicated test; the `otto-gateway` script is referenced by packaging and its packaging test. SL3 already removed the duplicate root `overview`, `tasks`, and `task` routes. `sync-docs` is owned for implementation removal by PROGRAM A6; SL7 updates docs only. Do not duplicate PROGRAM ownership of the Evidence workflow switch, fleet `done.summary`, Vision/Native5 controller retirement, or manager replacement wiring.
+
+The refreshed tasklist adds SL7A for documentation that does not depend on SL6 and groups the remaining audit work as SL9A-E. It keeps SL2/SL6 blocked on manager-replacement wiring. Vision disablement remains intact because its result is invoked by `vision_command.py` and adopted selections are exact-pinned by `owner_vision.py`; changing it requires a separate pin migration.
 
 ## SL2 worker evidence
 
