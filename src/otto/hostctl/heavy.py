@@ -471,9 +471,21 @@ def status() -> dict:
     cap = capacity(directory)
     holders = _holders(directory)
     used = sum(int(h.get("weight", 1)) for h in holders)
+    visible_holders = []
+    for holder in holders:
+        shown = {k: holder.get(k) for k in ("lease_id", "owner", "purpose", "weight",
+                                            "started_at", "expires_at")}
+        shown["unresolved"] = holder.get("unresolved")
+        if shown["unresolved"]:
+            reasons = ", ".join(map(str, shown["unresolved"].get("remaining", []))) or "cleanup uncertain"
+            shown["next_action"] = (f"Inspect retained lease {shown['lease_id']} ({reasons}) and run "
+                                    "supported recovery; keep its capacity claim held until the scope is gone. "
+                                    "Do not rerun the command from this status alone.")
+        else:
+            shown["next_action"] = f"Lease {shown['lease_id']} is active; wait for its holder to finish."
+        visible_holders.append(shown)
     return {"capacity": cap, "used": used, "free": max(0, cap - used),
-            "holders": [{k: h.get(k) for k in ("owner", "purpose", "weight", "started_at", "expires_at")}
-                        for h in holders],
+            "holders": visible_holders,
             "waiting": [{"purpose": t.get("purpose"), "weight": t.get("weight"),
                          "queued_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t.get("queued_at", 0)))}
                         for t in _waiting(directory)],

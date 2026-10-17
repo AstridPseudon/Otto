@@ -24,12 +24,23 @@ _MAX_SECONDS = 86400
 _PURPOSE_CHARS = 120
 
 
-def _recovery_action(record: dict[str, Any]) -> str:
-    """Explain how to inspect an unknown run without implying that it settled."""
-    if record.get("custody") == "uncertain":
-        return ("Inspect the retained runner record and custody latch; keep its capacity claim held "
-                "until supported recovery proves the process scope is gone. Do not resubmit this request.")
-    return "Inspect the retained runner record and its outcome before deciding whether a new request is safe."
+def _recovery_action(recovery: dict[str, Any]) -> str:
+    """Describe current scope/claim evidence while preserving an unknown command outcome."""
+    scope, claim = recovery["scope_run_id"], recovery["claim_run_id"]
+    if recovery["latch_present"]:
+        scope_action = f"Scope {scope} has an unresolved custody latch; inspect it with supported recovery."
+    else:
+        scope_action = f"Scope {scope} has no retained custody latch."
+    if recovery["claim_held"]:
+        claim_action = (f" Capacity claim held for {claim} ({recovery['claim_units']} units) until its "
+                        "unresolved scopes are settled.")
+    elif recovery["latch_present"]:
+        claim_action = (f" No capacity claim is recorded for {claim} despite the unresolved latch; "
+                        "stop conflicting admissions and inspect this accounting gap.")
+    else:
+        claim_action = f" Capacity claim released for {claim}."
+    return (scope_action + claim_action + " The command outcome remains unknown; inspect the retained "
+            "record and output. Do not resubmit this request.")
 
 
 class Lease:
@@ -156,7 +167,8 @@ class Runner:
                     code = record["exit_code"] if record["state"] == "settled" else EXIT_UNKNOWN
                     result = {"ok": True, "done": True, "record": record, "exit_code": code}
                     if record["state"] == "unknown":
-                        result["next_action"] = _recovery_action(record)
+                        result["recovery"] = self._recovery_state(record)
+                        result["next_action"] = _recovery_action(result["recovery"])
                     return result
                 if deadline is None:
                     self._cond.wait()
@@ -187,8 +199,27 @@ class Runner:
                 except StoreError as exc:
                     return _error("evidence_invalid", str(exc))
                 if out["record"] is not None and out["record"].get("state") == "unknown":
-                    out["next_action"] = _recovery_action(out["record"])
+                    out["recovery"] = self._recovery_state(out["record"])
+                    out["next_action"] = _recovery_action(out["recovery"])
         return out
+
+    def _recovery_state(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Current durable latch and admitted claim for one unknown run; caller holds _cond."""
+        run_id = record["run_id"]
+        claim_id = record.get("claim_run_id") or record.get("nested_in") or run_id
+        held = [lease for lease in self._leases.values() if lease.ticket is not None and
+                (lease.run_id == claim_id or lease.record.get("claim_run_id") == claim_id or
+                 lease.record.get("run_id") == run_id)]
+        try:
+            os.stat(self._latch_path(run_id))
+            latch_present = True
+        except FileNotFoundError:
+            latch_present = False
+        except OSError:
+            latch_present = True  # unreadable custody evidence cannot prove release
+        return {"scope_run_id": run_id, "latch_present": latch_present,
+                "claim_run_id": claim_id, "claim_held": bool(held),
+                "claim_units": sum(lease.units for lease in held)}
 
     def report(self, task: str | None = None) -> dict[str, Any]:
         """Per-task sums over the verified records, and the totals over all of them."""
