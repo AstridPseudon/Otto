@@ -653,6 +653,27 @@ class FakeHarness(Workspace):
             binding.execute(request)
         self.assertEqual(events, ['prepared', ('launch', str(Path(self.root) / 'owner-scope-latch.json'))])
 
+    def test_codex_postspawn_os_error_with_unsettled_cleanup_is_unknown(self):
+        from herzchen.adapters.host import CodexCliBinding
+        from herzchen.contracts import HostRequest, HostIdentity, HostOperation, HostOutcome, ResourceRef
+        from herzchen.fleet.custody import Disposition
+        from types import SimpleNamespace
+        binding = CodexCliBinding(self.root, launcher='/L/codex', prompt='p')
+        request = HostRequest(HostOperation.INVOKE, HostIdentity('worker', None),
+                              ResourceRef('o', 'work.task', 't'), 'workspace-write')
+        closed = SimpleNamespace(close=lambda: None)
+        def broken_communicate(*_args, **_kwargs):
+            raise OSError('pipe failed after spawn')
+        process = SimpleNamespace(pid=222, stdin=closed, stdout=closed, stderr=closed,
+                                  communicate=broken_communicate)
+        custody = SimpleNamespace(process=process,
+                                  release=lambda: Disposition('uncertain', 'census unavailable'))
+        with mock.patch('herzchen.adapters.host.Custody.launch', return_value=custody):
+            receipt, result = binding.execute(request)
+        self.assertEqual(receipt.outcome, HostOutcome.UNKNOWN)
+        self.assertEqual(receipt.unsupported_reason, 'native_cleanup_unresolved')
+        self.assertEqual(result['custody']['state'], 'uncertain')
+
     def test_a_host_that_skips_part_of_the_contract_cannot_register(self):
         H = hosts()
 

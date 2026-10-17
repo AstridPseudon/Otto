@@ -836,6 +836,7 @@ class CodexCliBinding(HostPort):
         caller_cleanup = None
         custody = None
         custody_disposition = None
+        postspawn_error = None
         def resolve_usage_turn(session_id):
             # Fresh initializer usage may omit a CLI turn ID. Reuse the exact
             # host trace selector and prompt binding, with its bounded read.
@@ -921,17 +922,25 @@ class CodexCliBinding(HostPort):
                         if pipe is not None: pipe.close()
             exit_status = None
         except OSError as exc:
-            return (HostReceipt(request.operation, HostOutcome.FAILED, request.identity,
-                                request.identity.logical_agent_id, request.requested_profile,
-                                observed_runner=RUNNER_ID, unsupported_reason="codex_launcher_os_error"),
-                    {"command": command, "started_at": started, "stderr": str(exc),
-                     "delivery_state": "unknown"})
+            if custody is None:
+                return (HostReceipt(request.operation, HostOutcome.FAILED, request.identity,
+                                    request.identity.logical_agent_id, request.requested_profile,
+                                    observed_runner=RUNNER_ID, unsupported_reason="codex_launcher_os_error"),
+                        {"command": command, "started_at": started, "stderr": str(exc),
+                         "delivery_state": "unknown"})
+            # A process already exists. Classify its native turn only after
+            # the finally block has established cleanup disposition.
+            postspawn_error = str(exc)
+            stdout, stderr, exit_status = "", str(exc), None
         finally:
             if caller_cleanup is not None:
                 caller_cleanup()
             if custody is not None:
                 # Sweeps stragglers the CLI left behind; a no-op once the tree is already proven gone.
-                custody_disposition = custody.release()
+                try:
+                    custody_disposition = custody.release()
+                except Exception:
+                    custody_disposition = Disposition("uncertain", "scope cleanup failed")
                 settle_scope = getattr(self._process_pin, "settle_scope", None)
                 if custody_disposition.gone and callable(settle_scope):
                     try:
@@ -951,7 +960,7 @@ class CodexCliBinding(HostPort):
         observed_turn_id = stream.turn_id
         native_turn_started = stream.turn_started
         invocation_turn_verified = False
-        trace_error = None
+        trace_error = postspawn_error
         if (request.operation == HostOperation.RESUME and observed_session is not None
                 and observed_session != request.identity.physical_session_id):
             trace_error = "resumed session differs"
