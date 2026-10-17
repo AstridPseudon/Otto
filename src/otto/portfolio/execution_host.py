@@ -257,7 +257,6 @@ class ExecutionHost:
         self._capacity_holds: dict[str, dict[str, Any]] = {}
         self._capacity_freed: set[str] = set()
         self._process_groups = self._load_process_groups()
-        self._terminate_recorded_process_groups()
         self._reconcile_checked = 0.0
         self._last_project: str | None = None
         self._project_order: list[str] = []
@@ -1081,6 +1080,9 @@ class ExecutionHost:
                 stream.flush()
                 os.fsync(stream.fileno())
             self._owns_owner_file = True
+            # Only the owner that has claimed this directory may clean up its
+            # prior worker records. A competing constructor must leave them alone.
+            self._terminate_recorded_process_groups()
         # A partial atomic response from a crashed host is never a terminal
         # response. Only our own response-temp naming convention is removed.
         for temporary in self.directory.glob(".response-*.json.tmp"):
@@ -2033,9 +2035,6 @@ class ExecutionHost:
     def close(self) -> None:
         """Keep commands/status available while retained children settle."""
         self.begin_drain()
-        # Stop independently sessioned workers before joining owner command
-        # lanes; a child blocked on a worker must not postpone forced cleanup.
-        self._terminate_recorded_process_groups()
         while True:
             with self._lock:
                 children = tuple(self._children)

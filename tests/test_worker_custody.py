@@ -138,8 +138,28 @@ class WorkerCustodyTests(unittest.TestCase):
         record = {'pid': process.pid, 'pgid': process.pid,
                   'birth': _process_start_identity(process.pid)['birth']}
         (directory / 'capacity-process-groups.json').write_text(json.dumps({'worker': record}))
-        ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        host = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        host.start()
+        self.addCleanup(host.close)
         self.assertLess(process.wait(timeout=2), 0, 'owner startup left its recorded fake worker alive')
+
+    def test_competing_owner_cannot_kill_worker_before_claiming_custody(self):
+        from otto.portfolio.execution_host import ExecutionHost, _process_start_identity
+        directory = Path(self.f.temporary.name) / 'competing-host'
+        owner = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        owner.start()
+        self.addCleanup(owner.close)
+
+        process = self.spawn_fake_worker()
+        self.addCleanup(lambda: (process.poll() is None and os.killpg(process.pid, signal.SIGKILL),
+                                 process.wait()))
+        record = {'pid': process.pid, 'pgid': process.pid,
+                  'birth': _process_start_identity(process.pid)['birth']}
+        (directory / 'capacity-process-groups.json').write_text(json.dumps({'worker': record}))
+        contender = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        with self.assertRaisesRegex(RuntimeError, 'another execution host owns this command directory'):
+            contender.start()
+        self.assertIsNone(process.poll(), 'the rejected contender killed a worker owned by the live owner')
 
     def test_forced_owner_close_terminates_recorded_fake_worker(self):
         from otto.portfolio.execution_host import ExecutionHost, _process_start_identity

@@ -114,7 +114,7 @@ def terminate_recorded_process_group(record: Mapping[str, Any], *,
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
-        return True
+        return False
     except OSError:
         return False
     return True

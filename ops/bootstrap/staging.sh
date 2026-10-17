@@ -115,6 +115,29 @@ stop_group() {
   return 1
 }
 
+# After a forced owner-group stop there is no owner left to run close(). Stop
+# each durable worker group only if its recorded leader birth still matches.
+terminate_recorded_worker_groups() {
+  local records="$HOME_DIR/shared-host/capacity-process-groups.json"
+  [ -f "$records" ] || return 0
+  "$PY" -I - "$TREE/src" "$records" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from otto.agents.claude_cli import terminate_recorded_process_group
+from otto.portfolio.execution_host import _process_start_identity
+
+records = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for occurrence, record in records.items():
+    killed = terminate_recorded_process_group(
+        record, birth_reader=lambda pid: _process_start_identity(pid)["birth"])
+    if killed:
+        print("down: killed recorded worker group %s (%s)" % (record.get("pgid"), occurrence))
+PY
+}
+
 # 0 once process group PGID has no live member, or 1 if one is still there after SECONDS.
 wait_group_gone() {
   local pgid=$1 i
@@ -257,6 +280,7 @@ down() {
     if ! wait_group_gone "$pid" "${OTTO_STAGING_STOP_SECONDS:-60}"; then
       forced=" (forced)"
       stop_group "$pid" || die "down: processes in group $pid survived KILL; pidfile kept"
+      terminate_recorded_worker_groups
     fi
   else
     # The leader is gone. Its group is not signalled, since the pid may have been reused;
