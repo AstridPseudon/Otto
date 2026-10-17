@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import threading
+import time
 from unittest.mock import patch
 
 from otto.hostctl import lanes
@@ -98,7 +99,8 @@ def test_real_owner_installs_b_during_live_and_queued_a_and_routes_a_result():
     f.setUp()
 
     def receipt(path):
-        f.wait(path.exists, str(path))
+        while not path.exists():
+            time.sleep(.01)
         return json.loads(path.read_text())
 
     try:
@@ -111,7 +113,7 @@ def test_real_owner_installs_b_during_live_and_queued_a_and_routes_a_result():
         first_manager = threading.Event()
         f.native.started[("manager-A", 1)] = first_manager
         manager_response = f.send("A", {"command": "start-manager"})
-        f.wait(first_manager.is_set, "first A manager")
+        first_manager.wait()
         f.native.release("manager-A")
         assert receipt(manager_response)["outcome"] == "succeeded"
 
@@ -123,7 +125,7 @@ def test_real_owner_installs_b_during_live_and_queued_a_and_routes_a_result():
             "focus": "Complete A's bounded task"})
         admitted = receipt(submission)
         assert admitted["outcome"] == "admitted"
-        f.wait(worker_started.is_set, "A worker")
+        worker_started.wait()
 
         seed = host._owner_request(lambda: next(
             row for row in f.f.port.list_due(
@@ -131,8 +133,9 @@ def test_real_owner_installs_b_during_live_and_queued_a_and_routes_a_result():
             if row["recipient"] == "seed-A"))
         queued_path = f.send("A", {
             "command": "fixture-start", "schedule_id": seed["schedule_id"]})
-        f.wait(lambda: host._owner_request(
-            lambda: seed["schedule_id"] in host._executions), "queued A execution")
+        while not host._owner_request(
+                lambda: seed["schedule_id"] in host._executions):
+            time.sleep(.01)
         running, queued = host._owner_request(lambda: (
             host._executions[admitted["schedule_id"]]["running"],
             host._executions[seed["schedule_id"]]["running"]))
@@ -185,7 +188,7 @@ def test_real_owner_installs_b_during_live_and_queued_a_and_routes_a_result():
         worker_result = receipt(Path(admitted["response_path"]))
         assert worker_result["outcome"] == "succeeded"
         notice = worker_result["manager_result_notification"]
-        f.wait(second_manager.is_set, "A callback manager")
+        second_manager.wait()
         f.native.release("manager-A", 2)
         assert receipt(Path(notice["response_path"]))["outcome"] == "succeeded"
         assert f.states["B"] == original_b_state
