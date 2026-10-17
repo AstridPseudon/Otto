@@ -489,7 +489,7 @@ class ProjectOwnerService(OwnerService):
             manager_turns={'active': len(managers), 'active_projects': sorted(v['project'] for v in managers),
                            'limit': policy.manager_units},
             manager_turn_active=bool(managers),
-            native_capacity={'active_or_uncertain': len(active), 'total_limit': policy.manager_units,
+            native_capacity={'active_or_uncertain': len(active), 'total_limit': policy.total_turn_units,
                              'worker_limit': policy.worker_units, 'manager_limit': policy.manager_units,
                              'heavy_limit': policy.heavy_headroom,
                              'holds': sorted(self.shared_host._capacity_holds)},

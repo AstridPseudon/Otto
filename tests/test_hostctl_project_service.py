@@ -17,6 +17,52 @@ from tests import test_bounded_project_host as bounded_fixture
 
 
 class SharedHostAdmissionTests(unittest.TestCase):
+    def test_status_reports_admitted_turn_limits(self):
+        cases = (
+            ("default", CapacityPolicy(), (8, 6, 6)),
+            ("configured", CapacityPolicy(
+                turn_units=4, manager_reserve=1, heavy_headroom=2,
+                worker_floor=1), (5, 4, 4)),
+        )
+        for name, policy, expected in cases:
+            with self.subTest(policy=name), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                config = {
+                    "home": str(home),
+                    "owner": {"actor": "owner"},
+                    "store": {
+                        "authority": "status-test",
+                        "domain_descriptor_digest": "digest",
+                    },
+                    "hosts": {},
+                    "max_active_manager_turns": policy.manager_units,
+                }
+                host = SimpleNamespace(
+                    bounded_transports=True,
+                    capacity=SimpleNamespace(policy=policy),
+                    capacity_holds=lambda: {},
+                    _executions={},
+                    _capacity_holds={},
+                )
+                router = SimpleNamespace(host=host, store=object(), services={})
+                service = ProjectOwnerService(config, router=router)
+                capacity = service._status()["native_capacity"]
+
+                self.assertEqual(
+                    tuple(capacity[key] for key in (
+                        "total_limit", "worker_limit", "manager_limit")),
+                    expected,
+                )
+                self.assertEqual(policy.total_turn_units, expected[0])
+                self.assertTrue(policy.admits_turn("worker", expected[1] - 1, 0))
+                self.assertFalse(policy.admits_turn("worker", expected[1], 0))
+                workers, managers = policy.worker_floor, expected[2]
+                self.assertEqual(workers + managers, expected[0])
+                self.assertTrue(policy.admits_turn("manager", workers, managers - 1))
+                self.assertFalse(policy.admits_turn("manager", workers, managers))
+                self.assertTrue(policy.admits_turn("worker", workers - 1, managers))
+                self.assertFalse(policy.admits_turn("worker", workers, managers))
+
     def test_host_admission_borrows_store_and_foreign_project_denied(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
