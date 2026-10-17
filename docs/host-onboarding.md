@@ -61,6 +61,33 @@ request already written stays retained; read it later with `request-status`.
 The hooks already exist. A new CLI plugs in at the same points as Codex and
 Claude Code.
 
+### Contributor map: third-host extension
+
+Use this route when adding a host kind to the codebase. The fleet contract is
+the extension point; Otto's host control and admission code is the integration
+path around it.
+
+| Work | Start here | Then update |
+|---|---|---|
+| Implement the host kind | `src/herzchen/fleet/hosts/contract.py` (`HostKind`) and the sibling implementations `claude.py` / `codex.py` | Add `src/herzchen/fleet/hosts/<kind>.py`; export and register it in `src/herzchen/fleet/hosts/__init__.py` (`REGISTRY`) |
+| Make Otto admit and launch it | `src/otto/hostctl/config.py`, `service.py`, and `adapters.py` | Add the host model profile in `src/otto/agents/host_profiles.py`, its native adapter/result verifier beside `claude_adapter.py`, and `policy-staging/megado/skill/templates/run.<kind>.json` |
+| Check the contract and integration | `tests/test_host_contract.py` | Also run `tests/test_hostctl_cli.py`, `tests/test_host_neutral_defaults.py`, `tests/test_megado_templates.py`, and `tests/test_hostctl_serve.py` for Otto wiring; copy the Claude binding/admission focused tests for host-specific coverage |
+
+The fleet registry and Otto admission are separate steps: registering a
+`HostKind` makes `get_host(<kind>)` resolve it, but does not admit an agent CLI
+to a running Otto. The operator admission route is `ottoctl service
+admit-host --host <kind>`; its host configuration must resolve to a pinned,
+owner-bound adapter and declared capabilities. Follow the numbered steps below
+for adapter, fence, profile, and conformance details.
+
+**Gate boundary.** Focused fixtures establish mechanics; they do not establish
+that a native CLI is safe or live-ready. A native launcher/write-fence probe,
+actual owner or staging journey, or check that requires `sandbox-exec`, `ps`,
+or a staging owner needs the project gate. In a sandbox where those facilities
+are unavailable, record the check as `needs the gate` and continue with the
+focused offline tests. Keep live behavior `unverified` until a real journey
+runs.
+
 1. **Adapter module.** Write it next to `otto/agents/claude_cli.py` and
    `claude_adapter.py`:
    - `LauncherPin`: an absolute launcher, its realpath, sha256 and exact
