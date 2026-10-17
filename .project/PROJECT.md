@@ -13,6 +13,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:07Z | PK3R-UX | merged c5f6ab876679aa23a98aa44a6a6b3bfa1a653b9d | +3/-1 | test_host_contract.py 44 passed/23 subtests; diff --check passed | The missing model-binding refusal now carries a concrete next_action. Astra reviewed the narrow fix and found no defect.
 2026-10-17T21:19Z | PK3R-UX2 | merged a192e15103b8835a566b9a12e6e74cc9bce12f43 | +60/-13 | isolated registration-pin regression 1 passed; diff --check passed; full bundle file stalled after 24 passes; CLI owner setup needs the gate | Scoped role/profile pin refusals now retain next_action through the owner service and direct CLI error envelopes. No deletions.
 2026-10-17T21:26Z | PK3R-UX3 | merged 5832ee02207b07cf692d12edb43f01a168f7aedd | +36/-9 | test_host_neutral_defaults.py 19 passed; test_hostctl_bundle.py 29 passed/3 subtests; diff --check passed | Unknown, unqualified, unsupported and launcher-drift profile refusals now carry next_action through both error envelopes. No deletions.
+2026-10-17T21:29Z | PK3R-UX4 | merged 945d5bb71cc451bfeb56d9d26b9c42f1659393af | +29/-2 | test_hostctl_bundle.py 30 passed/5 subtests; diff --check passed | Retained-profile activation refusals for host/model qualification now use the recovery-aware refusal type. No deletions.
 
 ## Questions for the orchestrator
 
@@ -27,7 +28,7 @@ Reviewed the merged project diff against the goal and deletion budget. Astra fou
 
 The final Astra review then found two new refusal gaps in turn. PK3R-UX2 adds scoped registration-pin recovery guidance; PK3R-UX3 adds guidance for unknown, unqualified, unsupported and launcher-drift profile selections. Both preserve the refusal and the host boundary, and their CLI/service envelope checks are socket-free. The isolated PK3R-UX2 check passed; the later complete `test_hostctl_bundle.py` run passed all 29 tests and three subtests. The full CLI owner fixture remains a gate check.
 
-Astra's second whole-project pass found that a retained profile can be correctly refused during activation for the wrong host or unsupported models yet still lose its recovery action. PK3R-UX4 will use the same typed profile-selection refusal at those activation checks and add focused coverage.
+Astra's second whole-project pass found that a retained profile can be correctly refused during activation for the wrong host or unsupported models yet still lose its recovery action. PK3R-UX4 uses the same typed profile-selection refusal at those activation checks. The full bundle file passed with 30 tests and five subtests; both envelope helpers were checked without an owner socket.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
