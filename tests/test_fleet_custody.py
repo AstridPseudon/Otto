@@ -1306,6 +1306,33 @@ def test_census_gap_doubt_survives_latch_recovery(tmp_path):
     assert Path(latch).exists()
 
 
+@pytest.mark.parametrize("operation", ["status", "send", "signal_group"])
+def test_unavailable_census_at_entry_survives_recovery_without_second_census(tmp_path, operation):
+    latch = _write_latch(tmp_path / (operation + ".json"), 44401, "birth", {44401: "birth"})
+    calls = []
+
+    def unavailable():
+        calls.append(1)
+        return None
+
+    owner = custody.Custody.from_latch(latch, census_fn=unavailable)
+    with mock.patch.object(custody.os, "killpg") as killpg:
+        if operation == "status":
+            assert owner.status().state == "uncertain"
+        elif operation == "send":
+            owner._send(signal.SIGTERM)
+        else:
+            assert owner.signal_group(signal.SIGTERM) is False
+    assert len(calls) == 1
+    killpg.assert_not_called()
+    assert json.loads(Path(latch).read_text())["doubt"]
+
+    unrelated = custody.Proc(44402, 1, 44402, "unrelated")
+    recovered = custody.Custody.from_latch(latch, census_fn=lambda: {unrelated.pid: unrelated})
+    assert recovered.status().state == "uncertain"
+    assert Path(latch).exists()
+
+
 def test_cleanup_intent_remains_recorded_when_new_group_member_is_observed(tmp_path):
     latch = str(tmp_path / "cleanup.json")
     leader = custody.Proc(45001, 1, 45001, "leader")

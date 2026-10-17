@@ -201,6 +201,11 @@ class Custody:
         info = snap.get(pid)
         return info is not None and not info.zombie and info.birth == self.known.get(pid)
 
+    def _record_census_gap(self) -> None:
+        if self.doubt is None:
+            self.doubt = "census unavailable while scope was unresolved"
+            self._persist(self.state)
+
     def _group_state(self, snap: Mapping[int, Proc]) -> str:
         """``ours`` (provably), ``reused`` (the old group is provably gone), ``empty`` or ``unproven``."""
         if self.pgid < 0:
@@ -218,14 +223,12 @@ class Custody:
     def observe(self, snap: Optional[Mapping[int, Proc]] = None) -> Optional[dict]:
         """Record proven group members and return live recorded identities.
 
-        ``None`` means the census failed and latches doubt for a previously recorded live group.
+        ``None`` means the census failed and latches doubt for this scope.
         A parent pid or environment tag alone never grants signal authority.
         """
         snap = self._census() if snap is None else snap
         if snap is None:
-            if any(True for _ in self.known) and self.doubt is None:
-                self.doubt = "census unavailable while tracked processes were live"
-                self._persist(self.state)
+            self._record_census_gap()
             return None
         before = len(self.known)
         if self._group_state(snap) == "ours":
@@ -238,9 +241,10 @@ class Custody:
 
     # -- signals -----------------------------------------------------------------------------
     def _send(self, sig: int) -> None:
-        """Signal the tree, re-reading the census right before each signal."""
+        """Signal the proven private group after a fresh census."""
         snap = self._census()
         if snap is None:
+            self._record_census_gap()
             return
         self.observe(snap)
         grouped = self._group_state(snap) == "ours"
@@ -253,7 +257,10 @@ class Custody:
     def signal_group(self, sig: int) -> bool:
         """Signal the group only while it is provably ours. Returns whether a signal was sent."""
         snap = self._census()
-        if snap is None or self._group_state(snap) != "ours":
+        if snap is None:
+            self._record_census_gap()
+            return False
+        if self._group_state(snap) != "ours":
             return False
         try:
             os.killpg(self.pgid, sig)
@@ -265,6 +272,7 @@ class Custody:
         """Fail closed: ``gone`` only from a clean census with nothing of ours in it."""
         snap = self._census()
         if snap is None:
+            self._record_census_gap()
             return Disposition(UNCERTAIN, "census unavailable")
         live = self.observe(snap)
         if live:
