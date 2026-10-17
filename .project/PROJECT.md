@@ -5,6 +5,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 ## Log
 
 2026-10-17 19:55 UTC | SL0 | merged 81abf5c | +410/-4 | `tests/test_slim_ledger.py` (1 passed) | files: `.project/PROJECT.md`, `.project/ledger.md`, `.project/tasklist.md`, `scripts/slim_ledger.py`, `tests/test_slim_ledger.py`; measured 47,920 baseline and 11,980 threshold, 99 portfolio modules plus 38 controller modules; no deletions.
+2026-10-17 20:05 UTC | SL4 | merged 9fdc4be | +22/-781 | `tests/test_usage_contract.py` (9 passed); `src/otto/portfolio/tests/test_observability_views.py`, `tests/test_portfolio_status.py`, `tests/test_host_startup_composition.py` needs the gate (AF_UNIX bind denied) | retired proof-only Events modules and wrappers; no controller files deleted; ledger regenerated. Files listed in SL4 evidence below.
 
 ### SL4 worker evidence
 
