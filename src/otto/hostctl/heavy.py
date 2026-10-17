@@ -26,6 +26,8 @@ and observed descendants are recorded with
 process birth identities in the holder record. TERM + CONT, a grace period, then KILL apply only to
 verified members of that lease. An unresolved dead holder keeps its capacity claim until recovery
 can verify that its processes are gone. ``OTTO_HEAVY_LEASE`` only lets nested heavy calls reuse slots.
+A missed whole-table census is durable uncertainty: later empty scans cannot prove that a detached
+child did not leave its ancestry during the gap, so that holder's claim remains unresolved.
 An arbitrary child that forks, leaves the group, and is reparented entirely between observations
 cannot be attributed by portable process-table APIs. Such commands need cooperative custody or
 kernel containment to guarantee cleanup; the lease never signals a process based on its environment.
@@ -223,6 +225,14 @@ def _write_holder(path: Path, record: dict) -> None:
         os.close(directory_fd)
 
 
+def _record_census_gap(record: dict, holder_file: Path | None) -> None:
+    """A missed whole-table snapshot may hide a detached child, even after later empty scans."""
+    if not record.get("census_gap"):
+        record["census_gap"] = True
+        if holder_file is not None:
+            _write_holder(holder_file, record)
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -260,8 +270,14 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
     """Signal only live identities in this record and its verified private process group."""
     pgid = record.get("pgid")
 
-    def targets() -> tuple[set[int], bool, bool, set[int], bool]:
+    def census() -> dict[int, dict] | None:
         processes = _processes()
+        if processes is None:
+            _record_census_gap(record, holder_file)
+        return processes
+
+    def targets() -> tuple[set[int], bool, bool, set[int], bool]:
+        processes = census()
         if processes is None:
             return set(), False, False, set(), False
         if _observe(record, processes) and holder_file is not None:
@@ -286,7 +302,7 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
                 pass
         for pid in live:
             # Recheck directly before signalling, since a PID can have exited since the snapshot.
-            current = _processes()
+            current = census()
             if current is not None and pid in current and current[pid]["birth"] == record["processes"][str(pid)]["birth"]:
                 if group and current[pid]["pgid"] == pgid:
                     continue
@@ -312,6 +328,8 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
     remaining, group, scanned, unverified, root_unverified = targets()
     unresolved = sorted(remaining) + [f"identity-unavailable:{pid}" for pid in sorted(unverified)]
     unresolved += [f"unidentified:{pid}" for pid in record.get("unidentified", [])]
+    if record.get("census_gap"):
+        unresolved.append("census-gap")
     if root_unverified:
         unresolved.append("root-identity-unavailable")
     if pgid and not group and _group_alive(pgid):
@@ -319,7 +337,7 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
     if not scanned and (record.get("pid") or record.get("processes") or (pgid and _group_alive(pgid))):
         unresolved.append("process-table-unavailable")
     return {"reaped": sorted(before), "needed_kill": sorted(killed), "remaining": unresolved,
-            "sweep": "complete" if scanned else "unavailable"}
+            "sweep": "unavailable" if record.get("census_gap") or not scanned else "complete"}
 
 
 def _holders(directory: Path) -> list[dict]:
@@ -347,7 +365,7 @@ def _reap_dead_holders(directory: Path) -> list[dict]:
                     cleaned.append({"owner": holder.get("owner"), "purpose": holder.get("purpose"), **result})
                     continue
                 result = stop_lease(holder, path)
-                if result.get("remaining") or result.get("sweep") == "unavailable":
+                if holder.get("census_gap") or result.get("remaining") or result.get("sweep") == "unavailable":
                     holder["unresolved"] = result
                     _write_holder(path, holder)
                 else:
@@ -615,7 +633,9 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
                 if stop_signal:
                     break
                 processes = _processes()
-                if processes is not None and _observe(record, processes, seed_root=child.poll() is None):
+                if processes is None:
+                    _record_census_gap(record, holder_file)
+                elif _observe(record, processes, seed_root=child.poll() is None):
                     _write_holder(holder_file, record)
                 try:
                     code = child.wait(timeout=min(0.1, max(0, deadline - time.monotonic())))
