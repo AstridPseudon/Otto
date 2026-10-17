@@ -191,7 +191,7 @@ up() {
     # A fresh home gets a new, empty Store. A Store file without an installation is never reused.
     [ ! -e "$STORE_FILE" ] || die "up: a Store exists at $STORE_FILE but $HOME_DIR/installation.json does not; run wipe first"
     ottoctl install --create --store "$STORE_FILE" --authority otto-staging-owner-v1 \
-      --owner otto-staging-owner --credential-ref otto-staging-credential-v1 >>"$LOG" 2>&1 \
+      --owner otto-staging-owner --operator otto-staging-operator --credential-ref otto-staging-credential-v1 >>"$LOG" 2>&1 \
       || die "up: could not create the staging installation; see $LOG"
   fi
   before="$(wc -l < "$LOG" | tr -d ' ')"
