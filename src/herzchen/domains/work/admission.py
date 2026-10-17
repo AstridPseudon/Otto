@@ -91,6 +91,47 @@ def reviewed_content_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def task_content_matches(writer: Any, pinned_ref: Any, current_payload: Mapping[str, Any],
+                         *, current_ref: Any = None) -> bool:
+    """Whether a retained task pin still describes the current authored content.
+
+    Revision ids change for metadata-only writes such as admission. Resolve the
+    exact retained revision and compare both the admission digest and the wider
+    reviewer-visible digest, which includes authored metadata namespaces while
+    excluding the admission stamp itself. The digests are always computed from
+    the payloads; a caller-supplied stamp cannot make changed content match.
+    """
+    from herzchen.contracts import ResourceRef
+
+    if not isinstance(pinned_ref, ResourceRef) or pinned_ref.kind != "work.task" or not pinned_ref.revision:
+        return False
+    if not isinstance(current_payload, Mapping):
+        return False
+    if (current_payload.get("kind") not in {None, "task", pinned_ref.kind}
+            or current_payload.get("id", pinned_ref.id) != pinned_ref.id):
+        return False
+    if current_ref is not None:
+        if (not isinstance(current_ref, ResourceRef)
+                or (current_ref.authority, current_ref.kind, current_ref.id) !=
+                   (pinned_ref.authority, pinned_ref.kind, pinned_ref.id)):
+            return False
+        # An exact current revision already is the pinned content. Historical
+        # reads are needed only when a later revision must be compared.
+        if current_ref == pinned_ref:
+            return True
+    if (current_payload.get("kind") not in {"task", pinned_ref.kind}
+            or current_payload.get("id") != pinned_ref.id):
+        return False
+    writer_authority = getattr(writer, "authority", None)
+    if writer_authority is not None and writer_authority != pinned_ref.authority:
+        return False
+    retained = writer.get_revision(pinned_ref)
+    if retained is None or retained.ref != pinned_ref or retained.ref.kind != "work.task":
+        return False
+    return (content_digest(retained.payload) == content_digest(current_payload)
+            and reviewed_content_digest(retained.payload) == reviewed_content_digest(current_payload))
+
+
 def stamp_of(payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     namespaces = payload.get("metadata_namespaces")
     stamp = namespaces.get(NAMESPACE) if isinstance(namespaces, Mapping) else None

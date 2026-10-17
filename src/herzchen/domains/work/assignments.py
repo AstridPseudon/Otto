@@ -887,13 +887,11 @@ class _ResponsibilityAssignmentsEngine:
                 f"task {scope.id} revision {current.ref.revision} is not admitted"
                 + ("" if stamp is None else f" (admitted: {stamp['revision']})"))
         stamp = admission.stamp_of(current.payload)
-        reviewed = self.__writer.get_revision(ResourceRef(current.ref.authority, current.ref.kind, current.ref.id, admitted))
-        if reviewed is None:
+        pinned_ref = ResourceRef(current.ref.authority, current.ref.kind, current.ref.id, admitted)
+        if not admission.task_content_matches(self.__writer, pinned_ref, current.payload,
+                                              current_ref=current.ref):
             raise admission.TaskNotAdmittedError(
-                f"task {scope.id} admitted revision {admitted} is not retained")
-        if admission.reviewed_content_diff(reviewed.payload, current.payload):
-            raise admission.TaskNotAdmittedError(
-                f"task {scope.id} authored content differs from admitted revision {admitted}")
+                f"task {scope.id} admitted revision {admitted} is not retained or its authored content differs")
         basis = stamp.get("basis") if stamp is not None else None
         if basis not in {admission.BASIS_POLICY, admission.BASIS_AUTHORING, admission.BASIS_REVIEW}:
             raise admission.TaskNotAdmittedError(f"task {scope.id} has an unsupported admission basis")
@@ -925,6 +923,10 @@ class _ResponsibilityAssignmentsEngine:
                 raise admission.TaskNotAdmittedError(
                     f"task {scope.id} admission project revision is missing or malformed")
         if basis == admission.BASIS_POLICY:
+            reviewed = self.__writer.get_revision(pinned_ref)
+            if reviewed is None or reviewed.ref != pinned_ref:
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy admission does not retain its original task revision")
             reviewed_stamp = admission.stamp_of(reviewed.payload)
             if admitted != "rev-1" or reviewed_stamp != stamp:
                 raise admission.TaskNotAdmittedError(

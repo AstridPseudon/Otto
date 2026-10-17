@@ -741,6 +741,7 @@ class PortfolioOwnerBootstrap:
             binding=self.binding,
             dependency_owner_actor=self.owner_actor,
             operator_actor=self.operator_actor,
+            task_revision_reader=self.graph.get,
             sheet_port=self.sheet.command_port,
             content_port=self.content.command_port,
             assignments_port=self.assignments.command_port,

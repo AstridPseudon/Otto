@@ -354,6 +354,23 @@ class OwnerFleetRegistry:
             raise LookupError("dispatch record has no task id")
         return value
 
+    def _task_pin_matches(self, pinned_ref: Any, current: Any) -> bool:
+        """Validate a task pin by retained authored content under the owner Store."""
+        from herzchen.domains.work import admission
+        from herzchen.contracts import ResourceRef
+
+        try:
+            pin = ResourceRef.from_dict(pinned_ref) if isinstance(pinned_ref, Mapping) else pinned_ref
+            current_ref = getattr(current, "ref", None)
+            if (not isinstance(pin, ResourceRef) or current_ref is None
+                    or (pin.authority, pin.kind, pin.id) !=
+                       (current_ref.authority, current_ref.kind, current_ref.id)):
+                return False
+            return admission.task_content_matches(getattr(self.owner, "store", None), pin,
+                                                  current.payload, current_ref=current_ref)
+        except (AttributeError, KeyError, LookupError, TypeError, ValueError):
+            return False
+
     def _record_for_assignment(self, assignment_id: str) -> Any:
         record = self.records.get(assignment_id)
         if record is None or record.state not in {"admitted", "launched", "unknown"}:
@@ -413,7 +430,7 @@ class OwnerFleetRegistry:
         if not isinstance(project, ResourceRef) or not isinstance(task, ResourceRef):
             raise PermissionError("worker lab requires exact owner project and task references")
         current = self.owner.graph.current(ResourceRef(task.authority, "work.task", task.id))
-        if current.ref.to_dict() != task.to_dict():
+        if not self._task_pin_matches(task, current):
             raise PermissionError("worker task reference is stale")
         payload = current.payload
         task_project = payload.get("project_ref") if isinstance(payload, Mapping) else None
@@ -606,7 +623,7 @@ class OwnerFleetRegistry:
                 (task_ref.get("authority"), task_ref.get("kind", "work.task"), task_id)):
             raise PermissionError("worker Due task does not match its assignment scope")
         current = self.owner.graph.current(ResourceRef(task_ref["authority"], "work.task", task_id))
-        if current.ref.to_dict() != dict(task_ref):
+        if not self._task_pin_matches(task_ref, current):
             raise PermissionError("worker Due task revision is stale")
         from herzchen.domains.work.admission import admitted_revision
         revision = admitted_revision(current.payload)
@@ -638,7 +655,7 @@ class OwnerFleetRegistry:
                 raise PermissionError("worker Due task pin does not match its dispatch record")
             record_task_ref = getattr(record.task, "ref", None)
             if (record.admitted_revision != revision or record_task_ref is None
-                    or record_task_ref.to_dict() != current.ref.to_dict()):
+                    or not self._task_pin_matches(record_task_ref, current)):
                 raise PermissionError("worker dispatch record does not match the exact admitted task revision")
             if record.token is None:
                 raise PermissionError("worker dispatch has no live issued token")
@@ -693,7 +710,7 @@ class OwnerFleetRegistry:
                 (task_ref.get("authority"), task_ref.get("kind", "work.task"), task_id)):
             raise PermissionError("worker Due task does not match its assignment scope")
         current = self.owner.graph.current(ResourceRef(task_ref["authority"], "work.task", task_id))
-        if current.ref.revision != task_ref.get("revision"):
+        if not self._task_pin_matches(task_ref, current):
             raise PermissionError("worker Due task revision is stale")
         revision = admitted_revision(current.payload)
         if not isinstance(revision, str):

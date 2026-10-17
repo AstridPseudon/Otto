@@ -1696,7 +1696,8 @@ class ManagerJourneyService:
         grant = ProjectReadGrant(actor, (ref.id,), "host-owner-authoring", "v1")
         from .herzchen_binding import FiniteWorkOperations
         scoped = FiniteWorkOperations(port=operations.port, reader=self.server.owner.graph.reader,
-            binding=self.server.owner.binding, project_read_grant=grant)
+            binding=self.server.owner.binding, project_read_grant=grant,
+            task_revision_reader=self.server.owner.graph.get)
         return OttoPortfolio(scoped).read_pending(ref, actor=actor.actor)
 
     def _ask(self, request: Mapping[str, Any], context: Mapping[str, Any] | None) -> Mapping[str, Any]:

@@ -211,6 +211,16 @@ def _require_exact_ref(actual: Any, expected: Mapping[str, Any], field: str) -> 
     return observed
 
 
+def _require_task_pin(actual: Any, expected: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
+    """Accept a newer task revision only with owner-reader content proof."""
+    observed = _pinned_ref(actual, "task.ref")
+    if any(observed.get(key) != expected.get(key) for key in ("authority", "kind", "id")):
+        raise OperatingBriefError("task does not match the pinned canonical identity")
+    if observed["revision"] != expected["revision"] and record.get("task_pin_content_matches") is not True:
+        raise OperatingBriefError("task content no longer matches the pinned canonical revision")
+    return observed
+
+
 def _same_identity(actual: Any, expected: Mapping[str, Any], field: str) -> bool:
     observed = _pinned_ref(actual, field)
     return all(observed.get(key) == expected.get(key) for key in ("authority", "kind", "id"))
@@ -554,7 +564,7 @@ def prepare_canonical_operating_brief(
     _require_exact_ref(_observed_ref(assignment, "assignment"), assignment_pin, "assignment")
     _require_exact_ref(_observed_ref(mandate_record, "mandate"), mandate_pin, "mandate")
     if task is not None and task_pin is not None:
-        _require_exact_ref(_observed_ref(task, "task"), task_pin, "task")
+        _require_task_pin(_observed_ref(task, "task"), task_pin, task)
 
     project_state = _state(project, "project")
     assignment_payload = _owner_payload(assignment, "assignment")
