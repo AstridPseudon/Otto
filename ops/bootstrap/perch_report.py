@@ -296,9 +296,10 @@ def stage2_dispatch_check(status, activation, admission, alias):
     stage2_admission_check(admission, expected)
     task = stage2_status_task(status, alias)
     dispatch = task["dispatch"]
-    if dispatch["state"] not in {"launched", "landed"}:
+    if dispatch["state"] not in {"launched", "landed"} and not (
+            alias == "C" and dispatch["state"] == "unknown"):
         raise ValueError("owner has no retained launched dispatch for " + alias)
-    if dispatch.get("reason") is not None:
+    if dispatch.get("reason") is not None and dispatch["state"] != "unknown":
         raise ValueError("owner dispatched %s with a failure reason: %s" % (alias, dispatch["reason"]))
     if task.get("repo") != "toy" or task.get("branch") != "canon/main":
         raise ValueError("owner dispatched %s outside the registered toy repository" % alias)
@@ -335,7 +336,7 @@ def stage2_status_task(status, alias):
     matches = [task for task in status["tasks"] if isinstance(task, dict) and task.get("id") == alias]
     if len(matches) != 1 or not isinstance(matches[0].get("dispatch"), dict):
         raise ValueError("staging project status lacks one task dispatch state for " + alias)
-    if (matches[0]["dispatch"].get("state") not in {"admitted", "launched", "landed", "failed"}
+    if (matches[0]["dispatch"].get("state") not in {"admitted", "launched", "landed", "failed", "unknown"}
             or "reason" not in matches[0]["dispatch"]):
         raise ValueError("staging project status has no recognized dispatch state for " + alias)
     return matches[0]
@@ -343,7 +344,8 @@ def stage2_status_task(status, alias):
 
 def stage2_dispatch_no_failure(status, alias):
     task = stage2_status_task(status, alias)
-    if task["dispatch"]["state"] == "failed":
+    state = task["dispatch"]["state"]
+    if state == "failed" or (state == "unknown" and alias in {"A", "B"}):
         raise ValueError("owner automatic dispatch failed for %s: %s" %
                          (alias, task["dispatch"].get("reason") or "no reason retained"))
 
@@ -358,10 +360,20 @@ def stage2_task_complete(project_status, owner_status, alias):
     return tasks.get(alias, {}).get("lifecycle") == "completed" and type(held) is int and held == 0
 
 
+def stage2_task_landed(project_status, alias):
+    tasks = {row.get("id"): row for row in project_status.get("tasks") or []}
+    return tasks.get(alias, {}).get("lifecycle") == "completed"
+
+
 def cmd_stage2_task_complete(args):
     if not stage2_task_complete(read_json(args.project_status, {}) or {},
                                 read_json(args.owner_status, {}) or {}, args.task):
         raise ValueError(args.task + " has not completed and released owner capacity")
+
+
+def cmd_stage2_task_landed(args):
+    if not stage2_task_landed(read_json(args.project_status, {}) or {}, args.task):
+        raise ValueError(args.task + " has not completed")
 
 
 def cmd_stage2_capacity_held(args):
@@ -1825,6 +1837,9 @@ def build_parser():
     p = sub.add_parser("stage2-task-complete")
     p.add_argument("--project-status", required=True); p.add_argument("--owner-status", required=True)
     p.add_argument("--task", required=True); p.set_defaults(fn=cmd_stage2_task_complete)
+    p = sub.add_parser("stage2-task-landed")
+    p.add_argument("--project-status", required=True); p.add_argument("--task", required=True)
+    p.set_defaults(fn=cmd_stage2_task_landed)
     p = sub.add_parser("stage2-capacity-held"); p.add_argument("--status", required=True)
     p.set_defaults(fn=cmd_stage2_capacity_held)
     p = sub.add_parser("stage2-observations"); p.add_argument("--raw", required=True)

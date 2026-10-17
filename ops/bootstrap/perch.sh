@@ -384,9 +384,15 @@ stage2_wait_worker() {  # HOST TASK
       saw_dispatch=1
       cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-dispatch-$task-project.json"
       cold_client service status > "$RAW/stage2-owner-$task.json" 2>> "$RAW/stage2-setup-errors.txt" || return $?
-      if [ "$task" = C ] || "$PY" -I "$REPORT_PY" stage2-task-complete \
-          --project-status "$RAW/stage2-dispatch-$task-project.json" \
-          --owner-status "$RAW/stage2-owner-$task.json" --task "$task" > /dev/null 2>&1; then
+      if [ "$task" = C ]; then
+        return 0
+      fi
+      if "$PY" -I "$REPORT_PY" stage2-task-landed \
+          --project-status "$RAW/stage2-dispatch-$task-project.json" --task "$task" > /dev/null 2>&1; then
+        # C depends on B and can occupy the newly freed worker slot before B's
+        # status poll sees zero active capacity. Kill C at this boundary, while
+        # its fake worker is held, instead of waiting for its client timeout.
+        if [ "$task" = B ]; then stage2_kill_worker || return $?; fi
         return 0
       fi
     fi
@@ -659,7 +665,6 @@ run_stage() {  # STAGE
               if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
                 cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
               fi
-              stage2_kill_worker || true
               "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value ran
               host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
               stage2_host_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-dispatch-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true

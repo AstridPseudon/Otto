@@ -847,6 +847,9 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertIsNotNone(wait)
         self.assertIn('project status --project perch-stage2', wait.group())
         self.assertNotIn('manager --project perch-stage2 status', wait.group())
+        self.assertIn('stage2-task-landed', wait.group())
+        self.assertIn('if [ "$task" = B ]; then stage2_kill_worker || return $?; fi', wait.group())
+        self.assertNotIn('stage2_kill_worker || true', shell)
         source = (BOOTSTRAP / "perch_stage2_owner.py").read_text(encoding="utf-8")
         for removed in ("install_scope_setup", "_seed_scopes", "_seed_admitted_scope",
                         "_refresh_manager_setup", "_status_with_dispatch"):
@@ -865,9 +868,61 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             perch_report.stage2_dispatch_no_failure(status, "A")
         with self.assertRaisesRegex(ValueError, "no retained launched dispatch"):
             perch_report.stage2_dispatch_check(status, activation, admission, "A")
+        for alias in ("A", "B"):
+            status["tasks"][0]["id"] = alias
+            status["tasks"][0]["dispatch"] = {"state": "unknown", "reason": "worker was killed"}
+            with self.subTest(alias=alias), self.assertRaisesRegex(ValueError, "worker was killed"):
+                perch_report.stage2_dispatch_no_failure(status, alias)
+
+        status["tasks"][0]["id"] = "C"
+        status["tasks"][0]["dispatch"] = {"state": "unknown", "reason": "worker was killed"}
+        self.assertIs(perch_report.stage2_dispatch_no_failure(status, "C"), None)
+        task_ref_c = {**task_ref, "id": "task-C"}
+        activation_c = {"activation": {"steps": {"tasks": {"task_refs": {"C": task_ref_c}}}}}
+        admission_c = {"outcome": "admitted", "admitted_revision": "rev-1"}
+        self.assertEqual(perch_report.stage2_dispatch_check(status, activation_c, admission_c, "C"),
+                         status["tasks"][0])
         private_only = {"outcome": "read", "workers": {"A": {"automatic": True}}}
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
+
+    def test_b_completion_kills_held_c_before_waiting_for_empty_capacity(self):
+        import re
+        import shlex
+
+        root = short_temp_root()
+        self.addCleanup(shutil.rmtree, root, True)
+        raw = root / "raw"
+        raw.mkdir()
+        fake_python = root / "python-stub"
+        fake_python.write_text("#!/bin/sh\ncase \"$*\" in\n"
+                               "  *stage2-dispatch-request*) exit 0 ;;\n"
+                               "  *stage2-dispatch-no-failure*) exit 0 ;;\n"
+                               "  *stage2-dispatch-check*) exit 0 ;;\n"
+                               "  *stage2-task-landed*) exit 0 ;;\n"
+                               "  *) echo unexpected report command: \"$*\" >&2; exit 90 ;;\n"
+                               "esac\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+        status = json.dumps({"outcome": "read", "tasks": [{"id": "B", "lifecycle": "completed",
+            "repo": "toy", "branch": "canon/main", "dispatch": {"state": "landed", "reason": None}}]})
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        wait = re.search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(wait)
+        script = "\n".join((
+            "set -euo pipefail",
+            "RAW=" + shlex.quote(str(raw)),
+            "PY=" + shlex.quote(str(fake_python)),
+            "REPORT_PY=unused",
+            "sleep() { :; }",
+            "stage2_host_client() { printf '%s\\n' " + shlex.quote(status) + "; }",
+            "cold_client() { printf '%s\\n' '{\"native_capacity\":{\"active_or_uncertain\":1}}'; }",
+            "stage2_kill_worker() { echo kill-C >> \"$RAW/order\"; }",
+            wait.group(),
+            "stage2_wait_worker claude-code B",
+        ))
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((raw / "order").read_text(encoding="utf-8").splitlines(), ["kill-C"])
 
     def test_held_operator_admission_waits_for_owner_status_then_reuses_request_key(self):
         import re
@@ -1394,8 +1449,13 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         status = {"tasks": [{"id": "A", "lifecycle": "completed"}]}
         owner = {"native_capacity": {"active_or_uncertain": 0}}
         self.assertTrue(perch_report.stage2_task_complete(status, owner, "A"))
+        self.assertTrue(perch_report.stage2_task_landed(status, "A"))
+        owner["native_capacity"]["active_or_uncertain"] = 1
+        self.assertFalse(perch_report.stage2_task_complete(status, owner, "A"))
+        self.assertTrue(perch_report.stage2_task_landed(status, "A"))
         status["tasks"][0]["lifecycle"] = "active"
         self.assertFalse(perch_report.stage2_task_complete(status, owner, "A"))
+        self.assertFalse(perch_report.stage2_task_landed(status, "A"))
 
     def test_fake_completion_hook_runs_after_real_landing_and_preserves_refusal(self):
         order = []
