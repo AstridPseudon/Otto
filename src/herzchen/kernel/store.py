@@ -2731,25 +2731,47 @@ class Store:
             # Match the assessment protocol's parent slot, never arbitrary
             # evidence/candidate refs that happen to mention the selected task.
             parent_slot = ("CASE WHEN e.event_type = 'assessment.scope.declared' "
-                "AND e.subject_kind = 'assessment.scope' THEN '$[0]' "
+                "AND e.subject_kind = 'assessment.scope' "
+                "THEN CASE WHEN json_extract(e.effects_json, '$.owner_amendment') IS NOT NULL "
+                "THEN '$[1]' ELSE '$[0]' END "
                 "WHEN e.event_type = 'assessment.completed' AND e.subject_kind = 'assessment.result' THEN '$[1]' "
                 "WHEN e.event_type = 'assessment.unknown.disposed' AND e.subject_kind = 'assessment.decision' THEN '$[1]' "
                 "WHEN e.event_type = 'assessment.accepted' AND e.subject_kind = 'assessment.decision' "
-                "THEN CASE WHEN json_extract(e.effects_json, '$.no_review') = 1 THEN '$[0]' ELSE '$[1]' END END")
+                "THEN CASE WHEN json_extract(e.effects_json, '$.no_review') = 1 THEN '$[0]' ELSE '$[1]' END "
+                "WHEN e.event_type = 'assessment.correction.created' "
+                "AND e.subject_kind = 'assessment.correction' THEN '$[1]' END")
             parent_link = "json_extract(e.before_refs_json, " + parent_slot + ")"
             clauses.append("((json_extract(" + parent_link + ", '$.authority') = ? AND "
                 "json_extract(" + parent_link + ", '$.kind') = ? AND json_extract(" + parent_link + ", '$.id') = ?) "
+                "OR (e.event_type = 'assessment.correction.resolved' AND e.subject_kind = 'assessment.correction' "
+                "AND EXISTS (SELECT 1 FROM events correction_create WHERE correction_create.store_authority = ? "
+                "AND correction_create.stream = 'assessment' "
+                "AND correction_create.event_type = 'assessment.correction.created' "
+                "AND correction_create.subject_kind = 'assessment.correction' "
+                "AND correction_create.subject_authority = e.subject_authority "
+                "AND correction_create.subject_kind = e.subject_kind "
+                "AND correction_create.subject_id = e.subject_id "
+                "AND json_extract(correction_create.before_refs_json, '$[1].authority') = ? "
+                "AND json_extract(correction_create.before_refs_json, '$[1].kind') = ? "
+                "AND json_extract(correction_create.before_refs_json, '$[1].id') = ?)) "
                 "OR (e.event_type = 'assessment.candidate.selected' AND e.subject_kind = 'assessment.selection' "
                 "AND EXISTS (SELECT 1 FROM events scope WHERE scope.store_authority = ? "
                 "AND scope.stream = 'assessment' AND scope.event_type = 'assessment.scope.declared' "
                 "AND scope.subject_kind = 'assessment.scope' "
-                "AND json_extract(scope.before_refs_json, '$[0].authority') = ? "
-                "AND json_extract(scope.before_refs_json, '$[0].kind') = ? "
-                "AND json_extract(scope.before_refs_json, '$[0].id') = ? "
+                "AND json_extract(scope.before_refs_json, CASE WHEN "
+                "json_extract(scope.effects_json, '$.owner_amendment') IS NOT NULL "
+                "THEN '$[1].authority' ELSE '$[0].authority' END) = ? "
+                "AND json_extract(scope.before_refs_json, CASE WHEN "
+                "json_extract(scope.effects_json, '$.owner_amendment') IS NOT NULL "
+                "THEN '$[1].kind' ELSE '$[0].kind' END) = ? "
+                "AND json_extract(scope.before_refs_json, CASE WHEN "
+                "json_extract(scope.effects_json, '$.owner_amendment') IS NOT NULL "
+                "THEN '$[1].id' ELSE '$[0].id' END) = ? "
                 "AND json_extract(e.before_refs_json, '$[0].authority') = scope.subject_authority "
                 "AND json_extract(e.before_refs_json, '$[0].kind') = scope.subject_kind "
                 "AND json_extract(e.before_refs_json, '$[0].id') = scope.subject_id)))")
             args.extend([assessment_parent.authority, assessment_parent.kind, assessment_parent.id,
+                         self.authority, assessment_parent.authority, assessment_parent.kind, assessment_parent.id,
                          self.authority, assessment_parent.authority, assessment_parent.kind, assessment_parent.id])
         with self._transaction_lock:
             self._require_open()
