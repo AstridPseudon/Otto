@@ -45,10 +45,25 @@
     "2": {
       "tasks": ["A", "B", "C"],
       "host": "claude-code",
+      "repository": "toy",
+      "branch": "canon/main",
       "pool_limit": 2,
       "manager_reserve": 1,
-      "store": {"store_events": 6, "store_tasks": 3, "store_bytes_max": 262144},
+      "store": {"store_events_min": 6, "store_work_tasks": ["A", "B", "C"],
+                "store_assignment_tasks_min": 3, "store_growth_max": 2097152},
       "scenarios": ["admit-and-dispatch"],
+      "run_policy": {
+        "assessment_accounting": {
+          "kind": "owner_local_bookkeeping",
+          "purpose": "Canary check-accepted dispatch evidence",
+          "local_only": true,
+          "pool_id": "perch-stage2-checks",
+          "capacity_units": 1,
+          "cumulative_allowance_units": 3,
+          "scope_mode": "check-accepted",
+          "task_criterion_pairs": ["A/C-A", "B/C-B", "C/C-C"]
+        }
+      },
       "admission": {"admitted": ["A", "B", "C"],
         "unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": false}},
       "dependencies": {"A": [], "B": ["A"], "C": ["B"]},
