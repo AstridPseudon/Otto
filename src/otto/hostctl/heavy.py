@@ -299,14 +299,14 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
         processes = _processes()
         if processes is None:
             _record_census_gap(record, holder_file)
+        elif _observe(record, processes) and holder_file is not None:
+            _write_holder(holder_file, record)
         return processes
 
     def targets() -> tuple[set[int], bool, bool, set[int], bool]:
         processes = census()
         if processes is None:
             return set(), False, False, set(), False
-        if _observe(record, processes) and holder_file is not None:
-            _write_holder(holder_file, record)
         live = {int(pid) for pid, identity in record.get("processes", {}).items()
                 if int(pid) in processes and processes[int(pid)]["birth"] == identity["birth"]}
         unverified = {int(pid) for pid in record.get("processes", {})

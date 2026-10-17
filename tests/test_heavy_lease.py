@@ -421,6 +421,43 @@ print(json.dumps(heavy._reap_dead_holders(Path({str(directory)!r}))[0]))
     assert path.exists() and json.loads(path.read_text())["birth_gaps"] == [43210]
 
 
+@pytest.mark.parametrize("pgid", (43210, None))
+def test_missing_birth_at_signal_recheck_survives_empty_scans_and_restart(tmp_path, monkeypatch, pgid):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    (directory / "holders").mkdir(parents=True)
+    path = directory / "holders" / "recheck-gap.json"
+    path.write_text(json.dumps({"lease_id": "recheck-gap", "holder_pid": 99999999,
+                                "weight": 1, "pid": 43210, "pgid": pgid,
+                                "processes": {"43210": {"birth": [1], "pgid": 43210}}}))
+    live = {43210: {"ppid": 1, "pgid": 43210, "birth": [1]}}
+    missing = {43210: {"ppid": 1, "pgid": 43210, "birth": None}}
+    scans = iter((live, live, missing))
+    monkeypatch.setattr(module, "_processes", lambda: next(scans, {}))
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    monkeypatch.setattr(module, "_alive", lambda _pid: False)
+    monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("unverified PID was signalled"))
+    monkeypatch.setattr(module.os, "killpg", lambda *_args: pytest.fail("unverified group was signalled"))
+
+    first = module._reap_dead_holders(directory)[0]
+    assert first["sweep"] == "unavailable" and "identity-unavailable:43210" in first["remaining"]
+    assert path.exists() and json.loads(path.read_text())["birth_gaps"] == [43210]
+
+    restart = subprocess.run(py(f"""
+import json
+from pathlib import Path
+from otto.hostctl import heavy
+heavy._processes = lambda: {{}}
+heavy._group_alive = lambda _pgid: False
+print(json.dumps(heavy._reap_dead_holders(Path({str(directory)!r}))[0]))
+"""), env=dict(os.environ, PYTHONPATH=str(SRC)), capture_output=True, text=True, timeout=30)
+    assert restart.returncode == 0, restart.stderr
+    second = json.loads(restart.stdout)
+    assert second["sweep"] == "unavailable" and "identity-unavailable:43210" in second["remaining"]
+    assert path.exists() and json.loads(path.read_text())["birth_gaps"] == [43210]
+
+
 def test_census_gap_is_sticky_through_empty_cleanup_and_dead_holder_recovery(tmp_path, monkeypatch):
     from otto.hostctl import heavy as module
 
