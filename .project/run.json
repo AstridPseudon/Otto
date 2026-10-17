@@ -3,7 +3,7 @@
   "portfolio": "otto-program",
   "project": "PROCLIFE",
   "control_root": "/Users/hannahomalley/Developer/otto-program/projects/process-lifecycle",
-  "mode": "pl6_handoff_complete_gate_pending",
+  "mode": "active_canon_audit_fixes",
   "profile": "codex",
   "profile_note": "Manager run authorized by the user on 17 Oct 2026 against Otto canon/main eb9b6cd. D19 directs PL1 to preserve the setsid escapee test and ancestry cleanup; the 99-line deletion budget is agreed.",
   "roles": {
@@ -57,6 +57,11 @@
       "stage": "installed owner and external gates",
       "status": "needs the gate",
       "notes": "Otto staging, cold-agent baseline/result, ps/sandbox-exec/Unix-socket checks, SIGKILL recovery, and Astrid film journey are not runnable in this worktree."
+    },
+    {
+      "stage": "Astra canon integration corrections",
+      "status": "in_progress",
+      "notes": "Six findings plus PL4 timed crash-test blocker are being fixed in task worktrees from the existing project branch; final whole-project Astra review follows. PL6 remains evidence only."
     }
   ],
   "dependencies": [],
