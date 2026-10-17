@@ -3,6 +3,7 @@
 Run: PYTHONPATH=src:. python3 -m unittest discover -s src/otto/portfolio/tests
 Provider substitutions exercise admission; the installed live journey is S06.
 """
+from tests.execution_helpers import start_worker
 from dataclasses import replace
 import hashlib
 import json
@@ -217,7 +218,7 @@ class OperatingSetupTests(unittest.TestCase):
                               bad if schedule == callback.schedule_id else forged if schedule == initial.schedule_id else original_read(schedule)):
                 with self.assertRaises(ValueError):
                     f.app._verify_native_binding(manager, "actual-manager-session", callback.schedule_id)
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         self.assertEqual(worker["outcome"], "succeeded", worker)
         delivered = f.app.continue_manager_from_worker(manager_schedule_id=callback.schedule_id,
             worker_schedule_id=worker["schedule_id"], execute=True)

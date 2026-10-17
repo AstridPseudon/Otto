@@ -3,6 +3,7 @@
 Every provider stream in this file is SYNTHETIC. The installed test checks
 launcher metadata and actual scope refusal only, never paid model behavior.
 """
+from tests.execution_helpers import start_worker
 import base64
 import copy
 import json
@@ -189,7 +190,7 @@ class OwnerTests(unittest.TestCase):
         self.request=self.f.request();self.request['instruction_contract']['read_targets']=[self.root]
 
     def test_actual_owner_admission_capture_artifact_detach_read_dedup(self):
-        result=self.app.assign_and_start(**self.request)
+        result=start_worker(self.app, self.request)
         self.assertEqual(result['outcome'],'succeeded',result)
         self.assertEqual(len(self.t.calls),2)
         due=self.f.port.read_due(result['schedule_id']);view=result_view(due)
@@ -203,7 +204,7 @@ class OwnerTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(artifact['content_base64']),b'Useful ')
             self.assertEqual(result_view(due)['conclusion'],view['conclusion'])
         self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
-        replay=self.app.assign_and_start(**self.request);self.assertEqual(replay['outcome'],'replayed',replay)
+        replay=start_worker(self.app, self.request);self.assertEqual(replay['outcome'],'replayed',replay)
         self.assertEqual(len(self.t.calls),2)
         # Live file drift cannot change the retained captured artifact bytes.
         Path(self.root,'answer.txt').write_text('changed')
@@ -215,7 +216,7 @@ class OwnerTests(unittest.TestCase):
     def test_initializer_only_or_missing_artifact_never_publish(self):
         self.t.process_factory=lambda command,**kwargs:subprocess.Popen([sys.executable,'-c',PROCESS.replace("f.write('Useful artifact\\n')","f.write('Useful artifact\\n')" )
             .replace("'name':'Write'","'name':'Read'")],**kwargs)
-        result=self.app.assign_and_start(**self.request)
+        result=start_worker(self.app, self.request)
         self.assertNotEqual(result['outcome'],'succeeded',result)
         due=self.f.port.read_due(result['schedule_id']);self.assertFalse(result_view(due)['required_capture'])
 
@@ -223,14 +224,14 @@ class OwnerTests(unittest.TestCase):
         self.request['instruction_contract']['delegation']={'max_depth':1,'result_consumption':'yield'}
         self.request['instruction_contract']['allowed_operations'].append('canonical_child_commands')
         self.request['instruction_contract']['authority']['permitted_effects'].append('canonical_child_commands')
-        result=self.app.assign_and_start(**self.request)
+        result=start_worker(self.app, self.request)
         self.assertNotEqual(result['outcome'],'succeeded');self.assertEqual(len(self.t.calls),0)
         with self.assertRaises(ClaudeBindingError):self.adapter.validate_owner_host_composition(role='manager',profile='workspace-write')
 
     def test_optional_invalid_usage_does_not_change_captured_outcome(self):
         self.t.process_factory=lambda command,**kwargs:subprocess.Popen([sys.executable,'-c',
             PROCESS.replace("'input_tokens':11", "'input_tokens':True")],**kwargs)
-        result=self.app.assign_and_start(**self.request)
+        result=start_worker(self.app, self.request)
         self.assertEqual(result['outcome'],'succeeded',result.get('error'))
         view=result_view(self.f.port.read_due(result['schedule_id']))
         self.assertTrue(view['required_capture']);self.assertEqual(view['usage']['state'],'invalid')
@@ -239,7 +240,7 @@ class OwnerTests(unittest.TestCase):
         self.t.process_factory=lambda command,**kwargs:subprocess.Popen([sys.executable,'-c',
             PROCESS.replace("'is_error':False,'session_id':session,'uuid':'result-init'",
                 "'is_error':not init,'session_id':session,'uuid':'result-init'")],**kwargs)
-        result=self.app.assign_and_start(**self.request)
+        result=start_worker(self.app, self.request)
         self.assertNotEqual(result['outcome'],'succeeded')
         due=self.f.port.read_due(result['schedule_id'])
         retained=due['host_evidence']['gateway_attempt']['result']
@@ -258,7 +259,7 @@ class OwnerTests(unittest.TestCase):
         def corrupted(authorizer,**kwargs):
             return original(lambda *args:{**authorizer(*args),'generation':999},**kwargs)
         self.app.runtime.adapter.bind_owner_authorization=corrupted
-        result=self.app.assign_and_start(**self.request)
+        result=start_worker(self.app, self.request)
         self.assertNotEqual(result['outcome'],'succeeded');self.assertEqual(len(self.t.calls),1)
         self.assertFalse(Path(self.root,'answer.txt').exists())
 

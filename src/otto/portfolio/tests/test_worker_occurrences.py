@@ -1,5 +1,6 @@
 """D02 owner faults and custody checks. Synthetic provider evidence is explicit."""
 from __future__ import annotations
+from tests.execution_helpers import start_worker
 from dataclasses import replace
 import copy
 import json
@@ -34,7 +35,7 @@ class WorkerOccurrenceTests(unittest.TestCase):
         self.parent_request["instruction_contract"]["delegation"] = {"max_depth": 1, "result_consumption": "yield"}
         self.parent_request["instruction_contract"]["allowed_operations"].append("canonical_child_commands")
         self.parent_request["instruction_contract"]["authority"]["permitted_effects"].append("canonical_child_commands")
-        parent = self.f.app.assign_and_start(**self.parent_request)
+        parent = start_worker(self.f.app, self.parent_request)
         self.assertEqual(parent["outcome"], "succeeded", parent)
         self.parent = self.f.app._read(parent["schedule_id"])
         self.run = self.root / "run"; self.run.mkdir()

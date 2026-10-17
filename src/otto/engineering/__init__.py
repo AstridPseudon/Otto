@@ -2,10 +2,10 @@
 
 from .release_records import (
     COMMANDS, RIGHTS, CandidateObservation, ProcessProfile, ReleaseError,
-    ReleaseOperations, RepositoryRecord, SourceSetEntry,
+    RepositoryRecord, SourceSetEntry,
 )
 
 __all__ = [
     "COMMANDS", "RIGHTS", "CandidateObservation", "ProcessProfile",
-    "ReleaseError", "ReleaseOperations", "RepositoryRecord", "SourceSetEntry",
+    "ReleaseError", "RepositoryRecord", "SourceSetEntry",
 ]

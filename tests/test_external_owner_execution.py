@@ -1,4 +1,5 @@
 """Real owner-store joins with a synthetic provider; not installed-host proof."""
+from tests.execution_helpers import start_worker
 import copy
 import json
 import subprocess
@@ -221,7 +222,7 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         # Cleanup must follow the retained artifact capture, not that decision.
         with patch.object(OwnerAuthorizedRoleCapture, 'accept_result',
                 return_value={'outcome': 'rejected', 'accepted': False}):
-            result = app.assign_and_start(**request)
+            result = start_worker(app, request)
 
         self.assertEqual(result['outcome'], 'succeeded', result)
         self.assertEqual(order, ['Write', 'done', 'capture'], result)
@@ -315,7 +316,7 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         request['instruction_contract']['authority']['workspace_roots'] = [str(lab.path.resolve())]
         request['instruction_contract']['read_targets'] = [workspace]
 
-        result = app.assign_and_start(**request)
+        result = start_worker(app, request)
 
         self.assertEqual(result['outcome'], 'succeeded', result)
         self.assertEqual(order, ['Write', 'done', 'capture'], result)
@@ -383,7 +384,7 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         request['instruction_contract']['authority']['workspace_roots'] = [workspace]
         request['instruction_contract']['read_targets'] = [workspace]
 
-        result = app.assign_and_start(**request)
+        result = start_worker(app, request)
 
         self.assertNotEqual(result['outcome'], 'succeeded', result)
         due = f.port.read_due(result['schedule_id'])

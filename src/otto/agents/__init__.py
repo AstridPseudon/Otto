@@ -9,10 +9,6 @@ from .gateway import (
     OwnerDueRecordAttemptCapture,
     OttoGateway,
     Responsibility,
-    MO02B_SLOT3_REQUEST_KEY,
-    continue_admitted_occurrence,
-    run_due_occurrence,
-    run_scheduled_callback,
     error,
 )
 from herzchen.fleet.hosts.codex import normalize_codex_jsonl
@@ -47,7 +43,6 @@ from .orchestrator_route import (
     prepare_canonical_assignment_role_brief,
     prepare_canonical_callback,
     compose_owner_resource_herzchen_adapter,
-    invoke_assignment,
     prepare_assignment_role_brief,
 )
 from .herzchen_adapter import HerzchenAdapterError, HerzchenCodexAdapter, JsonlHostTurnContextReader
@@ -126,14 +121,9 @@ __all__ = [
     "DueRecordAttemptCapture",
     "OttoGateway",
     "Responsibility",
-    "MO02B_SLOT3_REQUEST_KEY",
-    "continue_admitted_occurrence",
-    "run_due_occurrence",
-    "run_scheduled_callback",
     "error",
     "OrchestratorRouteError",
     "compose_owner_resource_herzchen_adapter",
-    "invoke_assignment",
     "prepare_assignment_role_brief",
     "normalize_codex_jsonl",
     "CHARGEABLE_FIELDS",

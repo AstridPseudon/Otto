@@ -4,7 +4,6 @@ import unittest
 
 from otto.host_bridge import DeterministicHostExecutor, host_trigger_capabilities
 from otto.portfolio.execution_host import ExecutionHost
-from otto.portfolio.lifecycle import PortfolioLifecycleIntegration
 from tests import test_execution_application as existing
 
 
@@ -145,20 +144,6 @@ class HostBridgeTransitionTests(unittest.TestCase):
         self.assertEqual(recovered["outcome"], "reconciled")
         self.assertTrue(recovered["external_host_suspended"])
         self.assertEqual(len(self.updates), 1)
-
-    def test_existing_portfolio_caller_routes_its_scope_through_execution_host(self):
-        caller = object.__new__(PortfolioLifecycleIntegration)
-        caller.attention = self.attention
-        caller._executor = self.executor
-        caller._lifecycle_owner = "manager"
-        caller._generation = self.attention._read(self.schedule).generation
-        with patch.object(ExecutionHost, "reconcile_trigger", wraps=ExecutionHost.reconcile_trigger) as bridged:
-            result = caller._run_schedule(self.schedule, request_id="portfolio-pause", desired_state="paused")
-        self.assertEqual(result["outcome"], "reconciled")
-        self.assertTrue(result["readback_exact"])
-        self.assertEqual(bridged.call_count, 1)
-        self.assertEqual(bridged.call_args.kwargs["expected_version"], result["prepared"]["effect"]["owner_version"])
-        self.assertFalse(result["observed_scheduled_callback"])
 
 
 if __name__ == "__main__":

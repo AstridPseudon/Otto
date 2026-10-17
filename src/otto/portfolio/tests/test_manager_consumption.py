@@ -1,4 +1,5 @@
 """Exact ordinary-manager delivery consumption; disposable synthetic provider only."""
+from tests.execution_helpers import start_worker
 from dataclasses import replace
 import copy
 from types import SimpleNamespace
@@ -19,7 +20,7 @@ class ManagerConsumptionTests(unittest.TestCase):
         request = dict(self.f.request(), request_key="ordinary-manager-child", principal="ordinary-leaf")
         request["instruction_contract"]["authority"]["owner_actor"] = "ordinary-leaf"
         request["instruction_contract"]["authority"]["workspace_roots"] = [str(self.x.root / "worker-lab")]
-        started = self.f.app.assign_and_start(**request)
+        started = start_worker(self.f.app, request)
         self.assertEqual(started["outcome"], "succeeded", started)
         self.child = self.f.app._read(started["schedule_id"])
         self.assertIsNone(self.child.target.get("parent"))

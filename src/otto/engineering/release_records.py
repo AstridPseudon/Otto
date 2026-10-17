@@ -484,81 +484,6 @@ def _decode_consumer(value: Any) -> Any:
     return value
 
 
-class ReleaseOperations:
-    """Finite serialized consumer; owner objects never cross this boundary."""
-
-    def __init__(self, client: Any, reader: Any, authority: str) -> None:
-        from herzchen.command_ports import SerializedCommandClient, SerializedReaderClient
-        if not isinstance(client, SerializedCommandClient) or not isinstance(reader, SerializedReaderClient):
-            raise TypeError("ReleaseOperations requires serialized Herzchen clients")
-        self._client = client
-        self._reader = reader
-        self._authority = authority
-
-    @classmethod
-    def bootstrap(cls, database_path: str | Path, *, authority: str = "otto", actor_id: str = "otto-owner", credential_ref: str = "otto-owner-credential") -> "ReleaseOperations":
-        from herzchen.kernel import Store
-        from herzchen.domains.work.module import register_work
-        store = Store.create(str(database_path), authority=authority)
-        register_work(store)
-        facade = _ReleaseCommandFacade(store, authority=authority, actor_id=actor_id, credential_ref=credential_ref)
-        return cls(facade.command_port, facade.reader, authority)
-
-    def _call(self, endpoint: str, *args: Any, **kwargs: Any) -> Any:
-        return _decode_consumer(self._client.call(endpoint, *args, **kwargs))
-
-    def close(self) -> None:
-        self._call("close_store")
-
-    def reopen(self) -> None:
-        self._call("reopen_store")
-
-    def register_repository(self, **kwargs: Any) -> Any:
-        return self._call("register_repository", **kwargs)
-
-    def get_repository(self, repository_id: str) -> RepositoryRecord:
-        return self._call("get_repository", repository_id)
-
-    def select_candidate(self, repository_id: str, **kwargs: Any) -> CandidateObservation:
-        return self._call("select_candidate", repository_id, **kwargs)
-
-    def record_required_check(self, repository_id: str, **kwargs: Any) -> Any:
-        return self._call("record_required_check", repository_id, **kwargs)
-
-    def record_manager_decision(self, repository_id: str, **kwargs: Any) -> Any:
-        return self._call("record_manager_decision", repository_id, **kwargs)
-
-    def record_merge(self, repository_id: str, **kwargs: Any) -> Any:
-        return self._call("record_merge", repository_id, **kwargs)
-
-    def record_promotion(self, repository_id: str, **kwargs: Any) -> Any:
-        return self._call("record_promotion", repository_id, **kwargs)
-
-    def record_publication(self, repository_id: str, **kwargs: Any) -> Any:
-        return self._call("record_publication", repository_id, **kwargs)
-
-    def record_deployment(self, repository_id: str, **kwargs: Any) -> Any:
-        return self._call("record_deployment", repository_id, **kwargs)
-
-    def get_candidate(self, candidate_ref: Any) -> Any:
-        return self._call("get_candidate", candidate_ref)
-
-    def get_decision(self, decision_ref: Any) -> Any:
-        return self._call("get_decision", decision_ref)
-
-    def get_receipt(self, logical_request_key: str) -> Any:
-        return self._call("get_receipt", logical_request_key)
-
-    def list_events(self, repository_id: str) -> tuple[Any, ...]:
-        return self._call("list_events", repository_id)
-
-    def snapshot_counts(self) -> Mapping[str, int]:
-        return self._call("snapshot_counts")
-
-    @property
-    def registered_domains(self) -> tuple[str, ...]:
-        return self._call("registered_domains")
-
 
 def _ref(authority: str, repository_id: str) -> Any:
     from herzchen.contracts import ResourceRef
@@ -611,4 +536,4 @@ def _translate_public_error(exc: Exception) -> None:
     raise exc
 
 
-__all__ = ["COMMANDS", "RIGHTS", "CandidateObservation", "ProcessProfile", "ReleaseError", "ReleaseOperations", "RepositoryRecord", "SourceSetEntry", "RELEASE_DOMAIN_ID", "RELEASE_SCHEMA_REVISION"]
+__all__ = ["COMMANDS", "RIGHTS", "CandidateObservation", "ProcessProfile", "ReleaseError", "RepositoryRecord", "SourceSetEntry", "RELEASE_DOMAIN_ID", "RELEASE_SCHEMA_REVISION"]

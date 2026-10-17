@@ -118,83 +118,6 @@ def prepare_assignment_role_brief(
     return {"assignment": assignment, "brief": brief, "resource_evidence": evidence}
 
 
-def invoke_assignment(
-    *,
-    gateway: OttoGateway,
-    assignment_ref: Mapping[str, Any],
-    assignment_reader: Callable[[Any], Any],
-    resource_reader: Any,
-    owner: str,
-    logical_agent_id: str,
-    operation: str,
-    packet_digest: str,
-    project_ref: Any,
-    task_ref: Any,
-    logical_request_key: str,
-    request: Mapping[str, Any],
-    lifecycle: str,
-    operating_core: Mapping[str, Any],
-    context: Mapping[str, Any],
-    required_resource_names: Sequence[str],
-    expected_generation: int,
-    physical_session_id: str | None = None,
-    requested_model: str = "gpt-5.6-luna",
-    requested_reasoning: str = "high",
-    requested_profile: str = "default",
-) -> Any:
-    """Prepare the exact role brief and invoke the existing gateway once."""
-
-    if not isinstance(request, Mapping):
-        raise OrchestratorRouteError("request must be an object")
-    if gateway.attempt_capture is None or not callable(getattr(gateway.attempt_capture, "validate_generation", None)):
-        raise OrchestratorRouteError("owner generation/replay gate is unavailable")
-    prepared = prepare_assignment_role_brief(
-        assignment_ref=assignment_ref,
-        assignment_reader=assignment_reader,
-        resource_reader=resource_reader,
-        lifecycle=lifecycle,
-        operating_core=operating_core,
-        context=context,
-        required_resource_names=required_resource_names,
-        expected_generation=expected_generation,
-        native_identity=physical_session_id,
-    )
-    evidence = prepared["resource_evidence"]
-    bound_request = dict(request)
-    # Evidence stores the immutable brief body without its self-referential
-    # digest and idempotency key; this exact body is what the gateway requires
-    # at the adapter boundary.
-    bound_request["resource_brief"] = evidence["brief"]
-    bound_request["resource_brief_sha256"] = evidence["brief_sha256"]
-    expected_fields = {
-        "logical_agent_id": logical_agent_id,
-        "physical_session_id": physical_session_id,
-        "requested_profile": requested_profile,
-        "target_ref": task_ref,
-    }
-    for field, expected in expected_fields.items():
-        if field in bound_request and bound_request[field] is not None and not _same_value(bound_request[field], expected):
-            raise OrchestratorRouteError(f"request {field} conflicts with the fenced responsibility")
-        bound_request[field] = expected
-    assignment = prepared["assignment"]
-    responsibility = Responsibility(
-        owner,
-        logical_agent_id,
-        operation,
-        packet_digest,
-        physical_session_id=physical_session_id,
-        requested_model=requested_model,
-        requested_reasoning=requested_reasoning,
-        requested_profile=requested_profile,
-        logical_request_key=logical_request_key,
-        project_ref=project_ref,
-        task_ref=task_ref,
-        assignment_ref=assignment.get("assignment_ref", assignment.get("ref")),
-        generation=assignment["generation"],
-        resource_evidence=evidence,
-    )
-    return gateway.operation(responsibility, bound_request)
-
 
 def compose_owner_resource_herzchen_adapter(
     *,
@@ -484,6 +407,5 @@ __all__ = [
 
     "OrchestratorRouteError",
     "compose_owner_resource_herzchen_adapter",
-    "invoke_assignment",
     "prepare_assignment_role_brief",
 ]

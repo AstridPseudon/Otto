@@ -1,4 +1,5 @@
 """Real OS caller authentication with canonical owner/provider fixture records."""
+from tests.execution_helpers import start_worker
 import json
 import os
 from pathlib import Path
@@ -125,7 +126,7 @@ class NativeCallerIngressTests(unittest.TestCase):
         from otto.portfolio.execution_operations import manager_worker_result_schedule_id
         from unittest.mock import patch
         manager = self.bindings["manager"]
-        worker = self.c.f.app.assign_and_start(**self.c.f.request())
+        worker = start_worker(self.c.f.app, self.c.f.request())
         self.assertEqual(worker["outcome"], "succeeded", worker)
         continued = self.c.f.app.continue_manager_from_worker(
             manager_schedule_id=manager.schedule_id, worker_schedule_id=worker["schedule_id"], execute=True)
