@@ -3,7 +3,7 @@
 A caller that launches a command through ``Custody.launch`` owns its private process group.
 The rules for group signal authority and settlement are:
 
-* Identity is ``(pid, birth)``, never a bare pid. ``birth`` is the process start time from the census.
+* Identity is ``(pid, birth)``, never a bare pid. ``birth`` is the exact kernel start token.
 * A group id is signalled only while it is provably ours: our unreaped leader still holds it, or a
   tracked member whose birth still matches is alive in it. A group id is reusable only once its group is
   empty, so a live proven member means nobody else can hold it. A reaped leader is never enough.
@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from herzchen.kernel.process_identity import process_identity
+
 _REAL_POPEN = subprocess.Popen     # the census must keep working when a caller patches subprocess.Popen
 
 GONE = "gone"
@@ -41,7 +43,7 @@ class Proc:
     pid: int
     ppid: int
     pgid: int
-    birth: str
+    birth: tuple[int, ...] | list[int] | str | None
     zombie: bool = False
 
 
@@ -65,7 +67,7 @@ def census() -> Optional[dict]:
     """
     ps = next((p for p in ("/bin/ps", "/usr/bin/ps") if os.path.isfile(p)), "ps")
     try:
-        with _REAL_POPEN([ps, "-axo", "pid=,ppid=,pgid=,stat=,lstart="], stdout=subprocess.PIPE,
+        with _REAL_POPEN([ps, "-axo", "pid=,ppid=,pgid=,stat="], stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, text=True) as proc:
             try:
                 out, _ = proc.communicate(timeout=2.0)
@@ -80,14 +82,23 @@ def census() -> Optional[dict]:
         return None
     table: dict = {}
     for line in out.splitlines():
-        fields = line.strip().split(None, 4)
-        if len(fields) != 5:
+        fields = line.strip().split()
+        if len(fields) != 4:
             continue
         try:
             pid, ppid, pgid = (int(value) for value in fields[:3])
         except ValueError:
             continue
-        table[pid] = Proc(pid, ppid, pgid, fields[4], fields[3].startswith("Z"))
+        try:
+            identity = process_identity(pid)
+            # ps enumerates a PID before the kernel identity read. A replacement
+            # must not inherit the old row's ancestry or group signal authority.
+            if identity.pid != pid or identity.parent != ppid or identity.pgid != pgid:
+                raise PermissionError("ps row and kernel process differ")
+            birth = identity.birth
+        except (OSError, PermissionError, ValueError, IndexError, AttributeError):
+            birth = None
+        table[pid] = Proc(pid, ppid, pgid, birth, fields[3].startswith("Z"))
     if not table or os.getpid() not in table:
         return None
     return table
@@ -132,7 +143,7 @@ def _remove(path: str) -> None:
 class Custody:
     """One launched tree: its group, its leader's birth, and every descendant identity seen so far."""
 
-    def __init__(self, process: Any, pgid: int, leader_birth: Optional[str], members: Mapping[int, str],
+    def __init__(self, process: Any, pgid: int, leader_birth: Any, members: Mapping[int, Any],
                  latch_path: Optional[str] = None, census_fn: Optional[Callable[[], Optional[dict]]] = None,
                  doubt: Optional[str] = None, state: str = "running") -> None:
         self.process = process
@@ -165,7 +176,7 @@ class Custody:
         custody = cls(process, process.pid, None, {}, latch_path, census_fn)
         snap = custody._census()
         leader = snap.get(process.pid) if snap else None
-        if leader is None or leader.pgid != process.pid:
+        if leader is None or leader.pgid != process.pid or leader.birth is None:
             custody.doubt = "leader identity not captured at birth"
         else:
             custody.leader_birth = leader.birth
@@ -179,9 +190,17 @@ class Custody:
         try:
             with open(latch_path, encoding="utf-8") as handle:
                 record = json.load(handle)
-            members = {int(pid): str(birth) for pid, birth in record["members"].items()}
+            members = {int(pid): birth for pid, birth in record["members"].items()}
+            doubt = record.get("doubt")
+            # Older latches stored ps lstart text. It cannot prove a kernel birth,
+            # even if the displayed second happens to agree with a live process.
+            if any(isinstance(birth, str) and " " in birth for birth in
+                   [record.get("leader_birth"), *members.values()]):
+                marker = "exact kernel birth unavailable for scope member"
+                if marker not in (doubt or ""):
+                    doubt = "%s; %s" % (doubt, marker) if doubt else marker
             return cls(None, int(record["pgid"]), record.get("leader_birth"), members, latch_path,
-                       census_fn, doubt=record.get("doubt"), state=record.get("state", "running"))
+                       census_fn, doubt=doubt, state=record.get("state", "running"))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             return cls(None, -1, None, {}, latch_path, census_fn, doubt="latch unreadable: %s" % type(exc).__name__)
 
@@ -201,9 +220,30 @@ class Custody:
             self._persist_ok = False
 
     # -- census ------------------------------------------------------------------------------
+    @staticmethod
+    def _same_birth(left: Any, right: Any) -> bool:
+        if left is None or right is None:
+            return False
+        if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
+            return tuple(left) == tuple(right)
+        return left == right
+
     def _live(self, snap: Mapping[int, Proc], pid: int) -> bool:
         info = snap.get(pid)
-        return info is not None and not info.zombie and info.birth == self.known.get(pid)
+        return info is not None and not info.zombie and self._same_birth(info.birth, self.known.get(pid))
+
+    def _missing_birth(self, snap: Mapping[int, Proc]) -> bool:
+        """Keep a scope unresolved if any visible member lacks an exact birth token."""
+        missing = any(info.birth is None and not info.zombie and
+                      (info.pid in self.known or info.pgid == self.pgid or info.pid == self.pgid)
+                      for info in snap.values())
+        missing |= any(info.birth is None and not info.zombie and self._live(snap, info.ppid)
+                       for info in snap.values())
+        marker = "exact kernel birth unavailable for scope member"
+        if missing and marker not in (self.doubt or ""):
+            self.doubt = "%s; %s" % (self.doubt, marker) if self.doubt else marker
+            self._persist(self.state)
+        return missing or marker in (self.doubt or "")
 
     def _record_census_gap(self) -> None:
         if self.doubt is None:
@@ -216,7 +256,11 @@ class Custody:
             return "unproven"
         members = [i for i in snap.values() if i.pgid == self.pgid and not i.zombie]
         leader = snap.get(self.pgid)
-        if leader is not None and self.leader_birth is not None and leader.birth != self.leader_birth:
+        if self._missing_birth(snap):
+            return "unproven"
+        if self.process is not None and self.leader_birth is None:
+            return "unproven"
+        if leader is not None and self.leader_birth is not None and leader.birth is not None and not self._same_birth(leader.birth, self.leader_birth):
             return "reused"                    # the leader pid was recycled: the old group was empty
         if self.process is not None and self.process.poll() is None:
             return "ours"                      # our unreaped leader still holds the group id
@@ -234,11 +278,12 @@ class Custody:
         if snap is None:
             self._record_census_gap()
             return None
+        missing_birth = self._missing_birth(snap)
         before = len(self.known)
         prior_doubt = self.doubt
         if self._group_state(snap) == "ours":
             for info in snap.values():
-                if info.pgid == self.pgid and not info.zombie and info.pid not in self.known:
+                if info.pgid == self.pgid and not info.zombie and info.birth is not None and info.pid not in self.known:
                     self.known[info.pid] = info.birth
         children: dict = {}
         for info in snap.values():
@@ -247,15 +292,18 @@ class Custody:
         while pending:
             parent = pending.pop()
             for info in children.get(parent, ()):
-                if info.pid not in self.known and not info.zombie:
+                if info.pid not in self.known and not info.zombie and info.birth is not None:
                     self.known[info.pid] = info.birth
                     pending.append(info.pid)
         for pid in self.known:
             if not self._live(snap, pid) and any(c.pid not in self.known and not c.zombie
                                                  for c in children.get(pid, ())):
                 self.doubt = self.doubt or "unverified child of a missing tracked parent"
+        missing_birth |= self._missing_birth(snap)
         if len(self.known) != before or self.doubt != prior_doubt:
             self._persist("running")
+        if missing_birth:
+            return None
         return {pid: birth for pid, birth in self.known.items() if self._live(snap, pid)}
 
     # -- signals -----------------------------------------------------------------------------
@@ -265,7 +313,11 @@ class Custody:
         if snap is None:
             self._record_census_gap()
             return
+        if self._missing_birth(snap):
+            return
         live = self.observe(snap) or {}
+        if self._missing_birth(snap):
+            return
         if not self._persist_ok:
             return
         grouped = self._group_state(snap) == "ours"
@@ -289,6 +341,8 @@ class Custody:
         if snap is None:
             self._record_census_gap()
             return False
+        if self._missing_birth(snap):
+            return False
         if self._group_state(snap) != "ours":
             return False
         try:
@@ -303,6 +357,8 @@ class Custody:
         if snap is None:
             self._record_census_gap()
             return Disposition(UNCERTAIN, "census unavailable")
+        if self._missing_birth(snap):
+            return Disposition(UNCERTAIN, self.doubt or "exact kernel birth unavailable")
         live = self.observe(snap)
         if live:
             return Disposition("alive", "tracked processes remain", tuple(sorted(live)))
