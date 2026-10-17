@@ -57,9 +57,6 @@ RUN = {
         "worker_xhard": {"model": "claude-sonnet-5-5"},
     },
     "oracle": {"max_calls": 5},
-    "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "task review",
-                              "local_only": True, "capacity_units": 1, "cumulative_allowance_units": 1,
-                              "task_criterion_pairs": ["T1/C1"]},
     "review_stages": [
         {"id": "RS-1", "max_calls": 2, "scope": "s", "reviewer": "reviewer_xhard"},
         {"id": "RS-F", "max_calls": 1, "repeat_allowance": 1, "scope": "f", "reviewer": "final_reviewer"},
@@ -251,6 +248,14 @@ class HostctlCliTest(HostctlFixture):
 
     def test_register_creates_only_a_draft_and_activation_materializes(self):
         self._init()
+        run_path = Path(self.bundle, "run.json")
+        run = json.loads(run_path.read_text())
+        run["assessment_accounting"] = {
+            "kind": "owner_local_bookkeeping", "purpose": "task review", "local_only": True,
+            "pool_id": "demo-review-pool", "capacity_units": 1, "cumulative_allowance_units": 1,
+            "task_criterion_pairs": ["T1/C1"],
+        }
+        run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
         receipt = self._register()
         self.assertEqual((receipt["outcome"], receipt["lifecycle"]), ("registered", "pending"))
         self.assertIs(receipt["dispatch"], False)
@@ -266,7 +271,7 @@ class HostctlCliTest(HostctlFixture):
         self.assertIsNotNone(enrollment["supervisor_assignment_ref"])
         code, draft = self._ottoctl("project", "status", "--project", "demo-run")
         self.assertEqual((draft["tasks"], draft["schedules"], draft["allowances"]), ([], [], []))
-        self.assertEqual(draft["assessment_scope"], RUN["assessment_accounting"])
+        self.assertEqual(draft["assessment_scope"], run["assessment_accounting"])
         self.assertEqual([a["role"] for a in draft["assignments"]], [])
         code, refused = self._ottoctl("admission", "dry-run", "--project", "demo-run")
         self.assertNotEqual(code, 0)
