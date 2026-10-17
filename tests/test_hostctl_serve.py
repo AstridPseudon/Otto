@@ -431,13 +431,7 @@ class ServeTests(HostctlFixture):
         code, applied = self._ottoctl("operating-setup", "--project", "demo-run", "--operation", "apply")
         self.assertEqual((code, applied["outcome"], applied["started"]), (0, "replayed", False), applied)
         schedule = applied["setup"]["roles"]["manager"]
-        # The journey assertions cover owner authentication and document reads;
-        # the nested OS fence is independently exercised by the scope tests.
-        with patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
-                   side_effect=lambda scope: {**scope.pin, "verified": True}), \
-             patch("otto.agents.claude_cli.MacWriteScope.wrap", autospec=True,
-                   side_effect=lambda scope, command, **options: command):
-            started = self.orchestrator("start-manager", "--schedule-id", schedule)
+        started = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(started.get("outcome"), "succeeded", started)
         root = Path(self.worktree)
         whoami = json.loads((root / "whoami.json").read_text())
@@ -720,11 +714,7 @@ class EscalationTests(ServeTests):
         code, applied = self._ottoctl("operating-setup", "--project", "demo-run", "--operation", "apply")
         schedule = applied["setup"]["roles"]["manager"]
         root = Path(self.worktree)
-        with patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
-                   side_effect=lambda scope: {**scope.pin, "verified": True}), \
-             patch("otto.agents.claude_cli.MacWriteScope.wrap", autospec=True,
-                   side_effect=lambda scope, command, **options: command):
-            started = self.orchestrator("start-manager", "--schedule-id", schedule)
+        started = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(started.get("outcome"), "succeeded", started)
         # The manager's request-help went through its file lane during its own turn.
         requested = json.loads((root / "request-help.json").read_text())
@@ -744,14 +734,6 @@ class EscalationTests(ServeTests):
         # ... and the orchestrator cannot smuggle it through the manager relay.
         smuggled = self.orchestrator("respond-help", "--request-key", "smuggled", *fields)
         self.assertEqual(smuggled["outcome"], "error", smuggled)
-        scope_patches = [
-            patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
-                  side_effect=lambda scope: {**scope.pin, "verified": True}),
-            patch("otto.agents.claude_cli.MacWriteScope.wrap", autospec=True,
-                  side_effect=lambda scope, command, **options: command)]
-        for scope_patch in scope_patches:
-            scope_patch.start()
-            self.addCleanup(scope_patch.stop)
         code, answered = self._ottoctl("--wait-seconds", "60", "help", "respond", "--project", "demo-run",
             "--issue-id", issue_id, "--request-key", "ruling-1-answer", "--response", "Use design A",
             "--proposed-solution", "Design A keeps one resolver", "--next-action", "Implement T1 with design A")
@@ -760,8 +742,6 @@ class EscalationTests(ServeTests):
         deadline = time.monotonic() + 60
         while not (root / "resolve-help.json").exists() and time.monotonic() < deadline:
             time.sleep(0.2)
-        for scope_patch in reversed(scope_patches):
-            scope_patch.stop()
         resolved = json.loads((root / "resolve-help.json").read_text())
         self.assertNotEqual(resolved.get("outcome"), "error", resolved)
         self.assertIn("Use design A", (root / "manager-turn-2.txt").read_text())
