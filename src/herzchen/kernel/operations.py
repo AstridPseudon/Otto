@@ -26,7 +26,7 @@ from herzchen.contracts import (
 )
 
 from herzchen.command_ports import command_facade
-from .store import StoreError, TargetMismatchError, Transaction, coerce_operation_owner
+from .store import StoreError, TargetMismatchError, Transaction, VersionConflictError, coerce_operation_owner
 
 
 OPERATION_SCHEMA_REVISION = "fnd-04.operation.v1"
@@ -41,6 +41,7 @@ class OperationError(StoreError):
 
 class OperationState(str, Enum):
     PREPARED = "prepared"
+    STARTED = "started"
     COMMITTED = "committed"
     FAILED = "failed"
     UNKNOWN = "unknown"
@@ -66,6 +67,7 @@ class OperationOwner(Protocol):
     domain_descriptor_digest: str
 
     def registered_domains(self) -> Sequence[Any]: ...
+    def ensure_durable_start_boundary(self) -> None: ...
     def transaction(self) -> ContextManager[Transaction]: ...
     def mutate(self, envelope: CommandEnvelope, *, event_type: str, result_ref: Optional[ResourceRef] = None,
                before_refs: Sequence[ResourceRef] = (), after_refs: Sequence[ResourceRef] = (),
@@ -266,6 +268,11 @@ class OperationRecord:
         return self.receipt
 
     @property
+    def effect_ref(self) -> ResourceRef:
+        """Stable effect identity, distinct from the operation and invocation."""
+        return ResourceRef(self.operation_ref.authority, "effect", self.operation_ref.id)
+
+    @property
     def physical_invocation_ref(self) -> Optional[ResourceRef]:
         return self.request.physical_invocation_ref
 
@@ -303,6 +310,7 @@ class _OperationManagerEngine:
     def _payload(self, request: OperationRequest, state: OperationState, result: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "record_type": OPERATION_KIND,
+            "effect_ref": ResourceRef(self.__owner.authority, "effect", request.logical_request_key).to_dict(),
             "operation": request.operation,
             "schema_revision": request.schema_revision,
             "adapter_ref": request.adapter_ref.to_dict(),
@@ -391,6 +399,7 @@ class _OperationManagerEngine:
         )
         effects = {
             "state": OperationState.PREPARED.value,
+            "effect_ref": ResourceRef(self.__owner.authority, "effect", request.logical_request_key).to_dict(),
             "result": {},
             "adapter_ref": request.adapter_ref.to_dict(),
             "request_actor": request.actor.to_dict(),
@@ -418,6 +427,64 @@ class _OperationManagerEngine:
         version = int(event_effects.get("version", identity.version if identity else 1))
         operation_ref = receipt.result_ref or (identity.ref if identity else target)
         return self._record_from_event(receipt, event_effects, request, operation_ref, version)
+
+    def claim_start(self, record: OperationRecord, *, transition_key: Optional[str] = None, transaction: Optional[Transaction] = None) -> OperationRecord:
+        """Commit the one start claim before the caller invokes its effect.
+
+        The returned STARTED record is the caller's permission to invoke once.
+        A later caller, including one replaying the same key, receives a hold
+        instead of another permission.  A reconstructed STARTED identity reads
+        as UNKNOWN because its external outcome cannot be inferred.
+        """
+        if not isinstance(record, OperationRecord):
+            raise TypeError("record must be an OperationRecord")
+        if transaction is not None:
+            raise OperationError("start claim must commit before external invocation")
+        self.__owner.ensure_durable_start_boundary()
+        target = record.operation_ref
+        if target.revision is None:
+            raise OperationError("operation record must carry its current revision")
+        if record.state is not OperationState.PREPARED:
+            raise UnknownOutcomeError("effect is already started or held")
+        start_key = transition_key or record.request.logical_request_key + ":start"
+        if self.__owner.get_receipt(start_key) is not None:
+            raise UnknownOutcomeError("effect start claim already exists")
+        identity = self.__owner.get_identity(target)
+        if identity is None or identity.ref != target or identity.version != record.version or identity.payload.get("state") != OperationState.PREPARED.value:
+            raise UnknownOutcomeError("effect is already started or held")
+        if self._request_from_identity(identity.payload) != record.request:
+            raise OperationError("start claim does not match the prepared effect")
+        if identity.payload.get("effect_ref") != record.effect_ref.to_dict():
+            raise OperationError("prepared effect identity does not match its operation")
+        start_request = OperationRequest(
+            "operation.start", record.request.schema_revision, record.request.adapter_ref,
+            record.request.actor, start_key, request_digest({"effect_ref": record.effect_ref.to_dict()}),
+            {"effect_ref": record.effect_ref.to_dict()},
+            record.request.physical_invocation_ref, record.request.external_owner_ref,
+            record.request.expected_revision, record.request.expected_version,
+            record.request.edit_token, record.request.correlation_id, record.request.causation_id,
+        )
+        payload = self._payload(record.request, OperationState.STARTED, {})
+        envelope = start_request.envelope(
+            target, expected_revision=target.revision, expected_version=record.version,
+            edit_token=None, payload=payload,
+        )
+        effects = dict(payload)
+        effects["version"] = record.version + 1
+        try:
+            receipt = self.__owner.mutate(
+                envelope, event_type="operation.started",
+                result_ref=ResourceRef(target.authority, target.kind, target.id, "rev-{}".format(record.version + 1)),
+                effects=effects, stream=OPERATION_STREAM,
+            )
+        except (TargetMismatchError, VersionConflictError) as exc:
+            raise UnknownOutcomeError("effect is already started or held") from exc
+        if receipt.replayed:
+            raise UnknownOutcomeError("effect start claim already exists")
+        if receipt.logical_request_key != start_key or receipt.result_ref is None:
+            raise OperationError("start claim has no durable result")
+        event_effects = self._event_for_receipt(receipt)
+        return self._record_from_event(receipt, event_effects, record.request, receipt.result_ref, int(event_effects["version"]))
 
     def _transition(
         self,
@@ -490,7 +557,7 @@ class _OperationManagerEngine:
             return self._record_from_event(prior, event_effects, record.request, prior.result_ref or target, int(event_effects.get("version", record.version + 1)))
         if record.state in (OperationState.UNKNOWN, OperationState.UNCERTAIN) and not allow_unknown_resolution:
             raise UnknownOutcomeError("unknown operation outcome requires explicit resolution")
-        if record.state not in (OperationState.PREPARED, OperationState.UNKNOWN, OperationState.UNCERTAIN):
+        if record.state not in (OperationState.PREPARED, OperationState.STARTED, OperationState.UNKNOWN, OperationState.UNCERTAIN):
             raise OperationError("operation already has a terminal outcome")
         effects = {
             "state": state.value,
@@ -552,7 +619,10 @@ class _OperationManagerEngine:
         )
         request = self._request_from_identity(identity.payload, actor=lineage_actor)
         receipt = self.__owner.get_receipt(request.logical_request_key)
-        return OperationRecord(identity.ref, request, OperationState(identity.payload["state"]), dict(identity.payload.get("result", {})), receipt, identity.version)
+        state = OperationState(identity.payload["state"])
+        if state is OperationState.STARTED:
+            state = OperationState.UNKNOWN
+        return OperationRecord(identity.ref, request, state, dict(identity.payload.get("result", {})), receipt, identity.version)
 
 
 OperationManager = command_facade(_OperationManagerEngine, "herzchen.kernel.operations")

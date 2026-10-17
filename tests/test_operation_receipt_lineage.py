@@ -4,7 +4,7 @@ import tempfile,unittest
 from pathlib import Path
 from herzchen.contracts import AuthenticatedActor,ResourceRef,CommandReceipt,ReceiptStatus
 from herzchen.kernel import Store
-from herzchen.kernel.operations import OperationManager,OperationRequest,OperationState
+from herzchen.kernel.operations import OperationManager,OperationRequest,OperationState,UnknownOutcomeError
 from herzchen.kernel.store import OperationOwnerCapability,RuntimeOperationOwner,RuntimeOperationReader
 
 class ReceiptLineageTests(unittest.TestCase):
@@ -59,4 +59,39 @@ class ReceiptLineageTests(unittest.TestCase):
    def lookup_replay(self,*args):return None
    def event_lineage(self,value):calls.append(value);return store.list_events(subjects=(value.result_ref,))
   owner=OperationOwnerCapability.issue_runtime(Owner());events=owner.event_lineage(receipt);self.assertEqual(calls,[receipt]);self.assertEqual(tuple(x.event_id for x in events),receipt.event_ids)
+ def test_no_double_start_across_crash(self):
+  prepared=self.manager.prepare(self.request('crash-start'))
+  started=self.manager.claim_start(prepared,transition_key='crash-start-claim')
+  self.assertEqual(started.state,OperationState.STARTED)
+  effect_ref=started.effect_ref
+
+  # Model a process stopping immediately after the durable claim returned.
+  self.store.close()
+  self.store=Store.open(Path(self.directory.name)/'owner.sqlite',authority='owner')
+  self.addCleanup(self.store.close)
+  recovered_manager=OperationManager(self.store)
+  recovered=recovered_manager.get('crash-start')
+  self.assertEqual(recovered.state,OperationState.UNKNOWN)
+  self.assertEqual(recovered.effect_ref,effect_ref)
+  invocations=[]
+  def invoke_after_successful_claim(record,key):
+   claimed=recovered_manager.claim_start(record,transition_key=key)
+   invocations.append(claimed.effect_ref)
+  with self.assertRaises(UnknownOutcomeError):
+   invoke_after_successful_claim(recovered,'second-claim')
+  with self.assertRaises(UnknownOutcomeError):
+   invoke_after_successful_claim(recovered,'crash-start-claim')
+  self.assertEqual(invocations,[])
+
+ def test_unknown_is_held_not_retried(self):
+  prepared=self.manager.prepare(self.request('unknown-held'))
+  self.manager.claim_start(prepared,transition_key='unknown-held-claim')
+  self.store.close()
+  self.store=Store.open(Path(self.directory.name)/'owner.sqlite',authority='owner')
+  self.addCleanup(self.store.close)
+  recovered_manager=OperationManager(self.store)
+  unknown=recovered_manager.get('unknown-held')
+  self.assertEqual(unknown.state,OperationState.UNKNOWN)
+  with self.assertRaises(UnknownOutcomeError):
+   recovered_manager.claim_start(unknown,transition_key='unknown-held-retry')
 if __name__=='__main__':unittest.main()
