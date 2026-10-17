@@ -13,17 +13,43 @@
 # "LAND RESULT: refused <reason>", so a caller that started it detached can poll for it.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
+valid_task "${1:-}" || { echo "error: usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]" >&2; echo "LAND RESULT: refused invalid task"; exit 1; }
+# The parent owns the POSIX lock. Bash and its test children never inherit its descriptor, so a
+# killed gate releases the lock even if a child process survives. The regular file is never unlinked.
+if [ "${OTTO_LAND_LOCK_PARENT_PID:-}" != "$PPID" ]; then
+  mkdir -p "$OPS_DIR"
+  exec "$PY" - "$0" "$OPS_DIR/land.lock" "$@" <<'PY'
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+script, path, *args = sys.argv[1:]
+try:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        raise OSError("lock path is not a regular file")
+    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except (OSError, BlockingIOError) as exc:
+    print(f"error: another landing is running ({path}): {exc}", file=sys.stderr)
+    print(f"LAND RESULT: refused another landing is running ({path})")
+    raise SystemExit(1)
+env = dict(os.environ, OTTO_LAND_LOCK_PARENT_PID=str(os.getpid()))
+try:
+    raise SystemExit(subprocess.call(["bash", script, *args], env=env))
+finally:
+    os.close(fd)
+PY
+fi
 REASON=""
-LOCKED=""
 LANDED=""
 LAND_TMPDIR=""
 die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
 finish() {
   local rc=$?
-  [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
   [ -z "$LAND_TMPDIR" ] || rm -rf "$LAND_TMPDIR"
-  # "landed" means pushed, whatever the exit status: a run stopped by a signal can end with status 0,
-  # and a cleanup failure after the push doesn't undo the landing.
+  # Only a remotely confirmed publication with completed cleanup sets LANDED.
   if [ -n "$LANDED" ]; then echo "LAND RESULT: landed $LANDED"; return; fi
   case "$rc" in
     4) echo "LAND RESULT: d19" ;;
@@ -33,7 +59,6 @@ finish() {
 trap finish EXIT
 trap 'REASON="interrupted by a signal; canon/main unchanged unless the log says pushed"; exit 143' TERM INT HUP
 
-valid_task "${1:-}" || die "usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]"
 TASK="$1"
 shift
 TITLE=""
@@ -50,15 +75,85 @@ done
 LAB="$LABS_DIR/$TASK"
 RUN="$RUNS_DIR/$TASK"
 BRANCH="lab/$TASK"
-[ -d "$LAB" ] || die "no lab at $LAB"
-[ -f "$LAB/.brief.md" ] || die "no brief at $LAB/.brief.md"
-git -C "$OTTO_REPO" show-ref --verify --quiet "refs/heads/$BRANCH" || die "no branch $BRANCH"
-"$PY" -I "$HERE/workers.py" check --file "$WORKERS_JSON" --task "$TASK" \
-  || die "land $TASK after its worker exits"
 [ "$(git -C "$OTTO_REPO" symbolic-ref --short HEAD)" = canon/main ] \
   || die "$OTTO_REPO must have canon/main checked out"
 [ -z "$(git -C "$OTTO_REPO" status --porcelain --untracked-files=no)" ] \
   || die "$OTTO_REPO has uncommitted changes"
+
+mkdir -p "$RUN" "$OPS_DIR"
+LOG="$RUN/land.log"
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "$LOG"; }
+fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
+gitl() { git -C "$OTTO_REPO" "$@"; }
+
+# A prior gate may have died after creating its merge. Trust only a merge whose subject, parents,
+# BASE and tested SHA all agree with the previous run's log.
+reconcile_merge() {  # MERGE TASK; returns 0 if published, 2 if rejected, 1 on ambiguity
+  local merge="$1" prior="$2" prior_log parents base tested remote
+  prior_log="$RUNS_DIR/$prior/land.log"
+  [ -f "$prior_log" ] || { REASON="unconfirmed Land $prior merge has no log evidence"; return 1; }
+  [[ "$(gitl log -1 --format=%s "$merge")" == "Land $prior: "* ]] \
+    || { REASON="ambiguous Land $prior merge subject"; return 1; }
+  parents="$(gitl rev-list --parents -n 1 "$merge")"
+  read -r _ base tested extra <<< "$parents"
+  [ -n "${tested:-}" ] && [ -z "${extra:-}" ] \
+    || { REASON="ambiguous Land $prior merge parents"; return 1; }
+  grep -qF "land $prior: BASE $base" "$prior_log" \
+    && grep -qF "tested commit $tested " "$prior_log" \
+    && { grep -qF "merged $merge" "$prior_log" || grep -qF "merged ${merge:0:7}" "$prior_log"; } \
+    || { REASON="Land $prior merge lacks matching BASE/tested SHA log evidence"; return 1; }
+  gitl fetch --quiet "$GIT_REMOTE" || { REASON="cannot fetch $GIT_REMOTE to reconcile Land $prior"; return 1; }
+  remote="$(gitl rev-parse "$GIT_REMOTE/main")"
+  if gitl merge-base --is-ancestor "$merge" "$remote"; then
+    log "publication confirmed: Land $prior merge $merge is on $GIT_REMOTE/main ($remote)"
+    "$HERE/otto-lab.sh" remove "$prior" "$merge" | tee -a "$LOG" \
+      || { REASON="published Land $prior cleanup failed"; return 1; }
+    return 0
+  fi
+  if [ "$remote" = "$base" ]; then
+    log "publication rejected: merge $merge has remote main at BASE $base"
+    gitl reset --hard "$base" >/dev/null || { REASON="cannot restore canon/main to BASE $base"; return 1; }
+    log "restored canon/main to BASE $base; lab/$prior remains retriable"
+    return 2
+  fi
+  REASON="ambiguous remote relationship for Land $prior merge $merge; local merge retained"
+  return 1
+}
+
+LOCAL_HEAD="$(gitl rev-parse canon/main)"
+LOCAL_SUBJECT="$(gitl log -1 --format=%s "$LOCAL_HEAD")"
+if [[ "$LOCAL_SUBJECT" =~ ^Land[[:space:]]([A-Za-z0-9._-]+):[[:space:]] ]]; then
+  PRIOR="${BASH_REMATCH[1]}"
+  rc=0
+  reconcile_merge "$LOCAL_HEAD" "$PRIOR" || rc=$?
+  [ "$rc" != 1 ] || fail "$REASON"
+  if [ "$rc" = 0 ] && [ "$TASK" = "$PRIOR" ]; then
+    LANDED="$(gitl rev-parse --short "$LOCAL_HEAD")"
+    exit 0
+  fi
+  if [ "$rc" = 2 ] && gitl show-ref --verify --quiet "refs/heads/$BRANCH" \
+      && gitl merge-base --is-ancestor "$LOCAL_HEAD" "$BRANCH"; then
+    fail "lab/$TASK descends from discarded Land $PRIOR merge; rebuild it from confirmed main"
+  fi
+fi
+[ -d "$LAB" ] || die "no lab at $LAB"
+[ -f "$LAB/.brief.md" ] || die "no brief at $LAB/.brief.md"
+gitl show-ref --verify --quiet "refs/heads/$BRANCH" || die "no branch $BRANCH"
+# A rejected merge may already have been reset by its own gate. Keep its ancestry out of later
+# branches even after that reset has removed the merge from canon/main.
+for prior_log in "$RUNS_DIR"/*/land.log; do
+  [ -f "$prior_log" ] || continue
+  while read -r discarded; do
+    [ -n "$discarded" ] || continue
+    gitl cat-file -e "$discarded^{commit}" 2>/dev/null \
+      || fail "rejected merge $discarded in $prior_log is missing; inspect history before landing"
+    if gitl merge-base --is-ancestor "$discarded" "$BRANCH"; then
+      fail "$BRANCH descends from discarded merge $discarded; rebuild it from confirmed main"
+    fi
+  done < <(sed -n 's/^.*publication rejected: merge \([0-9a-f]\{40\}\) has remote main at BASE .*/\1/p' "$prior_log")
+done
+"$PY" -I "$HERE/workers.py" check --file "$WORKERS_JSON" --task "$TASK" \
+  || die "land $TASK after its worker exits"
 if [ -n "$(uncommitted_work "$LAB")" ]; then
   uncommitted_work "$LAB" >&2
   die "lab $LAB has uncommitted work; the worker must commit it"
@@ -89,9 +184,6 @@ if [ -z "$TITLE" ]; then
 fi
 TITLE="${TITLE:-$TASK}"
 
-mkdir -p "$RUN" "$OPS_DIR"
-mkdir "$OPS_DIR/land.lock" 2>/dev/null || die "another landing is running ($OPS_DIR/land.lock); wait for it"
-LOCKED=1
 # Give this landing a short, private TMPDIR so staging sockets stay within Unix socket limits and
 # the owner census below can attribute leftovers to this run alone.
 LAND_TMPDIR="$(mktemp -d /tmp/l.XXXXXX)" || die "could not create a private temporary root"
@@ -101,10 +193,6 @@ export TMPDIR
 # long for the 100-byte socket limit, so they fall back to /tmp).
 OTTO_LAND_TMPDIR="$LAND_TMPDIR"
 export OTTO_LAND_TMPDIR
-LOG="$RUN/land.log"
-log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "$LOG"; }
-fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
-
 BASE="$(git -C "$OTTO_REPO" rev-parse canon/main)"
 log "land $TASK: BASE $BASE"
 echo "rebasing $BRANCH onto canon/main ($(git -C "$OTTO_REPO" rev-parse --short canon/main))"
@@ -112,9 +200,8 @@ if ! git -C "$LAB" rebase --quiet canon/main; then
   git -C "$LAB" rebase --abort || true
   die "rebase onto canon/main conflicts; resume the worker's session with the conflict"
 fi
-log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase; the merge's tree)"
-
-gitl() { git -C "$OTTO_REPO" "$@"; }
+TESTED_SHA="$(git -C "$LAB" rev-parse HEAD)"
+log "tested commit $TESTED_SHA (the lab tip after the rebase; the merge's tree)"
 
 # Cheap checks first, so an exit 4 or a D14 refusal costs seconds, not a sweep.
 # placement (D14)
@@ -433,7 +520,6 @@ done
 # silently after PERCH landed).
 ST="$LAB/ops/bootstrap"
 if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
-  SHA="$(git -C "$LAB" rev-parse HEAD)"
   # perch restarts staging on OTTO_STAGING_REF itself. Until 16 Oct the gate passed OTTO_COMMIT, which
   # nothing reads, so staging ran BASE (STAGE0 F1); its reports now outlive the lab (F6).
   # Only the stages that have passed gate a landing ($OPS_DIR/stages-gated, default "0 1"). A stage whose
@@ -441,42 +527,55 @@ if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
   # PERCH2's stage 2 canary refused PERCH2 itself). The orchestrator adds a stage once it passes.
   GATED="$(cat "$OPS_DIR/stages-gated" 2>/dev/null || echo "0 1")"
   for stage in $GATED; do
-    ( cd "$LAB" && OTTO_STAGING_REF="$SHA" PERCH_OUT="$OTTO_REPO/ops/perch" bash "$ST/perch.sh" "$stage" --fake ) \
+    ( cd "$LAB" && OTTO_STAGING_REF="$TESTED_SHA" PERCH_OUT="$OTTO_REPO/ops/perch" bash "$ST/perch.sh" "$stage" --fake ) \
       >> "$G/staging.log" 2>&1 || fail "perch.sh $stage --fake failed ($G/staging.log)"
   done
   for report in $(sed -n 's/^perch: stage .* report at //p' "$G/staging.log"); do
-    grep -q "staging tree sha $SHA" "$report" \
-      || fail "staging did not run the tested commit $SHA: $(grep -m1 'staging tree sha' "$report") ($report)"
+    grep -q "staging tree sha $TESTED_SHA" "$report" \
+      || fail "staging did not run the tested commit $TESTED_SHA: $(grep -m1 'staging tree sha' "$report") ($report)"
   done
-  log "staging: perch --fake passed on $SHA (reports under $OTTO_REPO/ops/perch)"
+  log "staging: perch --fake passed on $TESTED_SHA (reports under $OTTO_REPO/ops/perch)"
 else
   log "staging: skipped (STAGE/PERCH not landed)"
 fi
 
 # e. remote
 git -C "$OTTO_REPO" fetch --quiet "$GIT_REMOTE" || fail "cannot fetch $GIT_REMOTE"
-gitl merge-base --is-ancestor "$GIT_REMOTE/main" canon/main \
-  || fail "$GIT_REMOTE main has commits canon/main lacks; reconcile first"
+[ "$(gitl rev-parse "$GIT_REMOTE/main")" = "$BASE" ] \
+  || fail "$GIT_REMOTE main differs from checked BASE; reconcile first"
 
 # f. merge and push
 [ "$(gitl rev-parse canon/main)" = "$BASE" ] \
   || fail "canon/main moved during the gate; run land.sh $TASK again"
-if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge.log" 2>&1; then
+[ "$(git -C "$LAB" rev-parse HEAD)" = "$TESTED_SHA" ] \
+  || fail "lab HEAD changed after check; run land.sh $TASK again"
+[ "$(gitl rev-parse "$BRANCH")" = "$TESTED_SHA" ] \
+  || fail "$BRANCH changed after check; run land.sh $TASK again"
+[ -z "$(uncommitted_work "$LAB")" ] \
+  || fail "lab has uncommitted work after check; run land.sh $TASK again"
+if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$TESTED_SHA" > "$RUN/merge.log" 2>&1; then
   gitl merge --abort 2>/dev/null || true
   fail "merge failed; canon/main unchanged (see $RUN/merge.log)"
 fi
-log "merged $(gitl rev-parse --short HEAD)"
+MERGE_SHA="$(gitl rev-parse HEAD)"
+log "merged $MERGE_SHA"
+[ "$(gitl rev-list --parents -n 1 "$MERGE_SHA")" = "$MERGE_SHA $BASE $TESTED_SHA" ] \
+  || fail "merge parents differ from BASE and TESTED_SHA; local merge retained"
 if ! gitl push --quiet "$GIT_REMOTE" canon/main:main >> "$RUN/merge.log" 2>&1; then
-  REASON="push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD)"
-  log "FAIL: push to $GIT_REMOTE failed; the local merge stays on canon/main (see $RUN/merge.log)"
-  echo "push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD) (log: $LOG)" >&2
-  exit 1
+  log "push returned an error; reconciling $MERGE_SHA with $GIT_REMOTE/main"
+  rc=0
+  reconcile_merge "$MERGE_SHA" "$TASK" || rc=$?
+  [ "$rc" = 0 ] || fail "push to $GIT_REMOTE failed: $REASON"
+else
+  # A successful transport reply is still checked against the exact merge before cleanup.
+  rc=0
+  reconcile_merge "$MERGE_SHA" "$TASK" || rc=$?
+  [ "$rc" = 0 ] || fail "push to $GIT_REMOTE could not be confirmed: $REASON"
 fi
 log "pushed canon/main to $GIT_REMOTE/main"
-LANDED="$(gitl rev-parse --short HEAD)"
+LANDED="$(gitl rev-parse --short "$MERGE_SHA")"
 
 # g. clean up and record
-"$HERE/otto-lab.sh" remove "$TASK" | tee -a "$LOG"
 SHORT="$(gitl diff --shortstat "$BASE" HEAD)"
 REMOVED="$(gitl diff --numstat "$BASE" HEAD | awk '{ d += $2 } END { print d+0 }')"
 log "net: ${SHORT:-no change}; lines removed: $REMOVED"

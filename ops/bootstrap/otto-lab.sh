@@ -1,8 +1,7 @@
 #!/bin/bash
 # A lab is a git worktree of canon/main on branch lab/TASK, one per task.
 #   otto-lab.sh create TASK   refuses if the lab or the branch already exists
-#   otto-lab.sh remove TASK   refuses a lab with uncommitted work or a running worker;
-#                             deletes the branch only if it is merged into canon/main
+#   otto-lab.sh remove TASK MERGE_SHA   idempotently removes a published lab and its checked branch
 # This replaces lab.sh, which retires in DELETE (later).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -24,20 +23,38 @@ case "${1:-}" in
     echo "created $LAB on $BRANCH from canon/main ($(git -C "$LAB" rev-parse --short HEAD))"
     ;;
   remove)
-    [ -d "$LAB" ] || die "no lab at $LAB"
+    MERGE_SHA="${3:-}"
+    [ -n "$MERGE_SHA" ] || die "remove needs the published merge SHA"
+    MERGE_SHA="$(git -C "$OTTO_REPO" rev-parse --verify "$MERGE_SHA^{commit}")" \
+      || die "no published merge commit: ${3:-}"
+    [ "$(git -C "$OTTO_REPO" log -1 --format=%s "$MERGE_SHA" | sed -n "s/^Land $TASK: //p" | wc -l | tr -d ' ')" = 1 ] \
+      || die "$MERGE_SHA is not a Land $TASK merge"
+    read -r _ BASE TESTED_SHA EXTRA <<< "$(git -C "$OTTO_REPO" rev-list --parents -n 1 "$MERGE_SHA")"
+    [ -n "${TESTED_SHA:-}" ] && [ -z "${EXTRA:-}" ] \
+      || die "$MERGE_SHA does not have the expected two parents"
+    git -C "$OTTO_REPO" merge-base --is-ancestor "$MERGE_SHA" "$GIT_REMOTE/main" \
+      || die "$MERGE_SHA is not confirmed on $GIT_REMOTE/main"
     "$PY" -I "$HERE/workers.py" remove --file "$WORKERS_JSON" --task "$TASK" \
       || die "worker for $TASK is still running; remove the lab after it exits"
-    if [ -n "$(uncommitted_work "$LAB")" ]; then
-      uncommitted_work "$LAB" >&2
-      die "lab $LAB has uncommitted work; commit or discard it first"
+    if git -C "$OTTO_REPO" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      [ "$(git -C "$OTTO_REPO" rev-parse "$BRANCH")" = "$TESTED_SHA" ] \
+        || die "$BRANCH differs from the published merge's checked parent $TESTED_SHA"
+    elif [ -d "$LAB" ]; then
+      die "$LAB exists without $BRANCH; inspect it before cleanup"
     fi
-    archive_manager_files "$LAB" "$TASK"
-    git -C "$OTTO_REPO" worktree remove --force "$LAB"
-    if git -C "$OTTO_REPO" merge-base --is-ancestor "$BRANCH" canon/main; then
+    if [ -d "$LAB" ]; then
+      if [ -n "$(uncommitted_work "$LAB")" ]; then
+        uncommitted_work "$LAB" >&2
+        die "lab $LAB has uncommitted work; commit or discard it first"
+      fi
+      archive_manager_files "$LAB" "$TASK"
+      git -C "$OTTO_REPO" worktree remove --force "$LAB"
+    fi
+    if git -C "$OTTO_REPO" show-ref --verify --quiet "refs/heads/$BRANCH"; then
       git -C "$OTTO_REPO" branch -D "$BRANCH" >/dev/null
-      echo "removed $LAB and deleted $BRANCH (merged into canon/main)"
+      echo "removed $LAB and deleted $BRANCH (checked parent of published $MERGE_SHA)"
     else
-      echo "removed $LAB; kept $BRANCH because it is not merged into canon/main"
+      echo "publication cleanup already complete for $TASK ($MERGE_SHA)"
     fi
     ;;
   *)

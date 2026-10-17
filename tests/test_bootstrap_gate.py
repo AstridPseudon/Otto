@@ -6,6 +6,7 @@ scripts (used to show the tests failing against the old ones).
 """
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -145,6 +146,187 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "land.lock").exists())
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
+
+    def test_lab_advance_after_check_refuses_without_moving_main(self):
+        from shlex import quote
+
+        lab = self.lab("T31", {"note.txt": "checked\n"})
+        checked = sh(["git", "rev-parse", "HEAD"], cwd=lab).stdout.strip()
+        advance = self.tmp / "advance_lab.py"
+        advance.write_text(textwrap.dedent("""\
+            import subprocess
+            from pathlib import Path
+
+            Path("unchecked.txt").write_text("unchecked\\n")
+            subprocess.run(["git", "add", "unchecked.txt"], check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "advance after check"], check=True)
+        """))
+        check = ("%s -m pytest -q tests/test_herzchen_boundary.py && %s %s"
+                 % (quote(sys.executable), quote(sys.executable), quote(str(advance))))
+
+        result = self.land("T31", "--check", check)
+
+        self.assertRefused(result, "T31", "lab HEAD changed")
+        self.assertNotEqual(sh(["git", "rev-parse", "HEAD"], cwd=lab).stdout.strip(), checked)
+        remote_head = sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
+        self.assertEqual(remote_head, self.base)
+
+    def test_rejected_push_is_reconciled_before_another_landing(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        self.lab("B", {"b.txt": "checked B\n"})
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho rejection >&2\nexit 1\n")
+        hook.chmod(0o755)
+
+        first = self.land("A")
+        self.assertNotEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(self.head("github/main"), self.base)
+        self.assertTrue((self.labs / "A").exists())
+        hook.unlink()
+
+        second = self.land("B")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip(), self.head())
+        self.assertNotIn("a.txt", sh(["git", "ls-tree", "-r", "--name-only", "main"], cwd=self.remote).stdout)
+        self.assertTrue((self.labs / "A").exists())
+        self.assertTrue(sh(["git", "branch", "--list", "lab/A"], cwd=self.repo).stdout.strip())
+
+    def test_branch_descending_from_discarded_merge_is_refused(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        lab_b = self.lab("B", {"b.txt": "checked B\n"})
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        rejected = self.land("A")
+        self.assertNotEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+        merge_abbrev = re.search(r"merged ([0-9a-f]{7,40})", self.log("A")).group(1)
+        merge = sh(["git", "rev-parse", merge_abbrev], cwd=self.repo).stdout.strip()
+        hook.unlink()
+        sh(["git", "merge", "--no-ff", "-m", "B accidentally includes discarded A", merge], cwd=lab_b, env=self.env)
+
+        result = self.land("B")
+        self.assertRefused(result, "B", "descends from discarded merge")
+        self.assertEqual(sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip(), self.base)
+
+    def test_accepted_push_with_lost_reply_is_published_and_cleaned(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        real_git = shutil.which("git")
+        standin = self.bin / "git"
+        standin.write_text("#!/bin/sh\ncase \" $* \" in\n"
+                           "  *' push '*' canon/main:main '*) \"$OTTO_TEST_REAL_GIT\" \"$@\" || exit $?; exit 1 ;;\n"
+                           "esac\nexec \"$OTTO_TEST_REAL_GIT\" \"$@\"\n")
+        standin.chmod(0o755)
+        self.env["OTTO_TEST_REAL_GIT"] = real_git
+
+        result = self.land("A")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        remote_head = sh([real_git, "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
+        self.assertEqual(remote_head, self.head())
+        self.assertFalse((self.labs / "A").exists())
+        self.assertFalse(sh([real_git, "branch", "--list", "lab/A"], cwd=self.repo).stdout.strip())
+
+    def test_next_landing_finishes_published_cleanup_before_its_own_gate(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        self.lab("B", {"b.txt": "checked B\n"})
+        real_git = shutil.which("git")
+        standin = self.bin / "git"
+        dirty = self.labs / "A" / "cleanup-interrupted.txt"
+        standin.write_text("#!/bin/sh\ncase \" $* \" in\n"
+                           "  *' push '*' canon/main:main '*) \"$OTTO_TEST_REAL_GIT\" \"$@\" || exit $?; "
+                           "printf interrupted > \"$OTTO_TEST_DIRTY\"; exit 0 ;;\n"
+                           "esac\nexec \"$OTTO_TEST_REAL_GIT\" \"$@\"\n")
+        standin.chmod(0o755)
+        self.env.update(OTTO_TEST_REAL_GIT=real_git, OTTO_TEST_DIRTY=str(dirty))
+
+        first = self.land("A")
+        self.assertNotEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(self.head(), sh([real_git, "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip())
+        self.assertTrue(dirty.exists())
+        self.assertTrue((self.labs / "A").exists())
+        blocked = self.land("B")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("cleanup failed", blocked.stdout + blocked.stderr)
+        self.assertEqual(self.head(), sh([real_git, "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip())
+
+        dirty.unlink()
+        standin.unlink()
+        recovered = self.land("B")
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+        self.assertFalse((self.labs / "A").exists())
+        self.assertFalse(sh([real_git, "branch", "--list", "lab/A"], cwd=self.repo).stdout.strip())
+        self.assertIn("a.txt", sh([real_git, "ls-tree", "-r", "--name-only", "main"], cwd=self.remote).stdout)
+
+    def test_next_landing_recovers_crash_after_remote_accepts_merge(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        self.lab("B", {"b.txt": "checked B\n"})
+        real_git = shutil.which("git")
+        standin = self.bin / "git"
+        pushed = self.tmp / "push-completed"
+        standin.write_text("#!/bin/sh\ncase \" $* \" in\n"
+                           "  *' push '*' canon/main:main '*) \"$OTTO_TEST_REAL_GIT\" \"$@\" || exit $?; "
+                           "printf done > \"$OTTO_TEST_PUSH_DONE\"; sleep 600 ;;\n"
+                           "esac\nexec \"$OTTO_TEST_REAL_GIT\" \"$@\"\n")
+        standin.chmod(0o755)
+        self.env["OTTO_TEST_REAL_GIT"] = real_git
+        self.env["OTTO_TEST_PUSH_DONE"] = str(pushed)
+        proc = subprocess.Popen(["bash", str(BOOT / "land.sh"), "A"], env=self.env,
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            while not pushed.exists() and proc.poll() is None:
+                pass
+            if proc.poll() is not None:
+                self.fail("gate exited before the remote accepted its merge:\n" + "".join(proc.communicate()))
+            remote_head = sh([real_git, "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
+            self.assertEqual(remote_head, self.head())
+        finally:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+        self.assertTrue((self.labs / "A").exists())
+        standin.unlink()
+
+        recovered = self.land("B")
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+        self.assertFalse((self.labs / "A").exists())
+        self.assertFalse(sh([real_git, "branch", "--list", "lab/A"], cwd=self.repo).stdout.strip())
+        tree = sh([real_git, "ls-tree", "-r", "--name-only", "main"], cwd=self.remote).stdout
+        self.assertIn("a.txt", tree)
+        self.assertIn("b.txt", tree)
+
+    def test_cleanup_retries_branch_only_with_exact_checked_parent(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        landed = self.land("A")
+        self.assertEqual(landed.returncode, 0, landed.stdout + landed.stderr)
+        merge = self.head()
+        checked = sh(["git", "rev-parse", "main^2"], cwd=self.remote).stdout.strip()
+        sh(["git", "branch", "lab/A", self.base], cwd=self.repo, env=self.env)
+        wrong = sh(["bash", str(BOOT / "otto-lab.sh"), "remove", "A", merge], env=self.env, check=False)
+        self.assertNotEqual(wrong.returncode, 0, wrong.stdout + wrong.stderr)
+        self.assertTrue(sh(["git", "branch", "--list", "lab/A"], cwd=self.repo).stdout.strip())
+        sh(["git", "branch", "-f", "lab/A", checked], cwd=self.repo, env=self.env)
+        removed = sh(["bash", str(BOOT / "otto-lab.sh"), "remove", "A", merge], env=self.env)
+        self.assertIn("deleted lab/A", removed.stdout)
+        self.assertFalse(sh(["git", "branch", "--list", "lab/A"], cwd=self.repo).stdout.strip())
+
+    def test_killed_gate_releases_lock_and_live_gate_is_excluded(self):
+        self.lab("A", {"a.txt": "checked A\n"})
+        self.lab("B", {"b.txt": "checked B\n"})
+        started = self.tmp / "check-started"
+        check = "%s -c \"open('%s','w').close(); import time; time.sleep(600)\"" % (sys.executable, started)
+        proc = subprocess.Popen(["bash", str(BOOT / "land.sh"), "A", "--check", check], env=self.env,
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            while not started.exists() and proc.poll() is None:
+                pass
+            if proc.poll() is not None:
+                self.fail("land.sh ended before its check ran:\n" + "".join(proc.communicate()))
+            live = self.land("B")
+            self.assertNotEqual(live.returncode, 0, live.stdout + live.stderr)
+            self.assertIn("another landing is running", live.stdout + live.stderr)
+        finally:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+        recovered = self.land("B")
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
 
     def test_brief_check_ignores_text_after_closing_backtick(self):
         self.lab("T29", {"note.txt": "x\n"})
@@ -407,6 +589,17 @@ class LandGate(Scratch):
         sh(["git", "push", "-q", "origin", "HEAD:main"], cwd=other, env=self.env)
         self.lab("T8", {"src/otto/extra.py": "X = 1\n"})
         self.assertRefused(self.land("T8"), "T8", "reconcile first")
+
+    def test_remote_behind_base_is_refused_before_merge(self):
+        remote_before = sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
+        self.write(self.repo, "local-only.txt", "not remotely reconciled\n")
+        self.commit(self.repo, "local only")
+        self.start()
+        self.lab("T8C", {"checked.txt": "checked\n"})
+
+        self.assertRefused(self.land("T8C"), "T8C", "reconcile first")
+        remote_after = sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
+        self.assertEqual(remote_after, remote_before)
 
     def test_added_regression_test_passing_on_base_warns(self):
         self.lab("T9", {"tests/test_new.py": "def test_ok():\n    assert True\n"})
