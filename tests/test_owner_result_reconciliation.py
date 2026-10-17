@@ -89,12 +89,14 @@ class OwnerResultReconciliationTests(unittest.TestCase):
             self.assertEqual(started.state, OperationState.STARTED)
             store.close()
             store = Store.open(path, authority="owner")
-            self.addCleanup(store.close)
-            recovered = NativeEffectLedger(store, actor)
-            self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
-            with self.assertRaises(UnknownOutcomeError):
-                recovered.begin(responsibility, "f" * 64)
-            self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+            try:
+                recovered = NativeEffectLedger(store, actor)
+                self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+                with self.assertRaises(UnknownOutcomeError):
+                    recovered.begin(responsibility, "f" * 64)
+                self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+            finally:
+                store.close()
 
     def test_exact_retained_success_reconciles_without_provider_retry(self):
         capture = FixtureCapture()
