@@ -157,3 +157,4 @@ The audit also names D14 placement: fleet custody mechanisms stay in Herzchen. P
 ### Correction merge log
 
 - 2026-10-17 21:58 UTC | PL1-BIRTH | merged `95fcd426999ab7d53b616c4b7a7a049228bd2f48` | +266/-55 | manager focused custody regressions 8 passed; worker focused selection 12 passed | Astra found stale ps/kernel PID-lifetime binding; fixed with kernel parent/group consistency and regressions, then Astra found no remaining defect. The unchanged setsid escapee acceptance test still needs the gate because `/bin/ps` is denied.
+- 2026-10-17 22:01 UTC | PL3-CAPACITY | merged `5fef03a38e7c6269c64660c295ccea594c6944c4` | +59/-13 | capacity unit regressions 3 passed; worker-custody regression 1 passed | Astra found no defect. The two original capacity integration tests remain unchanged but need the socket gate (`EPERM` during shared fixture setup).
