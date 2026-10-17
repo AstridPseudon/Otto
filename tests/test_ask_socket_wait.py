@@ -71,35 +71,79 @@ def test_otto_wait_reports_owner_down_and_restart_event_when_socket_is_gone(tmp_
 
 
 def test_active_otto_wait_is_released_with_owner_down_event_on_drain():
-    assignment = {"authority": "a", "kind": "work.assignment", "id": "x", "revision": "r1"}
-    server = SimpleNamespace(
-        state={"asking_waits": {"issue": {"wait_ref": {
-            "authority": "a", "kind": "work.wait", "id": "wait", "revision": "r1"}}}},
-        store=object(), portfolio=SimpleNamespace(_issue_loop=lambda: object()),
-    )
-    service = object.__new__(ManagerJourneyService)
-    service.server = server
-    service.host = SimpleNamespace(draining=True)
-    waiting = SimpleNamespace(
-        asking_assignment_ref=SimpleNamespace(to_dict=lambda: assignment), asking_generation=1,
-        asking_session_id="native", metadata={"asking_schedule_id": "schedule", "issue_id": "issue"},
-    )
-    page = SimpleNamespace(cursor="cursor-after-drain", events=(), status="timeout")
-    request = {"command": "wait-for-answer", "issue_id": "issue", "asking_schedule_id": "schedule",
-               "assignment_ref": assignment, "generation": 1, "native_session_id": "native",
-               "cursor": "cursor-before-drain", "timeout_seconds": 10.0}
-    context = {"assignment_ref": assignment, "generation": 1,
-               "occurrence_ref": {"schedule_id": "schedule"}, "native_session": {"id": "native"}}
-    decisions = SimpleNamespace(get_wait=lambda _ref: waiting)
-    cursor_reader = SimpleNamespace(wait=lambda *_args, **_kwargs: page)
-    with patch.object(ManagerJourneyService, "authorize_caller"), \
-         patch("herzchen.domains.work.decisions.DecisionsModule", return_value=decisions), \
-         patch("herzchen.fleet.runner.require_asking_session"), \
-         patch("herzchen.kernel.EventCursorReader", return_value=cursor_reader):
+    from tests import test_execution_application as owner_fixture
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.work.decisions import DecisionsModule
+
+    owner = owner_fixture.ExecutionApplicationTests()
+    owner.setUp()
+    try:
+        assignment, guide, mandate = owner.role_handles("manager", "manager", "native")
+        prepared = owner.app.prepare_role(role="manager", project_ref=owner.project.ref.to_dict(),
+            task_ref=owner.task.ref.to_dict(), assignment_ref=assignment.ref.to_dict(), generation=1,
+            mandate_ref=mandate, context_refs=(guide, mandate), request_key="ask-wait-real-due",
+            instruction="Wait for a decision", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="native")
+        schedule = prepared["schedule_id"]
+        issue_id = "issue-real-wait"
+        request = {"command": "wait-for-answer", "issue_id": issue_id,
+            "asking_schedule_id": schedule, "assignment_ref": assignment.ref.to_dict(),
+            "generation": 1, "native_session_id": "native", "cursor": None,
+            "timeout_seconds": 0.0}
+        waiting = DecisionsModule(owner.store, actor=owner.actor).record_wait(
+            owner.task.ref, missing_obligation="a decision", owner="manager",
+            awaited_ref=owner.task.ref, revisit_condition="when answered",
+            asking_assignment_ref=assignment.ref, asking_session_id="native", asking_generation=1,
+            metadata={"asking_schedule_id": schedule, "issue_id": issue_id},
+            logical_request_key="ask-wait-real-record")
+        stream = "report:" + assignment.ref.id
+        first_report = owner.owner.assignments.append_report(
+            assignment.ref, {"schema": "testpatch.report.v1", "sequence": "before-drain"},
+            expected_generation=1, logical_request_key="ask-wait-before-drain",
+            actor=owner.actor)
+        state = {"project_ref": owner.project.ref.to_dict(), "owner": "manager",
+            "manager": "manager", "assignment_ref": assignment.ref.to_dict(),
+            "manager_generation": 1, "task_refs": {"T1": owner.task.ref.to_dict()},
+            "asking_waits": {issue_id: {"wait_ref": waiting.ref.to_dict()}}}
+        server = SimpleNamespace(owner=owner.owner, portfolio=owner.app.portfolio, state=state,
+            store=owner.store, due_port=owner.port, _execution=lambda **_kwargs: owner.app,
+            _save_state=lambda: None)
+        host = SimpleNamespace(draining=True)
+        service = ManagerJourneyService(server=server, host=host,
+            run_path=owner.temporary.name, workspace=owner.temporary.name)
+        context = {"role": "manager", "principal": "manager",
+            "project_ref": owner.project.ref.to_dict(), "task_ref": owner.task.ref.to_dict(),
+            "assignment_ref": assignment.ref.to_dict(), "generation": 1,
+            "occurrence_ref": {"schedule_id": schedule}, "native_session": {"id": "native"}}
         result = service._wait_for_answer(request, context)
-    assert result["outcome"] == "owner_down"
-    assert result["owner_event"]["type"] == "owner-down"
-    assert result["cursor"] == "cursor-after-drain"
+        assert result["outcome"] == "owner_down"
+        assert result["owner_event"]["type"] == "owner-down"
+        assert isinstance(result["cursor"], str) and result["cursor"]
+
+        from herzchen.kernel import EventCursorReader, EventFilter
+        continuation = owner.owner.assignments.append_report(
+            assignment.ref, {"schema": "testpatch.report.v1", "sequence": "after-drain"},
+            expected_generation=1, logical_request_key="ask-wait-after-drain",
+            actor=owner.actor)
+        report_filter = EventFilter(event_types=("work.report.appended",))
+        page = EventCursorReader(owner.store).page(
+            stream, cursor=result["cursor"], event_filter=report_filter)
+        assert [event.subject for event in page.events] == [continuation.ref]
+        assert first_report.ref not in [event.subject for event in page.events]
+        next_page = EventCursorReader(owner.store).page(
+            stream, cursor=page.cursor, event_filter=report_filter)
+        assert next_page.events == (), "continuation replayed an already consumed report"
+
+        host.draining = False
+        foreign_context = {**context, "principal": "foreign-principal"}
+        try:
+            service._wait_for_answer(request, foreign_context)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("foreign asker principal passed owner authorization")
+    finally:
+        owner.doCleanups()
 
 
 def test_ask_wait_invalid_json_arguments_return_structured_errors():

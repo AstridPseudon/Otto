@@ -159,12 +159,26 @@ class OccurrenceContinuityTests(unittest.TestCase):
 
     def test_service_resume_reconciles_and_uses_shared_manager_readiness(self):
         host, service, schedule = self.service()
+        setup = {'schema': 'otto.operating-setup.v1', 'mode': 'manual',
+            'roles': {'manager': schedule},
+            'advisor_policy': {'mode': 'disabled', 'reason': 'Fixture owner'},
+            'acceptance_tasks': []}
+        adopted = self.f.app.compose_operating_setup(project_ref=self.f.project.ref.to_dict(),
+            operation='apply', setup=setup, request_key='continuity-ready-setup')
+        self.assertEqual(adopted['outcome'], 'applied', adopted)
         request = {'command': 'execution-control', 'operation': 'resume', 'schedule_id': schedule}
-        with patch.object(self.f.app, 'read_operating_setup', return_value={'ready': False}):
-            self.assertEqual(service(request)['outcome'], 'blocked')
+        due = self.f.port.read_due(schedule)
+        original_task = due['target']['task_ref']
+        due['target']['task_ref'] = {**original_task, 'revision': 'foreign-task-revision'}
+        self.f.port.save_due(schedule, due, request_id='continuity-pause-ready-setup',
+                             expected_version=due['version'])
+        self.assertEqual(service(request)['outcome'], 'blocked')
         self.assertEqual(self.f.provider.calls, [])
-        with patch.object(self.f.app, 'read_operating_setup', return_value={'ready': True}):
-            self.assertEqual(service(request)['outcome'], 'succeeded')
+        due = self.f.port.read_due(schedule)
+        due['target']['task_ref'] = original_task
+        self.f.port.save_due(schedule, due, request_id='continuity-resume-ready-setup',
+                             expected_version=due['version'])
+        self.assertEqual(service(request)['outcome'], 'succeeded')
         before = self.f.port.read_due(schedule)
         self.assertEqual(service(request)['outcome'], 'replayed')
         self.assertEqual(self.f.port.read_due(schedule), before)

@@ -129,74 +129,204 @@ finish("Manager turn %d: done." % turn)
 BRIEF_T1 = "# Brief: T1\n\nBuild the first outcome. Proof: tests pass.\n"
 
 
-class WorkerWorkspaceCompositionTests(unittest.TestCase):
+def _round_trip_task_revision(owner, task, actor, key):
+    historical = task
+    interim = owner.graph.revise(
+        historical.ref, title=historical.title + " interim",
+        base_revision=historical.ref.revision,
+        logical_request_key="testpatch-" + key + "-interim", actor=actor)
+    current = owner.graph.revise(
+        interim.ref, title=historical.title, base_revision=interim.ref.revision,
+        logical_request_key="testpatch-" + key + "-restore", actor=actor)
+    return historical, current
+
+
+class AssessmentHydrationCanaryTests(HostctlFixture):
+    def setUp(self):
+        # Keep the owner's Unix socket path below macOS's address limit.
+        # The default system temp root is too deep for the attached project.
+        previous_tempdir = tempfile.tempdir
+        tempfile.tempdir = "/private/tmp"
+        self.addCleanup(setattr, tempfile, "tempdir", previous_tempdir)
+        super().setUp()
+
+    def test_retained_criterion_without_t1_scope_is_rejected(self):
+        from hashlib import sha256
+
+        from herzchen.content import ContentDocument, ContentRevision
+        from herzchen.contracts import ResourceRef, TransactionContext
+        from herzchen.domains.assessment import AssessmentModule
+        from otto.portfolio.assessment import OttoAssessment
+
+        self._ready()
+
+        def check():
+            view = self.owner_service._attach(
+                "demo-run", host_kind="claude-code")
+            project = view.owner.graph.current(
+                ResourceRef.from_dict(view.state["project_ref"]))
+            t1 = ResourceRef.from_dict(view.state["task_refs"]["T1"])
+            t2 = ResourceRef.from_dict(view.state["task_refs"]["T2"])
+            actor = view.owner.owner_actor
+            historical_t1, current_t1 = _round_trip_task_revision(
+                view.owner, view.owner.graph.current(t1), actor, "canary")
+            assessment = OttoAssessment(
+                AssessmentModule(view.store, actor=actor), actor)
+            t2_scope = assessment.coverage(t2)["scopes"][0]
+            criterion = assessment.get_scope(
+                t2_scope["ref"]).criterion_refs[0]
+            self.assertNotIn(
+                criterion.to_dict(),
+                [ref for scope in assessment.coverage(current_t1.ref)["scopes"]
+                 for ref in scope["criteria"]])
+
+            row = next(row for row in view._documents(project.ref)
+                       if row["path"] == "run.json")
+            head = ResourceRef.from_dict(row["revision_ref"])
+            document = ContentDocument.from_dict(
+                view.store.get_identity(head).payload["document"])
+            run = json.loads(row["text"])
+            run["assessment_accounting"] = {
+                "kind": "owner_local_bookkeeping",
+                "purpose": "scope canary",
+                "local_only": True,
+                "pool_id": "scope-canary",
+                "capacity_units": 1,
+                "cumulative_allowance_units": 1,
+                "task_criterion_pairs": ["T1/C01"],
+            }
+            writer = view.binding.authenticated_actor(
+                view.config["hosts"]["claude-code"]["principal"])
+            key = "testpatch-scope-canary"
+            revision = ContentRevision(
+                document.ref, "rev-testpatch-canary", json.dumps(run),
+                writer, parent_revision=head.revision)
+            context = TransactionContext(
+                writer, key, sha256(key.encode()).hexdigest(),
+                expected_revision=head.revision)
+            view.owner.content.execute(
+                view.owner.content.build_append_revision(
+                    context, document, revision))
+
+            view.state["criterion_refs"] = {
+                "C01": criterion.to_dict()}
+            retained_tasks = json.loads(json.dumps(view.state["task_refs"]))
+            retained_tasks["T1"] = historical_t1.ref.to_dict()
+            view.state["task_refs"] = retained_tasks
+            with self.assertRaisesRegex(
+                    RuntimeError, "does not bind current owner records"):
+                view._hydrate_assessment_policy(project)
+            self.assertEqual(view.state["task_refs"], retained_tasks,
+                             "refusal must leave trusted task pins intact")
+
+        self.owner_service.call(check)
+
+
+class WorkerWorkspaceCompositionTests(HostctlFixture):
+    def setUp(self):
+        previous_tempdir = tempfile.tempdir
+        tempfile.tempdir = "/private/tmp"
+        self.addCleanup(setattr, tempfile, "tempdir", previous_tempdir)
+        super().setUp()
+
     def test_fresh_project_view_loads_owner_policy_and_exact_criterion_aliases(self):
-        from types import SimpleNamespace
-        from herzchen.contracts import ResourceRef
-        from otto.hostctl.serve import HostOwnerService
+        from hashlib import sha256
 
-        project = ResourceRef("owner", "work.project", "project-a", "project-r2")
-        prior_task = ResourceRef("owner", "work.task", "task-a", "task-r2")
-        task = ResourceRef("owner", "work.task", "task-a", "task-r3")
-        criterion = ResourceRef("owner", "assessment.criterion", "criterion-a", "criterion-r1")
-        identities = {ref.id: SimpleNamespace(ref=ref, payload=payload)
-                      for ref, payload in ((project, {"tasks": [prior_task.to_dict()]}),
-                                           (task, {"alias": "T1"}),
-                                           (criterion, {"definition": {"source_alias": "C01"}}))}
-        reader = SimpleNamespace(get_identity=lambda ref: identities.get(ref.id))
-        scope = SimpleNamespace(parent_obligation_ref=prior_task, criterion_refs=(criterion,))
-        assessed = SimpleNamespace(coverage=lambda parent: {"scopes": [{"ref": {"id": "scope-a"}}]
-                                   if parent.id == task.id else []},
-                                   get_scope=lambda _ref: scope)
-        service = object.__new__(HostOwnerService)
-        service.state = {"authority": "owner", "project_ref": project.to_dict(),
-                         "task_refs": {"T1": prior_task.to_dict()}, "manager": "manager"}
-        service.owner = SimpleNamespace(
-            binding=SimpleNamespace(authenticated_actor=lambda principal: principal),
-            graph=SimpleNamespace(reader=reader, current=lambda _ref: identities[project.id]),
-            assessment=lambda actor: assessed,
-            evidence_payload_resolver=object())
-        service.store = object()
-        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
-            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
-                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
-                "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
-                "task_criterion_pairs": ["T1/C01"]}})}]
+        from herzchen.content import ContentDocument, ContentRevision
+        from herzchen.contracts import ResourceRef, TransactionContext
+        from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
 
-        service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+        run_path = Path(self.bundle) / "run.json"
+        run = json.loads(run_path.read_text())
+        run["assessment_accounting"] = {
+            "kind": "owner_local_bookkeeping", "purpose": "local checks",
+            "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
+            "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
+            "task_criterion_pairs": ["T1/C01"],
+        }
+        run_path.write_text(json.dumps(run))
+        self._ready()
 
-        self.assertEqual(service.state["assessment_policy"]["scope_mode"], "check-accepted")
-        self.assertEqual(service.state["task_refs"], {"T1": task.to_dict()})
-        self.assertEqual(service.state["criterion_refs"], {"C01": criterion.to_dict()})
-        self.assertIsNone(service.assert_assessment_policy_current())
-        policy = __import__("otto.portfolio.local_assessment_policy", fromlist=["LocalAssessmentPolicy"])
-        parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
-        self.assertEqual(parsed.task_criterion_pairs, ((task, criterion),))
+        def check():
+            view = self.owner_service._attach("demo-run", host_kind="claude-code")
+            project = view.owner.graph.current(ResourceRef.from_dict(view.state["project_ref"]))
+            original_task = view.owner.graph.current(
+                ResourceRef.from_dict(view.state["task_refs"]["T1"]))
+            actor = view.owner.owner_actor
+            historical_task, expected_task = _round_trip_task_revision(
+                view.owner, original_task, actor, "positive")
+            assessment = view.owner.assessment(actor)
+            criterion = None
+            for scope_row in assessment.coverage(expected_task.ref)["scopes"]:
+                scope = assessment.get_scope(scope_row["ref"])
+                for candidate_ref in scope.criterion_refs:
+                    candidate = view.owner.graph.reader.get_identity(candidate_ref)
+                    definition = candidate.payload.get("definition") or {}
+                    if definition.get("source_alias") == "C01":
+                        criterion = candidate.ref
+            self.assertIsNotNone(criterion, "C01 must come from an independent owner scope record")
 
-        hydrated_state = json.loads(json.dumps(service.state))
-        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
-            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "changed owner policy",
-                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
-                "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
-                "task_criterion_pairs": ["T1/C01"]}})}]
-        with self.assertRaisesRegex(RuntimeError, "changed after owner view hydration"):
-            service.assert_assessment_policy_current()
-        self.assertEqual(service.state, hydrated_state, "freshness check must not mutate trusted service state")
+            # Simulate a retained view pinned to the real prior task revision.
+            view.state["task_refs"]["T1"] = historical_task.ref.to_dict()
+            view._hydrate_assessment_policy(project)
 
-        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
-            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
-                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
-                "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C01"]}})}]
-        service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
-        parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
-        self.assertEqual(parsed.scope_mode, "review-required")
+            self.assertEqual(view.state["task_refs"]["T1"], expected_task.ref.to_dict())
+            self.assertEqual(view.state["criterion_refs"]["C01"], criterion.to_dict())
+            self.assertEqual(
+                LocalAssessmentPolicy.from_run_config(
+                    view.state["assessment_policy"], state=view.state).task_criterion_pairs,
+                ((expected_task.ref, criterion),),
+            )
+            self.assertEqual(view.state["assessment_policy"]["scope_mode"], "check-accepted")
+            self.assertIsNone(view.assert_assessment_policy_current())
+            trusted = json.loads(json.dumps(view.state))
 
-        service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
-            "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
-                "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
-                "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C99"]}})}]
-        with self.assertRaisesRegex(RuntimeError, "does not bind current owner records"):
-            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+            def append_run(updated, suffix):
+                latest = next(row for row in view._documents(project.ref) if row["path"] == "run.json")
+                current_head = ResourceRef.from_dict(latest["revision_ref"])
+                current_document = ContentDocument.from_dict(
+                    view.store.get_identity(current_head).payload["document"])
+                current_writer = view.binding.authenticated_actor(
+                    view.config["hosts"]["claude-code"]["principal"])
+                request_key = "testpatch-policy-" + suffix
+                appended = ContentRevision(
+                    current_document.ref, "rev-testpatch-" + suffix, json.dumps(updated),
+                    current_writer, parent_revision=current_head.revision)
+                transaction = TransactionContext(
+                    current_writer, request_key, sha256(request_key.encode()).hexdigest(),
+                    expected_revision=current_head.revision)
+                view.owner.content.execute(view.owner.content.build_append_revision(
+                    transaction, current_document, appended))
+
+            changed = json.loads(next(
+                row for row in view._documents(project.ref) if row["path"] == "run.json")["text"])
+            changed["assessment_accounting"]["purpose"] = "changed owner policy"
+            append_run(changed, "freshness")
+            with self.assertRaisesRegex(RuntimeError, "changed after owner view hydration"):
+                view.assert_assessment_policy_current()
+            self.assertEqual(
+                view.state, trusted,
+                "freshness check must not mutate trusted service state")
+
+            changed.pop("assessment_accounting")
+            changed["assessment_accounting"] = {
+                "kind": "owner_local_bookkeeping", "purpose": "local checks", "local_only": True,
+                "pool_id": "fleet-checks", "capacity_units": 1, "cumulative_allowance_units": 1,
+                "task_criterion_pairs": ["T1/C01"],
+            }
+            append_run(changed, "default-mode")
+            view._hydrate_assessment_policy(project)
+            self.assertEqual(
+                LocalAssessmentPolicy.from_run_config(
+                    view.state["assessment_policy"], state=view.state).scope_mode,
+                "review-required")
+
+            changed["assessment_accounting"]["task_criterion_pairs"] = ["T1/C99"]
+            append_run(changed, "unknown-alias")
+            with self.assertRaisesRegex(RuntimeError, "does not bind current owner records"):
+                view._hydrate_assessment_policy(project)
+
+        self.owner_service.call(check)
 
     def _service(self, due, workspace):
         from types import SimpleNamespace

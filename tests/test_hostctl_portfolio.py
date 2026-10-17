@@ -56,10 +56,8 @@ class HostctlPortfolioTests(HostctlFixture):
             self.assertNotEqual(code, 0)
             self.assertEqual(blocked['error']['code'], 'project_readiness_blocked')
             materialize.assert_not_called()
-        # Setup adoption invokes unrelated OS preflight; materialization remains real.
-        with patch('otto.hostctl.cli._compose_setup', return_value={'outcome': 'test_prepared'}):
-            code, activated = self._ottoctl('project', 'activate', '--project', 'demo-run', '--worktree', self.worktree,
-                '--override-readiness', '--reason', 'Approved integration skeleton')
+        code, activated = self._ottoctl('project', 'activate', '--project', 'demo-run', '--worktree', self.worktree,
+            '--override-readiness', '--reason', 'Approved integration skeleton')
         self.assertEqual(code, 0, activated)
         self.assertEqual(activated['outcome'], 'prepared')
         self.assertEqual(activated['readiness']['outcome'], 'overridden')

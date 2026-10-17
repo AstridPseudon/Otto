@@ -263,6 +263,7 @@ class HostOwnerService:
             alias = current.payload.get("alias") or current.ref.id
             linked_tasks[alias] = current.ref.to_dict()
         prior_tasks = self.state.get("task_refs") or {}
+        task_refs = dict(prior_tasks)
         if linked_tasks:
             if set(linked_tasks) != set(prior_tasks):
                 raise RuntimeError("assessment task aliases differ from the current project task links")
@@ -272,15 +273,15 @@ class HostOwnerService:
                     raise RuntimeError("assessment task alias was remapped to another owner record")
             # A retained view can outlive task revisions; refresh exact pins
             # from the current project links before resolving policy aliases.
-            self.state["task_refs"] = linked_tasks
+            task_refs = linked_tasks
 
         actor = self.owner.binding.authenticated_actor(self.state["manager"])
         assessed = self.owner.assessment(actor)
-        missing_tasks = requested_tasks - set(self.state["task_refs"])
+        missing_tasks = requested_tasks - set(task_refs)
         if missing_tasks:
             raise RuntimeError("assessment policy names a task outside the exact current project")
         parents = [project_ref]
-        parents.extend(ResourceRef.from_dict(self.state["task_refs"][alias])
+        parents.extend(ResourceRef.from_dict(task_refs[alias])
                        for alias in sorted(requested_tasks))
         aliases: dict[str, dict[str, Any]] = {}
         registered_aliases: set[str] = set()
@@ -355,18 +356,20 @@ class HostOwnerService:
             except (TypeError, ValueError):
                 continue
             identity = self.owner.graph.reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
-            if identity is not None and identity.ref == ref:
+            if (identity is not None and identity.ref == ref
+                    and (ref.authority, ref.kind, ref.id) in scoped_criteria):
                 if alias in aliases and aliases[alias] != ref.to_dict():
                     raise RuntimeError("retained assessment criterion alias is ambiguous: " + str(alias))
                 aliases[alias] = ref.to_dict()
 
-        policy_state = {**self.state, "criterion_refs": aliases}
+        policy_state = {**self.state, "task_refs": task_refs, "criterion_refs": aliases}
         try:
             policy = LocalAssessmentPolicy.from_run_config(configured, state=policy_state)
             for task_ref, _criterion_ref in policy.task_criterion_pairs:
                 policy.validate_binding(project_ref, task_ref, self.owner.graph.reader)
         except Exception as exc:
             raise RuntimeError("canonical project assessment policy does not bind current owner records: " + str(exc)) from exc
+        self.state["task_refs"] = task_refs
         self.state["criterion_refs"] = aliases
         self.state["assessment_policy"] = dict(configured)
 
