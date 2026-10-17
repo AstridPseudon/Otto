@@ -1339,10 +1339,15 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
 
         portfolio = Portfolio()
         owner = SimpleNamespace(graph=Graph(), owner_actor=object(), evidence_payload_resolver=SimpleNamespace(),
+                                binding=SimpleNamespace(authenticated_actor=lambda actor: ("authenticated", actor)),
                                 assignments=SimpleNamespace(get=lambda ref: SimpleNamespace(ref=manager_ref)))
-        owner.evidence_payload_resolver.resolve = lambda ref, verify_full: {
-            "representation": "managed", "verification": "full-verified",
-            "actual_digest": evidence_digest, "manifest": {"byte_digest": evidence_digest}}
+        resolve_actors = []
+
+        def resolve(ref, *, actor, verify_full):  # the real resolver's signature: actor is required
+            resolve_actors.append(actor)
+            return {"representation": "managed", "verification": "full-verified",
+                    "actual_digest": evidence_digest, "manifest": {"byte_digest": evidence_digest}}
+        owner.evidence_payload_resolver.resolve = resolve
         server = SimpleNamespace(run_id="perch-stage2", owner=owner, store=object(), portfolio=portfolio,
                                  state={"assignment_ref": manager_ref.to_dict(), "manager": "perch-stage2-manager",
                                         "manager_generation": 1})
