@@ -1931,7 +1931,8 @@ class ManagerJourneyService:
         self.server._save_state()
 
     def _submit_worker(self, request: Mapping[str, Any], *, external_parent: Mapping[str, Any] | None = None,
-                       resource_assignment_ref: Mapping[str, Any] | None = None, read_only: bool = False) -> Mapping[str, Any]:
+                       resource_assignment_ref: Mapping[str, Any] | None = None, read_only: bool = False,
+                       automatic: bool = False, automatic_revision: str | None = None) -> Mapping[str, Any]:
         self.commands._authorize()
         if self.host._closing:
             return {"outcome": "held", "reason": "owner host is draining", "provider_called": False}
@@ -1952,6 +1953,21 @@ class ManagerJourneyService:
                 "message": "worker focus must describe 1..4000 characters of current intent"},
                 "provider_called": False, "effects_started": False, "retry": False,
                 "next_action": "Correct a new bounded intent with a distinct stable key. Pin the exact owned scope-manifest path and SHA instead of embedding a long file list; preserve this rejected receipt."}
+        prior = (state.get("workers") or {}).get(task)
+        if (not automatic and external_parent is None and isinstance(prior, Mapping)
+                and prior.get("automatic") is True and prior.get("schedule_id")):
+            from herzchen.domains.work.admission import admitted_revision
+            task_ref = ResourceRef.from_dict(state["task_refs"][task])
+            current = self.server.owner.graph.current(ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+            # The owner's routine pump has already prepared this task generation.
+            # A manager may inspect its exact retained handle, but a distinct
+            # manager request key cannot prepare a second provider occurrence.
+            if admitted_revision(current.payload) == prior.get("automatic_revision"):
+                return {**prior, "outcome": "retained", "provider_called": False,
+                        "retry_provider": False,
+                        "next_action": "read the retained worker occurrence; do not send a second worker"}
+        if automatic and (not isinstance(automatic_revision, str) or not automatic_revision):
+            raise ValueError("automatic worker requires its admitted task revision")
         from .run_config import read_run_config
         try:
             config = read_run_config(self.run_path)
@@ -2145,7 +2161,9 @@ class ManagerJourneyService:
                 history.append(dict(previous))
         state.setdefault("workers", {})[task] = {**prepared, "principal": principal,
                                                  "model": model, "reasoning": reasoning,
-                                                 "request_key": key, "submission": dict(request)}
+                                                 "request_key": key, "submission": dict(request),
+                                                 "automatic": automatic,
+                                                 "automatic_revision": automatic_revision}
         caller = _CALLER.get()
         if isinstance(caller, Mapping) and caller.get("role") == "manager":
             # The authenticated occurrence, never request JSON or old settled

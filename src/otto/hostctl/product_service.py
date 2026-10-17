@@ -306,9 +306,16 @@ class OwnerFleetRegistry:
         self.facade_server.start()
 
     def bind_dispatcher(self, dispatcher: Any) -> None:
-        """Bind the live owner dispatcher used as the sole assignment authority."""
+        """Bind routine selection and its live grants to the retained Due authority."""
         if not hasattr(dispatcher, "tokens") or not hasattr(dispatcher, "records"):
             raise TypeError("fleet dispatcher must expose tokens and retained records")
+        if self.records and dispatcher.tokens is not self.tokens:
+            raise PermissionError("existing worker grants require the same owner TokenBook")
+        for assignment, record in self.records.items():
+            prior = dispatcher.records.get(assignment)
+            if prior is not None and prior is not record:
+                raise PermissionError("dispatcher record conflicts with retained worker authority")
+            dispatcher.records[assignment] = record
         self.dispatcher = dispatcher
         self.tokens = dispatcher.tokens
         self.records = dispatcher.records
@@ -427,7 +434,7 @@ class OwnerFleetRegistry:
                                   for raw in linked) if isinstance(candidate, ResourceRef)):
             raise PermissionError("worker task is not linked by the current project")
         admitted = admitted_revision(payload)
-        if not isinstance(admitted, str) or admitted != current.ref.revision:
+        if not isinstance(admitted, str):
             raise PermissionError("worker task has no current admitted revision")
         metadata = payload.get("metadata_namespaces") if isinstance(payload, Mapping) else None
         plan = metadata.get("otto.plan") if isinstance(metadata, Mapping) else None
@@ -603,15 +610,16 @@ class OwnerFleetRegistry:
             raise PermissionError("worker Due task revision is stale")
         from herzchen.domains.work.admission import admitted_revision
         revision = admitted_revision(current.payload)
-        if not isinstance(revision, str) or revision != current.ref.revision:
+        if not isinstance(revision, str):
             raise PermissionError("worker task has no current admitted revision")
         with self._lock:
             record = self.records.get(assignment_id)
             due_key = (assignment_id, str(due.get("schedule_id") if isinstance(due, Mapping)
                                           else getattr(due, "schedule_id", "")))
             if record is None:
-                if dispatcher is not None:
-                    raise PermissionError("worker Due has no retained dispatch record")
+                # An authenticated manager may have prepared this occurrence before the
+                # routine selector saw it. The exact Due checks above remain the source
+                # of authority for that route; it shares the same grant ledger.
                 record = self._record_from_due(due, assignment_id, task_id, due_key)
             elif (record.state not in {"admitted", "launched", "unknown"}
                   or getattr(record, "role", None) != "worker"):
@@ -688,7 +696,7 @@ class OwnerFleetRegistry:
         if current.ref.revision != task_ref.get("revision"):
             raise PermissionError("worker Due task revision is stale")
         revision = admitted_revision(current.payload)
-        if not isinstance(revision, str) or revision != current.ref.revision:
+        if not isinstance(revision, str):
             raise PermissionError("worker task has no current admitted revision")
         existing_key = self._due_keys.get(due_key)
         if existing_key is not None:
@@ -714,11 +722,136 @@ class OwnerFleetRegistry:
     def settle_assignment(self, assignment_id: str) -> None:
         """Revoke a worker token after its owner landing has settled."""
         with self._lock:
+            if callable(getattr(self.dispatcher, "finish", None)):
+                self.dispatcher.finish(assignment_id)
+                return
             self.tokens.revoke(assignment_id)
             record = self.records.get(assignment_id)
             if record is not None:
                 record.state = "settled"
                 record.token = None
+
+
+def bind_automatic_dispatch(host: Any, registry: OwnerFleetRegistry, views: Mapping[str, Any]) -> Any:
+    """Select admitted project tasks on the serialized owner capacity pump."""
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.work.admission import admitted_revision
+    from herzchen.domains.work.readiness import ready as work_ready
+    from herzchen.fleet.dispatch import DispatchError, FleetDispatcher
+    from otto.agents.claude_cli import TOOL_SPECS
+    from otto.portfolio.dependencies import PortfolioDependencies
+
+    owner = registry.owner
+    dependencies = PortfolioDependencies(owner.graph, owner.store.consumer(),
+                    actor=owner.owner_actor, owner_actor=owner.owner_actor)
+
+    def current(task: Any, **_context: Any) -> Any:
+        return owner.graph.current(ResourceRef(task.ref.authority, "work.task", task.ref.id))
+
+    def plan(task: Any) -> Mapping[str, Any]:
+        payload = task.payload
+        namespaces = payload.get("metadata_namespaces") if isinstance(payload, Mapping) else None
+        value = namespaces.get("otto.plan") if isinstance(namespaces, Mapping) else None
+        return value if isinstance(value, Mapping) else {}
+
+    def request_key(task: Any) -> str:
+        project = task.payload["project_ref"]
+        revision = admitted_revision(task.payload)
+        identity = {field: project[field] for field in ("authority", "kind", "id")}
+        raw = json.dumps([identity, task.ref.id, revision], sort_keys=True, separators=(",", ":"))
+        return "autodispatch-" + hashlib.sha256(raw.encode()).hexdigest()
+
+    def assignment_id(task: Any) -> str:
+        key = request_key(task) + ":assign"
+        return "assignment-" + hashlib.sha256((task.ref.authority + ":" + key).encode()).hexdigest()[:28]
+
+    def candidates() -> list[Any]:
+        tasks = []
+        for view in tuple(views.values()):
+            state = view.server.state
+            for alias, raw in tuple(state.get("task_refs", {}).items()):
+                try:
+                    task = owner.graph.current(ResourceRef.from_dict(raw))
+                except (LookupError, ValueError, KeyError):
+                    continue
+                if task.ref.to_dict() != raw:
+                    view._refresh_refs()
+                    if view.server.state["task_refs"].get(alias) != task.ref.to_dict():
+                        continue
+                prior = (state.get("workers") or {}).get(alias)
+                if prior is not None and not isinstance(prior, Mapping):
+                    continue
+                if isinstance(prior, Mapping):
+                    schedule = prior.get("schedule_id")
+                    if not isinstance(schedule, str) or not schedule:
+                        continue
+                    due = view.server.due_port.read_due(schedule)
+                    previous_ref = ((due or {}).get("target") or {}).get("task_ref")
+                    try:
+                        previous = (owner.graph.reader.get_identity(ResourceRef.from_dict(previous_ref))
+                                    if isinstance(previous_ref, Mapping) else None)
+                    except (LookupError, ValueError, TypeError, KeyError):
+                        previous = None
+                    if (not due or due.get("completion_state") != "succeeded" or previous is None
+                            or admitted_revision(previous.payload) == admitted_revision(task.payload)):
+                        continue
+                if plan(task).get("route") in {"normal", "xhard"}:
+                    tasks.append(task)
+        return tasks
+
+    def ready(task: Any, **_context: Any) -> Any:
+        lifecycle = getattr(task, "lifecycle", None)
+        lifecycle = getattr(lifecycle, "value", lifecycle)
+        readiness = task.payload.get("readiness")
+        readiness_state = (readiness.get("state", readiness.get("status"))
+                           if isinstance(readiness, Mapping) else readiness)
+        if lifecycle in {"paused", "waiting"} or readiness_state in {"paused", "waiting"}:
+            return {"ready": False, "blockers": ["task is paused or waiting"]}
+        result = work_ready(task, read_record=lambda ref: owner.graph.current(ref),
+                            read_revision=lambda ref: owner.graph.reader.get_identity(ref),
+                            project_readiness=lambda ref: dependencies.readiness(ref, observe=False))
+        if not result["ready"]:
+            return result
+        project = task.payload.get("project_ref")
+        view = views.get(project.get("id")) if isinstance(project, Mapping) else None
+        if (view is None or task.ref.to_dict() not in view.server.state.get("task_refs", {}).values()
+                or plan(task).get("route") not in {"normal", "xhard"}):
+            return {"ready": False, "blockers": ["task has no current configured project worker route"]}
+        return result
+
+    def active_counts() -> tuple[int, int]:
+        active = list(host.capacity_holds().values())
+        active.extend(value["scope"] for value in host._executions.values() if value["running"])
+        managers = sum(scope["role"] == "manager" for scope in active)
+        return len(active) - managers, managers
+
+    def launch(task: Any, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        project = task.payload["project_ref"]
+        view = views[project["id"]]
+        aliases = [alias for alias, ref in view.server.state["task_refs"].items() if ref["id"] == task.ref.id]
+        if len(aliases) != 1:
+            raise DispatchError("task has no unique current project alias")
+        focus = (task.payload.get("fields", {}).get("instructions")
+                 or task.payload.get("outcome") or task.title)
+        if not isinstance(focus, str) or not focus.strip() or len(focus) > 4000:
+            raise DispatchError("task has no bounded worker intent")
+        result = view._submit_worker({"command": "run-worker", "task": aliases[0],
+            "route": plan(task)["route"], "principal": "worker-" + task.ref.id,
+            "request_key": request_key(task), "focus": focus}, automatic=True,
+            automatic_revision=admitted_revision(task.payload))
+        if (result.get("outcome") not in {"admitted", "prepared", "retained"}
+                or result.get("assignment_ref", {}).get("id") != context["assignment"]):
+            raise DispatchError("owner worker preparation did not retain the selected assignment")
+        return result
+
+    dispatcher = FleetDispatcher(host.capacity, registry.tokens, ready=ready,
+        role_for=lambda _task: "worker", policy_for=lambda _role: host.capacity.policy,
+        active_counts=active_counts, make_spec=None, launch=launch,
+        mcp_server_name="otto", mcp_tools=tuple(spec.name for spec in TOOL_SPECS), assignment_id=assignment_id,
+        read_current=current)
+    registry.bind_dispatcher(dispatcher)
+    host.dispatch_pump = lambda: dispatcher.dispatch_ready(candidates())
+    return dispatcher
 
 
 def _source_next_append(store: Any) -> Optional[int]:
@@ -916,6 +1049,8 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         for run_id, record, kind in resolved:
             checkpoint('view-' + run_id)
             build_view(run_id, record, kind)
+
+        bind_automatic_dispatch(host, fleet_registry, views)
 
         checkpoint('router-install')
         relay = SharedLaneRelay(home, host)

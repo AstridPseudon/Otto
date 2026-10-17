@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from herzchen.contracts import ResourceRef
+from herzchen.domains.work.admission import authoring_stamp
 from herzchen.domains.assessment import AssessmentModule
 from herzchen.domains.work import WorkGraph
 from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
@@ -1007,6 +1008,32 @@ class ManagerJourneyWorkerWorkspaceTests(unittest.TestCase):
         service._execution = lambda **options: (captured.append(options) or worker_app)
         service._execution_control({"command": "execution-control", "operation": "startup"})
         self.assertEqual(captured[0]["evidence_id"], "worker-schedule")
+
+class AutomaticWorkerRetentionTests(unittest.TestCase):
+    def test_manager_run_worker_retains_automatic_task_occurrence(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None,
+                                           _key=lambda request: request["request_key"])
+        service.host = SimpleNamespace(_closing=False)
+        payload = {"kind": "task", "fields": {"check": ["true"]}}
+        payload["metadata_namespaces"] = {"work.admission": authoring_stamp(
+            "admitted-revision", payload, "owner")}
+        service.server = SimpleNamespace(state={
+            "task_refs": {"J01": {"authority": "fixture", "kind": "work.task", "id": "task-j01"}},
+            "workers": {"J01": {"automatic": True, "schedule_id": "worker-auto-j01",
+                                "automatic_revision": "admitted-revision",
+                                "assignment_ref": {"id": "assignment-auto-j01"},
+                                "retained_handle": "start-auto-j01", "principal": "worker-J01"}}},
+            owner=SimpleNamespace(graph=SimpleNamespace(current=lambda _ref: SimpleNamespace(payload=payload))))
+        request = {"command": "run-worker", "task": "J01", "route": "xhard",
+                   "principal": "manager-selected-worker", "request_key": "different-manager-key",
+                   "focus": "Investigate the ready task"}
+        result = service._submit_worker(request)
+        self.assertEqual(result["outcome"], "retained")
+        self.assertEqual(result["schedule_id"], "worker-auto-j01")
+        self.assertEqual(result["retained_handle"], "start-auto-j01")
+        self.assertFalse(result["provider_called"])
+
 
 if __name__ == "__main__":
     unittest.main()
