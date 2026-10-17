@@ -1297,6 +1297,60 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.launcher)
 
+    def test_stage_two_waits_keep_polling_until_evidence_or_owner_exit(self):
+        import re
+        import shlex
+
+        shell = PERCH.read_text(encoding="utf-8")
+        functions = {}
+        for name in ("stage2_owner_alive", "stage2_wait_marker", "stage2_wait_owner_capacity",
+                     "stage2_capacity_turn"):
+            match = re.search(r"(?ms)^" + name + r"\(\) \{[^\n]*\n.*?^\}\n", shell)
+            self.assertIsNotNone(match, name)
+            functions[name] = match.group()
+        for name in ("stage2_wait_marker", "stage2_wait_owner_capacity", "stage2_capacity_turn"):
+            self.assertIn("while :; do", functions[name])
+            self.assertIn("sleep 0.25", functions[name])
+            self.assertNotIn("deadline", functions[name])
+            self.assertNotIn("date +%s", functions[name])
+
+        cases = (
+            ("stage2_wait_marker", "stage2_wait_marker worker-A", "worker-A PID marker"),
+            ("stage2_wait_owner_capacity", 'stage2_wait_owner_capacity "$RAW/capacity.json" 2 1',
+             "capacity status showed active=2 manager=1"),
+            ("stage2_capacity_turn", "stage2_capacity_turn", "either ready worker A/B PID marker"),
+        )
+        for name, call, missing in cases:
+            with self.subTest(wait=name):
+                root = short_temp_root()
+                self.addCleanup(shutil.rmtree, root, True)
+                raw = root / "raw"
+                raw.mkdir()
+                (root / "canary").mkdir()
+                (root / "staging" / "run").mkdir(parents=True)
+                (root / "staging" / "run" / "staging.pid").write_text("4242\nrecorded start\n")
+                (raw / "owner-live").touch()
+                script = "\n".join((
+                    "set -euo pipefail",
+                    "RAW=" + shlex.quote(str(raw)),
+                    "STAGE_ROOT=" + shlex.quote(str(root / "staging")),
+                    "CANARY_DIR=" + shlex.quote(str(root / "canary")),
+                    "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
+                    "PY=" + shlex.quote(PY),
+                    "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+                    'ps() { [ -f "$RAW/owner-live" ] || return 0; case "$*" in',
+                    '  *lstart=*) echo "recorded start" ;; *stat=*) echo S ;; esac; }',
+                    'cold_client() { printf "%s\\n" \'{"native_capacity":{"active_or_uncertain":0},"manager_turns":{"active":0}}\'; }',
+                    'sleep() { [ "$1" = 0.25 ] || exit 91;',
+                    '  n=$(cat "$RAW/polls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/polls";',
+                    '  [ "$n" -lt 3 ] || rm "$RAW/owner-live"; }',
+                    functions["stage2_owner_alive"], functions[name], call,
+                ))
+                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((raw / "polls").read_text(encoding="utf-8").strip(), "3")
+                self.assertIn(missing, (raw / "stage2-setup-errors.txt").read_text(encoding="utf-8"))
+
     def test_fake_worker_has_native_entrypoint_and_executes_python_turn(self):
         root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)

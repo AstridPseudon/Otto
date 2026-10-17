@@ -348,15 +348,29 @@ stage2_admit_tasks() {
   return 0
 }
 
+stage2_owner_alive() {
+  local record="$STAGE_ROOT/run/staging.pid" pid start now state
+  [ -f "$record" ] || return 1
+  pid="$(sed -n 1p "$record")"
+  start="$(sed -n 2p "$record")"
+  case "$pid" in *[!0-9]*|"") return 1 ;; esac
+  [ -n "$start" ] || return 1
+  now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true)"
+  state="$(ps -o stat= -p "$pid" 2>/dev/null | sed 's/^ *//' || true)"
+  [ "$now" = "$start" ] && [ -n "$state" ] && [ "${state:0:1}" != Z ]
+}
+
 stage2_wait_marker() {  # NAME
-  local marker="" deadline=$(( $(date +%s) + 90 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
+  local marker=""
+  while :; do
     marker="$(find "$CANARY_DIR" -name ".perch-$1.pid" -print -quit 2>/dev/null || true)"
     [ -z "$marker" ] || { printf '%s\n' "$marker"; return 0; }
+    if ! stage2_owner_alive; then
+      echo "owner exited before the $1 PID marker appeared" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     sleep 0.25
   done
-  echo "owner never started the $1 fake turn" >> "$RAW/stage2-setup-errors.txt"
-  return 1
 }
 
 stage2_release_marker() {  # PATH
@@ -370,30 +384,34 @@ stage2_release_marker() {  # PATH
 }
 
 stage2_wait_owner_capacity() {  # RECEIPT ACTIVE MANAGERS
-  local deadline=$(( $(date +%s) + 30 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    cold_client service status > "$1" 2>> "$RAW/stage2-setup-errors.txt" || return 1
-    if "$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1]));
+  while :; do
+    if cold_client service status > "$1" 2>> "$RAW/stage2-setup-errors.txt" && \
+        "$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1]));
 assert (v.get("native_capacity") or {}).get("active_or_uncertain") == int(sys.argv[2]);
 assert (v.get("manager_turns") or {}).get("active") == int(sys.argv[3])' "$1" "$2" "$3" \
         > /dev/null 2>&1; then
       return 0
     fi
+    if ! stage2_owner_alive; then
+      echo "owner exited before capacity status showed active=$2 manager=$3 in $1" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     sleep 0.25
   done
-  echo "owner capacity never reached active=$2 manager=$3" >> "$RAW/stage2-setup-errors.txt"
-  return 1
 }
 
 stage2_capacity_turn() {
-  local host first="" second manager schedule deadline=$(( $(date +%s) + 90 ))
+  local host first="" second manager schedule
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
-  while [ "$(date +%s)" -lt "$deadline" ]; do
+  while :; do
     first="$(find "$CANARY_DIR" \( -name .perch-worker-A.pid -o -name .perch-worker-B.pid \) -print -quit 2>/dev/null || true)"
     [ -z "$first" ] || break
+    if ! stage2_owner_alive; then
+      echo "owner exited before either ready worker A/B PID marker appeared" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     sleep 0.25
   done
-  [ -n "$first" ] || { echo "neither ready worker launched" >> "$RAW/stage2-setup-errors.txt"; return 1; }
   schedule="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["operating_setup"]["setup"]["roles"]["manager"])' \
     "$RAW/stage2-activation.json")" || return 1
   stage2_host_client --host "$host" --wait-seconds 0 manager --project perch-stage2 \
