@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from otto.hostctl.service import OwnerService
+from otto.hostctl.service import OwnerService, with_lane_advice
 from otto.portfolio.execution_host import ExecutionHost
 
 
@@ -19,6 +19,15 @@ def config(home, limit=3):
 
 
 class OwnerServiceRoutingTests(unittest.TestCase):
+    def test_nonrunning_status_explains_closure_and_owner_restart_command(self):
+        status = with_lane_advice({
+            "outcome": "closed", "state": "closed", "service_home": "/srv/otto",
+            "closure": {"reason": "planned upgrade", "expected_return": "10 minutes"},
+        }, lane="owner", service_home=Path("/srv/otto"))
+        self.assertIn("planned upgrade", status["reason"])
+        self.assertEqual(status["restart_command"], "ottoctl --home /srv/otto service run")
+        self.assertIn(status["restart_command"], status["next_action"])
+
     def test_detach_refreshes_activity_and_fences_later_turn_admission(self):
         with tempfile.TemporaryDirectory() as directory:
             service = OwnerService(config(directory))

@@ -845,8 +845,9 @@ def _await(lane: Path, request: Mapping[str, Any], wait_seconds: float,
                                   service_home=lane.parent if lane_kind == "owner" else None)
         return {"outcome": "unavailable", "provider_called": False,
                 "error": {"code": "owner_service_not_running", "message": "no running owner service answers this lane "
-                          "(status: " + status["outcome"] + ")"},
-                "service_status": {k: status.get(k) for k in ("outcome", "generation", "heartbeat_at", "holder")},
+                          "(status: " + status["outcome"] + "; " + advice.get("reason", status["outcome"]) + ")"},
+                "service_status": {k: status.get(k) for k in
+                                   ("outcome", "generation", "heartbeat_at", "holder", "closure", "reason")},
                 "next_action": advice.get("next_action", "check `ottoctl service status`")}
     token = lanes.submit(lane, request)
     return lanes.wait(lane, token, timeout_seconds=wait_seconds)
@@ -1023,6 +1024,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         print(json_out(result))
     outcome = result.get("outcome") if isinstance(result, Mapping) else None
+    if (key == ("service", "run") and outcome == "closed"
+            and result.get("owner_exit_requested") is not True):
+        return EXIT_ERROR
     return EXIT_UNAVAILABLE if outcome == "unavailable" else EXIT_ERROR if outcome in {"error", "blocked"} else EXIT_OK
 
 

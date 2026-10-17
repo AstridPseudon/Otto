@@ -252,6 +252,10 @@ class ProjectOwnerService(OwnerService):
                 value = copy.deepcopy(dict(cached))
             value['state'] = 'draining'
             value['outcome'] = 'draining'
+            from .service import _requested_closure
+            closure = _requested_closure(self.home)
+            if closure:
+                value['closure'] = closure
             value['shutdown_phase'] = 'draining'
             value['draining_at'] = self._now_status_time()
             self._draining = True
@@ -450,6 +454,10 @@ class ProjectOwnerService(OwnerService):
 
     def _status(self, state: str = 'serving') -> dict[str, Any]:
         value = super()._status(state)
+        from .service import _requested_closure
+        closure = _requested_closure(self.home)
+        if closure:
+            value['closure'] = closure
         policy = self.shared_host.capacity.policy
         active = {**self.shared_host.capacity_holds(), **{
             key: item['scope'] for key, item in self.shared_host._executions.items() if item['running']}}

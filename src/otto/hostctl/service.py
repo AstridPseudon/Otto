@@ -73,17 +73,37 @@ def with_lane_advice(status: Mapping[str, Any], *, lane: str, owner_actor: Optio
     result = dict(status)
     actor = owner_actor or (status.get("holder") or {}).get("owner_actor") or "owner"
     outcome = status.get("outcome")
+    closure = status.get("closure") if isinstance(status.get("closure"), Mapping) else {}
+    reason = closure.get("reason") if isinstance(closure.get("reason"), str) else None
+    if outcome in {"closed", "draining", "stale", "not_running", "unavailable"}:
+        result["reason"] = reason or {
+            "closed": "the owner service closed",
+            "draining": "the owner service is draining",
+            "stale": "the owner process is not responding",
+            "not_running": "the owner service is not running",
+            "unavailable": str(status.get("reason") or "owner status is unavailable"),
+        }.get(outcome, "the owner service is not running")
+        restart_home = service_home or (Path(str(status["service_home"])) if status.get("service_home") else None)
+        if lane == "owner" and restart_home is not None:
+            result["restart_command"] = "ottoctl --home " + str(restart_home) + " service run"
+        elif lane == "client" and restart_home is not None:
+            result["restart_command"] = "ottoctl --home " + str(restart_home) + " service run"
     if lane == "client":
         result["owner_actor"] = actor
         if outcome in {"closed", "draining", "stale", "not_running", "unavailable"}:
-            result["next_action"] = ("the owner service is owned by " + actor + "; wait and check `ottoctl service status`; "
-                                     "do not start or restart the service from this client lane")
+            guidance = ("the owner service is owned by " + actor + "; ask that owner to restore it and check "
+                        "`ottoctl service status`")
+            if result.get("restart_command"):
+                guidance += "; restart command: `" + result["restart_command"] + "`"
+            result["next_action"] = guidance
     elif lane == "owner":
         if outcome == "draining":
             result["next_action"] = "wait for the owner service to finish draining; check `ottoctl service status`"
-        elif outcome in {"closed", "stale", "not_running"}:
+        elif outcome in {"closed", "stale", "not_running", "unavailable"}:
             home = str(service_home or "<service home>")
-            result["next_action"] = "the owner starts the one service: `ottoctl --home " + home + " service run`"
+            command = "ottoctl --home " + home + " service run"
+            result["restart_command"] = command
+            result["next_action"] = "the owner starts the one service: `" + command + "`"
     return result
 
 
@@ -209,7 +229,8 @@ class OwnerService:
                 self._project_sessions.clear()
                 self._publish(state="closed")
         return {"outcome": "closed", "generation": self.generation, "requests_served": self.served,
-                "relays_open": len(self.relays), "provider_called": False}
+                "relays_open": len(self.relays), "owner_exit_requested": stop.exists(),
+                "closure": _requested_closure(self.home), "provider_called": False}
 
     def _next_generation(self) -> int:
         path = self.home / "run" / "generation"
@@ -670,6 +691,7 @@ class OwnerService:
                 "queued": sum(self._turn_queued.values()), "queued_by_project": dict(self._turn_queued),
                 "limit": self.max_active_manager_turns}
         value = {"schema": STATUS_SCHEMA, "state": state, "outcome": "serving" if state == "serving" else state,
+                "service_home": str(self.home),
                 "holder": {"pid": os.getpid(), "owner_actor": self.config["owner"]["actor"],
                            "started_at": self.started_at},
                 "generation": self.generation, "heartbeat_at": _now(), "heartbeat_seconds": self.heartbeat_seconds,

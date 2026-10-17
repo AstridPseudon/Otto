@@ -1629,7 +1629,7 @@ def _exit_code(result: Any) -> int:
     if not isinstance(result, Mapping):
         return 1
     outcome = result.get("outcome")
-    if outcome in {"unsupported", "unavailable"}:
+    if outcome in {"unsupported", "unavailable", "owner_down"}:
         return 3
     if outcome in {"error", "failed"}:
         return 1

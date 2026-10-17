@@ -8,6 +8,7 @@ from pathlib import Path
 
 from otto.hostctl import lanes
 from otto.hostctl.portfolio import prepare_portfolio_request
+from otto.hostctl.cli import _await
 from otto.hostctl.service import OwnerService
 
 
@@ -17,6 +18,20 @@ def config(home):
 
 
 class OwnerSafeTests(unittest.TestCase):
+    def test_closed_owner_fails_client_fast_with_closure_and_restart_guidance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lane = lanes.private_dir(Path(directory) / "client-lane")
+            lanes.atomic_json(lane / lanes.STATUS_FILE, {
+                "state": "closed", "service_home": "/srv/otto",
+                "holder": {"owner_actor": "Ada"},
+                "closure": {"reason": "planned upgrade", "expected_return": "10 minutes"},
+            })
+            result = _await(lane, {"command": "whoami"}, 10, owner_actor="Ada")
+            self.assertEqual(result["outcome"], "unavailable")
+            self.assertEqual(result["service_status"]["closure"]["reason"], "planned upgrade")
+            self.assertIn("planned upgrade", result["error"]["message"])
+            self.assertIn("ottoctl --home", result["next_action"])
+
     def test_help_in_lane_request_never_stops_owner(self):
         with tempfile.TemporaryDirectory() as directory:
             service = OwnerService(config(directory), poll_seconds=0)
