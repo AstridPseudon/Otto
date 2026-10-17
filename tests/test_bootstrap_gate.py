@@ -348,6 +348,33 @@ class RunTaskRoute(Scratch):
         self.assertIn("sweep tests/test_named.py run 2/2", log)
 
 
+class GatedStages(Scratch):
+    """The gate runs only the stages in $OPS_DIR/stages-gated (default "0 1"), not "all": a stage
+    whose scenario can't run yet must not refuse every landing (17 Oct, PERCH2)."""
+
+    def stub_perch(self, task):
+        lab = self.lab(task, {"ops/bootstrap/staging.sh": "#!/bin/sh\n",
+                              "ops/bootstrap/perch.sh": 'echo "$@" >> "%s"\necho "perch: stage $1 report at %s/r.md"\n'
+                              % (self.tmp / "perch-args", self.tmp)})
+        (self.tmp / "r.md").write_text("staging tree sha %s\n" % sh(["git", "rev-parse", "HEAD"], cwd=lab).stdout.strip())
+        return lab
+
+    def test_default_runs_stages_0_and_1(self):
+        self.stub_perch("T14")
+        r = self.land("T14")
+        args = (self.tmp / "perch-args").read_text().split("\n") if (self.tmp / "perch-args").exists() else []
+        self.assertIn("0 --fake", args, r.stdout + r.stderr)
+        self.assertIn("1 --fake", args)
+        self.assertNotIn("all --fake", args)
+
+    def test_the_gated_list_is_the_programs(self):
+        (self.ops / "stages-gated").write_text("0\n")
+        self.stub_perch("T15")
+        self.land("T15")
+        args = [a for a in (self.tmp / "perch-args").read_text().split("\n") if a]
+        self.assertEqual(args, ["0 --fake"])
+
+
 class CheckPreexistingReds(Scratch):
     """A check that fails only on a test canon also fails lands, logging it as pre-existing; a check
     failure canon doesn't share still refuses (16 Oct: canon's manager-loop red refused three landings)."""

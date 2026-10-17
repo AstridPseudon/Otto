@@ -286,8 +286,14 @@ if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
   SHA="$(git -C "$LAB" rev-parse HEAD)"
   # perch restarts staging on OTTO_STAGING_REF itself. Until 16 Oct the gate passed OTTO_COMMIT, which
   # nothing reads, so staging ran BASE (STAGE0 F1); its reports now outlive the lab (F6).
-  ( cd "$LAB" && OTTO_STAGING_REF="$SHA" PERCH_OUT="$OTTO_REPO/ops/perch" bash "$ST/perch.sh" all --fake ) \
-    >> "$G/staging.log" 2>&1 || fail "perch.sh all --fake failed ($G/staging.log)"
+  # Only the stages that have passed gate a landing ($OPS_DIR/stages-gated, default "0 1"). A stage whose
+  # scenario can't run yet is the orchestrator's to run, and it must not refuse every landing (17 Oct:
+  # PERCH2's stage 2 canary refused PERCH2 itself). The orchestrator adds a stage once it passes.
+  GATED="$(cat "$OPS_DIR/stages-gated" 2>/dev/null || echo "0 1")"
+  for stage in $GATED; do
+    ( cd "$LAB" && OTTO_STAGING_REF="$SHA" PERCH_OUT="$OTTO_REPO/ops/perch" bash "$ST/perch.sh" "$stage" --fake ) \
+      >> "$G/staging.log" 2>&1 || fail "perch.sh $stage --fake failed ($G/staging.log)"
+  done
   for report in $(sed -n 's/^perch: stage .* report at //p' "$G/staging.log"); do
     grep -q "staging tree sha $SHA" "$report" \
       || fail "staging did not run the tested commit $SHA: $(grep -m1 'staging tree sha' "$report") ($report)"
