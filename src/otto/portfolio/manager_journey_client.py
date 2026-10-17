@@ -20,7 +20,7 @@ def requires_native_caller(command: str) -> bool:
     return command in {"whoami", "effective-context", "compact-read", "task-list-author", "run-worker",
                        "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
                        "report", "status", "show", "save", "answer", "route",
-                       "review-input", "finish-task", "finish-project",
+                       "review-input", "review-task", "finish-task", "finish-project",
                        "project-lifecycle-read", "commit", "request-help", "request-advice", "read-help", "resolve-help",
                        "worker-status", "worker-readiness", "manager-assessment", "manager-assessment-pool", "completion-gate",
                        "complete-task", "manager-continue", "execution-control", "operating-setup", "vision"}

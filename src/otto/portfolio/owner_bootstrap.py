@@ -994,25 +994,10 @@ class PortfolioOwnerBootstrap:
             return EvidenceReadGrant(self.owner_actor, actor, project, task, evidence)
 
         authorize()
-        assessment_module = AssessmentModule(self.store, actor=actor,
-            payload_resolver=self.evidence_payload_resolver,
-            evidence_read_grant_issuer=issue_evidence_read_grant)
-        # The manager is the assessment authority, while the owner grant is
-        # the custody authority for reading evidence. Keep those identities
-        # separate: a private project document may be valid review evidence
-        # even though the manager cannot read it through the document surface.
-        # The owner check remains scoped to this exact task and its project;
-        # manager assessment authorization below still gates every command.
-        from herzchen.command_ports import owner_local_engine
-        assessment_engine = owner_local_engine(assessment_module)
-        verify_as_owner = assessment_engine._verified_evidence
-
-        def verify_manager_evidence(refs, _manager_actor, parent, *, resolver=None):
-            return verify_as_owner(refs, self.owner_actor, parent, resolver=resolver)
-
-        assessment_engine._verified_evidence = verify_manager_evidence
         return ManagerAssessmentCommands(
-            assessment=OttoAssessment(assessment_module, actor),
+            assessment=OttoAssessment(AssessmentModule(self.store, actor=actor,
+                payload_resolver=self.evidence_payload_resolver,
+                evidence_read_grant_issuer=issue_evidence_read_grant), actor),
             reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
             generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
 
