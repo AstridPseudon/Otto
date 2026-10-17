@@ -434,11 +434,12 @@ class ServeTests(HostctlFixture):
         self.assertEqual(self.orchestrator("status")["outcome"], "ok")
         replay = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(replay.get("outcome"), "replayed", replay)
-        # Work the run produces after the manager started is still recorded in Otto.
+        # Files created in the source directory after registration are not mirrored into Otto.
         os.makedirs(os.path.join(self.bundle, "reviews"), exist_ok=True)
         Path(self.bundle, "reviews", "after-start.md").write_text("# A review written during the run\n")
-        code, synced = self._ottoctl("project", "sync-docs", "--project", "demo-run")
-        self.assertEqual((code, synced["outcome"], synced["recorded"]), (0, "synced", ["reviews/after-start.md"]), synced)
+        code, status = self._ottoctl("project", "status", "--project", "demo-run")
+        self.assertEqual(code, 0, status)
+        self.assertNotIn("reviews/after-start.md", {row["path"] for row in status["documents"]})
         code, schedules = self._ottoctl("schedules", "--project", "demo-run")
         checks = [row for row in schedules["schedules"] if row.get("purpose") == "orchestrator-check"]
         self.assertEqual([row["host_state"] for row in checks], ["paused", "paused"])

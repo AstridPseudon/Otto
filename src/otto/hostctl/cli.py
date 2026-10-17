@@ -418,6 +418,13 @@ def cmd_import_history(args: argparse.Namespace) -> Any:
     config = host_config.load(home)
     bundle = _client_bundle(args)
     run_id = bundle["run"].get("run_id") or Path(bundle["root"]).name
+    prior_path = receipt_path(home, "history-" + run_id)
+    try:
+        prior = json.loads(prior_path.read_text())
+    except (OSError, ValueError):
+        prior = None
+    if isinstance(prior, Mapping) and prior.get("outcome") == "imported_history" and prior.get("run_id") == run_id:
+        return prior
     entry = _host(args, config)
     computed = plan(bundle, profile=model_profile(entry["model_profile"]), manager_principal=run_id + "-manager",
                     worktree=str(Path(bundle["root"]).parent), tool_entrypoint=str(home / "bin" / "ottoctl"))
