@@ -40,7 +40,7 @@ The focused manager-brief projection regression failed before implementation on 
 
 ### SL1 Astra review
 
-Astra reviewed `4dee01c..task/SL1` before merge and found no concrete defects. It confirmed the brief projection uses the canonical adopted revision, the new replacement regression covers newer drafts and foreign responsibility directions, the removed adapter has no retained production caller, DueRecord delivery/wake and canonical resolution are unchanged, and the SL4 removals remain absent. The manager accepted the review without additional changes. 
+Astra reviewed `4dee01c..task/SL1` before merge and found no concrete defects. It confirmed the brief projection uses the canonical adopted revision, the new replacement regression covers newer drafts and foreign responsibility directions, the removed adapter has no retained production caller, DueRecord delivery/wake and canonical resolution are unchanged, and the SL4 removals remain absent. The manager accepted the review without additional changes.
 
 ## SL8 worker evidence
 
