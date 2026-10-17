@@ -46,8 +46,10 @@ class RolePackSelectorTests(unittest.TestCase):
     def test_role_introduction_uses_adopted_override_and_pack_brief(self):
         from otto.portfolio.role_context import effective_context_projection, role_introduction
         config_ref = {"authority": "local", "kind": "dat.content.document", "id": "cfg", "revision": "rev-1"}
-        configuration = self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
-            "role_bindings": {}, "role_pack": self.native_role_pin(),
+        configuration = self.adopted_configuration({"schema": "otto.role-configuration.v1",
+            "roles": {"manager_slot": {"model": "gpt-5", "reasoning": "high"}},
+            "role_bindings": {"manager": "manager_slot"}, "role_pack": self.native_role_pin(),
+            "profile_pack": {"pack_id": "profiles", "source_revision": "abc"},
             "role_policies": {"manager": "Adopted project policy"},
             "tool_entrypoints": {"manager": "adopted-project-tool"}})
         configuration["ref"] = config_ref
@@ -78,8 +80,30 @@ class RolePackSelectorTests(unittest.TestCase):
                          introduction["responsibility"])
         self.assertEqual(direct_context["remit"]["responsibility"], introduction["responsibility"])
         self.assertEqual(introduction["role_pack"]["pack_id"], "otto-roles")
+        sources = introduction["effective_context"]["effective_sources"]
+        self.assertEqual(sources["responsibility"], introduction["role_pack"])
+        self.assertEqual(sources["operating_guidance"], introduction["role_pack"])
+        self.assertEqual(sources["available_tools"], introduction["role_pack"])
+        self.assertEqual(sources["tool_entrypoint"], config_ref)
+        self.assertEqual(sources["selected_policy"], config_ref)
+        self.assertEqual(sources["model"], config_ref)
+        self.assertEqual(sources["reasoning"], config_ref)
+        self.assertEqual(sources["profile"], {"adopted_configuration": config_ref,
+                                               "profile_pack": {"pack_id": "profiles", "source_revision": "abc"}})
+        self.assertEqual(introduction["effective_context"]["effective_execution"], {
+            "model": "gpt-5", "reasoning": "high",
+            "profile_pack": {"pack_id": "profiles", "source_revision": "abc"}, "source": config_ref})
         self.assertEqual(introduction["effective_context"]["effective_manager_brief"]["base_manager_brief"]["schema"],
                          "otto.base-manager-brief.v1")
+
+    def test_missing_selected_role_source_refuses_with_recovery_action(self):
+        from otto.portfolio.role_context import RoleContextError, _role_pack
+        with patch("herzchen.packs.authoring.read_managed_pack", side_effect=ValueError("gone")):
+            with self.assertRaises(RoleContextError) as caught:
+                _role_pack(self.adopted_configuration({"schema": "otto.role-configuration.v1",
+                    "roles": {}, "role_bindings": {}, "role_pack": {"pack_id": "missing"}}), "manager")
+        self.assertIn("unavailable", str(caught.exception))
+        self.assertTrue(caught.exception.next_action)
 
     def test_runtime_role_pack_root_is_inside_runtime_source(self):
         from otto.portfolio.role_context import _role_pack_locations
