@@ -5,8 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
-import hashlib
-import json
 
 
 def defer_fake_lab_cleanup(root):
@@ -35,7 +33,8 @@ def complete_landed_canary(context, landing):
 
     A passing ``done`` lands and accepts work, but it does not itself complete
     the work task. The next canary task has a real dependency on that lifecycle
-    transition. The fake manager consumes only owner-retained landing records.
+    transition. Completion reuses managed evidence recorded by the landing's
+    accepted assessment result.
     """
     from herzchen.contracts import ResourceRef
     from herzchen.domains.assessment import AssessmentModule
@@ -43,7 +42,7 @@ def complete_landed_canary(context, landing):
     server = context["view"].server
     task = context["task"]
     alias = task.payload.get("alias")
-    if server.run_id != "perch-stage2" or alias not in {"A", "B"}:
+    if server.run_id != "perch-stage2" or alias not in {"A", "B", "C"}:
         return None
     if landing.get("landed") is not True:
         raise RuntimeError("stage-2 manager cannot complete work that did not land")
@@ -59,11 +58,22 @@ def complete_landed_canary(context, landing):
     candidate_identity = owner.graph.reader.get_identity(candidate)
     if candidate_identity is None or candidate_identity.ref != candidate:
         raise RuntimeError("stage-2 landing candidate is no longer an exact stored revision")
-    candidate_value = candidate_identity.payload.get("value")
-    if not isinstance(candidate_value, dict):
-        raise RuntimeError("stage-2 landing candidate has no stored value")
-    digest = hashlib.sha256(json.dumps(candidate_value, sort_keys=True,
-                                       separators=(",", ":")).encode()).hexdigest()
+    evidence_refs = assessed.evidence_refs
+    if not evidence_refs:
+        raise RuntimeError("stage-2 landing assessment has no managed evidence")
+    evidence_hashes = {}
+    for evidence_ref in evidence_refs:
+        resolved = owner.evidence_payload_resolver.resolve(evidence_ref, verify_full=True)
+        manifest = resolved.get("manifest") if isinstance(resolved, dict) else None
+        digest = manifest.get("byte_digest") if isinstance(manifest, dict) else None
+        if (not isinstance(resolved, dict)
+                or resolved.get("representation") != "managed"
+                or resolved.get("verification") != "full-verified"
+                or resolved.get("actual_digest") != digest
+                or not isinstance(digest, str) or len(digest) != 64):
+            raise RuntimeError("stage-2 landing evidence is not fully verified managed content")
+        evidence_hashes["%s:%s:%s" % (evidence_ref.kind, evidence_ref.id,
+                                      evidence_ref.revision)] = digest
     task_ref = owner.graph.current(ResourceRef(task.ref.authority, "work.task", task.ref.id)).ref
     project_pin = context["project_ref"]
     project_ref = owner.graph.current(ResourceRef(project_pin["authority"], "work.project",
@@ -76,8 +86,8 @@ def complete_landed_canary(context, landing):
         actor=server.state["manager"], request_id="perch-stage2-complete-" + alias,
         expected_generation=server.state["manager_generation"],
         expected_project_revision=project_ref.revision, expected_task_revision=task_ref.revision,
-        disposition="accepted", evidence_refs=[candidate.to_dict()],
-        evidence_hashes={"candidate": digest}, gate_refs=decisions,
+        disposition="accepted", evidence_refs=[ref.to_dict() for ref in evidence_refs],
+        evidence_hashes=evidence_hashes, gate_refs=decisions,
         candidate_ref=candidate.to_dict())
     if completion.get("outcome") != "completed":
         raise RuntimeError("stage-2 manager completion refused: " + repr(completion))
