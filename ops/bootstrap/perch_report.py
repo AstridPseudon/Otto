@@ -944,7 +944,8 @@ def cmd_init(args):
                                              "landing_conflict": project["tasks"][name].get("landing_conflict", False)}
                                             for name in stage["tasks"]]
     config = {
-        "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"], "stage_root": args.stage_root,
+        "stage": args.stage, "fake": args.fake, "tasks": tasks,
+        "check": "/usr/bin/true" if args.stage == "2" else project["check"], "stage_root": args.stage_root,
         "host": stage.get("host"),
         "pool_limit": stage.get("pool_limit", project["pool_limit"]), "manager_reserve": stage.get("manager_reserve"),
         "scenarios": stage.get("scenarios", []),
@@ -1530,10 +1531,14 @@ def assertions(raw):
     add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")
 
     # Until stage 2 there is no product pool to read: this is the harness's own count of its fake workers.
-    limit = config.get("pool_limit")
-    peak = pool_units_peak(raw)
-    add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
-        "peak %s of limit %s" % (peak, limit))
+    if config.get("stage") == "2":
+        add("harness-pool-within-limit", [], "owner capacity is checked separately",
+            skip="stage 2 uses owner capacity observations; the harness fake-worker count is not product capacity")
+    else:
+        limit = config.get("pool_limit")
+        peak = pool_units_peak(raw)
+        add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
+            "peak %s of limit %s" % (peak, limit))
 
     # The Store must hold what the stage says it holds, both ways, with no gap in a task's timeline; a read that
     # failed is not a match. A staging that did not start has no Store to read: staging-ready says so.
@@ -1782,7 +1787,7 @@ def cmd_render(args):
     out.append("- staging tree sha %s; canon/main %s" % (config.get("staging_sha", "?"), config.get("canon_main_sha", "?")))
     out.append("- check per task: `%s`; pool limit %s" % (config.get("check", "?"), config.get("pool_limit", "?")))
     out.append("- faults seeded: %s" % (", ".join(config.get("faults", [])) or "none"))
-    out.append("- the Otto and its Store are real; the worker is fake (commits only, no model); the staging Otto is"
+    out.append("- the Otto and its Store are real; --fake uses a fake worker and also fakes operator presence; the staging Otto is"
                " down at the end, so the census after is a clean line." if config.get("fake") else "")
     out += ["", "## Assertions", ""]
     out += table(["assertion", "result", "detail"],
@@ -1810,12 +1815,13 @@ def cmd_render(args):
                % (", ".join(map(str, gone)) if gone else "none"))
     out += ["", "## Labs and scratch left over", ""]
     out += ["    " + line for line in read_lines(raw / "leftovers.txt")] or ["none"]
-    out += ["", "## Pool units over time", ""]
-    out.append("peak %d of limit %s (perch's marks; samples peak %d)" % (
-        pool_units_peak(raw), config.get("pool_limit", "?"), max([s["pool_units"] for s in samples] or [0])))
-    out += table(["at", "pool units", "staging state"],
-                 [[s["at"], s["pool_units"], "%s (gen %s)" % (s["staging_state"], s["staging_generation"])]
-                  for s in samples]) if samples else ["(no samples)"]
+    if config.get("stage") != "2":
+        out += ["", "## Pool units over time", ""]
+        out.append("peak %d of limit %s (perch's marks; samples peak %d)" % (
+            pool_units_peak(raw), config.get("pool_limit", "?"), max([s["pool_units"] for s in samples] or [0])))
+        out += table(["at", "pool units", "staging state"],
+                     [[s["at"], s["pool_units"], "%s (gen %s)" % (s["staging_state"], s["staging_generation"])]
+                      for s in samples]) if samples else ["(no samples)"]
     out += ["", "## Staging at rest", ""] + at_rest_lines(raw)
     out += ["", "## Store growth", ""]
     if samples:

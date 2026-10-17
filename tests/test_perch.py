@@ -731,6 +731,26 @@ class AssertionKindTests(unittest.TestCase):
         self.assertIn("failed:", json.loads((raw / "notes.json").read_text(encoding="utf-8"))["admit-and-dispatch"])
         self.assertEqual(got["admitted-ready-dependency-order"]["status"], "skip")
 
+    def test_stage_two_report_names_real_check_and_fake_presence(self):
+        raw = clean_stage2_raw(self.tmp / "stage2-report-contract")
+        (raw / "timeline.json").write_text(json.dumps({"store_events": 0, "tasks": [], "error": None}),
+                                           encoding="utf-8")
+        perch_report.cmd_init(Namespace(
+            raw=str(raw), project=str(BOOTSTRAP / "canary" / "project.json"), stage="2", fake=True,
+            faults="", staging_restart=0, staging_sha="tree", canon_main_sha="canon",
+            started_at="start", stage_root="/staging"))
+        config = json.loads((raw / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["check"], "/usr/bin/true")
+        result = {row["name"]: row for row in perch_report.assertions(raw)}
+        self.assertEqual(result["harness-pool-within-limit"]["status"], "skip")
+
+        report = self.tmp / "stage2-report.md"
+        perch_report.cmd_render(Namespace(raw=str(raw), out=str(report)))
+        text = report.read_text(encoding="utf-8")
+        self.assertIn("check per task: `/usr/bin/true`", text)
+        self.assertIn("--fake uses a fake worker and also fakes operator presence", text)
+        self.assertNotIn("## Pool units over time", text)
+
     def test_stage_two_seeded_faults_fail_their_matching_assertions_only(self):
         cases = {
             "stage2_scenario": "admit-and-dispatch-ran",
