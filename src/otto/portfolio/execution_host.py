@@ -684,6 +684,10 @@ class ExecutionHost:
 
     _PROCESS_GROUPS = "capacity-process-groups.json"
 
+    def _scope_latch_path(self, schedule_id: str) -> Path:
+        token = hashlib.sha256(schedule_id.encode("utf-8")).hexdigest()
+        return (self.directory / ("capacity-scope-" + token + ".json")).resolve()
+
     def _load_process_groups(self) -> dict[str, dict[str, Any]]:
         try:
             value = json.loads((self.directory / self._PROCESS_GROUPS).read_text())
@@ -698,16 +702,96 @@ class ExecutionHost:
         _atomic_json(self.directory / self._PROCESS_GROUPS, self._process_groups)
 
     def _terminate_recorded_process_groups(self) -> dict[str, bool]:
-        """Best-effort owner lifecycle cleanup, fenced by each recorded birth identity."""
+        """Resume exact PL1 latches, or birth-fence older recorded groups."""
         from otto.agents.claude_cli import terminate_recorded_process_group
-        return {key: terminate_recorded_process_group(record, birth_reader=lambda pid:
+        from herzchen.fleet.custody import resume_cleanup
+        results = {}
+        for key, record in self._process_groups.items():
+            latch = record.get("scope_latch")
+            if latch is None:
+                results[key] = terminate_recorded_process_group(record, birth_reader=lambda pid:
                     _process_start_identity(pid)['birth'])
-                for key, record in self._process_groups.items()}
+                continue
+            if latch != str(self._scope_latch_path(key)):
+                results[key] = False
+                continue
+            if record.get("scope_disposition") == "gone":
+                results[key] = True
+                continue
+            try:
+                if Path(latch).exists():
+                    disposition = resume_cleanup(latch)
+                    settled = disposition.gone
+                else:
+                    # PL1 removes this exact latch only when Popen definitely
+                    # failed before an effect, or cleanup proved the scope gone.
+                    # It writes the latch before spawning and retains any
+                    # unresolved scope, even if identity capture failed.
+                    settled = True
+            except (OSError, ValueError, TypeError):
+                settled = False
+            results[key] = settled
+            if settled:
+                prior_state = record.get("scope_disposition")
+                record["scope_disposition"] = "gone"
+                try:
+                    self._save_process_groups()
+                except OSError:
+                    if prior_state is None:
+                        record.pop("scope_disposition", None)
+                    else:
+                        record["scope_disposition"] = prior_state
+                    results[key] = False
+        return results
 
     def _forget_process_group(self, schedule_id: str) -> None:
         self._capacity_freed.discard(schedule_id)
         if self._process_groups.pop(schedule_id, None) is not None:
             self._save_process_groups()
+
+    def record_process_launch_intent(self, schedule_id: str) -> str:
+        """Associate one PL1 latch with the admitted occurrence before spawn."""
+        if not self._owns_owner_file:
+            raise RuntimeError("scope launch requires the claimed execution owner")
+        if schedule_id not in self._capacity_holds and not (self._executions.get(schedule_id) or {}).get("running"):
+            raise RuntimeError("scope launch has no running or held occurrence")
+        latch = self._scope_latch_path(schedule_id)
+        prior = self._process_groups.get(schedule_id)
+        if prior is not None:
+            if (latch.exists() or (prior.get("scope_latch") == str(latch)
+                    and prior.get("scope_disposition") != "gone") or
+                    (prior.get("scope_latch") != str(latch)
+                     and self._group_state(prior) not in {"gone", "reused"})):
+                raise RuntimeError("prior process scope is unresolved")
+        self._process_groups[schedule_id] = {"scope_latch": str(latch), "scope_disposition": "launching"}
+        try:
+            self._save_process_groups()
+        except OSError:
+            if prior is None:
+                self._process_groups.pop(schedule_id, None)
+            else:
+                self._process_groups[schedule_id] = prior
+            raise
+        return str(latch)
+
+    def record_process_scope_disposition(self, schedule_id: str, disposition: Any) -> None:
+        """Persist PL1's settled result in the same owner row before another turn."""
+        if not getattr(disposition, "gone", False):
+            return
+        record = self._process_groups.get(schedule_id)
+        latch = self._scope_latch_path(schedule_id)
+        if record is None or record.get("scope_latch") != str(latch) or latch.exists():
+            raise RuntimeError("process scope settlement lacks its exact retired latch")
+        prior_state = record.get("scope_disposition")
+        record["scope_disposition"] = "gone"
+        try:
+            self._save_process_groups()
+        except OSError:
+            if prior_state is None:
+                record.pop("scope_disposition", None)
+            else:
+                record["scope_disposition"] = prior_state
+            raise
 
     def record_process_group(self, schedule_id: str, pid: int) -> None:
         """Pin a live native process group (pgid plus start time) to its occurrence.
@@ -722,21 +806,43 @@ class ExecutionHost:
             pgid = os.getpgid(pid)
         except OSError as error:
             raise PermissionError("process is not live; nothing to pin") from error
-        self._process_groups[schedule_id] = {"pid": pid, "pgid": pgid, "birth": birth}
+        prior_row = self._process_groups.get(schedule_id)
+        prior = prior_row or {}
+        if prior.get("scope_latch") and (prior.get("scope_disposition") != "launching"
+                or not self._scope_latch_path(schedule_id).exists()):
+            raise RuntimeError("process pin lacks its prepared live scope")
+        self._process_groups[schedule_id] = {**prior, "pid": pid, "pgid": pgid, "birth": birth}
+        if prior.get("scope_latch"):
+            self._process_groups[schedule_id]["scope_disposition"] = "running"
         if schedule_id in self._capacity_freed:
             self._capacity_freed.discard(schedule_id)
             self.capacity.ensure_turn(schedule_id, uncertain=True)  # the group is live again: it costs its slot
-        self._save_process_groups()
+        try:
+            self._save_process_groups()
+        except OSError:
+            if prior_row is None:
+                self._process_groups.pop(schedule_id, None)
+            else:
+                self._process_groups[schedule_id] = prior_row
+            raise
 
     @staticmethod
     def _group_state(record: Mapping[str, Any]) -> str:
-        """gone | alive | reused | unproven. Gone or reused frees physical capacity.
+        """gone | alive | reused | unproven. Only settled scopes free capacity.
 
-        Gone needs both an empty process group and an absent pid. A pid that is
-        live with another start time is reused only if the recorded group is
-        empty. A live group with a changed leader is unproven: it may still
-        contain the old worker's descendants. Both live and unproven stay charged.
+        For older rows without a PL1 latch, gone needs both an empty process
+        group and an absent pid. A pid that is
+        live with another start time is reused if the recorded group is empty
+        or the replacement PID itself leads that numeric group. A live group
+        with a changed leader in another group is unproven: it may still
+        contain the old worker's descendants. Live and unproven stay charged.
         """
+        if record.get("scope_disposition") == "gone":
+            return "gone"
+        if record.get("scope_latch"):
+            # A private group can empty while a birth-matched setsid escapee
+            # remains in PL1's latch. Group evidence alone cannot settle it.
+            return "unproven"
         pid, pgid, birth = record.get("pid"), record.get("pgid"), record.get("birth")
         if (type(pid) is not int or type(pgid) is not int or pid <= 0 or pgid <= 0
                 or not isinstance(birth, list) or not birth or any(type(v) is not int for v in birth)):
@@ -763,10 +869,16 @@ class ExecutionHost:
         except ProcessLookupError:
             return "reused" if changed_birth else "gone" if live is None else "alive"
         except PermissionError:
-            return "unproven" if changed_birth else "alive"
+            if not changed_birth:
+                return "alive"
         except OSError:
             return "unproven"
-        return "unproven" if changed_birth else "alive"
+        if not changed_birth:
+            return "alive"
+        try:
+            return "reused" if os.getpgid(pid) == pgid else "unproven"
+        except OSError:
+            return "unproven"
 
     def _reconcile_hold(self, schedule_id: str) -> bool:
         record = self._process_groups.get(schedule_id)

@@ -30,7 +30,7 @@ from herzchen.adapters.recovery_timing import timing_from_receipt
 from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.codex import CodexStream, native_caller_permission_overrides  # noqa: F401  (re-exported)
 from herzchen.usage.capture import UsageStream
-from herzchen.fleet.custody import Custody
+from herzchen.fleet.custody import Custody, Disposition
 
 RUNNER_ID = "codex-cli"
 CODEX = get_host("codex")     # the one place the Codex launch flags are built
@@ -857,8 +857,11 @@ class CodexCliBinding(HostPort):
                 "locator": self.evidence_path}, on_usage=self._usage_callback,
             turn_resolver=resolve_usage_turn)
         try:
+            prepare_launch = getattr(self._process_pin, "prepare_launch", None)
+            latch_path = prepare_launch() if callable(prepare_launch) else (
+                self.evidence_path + ".custody" if self.evidence_path else None)
             custody = Custody.launch(command,
-                latch_path=self.evidence_path + ".custody" if self.evidence_path else None,
+                latch_path=latch_path,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 cwd=self.worktree, env={**os.environ, **plan.env})
             process = custody.process
@@ -929,6 +932,12 @@ class CodexCliBinding(HostPort):
             if custody is not None:
                 # Sweeps stragglers the CLI left behind; a no-op once the tree is already proven gone.
                 custody_disposition = custody.release()
+                settle_scope = getattr(self._process_pin, "settle_scope", None)
+                if custody_disposition.gone and callable(settle_scope):
+                    try:
+                        settle_scope(custody_disposition)
+                    except Exception:
+                        custody_disposition = Disposition("uncertain", "owner scope settlement not recorded")
         observed_model = None
         observed_reasoning = None
         observed_profile = None

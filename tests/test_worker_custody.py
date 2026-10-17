@@ -285,6 +285,103 @@ class WorkerCustodyTests(unittest.TestCase):
 
 
 class RestartProcessScopeTests(unittest.TestCase):
+    def test_claude_transport_passes_prepared_latch_to_custody_before_spawn(self):
+        from herzchen.fleet.hosts import McpGrant
+        from otto.agents import claude_cli as cli
+        transport = object.__new__(cli.ClaudeCliTransport)
+        transport.pin = SimpleNamespace(realpath='/fake/claude')
+        transport.scope = SimpleNamespace(workspace='/private/tmp', allow_subprocesses=False)
+        transport.model, transport.reasoning = 'm', 'high'
+        transport.mcp, transport.tools, transport.max_turns = McpGrant(), cli.WORKER_TOOLS, 8
+        transport.process_factory = lambda *_a, **_k: None
+        transport.preflight = lambda: {}
+        transport.environment = lambda: {}
+        plan = SimpleNamespace(argv=('/fake/claude',), stdin=b'prompt', env={}, command=lambda: ('/fake/claude',))
+        events = []
+        def prepare():
+            events.append('prepared')
+            return '/private/tmp/owner-scope-latch.json'
+        def launch(_argv, **kwargs):
+            events.append(('launch', kwargs['latch_path']))
+            raise OSError('fixture stops before a process')
+        with mock.patch.object(cli.CLAUDE, 'launch', return_value=plan), \
+                mock.patch.object(cli.CLAUDE, 'parser', return_value=object()), \
+                mock.patch.object(cli.Custody, 'launch', side_effect=launch):
+            with self.assertRaisesRegex(OSError, 'fixture stops'):
+                transport.run('prompt', initializer=True, on_launch=prepare)
+        self.assertEqual(events, ['prepared', ('launch', '/private/tmp/owner-scope-latch.json')])
+
+    def test_definite_spawn_failure_without_latch_releases_only_physical_capacity(self):
+        from herzchen.fleet.custody import Custody
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-no-spawn-') as root:
+            owner = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            owner.start()
+            owner._executions['work'] = {'running': True}
+            latch = owner._owned(lambda: owner.record_process_launch_intent('work'))
+            with self.assertRaises(OSError):
+                Custody.launch(['fake'], latch_path=latch,
+                               popen=lambda _argv, **_kwargs: (_ for _ in ()).throw(OSError('no spawn')))
+            self.assertFalse(Path(latch).exists())
+            with mock.patch.object(owner, '_terminate_recorded_process_groups'):
+                owner.close()
+            restarted = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            restarted._capacity_holds['work'] = {'schedule_id': 'work', 'project': 'project-a',
+                'role': 'worker', 'session': 's', 'assignment': ('a', 1), 'workspace': root, 'writer': False}
+            restarted.capacity.ensure_turn('work', uncertain=True)
+            restarted.start()
+            try:
+                self.assertEqual(restarted._process_groups['work']['scope_disposition'], 'gone')
+                self.assertIn('work', restarted._capacity_holds)
+                self.assertNotIn('work', restarted.capacity_holds())
+            finally:
+                restarted.close()
+
+    def test_crash_between_scope_launch_and_owner_pin_recovers_exact_latch(self):
+        from herzchen.fleet.custody import Custody, Disposition, Proc
+        from otto.agents.owner_runtime import _pin_process_group
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-crash-') as root:
+            owner = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            owner.start()
+            owner._executions['work'] = {'running': True}
+            adapter = SimpleNamespace()
+            owner._owned(lambda: _pin_process_group(adapter, 'work'))
+            latch = owner._owned(lambda: adapter.process_pin.prepare_launch())
+            def spawned_before_pin(_argv, **_kwargs):
+                record = json.loads((Path(root) / 'capacity-process-groups.json').read_text())['work']
+                self.assertEqual(record['scope_latch'], latch)
+                self.assertTrue(Path(latch).exists(), 'scope intent must precede the process effect')
+                return SimpleNamespace(pid=999)
+            custody = Custody.launch(['fake'], latch_path=latch, popen=spawned_before_pin,
+                census_fn=lambda: {999: Proc(999, os.getpid(), 999, 'native-birth')})
+            self.assertEqual(custody.leader_birth, 'native-birth')
+            self.assertEqual(json.loads(Path(latch).read_text())['leader_birth'], 'native-birth')
+            with mock.patch.object(owner, '_terminate_recorded_process_groups'):
+                owner.close()
+            restarted = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            hold = {'schedule_id': 'work', 'project': 'project-a', 'role': 'worker', 'session': 's',
+                    'assignment': ('a', 1), 'workspace': root, 'writer': False}
+            restarted._capacity_holds['work'] = hold
+            restarted.capacity.ensure_turn('work', uncertain=True)
+            with mock.patch('herzchen.fleet.custody.resume_cleanup',
+                            return_value=Disposition('uncertain', 'launch identity unavailable')) as resume:
+                restarted.start()
+                try:
+                    resume.assert_called_once_with(latch)
+                    self.assertIn('work', restarted.capacity_holds())
+                    self.assertEqual(restarted._process_groups['work']['scope_latch'], latch)
+                    def settled(path):
+                        Path(path).unlink()
+                        return Disposition('gone')
+                    with mock.patch('herzchen.fleet.custody.resume_cleanup', side_effect=settled):
+                        restarted._terminate_recorded_process_groups()
+                    self.assertEqual(restarted.reconcile_dead_holds(), ['work'])
+                    self.assertIn('work', restarted._capacity_holds)
+                    self.assertNotIn('work', restarted.capacity_holds())
+                finally:
+                    restarted.close()
+
     def test_competing_owner_cannot_reconcile_capacity_before_claim(self):
         from otto.portfolio.execution_host import ExecutionHost
         with tempfile.TemporaryDirectory(prefix='worker-owner-') as root:
@@ -314,9 +411,38 @@ class RestartProcessScopeTests(unittest.TestCase):
             host._process_groups['old'] = {'pid': 123, 'pgid': 123, 'birth': [7]}
             with mock.patch('otto.portfolio.execution_host._process_start_identity',
                             return_value={'birth': [8]}), \
-                    mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None):
+                    mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None), \
+                    mock.patch('otto.portfolio.execution_host.os.getpgid', return_value=456):
                 self.assertEqual(host._group_state(host._process_groups['old']), 'unproven')
                 self.assertFalse(host._reconcile_hold('old'))
+
+    def test_replacement_leader_of_same_group_frees_only_physical_hold(self):
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-group-') as root:
+            host = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            host._process_groups['old'] = {'pid': 123, 'pgid': 123, 'birth': [7]}
+            with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                            return_value={'birth': [8]}), \
+                    mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None), \
+                    mock.patch('otto.portfolio.execution_host.os.getpgid', return_value=123):
+                self.assertEqual(host._group_state(host._process_groups['old']), 'reused')
+                self.assertTrue(host._reconcile_hold('old'))
+                self.assertIn('old', host._capacity_freed)
+
+    def test_empty_group_does_not_free_scope_with_unsettled_setsid_escapee(self):
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-escapee-') as root:
+            host = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            latch = str(host._scope_latch_path('work'))
+            host._process_groups['work'] = {'pid': 123, 'pgid': 123, 'birth': [7],
+                                            'scope_latch': latch, 'scope_disposition': 'running'}
+            Path(latch).write_text(json.dumps({'pgid': 123, 'leader_birth': 'birth',
+                                                'state': 'terminating', 'members': {'123': 'birth'}}))
+            with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                            side_effect=ProcessLookupError), \
+                    mock.patch('otto.portfolio.execution_host.os.killpg', side_effect=ProcessLookupError):
+                self.assertFalse(host._reconcile_hold('work'))
+            self.assertNotIn('work', host._capacity_freed)
 
     def test_restart_reuses_group_without_killing_it_and_frees_only_physical_capacity(self):
         from otto.portfolio.execution_host import ExecutionHost

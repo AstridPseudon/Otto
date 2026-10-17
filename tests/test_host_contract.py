@@ -630,6 +630,28 @@ class FakeHarness(Workspace):
             result = H.run_turn(fake_host_class()(), spec)
         self.assertEqual(result.outcome, "unknown")
         self.assertIn("census unavailable", result.error)
+        self.assertEqual(result.session_id, "fake-session-1")
+        self.assertTrue(result.events)
+
+    def test_codex_binding_prepares_owner_latch_before_custody_launch(self):
+        from herzchen.adapters.host import CodexCliBinding
+        from herzchen.contracts import HostRequest, HostIdentity, HostOperation, ResourceRef
+        events = []
+        def pin(_process):
+            pass
+        def prepare():
+            events.append('prepared')
+            return str(Path(self.root) / 'owner-scope-latch.json')
+        pin.prepare_launch = prepare
+        binding = CodexCliBinding(self.root, launcher='/L/codex', prompt='p', process_pin=pin)
+        request = HostRequest(HostOperation.INVOKE, HostIdentity('worker', None),
+                              ResourceRef('o', 'work.task', 't'), 'workspace-write')
+        def launch(_argv, **kwargs):
+            events.append(('launch', kwargs['latch_path']))
+            raise OSError('fixture stops before a process')
+        with mock.patch('herzchen.adapters.host.Custody.launch', side_effect=launch):
+            binding.execute(request)
+        self.assertEqual(events, ['prepared', ('launch', str(Path(self.root) / 'owner-scope-latch.json'))])
 
     def test_a_host_that_skips_part_of_the_contract_cannot_register(self):
         H = hosts()

@@ -242,19 +242,22 @@ class CodexAppServerThreadReader:
                 # One process group per call; teardown never leaves a reusable
                 # app-server session or unbounded wait behind.
                 lookup_failed = sys.exc_info()[0] is not None
+                cleanup_failed = False
                 try:
                     _reap_app_server(process)
                 except (OSError, subprocess.SubprocessError):
-                    # Preserve an earlier strict RPC/identity failure. A valid
-                    # lookup still fails closed if its process cannot be reaped.
-                    if not lookup_failed:
-                        raise HostThreadReadError("app_server_cleanup_failed") from None
+                    cleanup_failed = True
                 finally:
                     if custody is not None:
-                        # Sweep leftovers after the reap; the disposition never changes the propagating error.
+                        # Sweep leftovers after the reap. Unknown custody cannot
+                        # make otherwise valid metadata a successful lookup.
                         try:
-                            custody.release()
+                            disposition = custody.release()
+                            if not disposition.gone:
+                                cleanup_failed = True
                         except Exception:
-                            pass
+                            cleanup_failed = True
                     process.stdin.close()
                     process.stdout.close()
+                if cleanup_failed and not lookup_failed:
+                    raise HostThreadReadError("app_server_cleanup_failed") from None

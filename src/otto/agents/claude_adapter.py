@@ -413,6 +413,8 @@ class ClaudeWorkerAdapter:
         verify = ExecutionHost.owner_callback(self._verifier)
         usage_callback = ExecutionHost.owner_callback(getattr(self, "_usage_callback", None))
         usage_options = {} if usage_callback is None else {"on_usage": usage_callback}
+        prepare_launch = getattr(self.process_pin, "prepare_launch", None)
+        launch_options = {"on_launch": prepare_launch} if callable(prepare_launch) else {}
         try:
             if operation == 'resume':
                 # Owner-bound continuation: no new initializer. Bind the existing
@@ -422,7 +424,7 @@ class ClaudeWorkerAdapter:
             else:
                 init = ExecutionHost.external_call(lambda: transport.run(
                     'Initialize this session only. Do not use tools or do task work. Return READY.',
-                    initializer=True, on_init=on_thread, **usage_options))
+                    initializer=True, on_init=on_thread, **usage_options, **launch_options))
                 session = init['session_id']
                 if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
                     raise ClaudeBindingError('inert native initializer was not exact READY')
@@ -451,7 +453,7 @@ class ClaudeWorkerAdapter:
                 observer = ExecutionHost.owner_callback(self.native_process_observer)
             on_process = _compose_on_process(observer, authorization, self.process_pin)
             work = ExecutionHost.external_call(lambda: transport.run(prompt, session=session,
-                on_input=input_started, on_process=on_process, **usage_options))
+                on_input=input_started, on_process=on_process, **usage_options, **launch_options))
             if work['outcome'] == 'failed':
                 return {'outcome': 'failed', 'physical_session_id': session, 'observed_turn_id': work['turn_id'],
                         'delivery_state': 'failed', 'native_failure': work['result'], 'usage': work['usage'],
