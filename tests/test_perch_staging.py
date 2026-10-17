@@ -21,14 +21,62 @@ PY = "/opt/homebrew/bin/python3.11"
 
 class StagingRootTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="perch-staging-")).resolve()
+        # A short root under /tmp: under $TMPDIR the owner's socket path passes the 100-byte Unix limit
+        # and staging refuses to start (as tests/test_staging_startup.py already does).
+        self.tmp = Path(tempfile.mkdtemp(prefix="ps-", dir="/tmp")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.stage = self.tmp / "_staging"
         self.sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
                                   capture_output=True, check=True).stdout.strip()
-        self.addCleanup(self.staging, "down")  # runs before the rmtree: a test that fails still stops its Otto
+
+    def stop_owner(self):
+        pidfile = self.stage / "run" / "staging.pid"
+        if not pidfile.exists():
+            return
+        pid = int(pidfile.read_text(encoding="utf-8").split()[0])
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        self.fail("staging process group %d survived SIGKILL" % pid)
+
+    def start_staging(self):
+        return self.staging("up")
+
+    def assert_injected_exit_is_clean(self, error):
+        r = self.start_staging()
+        self.assertEqual(r.returncode, 0, r.log)
+        pid = self.staging_pid()
+        try:
+            raise error
+        except (AssertionError, subprocess.TimeoutExpired):
+            self.doCleanups()
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(pid, 0)
+        self.assertFalse(self.tmp.exists(), "temporary root remained after owner exit")
 
     def staging(self, *args):
+        if args and args[0] == "up":
+            # Register before every start so failures and timeouts stop the process group.
+            self.addCleanup(self.stop_owner)
         env = dict(
             os.environ, OTTO_STAGING_ROOT=str(self.stage), OTTO_REPO=str(ROOT), OTTO_PYTHON=PY,
             OTTO_STAGING_REF=self.sha, OTTO_STAGING_READY_SECONDS="60", OTTO_STAGING_STOP_SECONDS="30",
@@ -78,6 +126,12 @@ class StagingRootTests(unittest.TestCase):
 
 
 class StatusTests(StagingRootTests):
+    def test_cleanup_after_forced_mid_test_failure(self):
+        self.assert_injected_exit_is_clean(AssertionError("forced mid-test failure"))
+
+    def test_cleanup_after_timeout(self):
+        self.assert_injected_exit_is_clean(subprocess.TimeoutExpired("forced timeout", 0.01))
+
     def test_status_after_kill_is_stale(self):
         self.assertEqual(self.staging("up").returncode, 0)
         running = self.status()

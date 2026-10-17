@@ -41,10 +41,21 @@ class Scratch(unittest.TestCase):
         heavy = self.bin / "otto-heavy"
         heavy.write_text('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
         heavy.chmod(0o755)
+        self.ps_listing = self.tmp / "ps-listing"
+        self.ps_listing.write_text("")
+        ps_stub = self.bin / "ps"
+        # The gate lists processes before the check and after the sweep: the stub answers the first call
+        # from ps-listing.before (empty unless a test sets it) and later calls from ps-listing.
+        (self.tmp / "ps-listing.before").write_text("")
+        ps_stub.write_text('#!/bin/sh\nc="$OTTO_TEST_PS_LISTING.calls"; n=$(($(cat "$c" 2>/dev/null || echo 0) + 1)); '
+                           'echo "$n" > "$c"\nif [ "$n" = 1 ]; then cat "$OTTO_TEST_PS_LISTING.before"; '
+                           'else cat "$OTTO_TEST_PS_LISTING"; fi\n')
+        ps_stub.chmod(0o755)
         self.env = dict(
             os.environ, OTTO_REPO=str(self.repo), LABS_DIR=str(self.labs), OPS_DIR=str(self.ops),
             OTTO_HEAVY=str(heavy), BASELINE_LAB=str(self.baseline), OTTO_PYTHON=sys.executable,
             OTTO_REMOTE="github", PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+            OTTO_TEST_PS_LISTING=str(self.ps_listing),
             GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
         )
         sh(["git", "init", "-q", "-b", "canon/main", str(self.repo)])
@@ -133,6 +144,33 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "land.lock").exists())
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
+
+    def test_temporary_service_owner_left_before_the_landing_is_logged_not_refused(self):
+        self.lab("T26", {"note.txt": "x\n"})
+        home = self.tmp / "older-orphan-home"
+        line = "424242 python service run --home %s\n" % home
+        (self.tmp / "ps-listing.before").write_text(line)
+        self.ps_listing.write_text(line)
+        r = self.land("T26")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("left before this landing (not its own)", self.log("T26"))
+
+    def test_temporary_service_owner_orphan_is_named(self):
+        self.lab("T25", {"note.txt": "x\n"})
+        home = self.tmp / "orphan-home"
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60) # service run --home " + str(home)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.ps_listing.write_text("%d python service run --home %s\n" % (owner.pid, home))
+        try:
+            r = self.land("T25")
+            self.assertRefused(r, "T25", "orphan service run")
+            diagnostic = self.log("T25") + r.stdout + r.stderr
+            self.assertIn("pid %d" % owner.pid, diagnostic)
+            self.assertIn(str(home), diagnostic)
+        finally:
+            owner.terminate()
 
     def test_a_landing_stopped_by_a_signal_never_reports_landed(self):
         started = self.tmp / "check-started"

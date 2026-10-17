@@ -49,6 +49,14 @@ def group_has_members(pgid):
     return any(not s.startswith("Z") for s in stats("-g", str(pgid)))
 
 
+def process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def wait_until(predicate, seconds=20):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -83,19 +91,68 @@ class StagingCase(unittest.TestCase):
                      "OTTO_MANAGER_IPC", "OTTO_CALLER_SOCKET"):
             self.env.pop(name, None)
         self.started = set()
-        # Cleanups run last-in first-out: teardown stops anything still running before rmtree removes the folder.
+        # Owner cleanups are registered later and run first; this final check runs before rmtree.
         self.addCleanup(self._teardown)
 
     def _teardown(self):
         r = self.stage("down")
-        survivors = [pgid for pgid in self.started if group_has_members(pgid)]
+        survivors = [pgid for pgid in self.started if process_group_exists(pgid)]
         self.assertEqual(survivors, [], "process groups survived teardown")
         self.assertEqual(r.returncode, 0, "teardown down failed: " + r.stderr + r.stdout)
 
+    def _stop_owner(self):
+        if not self.pidfile.exists():
+            return
+        pid = int(self.pidfile.read_text().split()[0])
+        self.started.add(pid)
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    os.killpg(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("staging process group %d survived SIGKILL" % pid)
+
+    def start_staging(self):
+        return self.stage("up")
+
     def stage(self, verb, env=None):
+        if verb == "up":
+            # Registered before starting each owner, including on repeated starts in one test.
+            self.addCleanup(self._stop_owner)
         run_env = dict(self.env, **(env or {}))
         return subprocess.run(["bash", str(STAGING), verb], env=run_env, text=True,
                               capture_output=True, timeout=300)
+
+    def assert_injected_exit_is_clean(self, error):
+        r = self.stage("up")
+        self.assertEqual(r.returncode, 0, self.diag(r))
+        pid = self.pid()
+        try:
+            raise error
+        except (AssertionError, subprocess.TimeoutExpired):
+            self.doCleanups()
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(pid, 0)
+        self.assertFalse(self.tmp.exists(), "temporary root remained after owner exit")
 
     def pid(self):
         pid = int(self.pidfile.read_text().split()[0])
@@ -121,6 +178,12 @@ class StagingCase(unittest.TestCase):
         self.assertFalse(self.staged.exists(), "staging.json left behind")
 
     # Startup: the product entry point on an empty Store.
+
+    def test_cleanup_after_forced_mid_test_failure(self):
+        self.assert_injected_exit_is_clean(AssertionError("forced mid-test failure"))
+
+    def test_cleanup_after_timeout(self):
+        self.assert_injected_exit_is_clean(subprocess.TimeoutExpired("forced timeout", 0.01))
 
     def test_startup_on_empty_store(self):
         self.assertFalse(self.store_file.exists(), "a Store exists before the first start")
