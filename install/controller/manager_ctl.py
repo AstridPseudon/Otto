@@ -9,8 +9,13 @@ IPC=HERE/'manager-ipc'
 def call(payload):
  from otto.portfolio.manager_journey_client import read_command_response,read_command_status
  token=uuid.uuid4().hex;request=IPC/('request-'+token+'.json')
- fd=os.open(request,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
- with os.fdopen(fd,'w') as stream:json.dump(payload,stream);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+ temporary=IPC/('.request-'+token+'.tmp')
+ fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+ try:
+  with os.fdopen(fd,'w') as stream:json.dump(payload,stream);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+  os.replace(temporary,request)
+ finally:
+  temporary.unlink(missing_ok=True)
  from otto.portfolio.manager_journey_client import wait_command_response
  return wait_command_response(IPC,token,timeout_seconds=2.0)
 

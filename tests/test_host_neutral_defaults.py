@@ -199,6 +199,98 @@ class ManagerPortConfigTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 load_manager_ctl({"OTTO_MANAGER_CONFIG": str(config)})
 
+    def test_installed_client_publishes_only_complete_requests_under_concurrent_observation(self):
+        spec = importlib.util.spec_from_file_location(
+            "installed_manager_ctl_under_test", ROOT / "install" / "controller" / "manager_ctl.py")
+        client = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(client)
+        original_dumps = json.dumps
+
+        for _ in range(200):
+            with self.subTest(iteration=_), tempfile.TemporaryDirectory() as directory:
+                ipc = Path(directory)
+                client.IPC = ipc
+                partial_written = threading.Event()
+                finish_write = threading.Event()
+                call_done = threading.Event()
+                seen = []
+                malformed = []
+                errors = []
+                payload = {"command": "report", "summary": "x" * 256}
+
+                def paused_dump(value, stream, *args, **kwargs):
+                    encoded = original_dumps(value, *args, **kwargs)
+                    midpoint = max(1, len(encoded) // 2)
+                    stream.write(encoded[:midpoint])
+                    partial_written.set()
+                    if not finish_write.wait(2):
+                        raise TimeoutError("test did not release the paused request writer")
+                    stream.write(encoded[midpoint:])
+
+                def responder():
+                    deadline = time.monotonic() + 2
+                    while time.monotonic() < deadline:
+                        requests = list(ipc.glob("request-*.json"))
+                        if requests:
+                            request = requests[0]
+                            try:
+                                value = json.loads(request.read_text())
+                            except Exception as exc:
+                                malformed.append((request.name, repr(exc)))
+                                return
+                            seen.append(value)
+                            token = request.name[len("request-"):-len(".json")]
+                            response = ipc / ("response-" + token + ".json")
+                            temporary = ipc / (".response-" + token + ".tmp")
+                            temporary.write_text(json.dumps({"outcome": "read"}))
+                            os.replace(temporary, response)
+                            return
+                        time.sleep(.001)
+                    errors.append("responder did not discover a request")
+
+                def observe():
+                    while not call_done.is_set():
+                        for request in ipc.glob("request-*.json"):
+                            try:
+                                json.loads(request.read_text())
+                            except Exception as exc:
+                                malformed.append((request.name, repr(exc)))
+                        time.sleep(.0005)
+
+                responder_thread = threading.Thread(target=responder)
+                observer_thread = threading.Thread(target=observe)
+                call_result = []
+
+                def invoke():
+                    try:
+                        with mock.patch.object(client.json, "dump", side_effect=paused_dump):
+                            call_result.append(client.call(payload))
+                    except Exception as exc:
+                        errors.append(repr(exc))
+                    finally:
+                        call_done.set()
+
+                responder_thread.start()
+                observer_thread.start()
+                call_thread = threading.Thread(target=invoke)
+                call_thread.start()
+                reached_pause = partial_written.wait(1)
+                visible_during_partial_write = list(ipc.glob("request-*.json"))
+                finish_write.set()
+                call_thread.join(3)
+                responder_thread.join(3)
+                call_done.set()
+                observer_thread.join(1)
+                self.assertTrue(reached_pause, "client did not reach the paused write")
+                self.assertEqual(visible_during_partial_write, [],
+                                 "partial request appeared under its discoverable final name")
+                self.assertFalse(call_thread.is_alive(), "client call hung")
+                self.assertFalse(responder_thread.is_alive(), "responder hung")
+                self.assertEqual(errors, [])
+                self.assertEqual(malformed, [])
+                self.assertEqual(seen, [payload])
+                self.assertEqual(call_result, [{"outcome": "read"}])
+
     def test_client_uses_the_configured_ipc_directory_and_task_aliases(self):
         with tempfile.TemporaryDirectory() as directory:
             ipc = Path(directory) / "ipc"
