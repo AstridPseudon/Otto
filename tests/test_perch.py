@@ -765,6 +765,31 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.launcher)
 
+    def test_fake_worker_has_native_entrypoint_and_executes_python_turn(self):
+        root = Path(tempfile.mkdtemp(prefix="perch-native-fake-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        launcher = root / "perch-fake-claude"
+        shutil.copy2(BOOTSTRAP / "perch_fake_claude.py", root / "perch-fake-claude.py")
+        built = subprocess.run(["/usr/bin/cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                                '-DPERCH_PYTHON="' + sys.executable + '"',
+                                str(BOOTSTRAP / "perch_fake_claude_launcher.c"), "-o", str(launcher)],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        version = subprocess.run([str(launcher), "--version"], capture_output=True, text=True, timeout=10)
+        self.assertEqual((version.returncode, version.stdout.strip()), (0, "2.1.293 (Claude Code)"))
+        frame = {"message": {"content": [{"text": "Canary dispatch A"}]}}
+        turn = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", "Read,Write"],
+                              input=json.dumps(frame) + "\n", capture_output=True, text=True,
+                              cwd=root, timeout=10)
+        self.assertEqual(turn.returncode, 0, turn.stderr)
+        self.assertEqual(json.loads(turn.stdout.splitlines()[-1])["subtype"], "success")
+        self.assertEqual(len(list(root.glob("perch-worker-*.txt"))), 1)
+        (root / "perch-fake-claude.py").unlink()
+        missing = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", "Read,Write"],
+                                 input=json.dumps(frame) + "\n", capture_output=True, text=True,
+                                 cwd=root, timeout=10)
+        self.assertNotEqual(missing.returncode, 0)
+
     def test_product_project_status_is_the_only_dispatch_read(self):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
         wait = __import__("re").search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
@@ -792,6 +817,55 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         private_only = {"outcome": "read", "workers": {"A": {"automatic": True}}}
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
+
+    def test_all_exact_operator_admissions_precede_dispatch_wait(self):
+        import re
+        import shlex
+
+        root = Path(tempfile.mkdtemp(prefix="perch-stage2-admit-order-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        raw = root / "raw"
+        raw.mkdir()
+        refs = {alias: {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
+                        "revision": "rev-" + alias} for alias in ("A", "B", "C")}
+        (raw / "stage2-activation.json").write_text(json.dumps(
+            {"activation": {"steps": {"tasks": {"task_refs": refs}}}}), encoding="utf-8")
+        (raw / "stage2-review-ref.json").write_text(json.dumps(
+            {"authority": "owner", "kind": "dat.content.document",
+             "id": "plan-review-document", "revision": "rev-review"}), encoding="utf-8")
+        shell = PERCH.read_text(encoding="utf-8")
+        admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(admit)
+        script = "\n".join((
+            "set -uo pipefail",
+            "RAW=" + shlex.quote(str(raw)),
+            "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
+            "PY=" + shlex.quote(sys.executable),
+            "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+            "cold_client() {",
+            '  case "$*" in *task-A*) alias=A ;; *task-B*) alias=B ;; *task-C*) alias=C ;; *) return 31 ;; esac',
+            '  case "$*" in *plan-review-document*) ;; *) return 32 ;; esac',
+            '  echo "admit-$alias" >> "$RAW/trace"',
+            '  if [ "${SEED_REJECT_B:-0}" = 1 ] && [ "$alias" = B ]; then return 33; fi',
+            '  printf \'{"outcome":"admitted","admitted_revision":"rev-%s"}\\n\' "$alias"',
+            "}",
+            "stage2_wait_worker() {",
+            '  for alias in A B C; do [ -f "$RAW/stage2-admit-$alias.json" ] || return 34; done',
+            '  echo "wait-$2" >> "$RAW/trace"',
+            "}",
+            admit.group(),
+            "stage2_admit_tasks",
+        ))
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
+                         ["admit-A", "admit-B", "admit-C", "wait-A", "wait-B", "wait-C"])
+        (raw / "trace").unlink()
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                env={**os.environ, "SEED_REJECT_B": "1"}, timeout=30)
+        self.assertEqual(result.returncode, 33, result.stderr)
+        self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
+                         ["admit-A", "admit-B"])
 
     def test_dispatch_poll_resolves_one_pending_request_before_read(self):
         import re

@@ -165,8 +165,13 @@ stage2_setup() {
   bundle="$CANARY_DIR/project"
   "$PY" -I "$REPORT_PY" stage2-bundle --project "$CANARY/project.json" --out "$bundle" > "$RAW/stage2-bundle-path.txt"
   if [ -n "$FAKE" ]; then
-    cp "$HERE/perch_fake_claude.py" "$CANARY_DIR/perch-fake-claude"
-    chmod 755 "$CANARY_DIR/perch-fake-claude"
+    cp "$HERE/perch_fake_claude.py" "$CANARY_DIR/perch-fake-claude.py"
+    if ! /usr/bin/cc -std=c11 -O2 -Wall -Wextra "-DPERCH_PYTHON=\"$PY\"" \
+        "$HERE/perch_fake_claude_launcher.c" -o "$CANARY_DIR/perch-fake-claude" \
+        > "$RAW/stage2-fake-launcher-build.log" 2>&1; then
+      echo "fake Claude launcher build failed; see stage2-fake-launcher-build.log" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     launcher_args=(--launcher "$CANARY_DIR/perch-fake-claude")
   fi
   # The owner reloads its installation when admitting a host. Map toy first so
@@ -213,6 +218,9 @@ stage2_admit_tasks() {
   local host task ref review_ref rc=0
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
   review_ref="$(cat "$RAW/stage2-review-ref.json")"
+  # Admit every activated task before observing dispatch. Dependencies select
+  # execution order; waiting for A here used to leave B and C unadmitted when
+  # the first owner turn remained pending.
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
@@ -232,6 +240,8 @@ stage2_admit_tasks() {
       return 1
     fi
     "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value ran
+  done
+  for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     stage2_wait_worker "$host" "$task" || return $?
   done
   return 0
@@ -292,6 +302,11 @@ stage2_wait_worker() {  # HOST TASK
     echo "owner dispatched admitted task $task but did not complete it and release capacity in 180 seconds; see stage2-dispatch-$task-project.json and stage2-owner-$task.json" >> "$RAW/stage2-setup-errors.txt"
   else
     echo "owner did not dispatch admitted task $task in 180 seconds; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
+  fi
+  # Preserve the staging owner's own reason before teardown. This copies a
+  # bounded diagnostic tail into the report; it never changes owner state.
+  if [ -f "$STAGE_ROOT/run/staging.log" ]; then
+    tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
   fi
   return 1
 }
