@@ -179,11 +179,27 @@ PY
     echo "D19: $D19 does not name changed test file(s): $D19_MISSING; extend the decision, then re-run land.sh $TASK --d19 $D19" >&2
     exit 4
   fi
-  VERDICT="$(grep -m1 -E 'LAND|SEND BACK' "$D19" || true)"
+  VERDICT=""
+  if VERDICT="$("$PY" - "$D19" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+for line in text.splitlines():
+    if re.match(r"^\s*Decision:", line):
+        match = re.match(r"^\s*Decision:\s*(LAND|SEND BACK)(?:\s|$)", line)
+        if match:
+            print(match.group(1))
+        break
+PY
+  )"; then
+    :
+  fi
   case "$VERDICT" in
-    *"SEND BACK"*) fail "D19: review says SEND BACK ($D19)" ;;
-    *LAND*) log "D19: review says LAND ($D19) for $D19_FILES" ;;
-    *) fail "D19: no LAND or SEND BACK in $D19" ;;
+    "SEND BACK") fail "D19: review says SEND BACK ($D19)" ;;
+    LAND) log "D19: review says LAND ($D19) for $D19_FILES" ;;
+    *) fail "D19: missing explicit LAND or SEND BACK Decision in $D19" ;;
   esac
 fi
 

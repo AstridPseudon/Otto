@@ -324,12 +324,20 @@ class LandGate(Scratch):
         self.assertIn("D19: existing test expectations changed in tests/test_mod.py;", r.stderr)
         self.assertIn("ops/reviews/D19-T4.brief.md", r.stderr)
         self.assertEqual(self.head(), self.base)
-        (self.tmp / "no.md").write_text("Review\nSEND BACK: tests/test_mod.py is too loose\n")
+        (self.tmp / "no.md").write_text("# BOOTLAND review\nDecision: SEND BACK tests/test_mod.py is too loose\n")
         self.assertRefused(self.land("T4", "--d19", str(self.tmp / "no.md")), "T4", "SEND BACK")
         (self.tmp / "yes.md").write_text("Review\nDecision: LAND tests/test_mod.py\n")
         r = self.land("T4", "--d19", str(self.tmp / "yes.md"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotEqual(self.head(), self.base)
+
+    def test_d19_heading_does_not_supply_a_verdict_and_missing_decision_names_file(self):
+        self.lab("T4C", {"tests/test_mod.py": GOOD_TEST.replace("== 1", "!= 2")})
+        decision = self.tmp / "heading-only.md"
+        decision.write_text("# BOOTLAND review for tests/test_mod.py\nSEND BACK: this heading text is not a decision\n")
+        r = self.land("T4C", "--d19", str(decision))
+        self.assertRefused(r, "T4C", "missing explicit LAND or SEND BACK Decision")
+        self.assertIn(str(decision), r.stdout + r.stderr + self.log("T4C"))
 
     def d19_two_changed_tests(self, task):
         extra = "def test_extra():\n    assert True\n"
