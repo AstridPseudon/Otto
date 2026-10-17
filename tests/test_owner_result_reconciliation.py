@@ -77,7 +77,8 @@ class FixtureCapture(OwnerAuthorizedRoleCapture):
 
 class OwnerResultReconciliationTests(unittest.TestCase):
     def test_fresh_manager_replay_finishes_held_effect_after_capture_crash(self):
-        source = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "unknown"}
+        source = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "unknown",
+                  "assignment_ref": ASSIGNMENT, "generation": 1}
         digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
         result = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "succeeded",
@@ -95,20 +96,32 @@ class OwnerResultReconciliationTests(unittest.TestCase):
                           "effect": "retained_evidence_reparsed_no_provider_replay",
                           "source_unknown_sha256": digest(source), "trace_sha256": "b" * 64}
         due = {"role": "manager", "execution_mode": "fresh_manager", "generation": 1,
-               "target": {"mandate_ref": {"id": "mandate-1"}},
+               "target": {"mandate_ref": {"id": "mandate-1"}, "principal": "manager"},
                "host_evidence": {"gateway_attempt": {"state": "result", "logical_request_key": "turn-1",
                    "result": result, "delivery_admission_reconciliation": proof,
                    "reconciliation": reconciliation}}}
         checks, settlements = [], []
         capture = SimpleNamespace(completed_scope_validator=lambda: None, settled_publication=False,
             validate_completed_manager_result=lambda value: checks.append(value))
+        current_assignment = {"ref": ASSIGNMENT, "assignment_ref": ASSIGNMENT,
+            "role": "manager", "principal": "manager", "generation": 1,
+            "assignment_pin_content_matches": True}
         ledger = SimpleNamespace(get=lambda key: SimpleNamespace(state=OperationState.UNKNOWN),
             settle_verified=lambda key, value: settlements.append((key, value)))
         runtime = object.__new__(CanonicalRoleRuntime)
         runtime.actor = "owner-principal"
         runtime.due_port = SimpleNamespace(read_due=lambda schedule: due)
         runtime.effect_ledger = ledger
-        runtime._binding = lambda **kwargs: (None, None, capture)
+        runtime._binding = lambda **kwargs: (current_assignment, None, capture)
+        current_assignment.update(ref={**ASSIGNMENT, "revision": "rev-3"},
+            assignment_ref={**ASSIGNMENT, "revision": "rev-3"}, generation=2,
+            assignment_pin_content_matches=False)
+        with self.assertRaisesRegex(OwnerRoleRuntimeError, "assignment"):
+            runtime.reconcile_fresh_manager_result(schedule_id="schedule-1",
+                expected_unknown_sha256=digest(source))
+        self.assertEqual(settlements, [])
+        current_assignment.update(ref=ASSIGNMENT, assignment_ref=ASSIGNMENT,
+            generation=1, assignment_pin_content_matches=True)
         replay = runtime.reconcile_fresh_manager_result(schedule_id="schedule-1",
             expected_unknown_sha256=digest(source))
         self.assertTrue(replay["replayed"])

@@ -1248,11 +1248,27 @@ class CanonicalRoleRuntime:
                     or reconciliation.get("source_unknown_sha256") != expected_unknown_sha256
                     or reconciliation.get("trace_sha256") != receipt.get("trace_sha256")):
                 raise OwnerRoleRuntimeError("retained fresh-manager reconciliation proof changed")
-            _, _, capture = self._binding(role="manager", project_ref=prior["project_ref"],
+            assignment, _, capture = self._binding(role="manager", project_ref=prior["project_ref"],
                 task_ref=prior["task_ref"], assignment_ref=prior["assignment_ref"],
                 mandate_ref=due["target"]["mandate_ref"], schedule_id=schedule_id,
                 logical_request_key=prior["logical_request_key"], expected_generation=prior["generation"],
                 allow_settled_publication=True)
+            pinned_assignment = prior["assignment_ref"]
+            current_ref = assignment.get("ref") or {}
+            current_assignment_ref = assignment.get("assignment_ref") or {}
+            same_identity = lambda ref: isinstance(ref, Mapping) and all(
+                ref.get(field) == pinned_assignment.get(field)
+                for field in ("authority", "kind", "id"))
+            if (not same_identity(current_ref) or not same_identity(current_assignment_ref)
+                    or (current_ref != pinned_assignment
+                        and assignment.get("assignment_pin_content_matches") is not True)
+                    or type(assignment.get("generation")) is not int
+                    or not (assignment.get("generation") == prior.get("generation") == due.get("generation"))
+                    or source.get("assignment_ref") != pinned_assignment
+                    or source.get("generation") != prior.get("generation")
+                    or assignment.get("role") != "manager"
+                    or assignment.get("principal") != due["target"].get("principal")):
+                raise OwnerRoleRuntimeError("current assignment differs from retained native effect custody")
             if not callable(capture.completed_scope_validator) or capture.completed_scope_validator():
                 raise OwnerRoleRuntimeError("current exact manager custody is required")
             if not capture.settled_publication:
