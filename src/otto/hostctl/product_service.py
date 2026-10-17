@@ -27,6 +27,7 @@ from urllib.parse import unquote
 from herzchen.fleet.capacity import CapacityPolicy
 from herzchen.fleet.labs import LabFleet
 from herzchen.fleet.runner.store import ResultStore
+from herzchen.fleet.tools.facade import SettlingOwnerPort as _OwnerExecutorPort
 
 from . import lanes
 from .owner import HostSession, host_domains, runtime_dirs, service_store
@@ -216,22 +217,6 @@ class ProductOwner:
             registry.close()
         if self.runner is not None:
             self.runner.stop()
-
-
-class _OwnerExecutorPort:
-    """Serialize facade calls through the owner host's command pump."""
-
-    def __init__(self, inner: Any, executor: Callable[[], Any], settle: Callable[[str], None]) -> None:
-        self.inner, self.executor, self.settle = inner, executor, settle
-
-    def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
-        executor = self.executor()
-        if not callable(executor):
-            raise PermissionError("owner command executor is unavailable")
-        result = executor(lambda: self.inner.call(operation, assignment, args, feedback=feedback))
-        if operation == "worker-done" and isinstance(result, Mapping) and result.get("landed") is True:
-            self.settle(assignment)
-        return result
 
 
 class _TaskContextPort:

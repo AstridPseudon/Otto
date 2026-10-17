@@ -192,10 +192,6 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
         ref=ResourceRef("fixture", "work.project", project_ref.id, current_project_revision),
         payload={"tasks": [task.ref.to_dict()]})
 
-    class FleetStub:
-        def __init__(self, repo, labs_root, *, checkpoint):
-                self.repo, self.labs_root, self.checkpoint = repo, labs_root, checkpoint
-
     class FacadeServerStub:
         def __init__(self, *_args):
             pass
@@ -206,11 +202,7 @@ def _fleet_registry_fixture(monkeypatch, tmp_path, *, plan=None, landing_factory
         def stop(self):
             pass
 
-    monkeypatch.setattr(product_service, "LabFleet", FleetStub, raising=False)
     # The registry's internal MCP endpoint is outside this unit's boundary.
-    monkeypatch.setattr(product_service, "_OwnerExecutorPort",
-                        lambda port, *_args: port, raising=False)
-    monkeypatch.setattr(product_service, "_TaskContextPort", lambda _registry: None, raising=False)
     monkeypatch.setattr(fleet_tools, "FacadeServer", FacadeServerStub)
     repository = Path(repository_path) if repository_path is not None else tmp_path / "checkout"
     repository.mkdir(exist_ok=True)
@@ -353,6 +345,97 @@ def test_worker_facade_check_is_feedback_and_done_lands_only_its_bound_lab_and_l
     assert lab.path.is_dir(), "worker-done removed the lab before stream artifact capture"
     assert (line / "one.txt").exists(), "the bound task lab did not land on its project line"
     assert not (line / "two.txt").exists(), "another task's lab was landed"
+
+
+def test_landed_done_revokes_before_facade_waiter_resumes(monkeypatch, tmp_path):
+    import threading
+    from otto.portfolio.execution_host import ExecutionHost
+
+    calls = []
+    landing_started = threading.Event()
+    release_landing = threading.Event()
+
+    class Landing:
+        def done(self, lab_name, task_id, **_pins):
+            calls.append(("done", lab_name, task_id))
+            landing_started.set()
+            release_landing.wait()
+            return {"landed": True}
+
+        def check(self, lab_name, task_id):
+            calls.append(("check", lab_name, task_id))
+            return {"feedback_only": True}
+
+    landing = Landing()
+    registry, _task, record, token, _repo = _fleet_registry_fixture(
+        monkeypatch, tmp_path,
+        plan={"repo": "repo-a", "branch": "project-line"},
+        landing_factory=lambda **_kwargs: landing,
+    )
+    host = ExecutionHost(
+        directory=tmp_path / "owner-pump",
+        handler=lambda _request: {},
+        owner_file_compatibility=True,
+        bounded_transports=True,
+    )
+    owner_returned = threading.Event()
+    release_facade = threading.Event()
+    replies = []
+    queued_replies = []
+    done_thread = None
+
+    def execute(operation):
+        def run_owned():
+            with host._command_lock:
+                return host._owned(operation)
+
+        result = host._owner_request(run_owned)
+        if threading.current_thread() is done_thread:
+            owner_returned.set()
+            release_facade.wait()
+        return result
+
+    registry.bind_owner_executor(execute)
+    host.start()
+    done_thread = threading.Thread(
+        target=lambda: replies.append(registry.facade.call(token, "done"))
+    )
+    check_thread = threading.Thread(
+        target=lambda: queued_replies.append(registry.facade.call(token, "check"))
+    )
+    try:
+        done_thread.start()
+        assert landing_started.wait(5)
+        check_thread.start()
+        deadline = time.monotonic() + 5
+        while host._owner_calls.qsize() == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert host._owner_calls.qsize() == 1  # Check captured its grant and entered the owner queue.
+        release_landing.set()
+        assert owner_returned.wait(5)  # Owner finished done; its facade thread is held.
+        check_thread.join(5)
+        assert not check_thread.is_alive()
+        assert queued_replies == [{
+            "ok": False, "error": "owner_unavailable",
+            "detail": "LookupError: assignment has no active dispatch record",
+        }]
+        refused = registry.facade.call(token, "check")
+        assert refused == {
+            "ok": False, "error": "unauthorized", "detail": "unknown token"
+        }
+        assert calls == [("done", "task-owned-by-worker", "task-owned-by-worker")]
+        assert record.state == "settled"
+        assert registry.tokens.live() == frozenset()
+    finally:
+        release_landing.set()
+        release_facade.set()
+        done_thread.join()
+        if check_thread.ident is not None:
+            check_thread.join()
+        host.close()
+        registry.close()
+
+    assert replies[0]["submitted"] is True
 
 
 def test_worker_facade_refuses_foreign_assignment_token(monkeypatch, tmp_path):

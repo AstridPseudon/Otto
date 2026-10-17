@@ -3,7 +3,7 @@
 Every tool name, server name, role name and owner operation is supplied by the caller.
 """
 
-from .facade import AllowlistedPort, OwnerPort, ToolFacade
+from .facade import AllowlistedPort, OwnerPort, SettlingOwnerPort, ToolFacade
 from .rules import (
     CHECK,
     DONE,
@@ -36,4 +36,5 @@ __all__ = [
     "ToolFacade",
     "OwnerPort",
     "AllowlistedPort",
+    "SettlingOwnerPort",
 ]
