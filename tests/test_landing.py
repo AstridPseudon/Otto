@@ -163,12 +163,12 @@ def _service(fleet, runner, *, task=None, assessment_assess=None, blockers=None,
 
 
 def _admitted_task(*, argv=("/usr/bin/true",), gate_checks=None):
-    from herzchen.domains.work.admission import content_digest
+    from herzchen.domains.work.admission import authoring_stamp
     payload = {"kind": "task", "project_ref": "project@1", "title": "LAND task",
                "name": "task-1", "outcome": "land verified work",
                "fields": {"check": {"argv": list(argv)}}, "parent": None, "dependencies": []}
-    stamp = {"revision": "task-rev-1", "digest": content_digest(payload)}
-    payload["metadata_namespaces"] = {"work.admission": stamp}
+    payload["metadata_namespaces"] = {
+        "work.admission": authoring_stamp("task-rev-1", payload, "reviewer")}
     result = {"revision": "task-rev-1", "payload": payload}
     if gate_checks is not None:
         result["gate_checks"] = gate_checks
@@ -176,12 +176,12 @@ def _admitted_task(*, argv=("/usr/bin/true",), gate_checks=None):
 
 
 def _admitted_gate(check):
-    from herzchen.domains.work.admission import content_digest
+    from herzchen.domains.work.admission import authoring_stamp
     payload = {"kind": "task", "project_ref": "project@1", "title": "Gate task",
                "name": "gate-1", "outcome": "verify gate", "fields": {"check": check},
                "parent": None, "dependencies": []}
-    payload["metadata_namespaces"] = {"work.admission": {
-        "revision": "gate-rev-1", "digest": content_digest(payload)}}
+    payload["metadata_namespaces"] = {
+        "work.admission": authoring_stamp("gate-rev-1", payload, "reviewer")}
     return {"id": "gate-1", "revision": "gate-rev-1", "payload": payload}
 
 

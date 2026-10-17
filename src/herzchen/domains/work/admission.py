@@ -8,7 +8,7 @@ port, so no new operation, resource kind or domain descriptor is needed.
 The legacy stamp digest covers a narrow, stable subset of task fields. New stamps
 also carry a full reviewer-visible digest so edits to any authored task field can
 invalidate admission. Lifecycle, readiness, and the stamp itself are excluded.
-Older stamps without the full digest retain their historical comparison behavior.
+Stamps without the full digest are not sufficient to admit reviewer-visible content.
 """
 
 from __future__ import annotations
@@ -144,8 +144,7 @@ def admitted_revision(payload: Mapping[str, Any]) -> Optional[str]:
     stamp = stamp_of(payload)
     if stamp is None or stamp["digest"] != content_digest(payload):
         return None
-    if ("reviewed_digest" in stamp
-            and stamp["reviewed_digest"] != reviewed_content_digest(payload)):
+    if stamp.get("reviewed_digest") != reviewed_content_digest(payload):
         return None
     return str(stamp["revision"])
 

@@ -140,6 +140,7 @@ class ExecutionApplicationTests(unittest.TestCase):
     def compose(self, owner_actor="manager", manager_actor=None):
         issuer = self.binding.authenticated_actor(owner_actor)
         owner = PortfolioOwnerBootstrap(self.store, binding=self.binding, owner_actor=owner_actor,
+            operator_actor="human-operator",
             project_read_grant=ProjectReadGrant(issuer, (self.project.id,), "test-host", "v1"))
         self.port = issue_store_due_record_port(self.store.domain_handler((due_record_contribution(),)), issuer)
         adapter = HerzchenCodexAdapter(owner="worker", source=str(Path(self.temporary.name).resolve()), worktree=str(Path(self.temporary.name).resolve()),

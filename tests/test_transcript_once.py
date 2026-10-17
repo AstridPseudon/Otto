@@ -395,7 +395,8 @@ class HostSessionWiringTests(Fixture):
         from otto.hostctl.owner import HostSession, create_store, native_body_root
         home = self.dir / 'home'
         config = host_config.new_installation(home, store_path=str(self.dir / 'host.sqlite'), authority='owner',
-                                              owner_actor='owner', credential_ref='credential', python='python3')
+                                              owner_actor='owner', operator_actor='human-operator',
+                                              credential_ref='credential', python='python3')
         config = create_store(config)
         with HostSession(config) as session:
             self.assertIsInstance(session.native_bodies, RetainedNativeBodies)

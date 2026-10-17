@@ -200,7 +200,8 @@ class HostctlCliTest(HostctlFixture):
         # Pure check: refused before anything is created, so nothing is written.
         with self.assertRaises(host_config.HostConfigError):
             host_config.new_installation(Path("~/Documents/Codex/otto-test-home"), store_path="/x/owner.sqlite",
-                authority="a", owner_actor="o", credential_ref="c", python="/usr/bin/python3")
+                authority="a", owner_actor="o", operator_actor="human-operator",
+                credential_ref="c", python="/usr/bin/python3")
 
     def test_repo_map_command_updates_owner_installation(self):
         self._init()

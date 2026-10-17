@@ -476,7 +476,7 @@ class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
             created = self.sheet.create_pending(
                 title=title,
                 outcome=outcome,
-                creator=self.operator_actor or actor,
+                creator=self._operator_actor(),
                 curator=actor,
                 metadata=dict(metadata),
                 logical_request_key=project_key,
@@ -661,8 +661,10 @@ class PortfolioOwnerBootstrap:
             raise TypeError("store must be the trusted Herzchen Store owner")
         if not isinstance(binding, HerzchenBindingConfig):
             raise TypeError("binding must be HerzchenBindingConfig")
+        if operator_actor is not None and (not isinstance(operator_actor, str) or not operator_actor.strip()):
+            raise ValueError("operator identity must be exact nonblank text when supplied")
         authenticated = binding.authenticated_actor(owner_actor)
-        operator = binding.authenticated_actor(operator_actor or owner_actor)
+        operator = binding.authenticated_actor(operator_actor) if operator_actor is not None else None
         if authenticated.authority != store.authority:
             raise ValueError("binding authority does not belong to the supplied store")
         if project_read_grant is not None and (

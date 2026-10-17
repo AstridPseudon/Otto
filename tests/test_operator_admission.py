@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import patch
 
 from herzchen.contracts import ResourceRef
-from herzchen.domains.work.admission import task_content_matches
-from herzchen.domains.work.admission import TaskNotAdmittedError
+from herzchen.domains.work.admission import task_content_matches, TaskNotAdmittedError
+from herzchen.domains.work.admission import admitted_revision, content_digest
 from otto.hostctl import cli as host_cli, config as host_config, lanes
 from otto.hostctl.owner import HostSession
 from otto.hostctl.presence import LocalAuthenticationProver, PresenceResult
@@ -102,6 +102,38 @@ class OperatorAdmissionTests(HostctlFixture):
     def _audit(self):
         path = Path(self.home) / "run" / "operator-admission.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_legacy_admission_stamp_does_not_admit_edited_reviewer_content(self):
+        payload = {"kind": "task", "id": "task-a", "title": "Reviewed",
+                   "body": "Original body", "metadata_namespaces": {}}
+        payload["metadata_namespaces"]["work.admission"] = {
+            "revision": "task-r1", "digest": content_digest(payload), "basis": "review"}
+        payload["body"] = "Edited after review"
+        self.assertIsNone(admitted_revision(payload))
+
+    def test_missing_operator_identity_is_refused_at_owner_composition_boundaries(self):
+        from otto.portfolio.herzchen_binding import FiniteWorkOperations
+        from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap, _CreateAndOpenOwnerEngine
+
+        def check(session):
+            owner = PortfolioOwnerBootstrap(session.store, binding=session.binding,
+                owner_actor=session.owner.owner_actor.actor, operator_actor=None)
+            operations = FiniteWorkOperations(port=object(), reader=object(), binding=session.binding,
+                                               operator_actor=None)
+            engine = _CreateAndOpenOwnerEngine(session.store, sheet=session.owner.sheet,
+                                               authoring=session.owner.authoring, operator_actor=None)
+            self.assertIsNone(owner.operator_actor)
+            self.assertIsNone(operations.operator_actor)
+            self.assertIsNone(engine.operator_actor)
+            with self.assertRaisesRegex(ValueError, "operator"):
+                engine._operator_actor()
+            with self.assertRaisesRegex(ValueError, "operator"):
+                operations._operator()
+            with self.assertRaisesRegex(ValueError, "operator"):
+                engine.import_project_folder(project_json={"title": "Missing operator"}, files={},
+                    actor=session.owner.owner_actor, request_id="missing-operator-folder")
+
+        self._owner(check)
 
     def test_registered_project_has_operator_creator_host_curator_and_unadmitted_tasks(self):
         def inspect(session):

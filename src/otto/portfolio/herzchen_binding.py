@@ -257,6 +257,11 @@ class FiniteWorkOperations:
     def _actor(self, actor: str) -> Any:
         return self.binding.authenticated_actor(actor)
 
+    def _operator(self) -> Any:
+        if self.operator_actor is None:
+            raise ValueError("authenticated operator identity is required to create a project")
+        return self.operator_actor
+
     def read_document_receipt(self, *, project_ref: Mapping[str, Any], document_ref: Mapping[str, Any],
                               request_id: str, actor: str) -> Optional[Mapping[str, Any]]:
         """Read one exact receipt for an owned document in the existing grant.
@@ -486,7 +491,7 @@ class FiniteWorkOperations:
                 outcome=edit.get("outcome", ""),
                 logical_request_key=request_id,
                 actor=actor_value,
-                creator=self.operator_actor or actor_value,
+                creator=self._operator(),
                 curator=actor_value,
                 metadata=self._metadata(payload, request_id, payload.get("template", "blank")),
             )
@@ -1094,7 +1099,7 @@ class FiniteWorkOperations:
                 outcome=outcome,
                 logical_request_key=request_id,
                 actor=actor_value,
-                creator=self.operator_actor or actor_value,
+                creator=self._operator(),
                 curator=actor_value,
                 metadata=metadata,
             )
@@ -1586,7 +1591,7 @@ class FiniteWorkOperations:
                 outcome=edit.get("outcome", ""),
                 logical_request_key=request_id + "-project",
                 actor=self._actor(actor),
-                creator=self.operator_actor or self._actor(actor),
+                creator=self._operator(),
                 curator=self._actor(actor),
                 metadata=self._metadata(payload, request_id, payload["template"]),
             )
@@ -2366,7 +2371,7 @@ class FiniteWorkOperations:
                 created = self.sheet_port.create_pending(
                     title=project_values.get("title"), outcome=project_values.get("outcome", ""),
                     sheet=sheet, logical_request_key=request_id, actor=actor_value,
-                    creator=self.operator_actor or actor_value, curator=actor_value,
+                    creator=self._operator(), curator=actor_value,
                 )
                 return {"outcome": "replayed" if before is not None else "saved",
                         "project_ref": _json_value(created.project.ref),

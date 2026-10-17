@@ -205,6 +205,8 @@ class MacWriteScope:
         self.extra_write_roots = tuple(dict.fromkeys(extra))
         execs = []
         for command in tuple(exec_allow):
+            if not Path(command).is_absolute():
+                raise ClaudeBindingError('exec allowances must be existing absolute file paths')
             resolved = os.path.realpath(command)
             if not os.path.isfile(resolved):
                 raise ClaudeBindingError('exec allowances must be existing absolute file paths')
