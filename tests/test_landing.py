@@ -1,6 +1,7 @@
 """Acceptance tests for the owner-controlled landing lifecycle."""
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 import threading
@@ -385,6 +386,34 @@ def test_facade_done_starts_landing(tmp_path):
     assert result["ok"] is True and result["kind"] == DONE and result["accepted"] is False
     assert result["result"]["landed"] is True
     assert len(calls["accept"]) == 1
+
+
+def test_landed_write_artifact_remains_available_for_native_turn_capture(tmp_path):
+    """The real Claude adapter captures Write bytes after worker-done returns."""
+    from otto.agents.claude_adapter import capture_artifacts
+
+    line, _base, fleet = _project(tmp_path)
+    lab = fleet.labs["one"]
+    artifact = lab.path / "answer.txt"
+    artifact.write_text("captured owner result\n")
+    fleet.checkpoint(str(lab.path), ["one.txt", "answer.txt"], message="worker output")
+    runner = _Runner()
+    service, _calls = _service(fleet, runner)
+
+    landed = _advance(service)
+    native = {
+        "tools": {"write-1": {"name": "Write", "input": {
+            "file_path": str(artifact), "content": "captured owner result\n"}}},
+        "tool_results": {"write-1": {"is_error": False}},
+    }
+
+    # This is the exact post-stream capture operation: landing's ``done`` call
+    # has returned, and the adapter now verifies the bytes written in the lab.
+    captured = capture_artifacts(native, str(lab.path))
+
+    assert landed["landed"] is True
+    assert captured[0]["name"] == "answer.txt"
+    assert base64.b64decode(captured[0]["content_base64"]) == b"captured owner result\n"
 
 
 def test_facade_check_is_feedback_only(tmp_path):

@@ -309,6 +309,7 @@ class LabFleet:
                 raise LabRefused("lab %s already exists" % name)
             if _resolve(self.repo, "refs/labs/" + name) is not None:
                 raise LabRefused("refs/labs/%s is already parked; resume it or pick another name" % name)
+            self._landed_marker(name).unlink(missing_ok=True)
             self._refuse_dirty(self.repo, "the line")
             if self.template != self.repo and self._is_worktree(self.template):
                 self._refuse_dirty(self.template, "the template")
@@ -325,6 +326,7 @@ class LabFleet:
             start = _resolve(self.repo, "refs/labs/" + name + "^{commit}")
             if start is None:
                 raise LabRefused("nothing is parked as %s" % name)
+            self._landed_marker(name).unlink(missing_ok=True)
             self._discard_stale(name, path)
             self._populate(name, path, start)
         return self._lab(name)
@@ -349,7 +351,83 @@ class LabFleet:
             self._unlink(lab, before_unlink)
             if merged:
                 _git(self.repo, "update-ref", "-d", "refs/labs/" + name)
+            self._landed_marker(name).unlink(missing_ok=True)
             return RemoveResult(name, head, kept_ref=not merged)
+
+    def mark_landed(self, name: str, commit: str, merged_into: str) -> None:
+        """Record landing intent; cleanup also requires owner capture and line ancestry."""
+        self._check_name(name)
+        if not isinstance(commit, str) or not commit or not isinstance(merged_into, str) or not merged_into:
+            raise LabRefused("landed commit and owner line ref are required")
+        with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
+            self._mark_landed_locked(name, commit, merged_into)
+
+    def _mark_landed_locked(self, name: str, commit: str, merged_into: str) -> None:
+        """Record intent for a caller already holding this lab's exclusive lock."""
+        lab = self._existing(name)
+        if lab.head() != commit:
+            raise LabRefused("landed marker commit differs from lab HEAD")
+        marker = self._landed_marker(name)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=str(marker.parent), prefix=".landed-")
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as stream:
+                stream.write(commit + "\n" + merged_into + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, marker)
+        except BaseException:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary)
+            raise
+
+    def sweep_landed(self, merged_into: str, is_captured: Callable[[str, str], bool],
+                     before_unlink: Optional[Callable[[Path], Any]] = None) -> list:
+        """Retry removal only for labs with durable, exact landing evidence."""
+        if not isinstance(merged_into, str) or not merged_into or not callable(is_captured):
+            raise LabRefused("owner line ref and captured-result predicate are required for landed sweep")
+        directory = self.labs_root / ".landed"
+        if not directory.is_dir():
+            return []
+        results = []
+        for marker in sorted(directory.iterdir()):
+            name = marker.name
+            try:
+                self._check_name(name)
+                if marker.is_symlink() or not marker.is_file():
+                    raise LabRefused("landed marker is not a regular file")
+                marker_fields = marker.read_text(encoding="ascii").splitlines()
+                if len(marker_fields) != 2 or marker_fields[1] != merged_into:
+                    raise LabRefused("landed marker does not identify the requested owner line")
+                commit = marker_fields[0]
+                if not is_captured(name, commit):
+                    results.append(SweepResult(name, "kept-unsettled", "captured worker result is unavailable"))
+                    continue
+                if not self._is_ancestor(commit, merged_into):
+                    raise LabRefused("landed marker commit is not on the owner line")
+                lab_path = self.labs_root / name
+                if (lab_path.exists() or lab_path.is_symlink()) and not _is_lab_dir(lab_path):
+                    raise LabRefused("unlinked landed lab path is not a normal directory")
+                if not lab_path.exists():
+                    # Removal may have unlinked the directory and then failed
+                    # while deleting its captured lab ref. Finish that exact
+                    # cleanup from the marker and owner result evidence.
+                    parked = _resolve(self.repo, "refs/labs/" + name)
+                    if parked is not None and parked != commit:
+                        raise LabRefused("unlinked landed lab ref differs from its marker")
+                    if parked is not None:
+                        _git(self.repo, "update-ref", "-d", "refs/labs/" + name)
+                    marker.unlink()
+                    results.append(SweepResult(name, "removed", commit))
+                    continue
+                lab = self.get(name)
+                if lab.head() != commit:
+                    raise LabRefused("landed marker no longer matches the lab HEAD")
+                removed = self.remove(name, merged_into=merged_into, before_unlink=before_unlink)
+                results.append(SweepResult(name, "removed", removed.commit))
+            except Exception as exc:
+                results.append(SweepResult(name, "kept-error", repr(exc)))
+        return results
 
     def sweep(self, is_orphan: Callable[[str], bool],
               before_unlink: Optional[Callable[[Path], Any]] = None) -> list:
@@ -364,6 +442,9 @@ class LabFleet:
 
     def _marker(self, name: str) -> Path:
         return self.labs_root / ".creating" / name
+
+    def _landed_marker(self, name: str) -> Path:
+        return self.labs_root / ".landed" / name
 
     def _lab(self, name: str) -> Lab:
         return Lab(name, self.labs_root / name, "lab/" + name, self.exempt)
