@@ -524,17 +524,25 @@ def test_unresolved_dead_holder_keeps_capacity_claim_until_settled(tmp_path, mon
 
 
 def test_holder_crash_at_spawn_cannot_launch_command_without_durable_root(tmp_path):
+    from otto.portfolio.native_caller_ingress import process_identity
+
     marker = tmp_path / "command-ran"
+    spawned = tmp_path / "spawned.json"
     command = py(f"open({str(marker)!r}, 'w').write('ran')")
     code = f"""
-import os, signal, sys
+import json, os, signal, sys
+from pathlib import Path
 from otto.hostctl import heavy
+from otto.portfolio.native_caller_ingress import process_identity
 command = {command!r}
 real_popen = heavy.subprocess.Popen
 def crash_after_spawn(args, *a, **kw):
     child = real_popen(args, *a, **kw)
     if args == command or (len(args) > 3 and args[1:3] == ['-m', 'otto.hostctl.heavy']
                            and args[3] == '--_lease_child'):
+        identity = process_identity(child.pid)
+        Path({str(spawned)!r}).write_text(json.dumps(
+            {{'pid': child.pid, 'birth': list(identity.birth)}}))
         os.kill(os.getpid(), signal.SIGKILL)
     return child
 heavy.subprocess.Popen = crash_after_spawn
@@ -548,7 +556,24 @@ raise SystemExit(heavy.run(command, weight=1, purpose='crash at spawn',
     holder.wait(timeout=30)
     holder.stdout.close(); holder.stderr.close()
     assert holder.returncode == -signal.SIGKILL
-    time.sleep(0.3)
+    launched = json.loads(spawned.read_text())
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            current = process_identity(launched["pid"])
+        except ProcessLookupError:
+            break
+        except (PermissionError, OSError):
+            try:
+                os.kill(launched["pid"], 0)
+            except ProcessLookupError:
+                break
+        else:
+            if list(current.birth) != launched["birth"]:
+                break  # A reused PID proves the recorded incarnation has exited.
+        time.sleep(0.02)
+    else:
+        pytest.fail("the exact spawned helper did not reach a terminal state")
     assert not marker.exists(), "the requested command ran before exact custody was durable"
     path = next((tmp_path / "state" / "holders").glob("*.json"))
     record = json.loads(path.read_text())
