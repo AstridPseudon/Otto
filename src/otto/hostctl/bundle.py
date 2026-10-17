@@ -130,6 +130,8 @@ def parse_files(files: dict, *, raw_sha256: dict = None) -> dict:
         raise BundleError(f"{run_file} must contain JSON (despite the extension): {exc}") from None
     if not isinstance(run, dict):
         raise BundleError(f"{run_file} must contain a JSON object")
+    if "otto_generated_view" in run:
+        raise BundleError("generated run view is a read-only projection, not a source bundle")
 
     headings, tables = _scan_tables(files["tasklist.md"])
     tasks = _build_tasks(tables)
