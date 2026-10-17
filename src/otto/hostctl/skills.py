@@ -49,6 +49,15 @@ class SkillInstallError(ValueError):
     """Raised when a skill cannot be installed, linked or verified safely."""
 
 
+class ManagedMegadoSourceUnavailableError(SkillInstallError):
+    """The canonical managed Megado source cannot provide its declared skill."""
+
+    next_action = (
+        "Restore or re-register the canonical managed Megado pack and its provenance, "
+        "then retry `ottoctl skills install --megado --source-root <checkout>`."
+    )
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -321,14 +330,16 @@ def install_megado_skill_tree(
             source_state_path=_managed_source_state_path(),
         )
     except Exception as exc:
-        raise SkillInstallError("canonical Megado managed pack is unavailable or changed") from exc
+        raise ManagedMegadoSourceUnavailableError(
+            "canonical Megado managed pack is unavailable or changed"
+        ) from exc
 
     skill_resources = {
         item.path[len("skill/"):]: item.content
         for item in pack.resources if item.path.startswith("skill/")
     }
     if "SKILL.md" not in skill_resources:
-        raise SkillInstallError("canonical Megado pack has no skill/SKILL.md")
+        raise ManagedMegadoSourceUnavailableError("canonical Megado pack has no skill/SKILL.md")
     _check_component("megado", "skill name")
     with tempfile.TemporaryDirectory(prefix="otto-megado-skill-") as temporary:
         staged = Path(temporary) / "megado"

@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 try:
     from otto.hostctl import skills
@@ -90,6 +92,32 @@ class InstallTests(unittest.TestCase):
 
     def tearDown(self):
         self._tmp.cleanup()
+
+    def _assert_managed_megado_error(self, error):
+        self.assertIsInstance(error, skills.ManagedMegadoSourceUnavailableError)
+        self.assertTrue(error.next_action)
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.service import _owner_exception_result
+        for serialize in (_cli_exception_result, _owner_exception_result):
+            result = serialize(error)
+            self.assertEqual(result["error"]["code"], "SkillInstallError")
+            self.assertEqual(result["error"]["message"], str(error))
+            self.assertFalse(result["provider_called"])
+            self.assertEqual(result["next_action"], error.next_action)
+
+    def test_managed_megado_provenance_failure_has_recovery_action(self):
+        from herzchen.packs.authoring import PackProvenanceError
+        with patch("herzchen.packs.authoring.read_managed_pack", side_effect=PackProvenanceError("bad provenance")):
+            with self.assertRaises(skills.SkillInstallError) as caught:
+                skills.install_megado_skill_tree(self.root, self.dest, edition="ed1")
+        self._assert_managed_megado_error(caught.exception)
+
+    def test_managed_megado_missing_skill_md_has_recovery_action(self):
+        pack = SimpleNamespace(resources=[], source=SimpleNamespace(source_revision="abc"))
+        with patch("herzchen.packs.authoring.read_managed_pack", return_value=pack):
+            with self.assertRaises(skills.SkillInstallError) as caught:
+                skills.install_megado_skill_tree(self.root, self.dest, edition="ed1")
+        self._assert_managed_megado_error(caught.exception)
 
     def test_install_copies_stamps_and_writes_manifest(self):
         src = _make_source(self.root)
