@@ -75,6 +75,59 @@ def test_answer_continues_exact_asking_occurrence_and_rejects_stale_generation()
         fixture.doCleanups()
 
 
+def test_answered_worker_continuation_dispatches_once_and_replay_is_inert():
+    fixture = _fixture()
+    try:
+        f = fixture.f
+        assignment, guide, mandate = f.role_handles("worker", "worker", "ask-dispatch-session")
+        asking = f.app.prepare_role(role="worker", project_ref=f.project.ref.to_dict(),
+            task_ref=f.task.ref.to_dict(), assignment_ref=assignment.ref.to_dict(),
+            generation=assignment.generation, mandate_ref=mandate, context_refs=(guide, mandate),
+            request_key="ask-dispatch-occurrence", instruction="Wait for the owner decision.",
+            model="gpt-test", reasoning="high", profile="read-only",
+            native_session_id="ask-dispatch-session")
+        due = f.app._read(asking["schedule_id"])
+        f.port.save_due(due.schedule_id, replace(due, stop_state="completed",
+            completion_state="succeeded", in_flight_request=None,
+            last_completed_request="settle-ask-dispatch-occurrence").to_dict(),
+            request_id="settle-ask-dispatch-occurrence", expected_version=due.version)
+
+        asked = fixture.loop.ask(project_ref=f.project.ref.to_dict(),
+            assignment_ref=assignment.ref.to_dict(), generation=assignment.generation,
+            actor="worker", issue_key="ask-dispatch-question", problem="Need an owner decision",
+            evidence=[{"observed": "blocked"}], impact="Cannot continue safely",
+            requested_decision="Choose the next step", return_condition="Decision is recorded",
+            request_id="ask-dispatch-ask", asking_schedule_id=asking["schedule_id"])
+        answered = fixture.loop.respond_to_issue(project_ref=f.project.ref.to_dict(),
+            issue_id=asked["issue_id"], actor="root", authority_source="Owner decision",
+            response="Use the bounded repair route", proposed_solution="Repair only this task",
+            next_action="Continue the current session", request_id="ask-dispatch-answer")
+
+        request = dict(asking_schedule_id=asking["schedule_id"],
+            report_ref=answered["report_ref"], issue_id=asked["issue_id"],
+            assignment_ref=assignment.ref.to_dict(), generation=assignment.generation,
+            native_session_id="ask-dispatch-session")
+        prepared = f.app.continue_from_answer(**request)
+        assert prepared["outcome"] == "committed"
+        stream = "dispatch:" + assignment.ref.id
+        events_before = f.store.list_events(stream=stream)
+        calls_before = len(f.provider.calls)
+        started = f.app.continue_from_answer(**request, execute=True)
+        events_after_start = f.store.list_events(stream=stream)
+        assert started["outcome"] in {"succeeded", "replayed", "adoption-required"}
+        assert len(f.provider.calls) == calls_before + 1
+        new_events = events_after_start[len(events_before):]
+        assert len(new_events) == 1
+        assert [event.event_type for event in new_events] == ["work.assignment.dispatched"]
+
+        replayed = f.app.continue_from_answer(**request, execute=True)
+        assert replayed["schedule_id"] == started["schedule_id"]
+        assert len(f.provider.calls) == calls_before + 1
+        assert f.store.list_events(stream=stream) == events_after_start
+    finally:
+        fixture.doCleanups()
+
+
 def test_service_wait_returns_for_the_matching_real_delivery_event():
     fixture = _fixture()
     try:

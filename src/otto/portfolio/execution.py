@@ -2053,11 +2053,12 @@ class ExecutionApplication:
             binding_schedule_id=asking_schedule_id, timeout_seconds=prior.timeout_seconds,
             allowance_ref=prior.allowance_ref)
         if execute and prepared.get("outcome") in {"committed", "prepared", "replayed"}:
-            # Answer continuations resume an existing asking session through a
-            # fresh retained occurrence. Their dispatch is keyed to the exact
-            # answer request and replayed by WorkAssignments on retry.
-            self._record_assignment_dispatch(self._read(prepared["schedule_id"]),
-                logical_request_key=request_key + ":dispatch")
+            # Worker starts own dispatch at the shared provider boundary.
+            # Preserve the answer path's dispatch for other authorized roles,
+            # which the shared start boundary intentionally does not dispatch.
+            if prior.role != "worker":
+                self._record_assignment_dispatch(self._read(prepared["schedule_id"]),
+                    logical_request_key=request_key + ":dispatch")
             return self.start(schedule_id=prepared["schedule_id"])
         return prepared
 
