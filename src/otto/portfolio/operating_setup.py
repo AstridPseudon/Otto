@@ -155,7 +155,7 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
     a request-provided native ID or pin field alone never establishes authority.
     """
     from otto.attention import DueRecord, native_target_identity
-    from otto.agents.manager_capture_reconciliation import completed_resume_admission
+    from otto.agents.native_terminal_proof import completed_resume_admission
     def admission_for(record):
         attempt = (record.host_evidence or {}).get("gateway_attempt") or {}
         direct = attempt.get("delivery_admission") or {}
@@ -219,7 +219,7 @@ def verify_role_conversation(*, due: Any, assignment: Mapping[str, Any], project
         # Reuse only their completed, context-verified actual admission. The
         # exact owner authorization/assignment/project checks below still apply.
         proof_result = proof_attempt.get("result") or {}
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        from otto.agents.native_terminal_proof import retained_aborted_manager_capture
         if (proof_native is None and retained_aborted_manager_capture(conversation_due, actor)
                 and proof_result.get("physical_session_id") == native):
             proof_native = (proof_attempt.get("delivery_admission") or {}).get("physical_session_id")

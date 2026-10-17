@@ -168,7 +168,7 @@ class ExecutionApplication:
                 or _identity(prior.target["project_ref"]) != _identity(project)):
             raise OccurrencePreparationError("manual selector predecessor is foreign")
         attempt = (prior.host_evidence or {}).get("gateway_attempt")
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        from otto.agents.native_terminal_proof import retained_aborted_manager_capture
         aborted = retained_aborted_manager_capture(prior, self.actor)
         prompt_disposition = False
         if (prior.host_evidence or {}).get("manager_prompt_bound_custody_release"):
@@ -710,7 +710,7 @@ class ExecutionApplication:
                     initialized_worker_continuity(self, assignment, self._read(pin['schedule_id']), session,
                         request_key or value.get('in_flight_request'))
                     return
-                from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+                from otto.agents.native_terminal_proof import retained_aborted_manager_capture
                 terminal_abort = retained_aborted_manager_capture(proof, self.actor)
                 proof_session = proof["target"].get("native_id")
                 if terminal_abort:
@@ -1420,7 +1420,7 @@ class ExecutionApplication:
             return {**handle, "assignment_ref": due.assignment_ref, "due_version": due.version,
                     "outcome": "prepared", "next_action": "start this exact occurrence"}
         self._current(due.assignment_ref, due.generation)
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        from otto.agents.native_terminal_proof import retained_aborted_manager_capture
         if retained_aborted_manager_capture(due, self.actor):
             # The original turn cannot be retried. This settles only its exact
             # terminal capture; any in-turn command UNKNOWN remains separate.
@@ -1773,7 +1773,7 @@ class ExecutionApplication:
         independently settled native anchor. Worker delivery keeps its existing
         merge-before-start entrance instead of superseding that preparation.
         """
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        from otto.agents.native_terminal_proof import retained_aborted_manager_capture
         superseded = None
         reports = reports or []
         old_help = (prior.host_evidence or {}).get("help_continuation")

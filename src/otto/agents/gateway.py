@@ -1045,12 +1045,14 @@ class OttoGateway:
     def __init__(self, adapter: Any = None, *, binding_available: bool = True,
                  authority_available: bool = True,
                  attempt_capture: Optional[AttemptCapturePort] = None,
+                 effect_ledger: Any = None,
                  require_owner_binding: bool = False,
                  owner_bound: Optional[bool] = None) -> None:
         self.adapter = adapter
         self.binding_available = binding_available
         self.authority_available = authority_available
         self.attempt_capture = attempt_capture
+        self.effect_ledger = effect_ledger
         self.require_owner_binding = (
             require_owner_binding if owner_bound is None else owner_bound
         )
@@ -1694,6 +1696,13 @@ class OttoGateway:
                     "error": result["error"],
                 })
             return result
+        effect = None
+        if owner_bound and responsibility.operation in {"invoke", "resume", "send"} and self.effect_ledger is not None:
+            try:
+                effect = self.effect_ledger.begin(responsibility, self._fingerprint(responsibility, request))
+            except Exception as exc:
+                return error("native_effect_held", str(exc), adapter_called=False,
+                             next_action="inspect the exact retained effect and reconcile its native proof")
         started_session_id = responsibility.physical_session_id
         restore_thread_callback = None
         restore_turn_callback = None
@@ -1766,9 +1775,12 @@ class OttoGateway:
         def failed(exc):
             restore()
             if owner_bound and responsibility.operation != "inspect":
-                return self._attach_attempt(responsibility, request,
+                attached = self._attach_attempt(responsibility, request,
                                             error("adapter_error", str(exc), operation=responsibility.operation),
                                             error_message=str(exc))
+                if effect is not None:
+                    self.effect_ledger.finish(effect, attached["attempt"])
+                return attached
             return error("adapter_error", str(exc), operation=responsibility.operation)
 
         def complete(result):
@@ -1778,9 +1790,12 @@ class OttoGateway:
                 return failed(exc)
             finally:
                 restore()
-            return self._attach_attempt(
+            attached = self._attach_attempt(
                 responsibility, request, result, error_message=attestation_error
             ) if owner_bound and responsibility.operation != "inspect" else result
+            if effect is not None:
+                self.effect_ledger.finish(effect, attached["attempt"])
+            return attached
 
         from otto.portfolio.execution_host import ExecutionHost
         from otto.portfolio.owner_completion import after_owner

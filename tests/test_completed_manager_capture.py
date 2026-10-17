@@ -41,15 +41,23 @@ class CompletedResumeCaptureTests(unittest.TestCase):
         return f, root, role["schedule_id"], captured
 
     def test_terminal_reparse_retains_failed_transport_and_unknown_without_replay(self):
+        from herzchen.kernel.operations import OperationState
         f, root, schedule, prior = self.fixture()
+        ledger = f.app.runtime.effect_ledger
+        key = f.port.read_due(schedule)['in_flight_request']
+        held = ledger.get(key)
+        self.assertEqual(held.state, OperationState.UNKNOWN)
         before = f.port.read_due(schedule)
         submitted = (root / "submitted.jsonl").read_bytes()
         preview = f.app.runtime.reconcile_completed_resume_capture(schedule_id=schedule,
             expected_unknown_sha256=digest(prior), validate_only=True)
         self.assertEqual(preview["outcome"], "qualified")
+        self.assertEqual(ledger.get(key).state, OperationState.UNKNOWN)
         self.assertEqual(f.port.read_due(schedule), before)
         result = f.app.runtime.reconcile_completed_resume_capture(schedule_id=schedule,
             expected_unknown_sha256=digest(prior))
+        settled = ledger.get(key)
+        self.assertEqual(settled.state, OperationState.COMMITTED)
         self.assertFalse(result["provider_called"])
         self.assertEqual(result["admission_reconciliation"]["source_unknown"], prior)
         self.assertFalse(result["admission_reconciliation"]["original_admission_claimed"])
@@ -64,6 +72,7 @@ class CompletedResumeCaptureTests(unittest.TestCase):
         self.assertEqual((root / "submitted.jsonl").read_bytes(), submitted)
         self.assertTrue(f.app.runtime.reconcile_completed_resume_capture(schedule_id=schedule,
             expected_unknown_sha256=digest(prior))["replayed"])
+        self.assertEqual(ledger.get(key).version, settled.version)
         next_role = f.app.prepare_role(role="manager", project_ref=prior["project_ref"],
             task_ref=prior["task_ref"], assignment_ref=prior["assignment_ref"],
             generation=prior["generation"], mandate_ref=before["target"]["mandate_ref"],
@@ -79,7 +88,7 @@ class CompletedResumeCaptureTests(unittest.TestCase):
         self.assertEqual(native, prior["physical_session_id"])
         self.assertEqual((root / "submitted.jsonl").read_bytes(), submitted)
         from copy import deepcopy
-        from otto.agents.manager_capture_reconciliation import completed_resume_admission
+        from otto.agents.native_terminal_proof import completed_resume_admission
         attempt = f.port.read_due(schedule)["host_evidence"]["gateway_attempt"]
         for field, value in (("resolver", "foreign-owner"),
                              ("replacement_sha256", "0" * 64),

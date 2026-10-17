@@ -1,4 +1,4 @@
-"""Trusted terminal reparse for one lost manager resume-admission capture."""
+"""Reconcile manager captures and project exact retained native terminal proofs."""
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
@@ -23,6 +23,36 @@ def digest(value):
 def require(value, reason):
     if not value:
         raise OwnerRoleRuntimeError(reason)
+
+
+def _read_native_trace(runtime, session, *, reader_reason):
+    """Read one bounded regular native trace under the exact trusted session."""
+    reader = getattr(runtime.adapter, "trusted_thread_reader", None)
+    require(callable(reader), reader_reason)
+    thread = (reader(session) or {}).get("thread") or {}
+    require(thread.get("id") == session and isinstance(thread.get("path"), str),
+            "trusted native session metadata differs")
+    fd = os.open(thread["path"], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        require(stat.S_ISREG(metadata.st_mode), "native trace is not a regular file")
+        header = stream.readline(1024 * 1024 + 1)
+        require(header.endswith(b"\n") and len(header) <= 1024 * 1024,
+                "native session header exceeds bounded input")
+        start = max(len(header), metadata.st_size - 32 * 1024 * 1024)
+        stream.seek(start)
+        tail = stream.read(32 * 1024 * 1024 + 1)
+    require(len(tail) <= 32 * 1024 * 1024 and tail.endswith(b"\n"),
+            "native terminal tail is unavailable or incomplete")
+    if start > len(header):
+        tail = tail.split(b"\n", 1)[-1]
+    lines = [header.decode()] + [v.decode() for v in tail.splitlines() if v]
+    events = [json.loads(line) for line in lines]
+    require(events[0].get("type") == "session_meta"
+            and (events[0].get("payload", {}).get("id")
+                 or events[0].get("payload", {}).get("session_id")) == session,
+            "native file header identifies a different session")
+    return metadata, lines, events
 
 
 def reconcile_missing_manager_capture(runtime, *, schedule_id,
@@ -83,33 +113,12 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
             and attempt.get("assignment_ref") == capture.assignment_ref
             and attempt.get("generation") == capture.generation,
             "retained claim and authorization differ")
-    reader = getattr(runtime.adapter, "trusted_thread_reader", None)
-    require(callable(reader), "trusted exact-session native reader is required")
-    thread = (reader(session) or {}).get("thread") or {}
-    require(thread.get("id") == session and isinstance(thread.get("path"), str),
-            "trusted native session metadata differs")
-    fd = os.open(thread["path"], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(fd, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        require(stat.S_ISREG(metadata.st_mode), "native trace is not a regular file")
-        header = stream.readline(1024 * 1024 + 1)
-        require(header.endswith(b"\n") and len(header) <= 1024 * 1024,
-                "native session header exceeds bounded input")
-        start = max(len(header), metadata.st_size - 32 * 1024 * 1024)
-        stream.seek(start); tail = stream.read(32 * 1024 * 1024 + 1)
-    require(len(tail) <= 32 * 1024 * 1024 and tail.endswith(b"\n"),
-            "native terminal tail is unavailable or incomplete")
-    if start > len(header): tail = tail.split(b"\n", 1)[-1]
-    lines = [header.decode()] + [v.decode() for v in tail.splitlines() if v]
-    events = [json.loads(line) for line in lines]
-    native_session_id = (events[0].get("payload", {}).get("id")
-                         or events[0].get("payload", {}).get("session_id"))
+    metadata, lines, events = _read_native_trace(runtime, session,
+        reader_reason="trusted exact-session native reader is required")
     # The admission carries its session directly. Generation is retained on
     # the same owner claim and its authorization, then repeated in the exact
     # turn's invocation context below; observed_at is not identity evidence.
-    require(events[0].get("type") == "session_meta"
-            and native_session_id == session
-            and admission.get("physical_session_id") == native_session_id,
+    require(admission.get("physical_session_id") == session,
             "native file header identifies a different session")
     active, starts, ends, user_texts = set(), [], [], []
     for event in events:
@@ -237,50 +246,6 @@ def reconcile_missing_manager_capture(runtime, *, schedule_id,
     return {"outcome": "reconciled", "provider_called": False, "reconciliation": proof}
 
 
-def retained_aborted_manager_capture(due, lifecycle_owner):
-    """Retained owner capture proves physical terminality, never command effects."""
-    value = due.to_dict() if hasattr(due, "to_dict") else due if isinstance(due, Mapping) else vars(due)
-    attempt = (value.get("host_evidence") or {}).get("gateway_attempt") or {}
-    proof = attempt.get("missing_capture_reconciliation") or {}
-    result = attempt.get("result") or {}
-    claim = proof.get("source_claim") or {}
-    return (value.get("role") == "manager" and value.get("lifecycle_owner") == lifecycle_owner
-        and proof.get("schema") == "otto.missing-manager-capture-reconciliation.v1"
-        and proof.get("resolver") == lifecycle_owner and proof.get("native_terminal_state") == "aborted"
-        and proof.get("native_terminal_observed") is True
-        and proof.get("command_effects_reconciled") is False
-        and digest(claim) == proof.get("source_claim_sha256")
-        and attempt.get("state") == "result" and digest(result) == proof.get("result_sha256")
-        and result.get("outcome") == "failed" and result.get("delivery_state") == "done"
-        and (result.get("error") or {}).get("code") == "admitted_native_turn_aborted"
-        and claim.get("assignment_ref") == value.get("assignment_ref")
-        and claim.get("generation") == value.get("generation")
-        and result.get("physical_session_id") == proof.get("physical_session_id")
-        and result.get("observed_turn_id") == proof.get("observed_turn_id")
-        and (claim.get("delivery_admission") or {}).get("observed_turn_id") == proof.get("observed_turn_id"))
-
-
-def completed_resume_admission(attempt, lifecycle_owner):
-    """Project a verified terminal reparse, never the missing live callback."""
-    proof = attempt.get("delivery_admission_reconciliation") or {}
-    result = attempt.get("result") or {}
-    source = proof.get("source_unknown") or {}
-    if (proof.get("schema") != "otto.completed-resume-capture-reconciliation.v1"
-            or proof.get("resolver") != lifecycle_owner
-            or proof.get("effect") != "trusted_completed_resume_no_provider_replay"
-            or proof.get("source_unknown_sha256") != digest(source)
-            or source.get("operation") != "resume" or source.get("outcome") != "unknown"
-            or proof.get("replacement_sha256") != digest(result)
-            or result.get("outcome") != "succeeded" or result.get("context_digest_verified") is not True
-            or result.get("delivery_state") != "done"
-            or proof.get("native_turn_started") is not True
-            or proof.get("physical_session_id") != result.get("physical_session_id")
-            or proof.get("observed_turn_id") != result.get("observed_turn_id")):
-        return {}
-    return {"physical_session_id": result["physical_session_id"],
-            "observed_turn_id": result["observed_turn_id"], "native_turn_started": True,
-            "origin": "trusted_completed_resume_reparse", "original_live_admission": False}
-
 
 def reconcile_completed_resume_capture(runtime, *, schedule_id,
                                       expected_unknown_sha256, validate_only=False):
@@ -346,31 +311,8 @@ def reconcile_completed_resume_capture(runtime, *, schedule_id,
         and prior["requested_model"] == due["requested_model"]
         and prior["requested_reasoning"] == due["requested_reasoning"],
         "retained authorization, brief or exact current contract differs")
-    reader = getattr(runtime.adapter, "trusted_thread_reader", None)
-    require(callable(reader), "trusted exact-session native metadata reader is required")
-    thread = (reader(session) or {}).get("thread") or {}
-    require(thread.get("id") == session and isinstance(thread.get("path"), str),
-            "trusted native session metadata differs")
-    fd = os.open(thread["path"], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(fd, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        require(stat.S_ISREG(metadata.st_mode), "native trace is not a regular file")
-        header = stream.readline(1024 * 1024 + 1)
-        require(header.endswith(b"\n") and len(header) <= 1024 * 1024,
-                "native session header exceeds bounded input")
-        start = max(len(header), metadata.st_size - 32 * 1024 * 1024)
-        stream.seek(start)
-        tail = stream.read(32 * 1024 * 1024 + 1)
-    require(len(tail) <= 32 * 1024 * 1024 and tail.endswith(b"\n"),
-            "native terminal tail is unavailable or incomplete")
-    if start > len(header):
-        tail = tail.split(b"\n", 1)[-1]
-    lines = [header.decode()] + [v.decode() for v in tail.splitlines() if v]
-    events = [json.loads(line) for line in lines]
-    require(events[0].get("type") == "session_meta"
-        and (events[0].get("payload", {}).get("id")
-             or events[0].get("payload", {}).get("session_id")) == session,
-        "native file header identifies a different session")
+    metadata, lines, events = _read_native_trace(runtime, session,
+        reader_reason="trusted exact-session native metadata reader is required")
     began = datetime.fromisoformat(work["started_at"].replace("Z", "+00:00"))
     ended = datetime.fromisoformat(work["ended_at"].replace("Z", "+00:00"))
     require(began.tzinfo is not None and ended >= began, "retained transport times differ")
@@ -446,3 +388,46 @@ def reconcile_completed_resume_capture(runtime, *, schedule_id,
         parser_revision="otto.completed-resume-capture.v1")
     return {"outcome": "reconciled", "provider_called": False,
             "admission_reconciliation": proof, "result_reconciliation": reconciled["reconciliation"]}
+def retained_aborted_manager_capture(due, lifecycle_owner):
+    """Retained owner capture proves physical terminality, never command effects."""
+    value = due.to_dict() if hasattr(due, "to_dict") else due if isinstance(due, Mapping) else vars(due)
+    attempt = (value.get("host_evidence") or {}).get("gateway_attempt") or {}
+    proof = attempt.get("missing_capture_reconciliation") or {}
+    result = attempt.get("result") or {}
+    claim = proof.get("source_claim") or {}
+    return (value.get("role") == "manager" and value.get("lifecycle_owner") == lifecycle_owner
+        and proof.get("schema") == "otto.missing-manager-capture-reconciliation.v1"
+        and proof.get("resolver") == lifecycle_owner and proof.get("native_terminal_state") == "aborted"
+        and proof.get("native_terminal_observed") is True
+        and proof.get("command_effects_reconciled") is False
+        and digest(claim) == proof.get("source_claim_sha256")
+        and attempt.get("state") == "result" and digest(result) == proof.get("result_sha256")
+        and result.get("outcome") == "failed" and result.get("delivery_state") == "done"
+        and (result.get("error") or {}).get("code") == "admitted_native_turn_aborted"
+        and claim.get("assignment_ref") == value.get("assignment_ref")
+        and claim.get("generation") == value.get("generation")
+        and result.get("physical_session_id") == proof.get("physical_session_id")
+        and result.get("observed_turn_id") == proof.get("observed_turn_id")
+        and (claim.get("delivery_admission") or {}).get("observed_turn_id") == proof.get("observed_turn_id"))
+
+
+def completed_resume_admission(attempt, lifecycle_owner):
+    """Project a verified terminal reparse, never the missing live callback."""
+    proof = attempt.get("delivery_admission_reconciliation") or {}
+    result = attempt.get("result") or {}
+    source = proof.get("source_unknown") or {}
+    if (proof.get("schema") != "otto.completed-resume-capture-reconciliation.v1"
+            or proof.get("resolver") != lifecycle_owner
+            or proof.get("effect") != "trusted_completed_resume_no_provider_replay"
+            or proof.get("source_unknown_sha256") != digest(source)
+            or source.get("operation") != "resume" or source.get("outcome") != "unknown"
+            or proof.get("replacement_sha256") != digest(result)
+            or result.get("outcome") != "succeeded" or result.get("context_digest_verified") is not True
+            or result.get("delivery_state") != "done"
+            or proof.get("native_turn_started") is not True
+            or proof.get("physical_session_id") != result.get("physical_session_id")
+            or proof.get("observed_turn_id") != result.get("observed_turn_id")):
+        return {}
+    return {"physical_session_id": result["physical_session_id"],
+            "observed_turn_id": result["observed_turn_id"], "native_turn_started": True,
+            "origin": "trusted_completed_resume_reparse", "original_live_admission": False}

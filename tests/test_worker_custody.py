@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import unittest
 
 from herzchen.contracts import ResourceRef
+from herzchen.kernel.operations import OperationState
+from otto.agents.gateway import Responsibility
 from otto.portfolio.execution import _digest
 from otto.portfolio.execution_operations import OccurrencePreparationError
 from otto.portfolio.worker_custody import CAPACITY, permits_fresh_worker
@@ -22,6 +24,23 @@ def jsonl(items):
 
 
 class WorkerCustodyTests(unittest.TestCase):
+    def test_released_unknown_native_effect_remains_held_without_provider_retry(self):
+        due = self.before
+        attempt = due['host_evidence']['gateway_attempt']
+        result = attempt['result']
+        responsibility = Responsibility(owner=self.f.app.actor, logical_agent_id=due['recipient'],
+            operation=result['operation'], packet_digest='a' * 64,
+            logical_request_key=attempt['logical_request_key'],
+            project_ref=result['project_ref'], task_ref=result['task_ref'],
+            assignment_ref=due['assignment_ref'], generation=due['generation'])
+        ledger = self.f.app.runtime.effect_ledger
+        started = ledger.begin(responsibility, 'f' * 64)
+        ledger.finish(started, result)
+        self.assertEqual(ledger.get(attempt['logical_request_key']).state, OperationState.UNKNOWN)
+        self.release()
+        self.assertEqual(ledger.get(attempt['logical_request_key']).state, OperationState.UNKNOWN)
+        self.assertEqual(self.f.provider.calls, [])
+
     def setUp(self):
         self.f = fixtures.ExecutionApplicationTests(); self.f.setUp()
         self.addCleanup(self.f.doCleanups)

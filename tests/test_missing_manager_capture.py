@@ -12,10 +12,14 @@ class MissingManagerCaptureTests(unittest.TestCase):
         helper = fixture.FreshManagerTests()
         f, root = helper.fixture()
         self.addCleanup(helper.doCleanups)
+        effect_ledger = f.app.runtime.effect_ledger
+        f.app.runtime.effect_ledger = None  # Model the owner crash after durable start.
         outcome = f.app.start(schedule_id='fresh-manager', settle=False)
+        f.app.runtime.effect_ledger = effect_ledger
         self.assertEqual(outcome['outcome'], 'succeeded')
         due = f.port.read_due('fresh-manager')
         attempt = due['host_evidence']['gateway_attempt']
+        original_result = attempt['result']
         claim = {k: copy.deepcopy(v) for k, v in attempt.items()
                  if k not in {'result', 'manager_acceptance'}}
         claim['state'] = 'claimed'
@@ -28,30 +32,53 @@ class MissingManagerCaptureTests(unittest.TestCase):
                         request_id='fixture-owner-lost-capture')
         f.app.runtime.adapter.trusted_thread_reader = lambda session: {
             'thread': {'id': session, 'path': str(root / 'native.jsonl')}}
+        from types import SimpleNamespace
+        started = effect_ledger.begin(SimpleNamespace(**{
+            'logical_request_key': claim['logical_request_key'],
+            'operation': original_result['operation'], 'packet_digest': claim['request_fingerprint'],
+            'project_ref': original_result['project_ref'],
+            'task_ref': original_result['task_ref'],
+            'assignment_ref': claim['assignment_ref'],
+            'generation': claim['generation'],
+            'physical_session_id': original_result['physical_session_id']}),
+            claim['request_fingerprint'])
+        effect_ledger.finish(started, {'outcome': 'unknown', 'delivery_state': 'unknown',
+            'observed_turn_id': (claim.get('delivery_admission') or {}).get('observed_turn_id')})
         return f, root, claim
 
     def test_completed_admitted_turn_captured_and_settled_once_without_provider(self):
+        from herzchen.kernel.operations import OperationState
         f, root, claim = self.claimed()
+        ledger = f.app.runtime.effect_ledger
+        held = ledger.get(claim['logical_request_key'])
+        self.assertEqual(held.state, OperationState.UNKNOWN)
         before = (root / 'submitted.jsonl').read_bytes()
         due_before = f.port.read_due('fresh-manager')
         preview = f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
             expected_claim_sha256=fixture.digest(claim), validate_only=True)
         self.assertEqual(preview['outcome'], 'qualified')
+        self.assertEqual(ledger.get(claim['logical_request_key']).state, OperationState.UNKNOWN)
         self.assertEqual(f.port.read_due('fresh-manager'), due_before)
         recovered = f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
             expected_claim_sha256=fixture.digest(claim))
         self.assertFalse(recovered['provider_called'])
+        settled = ledger.get(claim['logical_request_key'])
+        self.assertEqual(settled.state, OperationState.COMMITTED)
         self.assertEqual(recovered['reconciliation']['source_claim'], claim)
         self.assertIsNone(recovered['reconciliation']['original_transport_exit_status'])
         self.assertEqual(f.app.recover(schedule_id='fresh-manager', execute=False)['outcome'], 'succeeded')
         self.assertTrue(f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
             expected_claim_sha256=fixture.digest(claim))['replayed'])
+        self.assertEqual(ledger.get(claim['logical_request_key']).version, settled.version)
         self.assertEqual((root / 'submitted.jsonl').read_bytes(), before)
 
     def test_admitted_abort_is_failed_settlement_and_physical_release_not_success(self):
-        from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
+        from herzchen.kernel.operations import OperationState
+        from otto.agents.native_terminal_proof import retained_aborted_manager_capture
         from otto.portfolio.execution_host import ExecutionHost
         f, root, claim = self.claimed()
+        ledger = f.app.runtime.effect_ledger
+        self.assertEqual(ledger.get(claim['logical_request_key']).state, OperationState.UNKNOWN)
         trace = root / 'native.jsonl'
         rows = [json.loads(v) for v in trace.read_text().splitlines()]
         for row in rows:
@@ -63,6 +90,8 @@ class MissingManagerCaptureTests(unittest.TestCase):
         key = fixture.digest(claim)
         result = f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
             expected_claim_sha256=key)
+        settled = ledger.get(claim['logical_request_key'])
+        self.assertEqual(settled.state, OperationState.FAILED)
         self.assertEqual(result['reconciliation']['native_terminal_state'], 'aborted')
         recovered = f.app.recover(schedule_id='fresh-manager', execute=False)
         self.assertEqual(recovered['outcome'], 'failed')
@@ -97,6 +126,9 @@ class MissingManagerCaptureTests(unittest.TestCase):
         self.assertFalse(retained_aborted_manager_capture(changed, f.app.actor))
         self.assertFalse(retained_aborted_manager_capture(due, 'foreign'))
         self.assertEqual((root / 'submitted.jsonl').read_bytes(), before)
+        self.assertEqual(f.app.runtime.reconcile_missing_manager_capture(schedule_id='fresh-manager',
+            expected_claim_sha256=key)['replayed'], True)
+        self.assertEqual(ledger.get(claim['logical_request_key']).version, settled.version)
 
     def test_aborted_manual_selector_allows_distinct_same_native_callback_start(self):
         f, root, claim = self.claimed()

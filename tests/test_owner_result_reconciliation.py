@@ -1,7 +1,17 @@
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
+import tempfile
+import hashlib
+import json
 
-from otto.agents.owner_runtime import OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
+from herzchen.contracts import AuthenticatedActor
+from herzchen.kernel import Store
+from herzchen.kernel.operations import OperationState, UnknownOutcomeError
+from otto.agents.effect_ledger import NativeEffectLedger
+from otto.agents.gateway import Responsibility
+
+from otto.agents.owner_runtime import CanonicalRoleRuntime, OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
 
 
 ASSIGNMENT = {"authority": "owner", "kind": "wrk.assignment", "id": "a-1", "revision": "rev-2"}
@@ -66,6 +76,82 @@ class FixtureCapture(OwnerAuthorizedRoleCapture):
 
 
 class OwnerResultReconciliationTests(unittest.TestCase):
+    def test_fresh_manager_replay_finishes_held_effect_after_capture_crash(self):
+        source = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "unknown",
+                  "assignment_ref": ASSIGNMENT, "generation": 1}
+        digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        result = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "succeeded",
+                  "delivery_state": "done", "assignment_ref": ASSIGNMENT, "generation": 1,
+                  "project_ref": {"id": "project-1"}, "task_ref": {"id": "task-1"},
+                  "physical_session_id": "session-1", "observed_turn_id": "turn-native",
+                  "task_bound_evidence": {"verified": True}}
+        proof = {"schema": "otto.owner-native-admission-reconciliation.v1",
+                 "resolver": "owner-principal", "effect": "retained_completed_native_turn_no_provider_replay",
+                 "source_unknown": source, "source_unknown_sha256": digest(source),
+                 "native_turn_started": True, "trace_sha256": "b" * 64,
+                 "physical_session_id": "session-1", "observed_turn_id": "turn-native",
+                 "task_bound_evidence_sha256": digest(result["task_bound_evidence"])}
+        reconciliation = {"schema": "otto.owner-result-reconciliation.v1", "resolver": "owner-principal",
+                          "effect": "retained_evidence_reparsed_no_provider_replay",
+                          "source_unknown_sha256": digest(source), "trace_sha256": "b" * 64}
+        due = {"role": "manager", "execution_mode": "fresh_manager", "generation": 1,
+               "target": {"mandate_ref": {"id": "mandate-1"}, "principal": "manager"},
+               "host_evidence": {"gateway_attempt": {"state": "result", "logical_request_key": "turn-1",
+                   "result": result, "delivery_admission_reconciliation": proof,
+                   "reconciliation": reconciliation}}}
+        checks, settlements = [], []
+        capture = SimpleNamespace(completed_scope_validator=lambda: None, settled_publication=False,
+            validate_completed_manager_result=lambda value: checks.append(value))
+        current_assignment = {"ref": ASSIGNMENT, "assignment_ref": ASSIGNMENT,
+            "role": "manager", "principal": "manager", "generation": 1,
+            "assignment_pin_content_matches": True}
+        ledger = SimpleNamespace(get=lambda key: SimpleNamespace(state=OperationState.UNKNOWN),
+            settle_verified=lambda key, value: settlements.append((key, value)))
+        runtime = object.__new__(CanonicalRoleRuntime)
+        runtime.actor = "owner-principal"
+        runtime.due_port = SimpleNamespace(read_due=lambda schedule: due)
+        runtime.effect_ledger = ledger
+        runtime._binding = lambda **kwargs: (current_assignment, None, capture)
+        current_assignment.update(ref={**ASSIGNMENT, "revision": "rev-3"},
+            assignment_ref={**ASSIGNMENT, "revision": "rev-3"}, generation=2,
+            assignment_pin_content_matches=False)
+        with self.assertRaisesRegex(OwnerRoleRuntimeError, "assignment"):
+            runtime.reconcile_fresh_manager_result(schedule_id="schedule-1",
+                expected_unknown_sha256=digest(source))
+        self.assertEqual(settlements, [])
+        current_assignment.update(ref=ASSIGNMENT, assignment_ref=ASSIGNMENT,
+            generation=1, assignment_pin_content_matches=True)
+        replay = runtime.reconcile_fresh_manager_result(schedule_id="schedule-1",
+            expected_unknown_sha256=digest(source))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(checks, [result])
+        self.assertEqual(settlements, [("turn-1", result)])
+
+    def test_native_start_claim_survives_reconstruction_and_unknown_stays_held(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "effect.sqlite"
+            store = Store.create(path, authority="owner")
+            actor = AuthenticatedActor("owner", "owner-principal", "credential")
+            ledger = NativeEffectLedger(store, actor)
+            responsibility = Responsibility(owner="owner-principal", logical_agent_id="worker-1",
+                operation="resume", packet_digest="a" * 64, physical_session_id="session-1",
+                logical_request_key="turn-1", project_ref={"authority": "owner", "kind": "wrk.project", "id": "p-1"},
+                task_ref={"authority": "owner", "kind": "wrk.task", "id": "t-1"},
+                assignment_ref=ASSIGNMENT, generation=1)
+            started = ledger.begin(responsibility, "f" * 64)
+            self.assertEqual(started.state, OperationState.STARTED)
+            store.close()
+            store = Store.open(path, authority="owner")
+            try:
+                recovered = NativeEffectLedger(store, actor)
+                self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+                with self.assertRaises(UnknownOutcomeError):
+                    recovered.begin(responsibility, "f" * 64)
+                self.assertEqual(recovered.get("turn-1").state, OperationState.UNKNOWN)
+            finally:
+                store.close()
+
     def test_exact_retained_success_reconciles_without_provider_retry(self):
         capture = FixtureCapture()
         result = capture.reconcile_unknown_result(
