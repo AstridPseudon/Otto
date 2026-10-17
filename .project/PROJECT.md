@@ -11,3 +11,11 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 ## Questions for the orchestrator
 
 - **PK3 §15 decision:** May PK3 update `tests/test_megado_templates.py::test_templates_are_json_and_match_the_host_profiles` so the two Megado run templates stop carrying seven static profile bindings and instead resolve them from the new pinned profile pack? The current test explicitly asserts those static values. §15 requires an Opus decision when an existing test's expected behavior changes; no such decision is recorded here. PK3 has no committed implementation. Its draft tests were not accepted: the source scan was overbroad and there is no production change to validate yet. PK5 depends on PK3. PK4 is independent and has landed.
+
+## Astra final review
+
+Reviewed the merged project diff against the goal and deletion budget. Astra found two concrete defects; both are fixed in `c383807`: the immutable Megado provenance paths again match their retained source commit/digests (with regression assertions), and the role pack no longer advertises the unimplemented `route-project` or `run-worker-result` commands (with a regression check). Astra re-read that correction and confirmed both findings resolved with no further demonstrated defect. Earlier PK1 Astra findings—the installed runtime root, compatibility helper and host guidance, and complete responsibility in `effective-context`—were also fixed and re-reviewed before merge.
+
+**Needs the gate:** `src/otto/portfolio/tests/test_role_context.py` has 22 owner-backed tests that fail at Unix socket fixture setup with `PermissionError`; `src/otto/portfolio/tests/test_d05_events_candidate_proof.py` has 5 tests blocked at the same socket setup. The focused non-socket role-pack checks and `src/otto/portfolio/tests/test_observability_contract.py` pass.
+
+**Remaining scope:** PK3 is blocked on the requested §15 Opus decision about replacing the two Megado run templates' static profile bindings. PK5 and its cold-agent measurement are blocked by PK3. The `host_profiles.PROFILES` table and 101 static run-template lines therefore remain; this is outstanding deletion-budget work, not a defect in the merged tasks.
