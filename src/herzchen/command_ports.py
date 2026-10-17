@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+from collections import deque
 from dataclasses import fields, is_dataclass
 from enum import Enum
 import importlib
@@ -26,6 +27,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 SERIALIZED_COMMAND_REVISION = "herzchen.command-transport.v1"
 _TAG = "$herzchen"
 _MAX_BYTES = 8 * 1024 * 1024
+_AUDIT_LIMIT = 256
 _FORBIDDEN = frozenset({
     "connection", "transaction", "mutate", "put_identity", "revise_identity",
     "put_reference", "append_event", "register_domain", "register_domain_handler",
@@ -332,36 +334,61 @@ class SerializedReaderClient:
 
 class _OwnerService:
     def __init__(self, facade: Any, transport: SerializedFacadeTransport, *, socket_enabled: bool = True) -> None:
-        self.facade, self.transport, self.closed, self.audit = facade, transport, threading.Event(), []
+        self.facade, self.transport, self.closed = facade, transport, threading.Event()
+        self.audit = deque(maxlen=_AUDIT_LIMIT)
         self.owner_endpoints = tuple(getattr(facade, "endpoints", transport.endpoints))
         directory_info = os.lstat(os.path.dirname(transport.socket_path))
         self.directory_identity = (directory_info.st_dev, directory_info.st_ino)
         self.socket_identity = None
         self.socket = None
-        if socket_enabled:
-            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            try:
-                self.socket.bind(transport.socket_path)
-                socket_info = os.lstat(transport.socket_path)
-                self.socket_identity = (socket_info.st_dev, socket_info.st_ino)
-                os.chmod(transport.socket_path, 0o600); self.socket.listen(16)
-                self.socket.settimeout(0.2)
-            except BaseException:
-                self.socket.close()
-                if self.socket_identity is not None:
-                    try:
-                        info = os.lstat(transport.socket_path)
-                        if (info.st_dev, info.st_ino) == self.socket_identity:
-                            os.unlink(transport.socket_path)
-                    except OSError:
-                        pass
-                raise
+        self.socket_enabled = socket_enabled
+        self._activation_lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
 
     def activate(self) -> None:
-        if self.socket is not None and self.thread is None:
+        if not self.socket_enabled or self.closed.is_set():
+            return
+        with self._activation_lock:
+            if self.closed.is_set():
+                return
+            if self.thread is not None:
+                return
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(self.transport.socket_path)
+                socket_info = os.lstat(self.transport.socket_path)
+                self.socket_identity = (socket_info.st_dev, socket_info.st_ino)
+                os.chmod(self.transport.socket_path, 0o600)
+                listener.listen(16)
+                listener.settimeout(0.2)
+            except BaseException:
+                listener.close()
+                if self.socket_identity is not None:
+                    try:
+                        info = os.lstat(self.transport.socket_path)
+                        if (info.st_dev, info.st_ino) == self.socket_identity:
+                            os.unlink(self.transport.socket_path)
+                    except OSError:
+                        pass
+                    self.socket_identity = None
+                raise
+            self.socket = listener
             self.thread = threading.Thread(target=self._serve, name="herzchen-owner-" + self.transport.session_id, daemon=True)
-            self.thread.start()
+            try:
+                self.thread.start()
+            except BaseException:
+                self.thread = None
+                self.socket = None
+                listener.close()
+                if self.socket_identity is not None:
+                    try:
+                        info = os.lstat(self.transport.socket_path)
+                        if (info.st_dev, info.st_ino) == self.socket_identity:
+                            os.unlink(self.transport.socket_path)
+                    except OSError:
+                        pass
+                    self.socket_identity = None
+                raise
 
     def _serve(self) -> None:
         while not self.closed.is_set():
@@ -416,10 +443,13 @@ class _OwnerService:
             return response
 
     def close(self) -> None:
-        self.closed.set()
-        if self.socket is not None:
-            self.socket.close()
-        if self.thread is not None and self.thread is not threading.current_thread(): self.thread.join(timeout=1.0)
+        with self._activation_lock:
+            self.closed.set()
+            listener = self.socket
+            thread = self.thread
+        if listener is not None:
+            listener.close()
+        if thread is not None and thread is not threading.current_thread(): thread.join(timeout=1.0)
         # Only this service's newly created directory is disposable. Never
         # recurse, scan old transports, or unlink a path replaced by another owner.
         directory = os.path.dirname(self.transport.socket_path)
@@ -533,8 +563,14 @@ def connect_consumer_facade(value: Mapping[str, Any] | SerializedFacadeTransport
 
 
 def close_consumer_facade(transport: SerializedFacadeTransport) -> None:
-    service = _OWNER_SERVICES.pop(transport.session_id, None)
-    if service is not None: service.close()
+    service = _OWNER_SERVICES.get(transport.session_id)
+    if service is None or service.transport.owner_pid != os.getpid():
+        return
+    if (service.transport.socket_path != transport.socket_path
+            or not secrets.compare_digest(service.transport.token, transport.token)):
+        return
+    _OWNER_SERVICES.pop(transport.session_id, None)
+    service.close()
 
 
 def consumer_facade_audit(transport: SerializedFacadeTransport) -> Tuple[Mapping[str, Any], ...]:

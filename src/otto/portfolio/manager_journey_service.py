@@ -649,11 +649,16 @@ class ManagerJourneyService:
             return {"state": "unknown", "reason": "owner assessment policy is unavailable"}
         try:
             from herzchen.contracts import ResourceRef
-            from herzchen.kernel import LimitService
             pool_value = configured.get("pool_ref")
             if pool_value is None:
                 pool_value = {"authority": self.server.state["authority"], "kind": "limit", "id": configured["pool_id"]}
-            pool = LimitService(self.server.store).get_pool(ResourceRef.from_dict(pool_value))
+            limits = getattr(getattr(self.server, "owner", None), "_limit_service", None)
+            if limits is None:
+                # Minimal compatibility servers used by focused unit tests do
+                # not compose a PortfolioOwnerBootstrap.
+                from herzchen.kernel import LimitService
+                limits = LimitService(self.server.store)
+            pool = limits.get_pool(ResourceRef.from_dict(pool_value))
             if pool is None:
                 return {"state": "unknown", "pool_ref": pool_value, "reason": "owner limit pool is missing"}
             return {"state": "known", "pool_ref": pool.ref.to_dict(),
