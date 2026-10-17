@@ -514,7 +514,7 @@ def _point_of_use(effective: Mapping[str, Any], help_value: Mapping[str, Any]) -
             key: effective.get(key) for key in (
                 "assignment_ref", "responsibility_ref", "generation", "directive_revisions",
                 "resource_revisions", "remit", "selected_project_set", "current_outcomes",
-                "dependencies", "next_actor", "next_action",
+                "dependencies", "next_actor", "next_action", "effective_manager_brief", "manager_actions",
             ) if key in effective
         },
         "help": {

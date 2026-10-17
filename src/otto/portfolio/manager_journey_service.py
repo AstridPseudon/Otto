@@ -303,6 +303,79 @@ class ManagerJourneyService:
             "status": status, **status,
         }
 
+    def _authorize_manager_tool(self, command: str) -> Mapping[str, Any]:
+        """Recheck project-bound manager authority at each new action seam."""
+        context = _CALLER.get()
+        if not isinstance(context, Mapping):
+            raise PermissionError(command + " requires the authenticated manager caller")
+        if context.get("project_ref") != self.server.state.get("project_ref"):
+            raise PermissionError(command + " caller belongs to a different project")
+        self.authorize_caller(context, {"command": command})
+        return self.server.state
+
+    def _show(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if set(request) != {"command"}:
+            raise ValueError("show reads only the bound manager's current project")
+        state = self._authorize_manager_tool("show")
+        from .show import show_project
+        result = show_project(self.server.portfolio, actor=state["manager"],
+            project_ref=state["project_ref"], limit=128)
+        if result.get("outcome") not in {"read", "listed", "partial"}:
+            return result
+        current = self.server.due_port.read_due(self._current_manager_schedule()) or {}
+        return {**result, "project_ref": state["project_ref"],
+            "effective_context": self._effective_context(current),
+            "project_role_identity": {
+                "project_ref": state["project_ref"], "role": "manager",
+                "principal": state["manager"], "assignment_ref": state["assignment_ref"],
+                "generation": state["manager_generation"],
+            }, "provider_called": False}
+
+    def _save_manager_note(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        state = self._authorize_manager_tool("save")
+        if set(request) != {"command", "request_key", "note"} and set(request) != {
+                "command", "request_key", "note", "task"}:
+            raise ValueError("save accepts one concise note and an optional current task alias")
+        note = request.get("note")
+        if not isinstance(note, str) or not note.strip() or len(note.encode("utf-8")) > 2048:
+            raise ValueError("manager note must contain 1 to 2048 UTF-8 bytes")
+        task = request.get("task")
+        if task is not None and task not in state["task_refs"]:
+            raise ValueError("manager note task must be a current project task alias")
+        key = self.commands._key(request)
+        from datetime import datetime, timezone
+        from .owner_readers import json_value
+        value = {"schema": "otto.manager-note.v1", "project_ref": state["project_ref"],
+            "assignment_ref": state["assignment_ref"], "generation": state["manager_generation"],
+            "task_ref": None if task is None else state["task_refs"][task],
+            "note": note.strip(), "logical_request_key": key,
+            "recorded_at": datetime.now(timezone.utc).isoformat()}
+        actor = self.server.owner.binding.authenticated_actor(state["manager"])
+        saved = self.server.owner.assignments.command_port.append_report(
+            ResourceRef.from_dict(state["assignment_ref"]), value,
+            expected_generation=state["manager_generation"], logical_request_key=key, actor=actor)
+        return {"outcome": "saved", "report": json_value(saved), "project_ref": state["project_ref"],
+            "request_key": key, "provider_called": False, "dispatch": False,
+            "allowance": "current manager assignment only; no task, mandate, or project scope change"}
+
+    def _route_manager_action(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        state = self._authorize_manager_tool("route")
+        operation = request.get("operation")
+        key = self.commands._key(request)
+        if operation == "reroute":
+            fields = {"command", "operation", "request_key", "task", "principal", "route", "focus"}
+            if set(request) != fields:
+                raise ValueError("reroute requires one current task, principal, route, and bounded focus")
+            return self._submit_worker({"command": "run-worker", "request_key": key,
+                **{field: request[field] for field in ("task", "principal", "route", "focus")}})
+        if operation == "retry":
+            if set(request) != {"command", "operation", "request_key", "schedule_id"}:
+                raise ValueError("retry requires only the exact retained schedule and tool request key")
+            result = self._execution_control({"command": "execution-control", "operation": "resume",
+                "schedule_id": request["schedule_id"]})
+            return {**result, "tool_request_key": key}
+        raise ValueError("route operation must be reroute or retry")
+
     def _task_acceptance_projection(self) -> Mapping[str, Any]:
         """Read current selected task acceptance refs without execution history."""
         self.commands._authorize()
@@ -332,7 +405,12 @@ class ManagerJourneyService:
         """Select current owner-issued preparation without discarding effects."""
         state = self.server.state
         historical = (state.get("manager_continuation") or {}).get("schedule_id")
-        for schedule in dict.fromkeys(filter(None, (historical, state.get("schedule_id")))):
+        current_schedule = state.get("schedule_id")
+        # A retained continuation may be the live same-session head even when
+        # another prepared occurrence is also named by state. Qualify it first;
+        # a stale but settled predecessor yields to a newer schedule already
+        # pinned to the current adopted assignment.
+        for schedule in dict.fromkeys(filter(None, (historical, current_schedule))):
             due = self.server.due_port.read_due(schedule)
             if not isinstance(due, Mapping):
                 raise PermissionError("retained manager occurrence is missing")
@@ -353,9 +431,22 @@ class ManagerJourneyService:
                     or evidence.get("schema") != "otto.role-result.v1"
                     or not evidence.get("result_digest")):
                 raise PermissionError("stale manager effects require exact reconciliation")
+            if schedule == historical and current_schedule and current_schedule != historical:
+                current = self.server.due_port.read_due(current_schedule)
+                if isinstance(current, Mapping):
+                    if (current.get("role") != "manager" or current.get("recipient") != state["manager"]
+                            or tuple(current["target"]["project_ref"][k] for k in ("authority", "kind", "id"))
+                            != tuple(state["project_ref"][k] for k in ("authority", "kind", "id"))
+                            or tuple(current["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                            != tuple(state["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                            or current.get("generation") != state["manager_generation"]):
+                        raise PermissionError("retained manager occurrence is foreign")
+                    if current.get("assignment_ref") == state["assignment_ref"]:
+                        return current_schedule
             from otto.attention import DueRecord
-            app = self._execution(principal=state['manager'], model=state['requested_model'],
-                reasoning=state['requested_reasoning'], evidence_id='adopted-manager-read-anchor')
+            app = self._execution(principal=state['manager'], model=state.get('requested_model', due.get('requested_model')),
+                reasoning=state.get('requested_reasoning', due.get('requested_reasoning')),
+                evidence_id='adopted-manager-read-anchor')
             adopted = app._manager_adoption_anchor(DueRecord.from_dict(due))
             from .operating_setup import authenticated_adoption_ancestor
             if adopted.ref.to_dict() != state['assignment_ref'] and not authenticated_adoption_ancestor({'ref':adopted.ref.to_dict(),'principal':adopted.principal,'role':adopted.role,'generation':adopted.generation,'payload':adopted.payload},state['assignment_ref'],getattr(app.portfolio.operations,'_owner_reader',None)):
@@ -436,6 +527,20 @@ class ManagerJourneyService:
             if not isinstance(tool_entrypoint, str) or not tool_entrypoint.strip():
                 tool_entrypoint = "python -m otto.portfolio.cli help --format text"
             effective = effective_context_projection(prepared, tool_entrypoint=tool_entrypoint)
+            manager_brief = effective.get("effective_manager_brief")
+            if isinstance(manager_brief, dict):
+                reports = read_project_progress_reports(self.server.store.consumer(), project_ref,
+                    assignment_refs=[assignment_ref])
+                notes = []
+                for item in reports:
+                    value = item.get("value") if isinstance(item, Mapping) else None
+                    if (isinstance(value, Mapping) and value.get("schema") == "otto.manager-note.v1"
+                            and value.get("project_ref") == project_ref
+                            and value.get("assignment_ref") == assignment_ref
+                            and value.get("generation") == generation):
+                        notes.append({"ref": item.get("ref"), "task_ref": value.get("task_ref"),
+                                      "note": value.get("note"), "recorded_at": value.get("recorded_at")})
+                manager_brief["manager_notes"]["saved_notes"] = notes[-32:]
             contract = prepared.get("mandate_instruction_contract")
             contract_view = None
             if isinstance(contract, Mapping):
@@ -702,6 +807,22 @@ class ManagerJourneyService:
             return result
         if command == "status":
             return self._status(request)
+        if command == "show":
+            return self._show(request)
+        if command == "save":
+            return self._save_manager_note(request)
+        if command == "answer":
+            state = self._authorize_manager_tool("answer")
+            if set(request) != {"command", "request_key", "issue_id", "evidence", "next_action"}:
+                raise ValueError("answer requires one current issue, applied evidence, and next action")
+            return self._help({"command": "resolve-help", "request_key": request["request_key"],
+                "issue_id": request["issue_id"], "evidence": request["evidence"],
+                "next_action": request["next_action"]})
+        if command == "route":
+            return self._route_manager_action(request)
+        if command == "report":
+            self._authorize_manager_tool("report")
+            return self.server.handle(request)
         if command == "worker-readiness":
             from .worker_readiness import read_worker_readiness
             return read_worker_readiness(self, request, context=_CALLER.get())

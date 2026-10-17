@@ -22,56 +22,36 @@ SNAPSHOT_SCHEMA_REVISION = "otto.operating-snapshot.v1"
 _ROLES = frozenset({"orchestrator", "manager", "worker", "project_advisor"})
 _USER_FIELDS = ("mandate", "user_constraints")
 _AGENT_FIELDS = ("priorities", "operational_constraints", "continuation", "links")
+BASE_MANAGER_BRIEF = {
+    "schema": "otto.base-manager-brief.v1",
+    "mandate": (
+        "Own delivery of this project against its adopted brief. Refresh canonical identity and project state "
+        "before acting, delegate bounded work through the authenticated manager route, and judge returned evidence. "
+        "Save concise progress and next steps. Escalate consequential decisions the current mandate cannot settle."
+    ),
+    "constraints": [
+        "Stay within this project's assignment, adopted resources, and allowance.",
+        "Reconcile an exact retained effect before retrying an unknown outcome.",
+        "Wake for judgment events; do not poll for routine progress.",
+    ],
+}
+
 _CODEX_ADAPTER_ROLE_BASE_GUIDANCE = (
-    " For the maintained agent-adapter route, use the exact tool_entrypoint emitted by the current role "
-    "introduction. The currently inspected installed prefix is "
-    "`/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9 "
-    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-agent-adapter-conformance-20261009/"
-    "controller/manager_ctl.py`; this is host evidence, not a borrowed identity or package-adoption claim. "
-    "A manager/coordinating worker launches only through the authenticated owner route with "
-    "`run-worker --task TASK --route normal|xhard --principal CHILD --request-key KEY --focus FOCUS`, "
-    "then retains distinct outer command, start/transport and durable occurrence handles. Use pure "
-    "`lookup-occurrence --scope SCOPE --request-key KEY --request-input ORIGINAL_INPUT`, "
-    "`follow-occurrence --occurrence OCCURRENCE --timeout-seconds 2`, `read-result --occurrence OCCURRENCE`, "
-    "and bounded `read-artifact --occurrence OCCURRENCE --artifact-ref REF --offset 0 --max-bytes 4096`; "
-    "`consume-result --occurrence OCCURRENCE` is the authenticated parent receipt. After a lost reply, "
-    "use exact `command-status --request-id HANDLE`, never a new key. Read original pins and reject changed "
-    "input, foreign parent, ambiguity or missing scope. If the active parent turn blocks delivery, return/yield "
-    "the retained handle and next action; never overlap parent turns, wait indefinitely, create hidden capacity, "
-    "borrow manager credentials or redelegate an unchanged leaf brief. Resolve defaults as authorized override "
-    "then project/role configuration then user default, and retain model/reasoning/adapter/resource provenance. "
-    "`execution-control --operation read|recover|stop` applies only to the exact owned occurrence; recover may "
-    "settle and stop fences the occurrence without proving native termination. A result is not task acceptance: "
-    "separate useful admission, native terminality, required capture, settlement, parent delivery and assessment. "
-    "Usage is observed, invalid or unavailable, never guessed as zero or money. When qualified retained accounting is present, public Usage/Timeline/detail readback keeps physical-span deduplication and historical agent/task/project attribution visible, and separates provider-reported money from versioned decimal estimates. Static rates are estimates with provenance, not billing; missing model/rate/time/currency, shared, conflicted, unpriced and unknown coverage remain explicit. Allowance units are separate, and missing accounting never authorizes replay or a pricing fetch. Claude in this scope is mechanical "
-    "only; do not perform or claim paid initialization/inference/resume. A read-only leaf has authorized delivered context and capture but no managed native caller socket; report unavailable identity reads rather than borrowing credentials. The separate protected external-root client uses launch/lookup/follow/result/artifact/consume; native manager_ctl uses run-worker/lookup-occurrence/follow-occurrence/read-result/read-artifact/consume-result. Read the host-issued root policy and tool entrypoint for actual root execution."
+    " Use the exact tool_entrypoint emitted by the current role introduction and the authenticated owner route "
+    "for project actions. Delegate with `run-worker --task TASK` through that route. Retain the request, start, and occurrence handles; reconcile exact retained effects "
+    "after a lost reply before retrying. Stay within the current project, assignment, adopted resources, and "
+    "allowance. Return or yield when the current turn must settle before a continuation."
 )
 
 
 def _host_role_guidance(environ: Optional[Mapping[str, str]] = None) -> str:
-    """The shared adapter-route guidance, with this host's installed command.
-
-    A Codex host (no selection) keeps the original text byte-for-byte. A host
-    installed through ottoctl exports OTTO_HOST_KIND / OTTO_TOOL_ENTRYPOINT so
-    new role briefs name its own command instead of another host's paths.
-    """
+    """Return concise shared guidance with an optional installed entrypoint."""
     import os
     env = os.environ if environ is None else environ
     entrypoint = env.get("OTTO_TOOL_ENTRYPOINT")
-    kind = env.get("OTTO_HOST_KIND")
     text = _CODEX_ADAPTER_ROLE_BASE_GUIDANCE
-    if not entrypoint and kind in (None, "", "codex"):
-        return text
-    start = text.index("The currently inspected installed prefix is ")
-    end = text.index("package-adoption claim. ") + len("package-adoption claim. ")
-    installed = ("The installed command on this host is `" + (entrypoint or "ottoctl") + "`; it is host evidence, "
-                 "not a borrowed identity. ")
-    text = text[:start] + installed + text[end:]
-    if kind and kind != "codex":
-        text = text.replace("Claude in this scope is mechanical only; do not perform or claim paid "
-                            "initialization/inference/resume.",
-                            "Claude Code roles on this host are those its adapter configuration declares "
-                            "(worker leaf, manager); follow the delivered role introduction.")
+    if entrypoint and entrypoint.strip():
+        text += " Installed tool entrypoint: `" + entrypoint.strip() + "`."
     return text
 
 
@@ -142,7 +122,8 @@ ROLE_CONTEXT_GUIDANCE = {
         "recovery_workflow": "Consult src/otto/portfolio/skills/recovery/SKILL.md for bounded find, inspect, resume, authorized reassignment and reminder continuity.",
     },
     "manager": {
-        "help": "Advance ready work. Before returning blocked on owner action, submit canonical request-help to the adopted project supervisor with exact task/handles, impact, needed action and resume condition; retain the issue and delivery receipt. Final text or a local file is not submission. On tool failure preserve its exact handle and use the supplied supported fallback once; never claim delivery without confirmation. Operational blockers do not wait for an hourly summary. Apply an authenticated reply, then continue the same manager. Use request-advice for project judgment.",
+        "help": "Advance ready work. Route operational blockers through request-help when discovered; retain the issue and delivery receipt. A final text or local file is not submission. On tool failure preserve its exact handle and use the supported recovery path; never claim delivery without confirmation. Apply an authenticated reply, then continue the same manager. Use request-advice for project judgment.",
+        "escalation": "Use the Megado oracle request format: name the decision; explain why the current brief or ruling cannot settle it; link the new evidence and prior ruling; give a recommendation and main alternative with tradeoff; name dependent work waiting and how many times this decision has returned.",
         "context": "Refresh the current project, task, assignment, generation, mandate, adopted resources and conversation before acting.",
         "delegation": "run-worker prepares a child; its focus is 1..4000 characters. For long exact file boundaries, retain an owned scope manifest and pin its exact path and SHA in the concise focus. A typed input rejection with effects_started=false permits a corrected distinct intent; an UNKNOWN transport result still requires exact reconciliation, never blind replay.",
         "planning": "Reviewer reports propose correction tasks with independent normal/XHARD rationale. The manager records accept/merge/defer/reject and uses task-list-author with the pinned report/result, current project revision, typed pending tasks and exact request key. Reuse the key/input after partial progress. Pending/unassigned/not-evaluated task defaults, empty blocker lists, and metadata-only dispatch:false do not themselves hold admission or require preassignment. Call run-worker once for an existing dependency-ready task; its canonical owner checks decide. Preserve any exact returned dependency/scope/adoption/custody/configuration/allowance hold, and never widen allowance or reopen completed work merely to file advice.",

@@ -24,6 +24,30 @@ from tests import test_manager_service_continuation as continuation
 from tests.test_execution_application import ProviderBinding, NOW
 
 
+def test_effective_manager_brief_composes_base_project_and_manager_notes():
+    from otto.portfolio.role_context import effective_context_projection
+    project = {"authority": "owner", "kind": "work.project", "id": "project-current", "revision": "p2"}
+    assignment = {"authority": "owner", "kind": "wrk.assignment", "id": "manager-current", "revision": "a4"}
+    canonical = {"role": "manager", "base_resource": {}, "supporting_context": [],
+        "direction_context": [], "render": {
+            "project_state": {"project": {"ref": project, "payload": {"title": "Current Project"}}, "task": None},
+            "snapshot": {"assignment_ref": assignment, "mandate_ref": {"id": "brief-1"}, "generation": 4},
+            "brief": {"mandate": "Deliver the signed release.", "user_constraints": ["No external publish."],
+                "priorities": [{"id": "p1", "text": "Complete review."}],
+                "operational_constraints": ["Use the existing worker route."],
+                "continuation": {"next_action": "review"}, "links": []}}}
+    effective = effective_context_projection(canonical, tool_entrypoint="otto manager")
+    brief = effective["effective_manager_brief"]
+    assert brief["project_ref"] == project
+    assert brief["assignment_ref"] == assignment
+    assert brief["generation"] == 4
+    assert brief["project_brief"]["mandate"] == "Deliver the signed release."
+    assert brief["manager_notes"]["priorities"][0]["id"] == "p1"
+    assert brief["manager_notes"]["continuation"]["next_action"] == "review"
+    assert brief["base_manager_brief"]["schema"] == "otto.base-manager-brief.v1"
+    assert "Wake for judgment events" in brief["base_manager_brief"]["constraints"][-1]
+
+
 class ManagerJourneyServiceTests(unittest.TestCase):
     reports = continuation.ManagerServiceContinuationTests.reports
 
@@ -94,6 +118,82 @@ class ManagerJourneyServiceTests(unittest.TestCase):
     def worker_request(self):
         return {"command": "run-worker", "task": "J01", "route": "xhard", "principal": "worker",
                 "request_key": "service-j01", "focus": "Inspect the bounded J01 seam"}
+
+    def test_manager_actions_are_authenticated_project_scoped_and_save_notes(self):
+        self.install_candidate()
+        service = self.host.handler
+        state = self.server.state
+        caller = {"role": "manager", "principal": state["manager"],
+            "project_ref": state["project_ref"], "assignment_ref": state["assignment_ref"],
+            "generation": state["manager_generation"]}
+        saved = service.dispatch_bound(caller, {"command": "save", "request_key": "tool-note-1",
+            "task": "J01", "note": "Keep the exact returned worker evidence for review."})
+        self.assertEqual(saved["outcome"], "saved", saved)
+        reports = self.reports()
+        note = next(item["value"] for item in reports if item["value"].get("schema") == "otto.manager-note.v1")
+        self.assertEqual(note["project_ref"], state["project_ref"])
+        self.assertEqual(note["assignment_ref"], state["assignment_ref"])
+        self.assertEqual(note["generation"], state["manager_generation"])
+        shown = service.dispatch_bound(caller, {"command": "show"})
+        self.assertIn(shown["outcome"], {"read", "listed", "partial"}, shown)
+        self.assertFalse(shown["provider_called"])
+        self.assertEqual(shown["project_role_identity"]["project_ref"], state["project_ref"])
+        self.assertEqual(shown["project_role_identity"]["role"], "manager")
+        foreign_caller = {**caller, "project_ref": {**state["project_ref"], "id": "foreign-project"}}
+        with self.assertRaises(PermissionError):
+            service.dispatch_bound(foreign_caller, {"command": "show"})
+        effective_brief = shown["effective_context"].get("effective_manager_brief", {})
+        if effective_brief:
+            self.assertEqual(effective_brief["project_ref"], state["project_ref"])
+            self.assertEqual(effective_brief["base_manager_brief"]["schema"], "otto.base-manager-brief.v1")
+            self.assertEqual(effective_brief["manager_notes"]["saved_notes"][0]["note"],
+                "Keep the exact returned worker evidence for review.")
+        with self.assertRaises(ValueError):
+            service.dispatch_bound(caller, {"command": "show", "project_ref": {"id": "foreign"}})
+        with self.assertRaises(ValueError):
+            service.dispatch_bound(caller, {"command": "save", "request_key": "tool-note-2",
+                "task": "FOREIGN", "note": "Must remain scoped."})
+
+    def test_answer_and_route_actions_reuse_existing_owner_paths(self):
+        self.install_candidate()
+        service = self.host.handler
+        state = self.server.state
+        caller = {"role": "manager", "principal": state["manager"],
+            "project_ref": state["project_ref"], "assignment_ref": state["assignment_ref"],
+            "generation": state["manager_generation"]}
+        with patch.object(service, "_help", return_value={"outcome": "recorded"}) as help_call:
+            result = service.dispatch_bound(caller, {"command": "answer", "request_key": "tool-answer-1",
+                "issue_id": "issue-1", "evidence": [{"ref": {"id": "evidence-1"}}],
+                "next_action": "Continue the same project."})
+        self.assertEqual(result["outcome"], "recorded")
+        self.assertEqual(help_call.call_args.args[0]["command"], "resolve-help")
+        rerouted = {"outcome": "admitted", "schedule_id": "owned-worker"}
+        with patch.object(service, "_submit_worker", return_value=rerouted) as submit:
+            result = service.dispatch_bound(caller, {"command": "route", "operation": "reroute",
+                "request_key": "tool-route-1", "task": "J01", "principal": "worker-2",
+                "route": "normal", "focus": "Continue the bounded task."})
+        self.assertEqual(result, rerouted)
+        self.assertEqual(submit.call_args.args[0]["command"], "run-worker")
+        self.assertEqual(submit.call_args.args[0]["request_key"], "tool-route-1")
+        with patch.object(service, "_execution_control", return_value={"outcome": "succeeded"}) as retry:
+            result = service.dispatch_bound(caller, {"command": "route", "operation": "retry",
+                "request_key": "tool-route-2", "schedule_id": state["schedule_id"]})
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(retry.call_args.args[0]["schedule_id"], state["schedule_id"])
+
+    def test_manager_client_mints_logical_request_keys_and_routes_actions_by_identity(self):
+        from otto.hostctl.manager_client import run_launched
+        from otto.portfolio.manager_journey_client import requires_native_caller
+        from otto.portfolio.execution_host import _nested_capability
+        self.assertTrue(all(requires_native_caller(name) for name in ("show", "save", "answer", "route")))
+        self.assertEqual([_nested_capability({"command": name}) for name in ("show", "save", "answer", "route")],
+                         ["admitted"] * 4)
+        with patch("otto.portfolio.caller_client.call", side_effect=lambda _socket, request: request) as call:
+            result = run_launched(["save", "--note", "Retain exact evidence."], {
+                "OTTO_MANAGER_IPC": "/tmp/manager-ipc", "OTTO_CALLER_SOCKET": "/tmp/caller.sock"})
+        self.assertEqual(result["command"], "save")
+        self.assertRegex(result["request_key"], r"^manager-tool:[0-9a-f]{32}$")
+        call.assert_called_once()
 
     def test_worker_result_notification_stays_retained_until_manager_settlement(self):
         self.install_candidate()

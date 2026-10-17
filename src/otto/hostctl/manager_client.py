@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     documents.add_argument("--path", help="the project path to read, e.g. briefs/M1.md")
     report = sub.add_parser("report", help="append a canonical manager progress report")
     report.add_argument("--task", required=True)
-    report.add_argument("--request-key", required=True)
+    report.add_argument("--request-key", help=argparse.SUPPRESS)
     report.add_argument("--summary", required=True)
     report.add_argument("--next-action", required=True)
     report.add_argument("--continue-project", action="store_true")
@@ -69,6 +69,10 @@ def run_launched(argv: list[str], environ: Mapping[str, str]) -> Mapping[str, An
     args = vars(build_parser().parse_args(argv))
     timeout = args.pop("timeout_seconds")
     args.pop("project", None)
+    if args["command"] in {"report", "save", "answer", "route"}:
+        # Logical keys are tool-owned. The transport has a separate retained
+        # request handle, so the manager never invents or reuses owner keys.
+        args["request_key"] = "manager-tool:" + uuid.uuid4().hex
     ipc = Path(environ.get("OTTO_MANAGER_IPC") or "")
     if args["command"] == "command-status":
         return read_command_status(ipc, args["request_id"]) or {

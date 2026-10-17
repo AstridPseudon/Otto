@@ -105,6 +105,7 @@ _MANAGER_TURN_COMMANDS = frozenset({"start-manager", "manager-continue", "manage
                                    "manager-help-result", "manager-task-settlement"})
 _REENTRANT_COMMANDS = frozenset({"task-state", "report", "completion-gate", "complete-task",
                                  "effective-context", "whoami", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result",
+                                 "show", "save", "answer", "route",
                                  "manager-assessment", "manager-assessment-pool",
                                  "run-worker", "worker-status", "worker-readiness", "start-retained-worker",
                                  "review-task", "finish-task", "finish-project",
@@ -123,6 +124,7 @@ def _starts_work(request: Mapping[str, Any]) -> bool:
             or request.get("command") in {"start-manager", "run-worker",
                 "start-retained-worker", "start-retained-help", "manager-worker-result",
                 "manager-task-settlement", "manager-help-result", "answer-session-result",
+                "answer", "route",
                 "request-help", "request-advice", "start-retained-child", "parent-child-result"}
             or request.get("command") == "manager-continue" and request.get("operation") == "dispatch"
             or request.get("command") == "operating-setup" and request.get("operation") == "activate"
