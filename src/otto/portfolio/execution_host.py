@@ -1449,7 +1449,7 @@ class ExecutionHost:
                     # owner remains free to process its corresponding answer.
                     ready = threading.Event()
                     observed = {}
-                    self._owner_request(lambda: result.then(
+                    self._owner_request(lambda: after_owner(result,
                         lambda value: (observed.update(value=value), ready.set()),
                         lambda error: (observed.update(error=str(error)), ready.set())))
                     ready.wait()
@@ -1622,7 +1622,8 @@ class ExecutionHost:
                             finally:
                                 with self._lock:
                                     self._active_files.discard(token)
-                        result.then(complete, lambda error, complete=complete: complete(error=error))
+                        after_owner(result, complete,
+                            lambda error, complete=complete: complete(error=error))
                         continue
                     if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result", "answer-session-result"} and result.get("outcome") == "pending"
                             and result.get("provider_called") is False and result.get("effects_started") is False):

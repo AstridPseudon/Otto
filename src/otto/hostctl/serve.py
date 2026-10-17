@@ -651,20 +651,23 @@ class HostOwnerService:
                     "provider_called": False, "effects_started": False, "retry": False}
         self.state["schedule_id"] = request["schedule_id"]
         self._save_state()
-        result = app.start(schedule_id=request["schedule_id"])
-        due = self.due_port.read_due(request["schedule_id"]) or {}
-        attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
-        session = (attempt.get("result") or {}).get("physical_session_id") or attempt.get("physical_session_id")
-        self.state["manager_launch"] = {"outcome": result.get("outcome"), "physical_session_id": session,
-                                        "completion_state": due.get("completion_state")}
-        if due.get("completion_state") == "succeeded" and isinstance(session, str):
-            current = app._read(due["schedule_id"])
-            # The original invocation can settle after another retained head
-            # has been selected. Preserve its result without moving that head.
-            if complete_manager_head(self.state, schedule_id=due["schedule_id"], result=result):
-                self.state["manager_continuation"]["native_session_id"] = session
-        self._save_state()
-        return result
+        from otto.portfolio.owner_completion import after_owner
+
+        def complete(result):
+            due = self.due_port.read_due(request["schedule_id"]) or {}
+            attempt = (due.get("host_evidence") or {}).get("gateway_attempt") or {}
+            session = (attempt.get("result") or {}).get("physical_session_id") or attempt.get("physical_session_id")
+            self.state["manager_launch"] = {"outcome": result.get("outcome"), "physical_session_id": session,
+                                            "completion_state": due.get("completion_state")}
+            if due.get("completion_state") == "succeeded" and isinstance(session, str):
+                # The original invocation can settle after another retained head
+                # has been selected. Preserve its result without moving that head.
+                if complete_manager_head(self.state, schedule_id=due["schedule_id"], result=result):
+                    self.state["manager_continuation"]["native_session_id"] = session
+            self._save_state()
+            return result
+
+        return after_owner(app.start(schedule_id=request["schedule_id"]), complete)
 
     # -- the orchestrator's reply: owner-issued grants ---------------------------
     def grant_reply(self, token: str, request: Mapping[str, Any], principal: str) -> None:

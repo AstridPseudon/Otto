@@ -1953,7 +1953,7 @@ class ManagerJourneyService:
             from .owner_completion import OwnerCompletion
             recovered = app.recover(schedule_id=prior.schedule_id, execute=False)
             if isinstance(recovered, OwnerCompletion):
-                return recovered.then(lambda _: self._answer_session_result(request))
+                return after_owner(recovered, lambda _: self._answer_session_result(request))
             prior = app._read(request["asking_schedule_id"])
             if prior.in_flight_request is not None:
                 return {"outcome": "pending", "reason": "asking occurrence has not settled",
@@ -1984,23 +1984,24 @@ class ManagerJourneyService:
                 self.server.owner.graph.set_lifecycle(latest.ref, "paused",
                     logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
             raise
-        from .owner_completion import OwnerCompletion
-        if isinstance(result, OwnerCompletion):
-            def repause_on_failure(error: BaseException) -> Any:
-                latest = self.server.owner.graph.current(current.ref)
-                if getattr(latest.lifecycle, "value", latest.lifecycle) != "paused":
-                    self.server.owner.graph.set_lifecycle(latest.ref, "paused",
-                        logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
-                raise error
-            return result.then(lambda value: value, repause_on_failure)
-        if (isinstance(result, Mapping) and result.get("outcome") in
-                {"partial", "blocked", "held", "paused", "adoption-required", "prepared"}
-                and not result.get("provider_called") and not result.get("effects_started")):
+        def repause_on_failure(error: BaseException) -> Any:
             latest = self.server.owner.graph.current(current.ref)
             if getattr(latest.lifecycle, "value", latest.lifecycle) != "paused":
                 self.server.owner.graph.set_lifecycle(latest.ref, "paused",
                     logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
-        return result
+            raise error
+
+        def repause_if_unstarted(value: Any) -> Any:
+            if (isinstance(value, Mapping) and value.get("outcome") in
+                    {"partial", "blocked", "held", "paused", "adoption-required", "prepared"}
+                    and not value.get("provider_called") and not value.get("effects_started")):
+                latest = self.server.owner.graph.current(current.ref)
+                if getattr(latest.lifecycle, "value", latest.lifecycle) != "paused":
+                    self.server.owner.graph.set_lifecycle(latest.ref, "paused",
+                        logical_request_key=lifecycle_request_key("ask-repause", latest.ref), actor=actor)
+            return value
+
+        return after_owner(result, repause_if_unstarted, repause_on_failure)
 
     def _help(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Manager operations and the host-bound recipient reply over IssueLoop."""
