@@ -171,3 +171,14 @@ The portfolio CLI now accepts `--request-key` as an alias for `--request-id` on 
 Changed files: `src/otto/portfolio/cli.py`, `src/otto/hostctl/portfolio.py`, `tests/test_request_key_alias.py`, `.project/PROJECT.md`. Focused parser/forwarding regression: `tests/test_request_key_alias.py` (15 passed). `tests/test_owner_lane.py` needs the gate: its owner service fixture failed during setup because AF_UNIX socket bind was denied; no tests ran. No deletion in this task.
 
 2026-10-17 20:58 UTC | SL9E | merged 32e069e | +59/-7 | request-key alias 15 passed; owner-lane integration needs the gate; diff check clean | transport request-status retained request-id.
+
+
+## SL9 deletion-budget disposition (17 Oct 2026)
+
+Completed all candidate groups from the 20261017b DEADCODE and CLISURFACE audits that are within this project and meet their caller/ownership checks: SL9A retired the unentered ORC packet modules; SL9B retired the test-only paused-advisor binder; SL9C aligned the installed client surface and removed the always-denied `admit` path; SL9D removed the inert public gateway script; SL9E accepted the logical `--request-key` alias; SL7A replaced obsolete command guidance. SL3 had already removed the duplicate root reads. Kept Vision disablement because its result is live and exact selection pins depend on the field; kept Vision/Native5 controller dependencies until CUTOVER; retained historical Evidence reads; excluded the Evidence switch and fleet `done.summary` as outside this project; `manager_replacement.py` remains PROGRAM MGR work. External imports and deployed clients remain unobservable under the stated boundary.
+
+Final generated ledger after the audit tasks: 46,610 top-level portfolio lines versus 47,920 baseline. `git diff --numstat 163925e...proj/slim -- src/otto/portfolio` measures +380/-1,854, net 1,474 deleted lines toward the 11,980 threshold; shortfall is 10,506. The scoped audit does not identify another caller-free portfolio/controller candidate of sufficient size. The remaining removed or consolidated candidates in the older ledger have live production callers or are explicitly held by PROGRAM ownership and CUTOVER. Mark SL9 blocked rather than deleting active or program-owned routes to fabricate the budget.
+
+### Questions for the orchestrator
+
+- After these audited candidates are closed, what next candidate set should SLIM use to pursue the remaining 10,506-line portfolio target? The 20261017b scoped audit is exhausted; remaining ledger candidates are live or in PROGRAM-owned rows.
