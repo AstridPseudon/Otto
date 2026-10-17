@@ -88,7 +88,7 @@ def _all_source_files() -> list[Path]:
     ]
 
 
-def _parser_verbs() -> list[str]:
+def _injected_parser_verbs() -> list[str]:
     tree = ast.parse((PORTFOLIO / "cli.py").read_text(encoding="utf-8"))
     build_parser = next(node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "build_parser")
     verbs = []
@@ -96,6 +96,30 @@ def _parser_verbs() -> list[str]:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_parser" and isinstance(node.func.value, ast.Name) and node.func.value.id == "sub" and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
             verbs.append(node.args[0].value)
     return sorted(set(verbs))
+
+
+def _parser_verbs() -> list[str]:
+    tree = ast.parse((PORTFOLIO / "cli.py").read_text(encoding="utf-8"))
+    # The installed `otto` entrypoint uses client_main/build_client_parser;
+    # build_parser also exposes injected routes that do not reach that client.
+    client_verbs: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        if names & {"CLIENT_LOCAL_VERBS", "CLIENT_OWNER_VERBS"}:
+            expression = node.value
+            if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name) and expression.func.id in {"set", "frozenset"}:
+                expression = expression.args[0]
+            value = ast.literal_eval(expression)
+            if not isinstance(value, (set, frozenset)):
+                raise ValueError("client parser verb constants must be literal sets")
+            client_verbs.update(value)
+    if client_verbs:
+        return sorted(client_verbs)
+
+    # Older revisions had a single parser for both installed and injected routes.
+    return _injected_parser_verbs()
 
 
 def _brief_rows() -> list[tuple[str, int, int]]:
@@ -145,7 +169,11 @@ def generate() -> str:
         "",
         "## Exposed `otto` verbs",
         "",
-        "`pyproject.toml` declares `otto = otto.portfolio.cli:client_main`. Direct root commands from `build_parser()` in `cli.py`: " + ", ".join(f"`{v}`" for v in _parser_verbs()) + ". Nested parser actions are represented in their defining source but are not duplicated here.",
+        "`pyproject.toml` declares `otto = otto.portfolio.cli:client_main`. Installed root commands from `build_client_parser()` in `cli.py`: " + ", ".join(f"`{v}`" for v in _parser_verbs()) + ".",
+        "",
+        "## Injected `otto` verbs",
+        "",
+        "Injected `build_parser()` routes for bound callers: " + ", ".join(f"`{v}`" for v in _injected_parser_verbs()) + ". Nested parser actions are represented in their defining source but are not duplicated here.",
         "",
         "## Module inventory",
         "",

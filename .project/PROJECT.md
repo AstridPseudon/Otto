@@ -97,7 +97,7 @@ Astra reviewed the original SL2 diff and reproduced the cross-schedule reacquisi
 
 Astra later found that the new structured held replacement responses lacked `next_action` under PLAN §15.2. The follow-up adds owner reconciliation guidance and explicitly prohibits retrying in the same assignment generation/native session. The focused regression asserts the guidance and unchanged acquisition count; 5 passed. Astra reviewed the follow-up before merge and found no custody or retry defect.
 
-## Remaining dependency blocks
+## Historical dependency snapshot (before orchestrator answers, 17 Oct 2026)
 
 - SL6 is blocked because its declared SL2 dependency has no production replacement entrypoint until PROGRAM/orchestrator wiring is decided.
 - SL7 is blocked by SL5's unanswered keep/retire decision and SL6.
@@ -177,8 +177,19 @@ Changed files: `src/otto/portfolio/cli.py`, `src/otto/hostctl/portfolio.py`, `te
 
 Completed all candidate groups from the 20261017b DEADCODE and CLISURFACE audits that are within this project and meet their caller/ownership checks: SL9A retired the unentered ORC packet modules; SL9B retired the test-only paused-advisor binder; SL9C aligned the installed client surface and removed the always-denied `admit` path; SL9D removed the inert public gateway script; SL9E accepted the logical `--request-key` alias; SL7A replaced obsolete command guidance. SL3 had already removed the duplicate root reads. Kept Vision disablement because its result is live and exact selection pins depend on the field; kept Vision/Native5 controller dependencies until CUTOVER; retained historical Evidence reads; excluded the Evidence switch and fleet `done.summary` as outside this project; `manager_replacement.py` remains PROGRAM MGR work. External imports and deployed clients remain unobservable under the stated boundary.
 
-Final generated ledger after the audit tasks: 46,610 top-level portfolio lines versus 47,920 baseline. `git diff --numstat 163925e...proj/slim -- src/otto/portfolio` measures +380/-1,854, net 1,474 deleted lines toward the 11,980 threshold; shortfall is 10,506. The scoped audit does not identify another caller-free portfolio/controller candidate of sufficient size. The remaining removed or consolidated candidates in the older ledger have live production callers or are explicitly held by PROGRAM ownership and CUTOVER. Mark SL9 blocked rather than deleting active or program-owned routes to fabricate the budget.
+Final generated ledger after the audit tasks: 46,610 top-level portfolio lines versus 47,920 baseline. Filtering `git diff --numstat 163925e...proj/slim -- src/otto/portfolio` to top-level `.py` modules measures +346/-1,656, net 1,310 deleted lines toward the 11,980 threshold; shortfall is 10,670. The scoped audit does not identify another caller-free portfolio/controller candidate of sufficient size. The remaining removed or consolidated candidates in the older ledger have live production callers or are explicitly held by PROGRAM ownership and CUTOVER. Mark SL9 blocked rather than deleting active or program-owned routes to fabricate the budget.
 
 ### Questions for the orchestrator
 
-- After these audited candidates are closed, what next candidate set should SLIM use to pursue the remaining 10,506-line portfolio target? The 20261017b scoped audit is exhausted; remaining ledger candidates are live or in PROGRAM-owned rows.
+- After these audited candidates are closed, what next candidate set should SLIM use to pursue the remaining 10,670-line portfolio target? The 20261017b scoped audit is exhausted; remaining ledger candidates are live or in PROGRAM-owned rows.
+
+
+### Astra whole-project review and corrections (17 Oct 2026)
+
+Astra reviewed `git diff 163925e...proj/slim` against the project goal, deletion budget, tasklist and PROGRAM §§14–15. It found three report defects and one documentation behavior defect; all three report defects were corrected here. The SL7A docs defect was sent back to the same worker and fixed in merge `079d492`: portfolio apply is now described as registering new declared projects and reconciling manifest metadata/gates/dependencies only; it does not sync existing project documents or root-level shared documents. The invalid example root was replaced with a portfolio root layout. Changed files in that correction: `docs/host-onboarding.md`, `docs/megado-from-any-host.md`, `docs/portfolio-spec.md`, `docs/portfolio.md`, `policy-staging/megado/skill/SKILL.md`, `policy-staging/megado/skill/references/project-lifecycle.md`, `tests/test_docs_supported_routes.py`. The corrected docs regression passes (4 tests, 15 subtests).
+
+Astra noticed that the deletion report had included nested tests against a top-level Python baseline. Corrected the tasklist and disposition: top-level portfolio diff is +346/-1,656, net 1,310 removed, leaving 10,670 of 11,980. Astra also noticed the generated ledger presented injected CLI verbs as installed commands. `scripts/slim_ledger.py` now reports separate installed (`build_client_parser`) and injected (`build_parser`) inventories; `tests/test_slim_ledger.py` asserts this split. Regenerated `.project/ledger.md`; focused test passes (1 passed).
+
+No additional correctness, authority, or custody defect was found. The owner allowlist remains finite, the historical manifests remain pinned, and Vision/Native5 remain until CUTOVER as decided. Astra separately noted a pre-existing PROGRAM issue outside this docs task: `src/otto/hostctl/portfolio_apply.py:26` references undefined `sync` while rendering some existing-project summaries. No implementation edit was made; report this for PROGRAM/A6 integration.
+
+2026-10-17 20:42 UTC | SL7A review correction | merged 079d492 | +65/-43 | docs supported-routes 4 passed, 15 subtests; diff check clean | fixed apply behavior claims and invalid portfolio-root example.

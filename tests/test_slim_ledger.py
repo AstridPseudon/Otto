@@ -18,6 +18,11 @@ def test_slim_ledger_records_baseline_callers_and_deletion_budget():
     assert "test importers" in ledger
     assert "dynamic production refs" in ledger
     assert "dynamic test refs" in ledger
+    assert "Installed root commands from `build_client_parser()`" in ledger
+    installed, injected = ledger.split("## Injected `otto` verbs", 1) if "## Injected `otto` verbs" in ledger else (ledger, "")
+    assert "`ask`, `help`, `open`, `read`, `release`, `retire`, `save`, `show`, `status`, `wait`" in installed
+    assert "`complete-task`" not in installed.split("## Module inventory", 1)[0]
+    assert "`complete-task`" in injected.split("## Module inventory", 1)[0]
     # A populated example proves caller locations are recorded rather than just
     # emitting headings and summary counts.
     assert "`src/otto/portfolio/cli.py:" in ledger
