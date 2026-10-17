@@ -29,6 +29,8 @@ verified members of that lease. An unresolved dead holder keeps its capacity cla
 can verify that its processes are gone. ``OTTO_HEAVY_LEASE`` only lets nested heavy calls reuse slots.
 A missed whole-table census is durable uncertainty: later empty scans cannot prove that a detached
 child did not leave its ancestry during the gap, so that holder's claim remains unresolved.
+The same applies when a seen process has no exact birth identity: its PID is recorded as a durable
+gap, since later empty scans cannot establish what happened to its descendants in the meantime.
 An arbitrary child that forks, leaves the group, and is reparented entirely between observations
 cannot be attributed by portable process-table APIs. Such commands need cooperative custody or
 kernel containment to guarantee cleanup; the lease never signals a process based on its environment.
@@ -179,6 +181,16 @@ def _observe(record: dict, processes: dict[int, dict], *, seed_root: bool = Fals
     known = record.setdefault("processes", {})
     root = int(record.get("pid") or 0)
     changed = False
+    gaps = set(record.get("birth_gaps", []))
+    missing = set(record.get("unidentified", []))
+    missing.update(int(pid) for pid in known
+                   if int(pid) in processes and processes[int(pid)]["birth"] is None)
+    if root in processes and processes[root]["birth"] is None:
+        missing.add(root)
+    if missing - gaps:
+        gaps.update(missing)
+        record["birth_gaps"] = sorted(gaps)
+        changed = True
     if seed_root and root in processes and processes[root]["birth"] is not None and str(root) not in known:
         known[str(root)] = {"birth": processes[root]["birth"], "pgid": processes[root]["pgid"]}
         changed = True
@@ -206,6 +218,8 @@ def _observe(record: dict, processes: dict[int, dict], *, seed_root: bool = Fals
         for pid, info in found.items():
             if info["birth"] is None:
                 pending.add(pid)
+                gaps.add(pid)
+                record["birth_gaps"] = sorted(gaps)
             else:
                 known[str(pid)] = {"birth": info["birth"], "pgid": info["pgid"]}
                 pending.discard(pid)
@@ -285,14 +299,14 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
         processes = _processes()
         if processes is None:
             _record_census_gap(record, holder_file)
+        elif _observe(record, processes) and holder_file is not None:
+            _write_holder(holder_file, record)
         return processes
 
     def targets() -> tuple[set[int], bool, bool, set[int], bool]:
         processes = census()
         if processes is None:
             return set(), False, False, set(), False
-        if _observe(record, processes) and holder_file is not None:
-            _write_holder(holder_file, record)
         live = {int(pid) for pid, identity in record.get("processes", {}).items()
                 if int(pid) in processes and processes[int(pid)]["birth"] == identity["birth"]}
         unverified = {int(pid) for pid in record.get("processes", {})
@@ -346,7 +360,8 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
         signal_all(signal.SIGKILL)
         time.sleep(0.2)
     remaining, group, scanned, unverified, root_unverified = targets()
-    unresolved = sorted(remaining) + [f"identity-unavailable:{pid}" for pid in sorted(unverified)]
+    unresolved = sorted(remaining) + [f"identity-unavailable:{pid}" for pid in
+                                      sorted(unverified | set(record.get("birth_gaps", [])))]
     unresolved += [f"unidentified:{pid}" for pid in record.get("unidentified", [])]
     if record.get("census_gap"):
         unresolved.append("census-gap")
@@ -357,7 +372,8 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
     if not scanned and (record.get("pid") or record.get("processes") or (pgid and _group_alive(pgid))):
         unresolved.append("process-table-unavailable")
     return {"reaped": sorted(before), "needed_kill": sorted(killed), "remaining": unresolved,
-            "sweep": "unavailable" if record.get("census_gap") or not scanned else "complete"}
+            "sweep": "unavailable" if record.get("census_gap") or record.get("birth_gaps") or not scanned
+                     else "complete"}
 
 
 def _holders(directory: Path) -> list[dict]:
