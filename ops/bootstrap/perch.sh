@@ -156,6 +156,15 @@ stage2_host_client() {
     'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$CANARY_DIR/client" "$@" < /dev/null
 }
 
+# Operator service admit retains its request on the service's owner lane. The
+# public request-status command reads an admitted host lane, so read this exact
+# owner-lane request with the same product retained-request reader instead.
+stage2_operator_request_status() {  # REQUEST_ID
+  env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$STAGE_ROOT/tree/src" "$PY" -c \
+    'import json,sys; from pathlib import Path; from otto.hostctl import lanes; from otto.hostctl.service import owner_lane; token=sys.argv[2]; assert lanes.valid_token(token); print(json.dumps(lanes.wait(owner_lane(Path(sys.argv[1])), token, timeout_seconds=0), sort_keys=True))' \
+    "$STAGE_ROOT/home" "$1" < /dev/null
+}
+
 # Stage 2 uses the same owner CLI setup path as an operator: join the canary host,
 # map its disposable repository, register the run bundle, then activate it. Every
 # command's raw answer is kept so a failed prerequisite is visible in the report.
@@ -280,7 +289,7 @@ stage2_admit_tasks() {
       fi
       while [ -n "$request_id" ] && [ "$(date +%s)" -lt "$deadline" ]; do
         sleep 0.5
-        if ! cold_client request-status --request-id "$request_id" \
+        if ! stage2_operator_request_status "$request_id" \
             > "$retained" 2>> "$RAW/stage2-setup-errors.txt"; then
           echo "retained admission request $request_id failed for $task; see $(basename "$retained")" >> "$RAW/stage2-setup-errors.txt"
           return 1

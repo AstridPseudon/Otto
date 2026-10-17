@@ -979,9 +979,9 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 '  n=$(cat "$RAW/date-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/date-calls"',
                 '  case "$n" in 1|2|3) echo 1000 ;; 4) echo 1001 ;; *) echo 1180 ;; esac',
                 "}",
-                "cold_client() {",
+                "stage2_operator_request_status() {",
                 '  case "$*" in',
-                '    *"request-status --request-id $REQUEST_ID")',
+                '    "$REQUEST_ID")',
                 '      echo request-status-B >> "$RAW/trace"',
                 '      if [ "${SEED_BAD_REQUEST_ID:-0}" = 1 ]; then',
                 '        printf \'%s\\n\' \'{"outcome":"pending","request_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","terminal":false}\'',
@@ -993,8 +993,13 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 '      else',
                 '        printf \'%s\\n\' \'{"outcome":"admitted","admitted_revision":"rev-B"}\'',
                 '      fi; return 0 ;;',
+                '    *) echo "unexpected retained request: $*" >&2; return 31 ;;',
+                '  esac',
+                "}",
+                "cold_client() {",
+                '  case "$*" in',
                 '    *"--wait-seconds 0 service admit"*) ;;',
-                '    *) echo "unexpected command: $*" >&2; return 31 ;;',
+                '    *) echo "unexpected operator command: $*" >&2; return 31 ;;',
                 '  esac',
                 '  local alias',
                 '  case "$*" in *task-A*) alias=A ;; *task-B*) alias=B ;; *task-C*) alias=C ;; *) return 32 ;; esac',
@@ -1042,6 +1047,40 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                          ["admit-A", "admit-B", "admit-C", "request-status-B"])
         self.assertIn("stayed pending", (raw / "stage2-setup-errors.txt").read_text())
         self.assertFalse((raw / "stage2-admit-B-attempt-2.json").exists())
+
+    def test_operator_retained_read_uses_the_admission_owner_lane(self):
+        import re
+        import shlex
+
+        root = Path(tempfile.mkdtemp(prefix="perch-owner-request-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        owner_lane = root / "home" / "owner-lane"
+        host_lane = root / "perch-canary" / "client" / "lanes" / "claude-code"
+        (root / "tree").mkdir()
+        (root / "tree" / "src").symlink_to(ROOT / "src", target_is_directory=True)
+        owner_lane.mkdir(parents=True)
+        host_lane.mkdir(parents=True)
+        request_id = "a0ebbb3fece74d328ad1d290385a13ae"
+        owner_response = owner_lane / ("response-" + request_id + ".json")
+        owner_response.write_text('{"outcome":"admitted","admitted_revision":"rev-A"}\n',
+                                  encoding="utf-8")
+        owner_response.chmod(0o600)
+        (host_lane / ("response-" + request_id + ".json")).write_text(
+            '{"outcome":"held","reason":"wrong host lane"}\n', encoding="utf-8")
+        shell = PERCH.read_text(encoding="utf-8")
+        helper = re.search(r"(?ms)^stage2_operator_request_status\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(helper)
+        script = "\n".join((
+            "STAGE_ROOT=" + shlex.quote(str(root)),
+            "PY=" + shlex.quote(sys.executable),
+            "PATH=" + shlex.quote(os.environ["PATH"]),
+            "HOME=" + shlex.quote(os.environ["HOME"]),
+            helper.group(),
+            "stage2_operator_request_status " + request_id,
+        ))
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"outcome": "admitted", "admitted_revision": "rev-A"})
 
     def test_pending_admission_requires_a_valid_request_receipt(self):
         pending = {"outcome": "pending", "request_id": "a" * 32, "terminal": False}
