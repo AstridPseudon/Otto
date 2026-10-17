@@ -348,6 +348,15 @@ class OwnerService:
             finally:
                 self._dispatch_context.project_id = prior_project
                 entry = self.in_flight.pop(token, {})
+            if (who == "owner" and (request or {}).get("command") == "admit"
+                    and isinstance(result, Mapping) and result.get("outcome") == "held"
+                    and result.get("retry")):
+                # Dispatch may open after _defer_request's check. Keep the
+                # exact request/token live and let the next poll retry it once
+                # the boundary closes; presence has not been checked yet.
+                (lane / ("pending-" + token + ".json")).unlink(missing_ok=True)
+                self._publish()
+                continue
             self.served += 1
             self.last_completed = {"token": token, "lane": who, "command": entry.get("command"), "at": _now()}
             if result is not _RELAYED:
@@ -355,7 +364,18 @@ class OwnerService:
             self._publish()
 
     def _defer_request(self, lane: Path, who: str, token: str, request: Mapping[str, Any]) -> bool:
-        """Subclasses may leave eligible requests untouched until custody clears."""
+        """Leave operator admission queued until every dispatch boundary is closed.
+
+        Admission must not prompt for presence and then return ``held``: the
+        operator would have to repeat the request (and authenticate again).
+        Deferring before claiming the lane keeps its exact request and key for
+        the ordinary owner path once dispatch settles.
+        """
+        if who == "owner" and request.get("command") == "admit":
+            with self.lock:
+                dispatching = any(journey.execution_host._external_waiting
+                                  for journey in self.journeys.values())
+            return bool(dispatching)
         return False
 
     def _poll_relays(self) -> None:
