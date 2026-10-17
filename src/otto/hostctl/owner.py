@@ -232,6 +232,7 @@ class HostSession:
                                  "privileged_actor_ids": (self.host["principal"],)}
             self.owner = PortfolioOwnerBootstrap(self.store, binding=self.binding, owner_actor=actor,
                 operator_actor=self.config["operator"]["actor"],
+                repositories=self.config.get("repositories"),
                 project_read_grant=grant, evidence_payload_resolver=evidence_payloads,
                 folder_transport_request_bytes=256 * 1024 * 1024, **orchestration)
             # Transcripts are stored once, by digest; Due records and their events

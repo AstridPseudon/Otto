@@ -78,6 +78,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                          runner: Any, views_provider: Callable[[], Mapping[str, Any]],
                          assignment_lookup: Callable[..., Mapping[str, Any]] | None = None,
                          task_lookup: Callable[[str], Mapping[str, Any]] | None = None,
+                         git: Callable[..., Any] | None = None,
                          timeout: float = 3600) -> LandingService:
     """Build a repo/branch landing service from owner-issued dependencies.
 
@@ -334,7 +335,10 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                                                    policy.pool_ref, manager_actor, execution_key,
                                                    (evidence_ref,))
             transferred = True
-            return {"candidate": candidate, "criterion": criterion, "parent_obligation": task_ref,
+            return {"candidate": candidate, "candidate_ref": candidate.to_dict(),
+                    "task_ref": task_ref.to_dict(), "assignment_ref": assignment_ref.to_dict(),
+                    "assignment_id": assignment_id,
+                    "criterion": criterion, "parent_obligation": task_ref,
                     "actor": project_owner.binding.authenticated_actor(manager_actor),
                     "criteria": criteria,
                     "scope": scope_ref, "input_packet": packet_ref, "limit_pool": policy.pool_ref,
@@ -345,6 +349,159 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                 close = getattr(commands, "close", None)
                 if callable(close):
                     close()
+
+    def intent_verifier(intent: Mapping[str, Any]) -> bool:
+        """Verify a retained landing intent against owner records and sealed runner data."""
+        required = {"version", "old_line_tip", "commit", "line_ref", "task_ref", "assignment_ref",
+                    "assignment_id", "candidate_ref", "runner", "assessment_result_refs",
+                    "accepted_decision_refs"}
+        if (not isinstance(intent, Mapping) or set(intent) - required not in (set(), {"proof_ref"})
+                or not required.issubset(intent) or intent.get("version") != 1):
+            raise LandingError("landing intent fields are incomplete or unexpected")
+        task_ref = _owner_ref(intent["task_ref"], "intent task", "work.task")
+        assignment_ref = _owner_ref(intent["assignment_ref"], "intent assignment", "wrk.assignment")
+        candidate_ref = _owner_ref(intent["candidate_ref"], "intent candidate", "wrk.result")
+        if (intent["task_ref"] != task_ref.to_dict()
+                or intent["assignment_ref"] != assignment_ref.to_dict()
+                or intent["candidate_ref"] != candidate_ref.to_dict()):
+            raise LandingError("landing intent resource pins must be exact reference dictionaries")
+        assignment_id = intent["assignment_id"]
+        commit = intent["commit"]
+        if (not isinstance(assignment_id, str) or assignment_ref.id != assignment_id
+                or intent["line_ref"] != "refs/heads/" + branch
+                or not _canonical_commit(commit) or not _canonical_commit(intent["old_line_tip"])
+                or not isinstance(intent["runner"], Mapping)
+                or not isinstance(intent["assessment_result_refs"], list)
+                or not intent["assessment_result_refs"]
+                or not isinstance(intent["accepted_decision_refs"], list)
+                or len(intent["assessment_result_refs"]) != len(intent["accepted_decision_refs"])):
+            raise LandingError("landing intent pins are malformed")
+        binding = assignment_lookup(assignment_id) if callable(assignment_lookup) else None
+        if not isinstance(binding, Mapping) or binding.get("record") is None:
+            raise LandingError("landing intent dispatch is unavailable")
+        dispatch = binding.get("record")
+        current_task_ref = _owner_ref(binding.get("task_ref"), "current task", "work.task")
+        current_assignment = _owner_ref(binding.get("assignment_ref"), "current assignment", "wrk.assignment")
+        current_task = owner.graph.reader.get_identity(
+            ResourceRef(current_task_ref.authority, current_task_ref.kind, current_task_ref.id))
+        if (current_task_ref != task_ref or current_assignment != assignment_ref
+                or current_task is None or current_task.ref != current_task_ref
+                or getattr(dispatch, "assignment", None) != assignment_id
+                or getattr(dispatch, "role", None) != "worker"
+                or getattr(dispatch, "admitted_revision", None) != admitted_revision(current_task.payload)):
+            raise LandingError("landing intent task admission or assignment changed")
+        candidate_identity = owner.store.get_identity(candidate_ref)
+        candidate_value = candidate_identity.payload.get("value") if candidate_identity is not None else None
+        expected_runner = dict(intent["runner"])
+        if (candidate_identity is None or candidate_identity.ref != candidate_ref
+                or not isinstance(candidate_value, Mapping)
+                or candidate_value != {"task_ref": task_ref.to_dict(),
+                    "admitted_revision": dispatch.admitted_revision,
+                    "assignment_ref": assignment_ref.to_dict(), "assignment_id": assignment_id,
+                    "lab_commit": commit, "repo_name": repo_name,
+                    "line_ref": "refs/heads/" + branch,
+                    "lab_name": task_ref.id,
+                    "runner": expected_runner}
+                or expected_runner.get("commit") != commit):
+            raise LandingError("landing intent differs from the exact retained candidate")
+        run_id = expected_runner.get("run_id")
+        try:
+            sealed = result_store.get(run_id)
+        except Exception as exc:
+            raise LandingError("landing intent sealed runner record is unavailable") from exc
+        if (not isinstance(sealed, Mapping) or sealed.get("commit") != commit
+                or _runner_identity(sealed) != expected_runner
+                or sealed.get("state") != "settled" or sealed.get("outcome") != "exited"
+                or sealed.get("exit_code") != 0):
+            raise LandingError("landing intent runner identity is not a passing sealed record")
+        try:
+            sealed_binding = ResultStore.binding(sealed["argv"], sealed["cwd"], commit)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LandingError("landing intent sealed runner binding is malformed") from exc
+        if sealed.get("binding") != sealed_binding:
+            raise LandingError("landing intent sealed runner binding is invalid")
+        assessment_module = owner.assessment_module()
+        for result_value, decision_value in zip(intent["assessment_result_refs"], intent["accepted_decision_refs"]):
+            result_ref = _owner_ref(result_value, "intent assessment result", "assessment.result")
+            decision_ref = _owner_ref(decision_value, "intent accepted decision", "assessment.decision")
+            if result_value != result_ref.to_dict() or decision_value != decision_ref.to_dict():
+                raise LandingError("landing intent assessment pins must be exact reference dictionaries")
+            try:
+                result = assessment_module.get_result(result_ref)
+                decision = assessment_module.get_decision(decision_ref)
+            except Exception as exc:
+                raise LandingError("landing intent assessment reference cannot be resolved") from exc
+            if (result.ref != result_ref or decision.ref != decision_ref
+                    or decision.disposition not in {"accept", "accept-with-risk"}
+                    or decision.result_ref != result_ref or result.candidate_ref != candidate_ref
+                    or result.parent_obligation_ref != task_ref or result.verdict.value != "PASS"
+                    or decision.parent_obligation_ref != task_ref
+                    or decision.candidate_ref != candidate_ref
+                    or result.protocol_result.get("runner") != expected_runner):
+                raise LandingError("landing intent acceptance does not bind its candidate and runner")
+        if "proof_ref" in intent:
+            proof_ref = _owner_ref(intent["proof_ref"], "intent line advance proof", "wrk.report")
+            if intent["proof_ref"] != proof_ref.to_dict():
+                raise LandingError("landing intent proof pin must be an exact reference dictionary")
+            reports = owner.assignments.list_observations(assignment_ref, kind="report")
+            retained = next((row for row in reports if row.ref == proof_ref), None)
+            expected_fields = {
+                "kind": "line-advance", "schema_version": 1, "repo_name": repo_name,
+                "line_ref": intent["line_ref"], "old_line_tip": intent["old_line_tip"],
+                "landed_commit": intent["commit"], "task_ref": intent["task_ref"],
+                "assignment_ref": intent["assignment_ref"], "candidate_ref": intent["candidate_ref"],
+                "runner": intent["runner"],
+                "assessment_result_refs": intent["assessment_result_refs"],
+                "accepted_decision_refs": intent["accepted_decision_refs"],
+            }
+            if (retained is None or not isinstance(retained.value, Mapping)
+                    or any(retained.value.get(key) != value for key, value in expected_fields.items())
+                    or not _canonical_commit(retained.value.get("line_tip"))):
+                raise LandingError("landing intent proof ref does not identify its retained owner report")
+        return True
+
+    def proof_writer(intent: Mapping[str, Any], *, line_tip: str) -> Mapping[str, Any]:
+        """Append the deterministic owner report after verifying the configured Git line."""
+        intent_verifier(intent)
+        repository = Path(repo_path).resolve()
+        invoke = git or _git_owner
+        observed = str(invoke(repository, "rev-parse", "--verify", intent["line_ref"])).strip()
+        if observed != line_tip:
+            raise LandingError("configured repository line tip differs from the observed landing tip")
+        try:
+            invoke(repository, "merge-base", "--is-ancestor", intent["commit"], line_tip)
+            invoke(repository, "merge-base", "--is-ancestor", intent["old_line_tip"], intent["commit"])
+        except Exception as exc:
+            raise LandingError("configured line ancestry does not prove this advance") from exc
+        assignment_id = intent["assignment_id"]
+        binding = assignment_lookup(assignment_id)
+        generation = binding.get("generation")
+        if type(generation) is not int or generation < 1:
+            raise LandingError("worker assignment generation is unavailable for line proof")
+        value = {"kind": "line-advance", "schema_version": 1, "repo_name": repo_name,
+                 "line_ref": intent["line_ref"], "line_tip": line_tip,
+                 "old_line_tip": intent["old_line_tip"], "landed_commit": intent["commit"],
+                 "task_ref": intent["task_ref"], "assignment_ref": intent["assignment_ref"],
+                 "candidate_ref": intent["candidate_ref"], "runner": intent["runner"],
+                 "assessment_result_refs": intent["assessment_result_refs"],
+                 "accepted_decision_refs": intent["accepted_decision_refs"]}
+        key = "fleet-line-advance:" + sha256((assignment_id + ":" + intent["commit"] + ":" +
+            intent["line_ref"] + ":" + intent["candidate_ref"]["id"]).encode()).hexdigest()
+        report = owner.assignments.append_report(
+            ResourceRef.from_dict(intent["assignment_ref"]), value,
+            expected_generation=generation, logical_request_key=key, actor=owner.owner_actor)
+        if report.value != value:
+            previous = report.value
+            if (not isinstance(previous, Mapping)
+                    or any(previous.get(field) != expected for field, expected in value.items()
+                           if field not in {"line_tip"})
+                    or not _canonical_commit(previous.get("line_tip"))):
+                raise LandingError("retained line advance report differs from the deterministic proof")
+            try:
+                invoke(repository, "merge-base", "--is-ancestor", previous["line_tip"], line_tip)
+            except Exception as exc:
+                raise LandingError("retained line advance report is not on the current configured line") from exc
+        return {"proof_ref": report.ref.to_dict(), "line_tip": line_tip}
 
     def current_criterion(pinned: Any) -> Any:
         criterion = _owner_ref(pinned, "criterion", "assessment.criterion")
@@ -382,6 +539,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
         criterion_lookup=current_criterion,
         completion_blockers=completion_blockers, completion_gate=completion_gate,
         result_lookup=result_store.get, timeout=timeout,
+        intent_verifier=intent_verifier, proof_writer=proof_writer,
     )
 
 
@@ -505,3 +663,17 @@ def _runner_identity(record: Mapping[str, Any]) -> dict[str, Any]:
         return {key: record[key] for key in ("run_id", "commit", "binding", "argv", "cwd", "exit_code")}
     except KeyError as exc:
         raise LandingError("sealed runner identity is incomplete") from exc
+
+
+def _canonical_commit(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) in {40, 64}
+            and all(char in "0123456789abcdef" for char in value))
+
+
+def _git_owner(cwd: Any, *args: str) -> str:
+    import subprocess
+    try:
+        return subprocess.run(["git", *args], cwd=str(cwd), check=True,
+                              capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as exc:
+        raise LandingError("configured repository Git verification failed") from exc

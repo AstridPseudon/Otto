@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import fnmatch
+import json
 import os
 from pathlib import Path
 import re
@@ -309,7 +310,8 @@ class LabFleet:
                 raise LabRefused("lab %s already exists" % name)
             if _resolve(self.repo, "refs/labs/" + name) is not None:
                 raise LabRefused("refs/labs/%s is already parked; resume it or pick another name" % name)
-            self._landed_marker(name).unlink(missing_ok=True)
+            if self._landed_marker(name).exists():
+                raise LabRefused("lab %s has an unsettled landing intent" % name)
             self._refuse_dirty(self.repo, "the line")
             if self.template != self.repo and self._is_worktree(self.template):
                 self._refuse_dirty(self.template, "the template")
@@ -326,7 +328,8 @@ class LabFleet:
             start = _resolve(self.repo, "refs/labs/" + name + "^{commit}")
             if start is None:
                 raise LabRefused("nothing is parked as %s" % name)
-            self._landed_marker(name).unlink(missing_ok=True)
+            if self._landed_marker(name).exists():
+                raise LabRefused("lab %s has an unsettled landing intent" % name)
             self._discard_stale(name, path)
             self._populate(name, path, start)
         return self._lab(name)
@@ -342,6 +345,9 @@ class LabFleet:
         """Unlink a clean lab. Never commits: dirty work is refused, not checkpointed."""
         with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
             lab = self._existing(name)
+            intent = self._landing_intent_locked(name)
+            if intent is not None and not isinstance(intent.get("proof_ref"), dict):
+                raise LabRefused("cannot remove a lab with an unproven landing intent")
             leftover = lab.dirty()
             if leftover:
                 raise LabRefused("remove refuses: %s has uncommitted work: %s" % (name, "; ".join(leftover)))
@@ -362,17 +368,36 @@ class LabFleet:
         with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
             self._mark_landed_locked(name, commit, merged_into)
 
-    def _mark_landed_locked(self, name: str, commit: str, merged_into: str) -> None:
+    def _mark_landed_locked(self, name: str, commit: str, merged_into: str,
+                            intent: Optional[dict] = None) -> None:
         """Record intent for a caller already holding this lab's exclusive lock."""
         lab = self._existing(name)
         if lab.head() != commit:
             raise LabRefused("landed marker commit differs from lab HEAD")
         marker = self._landed_marker(name)
+        existing_intent = self._landing_intent_locked(name)
+        if existing_intent is not None:
+            if intent is None:
+                raise LabRefused("cannot replace a versioned landing intent with a legacy marker")
+            # Proof recording may add proof_ref to the exact intent. Reject any
+            # attempt to repin a pending intent to different work or admission.
+            prior = dict(existing_intent)
+            prior.pop("proof_ref", None)
+            proposed = dict(intent)
+            proposed.pop("proof_ref", None)
+            if prior != proposed:
+                raise LabRefused("versioned landing intent is already retained with different pins")
         marker.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(dir=str(marker.parent), prefix=".landed-")
         try:
-            with os.fdopen(fd, "w", encoding="ascii") as stream:
-                stream.write(commit + "\n" + merged_into + "\n")
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                if intent is None:
+                    stream.write(commit + "\n" + merged_into + "\n")
+                else:
+                    value = dict(intent)
+                    if value.get("version") != 1 or value.get("commit") != commit or value.get("line_ref") != merged_into:
+                        raise LabRefused("versioned landing intent does not match the checked commit and line")
+                    stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, marker)
@@ -380,6 +405,24 @@ class LabFleet:
             with suppress(FileNotFoundError):
                 os.unlink(temporary)
             raise
+
+    def _landing_intent_locked(self, name: str) -> Optional[dict]:
+        """Read a versioned landing intent; legacy cleanup markers are not acceptance evidence."""
+        marker = self._landed_marker(name)
+        if not marker.exists():
+            return None
+        try:
+            value = json.loads(marker.read_text(encoding="utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) and value.get("version") == 1 else None
+
+    def _record_landed_proof_locked(self, name: str, proof_ref: dict) -> None:
+        intent = self._landing_intent_locked(name)
+        if intent is None or not isinstance(proof_ref, dict):
+            raise LabRefused("versioned landing intent and exact proof reference are required")
+        intent["proof_ref"] = dict(proof_ref)
+        self._mark_landed_locked(name, intent["commit"], intent["line_ref"], intent=intent)
 
     def sweep_landed(self, merged_into: str, is_captured: Callable[[str, str], bool],
                      before_unlink: Optional[Callable[[Path], Any]] = None) -> list:
@@ -396,10 +439,20 @@ class LabFleet:
                 self._check_name(name)
                 if marker.is_symlink() or not marker.is_file():
                     raise LabRefused("landed marker is not a regular file")
-                marker_fields = marker.read_text(encoding="ascii").splitlines()
-                if len(marker_fields) != 2 or marker_fields[1] != merged_into:
-                    raise LabRefused("landed marker does not identify the requested owner line")
-                commit = marker_fields[0]
+                raw = marker.read_text(encoding="utf-8")
+                try:
+                    versioned = json.loads(raw)
+                except json.JSONDecodeError:
+                    versioned = None
+                if isinstance(versioned, dict) and versioned.get("version") == 1:
+                    if versioned.get("line_ref") != merged_into or not isinstance(versioned.get("proof_ref"), dict):
+                        raise LabRefused("versioned landing intent has no retained owner proof")
+                    commit = versioned.get("commit")
+                else:
+                    marker_fields = raw.splitlines()
+                    if len(marker_fields) != 2 or marker_fields[1] != merged_into:
+                        raise LabRefused("landed marker does not identify the requested owner line")
+                    commit = marker_fields[0]
                 if not is_captured(name, commit):
                     results.append(SweepResult(name, "kept-unsettled", "captured worker result is unavailable"))
                     continue

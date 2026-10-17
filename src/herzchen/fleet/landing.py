@@ -76,6 +76,8 @@ class LandingService:
                  completion_blockers: Optional[Callable[..., Mapping[str, Any]]] = None,
                  completion_gate: Optional[Callable[..., Mapping[str, Any]]] = None,
                  result_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
+                 intent_verifier: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+                 proof_writer: Optional[Callable[..., Mapping[str, Any]]] = None,
                  lab_lookup: Optional[Callable[[str], Any]] = None,
                  git: Optional[Callable[..., Any]] = None, timeout: float = 3600) -> None:
         if not isinstance(line_ref, str) or not line_ref.startswith("refs/heads/"):
@@ -87,6 +89,8 @@ class LandingService:
         self.completion_blockers = completion_blockers
         self.completion_gate = completion_gate
         self.result_lookup = result_lookup
+        self.intent_verifier = intent_verifier
+        self.proof_writer = proof_writer
         if result_lookup is None:
             raise ValueError("authoritative sealed runner result lookup is required")
         self.lab_lookup = lab_lookup or fleet._lab
@@ -126,6 +130,29 @@ class LandingService:
         try:
             self._assert_line_clean(repo)
             base = self._git(repo, "rev-parse", "--verify", self.line_ref).strip()
+        except LandingError as exc:
+            if exc.settled is None:
+                exc.settled = True  # No line advancement has been attempted.
+            raise
+        intent = None
+        with self._lab_lock(lab_name):
+            read_intent = getattr(self.fleet, "_landing_intent_locked", None)
+            if callable(read_intent):
+                intent = read_intent(lab_name)
+                marker_path = getattr(self.fleet, "_landed_marker", lambda _name: None)(lab_name)
+                if intent is None and marker_path is not None and Path(marker_path).exists():
+                    raise LandingError("legacy landing marker cannot prove acceptance; lab retained",
+                                       settled=True)
+        if intent is not None:
+            with _exclusive_lock(lock_path), self._lab_lock(lab_name):
+                current = self.fleet._landing_intent_locked(lab_name)
+                if current != intent:
+                    raise LandingError("retained landing intent changed during recovery", settled=True)
+                self._assert_line_clean(repo)
+                base = self._git(repo, "rev-parse", "--verify", self.line_ref).strip()
+                return self._recover_intent(lab_name, task_id, task, lab, repo, base,
+                                            intent, assignment_id)
+        try:
             with self._lab_lock(lab_name):
                 prepared = self._prepare(lab_name, task_id, task, lab, repo, base)
         except LandingError as exc:
@@ -299,20 +326,115 @@ class LandingService:
                 raise LandingError("line advanced during landing; lab returned to worker")
             rebased = record["commit"]
             mark_landed = getattr(self.fleet, "_mark_landed_locked", None)
+            intent = None
             if callable(mark_landed):
-                # Persist exact verified intent before advancing the line. The
-                # owner Due capture predicate and ancestry check are both required
-                # before a later cleanup may remove this lab.
-                mark_landed(lab_name, rebased, self.line_ref)
+                if not callable(self.intent_verifier) or not callable(self.proof_writer):
+                    raise LandingError("owner landing intent verifier and proof writer are required")
+                intent = {
+                    "version": 1, "old_line_tip": old_line, "commit": rebased,
+                    "line_ref": self.line_ref,
+                    "task_ref": _exact_context_ref(context, "task_ref"),
+                    "assignment_ref": _optional_exact_context_ref(context, "assignment_ref"),
+                    "assignment_id": context.get("assignment_id", assignment_id),
+                    "candidate_ref": _exact_context_ref(context, "candidate_ref", candidate),
+                    "runner": _runner_identity(record),
+                    "assessment_result_refs": result_ref_json,
+                    "accepted_decision_refs": decision_ref_json,
+                }
+                self._verify_intent(intent)
+                mark_landed(lab_name, rebased, self.line_ref, intent=intent)
             self._git(repo, "merge", "--ff-only", rebased)
             if self._git(repo, "rev-parse", "HEAD").strip() != rebased:
                 raise LandingError("line checkout did not advance to the verified lab commit")
+            if self._git(repo, "rev-parse", "--verify", self.line_ref).strip() != rebased:
+                raise LandingError("configured line ref did not advance to the verified commit")
+            if intent is not None:
+                self._record_proof(lab_name, intent, rebased)
             return {"ok": True, "landed": True, "task": task_id, "commit": rebased,
                     "runner_run_id": record["run_id"],
                     "assessment_results": result_ref_json,
                     "acceptances": decision_ref_json,
                     "assessment_result": result_ref_json[0] if len(results) == 1 else result_ref_json,
                     "acceptance": decision_ref_json[0] if len(decisions) == 1 else decision_ref_json}
+
+    def _recover_intent(self, lab_name: str, task_id: str, task: Mapping[str, Any], lab: Any,
+                        repo: Path, line_tip: str, intent: Mapping[str, Any],
+                        assignment_id: str | None) -> dict[str, Any]:
+        if not callable(self.intent_verifier) or not callable(self.proof_writer):
+            raise LandingError("owner landing intent verifier and proof writer are required")
+        task_ref = intent.get("task_ref")
+        if (not isinstance(task_ref, Mapping) or task_ref.get("id") != task_id
+                or task_ref.get("revision") != task.get("revision")):
+            raise LandingError("retained landing intent belongs to a different task admission")
+        if assignment_id != intent.get("assignment_id"):
+            raise LandingError("retained landing intent belongs to a different worker assignment")
+        self._verify_intent(intent)
+        if intent.get("line_ref") != self.line_ref or intent.get("commit") != lab.head() or lab.dirty():
+            raise LandingError("retained landing intent no longer matches the unchanged lab")
+        if assignment_id is not None and intent.get("assignment_id") != assignment_id:
+            raise LandingError("requested assignment differs from retained landing intent")
+        runner = intent.get("runner")
+        if not isinstance(runner, Mapping) or runner.get("commit") != intent.get("commit"):
+            raise LandingError("retained intent has no exact runner identity")
+        sealed = self.result_lookup(runner.get("run_id"))
+        if not isinstance(sealed, Mapping) or any(sealed.get(key) != runner.get(key)
+                for key in ("run_id", "commit", "binding", "argv", "cwd", "exit_code")):
+            raise LandingError("retained intent runner record is not sealed or does not match")
+        if not isinstance(intent.get("assessment_result_refs"), list) or not intent["assessment_result_refs"]:
+            raise LandingError("retained intent has no accepted assessment results")
+        if not isinstance(intent.get("accepted_decision_refs"), list) or not intent["accepted_decision_refs"]:
+            raise LandingError("retained intent has no accepted decisions")
+        old_tip, commit = intent.get("old_line_tip"), intent.get("commit")
+        if self._is_ancestor(repo, commit, line_tip):
+            observed = line_tip
+        elif line_tip == old_tip:
+            self._assert_line_clean(repo)
+            self._git(repo, "merge", "--ff-only", commit)
+            observed = self._git(repo, "rev-parse", "HEAD").strip()
+            if observed != commit or self._git(repo, "rev-parse", "--verify", self.line_ref).strip() != commit:
+                raise LandingError("recovery did not advance the configured line to the exact commit")
+        else:
+            raise LandingError("configured line diverged from retained landing intent")
+        if not self._is_ancestor(repo, commit, self._git(repo, "rev-parse", "--verify", self.line_ref).strip()):
+            raise LandingError("retained commit is not on the configured line")
+        self._record_proof(lab_name, intent, observed)
+        return {"ok": True, "landed": True, "task": task_id, "commit": commit,
+                "runner_run_id": runner["run_id"],
+                "assessment_results": list(intent["assessment_result_refs"]),
+                "acceptances": list(intent["accepted_decision_refs"]),
+                "assessment_result": intent["assessment_result_refs"][0] if len(intent["assessment_result_refs"]) == 1 else list(intent["assessment_result_refs"]),
+                "acceptance": intent["accepted_decision_refs"][0] if len(intent["accepted_decision_refs"]) == 1 else list(intent["accepted_decision_refs"])}
+
+    def _verify_intent(self, intent: Mapping[str, Any]) -> None:
+        if (intent.get("version") != 1 or not isinstance(intent.get("old_line_tip"), str)
+                or not isinstance(intent.get("commit"), str) or intent.get("line_ref") != self.line_ref
+                or not isinstance(intent.get("task_ref"), Mapping)
+                or not isinstance(intent.get("candidate_ref"), Mapping)):
+            raise LandingError("retained landing intent is incomplete or unsupported")
+        try:
+            result = self.intent_verifier(dict(intent))
+        except Exception as exc:
+            raise LandingError("owner rejected retained landing intent: %s" % exc) from exc
+        if result is False or (isinstance(result, Mapping) and result.get("ok") is False):
+            raise LandingError("owner rejected retained landing intent")
+
+    def _record_proof(self, lab_name: str, intent: Mapping[str, Any], line_tip: str) -> None:
+        proof = self.proof_writer(dict(intent), line_tip=line_tip)
+        if not isinstance(proof, Mapping) or not isinstance(proof.get("proof_ref"), Mapping):
+            raise LandingError("owner did not retain a typed line advance proof")
+        recorder = getattr(self.fleet, "_record_landed_proof_locked", None)
+        if not callable(recorder):
+            raise LandingError("LabFleet cannot retain the owner line advance proof")
+        recorder(lab_name, dict(proof["proof_ref"]))
+
+    def _is_ancestor(self, repo: Path, commit: str, ref: str) -> bool:
+        done = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, ref],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if done.returncode == 0:
+            return True
+        if done.returncode == 1:
+            return False
+        raise LandingError("could not verify retained commit ancestry")
 
     def _checkpoint(self, lab: Any, name: str) -> None:
         # LabFleet owns the checkpoint callback and verification. Match park's path discovery but
@@ -505,6 +627,25 @@ def _json_ref(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     raise LandingError("assessment returned a reference that cannot be serialized")
+
+
+def _exact_context_ref(context: Mapping[str, Any], key: str, fallback: Any = None) -> dict[str, Any]:
+    value = context.get(key, fallback)
+    if hasattr(value, "ref"):
+        value = value.ref
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    if not isinstance(value, Mapping) or not all(
+            isinstance(value.get(field), str) and value[field]
+            for field in ("authority", "kind", "id", "revision")):
+        raise LandingError("owner assessment context must provide exact %s" % key)
+    return {field: value[field] for field in ("authority", "kind", "id", "revision")}
+
+
+def _optional_exact_context_ref(context: Mapping[str, Any], key: str) -> Optional[dict[str, Any]]:
+    if key not in context or context[key] is None:
+        return None
+    return _exact_context_ref(context, key)
 
 
 def _typed_ref(value: Any) -> bool:

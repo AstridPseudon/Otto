@@ -635,6 +635,7 @@ class PortfolioOwnerBootstrap:
         "_late_usage_lock",
         "_late_usage_cache",
         "landed_worker_settler",
+        "repositories",
     )
 
     def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
@@ -660,6 +661,7 @@ class PortfolioOwnerBootstrap:
         queue_ref: Any = None,
         reviewed_policy: Mapping[str, Any] | None = None,
         evidence_payload_resolver: Any = None,
+        repositories: Mapping[str, Any] | None = None,
     ) -> None:
         import threading
         self._owned_facades = []
@@ -717,6 +719,7 @@ class PortfolioOwnerBootstrap:
             self.reviewed_policy = reviewed_policy
             # The owner's evidence handler: verifies managed DAT payloads before accept or completion.
             self.evidence_payload_resolver = evidence_payload_resolver
+            self.repositories = dict(repositories) if isinstance(repositories, Mapping) else {}
             self.binding = binding
             self.owner_actor = authenticated
             self.operator_actor = operator
@@ -730,7 +733,7 @@ class PortfolioOwnerBootstrap:
             if register_resources is not None:
                 register_resources(store)
             self.assignments = self._own(ResponsibilityAssignments(store, actor=authenticated,
-                evidence_payload_resolver=evidence_payload_resolver))
+                evidence_payload_resolver=evidence_payload_resolver, repositories=self.repositories))
             # Sheet-governed manager completion must use the same configured
             # assignment guard as direct owner completion and assessment reads.
             self.sheet = self._own(ProjectSheet(store, actor=authenticated, assignments=self.assignments))
@@ -938,7 +941,8 @@ class PortfolioOwnerBootstrap:
             if cached is None:
                 facade = self._own(ResponsibilityAssignments(
                     self.store, actor=actor, native_bodies=native_bodies,
-                    evidence_payload_resolver=self.evidence_payload_resolver
+                    evidence_payload_resolver=self.evidence_payload_resolver,
+                    repositories=self.repositories,
                 ))
                 assignments = facade.command_port
                 self._late_usage_cache = (native_bodies, facade)

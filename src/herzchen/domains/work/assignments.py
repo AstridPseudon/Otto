@@ -182,7 +182,7 @@ class _ResponsibilityAssignmentsEngine:
     """The shared generic responsibility/assignment command surface."""
 
     def __init__(self, store: Any, *, actor: Optional[AuthenticatedActor] = None, native_bodies: Any = None,
-                 evidence_payload_resolver: Any = None) -> None:
+                 evidence_payload_resolver: Any = None, repositories: Optional[Mapping[str, Any]] = None) -> None:
         if not hasattr(store, "transaction") or not hasattr(store, "mutate"):
             raise TypeError("store must be the supplied FND writer")
         from .module import work_handler
@@ -192,6 +192,7 @@ class _ResponsibilityAssignmentsEngine:
         self._evidence_store = store
         self._evidence_payload_resolver = evidence_payload_resolver
         self._usage_native_bodies = native_bodies
+        self._repositories = dict(repositories) if isinstance(repositories, Mapping) else {}
 
     def _create_in_transaction(
         self,
@@ -760,6 +761,98 @@ class _ResponsibilityAssignmentsEngine:
                 for ref in evidence_values
             }
 
+            # A code task is complete only when the accepted candidate's exact
+            # commit is reachable from its configured repository line and a
+            # worker report records that verified advance.
+            landed_commit = line_ref = line_tip = line_proof_ref = None
+            metadata = task_payload.get("metadata_namespaces", {})
+            plan = metadata.get("otto.plan", {}) if isinstance(metadata, Mapping) else {}
+            repo_name, branch = (plan.get("repo"), plan.get("branch")) if isinstance(plan, Mapping) else (None, None)
+            candidate_identity = (self.__writer.get_identity(request_payload["candidate_ref"])
+                                  if request_payload["candidate_ref"] is not None else None)
+            candidate_value = (candidate_identity.payload.get("value", {})
+                               if candidate_identity is not None and isinstance(candidate_identity.payload, Mapping)
+                               else {})
+            candidate_value = candidate_value if isinstance(candidate_value, Mapping) else {}
+            code_task = bool(repo_name or branch or candidate_value.get("lab_commit"))
+            if code_task:
+                if candidate_identity is None or request_payload["result_ref"] is None:
+                    raise WorkValidationError("code task completion requires retained accepted candidate and result")
+                result_identity = self.__writer.get_identity(request_payload["result_ref"])
+                if (result_identity is None or result_identity.ref != request_payload["result_ref"]
+                        or self._as_ref(result_identity.payload.get("candidate_ref")) != candidate_identity.ref):
+                    raise WorkValidationError("code task result does not pin the accepted candidate")
+                commit = candidate_value.get("lab_commit")
+                expected_line = "refs/heads/" + branch if isinstance(branch, str) else None
+                candidate_task = candidate_value.get("task_ref")
+                candidate_assignment = candidate_value.get("assignment_ref")
+                if (not isinstance(repo_name, str) or repo_name not in self._repositories
+                        or not isinstance(expected_line, str) or not isinstance(commit, str)
+                        or candidate_task != task_ref.to_dict()
+                        or candidate_value.get("repo_name") != repo_name
+                        or candidate_value.get("line_ref") != expected_line):
+                    raise WorkValidationError("code task landing proof is absent or unverified")
+                worker_assignment = self._as_ref(candidate_assignment) if isinstance(candidate_assignment, Mapping) else None
+                if worker_assignment is None:
+                    raise WorkValidationError("code task candidate does not pin its worker assignment")
+                logical_key = "fleet-line-advance:" + hashlib.sha256(
+                    f"{worker_assignment.id}:{commit}:{expected_line}:{candidate_identity.ref.id}".encode()
+                ).hexdigest()
+                proof_ref = observation_reference(self.__writer.authority, worker_assignment.id, "report", logical_key)
+                proof_identity = self.__writer.get_identity(proof_ref)
+                proof = (proof_identity.payload.get("value") if proof_identity is not None
+                         and isinstance(proof_identity.payload, Mapping) else None)
+                accepted_refs = [self._as_ref(item).to_dict() for item in gate_state.get("accepted_decision_refs", ())]
+                accepted_result_refs = []
+                for raw_ref in gate_state.get("accepted_decision_refs", ()):
+                    accepted_decision = self.__writer.get_identity(self._as_ref(raw_ref))
+                    if accepted_decision is None:
+                        raise WorkValidationError("accepted code task decision is not retained")
+                    decision_value = accepted_decision.payload
+                    if (self._as_ref(decision_value.get("candidate_ref")) != candidate_identity.ref
+                            or decision_value.get("result_ref") is None):
+                        raise WorkValidationError("accepted code task decision does not pin the selected candidate result")
+                    decision_result = self._as_ref(decision_value["result_ref"])
+                    retained_result = self.__writer.get_identity(decision_result)
+                    if (retained_result is None or not isinstance(retained_result.payload, Mapping)
+                            or self._as_ref(retained_result.payload.get("candidate_ref")) != candidate_identity.ref):
+                        raise WorkValidationError("accepted code task result does not pin the selected candidate")
+                    if decision_result not in accepted_result_refs:
+                        accepted_result_refs.append(decision_result)
+                if (not isinstance(proof, Mapping) or proof_identity.ref.kind != REPORT_KIND
+                        or proof_identity.ref.revision is None or proof.get("kind") != "line-advance"
+                        or proof_identity.payload.get("observation_kind") != "report"
+                        or self._as_ref(proof_identity.payload.get("assignment")) != worker_assignment
+                        or proof.get("schema_version") != 1 or proof.get("repo_name") != repo_name
+                        or proof.get("line_ref") != expected_line or proof.get("landed_commit") != commit
+                        or proof.get("task_ref") != task_ref.to_dict()
+                        or proof.get("assignment_ref") != worker_assignment.to_dict()
+                        or proof.get("candidate_ref") != candidate_identity.ref.to_dict()
+                        or proof.get("runner") != candidate_value.get("runner")
+                        or proof.get("accepted_decision_refs") != accepted_refs
+                        or proof.get("assessment_result_refs") != [ref.to_dict() for ref in accepted_result_refs]
+                        or request_payload["result_ref"] not in accepted_result_refs):
+                    raise WorkValidationError("code task landing proof does not match accepted candidate and decisions")
+                old_tip, proven_tip = proof.get("old_line_tip"), proof.get("line_tip")
+                if not isinstance(old_tip, str) or not isinstance(proven_tip, str):
+                    raise WorkValidationError("code task landing proof has invalid Git line tips")
+                try:
+                    import subprocess
+                    from pathlib import Path
+                    repo_path = Path(self._repositories[repo_name]).resolve(strict=True)
+                    def git(*args: str) -> str:
+                        run = subprocess.run(["git", "-C", str(repo_path), *args], check=True,
+                                             capture_output=True, text=True)
+                        return run.stdout.strip()
+                    git("show-ref", "--verify", "--quiet", expected_line)
+                    current_tip = git("rev-parse", "--verify", expected_line)
+                    git("status", "--porcelain")
+                    for ancestor, descendant in ((old_tip, commit), (commit, proven_tip), (proven_tip, current_tip)):
+                        git("merge-base", "--is-ancestor", ancestor, descendant)
+                except Exception as exc:
+                    raise WorkValidationError("code task landing repository could not verify Git ancestry") from exc
+                landed_commit, line_ref, line_tip, line_proof_ref = commit, expected_line, proven_tip, proof_identity.ref
+
             completion = {
                 "manager": selected_actor.actor,
                 "assignment_ref": assignment_ref,
@@ -782,6 +875,9 @@ class _ResponsibilityAssignmentsEngine:
                 "assessment_gate_check": gate_state,
                 "logical_request_key": key,
             }
+            if landed_commit is not None:
+                completion.update(landed_commit=landed_commit, line_ref=line_ref,
+                                 line_tip=line_tip, line_proof_ref=line_proof_ref)
             observation_ref = ResourceRef(
                 self.__writer.authority, REPORT_KIND,
                 "report-" + hashlib.sha256((current_assignment.id + ":" + key + ":completion").encode()).hexdigest()[:28],

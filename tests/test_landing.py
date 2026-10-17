@@ -120,7 +120,8 @@ def _project(tmp_path: Path, *, conflict=False):
     return line, base, _Fleet(line, labs)
 
 
-def _service(fleet, runner, *, task=None, assessment_assess=None, blockers=None, gate=None):
+def _service(fleet, runner, *, task=None, assessment_assess=None, blockers=None, gate=None,
+             owner_proof=False):
     _LandingError, LandingService = _landing_api()
     admitted = task or _admitted_task()
     calls = {"accept": [], "decisions": [], "blockers": [], "gate": [], "gate_records": []}
@@ -151,15 +152,55 @@ def _service(fleet, runner, *, task=None, assessment_assess=None, blockers=None,
         calls["gate"].append((args, kwargs))
         return {"blockers": [], "clear": True}
 
+    base_context = lambda *_a, **kwargs: (
+        calls["gate_records"].extend(kwargs.get("gate_records", ())) or
+        {"scope": "scope@1", "input_packet": "packet@1", "limit_pool": "pool@1"})
+    owner_args = {}
+    if owner_proof:
+        repo = Path(fleet.repo)
+
+        def assessment_context(*_args, **kwargs):
+            result = base_context(*_args, **kwargs)
+            result.update({
+                "task_ref": ResourceRef("work", "task", "task-1", admitted["revision"]),
+                "candidate_ref": ResourceRef("assessment", "assessment.candidate", "candidate", "r1"),
+                "assignment_ref": ResourceRef("work", "assignment", "assignment-1", "r1"),
+                "assignment_id": "assignment-1",
+            })
+            return result
+
+        def verify_intent(intent):
+            task_ref = intent.get("task_ref", {})
+            candidate_ref = intent.get("candidate_ref", {})
+            runner_identity = intent.get("runner", {})
+            return (task_ref == {"authority": "work", "kind": "task", "id": "task-1",
+                                 "revision": admitted["revision"]}
+                    and candidate_ref == {"authority": "assessment", "kind": "assessment.candidate",
+                                          "id": "candidate", "revision": "r1"}
+                    and intent.get("line_ref") == "refs/heads/main"
+                    and runner_identity.get("commit") == intent.get("commit"))
+
+        def write_proof(intent, *, line_tip):
+            commit = intent.get("commit")
+            current = _run(repo, "rev-parse", "refs/heads/main")
+            head = _run(repo, "rev-parse", "HEAD")
+            if not commit or line_tip != commit or current != commit or head != commit:
+                raise AssertionError("proof requires the exact landed line tip and commit")
+            ref = ResourceRef("work", "line.advance.proof", commit, "r1")
+            return {"proof_ref": ref.to_dict()}
+
+        context = assessment_context
+        owner_args = {"intent_verifier": verify_intent, "proof_writer": write_proof}
+    else:
+        context = base_context
+
     service = LandingService(fleet, runner, lambda _task: admitted, "refs/heads/main",
                              assessment=Assessment(),
-                             assessment_context=lambda *_a, **kwargs: (
-                                 calls["gate_records"].extend(kwargs.get("gate_records", ())) or
-                                 {"scope": "scope@1", "input_packet": "packet@1", "limit_pool": "pool@1"}),
+                             assessment_context=context,
                              criterion_lookup=lambda ref: ref,
                              completion_blockers=blockers or clear_blockers,
                              completion_gate=gate or clear_gate,
-                             result_lookup=runner.lookup)
+                             result_lookup=runner.lookup, **owner_args)
     return service, calls
 
 
@@ -552,7 +593,7 @@ def test_real_owner_claude_edit_capture_settles_and_removes_lab(tmp_path, mode):
             base = subprocess.run(['git', '-C', str(line), 'rev-parse', 'HEAD'], check=True,
                                   stdout=subprocess.PIPE, text=True).stdout.strip()
         workspace = str(lab.path.resolve())
-        landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        landing, _calls = _service(fleet, _Runner(), task=_admitted_task(), owner_proof=True)
         edit_path = 'shared.txt' if mode in {'edit', 'auto_merge_write'} else 'answer.txt'
         if mode == 'edit':
             operations = [('Edit', {'old_string': 'base\n', 'new_string': 'edited\n'})]

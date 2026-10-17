@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from unittest import mock
 from types import SimpleNamespace
 
@@ -1017,9 +1018,10 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
             fixture.doCleanups()
 
 
-def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commit=False,
-                                          evidence_resolver=True, corrupt_evidence=False):
-    """Build one real owner and drive its landing adapter through done."""
+@contextmanager
+def _real_landing_case(tmp_path, *, exit_code=0, wrong_commit=False,
+                       evidence_resolver=True, corrupt_evidence=False, git=None):
+    """Build one real owner and expose it before landing."""
     import hashlib
     import json
     from pathlib import Path
@@ -1029,10 +1031,12 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
     from herzchen.domains.work.admission import admitted_revision, authoring_stamp
     from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
     from herzchen.evidence.model import load_evidence_pack
+    from herzchen.fleet.labs import LabFleet
     from herzchen.fleet.runner.store import ResultStore
     from otto.hostctl.fleet_landing import make_landing_service
     from otto.portfolio.local_assessment_policy import compose_manager_assessment_state
     from otto.portfolio.manager_assessment_command import manager_assessment_pool_from_command
+    from otto.portfolio.plan_metadata import register_plan_metadata
     from tests import test_evidence_lifecycle as lifecycle
     from tests.test_landing import _project
 
@@ -1042,6 +1046,19 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
         fixture = LocalAssessmentCompositionTests()
         fixture.setUp()
         f = fixture.f
+        register_plan_metadata()
+        git_root = Path(tmp_path) / "git"
+        git_root.mkdir()
+        line, base, _fixture_fleet = _project(git_root)
+        def checkpoint(worktree, paths, *, message):
+            from tests.test_landing import _run
+            path = Path(worktree)
+            _run(path, "add", "--", *paths)
+            _run(path, "-c", "user.name=LAND test", "-c", "user.email=land@test.invalid",
+                 "commit", "-m", message)
+        fleet = LabFleet(line, git_root / "labs", checkpoint=checkpoint, shared_dirs=())
+        lab = fleet.create("one", base="refs/heads/main")
+        (lab.path / "one.txt").write_text("worker change\n")
         register_evidence(f.store)
         root, discover, loader = lifecycle._public_pack_hooks()
         found = discover(project_root=root)[0]
@@ -1067,7 +1084,7 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
             issuer = f.binding.authenticated_actor("manager")
             f.owner = PortfolioOwnerBootstrap(f.store, binding=f.binding, owner_actor="manager",
                 project_read_grant=ProjectReadGrant(issuer, (f.project.id,), "test-host", "v1"),
-                evidence_payload_resolver=resolver)
+                evidence_payload_resolver=resolver, repositories={"repo": line})
 
         graph = WorkGraph(f.store, actor=f.actor)
         original_task = ResourceRef.from_dict(fixture.state["task_refs"]["PA06"])
@@ -1075,9 +1092,14 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
         authored = dict(original.payload)
         authored["fields"] = {**dict(authored.get("fields", {})),
                                "check": {"argv": ["/usr/bin/true"]}}
+        authored["metadata_namespaces"] = {
+            **dict(authored.get("metadata_namespaces", {})),
+            "otto.plan": {"repo": "repo", "branch": "main"},
+        }
         stamp = authoring_stamp(original_task.revision, authored, "manager")
         admitted = graph.revise(original_task, fields=authored["fields"],
-            metadata_namespaces={"work.admission": stamp}, logical_request_key="land-evidence-activate",
+            metadata_namespaces={"work.admission": stamp, "otto.plan": {"repo": "repo", "branch": "main"}},
+            logical_request_key="land-evidence-activate",
             actor=f.actor)
         active = graph.revise(admitted.ref, lifecycle="active",
             logical_request_key="land-evidence-activate-task", actor=f.actor)
@@ -1120,9 +1142,6 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
                 record = result_store.get(request["run_id"])
                 return {"ok": True, "done": True, "record": record}
 
-        git_root = Path(tmp_path) / "git"
-        git_root.mkdir()
-        line, base, fleet = _project(git_root)
         dispatch = SimpleNamespace(assignment=worker.ref.id, role="worker", admitted_revision=admitted_stamp)
         project_state = dict(fixture.state)
         binding = {"record": dispatch, "task": SimpleNamespace(ref=task_ref),
@@ -1132,7 +1151,8 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
             "view": SimpleNamespace(server=SimpleNamespace(owner=f.owner,
                 assert_assessment_policy_current=lambda: None))}
         def task_lookup(_task_id):
-            current = f.owner.graph.reader.get_identity(task_ref)
+            current = f.owner.graph.reader.get_identity(
+                ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
             return {"id": task_id, "revision": current.ref.revision,
                 "current_revision": current.ref.revision, "payload": current.payload}
         service = make_landing_service(fleet=fleet, result_store=result_store,
@@ -1140,27 +1160,27 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
             runner=Runner(), views_provider=lambda: {},
             assignment_lookup=lambda assignment_id: binding if assignment_id == worker.ref.id else {},
             task_lookup=task_lookup)
-        try:
-            result = service.done("one", task_id, assignment_id=worker.ref.id)
-        except Exception:
-            from tests.test_landing import _run
-            assert _run(line, "rev-parse", "refs/heads/main") == base
-            if exit_code != 0 or wrong_commit or not evidence_resolver or corrupt_evidence:
-                assert not AssessmentModule(f.store, actor=f.actor).list_decisions(parent_obligation=task_ref)
-            raise
-        return result, result_store, handler, f, base, fixture
-    except BaseException:
+        if git is not None:
+            service._git_hook = git
+        from tests.test_landing import _run
+        case = SimpleNamespace(service=service, owner=f.owner, line=line, runner=service.runner,
+            worker=worker, task_ref=task_ref, fixture=fixture, f=f, fleet=fleet, base=base,
+            result_store=result_store, handler=handler, evidence_resolver=evidence_resolver,
+            corrupt_evidence=corrupt_evidence, exit_code=exit_code, wrong_commit=wrong_commit,
+            _run=_run)
+        yield case
+    finally:
         if fixture is not None:
             fixture.doCleanups()
-        raise
 
 
 def test_done_freezes_exact_sealed_check_evidence_and_accepts_through_owner_adapter(tmp_path):
     from herzchen.contracts import ResourceRef
     from herzchen.domains.assessment import AssessmentModule
 
-    result, result_store, handler, f, base, fixture = _run_real_landing_with_runner_evidence(tmp_path)
-    try:
+    with _real_landing_case(tmp_path) as case:
+        result = case.service.done("one", case.task_ref.id, assignment_id=case.worker.ref.id)
+        result_store, handler, f, base, fixture = case.result_store, case.handler, case.f, case.base, case.fixture
         assert result["ok"] and result["landed"]
         assert result["commit"] != base
         runner_record = result_store.get(result["runner_run_id"])
@@ -1198,18 +1218,223 @@ def test_done_freezes_exact_sealed_check_evidence_and_accepts_through_owner_adap
             result_ref=assessed.ref, logical_request_key="done-evidence-task-complete",
             actor=f.binding.authenticated_actor("manager"))
         assert completion_result["outcome"] == "completed"
-    finally:
-        fixture.doCleanups()
 
 
 @pytest.mark.parametrize("case", ["failed", "wrong-commit", "missing-evidence", "unresolvable-evidence"])
 def test_done_refuses_failed_mismatched_or_unresolvable_check_evidence(tmp_path, case):
+    from herzchen.domains.assessment import AssessmentModule
     from herzchen.fleet.landing import LandingError
     options = {"exit_code": 1} if case == "failed" else (
         {"wrong_commit": True} if case == "wrong-commit" else (
         {"evidence_resolver": False} if case == "missing-evidence" else {"corrupt_evidence": True}))
-    with pytest.raises(LandingError):
-        result = _run_real_landing_with_runner_evidence(tmp_path, **options)
+    with _real_landing_case(tmp_path, **options) as case:
+        with pytest.raises(LandingError):
+            case.service.done("one", case.task_ref.id, assignment_id=case.worker.ref.id)
+        assert case._run(case.line, "rev-parse", "refs/heads/main") == case.base
+        assert not AssessmentModule(case.f.store, actor=case.f.actor).list_decisions(
+            parent_obligation=case.task_ref)
+
+
+def test_accepted_unlanded_commit_cannot_complete_and_reconciles_once(tmp_path):
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.assessment import AssessmentModule
+    from herzchen.fleet.landing import LandingError
+    from otto.portfolio.intake import OttoPortfolio
+    from tests.test_landing import _run
+
+    locks = []
+
+    def git(cwd, *args):
+        if args[0] == "merge" and not locks:
+            lock = Path(cwd) / ".git" / "index.lock"
+            lock.write_text("occupied\n")
+            locks.append(lock)
+        return _run(Path(cwd), *args)
+
+    with _real_landing_case(tmp_path, git=git) as case:
+        def land():
+            return case.service.done("one", case.task_ref.id,
+                assignment_id=case.worker.ref.id)
+
+        with pytest.raises((LandingError, subprocess.CalledProcessError)):
+            land()
+
+        assert len(locks) == 1
+        assert _run(case.line, "rev-parse", "refs/heads/main") == case.base
+        assert case.runner.n == 1
+        assessment = AssessmentModule(case.f.store, actor=case.f.actor)
+        decisions = assessment.list_decisions(parent_obligation=case.task_ref)
+        assert len(decisions) == 1
+        decision = decisions[0]
+        assert decision.disposition == "accept"
+        result = assessment.get_result(decision.result_ref)
+        checked = result.protocol_result["runner"]["commit"]
+        assert checked == case.fleet.get("one").head()
+        assert checked != case.base
+        candidate = case.f.store.get_identity(result.candidate_ref)
+        assert candidate.payload["value"]["lab_commit"] == checked
+        evidence, = decision.evidence_refs
+        verified = case.handler.resolve(evidence,
+            actor=case.f.binding.authenticated_actor("manager"), verify_full=True)
+        digest = verified["manifest"]["byte_digest"]
+        portfolio = OttoPortfolio(case.f.owner.consumer_operations())
+
+        def complete():
+            task = case.f.owner.graph.reader.get_identity(case.task_ref)
+            pin = ResourceRef.from_dict(case.fixture.state["project_ref"])
+            project = case.f.owner.graph.reader.get_identity(
+                ResourceRef(pin.authority, pin.kind, pin.id))
+            return portfolio.complete_task(project.ref.to_dict(), task.ref.to_dict(),
+                case.fixture.manager.ref.to_dict(), actor="manager",
+                request_id="landproof-complete",
+                expected_generation=case.fixture.manager.generation,
+                expected_project_revision=project.ref.revision,
+                expected_task_revision=task.ref.revision, disposition="accepted",
+                evidence_refs=[evidence.to_dict()], evidence_hashes=[digest],
+                gate_refs=[decision.ref.to_dict()],
+                candidate_ref=result.candidate_ref.to_dict(), result_ref=result.ref.to_dict())
+
+        refused = complete()
+        assert refused["outcome"] == "held"
+        assert "landing" in refused["error"]["message"].lower()
+        assert case.f.owner.graph.reader.get_identity(case.task_ref).payload["lifecycle"] != "completed"
+
+        locks[0].unlink()
+        landed = land()
+        assert landed["landed"] is True
+        assert landed["commit"] == checked
+        assert _run(case.line, "rev-parse", "refs/heads/main") == checked
+        assert case.runner.n == 1
+        assert len(assessment.list_decisions(parent_obligation=case.task_ref)) == 1
+
+        completed = complete()
+        assert completed["outcome"] == "completed"
+        assert completed["completion"]["landed_commit"] == checked
+        assert completed["completion"]["line_ref"] == "refs/heads/main"
+        reports = case.f.owner.assignments.list_observations(case.fixture.manager.ref, kind="report")
+        assert sum(row.value.get("kind") == "manager-completion" for row in reports) == 1
+
+
+def test_advance_without_owner_proof_reconciles_without_new_acceptance(tmp_path):
+    import sqlite3
+    from herzchen.domains.assessment import AssessmentModule
+    from herzchen.kernel.store import WriterBusyError
+    from tests.test_landing import _run
+
+    locks = []
+    merged = []
+
+    def git(cwd, *args):
+        from pathlib import Path
+
+        result = _run(Path(cwd), *args)
+        if args[:2] == ("merge", "--ff-only"):
+            checked = _run(Path(cwd), "rev-parse", "refs/heads/main")
+            lock = sqlite3.connect(case.f.store.path, timeout=0, isolation_level=None)
+            lock.execute("BEGIN IMMEDIATE")
+            locks.append(lock)
+            merged.append(checked)
+        return result
+
+    with _real_landing_case(tmp_path, git=git) as case:
+        try:
+            with pytest.raises(WriterBusyError):
+                case.service.done("one", case.task_ref.id, assignment_id=case.worker.ref.id)
+        finally:
+            for lock in locks:
+                lock.rollback()
+                lock.close()
+
+        assert len(merged) == 1
+        checked = merged[0]
+        assert checked != case.base
+        assert case.fleet.get("one").head() == checked
+        assert _run(case.line, "rev-parse", "refs/heads/main") == checked
+        assert case.runner.n == 1
+        assessment = AssessmentModule(case.f.store, actor=case.f.actor)
+        decisions = assessment.list_decisions(parent_obligation=case.task_ref)
+        assert len(decisions) == 1
+        assert not [row for row in case.f.owner.assignments.list_observations(
+            case.worker.ref, kind="report") if row.value.get("kind") == "line-advance"]
+
+        landed = case.service.done("one", case.task_ref.id, assignment_id=case.worker.ref.id)
+        assert landed["landed"] is True and landed["commit"] == checked
+        repeated = case.service.done("one", case.task_ref.id, assignment_id=case.worker.ref.id)
+        assert repeated["landed"] is True and repeated["commit"] == checked
+        assert case.runner.n == 1
+        assert len(assessment.list_decisions(parent_obligation=case.task_ref)) == 1
+        reports = case.f.owner.assignments.list_observations(case.worker.ref, kind="report")
+        assert sum(row.value.get("kind") == "line-advance" for row in reports) == 1
+
+
+@pytest.mark.parametrize("change", ["lab", "line", "admission"])
+def test_retained_landing_intent_refuses_changed_work_or_divergent_line(tmp_path, change):
+    from herzchen.domains.assessment import AssessmentModule
+    from herzchen.domains.work import WorkGraph
+    from herzchen.fleet.landing import LandingError
+    from tests.test_landing import _run
+
+    locks = []
+
+    def git(cwd, *args):
+        if args[0] == "merge" and not locks:
+            lock = Path(cwd) / ".git" / "index.lock"
+            lock.write_text("occupied\n")
+            locks.append(lock)
+        return _run(Path(cwd), *args)
+
+    with _real_landing_case(tmp_path, git=git) as case:
+        def land():
+            return case.service.done("one", case.task_ref.id,
+                assignment_id=case.worker.ref.id)
+
+        with pytest.raises((LandingError, subprocess.CalledProcessError)):
+            land()
+        assert len(locks) == 1
+        locks[0].unlink()
+        if change == "lab":
+            (case.fleet.get("one").path / "changed-after-acceptance.txt").write_text("changed\n")
+        elif change == "line":
+            (case.line / "independent.txt").write_text("independent\n")
+            _run(case.line, "add", "independent.txt")
+            _run(case.line, "commit", "-m", "independent line advance")
+        else:
+            WorkGraph(case.f.store, actor=case.f.actor).revise(case.task_ref,
+                fields={"check": {"argv": ["/usr/bin/false"]}},
+                logical_request_key="change-admission-after-acceptance", actor=case.f.actor)
+        with pytest.raises(LandingError, match="unchanged lab|diverged|task admission"):
+            land()
+        assert case.runner.n == 1
+        decisions = AssessmentModule(case.f.store, actor=case.f.actor).list_decisions()
+        assert sum(row.parent_obligation_ref.id == case.task_ref.id for row in decisions) == 1
+        assert not [row for row in case.f.owner.assignments.list_observations(
+            case.worker.ref, kind="report") if row.value.get("kind") == "line-advance"]
+
+
+def test_failed_assessment_cannot_complete_or_advance_line(tmp_path):
+    from herzchen.domains.assessment import AssessmentModule
+    from herzchen.fleet.landing import LandingError
+    from otto.portfolio.intake import OttoPortfolio
+    with _real_landing_case(tmp_path, exit_code=1) as case:
+        with pytest.raises(LandingError):
+            case.service.done("one", case.task_ref.id, assignment_id=case.worker.ref.id)
+        assert case._run(case.line, "rev-parse", "refs/heads/main") == case.base
+        assert not AssessmentModule(case.f.store, actor=case.f.actor).list_decisions(
+            parent_obligation=case.task_ref)
+        portfolio = OttoPortfolio(case.f.owner.consumer_operations())
+        task = case.f.owner.graph.reader.get_identity(case.task_ref)
+        pin = ResourceRef.from_dict(case.fixture.state["project_ref"])
+        project = case.f.owner.graph.reader.get_identity(
+            ResourceRef(pin.authority, pin.kind, pin.id))
+        refused = portfolio.complete_task(project.ref.to_dict(), task.ref.to_dict(),
+            case.fixture.manager.ref.to_dict(), actor="manager",
+            request_id="landproof-failed-check-complete",
+            expected_generation=case.fixture.manager.generation,
+            expected_project_revision=project.ref.revision,
+            expected_task_revision=task.ref.revision, disposition="accepted",
+            evidence_refs=[], evidence_hashes=[], gate_refs=[])
+        assert refused["outcome"] == "held"
+        assert case.f.owner.graph.reader.get_identity(case.task_ref).payload["lifecycle"] != "completed"
 
 
 @pytest.mark.parametrize("plan, message", [
