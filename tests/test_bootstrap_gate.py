@@ -226,12 +226,36 @@ class LandGate(Scratch):
         self.assertIn("D19: existing test expectations changed in tests/test_mod.py;", r.stderr)
         self.assertIn("ops/reviews/D19-T4.brief.md", r.stderr)
         self.assertEqual(self.head(), self.base)
-        (self.tmp / "no.md").write_text("Review\nSEND BACK: too loose\n")
+        (self.tmp / "no.md").write_text("Review\nSEND BACK: tests/test_mod.py is too loose\n")
         self.assertRefused(self.land("T4", "--d19", str(self.tmp / "no.md")), "T4", "SEND BACK")
-        (self.tmp / "yes.md").write_text("Review\nDecision: LAND\n")
+        (self.tmp / "yes.md").write_text("Review\nDecision: LAND tests/test_mod.py\n")
         r = self.land("T4", "--d19", str(self.tmp / "yes.md"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotEqual(self.head(), self.base)
+
+    def d19_two_changed_tests(self, task):
+        extra = "def test_extra():\n    assert True\n"
+        self.write(self.repo, "tests/test_mod_extra.py", extra)
+        self.commit(self.repo, "add second existing test")
+        self.start()
+        self.lab(task, {
+            "tests/test_mod.py": GOOD_TEST.replace("== 1", "!= 2"),
+            "tests/test_mod_extra.py": extra.replace("assert True", "assert 1 == 1"),
+        })
+
+    def test_d19_decision_must_name_every_changed_test_with_exact_paths(self):
+        self.d19_two_changed_tests("T4A")
+        decision = self.tmp / "partial.md"
+        decision.write_text("Decision: LAND\ntests/test_mod.py\ntests/test_mod_extra.py.bak\n")
+        r = self.land("T4A", "--d19", str(decision))
+        self.assertRefused(r, "T4A", "does not name changed test file(s): tests/test_mod_extra.py")
+
+    def test_d19_decision_naming_both_changed_test_paths_passes(self):
+        self.d19_two_changed_tests("T4B")
+        decision = self.tmp / "both.md"
+        decision.write_text("Decision: LAND\ntests/test_mod.py\ntests/test_mod_extra.py\n")
+        r = self.land("T4B", "--d19", str(decision))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_setup_line_change_does_not_trigger_d19(self):
         self.lab("T5", {"tests/test_mod.py": GOOD_TEST.replace("from otto import mod", "from otto import mod  # ok")})
