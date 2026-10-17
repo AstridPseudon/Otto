@@ -228,10 +228,14 @@ class _OwnerExecutorPort:
         executor = self.executor()
         if not callable(executor):
             raise PermissionError("owner command executor is unavailable")
-        result = executor(lambda: self.inner.call(operation, assignment, args, feedback=feedback))
-        if operation == "worker-done" and isinstance(result, Mapping) and result.get("landed") is True:
-            self.settle(assignment)
-        return result
+
+        def owned_call() -> Mapping:
+            result = self.inner.call(operation, assignment, args, feedback=feedback)
+            if operation == "worker-done" and isinstance(result, Mapping) and result.get("landed") is True:
+                self.settle(assignment)
+            return result
+
+        return executor(owned_call)
 
 
 class _TaskContextPort:
