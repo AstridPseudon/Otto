@@ -13,6 +13,21 @@ import sys
 import uuid
 
 
+def await_release(marker):
+    """Hold one owner-launched turn until the harness has taken its product reads."""
+    released = False
+
+    def release(_signal, _frame):
+        nonlocal released
+        released = True
+
+    signal.signal(signal.SIGUSR1, release)
+    with open(marker, "w", encoding="utf-8") as output:
+        output.write(str(os.getpid()) + "\n")
+    while not released:
+        signal.pause()
+
+
 def emit(value):
     print(json.dumps(value), flush=True)
 
@@ -86,14 +101,29 @@ def main():
               "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
               "result": "READY", "usage": {"input_tokens": 1, "output_tokens": 1}})
         return 0
+    try:
+        alias = canary_alias(prompt)
+    except ValueError:
+        if not os.environ.get("OTTO_STAGING_ROOT"):
+            raise
+        alias = None
+    if alias is None:
+        if os.environ.get("OTTO_STAGING_ROOT"):
+            await_release(".perch-manager.pid")
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
+              "result": "PERCH manager turn complete", "usage": {"input_tokens": 1, "output_tokens": 1}})
+        return 0
     if tools and "Bash" not in tools:
-        if canary_alias(prompt) == "C":
+        if alias == "C":
             # Stage 2 kills this exact owner-launched worker to verify that
             # only its slot is released. The PID marker is inside its lab.
             with open(".perch-worker-C.pid", "w", encoding="utf-8") as marker:
                 marker.write(str(os.getpid()) + "\n")
             signal.pause()
             return 1
+        if alias in {"A", "B"} and os.environ.get("OTTO_STAGING_ROOT"):
+            await_release(".perch-worker-" + alias + ".pid")
         path = os.path.join(os.getcwd(), "perch-worker-" + session + ".txt")
         content = "PERCH stage-2 worker artifact from " + model + "\n"
         emit({"type": "assistant", "uuid": "write-" + session, "session_id": session,

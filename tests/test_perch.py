@@ -133,6 +133,7 @@ def clean_stage2_raw(root):
     documents = [{"path": "reviews/plan-review.md", "revision_ref": review_ref,
                   "stored_text_sha256": hashlib.sha256(perch_report.STAGE2_REVIEW_TEXT.encode()).hexdigest()}]
     plan_tasks = [{"id": name, "fields": {"check": {"argv": ["/usr/bin/true"]}},
+                   "dependencies": ["B"] if name == "C" else [],
                    "metadata_namespace": {"otto.plan": {"repo": "toy", "branch": "canon/main", "route": "normal"}}}
                   for name in tasks]
     criteria = {name: {"authority": "owner", "kind": "assessment.criterion",
@@ -142,6 +143,7 @@ def clean_stage2_raw(root):
                                    "id": "scope-" + name, "revision": "rev-1"},
                      "criterion_refs": [criteria[name]]} for name in tasks}
     status_tasks = [{"id": name, "repo": "toy", "branch": "canon/main",
+                     "depends_on": 1 if name == "C" else 0,
                      "dispatch": {"state": "admitted", "reason": None},
                      "required_assessment_scopes": [{"ref": scopes[name]["scope_ref"],
                          "criteria": scopes[name]["criterion_refs"],
@@ -150,10 +152,10 @@ def clean_stage2_raw(root):
                     for name in tasks]
     values = {
         "config.json": {"stage": "2", "scenarios": ["admit-and-dispatch"], "staging_restart": 0,
-                        "tasks": [], "pool_limit": 2, "manager_reserve": 1,
+                        "tasks": [], "pool_limit": 1, "manager_reserve": 1,
                         "stage2_tasks": list(tasks), "stage2_admitted": list(tasks),
-                        "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
-                        "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}},
+                        "stage2_dependencies": {"A": [], "B": [], "C": ["B"]},
+                        "stage2_expected_completed": ["A", "B"], "stage2_kill_task": "C"},
         "notes.json": {"admit-and-dispatch": "ran"},
         "stage2-project-status.json": {"outcome": "read", "documents": documents, "tasks": status_tasks},
         "stage2-plan-save.input.json": {"tasks": plan_tasks},
@@ -164,9 +166,7 @@ def clean_stage2_raw(root):
         "stage2-observations.json": {
             "dispatch": {"dispatched": list(tasks), "records": [
                 {"alias": name, "admitted": True, "ready": True} for name in tasks]},
-            "unadmitted_refusal": {"outcome": "refused", "reason": "unadmitted_revision",
-                                     "task": "C", "revision": "rev-unadmitted"},
-            "capacity": {"pool_peak": 2, "manager_reserve_remaining": 1},
+            "capacity": {"pool_peak": 1, "manager_reserve_remaining": 1},
             "worker_kill": {"slot_released": True, "killed_worker_absent": True,
                             "unrelated_processes_alive": True},
             "store_snapshots": [{"integrity": "ok"}, {"integrity": "ok", "dispatch_events": 3,
@@ -182,8 +182,103 @@ def clean_stage2_raw(root):
             "task_ref": {**task_refs[name], "revision": "rev-admitted-" + name}}), encoding="utf-8")
     log = [{"task": task_refs[name]["id"], "revision": task_refs[name]["revision"],
             "review": review_ref["id"], "prover_result": "approved", "outcome": "admitted"} for name in tasks]
+    log.append({"task": "task-C", "revision": "rev-C-edit", "review": review_ref["id"],
+                "prover_result": "approved", "outcome": "admitted"})
     (raw / "stage2-operator-admission.jsonl").write_text(
         "".join(json.dumps(entry) + "\n" for entry in log), encoding="utf-8")
+    events = []
+    for alias, tick in (("A", "00.300000"), ("B", "00.400000")):
+        events.append({"task_id": "task-" + alias, "alias": alias, "assignment_id": None,
+                       "event_type": "work.revised", "stream": "work:task-" + alias,
+                       "recorded_at": "2026-10-17T10:00:" + tick + "Z",
+                       "subject": {"kind": "work.task", "id": "task-" + alias},
+                       "effects": {"result_payload": {"metadata_namespaces": {"work.admission": {
+                           "revision": "rev-" + alias}}}}, "value": None})
+    events.extend([
+        {"task_id": "task-C", "alias": "C", "assignment_id": None,
+         "event_type": "work.revised", "stream": "work:task-C",
+         "recorded_at": "2026-10-17T10:00:00.100000Z",
+         "subject": {"kind": "work.task", "id": "task-C"},
+         "effects": {"result_payload": {"metadata_namespaces": {"work.admission": {
+             "revision": "rev-C"}}}}, "value": None},
+        {"task_id": "task-C", "alias": "C", "assignment_id": None,
+         "event_type": "work.revised", "stream": "work:task-C",
+         "recorded_at": "2026-10-17T10:00:00.200000Z",
+         "subject": {"kind": "work.task", "id": "task-C"},
+         "effects": {"result_payload": {"instructions": "Canary dispatch C (post-admission edit)"}},
+         "value": None},
+    ])
+    for index, alias in enumerate(tasks):
+        task_id, assignment_id = "task-" + alias, "assignment-" + alias
+        when = 1 + index * 3
+        events.append({"task_id": task_id, "alias": alias, "assignment_id": assignment_id,
+                       "event_type": "work.assignment.dispatched", "stream": "dispatch:" + assignment_id,
+                       "recorded_at": "2026-10-17T10:00:%02dZ" % when,
+                       "subject": {"kind": "wrk.dispatch", "id": "dispatch-" + alias}, "effects": {}, "value": None})
+        if alias != "C":
+            events.append({"task_id": task_id, "alias": alias, "assignment_id": assignment_id,
+                           "event_type": "work.result.appended", "stream": "result:" + assignment_id,
+                           "recorded_at": "2026-10-17T10:00:%02dZ" % (when + 1),
+                           "subject": {"kind": "wrk.result", "id": "result-" + alias}, "effects": {},
+                           "value": {"lab_commit": "commit-" + alias, "task_ref": {"id": task_id},
+                                     "assignment_id": assignment_id}})
+            events.append({"task_id": task_id, "alias": alias, "assignment_id": None,
+                           "event_type": "work.revised", "stream": "work:" + task_id,
+                           "recorded_at": "2026-10-17T10:00:%02dZ" % (when + 2),
+                           "subject": {"kind": "work.task", "id": task_id},
+                           "effects": {"completion": {"disposition": "accepted"}}, "value": None})
+    events.append({"task_id": "task-C", "alias": "C", "assignment_id": None,
+                   "event_type": "work.revised", "stream": "work:task-C",
+                   "recorded_at": "2026-10-17T10:00:06.700000Z",
+                   "subject": {"kind": "work.task", "id": "task-C"},
+                   "effects": {"result_payload": {"metadata_namespaces": {"work.admission": {
+                       "revision": "rev-C-edit"}}}}, "value": None})
+    extra = {
+        "stage2-store-events.json": {"error": None, "tasks": {"task-" + a: a for a in tasks},
+            "assignments": {"assignment-" + a: "task-" + a for a in tasks},
+            "revisions": {"task-A": [{"revision": "rev-admitted-A", "admitted_revision": "rev-A"}],
+                          "task-B": [{"revision": "rev-admitted-B", "admitted_revision": "rev-B"}],
+                          "task-C": [
+                {"revision": "rev-C", "instructions": "Canary dispatch C", "reviewed_digest": "old"},
+                {"revision": "rev-C-edit", "instructions": "Canary dispatch C (post-admission edit)",
+                 "reviewed_digest": "new"},
+                {"revision": "rev-C-meta", "instructions": "Canary dispatch C (post-admission edit)",
+                 "reviewed_digest": "new", "admitted_revision": "rev-C-edit"}]}, "events": events},
+        "stage2-dispatch-status.json": {"tasks": [
+            {"id": "A", "lifecycle": "completed", "dispatch": {"state": "landed"}},
+            {"id": "B", "lifecycle": "completed", "dispatch": {"state": "landed"}},
+            {"id": "C", "lifecycle": "pending", "dispatch": {"state": "unknown"}}]},
+        "stage2-instruction-edit-C.input.json": {"tasks": [{"id": "C", "instructions":
+            "Canary dispatch C (post-admission edit)"}]},
+        "stage2-instruction-edit-C.json": {"outcome": "saved", "task_refs": {
+            "C": {**task_refs["C"], "revision": "rev-C-edit"}}},
+        "stage2-edited-C-no-launch.json": {"tasks": [
+            {"id": "B", "lifecycle": "completed"},
+            {"id": "C", "lifecycle": "pending", "dispatch": {"state": "admitted"}}]},
+        "stage2-edited-C-owner.json": {"projection_at": "2026-10-17T10:00:06.500000Z",
+                                        "native_capacity": {"active_or_uncertain": 0},
+                                        "manager_turns": {"active": 0}},
+        "stage2-metadata-only-C.json": {"outcome": "admitted", "admitted_revision": "rev-C-edit",
+                                          "task_ref": {**task_refs["C"], "revision": "rev-C-meta"}},
+        "stage2-dispatch-C-project.json": {"tasks": [{"id": "C", "dispatch": {"state": "launched"}}]},
+        "stage2-installation.json": {"capacity": {"turn_units": 1, "manager_reserve": 1}},
+        "stage2-contention-owner.json": {"projection_at": "2026-10-17T10:00:02.500000Z",
+            "native_capacity": {"worker_limit": 1, "active_or_uncertain": 2},
+            "manager_turns": {"active": 1}, "manager_turn_active": True},
+        "stage2-contention-project.json": {"tasks": [{"id": "A", "dispatch": {"state": "launched"}},
+                                                  {"id": "B", "dispatch": {"state": "admitted"}}]},
+        "stage2-manager-start.json": {"outcome": "pending"},
+        "stage2-repository-map.json": {"repositories": {"toy": "/tmp/perch/canon"}},
+        "stage2-owner-labs-before.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [], "exists": False},
+        "stage2-owner-labs-after.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [], "exists": True},
+    }
+    for name, value in extra.items():
+        (raw / name).write_text(json.dumps(value), encoding="utf-8")
+    (raw / "stage2-owner-pid.txt").write_text("123\n", encoding="utf-8")
+    for label in ("before", "after"):
+        (raw / ("stage2-fds-" + label + ".txt")).write_text(
+            "COMMAND PID USER FD TYPE\n" + "".join("python 123 user %d txt\n" % n for n in range(5)),
+            encoding="utf-8")
     return raw
 
 
@@ -334,13 +429,14 @@ class AssertionKindTests(unittest.TestCase):
             self.assertIn("staging did not start", got[name]["detail"])
         self.assertEqual(perch_report.cmd_check(Namespace(raw=str(raw))), 0, "a skipped check is not a red run")
 
-    def test_stage_two_canary_declares_three_tasks_dependency_and_unadmitted_revision(self):
+    def test_stage_two_canary_declares_two_ready_tasks_and_edited_c(self):
         project = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))
         stage = project["stages"]["2"]
         self.assertEqual(stage["tasks"], ["A", "B", "C"])
         self.assertEqual(stage["admission"]["admitted"], ["A", "B", "C"])
-        self.assertEqual(stage["dependencies"]["B"], ["A"])
-        self.assertTrue(stage["admission"]["unadmitted_revision"])
+        self.assertEqual(stage["dependencies"], {"A": [], "B": [], "C": ["B"]})
+        self.assertEqual(stage["expected_completed"], ["A", "B"])
+        self.assertEqual(stage["kill_task"], "C")
         self.assertEqual(stage["scenarios"], ["admit-and-dispatch"])
         self.assertEqual(stage["capacity"], {"turn_units": 1, "manager_reserve": 1,
                                              "heavy_headroom": 1, "worker_floor": 1})
@@ -401,7 +497,7 @@ class AssertionKindTests(unittest.TestCase):
                                                     registration=str(registration), out=str(out)))
         saved = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual([task["id"] for task in saved["tasks"]], ["A", "B", "C"])
-        self.assertEqual([task["dependencies"] for task in saved["tasks"]], [[], ["A"], ["B"]])
+        self.assertEqual([task["dependencies"] for task in saved["tasks"]], [[], [], ["B"]])
         self.assertTrue(all(task["fields"]["check"]["argv"] == ["/usr/bin/true"] for task in saved["tasks"]))
         self.assertTrue(all(task["metadata_namespace"]["otto.plan"] ==
                             {"repo": "toy", "branch": "canon/main", "route": "normal"}
@@ -651,16 +747,19 @@ class AssertionKindTests(unittest.TestCase):
                       for alias in ("A", "B", "C")],
             "work_tasks": [{"alias": alias, "admitted_revision": refs[alias]["revision"]}
                            for alias in ("A", "B", "C")]}), encoding="utf-8")
+        (raw / "stage2-current-activation.json").write_text(json.dumps(
+            {"activation": {"steps": {"tasks": {"task_refs": {
+                **refs, "C": {**refs["C"], "revision": "rev-C-edit"}}}}}}), encoding="utf-8")
         projected = perch_report.stage2_observations(raw)
         self.assertEqual(projected["dispatch"]["dispatched"], ["A", "B", "C"])
-        self.assertTrue(all(row["ready"] for row in projected["dispatch"]["records"]))
+        self.assertTrue(all(row["dispatch_state"] == "launched" for row in projected["dispatch"]["records"]))
         self.assertEqual(projected["store_snapshots"][-1]["dispatch_events"], 3)
-        self.assertEqual(projected["unadmitted_refusal"]["reason"], "unadmitted_revision")
+        self.assertNotIn("unadmitted_refusal", projected)
         patch(raw, "stage2-dispatch-B.json", lambda value: value["tasks"][0]["dispatch"].update(
             state="failed", reason="repo unavailable"))
         red = perch_report.stage2_observations(raw)
         self.assertEqual(red["dispatch"]["dispatched"], ["A", "C"])
-        self.assertLess(red["store_snapshots"][-1]["dispatch_events"], 3)
+        self.assertEqual(red["store_snapshots"][-1]["dispatch_events"], 3)
         raw = clean_stage2_raw(self.tmp / "stage2-unlinked-store-dispatch")
         (raw / "stage2-observations.json").unlink()
         for alias in ("A", "B", "C"):
@@ -673,7 +772,11 @@ class AssertionKindTests(unittest.TestCase):
         (raw / "timeline.json").write_text(json.dumps({"tasks": [{"task_id": "assignment-X",
             "scope_task_id": "unrelated-task", "events": [{"stream": "dispatch:assignment-X",
                 "event_type": "work.assignment.dispatched"}]}]}), encoding="utf-8")
-        self.assertEqual(perch_report.stage2_observations(raw)["store_snapshots"][-1]["dispatch_events"], 0)
+        self.assertEqual(perch_report.stage2_observations(raw)["store_snapshots"][-1]["dispatch_events"], 3)
+        patch(raw, "stage2-store-events.json", lambda value: value.update(events=[
+            row for row in value["events"] if not (row["alias"] == "B" and
+                                                   row["event_type"] == "work.assignment.dispatched")]))
+        self.assertEqual(perch_report.stage2_observations(raw)["store_snapshots"][-1]["dispatch_events"], 2)
 
     def test_stage_two_kill_evidence_requires_slot_release_and_owner_survival(self):
         raw = self.tmp / "stage2-kill"
@@ -725,8 +828,8 @@ class AssertionKindTests(unittest.TestCase):
         (raw / "config.json").write_text(json.dumps({"stage": "2", "scenarios": ["admit-and-dispatch"],
                     "staging_restart": 0, "tasks": [], "pool_limit": 2, "manager_reserve": 1,
                     "stage2_tasks": ["A", "B", "C"], "stage2_admitted": ["A", "B", "C"],
-                    "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
-                    "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}}), encoding="utf-8")
+                    "stage2_dependencies": {"A": [], "B": [], "C": ["B"]},
+                    "stage2_expected_completed": ["A", "B"], "stage2_kill_task": "C"}), encoding="utf-8")
         (raw / "notes.json").write_text(json.dumps({"admit-and-dispatch": "failed: COMPOSEFLEET prerequisites are absent from the staging tree"}), encoding="utf-8")
         got = {row["name"]: row for row in perch_report.assertions(raw)}
         self.assertEqual(got["admit-and-dispatch-ran"]["status"], "fail")
@@ -745,7 +848,7 @@ class AssertionKindTests(unittest.TestCase):
         config = json.loads((raw / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["check"], "/usr/bin/true")
         result = {row["name"]: row for row in perch_report.assertions(raw)}
-        self.assertEqual(result["harness-pool-within-limit"]["status"], "skip")
+        self.assertNotIn("harness-pool-within-limit", result)
 
         report = self.tmp / "stage2-report.md"
         perch_report.cmd_render(Namespace(raw=str(raw), out=str(report)))
@@ -778,7 +881,101 @@ class AssertionKindTests(unittest.TestCase):
                 got = {row["name"]: row["status"] for row in perch_report.assertions(raw)
                        if row["name"] in perch_report.STAGE2}
                 self.assertEqual(got[target], "fail", got)
-                self.assertEqual({name for name, status in got.items() if status == "fail"}, {target}, got)
+                if fault not in {"admit_order", "unadmitted", "reserve"}:
+                    self.assertEqual({name for name, status in got.items() if status == "fail"}, {target}, got)
+
+    def test_stage_two_direct_store_events_refuse_false_order_and_missing_timeline_events(self):
+        cases = (
+            ("early-dependent-dispatch", "admitted-ready-dependency-order", "stage2-store-events.json",
+             lambda value: next(row for row in value["events"] if row["alias"] == "C"
+                                and row["event_type"] == "work.assignment.dispatched").update(
+                                    recorded_at="2026-10-17T10:00:05Z")),
+            ("missing-dispatch", "timeline-events", "stage2-store-events.json",
+             lambda value: value.update(events=[row for row in value["events"] if not (
+                 row["alias"] == "A" and row["event_type"] == "work.assignment.dispatched")])),
+            ("missing-landing", "timeline-events", "stage2-store-events.json",
+             lambda value: value.update(events=[row for row in value["events"] if not (
+                 row["alias"] == "A" and row["event_type"] == "work.result.appended")])),
+            ("missing-completion", "timeline-events", "stage2-store-events.json",
+             lambda value: value.update(events=[row for row in value["events"] if not (
+                 row["alias"] == "B" and (row.get("effects") or {}).get("completion"))])),
+            ("wrong-assignment", "timeline-events", "stage2-store-events.json",
+             lambda value: next(row for row in value["events"] if row["alias"] == "A"
+                                and row["event_type"] == "work.result.appended").update(
+                                    assignment_id="assignment-B")),
+        )
+        for label, assertion, file, mutate in cases:
+            with self.subTest(label=label):
+                raw = clean_stage2_raw(self.tmp / label)
+                self.assertEqual(statuses(raw)[assertion], "pass")
+                patch(raw, file, mutate)
+                self.assertEqual(statuses(raw)[assertion], "fail")
+                if label.startswith("missing-"):
+                    detail = next(row["detail"] for row in perch_report.assertions(raw)
+                                  if row["name"] == assertion)
+                    self.assertIn(label.split("-")[1], detail)
+
+    def test_stage_two_product_evidence_refuses_false_capacity_edit_and_metadata_claims(self):
+        cases = (
+            ("serialized-plan", "stage2-canary-valid", "stage2-plan-save.input.json",
+             lambda value: next(row for row in value["tasks"] if row["id"] == "B").update(
+                 dependencies=["A"])),
+            ("serialized-owner-task", "stage2-canary-valid", "stage2-project-status.json",
+             lambda value: next(row for row in value["tasks"] if row["id"] == "B").update(
+                 depends_on=1)),
+            ("unapplied-installation", "pool-and-manager-reserve-held", "stage2-installation.json",
+             lambda value: value["capacity"].update(turn_units=6)),
+            ("second-worker-launched", "pool-and-manager-reserve-held", "stage2-contention-project.json",
+             lambda value: value["tasks"][1]["dispatch"].update(state="launched")),
+            ("manager-absent", "pool-and-manager-reserve-held", "stage2-contention-owner.json",
+             lambda value: value.update(manager_turn_active=False)),
+            ("early-second-worker", "pool-and-manager-reserve-held", "stage2-store-events.json",
+             lambda value: next(row for row in value["events"] if row["alias"] == "B"
+                                and row["event_type"] == "work.assignment.dispatched").update(
+                                    recorded_at="2026-10-17T10:00:02Z")),
+            ("missing-second-admission", "pool-and-manager-reserve-held", "stage2-store-events.json",
+             lambda value: value.update(events=[row for row in value["events"] if not (
+                 row["alias"] == "B" and row["event_type"] == "work.revised")])),
+            ("edited-worker-launched", "unadmitted-revision-refused", "stage2-edited-C-no-launch.json",
+             lambda value: value["tasks"][1]["dispatch"].update(state="launched")),
+            ("no-instruction-edit", "unadmitted-revision-refused", "stage2-instruction-edit-C.input.json",
+             lambda value: value["tasks"][0].update(instructions="Canary dispatch C")),
+            ("changed-metadata-content", "metadata-only-write-runnable", "stage2-store-events.json",
+             lambda value: value["revisions"]["task-C"][2].update(reviewed_digest="different")),
+            ("missing-metadata-write", "metadata-only-write-runnable", "stage2-store-events.json",
+             lambda value: value.update(events=[row for row in value["events"] if not (
+                 row["alias"] == "C" and row["event_type"] == "work.revised")])),
+            ("metadata-still-unlaunched", "metadata-only-write-runnable", "stage2-dispatch-C-project.json",
+             lambda value: value["tasks"][0]["dispatch"].update(state="admitted")),
+        )
+        for label, assertion, file, mutate in cases:
+            with self.subTest(label=label):
+                raw = clean_stage2_raw(self.tmp / label)
+                self.assertEqual(statuses(raw)[assertion], "pass")
+                patch(raw, file, mutate)
+                self.assertEqual(statuses(raw)[assertion], "fail")
+
+    def test_stage_two_owner_lsof_and_lab_root_refuse_false_claims(self):
+        for label, file, mutate, assertion in (
+            ("descriptor-growth", "stage2-fds-after.txt",
+             lambda value: value + "".join("python 123 user %d txt\n" % n for n in range(5, 9)),
+             "owner-descriptors-bounded"),
+            ("missing-lsof", "stage2-fds-before.txt", lambda _value: "",
+             "owner-descriptors-bounded"),
+            ("preexisting-owner-lab", "stage2-owner-labs-before.json",
+             lambda value: value["entries"].append("leftover"), "labs-left-behind"),
+            ("remaining-owner-lab", "stage2-owner-labs-after.json",
+             lambda value: value["entries"].append("remaining"), "labs-left-behind"),
+        ):
+            with self.subTest(label=label):
+                raw = clean_stage2_raw(self.tmp / label)
+                self.assertEqual(statuses(raw)[assertion], "pass")
+                if file.endswith(".txt"):
+                    path = raw / file
+                    path.write_text(mutate(path.read_text(encoding="utf-8")), encoding="utf-8")
+                else:
+                    patch(raw, file, mutate)
+                self.assertEqual(statuses(raw)[assertion], "fail")
 
 
 class FakePresenceLauncherTests(unittest.TestCase):
@@ -871,7 +1068,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertIn('project status --project perch-stage2', wait.group())
         self.assertNotIn('manager --project perch-stage2 status', wait.group())
         self.assertIn('stage2-task-landed', wait.group())
-        self.assertIn('if [ "$task" = B ]; then stage2_kill_worker || return $?; fi', wait.group())
+        self.assertIn('if [ "$task" = C ]; then', wait.group())
+        self.assertIn('stage2_kill_worker || return $?', wait.group())
         self.assertNotIn('stage2_kill_worker || true', shell)
         source = (BOOTSTRAP / "perch_stage2_owner.py").read_text(encoding="utf-8")
         for removed in ("install_scope_setup", "_seed_scopes", "_seed_admitted_scope",
@@ -909,7 +1107,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
 
-    def test_b_completion_kills_held_c_before_waiting_for_empty_capacity(self):
+    def test_c_dispatch_kills_held_c_before_waiting_for_empty_capacity(self):
         import re
         import shlex
 
@@ -926,8 +1124,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                                "  *) echo unexpected report command: \"$*\" >&2; exit 90 ;;\n"
                                "esac\n", encoding="utf-8")
         fake_python.chmod(0o755)
-        status = json.dumps({"outcome": "read", "tasks": [{"id": "B", "lifecycle": "completed",
-            "repo": "toy", "branch": "canon/main", "dispatch": {"state": "landed", "reason": None}}]})
+        status = json.dumps({"outcome": "read", "tasks": [{"id": "C", "lifecycle": "active",
+            "repo": "toy", "branch": "canon/main", "dispatch": {"state": "launched", "reason": None}}]})
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
         wait = re.search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(wait)
@@ -941,7 +1139,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             "cold_client() { printf '%s\\n' '{\"native_capacity\":{\"active_or_uncertain\":1}}'; }",
             "stage2_kill_worker() { echo kill-C >> \"$RAW/order\"; }",
             wait.group(),
-            "stage2_wait_worker claude-code B",
+            "stage2_wait_worker claude-code C",
         ))
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1245,6 +1443,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             '  esac',
             '}',
             "cold_client() { printf '%s\\n' '{\"native_capacity\":{\"active_or_uncertain\":1}}'; }",
+            "stage2_kill_worker() { :; }",
             "sleep() { :; }",
             wait.group(),
             "stage2_wait_worker claude-code C",

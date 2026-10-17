@@ -66,9 +66,10 @@
           "task_criterion_pairs": ["A/C-A", "B/C-B", "C/C-C"]
         }
       },
-      "admission": {"admitted": ["A", "B", "C"],
-        "unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": false}},
-      "dependencies": {"A": [], "B": ["A"], "C": ["B"]},
+      "admission": {"admitted": ["A", "B", "C"]},
+      "dependencies": {"A": [], "B": [], "C": ["B"]},
+      "expected_completed": ["A", "B"],
+      "kill_task": "C",
       "wipe": true
     },
     "4": {

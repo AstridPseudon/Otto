@@ -156,6 +156,17 @@ stage2_host_client() {
     'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$CANARY_DIR/client" "$@" < /dev/null
 }
 
+stage2_capture_fds() {  # BEFORE|AFTER
+  local pid
+  pid="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' \
+    "$STAGE_ROOT/run/staging.json")" || return 1
+  printf '%s\n' "$pid" > "$RAW/stage2-owner-pid.txt"
+  lsof -p "$pid" > "$RAW/stage2-fds-$1.txt" 2>> "$RAW/stage2-setup-errors.txt" || {
+    echo "owner lsof $1 failed for pid $pid" >> "$RAW/stage2-setup-errors.txt"
+    return 1
+  }
+}
+
 # Operator service admit retains its request on the service's owner lane. The
 # public request-status command reads an admitted host lane, so read this exact
 # owner-lane request with the same product retained-request reader instead.
@@ -215,8 +226,12 @@ stage2_setup() {
         > "$RAW/stage2-review-ref.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
+    cp "$STAGE_ROOT/home/installation.json" "$RAW/stage2-installation.json"
     "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage2-store-before.json"
-    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value ran
+    stage2_capture_fds before || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value ran
+    fi
   else
     "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value "failed: owner CLI setup exited $rc"
   fi
@@ -260,12 +275,13 @@ stage2_submit_admission() {  # HOST TASK REF REVIEW_REF ATTEMPT
 }
 
 stage2_admit_tasks() {
-  local host task ref review_ref attempt deadline receipt request_id next_request retained
+  local host task ref review_ref attempt deadline receipt request_id next_request retained selected
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
   review_ref="$(cat "$RAW/stage2-review-ref.json")"
-  # Submit A, B and C in activation order before waiting for any result or
-  # observing dispatch. A pending admission retains its one owner-lane request.
-  for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
+  selected="${1:-$("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2)}"
+  # Submit the selected tasks before waiting for their results. A pending
+  # admission retains its one owner-lane request.
+  for task in $selected; do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     # The operator command is the sole task admission route. It performs the
@@ -274,7 +290,7 @@ stage2_admit_tasks() {
     stage2_submit_admission "$host" "$task" "$ref" "$review_ref" 1 || return $?
     cp "$RAW/stage2-admit-$task-attempt-1.json" "$RAW/stage2-admit-$task.json"
   done
-  for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
+  for task in $selected; do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     attempt=0
@@ -332,6 +348,121 @@ stage2_admit_tasks() {
   return 0
 }
 
+stage2_wait_marker() {  # NAME
+  local marker="" deadline=$(( $(date +%s) + 90 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    marker="$(find "$CANARY_DIR" -name ".perch-$1.pid" -print -quit 2>/dev/null || true)"
+    [ -z "$marker" ] || { printf '%s\n' "$marker"; return 0; }
+    sleep 0.25
+  done
+  echo "owner never started the $1 fake turn" >> "$RAW/stage2-setup-errors.txt"
+  return 1
+}
+
+stage2_release_marker() {  # PATH
+  local pid command
+  pid="$(cat "$1")" || return 1
+  case "$pid" in *[!0-9]*|"") return 1 ;; esac
+  command="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in *"$CANARY_DIR/perch-fake-claude"*) kill -USR1 "$pid" ;;
+    *) echo "refusing to release unrelated pid $pid: $command" >> "$RAW/stage2-setup-errors.txt"; return 1 ;;
+  esac
+}
+
+stage2_wait_owner_capacity() {  # RECEIPT ACTIVE MANAGERS
+  local deadline=$(( $(date +%s) + 30 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    cold_client service status > "$1" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+    if "$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1]));
+assert (v.get("native_capacity") or {}).get("active_or_uncertain") == int(sys.argv[2]);
+assert (v.get("manager_turns") or {}).get("active") == int(sys.argv[3])' "$1" "$2" "$3" \
+        > /dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "owner capacity never reached active=$2 manager=$3" >> "$RAW/stage2-setup-errors.txt"
+  return 1
+}
+
+stage2_capacity_turn() {
+  local host first="" second manager schedule deadline=$(( $(date +%s) + 90 ))
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    first="$(find "$CANARY_DIR" \( -name .perch-worker-A.pid -o -name .perch-worker-B.pid \) -print -quit 2>/dev/null || true)"
+    [ -z "$first" ] || break
+    sleep 0.25
+  done
+  [ -n "$first" ] || { echo "neither ready worker launched" >> "$RAW/stage2-setup-errors.txt"; return 1; }
+  schedule="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["operating_setup"]["setup"]["roles"]["manager"])' \
+    "$RAW/stage2-activation.json")" || return 1
+  stage2_host_client --host "$host" --wait-seconds 0 manager --project perch-stage2 \
+    start-manager --schedule-id "$schedule" > "$RAW/stage2-manager-start.json" \
+    2>> "$RAW/stage2-setup-errors.txt" || return 1
+  manager="$(stage2_wait_marker manager)" || return 1
+  stage2_wait_owner_capacity "$RAW/stage2-contention-owner.json" 2 1 || return 1
+  stage2_host_client --host "$host" project status --project perch-stage2 \
+    > "$RAW/stage2-contention-project.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  stage2_release_marker "$manager" || return 1
+  stage2_release_marker "$first" || return 1
+  if [ "${first##*/}" = .perch-worker-A.pid ]; then second="$(stage2_wait_marker worker-B)" || return 1
+  else second="$(stage2_wait_marker worker-A)" || return 1; fi
+  cold_client service status > "$RAW/stage2-second-worker-owner.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  stage2_release_marker "$second" || return 1
+  stage2_wait_worker "$host" A && stage2_wait_worker "$host" B
+}
+
+stage2_edit_C() {
+  local host
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  stage2_host_client --host "$host" project status --project perch-stage2 \
+    > "$RAW/stage2-before-C-edit.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  "$PY" -I - "$RAW/stage2-plan-save.input.json" "$RAW/stage2-before-C-edit.json" \
+    "$RAW/stage2-instruction-edit-C.input.json" <<'PY' || return 1
+import json, sys
+from pathlib import Path
+plan, status = (json.load(open(path)) for path in sys.argv[1:3])
+task = next(row for row in plan["tasks"] if row["id"] == "C")
+task["instructions"] += " (post-admission edit)"
+Path(sys.argv[3]).write_text(json.dumps({"project_ref": status["project_ref"],
+    "project": {}, "tasks": [task]}, indent=2, sort_keys=True) + "\n")
+PY
+  stage2_host_client --host "$host" portfolio --portfolio "$host-portfolio" \
+    save "$RAW/stage2-instruction-edit-C.input.json" > "$RAW/stage2-instruction-edit-C.json" \
+    2>> "$RAW/stage2-setup-errors.txt" || return 1
+  "$PY" -I -c 'import json,sys; assert json.load(open(sys.argv[1]))["outcome"] == "saved"' \
+    "$RAW/stage2-instruction-edit-C.json" || return 1
+}
+
+stage2_finish_C() {
+  local host review_ref ref revision
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  stage2_capacity_turn || return 1
+  stage2_host_client --host "$host" project status --project perch-stage2 \
+    > "$RAW/stage2-edited-C-no-launch.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  stage2_wait_owner_capacity "$RAW/stage2-edited-C-owner.json" 0 0 || return 1
+  # The second operator admission writes the new stamp in task metadata. Its
+  # Store revision is separate from the instruction edit's content revision.
+  ref="$("$PY" -I -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["task_refs"]["C"],separators=(",",":")))' \
+    "$RAW/stage2-instruction-edit-C.json")" || return 1
+  revision="$("$PY" -I -c 'import json,sys; print(json.loads(sys.argv[1])["revision"])' "$ref")" || return 1
+  review_ref="$(cat "$RAW/stage2-review-ref.json")"
+  cold_client --host "$host" service admit --task-ref "$ref" --revision "$revision" \
+    --review-ref "$review_ref" --request-key perch-stage2-readmit-C \
+    > "$RAW/stage2-metadata-only-C.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  "$PY" -I "$REPORT_PY" stage2-admission-check --response "$RAW/stage2-metadata-only-C.json" \
+    --task-ref "$ref" >> "$RAW/stage2-setup-errors.txt" 2>&1 || return 1
+  "$PY" -I - "$RAW/stage2-activation.json" "$RAW/stage2-instruction-edit-C.json" \
+    "$RAW/stage2-current-activation.json" <<'PY' || return 1
+import json, sys
+from pathlib import Path
+activation = json.load(open(sys.argv[1]))
+edited = json.load(open(sys.argv[2]))
+activation["activation"]["steps"]["tasks"]["task_refs"]["C"] = edited["task_refs"]["C"]
+Path(sys.argv[3]).write_text(json.dumps(activation, indent=2, sort_keys=True) + "\n")
+PY
+}
+
 stage2_dispatch_tasks() {
   local host task
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
@@ -345,7 +476,11 @@ stage2_dispatch_tasks() {
 # reads each task's retained dispatch state through product project status.
 # Manager status requires a native manager caller.
 stage2_wait_worker() {  # HOST TASK
-  local host="$1" task="$2" saw_dispatch="" request_id="" next_request="" deadline=$(( $(date +%s) + 180 ))
+  local host="$1" task="$2" saw_dispatch="" request_id="" next_request="" deadline=$(( $(date +%s) + 180 )) activation admission
+  activation="$RAW/stage2-activation.json"; admission="$RAW/stage2-admit-$task.json"
+  if [ "$task" = C ] && [ -f "$RAW/stage2-current-activation.json" ]; then
+    activation="$RAW/stage2-current-activation.json"; admission="$RAW/stage2-metadata-only-C.json"
+  fi
   while [ "$(date +%s)" -lt "$deadline" ]; do
     # Return a retained receipt promptly; only request-status may read it until terminal.
     if ! stage2_host_client --host "$host" --wait-seconds 0 project status --project perch-stage2 \
@@ -378,21 +513,18 @@ stage2_wait_worker() {  # HOST TASK
           --status "$RAW/stage2-dispatch-$task.json" --task "$task" \
           >> "$RAW/stage2-setup-errors.txt" 2>&1; then return 1; fi
     if "$PY" -I "$REPORT_PY" stage2-dispatch-check \
-          --status "$RAW/stage2-dispatch-$task.json" --activation "$RAW/stage2-activation.json" \
-          --admission "$RAW/stage2-admit-$task.json" --task "$task" \
+          --status "$RAW/stage2-dispatch-$task.json" --activation "$activation" \
+          --admission "$admission" --task "$task" \
           > /dev/null 2>&1; then
       saw_dispatch=1
       cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-dispatch-$task-project.json"
       cold_client service status > "$RAW/stage2-owner-$task.json" 2>> "$RAW/stage2-setup-errors.txt" || return $?
       if [ "$task" = C ]; then
+        stage2_kill_worker || return $?
         return 0
       fi
       if "$PY" -I "$REPORT_PY" stage2-task-landed \
           --project-status "$RAW/stage2-dispatch-$task-project.json" --task "$task" > /dev/null 2>&1; then
-        # C depends on B and can occupy the newly freed worker slot before B's
-        # status poll sees zero active capacity. Kill C at this boundary, while
-        # its fake worker is held, instead of waiting for its client timeout.
-        if [ "$task" = B ]; then stage2_kill_worker || return $?; fi
         return 0
       fi
     fi
@@ -409,25 +541,6 @@ stage2_wait_worker() {  # HOST TASK
     tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
   fi
   return 1
-}
-
-# Probe an unadmitted revision through the same operator path only after the
-# three positive admission log lines have been preserved. A nonzero CLI answer
-# is evidence; the report also checks its error and the exact requested ref.
-stage2_probe_unadmitted() {
-  local ref revision review_ref rc=0
-  ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); ref=dict(v["activation"]["steps"]["tasks"]["task_refs"]["C"]); ref.pop("revision",None); print(json.dumps(ref,separators=(",",":")))' \
-    "$RAW/stage2-activation.json")" || return 1
-  revision="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key admission | \
-    "$PY" -I -c 'import json,sys; print(json.load(sys.stdin)["unadmitted_revision"]["revision"])')" || return 1
-  review_ref="$(cat "$RAW/stage2-review-ref.json")"
-  "$PY" -I -c 'import json,sys; print(json.dumps({"task_ref":json.loads(sys.argv[1]),"revision":sys.argv[2],"review_ref":json.loads(sys.argv[3])},sort_keys=True))' \
-    "$ref" "$revision" "$review_ref" > "$RAW/stage2-unadmitted-request.json"
-  cold_client service admit --task-ref "$ref" --revision "$revision" --review-ref "$review_ref" \
-    --request-key perch-stage2-unadmitted-probe > "$RAW/stage2-unadmitted-response.json" \
-    2>> "$RAW/stage2-setup-errors.txt" || rc=$?
-  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-unadmitted-exit --value "$rc"
-  [ "$rc" -ne 0 ]
 }
 
 stage2_kill_worker() {
@@ -590,7 +703,14 @@ run_stage() {  # STAGE
   CANARY_DIR="$STAGE_ROOT/perch-canary/$stage-$stamp"
   CANON="$CANARY_DIR/canon"
   LABS="$CANARY_DIR/labs"
-  mkdir -p "$RAW" "$LABS" "$CANARY_DIR/ops"
+  mkdir -p "$RAW"
+  if [ "$stage" = 2 ]; then
+    "$PY" -I -c 'import json,sys; from pathlib import Path; root=Path(sys.argv[1]);
+items=sorted(p.name for p in root.iterdir()) if root.exists() else [];
+Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists(),"entries":items})+"\n")' \
+      "$CANON.otto-labs" "$RAW/stage2-owner-labs-before.json"
+  fi
+  mkdir -p "$LABS" "$CANARY_DIR/ops"
   : > "$RAW/events.tsv"; : > "$RAW/started.tsv"; : > "$RAW/durations.tsv"
   STARTED="$(now)"
   RESTART_RC=0
@@ -654,8 +774,8 @@ run_stage() {  # STAGE
         elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
         elif stage2_setup; then
-          if stage2_admit_tasks; then
-            if stage2_dispatch_tasks; then
+          if stage2_admit_tasks C && stage2_edit_C && stage2_admit_tasks "A B"; then
+            if stage2_finish_C && stage2_dispatch_tasks; then
               if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
                 cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
               fi
@@ -664,7 +784,7 @@ run_stage() {  # STAGE
               stage2_host_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-dispatch-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
               cold_client service status > "$RAW/stage2-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
               "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage2-store-after.json"
-              stage2_probe_unadmitted || true
+              stage2_capture_fds after || true
             else
               if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
                 cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
@@ -742,10 +862,19 @@ run_stage() {  # STAGE
   if [ -n "$HOLD_LEAK" ]; then kill "$HOLD_LEAK" 2>/dev/null || true; wait "$HOLD_LEAK" 2>/dev/null || true; HOLD_LEAK=""; fi
 
   "$PY" -I "$REPORT_PY" snapshot --canon "$CANON" --labs "$LABS" --out "$RAW/leftovers.txt"
+  if [ "$stage" = 2 ]; then
+    "$PY" -I -c 'import json,sys; from pathlib import Path; root=Path(sys.argv[1]);
+items=sorted(p.name for p in root.iterdir()) if root.exists() else [];
+Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists(),"entries":items})+"\n")' \
+      "$CANON.otto-labs" "$RAW/stage2-owner-labs-after.json"
+  fi
   "$PY" -I "$REPORT_PY" timeline --src "$STAGE_ROOT/tree/src" --store "$STAGE_ROOT/store/staging.store" \
     --authority "$AUTHORITY" --out "$RAW/timeline.json" \
     || printf '{"error": "the Store timeline read failed; see the run log", "store_events": 0, "tasks": []}\n' > "$RAW/timeline.json"
   if [ "$stage" = 2 ]; then
+    "$PY" -I "$HERE/perch_stage2_evidence.py" --src "$STAGE_ROOT/tree/src" \
+      --store "$STAGE_ROOT/store/staging.store" --authority "$AUTHORITY" \
+      --out "$RAW/stage2-store-events.json" || true
     "$PY" -I "$REPORT_PY" stage2-observations --raw "$RAW"
   fi
 
