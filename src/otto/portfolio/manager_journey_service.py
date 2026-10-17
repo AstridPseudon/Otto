@@ -631,6 +631,7 @@ class ManagerJourneyService:
             }
         except Exception as exc:
             return {"state": "unknown", "reason": "current operating brief unavailable", "error": str(exc)[:512],
+                    "next_action": getattr(exc, "next_action", "Refresh the current adopted role sources and retry effective-context."),
                     "source_refs": {"project": project_ref, "assignment": assignment_ref, "mandate": mandate_ref}}
 
     @staticmethod

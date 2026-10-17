@@ -134,6 +134,10 @@ def _effective_role_data(canonical: Mapping[str, Any],
 class RoleContextError(ValueError):
     """A declared role source is missing, stale, or incompatible."""
 
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.next_action = "Adopt or restore the exact selected source, then retry effective-context."
+
 
 def supporting_context(base: Mapping[str, Any], reader: Any, *, exact_direction_inputs: list[dict[str, Any]] | None = None,
                        completed_support_refs: tuple[Mapping[str, Any], ...] = ()) -> list[dict[str, Any]]:
@@ -308,6 +312,27 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
                               "source": item.get("source")})
     available_commands = {"tool_entrypoint": tool_entrypoint,
                           "identity_reads": list(identity_commands)}
+    configuration = selected_configuration(canonical.get("supporting_context", []))
+    role = canonical.get("role")
+    binding = configured_binding(configuration, role) if configuration is not None else {}
+    config_ref = configuration.get("ref") if configuration is not None else None
+    role_pin = role_data.get("pin")
+    source_map = {
+        "responsibility": role_pin, "operating_guidance": role_pin,
+        "available_tools": role_pin,
+        "base_manager_brief": role_pin,
+        "mandate": snapshot.get("mandate_ref"),
+        "user_constraints": snapshot.get("mandate_ref"),
+        "operational_constraints": snapshot.get("mandate_ref"),
+        "tool_entrypoint": role_data.get("tool_source") or role_pin,
+        "selected_policy": role_data.get("selected_policy_source"),
+        "model": config_ref if binding else None,
+        "reasoning": config_ref if binding else None,
+        "profile": ({"adopted_configuration": config_ref,
+                     "profile_pack": configuration["content"]["profile_pack"]}
+                    if config_ref and isinstance(configuration.get("content", {}).get("profile_pack"), Mapping)
+                    else None),
+    }
     result = {
         "schema": "otto.effective-role-context.v1",
         "assignment_ref": snapshot.get("assignment_ref"),
@@ -329,6 +354,10 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
         "next_actor": next_actor,
         "next_action": next_action,
         "available_commands": available_commands,
+        "effective_sources": source_map,
+        "effective_execution": ({"model": binding.get("model"), "reasoning": binding.get("reasoning"),
+            "profile_pack": configuration["content"].get("profile_pack"), "source": config_ref}
+            if binding else None),
     }
     if canonical.get("role") == "manager":
         result["manager_actions"] = list(role_data["manager_actions"])
