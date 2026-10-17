@@ -89,7 +89,11 @@ def _submit(args: argparse.Namespace, client: RunnerClient) -> int:
     if args.max_minutes is not None:
         request["max_seconds"] = args.max_minutes * 60
     request["request_id"] = args.request_id or uuid.uuid4().hex
-    response = client.call(request)
+    try:
+        response = client.call(request)
+    except RunnerUnavailable as exc:
+        return _emit({"ok": False, "error": "runner_unavailable", "detail": str(exc),
+                      "request_id": request["request_id"]}, EXIT_UNREACHABLE)
     response.setdefault("request_id", request["request_id"])
     if not response.get("ok") or not args.wait:
         return _emit_ok(response)
