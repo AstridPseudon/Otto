@@ -510,6 +510,7 @@ _CORE_MUTATION_PORTS = (
     (None, ("operation",), ("operation.prepared",), None),
     ("operation.start", ("operation",), ("operation.started",), None),
     ("operation.outcome", ("operation",), ("operation.outcome",), None),
+    ("effect.proof", ("effect-proof",), ("effect.terminal",), "fnd-04.operation.v1"),
     ("limit.create", ("limit",), ("limit.created",), "fnd-04.limit.v1"),
     ("limit.reserve", ("reservation",), ("reservation.held",), "fnd-04.limit.v1"),
     ("limit.uncertain", ("reservation",), ("reservation.uncertain",), "fnd-04.limit.v1"),

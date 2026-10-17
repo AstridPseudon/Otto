@@ -18,6 +18,7 @@ from herzchen.contracts import (
     AuthenticatedActor,
     CommandEnvelope,
     CommandReceipt,
+    ReceiptStatus,
     ResourceRef,
     TransactionContext,
     canonical_request_digest,
@@ -499,6 +500,7 @@ class _OperationManagerEngine:
         allow_unknown_resolution: bool,
         transition_actor: AuthenticatedActor,
         transaction: Optional[Transaction],
+        resolution_evidence: Optional[Mapping[str, str]] = None,
     ) -> OperationRecord:
         if not isinstance(result, Mapping):
             raise OperationError("result must be a mapping")
@@ -544,12 +546,15 @@ class _OperationManagerEngine:
             record.request.correlation_id,
             record.request.causation_id,
         )
+        payload = self._payload(identity_request, state, result)
+        if resolution_evidence is not None:
+            payload["resolution_evidence"] = dict(resolution_evidence)
         envelope = next_request.envelope(
             target,
             expected_revision=target.revision,
             expected_version=record.version,
             edit_token=None,
-            payload=self._payload(identity_request, state, result),
+            payload=payload,
         )
         prior = self.__owner.lookup_replay(envelope)
         if prior is not None:
@@ -575,14 +580,21 @@ class _OperationManagerEngine:
             "causation_id": record.request.causation_id,
             "version": record.version + 1,
         }
-        receipt = self.__owner.mutate(
-            envelope,
-            event_type="operation.outcome",
-            result_ref=ResourceRef(target.authority, target.kind, target.id, "rev-{}".format(record.version + 1)),
-            effects=effects,
-            stream=OPERATION_STREAM,
-            transaction=transaction,
-        )
+        if resolution_evidence is not None:
+            effects["resolution_evidence"] = dict(resolution_evidence)
+        try:
+            receipt = self.__owner.mutate(
+                envelope,
+                event_type="operation.outcome",
+                result_ref=ResourceRef(target.authority, target.kind, target.id, "rev-{}".format(record.version + 1)),
+                effects=effects,
+                stream=OPERATION_STREAM,
+                transaction=transaction,
+            )
+        except (TargetMismatchError, VersionConflictError) as exc:
+            if not allow_unknown_resolution:
+                raise
+            raise UnknownOutcomeError("held effect was already reconciled or changed") from exc
         event_effects = self._event_for_receipt(receipt)
         new_ref = receipt.result_ref or target
         return self._record_from_event(receipt, event_effects, identity_request, new_ref, int(event_effects.get("version", record.version + 1)))
@@ -594,12 +606,46 @@ class _OperationManagerEngine:
             raise OperationError("record_outcome requires a terminal or uncertain state")
         return self._transition(record, state, result or {}, transition_key=transition_key, transition_digest=transition_digest, physical_invocation_ref=physical_invocation_ref, external_owner_ref=external_owner_ref, allow_unknown_resolution=False, transition_actor=record.request.actor, transaction=transaction)
 
-    def resolve_unknown(self, record: OperationRecord, state: OperationState, result: Optional[Mapping[str, Any]] = None, *, resolver: Optional[AuthenticatedActor] = None, transition_key: Optional[str] = None, transition_digest: Optional[str] = None, physical_invocation_ref: Optional[ResourceRef] = None, external_owner_ref: Optional[ResourceRef] = None, transaction: Optional[Transaction] = None) -> OperationRecord:
+    def resolve_unknown(self, record: OperationRecord, state: OperationState, result: Optional[Mapping[str, Any]] = None, *, resolver: Optional[AuthenticatedActor] = None, evidence_key: Optional[str] = None, transition_key: Optional[str] = None, transition_digest: Optional[str] = None, physical_invocation_ref: Optional[ResourceRef] = None, external_owner_ref: Optional[ResourceRef] = None, transaction: Optional[Transaction] = None) -> OperationRecord:
+        """Settle a held effect from one exact, retained terminal proof.
+
+        A proof is a committed owner receipt with one linked effect.terminal
+        event. Its effect identity, terminal state, and result must equal this
+        resolution claim. A missing or changed proof leaves the hold intact.
+        """
+        if not isinstance(record, OperationRecord) or record.state not in (OperationState.UNKNOWN, OperationState.UNCERTAIN):
+            raise UnknownOutcomeError("only a held effect can be reconciled")
         if state not in (OperationState.COMMITTED, OperationState.FAILED):
             raise OperationError("unknown resolution must be committed or failed")
         if not isinstance(resolver, AuthenticatedActor):
             raise OperationError("unknown resolution requires an authenticated resolver")
-        return self._transition(record, state, result or {}, transaction=transaction, transition_key=transition_key, transition_digest=transition_digest, physical_invocation_ref=physical_invocation_ref, external_owner_ref=external_owner_ref, allow_unknown_resolution=True, transition_actor=resolver)
+        if (physical_invocation_ref is not None and physical_invocation_ref != record.request.physical_invocation_ref
+                or external_owner_ref is not None and external_owner_ref != record.request.external_owner_ref):
+            raise UnknownOutcomeError("resolution cannot change held effect custody")
+        if not isinstance(evidence_key, str) or not evidence_key.strip():
+            raise UnknownOutcomeError("held effect requires a retained terminal proof")
+        if not isinstance(result, Mapping) and result is not None:
+            raise OperationError("result must be a mapping")
+        claimed_result = dict(result or {})
+        receipt = self.__owner.get_receipt(evidence_key)
+        if (receipt is None or receipt.status is not ReceiptStatus.COMMITTED
+                or receipt.target.authority != self.__owner.authority
+                or receipt.result_ref is None or receipt.result_ref.authority != self.__owner.authority
+                or len(receipt.event_ids) != 1):
+            raise UnknownOutcomeError("held effect has no exact local terminal proof")
+        events = self.__owner.event_lineage(receipt)
+        if len(events) != 1 or events[0].event_id != receipt.event_ids[0]:
+            raise UnknownOutcomeError("held effect terminal proof is incomplete")
+        event = events[0]
+        if (event.store_authority != self.__owner.authority
+                or event.subject != receipt.result_ref
+                or event.event_type != "effect.terminal"
+                or event.effects.get("effect_ref") != record.effect_ref.to_dict()
+                or event.effects.get("state") != state.value
+                or event.effects.get("result") != claimed_result):
+            raise UnknownOutcomeError("terminal proof does not match the held effect and claim")
+        evidence = {"evidence_key": evidence_key, "event_id": event.event_id, "request_digest": receipt.request_digest}
+        return self._transition(record, state, claimed_result, transaction=transaction, transition_key=transition_key, transition_digest=transition_digest, physical_invocation_ref=physical_invocation_ref, external_owner_ref=external_owner_ref, allow_unknown_resolution=True, transition_actor=resolver, resolution_evidence=evidence)
 
     def get(self, logical_request_key: str) -> Optional[OperationRecord]:
         target = self._target(logical_request_key)
