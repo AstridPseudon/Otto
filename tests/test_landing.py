@@ -362,6 +362,58 @@ def test_feedback_check_selects_importing_test_files_only(tmp_path):
     assert "tests/test_direct.py" in selected
 
 
+def test_feedback_selection_includes_commits_and_rewrites_broad_targets_safely(tmp_path):
+    from herzchen.fleet.landing import _feedback_argv
+
+    _run(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "src/pkg").mkdir(parents=True)
+    (tmp_path / "src/pkg/changed.py").write_text("VALUE = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_importer.py").write_text("from pkg.changed import VALUE\n")
+    (tmp_path / "tests/test_slow.py").write_text("def test_slow(): pass\n")
+    _run(tmp_path, "config", "user.name", "test")
+    _run(tmp_path, "config", "user.email", "test@example.invalid")
+    _run(tmp_path, "add", ".")
+    _run(tmp_path, "commit", "-qm", "base")
+    _run(tmp_path, "checkout", "-qb", "lab")
+    (tmp_path / "src/pkg/changed.py").write_text("VALUE = 2\n")
+    _run(tmp_path, "add", "src/pkg/changed.py")
+    _run(tmp_path, "commit", "-qm", "checkpoint")
+
+    prefix = ["python", "-m", "pytest", "-q"]
+    selected = _feedback_argv(tmp_path, prefix + ["tests"], "main")
+    assert "tests/test_importer.py" in selected
+    assert "tests/test_slow.py" not in selected
+    selected = _feedback_argv(tmp_path, prefix + ["--ignore", "tests/test_skip.py", "tests"], "main")
+    assert selected[selected.index("--ignore") + 1] == "tests/test_skip.py"
+    assert "tests/test_importer.py" in selected and "tests" not in selected
+    selected = _feedback_argv(tmp_path, prefix, "main")
+    assert "tests/test_importer.py" in selected and "tests/test_slow.py" not in selected
+
+
+def test_feedback_selection_excludes_deleted_test_and_old_rename_path(tmp_path):
+    from herzchen.fleet.landing import _feedback_argv
+
+    _run(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_old.py").write_text("def test_old(): pass\n")
+    _run(tmp_path, "config", "user.name", "test")
+    _run(tmp_path, "config", "user.email", "test@example.invalid")
+    _run(tmp_path, "add", ".")
+    _run(tmp_path, "commit", "-qm", "base")
+    _run(tmp_path, "checkout", "-qb", "lab")
+    _run(tmp_path, "mv", "tests/test_old.py", "tests/test_new.py")
+    _run(tmp_path, "commit", "-qam", "rename")
+    selected = _feedback_argv(tmp_path, ["python", "-m", "pytest", "tests"], "main")
+    assert "tests/test_new.py" in selected
+    assert "tests/test_old.py" not in selected
+
+    _run(tmp_path, "rm", "tests/test_new.py")
+    _run(tmp_path, "commit", "-qm", "delete")
+    selected = _feedback_argv(tmp_path, ["python", "-m", "pytest", "tests"], "main")
+    assert "tests/test_new.py" not in selected
+
+
 def test_rebase_conflict_returns_clean_lab_to_worker(tmp_path):
     LandingError, _ = _landing_api()
     line, _base, fleet = _project(tmp_path, conflict=True)

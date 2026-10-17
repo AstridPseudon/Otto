@@ -61,7 +61,7 @@ class LandingService:
         """Run the current admitted check and return feedback. This never accepts or lands work."""
         task = self._task(task_id)
         lab = self.lab_lookup(lab_name)
-        task = dict(task, check_argv=_feedback_argv(Path(lab.path), list(task["check_argv"])))
+        task = dict(task, check_argv=_feedback_argv(Path(lab.path), list(task["check_argv"]), self.line_ref))
         record = self._run_check(lab, task_id, task, require_clean=False)
         return {"ok": record["exit_code"] == 0, "feedback_only": True,
                 "run_id": record["run_id"], "commit": record["commit"],
@@ -385,17 +385,35 @@ def _valid_argv(value: Any) -> bool:
             and all(isinstance(part, str) and "\0" not in part for part in value))
 
 
-def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
+def _feedback_argv(repo: Path, argv: list[str], base_ref: str = "HEAD") -> list[str]:
     """Narrow a direct pytest check to changed tests and tests importing changed code."""
     if "pytest" not in argv:
         return argv
     try:
+        committed = subprocess.run(
+            ["git", "-C", os.fspath(repo), "diff", "--name-status", "-z", base_ref + "...HEAD"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.decode("utf-8", "surrogateescape")
         changed = subprocess.run(
             ["git", "-C", os.fspath(repo), "status", "--porcelain", "-z", "--untracked-files=all"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.decode("utf-8", "surrogateescape")
     except (OSError, subprocess.CalledProcessError):
         return argv
     paths = []
+    diff_fields = committed.split("\0")
+    index = 0
+    while index < len(diff_fields):
+        status = diff_fields[index]
+        index += 1
+        if not status:
+            continue
+        if index >= len(diff_fields):
+            break
+        name = diff_fields[index]
+        index += 1
+        if status.startswith(("R", "C")) and index < len(diff_fields):
+            name = diff_fields[index]  # Git emits the old path before the destination for name-status -z.
+            index += 1
+        paths.append(name)
     fields = changed.split("\0")
     index = 0
     while index < len(fields):
@@ -406,7 +424,6 @@ def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
         status, name = item[:2], item[3:]
         paths.append(name)
         if "R" in status and index < len(fields):
-            paths.append(fields[index])
             index += 1
     modules, ops_names = [], []
     tests: set[str] = set()
@@ -419,7 +436,7 @@ def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
             ops_names.append(leaf)
             if leaf.endswith(".py"):
                 ops_names.append(leaf[:-3])
-        elif name.startswith("tests/test_") and name.endswith(".py"):
+        elif name.startswith("tests/test_") and name.endswith(".py") and (repo / name).is_file():
             tests.add(name)
     test_dir = repo / "tests"
     if (modules or ops_names) and test_dir.is_dir():
@@ -438,14 +455,27 @@ def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
                 source = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if any(pattern.search(source) for pattern in patterns):
+            if path.is_file() and any(pattern.search(source) for pattern in patterns):
                 tests.add("tests/" + path.name)
     if not tests:
         return argv
-    test_args = [arg for arg in argv if arg.startswith("tests/") or arg.startswith("tests\\")]
-    if not test_args:
-        return argv
-    result = [arg for arg in argv if arg not in test_args]
+    valued_options = {"-c", "-k", "-m", "--basetemp", "--confcutdir", "--deselect", "--ignore",
+                      "--ignore-glob", "--override-ini", "--rootdir"}
+    test_indexes, skip_next = [], False
+    for index, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in valued_options:
+            skip_next = True
+            continue
+        if arg == "--":
+            test_indexes.extend(i for i in range(index + 1, len(argv))
+                                if argv[i] == "tests" or argv[i].startswith(("tests/", "tests\\")))
+            break
+        if arg == "tests" or arg.startswith(("tests/", "tests\\")):
+            test_indexes.append(index)
+    result = [arg for index, arg in enumerate(argv) if index not in test_indexes]
     result.extend(sorted(tests))
     return result
 
