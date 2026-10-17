@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping
 from herzchen.contracts import AuthenticatedActor, ResourceRef
 from .model import revision_identity
@@ -82,6 +83,84 @@ def authorize(document: Mapping[str, Any], actor: Any, roles=(), scopes=()) -> N
         authorize_document(document, VisibilityContext(name, tuple(roles), tuple(scopes)))
     except AccessDeniedError:
         raise PermissionError("document unavailable") from None
+
+
+@dataclass(frozen=True)
+class EvidenceReadGrant:
+    """Owner-issued permission to inspect one pinned document for one assessment."""
+
+    principal: AuthenticatedActor
+    requester: AuthenticatedActor
+    project: ResourceRef
+    parent: ResourceRef
+    evidence: ResourceRef
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.principal, AuthenticatedActor)
+                or not isinstance(self.requester, AuthenticatedActor)
+                or not all(isinstance(ref, ResourceRef) and ref.revision is not None
+                           for ref in (self.project, self.parent, self.evidence))
+                or self.project.kind != "work.project" or self.parent.kind != "work.task"
+                or self.evidence.kind != "dat.content.document"
+                or any(ref.authority != self.principal.authority
+                       for ref in (self.project, self.parent, self.evidence))
+                or self.requester.authority != self.principal.authority):
+            raise ValueError("evidence read grant requires one local pinned document and assessment")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"principal": self.principal.to_dict(), "requester": self.requester.to_dict(),
+                "project": self.project.to_dict(), "parent": self.parent.to_dict(),
+                "evidence": self.evidence.to_dict()}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "EvidenceReadGrant":
+        if not isinstance(value, Mapping) or set(value) != {
+                "principal", "requester", "project", "parent", "evidence"}:
+            raise ValueError("invalid evidence read grant")
+        return cls(AuthenticatedActor.from_dict(value["principal"]),
+                   AuthenticatedActor.from_dict(value["requester"]),
+                   ResourceRef.from_dict(value["project"]),
+                   ResourceRef.from_dict(value["parent"]),
+                   ResourceRef.from_dict(value["evidence"]))
+
+    def read_actor(self, document: Mapping[str, Any], requester: AuthenticatedActor,
+                   reference: ResourceRef, scopes: tuple[ResourceRef, ...]) -> AuthenticatedActor:
+        scope = document.get("authoring_scope")
+        scope = ResourceRef.from_dict(scope) if isinstance(scope, Mapping) else scope
+        project_scope = any((value.authority, value.kind, value.id) ==
+                            (self.project.authority, self.project.kind, self.project.id)
+                            for value in scopes)
+        if (requester != self.requester or reference != self.evidence
+                or self.parent not in scopes or not project_scope
+                or document.get("visibility") != "private"
+                or document.get("maintainer") != self.principal.actor
+                or not isinstance(scope, ResourceRef)
+                or (scope.authority, scope.kind, scope.id) !=
+                   (self.project.authority, self.project.kind, self.project.id)):
+            raise PermissionError("document unavailable")
+        authorize(document, self.principal, scopes=scopes)
+        return self.principal
+
+
+def evidence_metadata(reader: Any, reference: ResourceRef, *, actor: AuthenticatedActor,
+                      scopes: tuple[ResourceRef, ...], grant: EvidenceReadGrant | None = None
+                      ) -> tuple[Mapping[str, Any], AuthenticatedActor]:
+    """Use ordinary visibility first; a grant changes only this exact read."""
+    read_actor = actor
+
+    def authorize_read(document: Mapping[str, Any], requester: AuthenticatedActor,
+                       exact: ResourceRef) -> None:
+        nonlocal read_actor
+        try:
+            authorize(document, requester, scopes=scopes)
+        except PermissionError:
+            if grant is None:
+                raise
+            read_actor = grant.read_actor(document, requester, exact, scopes)
+
+    metadata = document_metadata(reader, reference, actor=actor, scopes=scopes,
+                                 authorize_read=authorize_read)
+    return metadata, read_actor
 
 
 def document_metadata(reader: Any, reference: Any, *, actor: Any, roles=(), scopes=(),

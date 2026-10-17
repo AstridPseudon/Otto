@@ -78,7 +78,8 @@ def _digest(value: Any) -> str:
 
 
 def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
-                        scopes: Sequence[Any] = (), payload_resolver: Any = None) -> Mapping[str, Any]:
+                        scopes: Sequence[Any] = (), payload_resolver: Any = None,
+                        evidence_read_grant: Any = None) -> Mapping[str, Any]:
     """Resolve one exact DAT revision through the existing visibility/content owners."""
     ref = _ref(evidence, "evidence")
     if ref.kind != "dat.content.document" or ref.revision is None:
@@ -86,9 +87,13 @@ def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
     try:
         from herzchen.content import ContentCommandHandler
         from herzchen.content.packets import ContextPacketService
+        from herzchen.content.reads import evidence_metadata
 
         scoped = tuple(_ref(value, "evidence scope") for value in scopes if value is not None)
-        metadata = ContentCommandHandler(store).metadata(ref, actor=actor, scopes=scoped)
+        metadata, read_actor = evidence_metadata(ContentCommandHandler(store).reader, ref,
+                                                 actor=actor, scopes=scoped, grant=evidence_read_grant)
+        granted_read = ({"evidence_read_grant": evidence_read_grant.to_dict()}
+                        if read_actor != actor else {})
         if metadata.get("representation") == "managed":
             manifest = metadata["manifest"]
             reference = {"schema": "dat.content.consumer-reference.v1", "reference": ref.to_dict(),
@@ -99,17 +104,18 @@ def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
                 "representation": "managed-bytes.v1", "ref": ref.to_dict(), "consumer_reference": reference}
             if payload_resolver is None:
                 return {**result, "state": "unknown", "reason": "payload_resolver_unavailable"}
-            observed = payload_resolver.resolve(ref, actor=actor, scopes=scoped,
+            observed = payload_resolver.resolve(ref, actor=read_actor, scopes=scoped,
                 verify_full=True, max_bytes=0)
             result["io_work"] = observed.get("io_work")
             if observed.get("verification") == "full-verified" and observed.get("actual_digest") == manifest["byte_digest"]:
                 return {**result, "state": "verified", "reason": "managed_payload_full_verification",
-                    "digest": manifest["byte_digest"], "algorithm": "sha256", "verification_scope": "full-payload"}
+                    "digest": manifest["byte_digest"], "algorithm": "sha256", "verification_scope": "full-payload",
+                    **granted_read}
             if observed.get("availability") == "corrupt" or (
                     observed.get("verification") == "full-verified" and observed.get("actual_digest") != manifest["byte_digest"]):
                 return {**result, "state": "mismatch", "reason": "managed_payload_mismatch"}
             return {**result, "state": "unknown", "reason": "managed_payload_not_fully_verified"}
-        resolved = ContextPacketService(store).resolve_reference(ref, actor=actor, scopes=scoped)
+        resolved = ContextPacketService(store).resolve_reference(ref, actor=read_actor, scopes=scoped)
         if resolved.get("foreign") or resolved.get("resolved") != ref:
             return {"state": "unknown", "reason": "evidence_ref_unresolved"}
         value = ContentCommandHandler(store).read(ref)
@@ -131,7 +137,7 @@ def verify_dat_evidence(store: Any, evidence: Any, *, actor: AuthenticatedActor,
         if stored_digest.lower() != digest:
             return {"state": "mismatch", "reason": "dat_content_digest_mismatch", "digest": digest}
         return {"state": "verified", "digest": digest, "algorithm": "sha256",
-                "representation": "herzchen.canonical_json.utf8", "ref": ref.to_dict()}
+                "representation": "herzchen.canonical_json.utf8", "ref": ref.to_dict(), **granted_read}
     except Exception:
         # A missing, denied, external or unsupported owner read is not a proof.
         return {"state": "unknown", "reason": "evidence_read_unavailable"}
@@ -241,7 +247,8 @@ def contribution() -> DomainContribution:
 class _AssessmentModuleEngine:
     """One shared assessment surface for Megado and creative protocols."""
 
-    def __init__(self, store: Store, *, actor: Optional[AuthenticatedActor] = None, payload_resolver: Any = None) -> None:
+    def __init__(self, store: Store, *, actor: Optional[AuthenticatedActor] = None,
+                 payload_resolver: Any = None, evidence_read_grant_issuer: Any = None) -> None:
         if not isinstance(store, Store):
             raise TypeError("store must be the supplied FND Store")
         try:
@@ -252,6 +259,7 @@ class _AssessmentModuleEngine:
         self.default_actor = actor
         self._evidence_store = store
         self._payload_resolver = payload_resolver
+        self._evidence_read_grant_issuer = evidence_read_grant_issuer
         self.limits = LimitService(store)
         self.operations = OperationManager(store)
 
@@ -269,8 +277,10 @@ class _AssessmentModuleEngine:
         for ref in refs:
             if ref.kind != "dat.content.document":
                 continue
+            issuer = getattr(self, "_evidence_read_grant_issuer", None)
             verified = verify_dat_evidence(self._evidence_store, ref, actor=actor, scopes=self._evidence_scopes(parent),
-                payload_resolver=resolver if resolver is not None else getattr(self, "_payload_resolver", None))
+                payload_resolver=resolver if resolver is not None else getattr(self, "_payload_resolver", None),
+                evidence_read_grant=issuer(ref, parent) if issuer is not None else None)
             if verified.get("state") != "verified":
                 raise AssessmentStateError(f"evidence {ref.id} is not verified: {verified.get('state')} ({verified.get('reason')})")
             rows.append(verified)
@@ -975,9 +985,12 @@ class _AssessmentModuleEngine:
         evidence_digests = list(self._verified_evidence(evidence, selected_actor, current.parent_obligation_ref))
         for row in current.payload.get("evidence_digests") or ():
             bound_ref = self._payload_ref(row["ref"])
+            issuer = getattr(self, "_evidence_read_grant_issuer", None)
             checked = verify_dat_evidence(self._evidence_store, bound_ref, actor=selected_actor,
                                           scopes=self._evidence_scopes(current.parent_obligation_ref),
-                                          payload_resolver=getattr(self, "_payload_resolver", None))
+                                          payload_resolver=getattr(self, "_payload_resolver", None),
+                                          evidence_read_grant=issuer(bound_ref, current.parent_obligation_ref)
+                                              if issuer is not None else None)
             if checked.get("state") != "verified" or checked.get("digest") != row.get("digest"):
                 raise AssessmentStateError("result evidence changed since it was verified")
             if bound_ref not in evidence:
@@ -1226,9 +1239,16 @@ class _AssessmentModuleEngine:
                     if pin is None or actor is None or evidence_store is None:
                         evidence_states.append("unknown")
                         continue
+                    from herzchen.content.reads import EvidenceReadGrant
+                    grant_data = pin.get("evidence_read_grant")
+                    try:
+                        read_grant = EvidenceReadGrant.from_dict(grant_data) if grant_data is not None else None
+                    except (TypeError, ValueError, KeyError):
+                        read_grant = None
                     verified = verify_dat_evidence(evidence_store, evidence, actor=actor,
                                                    scopes=self._evidence_scopes(current_parent),
-                                                   payload_resolver=payload_resolver if payload_resolver is not None else getattr(self, "_payload_resolver", None))
+                                                   payload_resolver=payload_resolver if payload_resolver is not None else getattr(self, "_payload_resolver", None),
+                                                   evidence_read_grant=read_grant)
                     state = str(verified.get("state", "unknown"))
                     if state == "verified" and verified.get("digest") != pin.get("digest"):
                         state = "mismatch"
