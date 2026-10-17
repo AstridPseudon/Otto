@@ -824,10 +824,36 @@ def _classes_named(pattern_parts):
 
 
 class OneCodexBinding(unittest.TestCase):
+    def test_live_gateway_requires_resolved_model_and_reasoning(self):
+        from otto.agents.gateway import OttoGateway, Responsibility
+        adapter = mock.Mock()
+        gateway = OttoGateway(adapter=adapter)
+        missing = Responsibility("owner", "agent", "invoke", "digest")
+        self.assertEqual(gateway.preflight(missing)["code"], "missing_model_binding")
+        self.assertEqual(gateway.operation(missing, {})["error"]["code"], "missing_model_binding")
+        adapter.invoke.assert_not_called()
+        bound = Responsibility("owner", "agent", "invoke", "digest",
+            requested_model="selected-model", requested_reasoning="medium")
+        self.assertIsNone(gateway.preflight(bound))
+
+    def test_codex_adapter_requires_explicit_resolved_binding(self):
+        from otto.agents.herzchen_adapter import HerzchenAdapterError, HerzchenCodexAdapter
+        args = {"owner": "owner", "source": "/source", "worktree": "/worktree", "launcher": "/launcher"}
+        with self.assertRaisesRegex(HerzchenAdapterError, "requested_model"):
+            HerzchenCodexAdapter(**args)
+        with self.assertRaisesRegex(HerzchenAdapterError, "requested_reasoning"):
+            HerzchenCodexAdapter(**args, requested_model="selected-model")
+        adapter = HerzchenCodexAdapter(**args, requested_model="selected-model", requested_reasoning="medium")
+        self.assertEqual((adapter.requested_model, adapter.requested_reasoning), ("selected-model", "medium"))
+
     def test_live_profile_policy_has_no_python_model_table(self):
         # worker_import_map.py is frozen, digest-checked migration evidence;
         # historical/contract model literals outside these live locations stay intact.
         live = [SRC / "otto" / "agents" / "host_profiles.py",
+                SRC / "otto" / "agents" / "gateway.py",
+                SRC / "otto" / "agents" / "herzchen_adapter.py",
+                SRC / "otto" / "agents" / "orchestrator_route.py",
+                SRC / "otto" / "agents" / "owner_runtime.py",
                 SRC / "otto" / "hostctl" / "config.py",
                 SRC / "otto" / "hostctl" / "service.py"]
         profiles = json.loads((SRC / "otto" / "packs" / "otto-profiles" / "profiles.json").read_text())

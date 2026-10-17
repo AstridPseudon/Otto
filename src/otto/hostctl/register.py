@@ -99,6 +99,13 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
         from otto.agents.host_profiles import profile_pin_matches
         if not profile_pin_matches(run["profile_pack"], profile.get("pin") or {}):
             raise ValueError("selected run profile pack pin is stale or inconsistent")
+    from otto.portfolio.role_context import RoleContextError, _role_pack
+    role_selection = ({"content": {"role_pack": run["role_pack"]}}
+                      if "role_pack" in run else None)
+    try:
+        role_pack_pin = _role_pack(role_selection, "manager")[0]["pin"]
+    except RoleContextError as exc:
+        raise ValueError("selected run role pack pin is stale or inconsistent") from exc
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
     title = heading if heading.startswith(run_id) else (run_id + ": " + heading if heading else run_id)
@@ -152,6 +159,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                                               else "host profile " + profile["name"]}}
     configuration = {"schema": "otto.role-configuration.v1",
                      "profile_pack": profile.get("pin"),
+                     "role_pack": copy.deepcopy(role_pack_pin),
                      "model_profile": next(iter(profile_names)) if len(profile_names) == 1 else "mixed",
                      "roles": slot_bindings,
                      "role_bindings": {"manager": "coordinator", "orchestrator": "oracle"},
@@ -184,6 +192,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
         "review_stages": copy.deepcopy(profile.get("review_stages") or []),
         "scheduled_checks": copy.deepcopy(profile.get("scheduled_checks") or []),
         "pin": copy.deepcopy(profile.get("pin")),
+        "role_pack": copy.deepcopy(role_pack_pin),
         "resolved_roles": copy.deepcopy(slot_bindings),
         "run_file": bundle["run_file"], "run_sha256": bundle["raw_sha256"][bundle["run_file"]],
     }
@@ -251,6 +260,8 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
                         "pin": copy.deepcopy(selection["pin"])}
     computed = plan(bundle, profile=retained_profile, manager_principal=manager_principal,
                     worktree=worktree, tool_entrypoint=tool_entrypoint)
+    if selection.get("role_pack") is not None and selection["role_pack"] != computed["configuration"]["role_pack"]:
+        raise ValueError("registered role pack pin is stale or inconsistent")
     if computed["configuration"]["roles"] != selection.get("resolved_roles"):
         raise ValueError("registered run role bindings differ from retained selection")
     return computed
