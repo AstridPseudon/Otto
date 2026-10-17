@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 from dataclasses import fields
 from types import SimpleNamespace
@@ -479,6 +480,15 @@ class WorkerPinTests(unittest.TestCase):
         adapter = SimpleNamespace()
         process = self.group()
         seen = {}
+        recorded = []
+        original_profile = sys.getprofile()
+        record_code = ExecutionHost.record_process_group.__code__
+
+        def observe_record(frame, event, arg):
+            if event == "call" and frame.f_code is record_code:
+                recorded.append(threading.get_ident())
+            if original_profile is not None:
+                original_profile(frame, event, arg)
 
         def transport_operation():
             seen["transport"] = threading.get_ident()
@@ -489,8 +499,13 @@ class WorkerPinTests(unittest.TestCase):
             _pin_process_group(adapter, schedule)  # the owner context exists at install time
             ExecutionHost.external_call(transport_operation)
 
-        self.host._owned(owner_work)
+        sys.setprofile(observe_record)
+        try:
+            self.host._owned(owner_work)
+        finally:
+            sys.setprofile(original_profile)
         self.assertNotEqual(seen["transport"], seen["owner"], "the adapter pins from its transport thread")
+        self.assertEqual(recorded, [seen["owner"]], "registration runs on the owner thread")
         self.assertEqual(self.host._process_groups[schedule]["pgid"], process.pid)
 
     def test_pin_from_a_foreign_thread_outside_a_transport_wait_fails(self):

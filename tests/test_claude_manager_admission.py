@@ -286,13 +286,14 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
         self.assertEqual(restarted.capacity.snapshot()["pool"]["held_units"], 0)
 
     def test_work_pin_failure_keeps_initializer_record_and_releases_empty_slot(self):
-        from unittest.mock import patch
         from otto.portfolio import execution_host
 
         prepared = self.app.prepare_role(**self.role(fresh_manager=True))
         schedule = prepared['schedule_id']
         original_factory = self.manager_t.process_factory
         work = []
+        collision = []
+        initializer_record_at_collision = []
         input_marker = Path(self.root) / 'work-input-received'
         model = ('import pathlib,sys\n'
                  'line=sys.stdin.buffer.readline()\n'
@@ -300,25 +301,30 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
 
         def factory(command, **kwargs):
             if self.manager_t.processes:
+                # The initializer's pin is already durable. The real writer's
+                # exclusive temp-file create now fails for the work pin.
+                prior = json.loads(collision[0].with_name('capacity-process-groups.json').read_text())
+                initializer_record_at_collision.append(prior[schedule]['pid'])
+                collision[0].touch(exist_ok=False)
                 process = subprocess.Popen([sys.executable, '-c', model, str(input_marker)], **kwargs)
                 work.append(process)
                 return process
             return original_factory(command, **kwargs)
 
         self.manager_t.process_factory = factory
-        real_save = execution_host._atomic_json
 
-        def fail_second_pin(path, value):
-            if path.name == 'capacity-process-groups.json' and path.exists():
-                raise OSError('injected second pin write failure')
-            return real_save(path, value)
+        def configure_host(host):
+            path = host.directory / '.capacity-process-groups.json.tmp'
+            collision.append(path)
+            self.addCleanup(path.unlink, missing_ok=True)
 
-        with patch.object(execution_host, '_atomic_json', side_effect=fail_second_pin):
-            result, host = self.run_on_host(schedule)
-            saved = json.loads((host.directory / 'capacity-process-groups.json').read_text())
-            self.assertEqual(saved[schedule]['pid'], self.manager_t.processes[0].pid)
-            self.assertEqual(result['outcome'], 'failed', result.get('error'))
-            self.assertEqual(host._process_groups, {})
+        result, host = self.run_on_host(schedule, configure_host=configure_host)
+        saved = json.loads((host.directory / 'capacity-process-groups.json').read_text())
+        self.assertEqual(initializer_record_at_collision, [self.manager_t.processes[0].pid])
+        self.assertEqual(saved[schedule]['pid'], self.manager_t.processes[0].pid)
+        self.assertTrue(collision[0].is_file())
+        self.assertEqual(result['outcome'], 'failed', result.get('error'))
+        self.assertEqual(host._process_groups, {})
         self.assertEqual(len(work), 1)
         self.assertFalse(input_marker.exists())
         self.assertIsNotNone(work[0].poll())
@@ -327,6 +333,7 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
         due = self.f.port.read_due(schedule)
         self.assertEqual((due['stop_state'], due['completion_state']), ('completed', 'failed'))
         self.assertEqual(host.capacity_holds(), {})
+        collision[0].unlink()
         restarted = execution_host.ExecutionHost(directory=host.directory,
             handler=lambda _request: None, bounded_transports=True,
             capacity_store=self.f.store)
