@@ -329,6 +329,39 @@ def test_failed_admitted_check_returns_lab_to_worker(tmp_path):
     assert "one" in fleet.labs and not calls["accept"] and not calls["decisions"]
 
 
+def test_feedback_check_selects_importing_test_files_only(tmp_path):
+    from herzchen.fleet.landing import _feedback_argv
+
+    _run(tmp_path, "init", "-q")
+    (tmp_path / "src/pkg").mkdir(parents=True)
+    (tmp_path / "src/pkg/changed.py").write_text("VALUE = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_importer.py").write_text("from pkg.changed import VALUE\n")
+    (tmp_path / "tests/test_slow_unrelated.py").write_text("def test_slow(): pass\n")
+    _run(tmp_path, "config", "user.name", "test")
+    _run(tmp_path, "config", "user.email", "test@example.invalid")
+    _run(tmp_path, "add", ".")
+    _run(tmp_path, "commit", "-qm", "baseline")
+    (tmp_path / "src/pkg/changed.py").write_text("VALUE = 2\n")
+    selected = _feedback_argv(tmp_path, ["python", "-m", "pytest", "-q",
+                                         "tests/test_slow_unrelated.py"])
+    assert "tests/test_importer.py" in selected
+    assert "tests/test_slow_unrelated.py" not in selected
+
+    (tmp_path / "ops").mkdir()
+    (tmp_path / "ops/land.sh").write_text("#!/bin/sh\n")
+    (tmp_path / "tests/test_ops.py").write_text("# invokes ops/land.sh\n")
+    selected = _feedback_argv(tmp_path, ["python", "-m", "pytest", "-q",
+                                         "tests/test_slow_unrelated.py"])
+    assert "tests/test_ops.py" in selected
+    assert "tests/test_slow_unrelated.py" not in selected
+
+    (tmp_path / "tests/test_direct.py").write_text("def test_direct(): pass\n")
+    selected = _feedback_argv(tmp_path, ["python", "-m", "pytest", "-q",
+                                         "tests/test_slow_unrelated.py"])
+    assert "tests/test_direct.py" in selected
+
+
 def test_rebase_conflict_returns_clean_lab_to_worker(tmp_path):
     LandingError, _ = _landing_api()
     line, _base, fleet = _project(tmp_path, conflict=True)
