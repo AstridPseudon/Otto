@@ -21,9 +21,9 @@ PY = "/opt/homebrew/bin/python3.11"
 
 class StagingRootTests(unittest.TestCase):
     def setUp(self):
-        # A short root under /tmp: under $TMPDIR the owner's socket path passes the 100-byte Unix limit
-        # and staging refuses to start (as tests/test_staging_startup.py already does).
-        self.tmp = Path(tempfile.mkdtemp(prefix="ps-", dir="/tmp")).resolve()
+        # The landing gate supplies a short private TMPDIR so the owner's socket path stays under
+        # the Unix socket length limit.
+        self.tmp = Path(tempfile.mkdtemp(prefix="ps-", dir=os.environ.get("OTTO_LAND_TMPDIR", "/tmp"))).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.stage = self.tmp / "_staging"
         self.sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,

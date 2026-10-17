@@ -16,10 +16,12 @@ set -euo pipefail
 REASON=""
 LOCKED=""
 LANDED=""
+LAND_TMPDIR=""
 die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
 finish() {
   local rc=$?
   [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
+  [ -z "$LAND_TMPDIR" ] || rm -rf "$LAND_TMPDIR"
   # "landed" means pushed, whatever the exit status: a run stopped by a signal can end with status 0,
   # and a cleanup failure after the push doesn't undo the landing.
   if [ -n "$LANDED" ]; then echo "LAND RESULT: landed $LANDED"; return; fi
@@ -76,6 +78,15 @@ TITLE="${TITLE:-$TASK}"
 mkdir -p "$RUN" "$OPS_DIR"
 mkdir "$OPS_DIR/land.lock" 2>/dev/null || die "another landing is running ($OPS_DIR/land.lock); wait for it"
 LOCKED=1
+# Give this landing a short, private TMPDIR so staging sockets stay within Unix socket limits and
+# the owner census below can attribute leftovers to this run alone.
+LAND_TMPDIR="$(mktemp -d /tmp/l.XXXXXX)" || die "could not create a private temporary root"
+TMPDIR="$LAND_TMPDIR"
+export TMPDIR
+# The staging tests root themselves here when it is set (outside the gate, macOS's own TMPDIR is too
+# long for the 100-byte socket limit, so they fall back to /tmp).
+OTTO_LAND_TMPDIR="$LAND_TMPDIR"
+export OTTO_LAND_TMPDIR
 LOG="$RUN/land.log"
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "$LOG"; }
 fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
@@ -168,18 +179,13 @@ G="$RUN/.gate"; rm -rf "$G"; mkdir -p "$G"  # dot-folders: portfolio applies ski
 # Staging owners (`service run`) whose home is under a temporary root, one "pid home" per line.
 # A swept test can leave one behind even when its temporary home has no pidfile (TOOLING21, 17 Oct).
 temp_owners() {
-  "$PY" - "${TMPDIR:-/tmp}" <<'PY'
+  "$PY" - "$TMPDIR" <<'PY'
 import os
 import re
 import subprocess
 import sys
 
-roots = []
-for candidate in (sys.argv[1], "/tmp", "/private/tmp"):
-    if candidate:
-        root = os.path.realpath(candidate)
-        if root not in roots:
-            roots.append(root.rstrip(os.sep) + os.sep)
+root = os.path.realpath(sys.argv[1]).rstrip(os.sep) + os.sep
 try:
     listing = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], check=True,
                              text=True, capture_output=True).stdout
@@ -196,7 +202,7 @@ for line in listing.splitlines():
     if not home_match:
         continue
     home = os.path.realpath(home_match.group(1))
-    if any(home.startswith(root) for root in roots):
+    if home.startswith(root):
         print("%s %s" % (match.group(1), home))
 PY
 }

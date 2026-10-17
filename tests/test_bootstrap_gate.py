@@ -48,8 +48,9 @@ class Scratch(unittest.TestCase):
         # from ps-listing.before (empty unless a test sets it) and later calls from ps-listing.
         (self.tmp / "ps-listing.before").write_text("")
         ps_stub.write_text('#!/bin/sh\nc="$OTTO_TEST_PS_LISTING.calls"; n=$(($(cat "$c" 2>/dev/null || echo 0) + 1)); '
-                           'echo "$n" > "$c"\nif [ "$n" = 1 ]; then cat "$OTTO_TEST_PS_LISTING.before"; '
-                           'else cat "$OTTO_TEST_PS_LISTING"; fi\n')
+                           'echo "$n" > "$c"\nif [ "$n" = 1 ]; then f="$OTTO_TEST_PS_LISTING.before"; '
+                           'else f="$OTTO_TEST_PS_LISTING"; fi\n'
+                           'sed "s|__TMPDIR__|$TMPDIR|g" "$f"\n')
         ps_stub.chmod(0o755)
         self.env = dict(
             os.environ, OTTO_REPO=str(self.repo), LABS_DIR=str(self.labs), OPS_DIR=str(self.ops),
@@ -145,15 +146,15 @@ class LandGate(Scratch):
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
 
-    def test_temporary_service_owner_left_before_the_landing_is_logged_not_refused(self):
+    def test_temporary_service_owner_under_another_root_is_ignored(self):
         self.lab("T26", {"note.txt": "x\n"})
-        home = self.tmp / "older-orphan-home"
+        home = self.tmp / "other-session" / "older-orphan-home"
         line = "424242 1 python service run --home %s\n" % home
         (self.tmp / "ps-listing.before").write_text(line)
         self.ps_listing.write_text(line)
         r = self.land("T26")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("left before this landing (not its own)", self.log("T26"))
+        self.assertNotIn("424242", self.log("T26") + r.stdout + r.stderr)
 
     def test_a_live_owner_with_a_parent_is_not_an_orphan(self):
         self.lab("T27", {"note.txt": "x\n"})
@@ -163,18 +164,24 @@ class LandGate(Scratch):
 
     def test_temporary_service_owner_orphan_is_named(self):
         self.lab("T25", {"note.txt": "x\n"})
-        home = self.tmp / "orphan-home"
+        marker = self.tmp / "landing-tmpdir"
+        check = ("%s -c \"from pathlib import Path; import os; Path('%s').write_text(os.environ['TMPDIR'])\" && "
+                 "%s -m pytest -q tests/test_herzchen_boundary.py") % (sys.executable, marker, sys.executable)
+        home = Path("__TMPDIR__") / "orphan-home"
         owner = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60) # service run --home " + str(home)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self.ps_listing.write_text("%d 1 python service run --home %s\n" % (owner.pid, home))
         try:
-            r = self.land("T25")
+            r = self.land("T25", "--check", check)
             self.assertRefused(r, "T25", "orphan service run")
             diagnostic = self.log("T25") + r.stdout + r.stderr
+            landing_tmpdir = Path(marker.read_text())
+            self.assertEqual(landing_tmpdir.parent, Path("/tmp"), "landing did not use a short private TMPDIR")
+            self.assertTrue(landing_tmpdir.name.startswith("l."), str(landing_tmpdir))
             self.assertIn("pid %d" % owner.pid, diagnostic)
-            self.assertIn(str(home), diagnostic)
+            self.assertIn(str(landing_tmpdir / "orphan-home"), diagnostic)
         finally:
             owner.terminate()
 
