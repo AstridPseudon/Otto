@@ -824,6 +824,24 @@ def _classes_named(pattern_parts):
 
 
 class OneCodexBinding(unittest.TestCase):
+    def test_live_profile_policy_has_no_python_model_table(self):
+        # worker_import_map.py is frozen, digest-checked migration evidence;
+        # historical/contract model literals outside these live locations stay intact.
+        live = [SRC / "otto" / "agents" / "host_profiles.py",
+                SRC / "otto" / "hostctl" / "config.py",
+                SRC / "otto" / "hostctl" / "service.py"]
+        profiles = json.loads((SRC / "otto" / "packs" / "otto-profiles" / "profiles.json").read_text())
+        model_ids = {role["model"] for item in profiles["profiles"].values()
+                     for role in item["roles"].values()}
+        for path in live:
+            source = path.read_text("utf-8")
+            self.assertNotIn("PROFILES: Mapping", source, str(path))
+            for model_id in model_ids:
+                self.assertNotIn(json.dumps(model_id), source, str(path))
+        protocol = json.loads((SRC / "otto" / "packs" / "megado" / "protocols" / "megado.json").read_text())
+        self.assertNotIn("default_role_bindings", protocol)
+        self.assertNotIn("oracle_calls", protocol["default_limits"])
+
     def test_one_codex_binding(self):
         # one Codex binding class in the tree, and it is the one the live service constructs
         launchers = [c for c in _classes_named(("Codex",)) if "Binding" in c[1] or "CliAdapter" in c[1]]
@@ -846,6 +864,18 @@ class OneCodexBinding(unittest.TestCase):
         self.assertIn("get_host(\"codex\")", source)
         self.assertNotIn("--ignore-user-config", source)
         self.assertNotIn("model_reasoning_effort", source)
+
+    def test_host_adapter_entry_uses_registry_data_and_rejects_cross_host_profile(self):
+        from otto.hostctl.config import HostConfigError, host_entry
+        codex = host_entry("codex", principal="codex", launcher="/bin/codex", qualified_versions=[],
+                           model_profile="codex")
+        self.assertEqual(codex["adapters"]["codex"]["profiles"], ["read-only", "workspace-write"])
+        with self.assertRaises(HostConfigError):
+            host_entry("codex", principal="codex", launcher="/bin/codex", qualified_versions=[],
+                       model_profile="claude")
+        with self.assertRaises(HostConfigError):
+            host_entry("claude-code", principal="claude", launcher="/bin/claude", qualified_versions=[],
+                       model_profile="codex")
 
     def test_the_live_service_path_reaches_the_kept_binding(self):
         """herzchen_adapter._new_host (the live Codex path) constructs CodexCliBinding from herzchen.adapters."""

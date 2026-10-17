@@ -1,42 +1,14 @@
 {
   "mode": "planning_only",
   "model_profile": "claude",
-  "roles": {
-    "coordinator": {
-      "model": "claude-haiku-5-5",
-      "reasoning": "medium"
-    },
-    "worker_normal": {
-      "model": "claude-haiku-5-5",
-      "reasoning": "high"
-    },
-    "worker_xhard": {
-      "model": "claude-sonnet-5-5",
-      "reasoning": "high"
-    },
-    "reviewer_normal": {
-      "model": "claude-sonnet-5-5",
-      "reasoning": "high"
-    },
-    "reviewer_xhard": {
-      "model": "claude-opus-5-5",
-      "reasoning": "high"
-    },
-    "oracle": {
-      "model": "claude-opus-5-5",
-      "reasoning": "high"
-    },
-    "final_reviewer": {
-      "model": "claude-opus-5-5",
-      "reasoning": "high"
+  "profile_pack": {
+    "pack_id": "otto-profiles",
+    "pack_version": "1.0.0",
+    "resource_digests": {
+      "profiles.json": "f97f2f7a7bdb9dba5bb9852a085be950ee9f4d7da16937011fc3700bb1291fba",
+      "hosts.json": "1d09e8f06d6ba4255af334e05bbafc8ad7eccb8ea11b3228c83433e5c4b3e164"
     }
   },
-  "oracle": {
-    "max_calls": 3
-  },
-  "review_stages": [],
-  "assurance_selection": "Planning only: no active stages. Before new substantial delivery, explicitly adopt one final independent claude-opus-5-5 high review with max_calls 1, exact criteria and frozen candidate. Select intermediate reviews proportionately; existing instance policy and user overrides prevail.",
-  "scheduled_checks": [],
   "project_advisor_policy": {
     "resource": "protocols/project-advisor.json",
     "adoption": "explicit_instance_adoption",

@@ -399,7 +399,7 @@ def cmd_projects(args: argparse.Namespace) -> Any:
 
 
 def cmd_register(args: argparse.Namespace) -> Any:
-    from otto.agents.host_profiles import profile as model_profile
+    from otto.agents.host_profiles import profile_for_run
     from .register import plan, register
     home = _home(args)
     config = host_config.load(home)
@@ -408,7 +408,8 @@ def cmd_register(args: argparse.Namespace) -> Any:
     run_id = run.get("run_id") or Path(bundle["root"]).name
     worktree = args.worktree or str(Path(run.get("control_root") or bundle["root"]).parents[2])
     entry = _host(args, config)
-    computed = plan(bundle, profile=model_profile(entry["model_profile"]),
+    computed = plan(bundle, profile=profile_for_run(bundle["run"], host_kind=entry["kind"],
+                                                    default_profile=entry["model_profile"]),
                     manager_principal=args.manager_principal or run_id + "-manager", worktree=worktree,
                     tool_entrypoint=str(home / "bin" / "ottoctl"))
     if args.plan_only:
@@ -424,8 +425,7 @@ def cmd_register(args: argparse.Namespace) -> Any:
 
 
 def cmd_import_history(args: argparse.Namespace) -> Any:
-    from otto.agents.host_profiles import profile as model_profile
-    from .register import import_history, plan
+    from .register import import_history, plan_history
     home = _home(args)
     config = host_config.load(home)
     bundle = _client_bundle(args)
@@ -438,8 +438,7 @@ def cmd_import_history(args: argparse.Namespace) -> Any:
     if isinstance(prior, Mapping) and prior.get("outcome") == "imported_history" and prior.get("run_id") == run_id:
         return prior
     entry = _host(args, config)
-    computed = plan(bundle, profile=model_profile(entry["model_profile"]), manager_principal=run_id + "-manager",
-                    worktree=str(Path(bundle["root"]).parent), tool_entrypoint=str(home / "bin" / "ottoctl"))
+    computed = plan_history(bundle)
     with HostSession(config, host=entry) as session:
         receipt = import_history(session, computed, note=args.note)
     _receipt(home, "history-" + run_id, receipt)
@@ -459,8 +458,7 @@ def _client_bundle(args: argparse.Namespace) -> dict:
 
 def cmd_activate(args: argparse.Namespace) -> Any:
     """Materialize from Otto's stored documents, then adopt the operating setup (prepared, not started)."""
-    from otto.agents.host_profiles import profile as model_profile
-    from .register import materialize, plan, stored_bundle
+    from .register import ensure_profile_selection, materialize, plan_retained, stored_bundle
     home = _home(args)
     config = host_config.load(home)
     entry = _host(args, config)
@@ -468,6 +466,10 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=entry, project_ids=(record.ref.id,)) as session:
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
+        bundle = stored_bundle(session, record)
+        run_id = registration.get("run_id") or record.ref.id
+        worktree = args.worktree or str(Path(bundle["run"].get("control_root") or home).resolve().parents[2])
         from .portfolio import dependency_service
         readiness = dependency_service(session, args).activation_check(
             record.ref, override=getattr(args, "override_readiness", False),
@@ -476,13 +478,13 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         if readiness.get("outcome") in {"blocked", "error"}:
             return readiness
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
-        registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-        bundle = stored_bundle(session, record)
-        run_id = registration.get("run_id") or record.ref.id
-        worktree = args.worktree or str(Path(bundle["run"].get("control_root") or home).resolve().parents[2])
-        computed = plan(bundle, profile=model_profile(entry["model_profile"]),
-                        manager_principal=args.manager_principal or run_id + "-manager", worktree=worktree,
-                        tool_entrypoint=str(home / "bin" / "ottoctl"))
+        record, registration = ensure_profile_selection(
+            session, record, bundle, host=entry,
+            manager_principal=args.manager_principal or run_id + "-manager",
+            worktree=worktree, tool_entrypoint=str(home / "bin" / "ottoctl"))
+        computed = plan_retained(bundle, facts=registration, host=entry,
+                                 manager_principal=args.manager_principal or run_id + "-manager",
+                                 worktree=worktree, tool_entrypoint=str(home / "bin" / "ottoctl"))
         available = set((entry.get("adapters") or {}).keys())
         # Activation prepares only the manager. Optional worker/reviewer/
         # advisor slots retain their declarations and are fenced at their own

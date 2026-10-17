@@ -49,7 +49,6 @@
     }
   },
   "default_limits": {
-    "oracle_calls": 3,
     "ordinary_review_rounds": 1,
     "elevated_review_ceiling": 2,
     "whole_system_review_ceiling": 2,
@@ -70,36 +69,6 @@
     "periodic_reviews_default": [],
     "normal_review": "Luna xhigh only when an independent local judgment adds value; manager inspection and tests remain the default",
     "xhard_review": "Sol high for a specifically justified nonlocal reasoning question; not an automatic second reviewer"
-  },
-  "default_role_bindings": {
-    "coordinator": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "medium"
-    },
-    "worker_normal": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "high"
-    },
-    "worker_xhard": {
-      "model": "gpt-5.6-sol",
-      "reasoning": "high"
-    },
-    "reviewer_normal": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "xhigh"
-    },
-    "reviewer_xhard": {
-      "model": "gpt-5.6-sol",
-      "reasoning": "high"
-    },
-    "oracle": {
-      "model": "gpt-6-astra",
-      "reasoning": "high"
-    },
-    "final_reviewer": {
-      "model": "gpt-6-astra",
-      "reasoning": "high"
-    }
   },
   "version": "1.2.0"
 }

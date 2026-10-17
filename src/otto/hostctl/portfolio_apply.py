@@ -386,13 +386,14 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
     for pid in declared:
         visit(pid)
     index = _project_index(session, list(data_rows.values()))
-    from otto.agents.host_profiles import profile as model_profile
-    profile = model_profile(session.host["model_profile"])
+    from otto.agents.host_profiles import profile_for_run
     planned, registrations = [], {}
     actor = session.host_principal()
     for letter, item in index.items():
         bundle = item["row"]["bundle"]
-        computed = plan(bundle, profile=profile, manager_principal=item["run_id"] + "-manager",
+        selected_profile = profile_for_run(bundle["run"], host_kind=session.host["kind"],
+                                           default_profile=session.host["model_profile"])
+        computed = plan(bundle, profile=selected_profile, manager_principal=item["run_id"] + "-manager",
                         worktree=_worktree(bundle), tool_entrypoint=str(Path(session.config["home"]) / "bin" / "ottoctl"))
         computed["custom"]["otto_portfolio_setup"] = {"project_id": letter,
             "portfolio_id": str(portfolio_ref.id), "manifest_schema": setup.get("schema"),
@@ -434,10 +435,8 @@ def apply_portfolio(session: Any, portfolio_ref: Any, payload: Mapping[str, Any]
         planned_row.update(outcome=receipt.get("outcome"), project_ref=receipt.get("project_ref"), receipt=receipt)
     if import_history and payload.get("history"):
         history_bundle = payload["history"]
-        run_id = _run_id(history_bundle)
-        history_plan = plan(history_bundle, profile=profile, manager_principal=run_id + "-manager",
-            worktree=str(Path(history_bundle.get("root") or payload.get("history_root")).resolve().parent),
-            tool_entrypoint=str(Path(session.config["home"]) / "bin" / "ottoctl"))
+        from .register import plan_history
+        history_plan = plan_history(history_bundle)
         register_history(session, history_plan, note="Closed timeline-platform-r3 history; Phase 2 port moved to Codex.")
     gate_rows = _ensure_gates(session, index, gates, dry_run=False)
     dep_rows = _ensure_dependencies(session, index, dependencies, dry_run=False)

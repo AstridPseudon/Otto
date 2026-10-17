@@ -1,41 +1,5 @@
 {
   "mode": "planning_only",
-  "roles": {
-    "coordinator": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "medium"
-    },
-    "worker_normal": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "high"
-    },
-    "worker_xhard": {
-      "model": "gpt-5.6-sol",
-      "reasoning": "high"
-    },
-    "reviewer_normal": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "xhigh"
-    },
-    "reviewer_xhard": {
-      "model": "gpt-5.6-sol",
-      "reasoning": "high"
-    },
-    "oracle": {
-      "model": "gpt-6-astra",
-      "reasoning": "high"
-    },
-    "final_reviewer": {
-      "model": "gpt-6-astra",
-      "reasoning": "high"
-    }
-  },
-  "oracle": {
-    "max_calls": 3
-  },
-  "review_stages": [],
-  "assurance_selection": "Planning only: no active stages. Before new substantial delivery, explicitly adopt one final independent gpt-6-astra high review with max_calls 1, exact criteria and frozen candidate. Select intermediate reviews proportionately; existing instance policy and user overrides prevail.",
-  "scheduled_checks": [],
   "project_advisor_policy": {
     "resource": "protocols/project-advisor.json",
     "adoption": "explicit_instance_adoption",
@@ -46,5 +10,14 @@
     "target": null,
     "allowed_refs": [],
     "source_upstream_write": false
+  },
+  "model_profile": "codex",
+  "profile_pack": {
+    "pack_id": "otto-profiles",
+    "pack_version": "1.0.0",
+    "resource_digests": {
+      "profiles.json": "f97f2f7a7bdb9dba5bb9852a085be950ee9f4d7da16937011fc3700bb1291fba",
+      "hosts.json": "1d09e8f06d6ba4255af334e05bbafc8ad7eccb8ea11b3228c83433e5c4b3e164"
+    }
   }
 }
