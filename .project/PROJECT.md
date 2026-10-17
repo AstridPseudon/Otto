@@ -15,6 +15,7 @@ Base: canon/main eb9b6cd. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T20:42:37Z | PL3 | merged f9d18e3 | +528/-60 | `tests/test_worker_custody.py` 9 passed/13 failed; `tests/test_host_contract.py` 39 passed/2 failed; `tests/test_codex_host_reader.py` 9 passed/1 failed (`needs the gate`); targeted regressions 10/3/2 passed respectively | Persisted the exact PL1 latch path in the existing owner process-group record before native launch; claimed-owner restart resumes only that latch. Unresolved scope keeps physical capacity; exact gone evidence releases the physical slot while occurrence custody remains fenced. Claude/Codex paths surface uncertain cleanup as UNKNOWN, including Codex postlaunch OSError; valid metadata lookup also fails closed on uncertain cleanup. Astra's earlier owner-close and error-return findings were fixed and its final review found no remaining concrete defect. It also found pre-start `restore_execution` can reconstruct capacity before owner claim; manager accepted Astra's scope assessment that this changes no process signaling and does not violate PL3's owner-claim-before-kill criterion. No candidate helper block deleted; direct deletion credit: 0/99.
 2026-10-17T20:42:37Z | PL3 | merged f9d18e3 | +528/-60 | `tests/test_worker_custody.py` 9 passed/13 failed; `tests/test_host_contract.py` 39 passed/2 failed; `tests/test_codex_host_reader.py` 9 passed/1 failed (`needs the gate`); targeted regressions 10/3/2 passed respectively | Persisted the exact PL1 latch path in the existing owner process-group record before native launch; claimed-owner restart resumes only that latch. Unresolved scope keeps physical capacity; exact gone evidence releases the physical slot while occurrence custody remains fenced. Claude/Codex paths surface uncertain cleanup as UNKNOWN, including Codex postlaunch OSError; valid metadata lookup also fails closed on uncertain cleanup. Astra's earlier owner-close and error-return findings were fixed and its final review found no remaining concrete defect. It also found pre-start `restore_execution` can reconstruct capacity before owner claim; manager accepted Astra's scope assessment that this changes no process signaling and does not violate PL3's owner-claim-before-kill criterion. No candidate helper block deleted; direct deletion credit: 0/99.
 2026-10-17T20:55:00Z | PL4 | merged 580c6c4 | +508/-70 | 11 targeted custody regressions passed; manager `tests/test_heavy_lease.py` run: 14 passed, 8 failed, interrupted at 463s when remaining process cases blocked (`needs the gate`) | Replaced environment-tag signalling with exact recorded identity and private-group ancestry observation. Added pending launch intent; a private session root durably records its exact birth identity then waits for holder release before executing CMD. Holder death before release prevents CMD start; pending/unresolved claims survive recovery. Astra's re-review found no remaining concrete defect. The double-fork/setsid child reparented entirely between observations remains the explicit containment limitation in the goal. Direct deletion credit: 25/99.
+2026-10-17T20:58:48Z | PL5 | merged 05ec363 | +94/-17 | `tests/test_runner_cli_retry_key.py` 1 passed; `tests/test_runner.py -k uncertain_scope_holds_only_its_own_units` 1 passed; `tests/test_runner_cli.py -k submit_mints_request_id_before_client_transport` 1 failed at AF_UNIX socket bind (`needs the gate`); worker's full CLI file run 3 passed/7 failed on the socket gate | Unknown run await/status now includes `next_action`. CLI mints and returns request IDs; a transport error exposes the same key for exact retry. Manager review caught and returned the initial transport-failure key loss; failing-first regression confirmed it and the worker fixed it. Worker guidance and manager journey entry were shortened. No direct lifecycle behavior/status lines deleted; direct deletion credit: 0/99. Installed-owner cold-agent baseline/result needs the gate; no owner/staging session was started.
 
 ## Xhard review
 
@@ -23,6 +24,7 @@ Base: canon/main eb9b6cd. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 - PL2 Astra found restart settlement was not idempotent across repeated restarts, immediate nested submit could race parent launch identity, and non-ASCII tokens could raise from `compare_digest`. All three were returned to the same worker, covered by failing-first regressions, fixed through `8d6a1e8`, and Astra found no remaining concrete defect.
 - PL3 Astra found the prelaunch latch was not associated with the owner recovery row, unresolved Codex metadata cleanup was discarded, replacement group identity and cleanup error paths needed stronger handling, and an unclaimed `close()` could resume another owner's latch. The same worker fixed these in `35f95f5`; Astra's final review found no remaining concrete defect. Astra also reported that pre-start `restore_execution` may mutate capacity before owner claim. This affects the capacity ledger but does not signal a process, so it was recorded and not broadened into a task whose stated acceptance is owner claim before kill.
 - PL4 Astra found unidentified-PID recovery, unreadable Linux process identity, verified PID reuse, and the spawn-to-persist crash window. The PL4 worker fixed all four with failing-first regressions; Astra re-reviewed through `65f3257` and found no remaining concrete defect. The separately observed fast double-fork/setsid/reparent gap is accepted under the goal's explicit never-recorded-daemonization limit. Manager's full focused file run showed 14 pass and 8 gate failures before it was interrupted while a process-census case remained blocked; selected custody regressions passed.
+- PL5 was a normal-route Agent-UX pass, so no Astra review was required. Manager review found the first request-key change lost its minted ID when transport failed; the same worker added a failing-first regression and exposed the key in the structured transport error. Manager's focused retry and unresolved-scope checks passed. The CLI fixture's AF_UNIX socket bind is denied here and remains a gate check.
 
 ## File inventory and accounting
 
@@ -67,9 +69,19 @@ PL4 implementation/test files merged in `580c6c4`:
 - `src/otto/hostctl/heavy.py`
 - `tests/test_heavy_lease.py`
 
-Merged implementation deletions credited toward the agreed budget: 44/99 (PL1: 0; PL2: 19; PL3: 0; PL4: 25). PL1 and PL3 net removed lines did not retire complete candidate legacy blocks. The Astrid package's approximately 4,000-line ambition does not map to this clone.
+PL5 implementation/test/guidance files merged in `05ec363`:
 
-Current committed branch diff from `eb9b6cd` before PL5: 26 files, +1794/-187 (8 project-package files, two PL1 files, four PL2 files, ten PL3 files, and two PL4 files).
+- `docs/manager-journey-commands.md`
+- `src/herzchen/fleet/runner/runner.py`
+- `src/otto/portfolio/skills/references/worker.md`
+- `src/otto/runner_cli.py`
+- `tests/test_runner.py`
+- `tests/test_runner_cli.py`
+- `tests/test_runner_cli_retry_key.py`
+
+Merged implementation deletions credited toward the agreed budget: 44/99 (PL1: 0; PL2: 19; PL3: 0; PL4: 25; PL5: 0). PL1 and PL3 net removed lines did not retire complete candidate legacy blocks. PL5 shortened prose but did not retire a measured lifecycle block. The Astrid package's approximately 4,000-line ambition does not map to this clone.
+
+Current committed branch diff from `eb9b6cd` before PL6: 29 files, +1888/-204 (8 project-package files, two PL1 files, four PL2 files, ten PL3 files, two PL4 files, and three PL5 source/doc/test files plus one new regression file; see inventory above for exact PL5 paths).
 
 ## Gate checks
 
@@ -77,6 +89,7 @@ Current committed branch diff from `eb9b6cd` before PL5: 26 files, +1794/-187 (8
 - `tests/test_runner_cli.py`: 6 failures need the gate due Unix-domain socket bind (`EPERM`); 3 tests passed in the manager rerun.
 - PL3 `tests/test_worker_custody.py`: 13 failures need the gate because setup binds an AF_UNIX socket; 9 passed. `tests/test_host_contract.py`: 2 process-cleanup tests need the gate because `ps` is unavailable; 39 passed. `tests/test_codex_host_reader.py`: 1 valid metadata lookup fails closed because `ps` is unavailable; 9 passed. Targeted PL3 regressions passed separately as recorded above.
 - PL4 `tests/test_heavy_lease.py`: manager run had 8 failures and 14 passes before interruption after 463 seconds. Failed cleanup cases leave exact claims unresolved when macOS process census (`ps`) is denied; waiting integration tests then time out behind those correctly retained claims. These process-census/cleanup cases need the gate. The worker's 11 selected custody regressions, including the spawn crash handshake, passed.
+- PL5 `tests/test_runner_cli.py`: socket fixture bind is denied (`EPERM`), so its manager-targeted mint test failed at setup and worker full-file run had 7 socket-gate failures (3 passed). The transport retry key regression passed in its standalone focused file. The installed-owner cold-agent measurement needs the gate.
 
 ## Final project review
 

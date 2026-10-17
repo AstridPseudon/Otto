@@ -26,7 +26,7 @@ No PL7 branch archive: the named branches from the packaged tasklist are Astrid 
 ## Current run status
 
 - PL1: merged at `964120e`; setsid escapee cleanup and its existing acceptance test are preserved.
-- PL2: merged at `eec2b98`; 19/99 direct legacy deletion lines credited. PL3 merged at `f9d18e3`; native turns now associate the exact PL1 latch with the existing owner recovery row before spawn. PL4 merged at `580c6c4`; PL5 is unblocked, and PL6 follows PL1–PL5.
+- PL2: merged at `eec2b98`; 19/99 direct legacy deletion lines credited. PL3 merged at `f9d18e3`; native turns now associate the exact PL1 latch with the existing owner recovery row before spawn. PL4 merged at `580c6c4`; PL5 merged at `05ec363`; PL6 is in progress.
 
 ## Canon changes to recheck before edits
 
