@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "id": "engineering",
+  "name": "Engineering project templates",
+  "version": "1.0.0",
+  "description": "Versioned data templates for code tasks with focused pytest acceptance criteria.",
+  "resources": [
+    {
+      "path": "templates/code-task.json",
+      "kind": "work_template"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "astrid.film-edit",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {"type": "string", "minLength": 1},
+      "outcome": {"type": "string", "minLength": 1}
+    },
+    "required": ["title", "outcome"],
+    "additionalProperties": false
+  },
+  "seed": {
+    "project": {
+      "local_id": "project",
+      "kind": "project",
+      "title": {"$param": "title"},
+      "outcome": {"$param": "outcome"}
+    },
+    "tasks": [
+      {
+        "local_id": "edit-assembly",
+        "kind": "task",
+        "title": "Assemble the film edit",
+        "outcome": {"$param": "outcome"},
+        "instructions": "Assemble approved material into the intended sequence, then prepare a reviewable render for editorial feedback."
+      }
+    ],
+    "criteria": [
+      {
+        "local_id": "edit-structure",
+        "kind": "criterion",
+        "title": "Edit structure",
+        "description": "The edit follows the approved sequence, preserves narrative clarity and uses transitions that support the intended pacing."
+      },
+      {
+        "local_id": "render-review",
+        "kind": "criterion",
+        "title": "Render review",
+        "description": "A review render is checked for missing media, timing errors, audio continuity and unintended black or frozen frames."
+      }
+    ]
+  }
+}
