@@ -25,8 +25,8 @@ No PL7 branch archive: the named branches from the packaged tasklist are Astrid 
 
 ## Current run status
 
-- PL1: rework in progress on `task/PL1`. The orchestrator's D19 decision requires the setsid escapee expectation to remain unchanged and permits removing only redundant same-group paths.
-- PL2–PL6: waiting on PL1 merge; their task worktrees have not been created.
+- PL1: merged at `964120e`; setsid escapee cleanup and its existing acceptance test are preserved.
+- PL2: ready to start. PL3 and PL4 depend on PL1; PL5 depends on PL2–PL4; PL6 depends on PL1–PL5.
 
 ## Canon changes to recheck before edits
 
