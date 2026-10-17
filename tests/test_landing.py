@@ -393,6 +393,10 @@ def test_feedback_selection_includes_commits_and_rewrites_broad_targets_safely(t
     assert "tests/test_importer.py" in selected and "tests" not in selected
     unknown_option_argv = prefix + ["--junitxml", "tests/report.xml", "tests"]
     assert _feedback_argv(tmp_path, unknown_option_argv, "main") == unknown_option_argv
+    pyargs_argv = prefix + ["--pyargs", "tests"]
+    assert _feedback_argv(tmp_path, pyargs_argv, "main") == pyargs_argv
+    coverage_argv = prefix + ["--cov", "tests"]
+    assert _feedback_argv(tmp_path, coverage_argv, "main") == coverage_argv
     selected = _feedback_argv(tmp_path, prefix, "main")
     assert "tests/test_importer.py" in selected and "tests/test_slow.py" not in selected
 
