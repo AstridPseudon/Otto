@@ -395,6 +395,8 @@ def test_feedback_selection_includes_commits_and_rewrites_broad_targets_safely(t
     assert _feedback_argv(tmp_path, unknown_option_argv, "main") == unknown_option_argv
     pyargs_argv = prefix + ["--pyargs", "tests"]
     assert _feedback_argv(tmp_path, pyargs_argv, "main") == pyargs_argv
+    pyargs_mode_argv = ["python", "-m", "pytest", "--pyargs", "-q", "tests"]
+    assert _feedback_argv(tmp_path, pyargs_mode_argv, "main") == pyargs_mode_argv
     coverage_argv = prefix + ["--cov", "tests"]
     assert _feedback_argv(tmp_path, coverage_argv, "main") == coverage_argv
     selected = _feedback_argv(tmp_path, prefix, "main")

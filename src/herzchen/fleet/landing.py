@@ -389,6 +389,8 @@ def _feedback_argv(repo: Path, argv: list[str], base_ref: str = "HEAD") -> list[
     """Narrow a direct pytest check to changed tests and tests importing changed code."""
     if "pytest" not in argv:
         return argv
+    if "--pyargs" in argv:
+        return argv
     try:
         committed = subprocess.run(
             ["git", "-C", os.fspath(repo), "diff", "--name-status", "-z", base_ref + "...HEAD"],
