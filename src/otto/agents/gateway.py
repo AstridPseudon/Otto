@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import shlex
 from typing import Any, Mapping, Optional, Protocol
 
 from otto.agents.evidence_refs import compact_raw_result
@@ -180,7 +181,8 @@ class InMemoryAttemptCapture:
             return {"outcome": "replayed", "replayed": True, "attempt": dict(prior)}
         unresolved = self._by_assignment.get(assignment_key)
         if unresolved is not None and unresolved.get("outcome") == "unknown":
-            return {"outcome": "unknown", "message": "an unresolved attempt requires reconciliation"}
+            return {"outcome": "unknown", "message": "an unresolved attempt requires reconciliation",
+                    "logical_request_key": unresolved.get("logical_request_key")}
         prior_claim = self._claims_by_key.get(logical_request_key)
         if prior_claim is not None:
             if prior_claim["request_fingerprint"] != request_fingerprint:
@@ -188,7 +190,8 @@ class InMemoryAttemptCapture:
             return {"outcome": "claimed", "claimed": False, "replayed": False}
         competing_key = self._claims_by_assignment.get(assignment_key)
         if competing_key is not None and competing_key != logical_request_key:
-            return {"outcome": "unknown", "message": "assignment generation already has a pending claim"}
+            return {"outcome": "unknown", "message": "assignment generation already has a pending claim",
+                    "logical_request_key": competing_key}
         claim = {
             "logical_request_key": logical_request_key,
             "assignment_ref": _json_value(assignment_ref),
@@ -499,7 +502,9 @@ class OwnerDueRecordAttemptCapture:
         if attempt is None or attempt.get("generation") != generation or not self._same(attempt.get("assignment_ref"), assignment_ref):
             return None
         result = attempt.get("result")
-        return dict(result) if isinstance(result, Mapping) else {"outcome": "unknown", "unknown_reason": "attempt claim has no result"}
+        return dict(result) if isinstance(result, Mapping) else {
+            "outcome": "unknown", "unknown_reason": "attempt claim has no result",
+            "logical_request_key": attempt.get("logical_request_key")}
 
     def _save(self, record: Any, attempt: Mapping[str, Any], request_id: str) -> Mapping[str, Any]:
         value = record.to_dict()
@@ -538,7 +543,8 @@ class OwnerDueRecordAttemptCapture:
                     and prior_result.get("delivery_state") != "unknown"
                 )
                 if not next_owner_occurrence:
-                    return {"outcome": "unknown", "message": "due occurrence already has a different unresolved attempt"}
+                    return {"outcome": "unknown", "message": "due occurrence already has a different unresolved attempt",
+                            "logical_request_key": prior.get("logical_request_key")}
             else:
                 if prior.get("request_fingerprint") != request_fingerprint:
                     return {"outcome": "request_reuse_conflict", "message": "same request key has different attempt content"}
@@ -1567,9 +1573,25 @@ class OttoGateway:
             }, message
         return result, None
 
+    def _effect_readback(self, key: Any) -> dict[str, Any]:
+        """Project only an effect that the owner ledger actually retains."""
+        if self.effect_ledger is None or not _text(key):
+            return {}
+        record = self.effect_ledger.get(key)
+        if record is None:
+            return {}
+        ref = record.effect_ref.to_dict()
+        argument = json.dumps(ref, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return {"effect_ref": ref,
+                "next_action": "otto effects read --effect-ref " + shlex.quote(argument)}
+
     def _owner_bound_operation(self, responsibility: Responsibility, request: Any) -> Any:
         key = responsibility.logical_request_key
         fingerprint = self._fingerprint(responsibility, request)
+        def held_error(code: str, message: str, *, effect_key: Any = key) -> dict[str, Any]:
+            guidance = self._effect_readback(effect_key)
+            return {**error(code, message, **guidance), **guidance}
+
         validator = getattr(self.attempt_capture, "validate_generation", None) if self.attempt_capture is not None else None
         if callable(validator):
             validation = validator(responsibility.assignment_ref, int(responsibility.generation or 0))
@@ -1578,17 +1600,18 @@ class OttoGateway:
         prior = self._capture_read("read", key) if key else None
         if prior is not None:
             if prior.get("request_fingerprint") != fingerprint:
-                return error("request_reuse_conflict", "logical request key was reused with changed attempt")
+                return held_error("request_reuse_conflict", "logical request key was reused with changed attempt")
             if prior.get("outcome") == "unknown" or prior.get("delivery_state") == "unknown":
-                return error("unknown_attempt_requires_reconciliation",
-                             "an unresolved attempt cannot be retried automatically")
+                return held_error("unknown_attempt_requires_reconciliation",
+                                  "an unresolved attempt cannot be retried automatically")
             prior["replayed"] = True
             return {"outcome": "replayed", "replayed": True, "adapter_called": False,
-                    "attempt": prior, "envelope": prior}
+                    "attempt": prior, "envelope": prior, **self._effect_readback(key)}
         unresolved = self._capture_read("read_assignment", responsibility.assignment_ref, int(responsibility.generation or 0))
         if unresolved is not None and unresolved.get("outcome") == "unknown":
-            return error("unknown_attempt_requires_reconciliation",
-                         "an unresolved attempt for this assignment generation cannot be retried")
+            return held_error("unknown_attempt_requires_reconciliation",
+                              "an unresolved attempt for this assignment generation cannot be retried",
+                              effect_key=unresolved.get("logical_request_key"))
         resource_validator = getattr(self.attempt_capture, "validate_resources", None)
         if callable(resource_validator):
             resource_error = resource_validator(responsibility.resource_evidence)
@@ -1601,11 +1624,13 @@ class OttoGateway:
             if outcome == "replayed":
                 attempt = claim.get("attempt")
                 return {"outcome": "replayed", "replayed": True, "adapter_called": False,
-                        "attempt": attempt, "envelope": attempt}
+                        "attempt": attempt, "envelope": attempt, **self._effect_readback(key)}
             if outcome == "unknown":
-                return error("unknown_attempt_requires_reconciliation", str(claim.get("message", "owner claim is unresolved")))
+                return held_error("unknown_attempt_requires_reconciliation",
+                    str(claim.get("message", "owner claim is unresolved")),
+                    effect_key=claim.get("logical_request_key", key))
             if outcome == "request_reuse_conflict":
-                return error("request_reuse_conflict", str(claim.get("message", "owner claim input changed")))
+                return held_error("request_reuse_conflict", str(claim.get("message", "owner claim input changed")))
             if outcome == "stale_generation":
                 return error("stale_generation", str(claim.get("message", "owner claim generation is stale")))
             if outcome == "foreign_assignment":
@@ -1620,7 +1645,7 @@ class OttoGateway:
                     diagnostic=claim.get("diagnostic"),
                 )
             if outcome == "claimed" and claim.get("claimed") is False:
-                return error("unknown_attempt_requires_reconciliation", "an owner claim is already pending")
+                return held_error("unknown_attempt_requires_reconciliation", "an owner claim is already pending")
             if outcome != "claimed":
                 return error("owner_claim_rejected", "owner did not grant the launch claim")
         return None
@@ -1701,8 +1726,9 @@ class OttoGateway:
             try:
                 effect = self.effect_ledger.begin(responsibility, self._fingerprint(responsibility, request))
             except Exception as exc:
-                return error("native_effect_held", str(exc), adapter_called=False,
-                             next_action="inspect the exact retained effect and reconcile its native proof")
+                guidance = self._effect_readback(responsibility.logical_request_key)
+                return {**error("native_effect_held", str(exc), adapter_called=False,
+                                **guidance), **guidance}
         started_session_id = responsibility.physical_session_id
         restore_thread_callback = None
         restore_turn_callback = None
