@@ -184,7 +184,8 @@ class CodexHostReaderTests(unittest.TestCase):
 
     def test_installed_owner_factories_share_one_reader_scope_across_evidence_ids(self):
         controller = self.root / 'controller'
-        expected = str(controller / 'manager-ipc' / 'metadata-reader-scope.json')
+        private = self.root / 'owner-private'
+        expected = str(private / 'metadata-reader-scope.json')
         sources = ('operating_service.py', 'shared_operating_service.py', 'w0_codex_view_join.py')
         for source in sources:
             path = Path(__file__).resolve().parents[1] / 'install' / 'controller' / source
@@ -198,8 +199,27 @@ class CodexHostReaderTests(unittest.TestCase):
                 scope = eval(compile(ast.Expression(option), str(path), 'eval'),
                              {'__builtins__': {'str': str}},
                              {'HERE': controller, 'C': controller,
-                              'CONTROLLER': controller, 'evidence_id': evidence_id})
+                              'CONTROLLER': controller, 'PRIVATE': private,
+                              'NATIVE_EVIDENCE_ROOT': private / 'native-evidence',
+                              'evidence_id': evidence_id})
                 self.assertEqual(scope, expected, (source, evidence_id))
+                self.assertFalse(Path(scope).is_relative_to(controller), source)
+
+    def test_reader_prepares_private_scope_parent_before_launch(self):
+        self.fixture_reader()
+        parent = self.root / 'owner-private'
+        latch = parent / 'metadata-reader-scope.json'
+        reader = reader_module.CodexAppServerThreadReader(
+            launcher=str(self.launcher), sessions_root=str(self.root),
+            scope_latch_path=str(latch))
+        def stopped_before_spawn(_argv, **kwargs):
+            self.assertEqual(kwargs['latch_path'], str(latch))
+            self.assertTrue(parent.is_dir())
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+            raise OSError('fixture stops before spawn')
+        with patch.object(reader_module.Custody, 'launch', side_effect=stopped_before_spawn):
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, '^host_metadata_lookup_failed$'):
+                reader('issued-session')
 
 
 if __name__ == "__main__":

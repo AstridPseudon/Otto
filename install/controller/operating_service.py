@@ -247,7 +247,7 @@ class Server:
  def _execution(self,*,principal,model,reasoning,evidence_id):
   from otto.agents.codex_host_reader import CodexAppServerThreadReader
   from otto.agents.herzchen_adapter import HerzchenCodexAdapter
-  adapter=pinned_pack_adapter()(owner=principal,source=str(RUN),worktree=str(WORK),launcher=LAUNCHER,requested_model=model,requested_reasoning=reasoning,trusted_thread_reader=CodexAppServerThreadReader(launcher=LAUNCHER,timeout_seconds=30,scope_latch_path=str(HERE/'manager-ipc'/'metadata-reader-scope.json')),host_context_path=str(HERE/'evidence'/(evidence_id+'-host.jsonl')),require_host_context=True,writable_roots=(str(HERE),),native_process_observer=self.native_callers.observe,native_caller_socket=str(native_caller_socket_path()))
+  adapter=pinned_pack_adapter()(owner=principal,source=str(RUN),worktree=str(WORK),launcher=LAUNCHER,requested_model=model,requested_reasoning=reasoning,trusted_thread_reader=CodexAppServerThreadReader(launcher=LAUNCHER,timeout_seconds=30,scope_latch_path=str(NATIVE_EVIDENCE_ROOT.parent/'metadata-reader-scope.json')),host_context_path=str(HERE/'evidence'/(evidence_id+'-host.jsonl')),require_host_context=True,writable_roots=(str(HERE),),native_process_observer=self.native_callers.observe,native_caller_socket=str(native_caller_socket_path()))
   return self.owner.execution_application(due_port=self.due_port,adapter=adapter,manager_actor=MANAGER,issue_delivery=self.help_delivery,native_bodies=self.native_bodies)
  def handle(self,request):
   from herzchen.contracts import ResourceRef

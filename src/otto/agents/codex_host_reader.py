@@ -180,7 +180,19 @@ class CodexAppServerThreadReader:
         """Serialize lookups and recovery across owner processes; death drops the OS lock."""
         lock_path = self.scope_latch_path + ".lock"
         try:
-            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            parent = Path(self.scope_latch_path).parent
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory = parent.lstat()
+            if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+                    or stat.S_IMODE(directory.st_mode) != 0o700):
+                _fail("app_server_scope_unavailable")
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK |
+                                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+            lock = os.fstat(descriptor)
+            if (not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid()
+                    or stat.S_IMODE(lock.st_mode) != 0o600):
+                os.close(descriptor)
+                _fail("app_server_scope_unavailable")
         except OSError:
             _fail("app_server_scope_unavailable")
         try:
