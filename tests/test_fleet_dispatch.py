@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+import threading
+import time
 from types import SimpleNamespace
 
 from herzchen.fleet.capacity import CapacityPool, CapacityPolicy
@@ -238,3 +240,56 @@ def test_current_record_lookup_is_required_and_used_at_final_readiness_check():
     assert len(reads) == 2
     assert pool.snapshot()["turns"]["reserved"] == 0
     assert not book.live()
+
+
+def test_ready_scan_skips_blocked_and_unadmitted_tasks():
+    blocked = _task("blocked")
+    blocked.payload["dependencies"] = [ResourceRef("test", "work.task", "prerequisite", "old")]
+    unadmitted = _task("unadmitted-scan")
+    unadmitted.payload["fields"]["check"] = ["changed after admission"]
+    selected = _task("selected")
+    launched = []
+    dispatcher, _pool, book = _dispatcher(
+        _ready_with({"prerequisite": _dependency("work.task", "prerequisite", "active")}),
+        lambda spec, _context: launched.append(spec))
+    record = dispatcher.dispatch_ready([blocked, unadmitted, selected])
+    assert record.task is selected
+    assert len(launched) == 1
+    assert book.live() == frozenset({record.assignment})
+    assert "blocked" not in dispatcher.records
+    assert "unadmitted-scan" not in dispatcher.records
+
+
+def test_concurrent_owner_selectors_launch_one_task_generation():
+    task = _task("raced")
+    pool = CapacityPool(CapacityPolicy())
+    book = TokenBook()
+    calls = []
+    gate = threading.Barrier(3)
+
+    def launch(current, _context):
+        calls.append(current.ref.id)
+        time.sleep(0.02)
+        return {"outcome": "admitted"}
+
+    dispatcher = FleetDispatcher(pool, book, ready=_ready_with({}),
+        role_for=lambda _task: "worker", policy_for=lambda _role: pool.policy,
+        active_counts=lambda: (0, 0), make_spec=None, launch=launch,
+        mcp_server_name="otto", mcp_tools=(), read_current=lambda current, **_kw: current)
+    results = []
+
+    def pump():
+        gate.wait()
+        results.append(dispatcher.dispatch_ready([task]))
+
+    threads = [threading.Thread(target=pump) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    gate.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert calls == ["raced"]
+    assert sum(result is not None for result in results) == 1
+    dispatcher.finish("raced")
+    assert dispatcher.dispatch_ready([task]) is None

@@ -713,11 +713,17 @@ class ExecutionHost:
     _RECONCILE_INTERVAL = 30.0
 
     def _capacity_tick(self) -> None:
-        """Owner-loop upkeep: free what has provably died."""
+        """Owner-loop upkeep and one admitted routine dispatch per free pump."""
         now = time.monotonic()
         if now - self._reconcile_checked >= self._RECONCILE_INTERVAL:
             self._reconcile_checked = now
             self.reconcile_dead_holds()  # the next pump sees the freed slots
+        pump = getattr(self, "dispatch_pump", None)
+        if callable(pump) and not self._dispatch_held and not self._closing:
+            try:
+                pump()
+            except Exception as exc:
+                self.failures["routine-dispatch"] = {"code": type(exc).__name__, "message": str(exc)}
 
     def start(self) -> None:
         if self._threads:

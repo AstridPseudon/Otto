@@ -6,6 +6,7 @@ actual host launch. This module orders those decisions and records what was admi
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import threading
 from typing import Any, Callable, Mapping
 
 from .hosts.contract import McpGrant, TurnSpec
@@ -36,23 +37,27 @@ class FleetDispatcher:
     ``ready`` receives the task and keyword context and returns either ``True`` or a mapping
     with a true ``ready`` key. ``active_counts`` returns ``(workers, managers)``. ``make_spec``
     receives ``(task, role, token, context)`` and must return a host ``TurnSpec``. The launcher
-    receives ``(spec, context)``. No manager wake or scheduling callback is part of dispatch.
+    receives ``(spec, context)``. When ``make_spec`` is ``None``, the owner launcher receives
+    ``(current_task, context)`` and must prepare a retained occurrence; that occurrence owns
+    the host turn reservation and final execution admission. No manager wake is part of dispatch.
     """
 
     def __init__(self, capacity: Any, tokens: TokenBook, *, ready: Callable[..., Any],
                  role_for: Callable[[Any], str], policy_for: Callable[[str], Any],
                  active_counts: Callable[[], tuple[int, int]],
-                 make_spec: Callable[..., TurnSpec], launch: Callable[..., Any],
+                 make_spec: Callable[..., TurnSpec] | None, launch: Callable[..., Any],
                  mcp_server_name: str, mcp_tools: tuple[str, ...],
                  assignment_id: Callable[[Any], str] | None = None,
                  read_current: Callable[..., Any]):
         for name, value in (("ready", ready), ("role_for", role_for), ("policy_for", policy_for),
-                            ("active_counts", active_counts), ("make_spec", make_spec), ("launch", launch),
+                            ("active_counts", active_counts), ("launch", launch),
                             ("read_current", read_current)):
             if not callable(value):
                 raise TypeError(name + " must be callable")
         if not isinstance(tokens, TokenBook):
             raise TypeError("tokens must be a TokenBook")
+        if make_spec is not None and not callable(make_spec):
+            raise TypeError("make_spec must be callable or None")
         if not isinstance(mcp_server_name, str) or not mcp_server_name:
             raise TypeError("mcp_server_name must be a nonempty string")
         if not isinstance(mcp_tools, tuple) or any(not isinstance(t, str) or not t for t in mcp_tools):
@@ -64,18 +69,25 @@ class FleetDispatcher:
         self.assignment_id = assignment_id or self._default_assignment
         self.read_current = read_current
         self.records: dict[str, DispatchRecord] = {}
+        self._lock = threading.RLock()
 
     def dispatch(self, task: Any, *, context: Mapping[str, Any] | None = None,
                  assignment: str | None = None, retry: bool = False,
                  resume: bool = False) -> DispatchRecord:
         """Dispatch one fresh, retry or resumed launch through the same final readiness check."""
+        with self._lock:
+            return self._dispatch_locked(task, context=context, assignment=assignment,
+                                         retry=retry, resume=resume)
+
+    def _dispatch_locked(self, task: Any, *, context: Mapping[str, Any] | None,
+                         assignment: str | None, retry: bool, resume: bool) -> DispatchRecord:
         context = dict(context or {})
         assignment = assignment or self.assignment_id(task)
         if not isinstance(assignment, str) or not assignment:
             raise DispatchError("assignment id is required")
         previous = self.records.get(assignment)
-        if previous is not None and previous.state in {"admitted", "launched", "unknown"}:
-            raise DispatchError("assignment already has an active dispatch")
+        if previous is not None and previous.state != "refused":
+            raise DispatchError("assignment already has an active dispatch or settled generation")
         context.update(assignment=assignment, retry=bool(retry), resume=bool(resume))
         self._require_ready(task, context)
         role = self.role_for(task)
@@ -100,10 +112,11 @@ class FleetDispatcher:
             current = self.read_current(task, **context)
             if current is None:
                 raise DispatchError("assignment no longer exists")
-            spec = self.make_spec(current, role, token, context)
-            self._validate_spec(spec, token)
-            self.capacity.ensure_turn(assignment)
-            reserved = True
+            if self.make_spec is not None:
+                spec = self.make_spec(current, role, token, context)
+                self._validate_spec(spec, token)
+                self.capacity.ensure_turn(assignment)
+                reserved = True
             # Final check is adjacent to launch on every path, including resume and retry.
             current = self.read_current(task, **context)
             if current is None:
@@ -111,8 +124,13 @@ class FleetDispatcher:
             if self._admitted_revision(current) != record.admitted_revision:
                 raise DispatchError("assignment admission changed before launch")
             self._require_ready(current, context)
+            record.task = current
             launch_started = True
-            record.result = self.launch(spec, context)
+            # Owner-composed launchers prepare a canonical occurrence. Its retained start
+            # takes the real host slot and calls admit_execution; reserving this selector's
+            # assignment as a second turn would charge capacity twice.
+            record.result = (self.launch(spec, context) if self.make_spec is not None
+                             else self.launch(current, context))
             record.state = "launched"
             return record
         except Exception as exc:
@@ -137,9 +155,16 @@ class FleetDispatcher:
         ``dispatch`` and its immediate prelaunch readiness check. Blocked candidates are skipped
         without issuing a token or waking a manager.
         """
+        with self._lock:
+            return self._dispatch_ready_locked(tasks, context=context)
+
+    def _dispatch_ready_locked(self, tasks: Any, *, context: Mapping[str, Any] | None) -> DispatchRecord | None:
         base_context = dict(context or {})
         for task in tasks:
             assignment = self.assignment_id(task)
+            previous = self.records.get(assignment)
+            if previous is not None and previous.state != "refused":
+                continue
             candidate_context = dict(base_context, assignment=assignment, retry=False, resume=False)
             current = self.read_current(task, **candidate_context)
             if current is None:
@@ -169,16 +194,18 @@ class FleetDispatcher:
 
     def finish(self, assignment: str, *, settled: bool = True) -> None:
         """Release the turn reservation and token after the owner has settled the assignment."""
-        record = self.records.get(assignment)
-        if record is None:
-            return
-        self.tokens.revoke(assignment)
-        if settled:
-            self.capacity.settle_turn(assignment)
-        else:
-            self.capacity.release_turn(assignment)
-        record.state = "settled" if settled else "released"
-        record.token = None
+        with self._lock:
+            record = self.records.get(assignment)
+            if record is None:
+                return
+            self.tokens.revoke(assignment)
+            if self.make_spec is not None:
+                if settled:
+                    self.capacity.settle_turn(assignment)
+                else:
+                    self.capacity.release_turn(assignment)
+            record.state = "settled" if settled else "released"
+            record.token = None
 
     def _require_ready(self, task: Any, context: Mapping[str, Any]) -> None:
         result = self.ready(task, **dict(context))
