@@ -321,6 +321,88 @@ def owner_lane_path(home):
 
 
 class CloseTests(SpyMixin, ProductFixture):
+    def test_stop_is_complete_at_publication_and_reaches_draining_and_closed(self):
+        from otto.hostctl.cli import cmd_service_stop
+
+        self._prepared()
+        events, owner_thread = self._product()
+        self._ready_doc(events)
+
+        marker = stop_marker(Path(self.home))
+        status_file = status_path(Path(self.home))
+        closure = {"reason": "planned upgrade", "expected_return": "10 minutes"}
+        self.assertFalse(marker.exists())
+
+        entered = threading.Event()
+        release = threading.Event()
+        temporary = []
+        published = []
+        result = {}
+        real_replace = os.replace
+
+        def replace(source, destination):
+            destination = Path(destination)
+            if destination == marker:
+                temporary.append(Path(source))
+                entered.set()
+                if not release.wait(60):
+                    raise AssertionError("stop publication was never released")
+            real_replace(source, destination)
+            if destination == status_file:
+                value = read_status(status_file)
+                if value["outcome"] in {"draining", "closed"}:
+                    published.append(value)
+
+        def request_stop():
+            try:
+                result["value"] = cmd_service_stop(SimpleNamespace(
+                    home=self.home,
+                    reason="  planned upgrade  ",
+                    expected_return="  10 minutes  "))
+            except BaseException as error:
+                result["error"] = error
+
+        with mock.patch.object(os, "replace", replace):
+            writer = threading.Thread(target=request_stop, daemon=True)
+            writer.start()
+            try:
+                self.assertTrue(entered.wait(60), "stop never reached atomic replacement")
+                self.assertEqual(temporary[0].parent, marker.parent)
+                self.assertEqual(temporary[0].stat().st_mode & 0o777, 0o600)
+                prepared = json.loads(temporary[0].read_text())
+                self.assertTrue(prepared["requested_at"])
+                self.assertEqual({key: prepared[key] for key in closure}, closure)
+
+                self.assertFalse(marker.exists())
+                self.assertTrue(owner_thread.is_alive())
+                self.assertEqual(read_status(status_file)["outcome"], "running")
+                code, reply = self._ottoctl(
+                    "help", "read", "--project", "demo-run")
+                self.assertEqual(code, 0, reply)
+                self.assertEqual(reply["relayed"]["command"], "read-help")
+            finally:
+                release.set()
+                writer.join(timeout=60)
+            owner_thread.join(timeout=60)
+
+        self.assertFalse(writer.is_alive())
+        self.assertNotIn("error", result, result)
+
+        self.assertFalse(owner_thread.is_alive())
+        self.assertEqual(result["value"]["closure"], closure)
+        self.assertEqual(
+            {key: json.loads(marker.read_text())[key] for key in closure},
+            closure)
+        self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(marker.parent.glob(".service-stop.*.tmp")), [])
+
+        for phase in ("draining", "closed"):
+            matches = [value for value in published if value["outcome"] == phase]
+            self.assertTrue(matches, published)
+            self.assertEqual(matches[-1]["closure"], closure)
+        self.assertEqual(read_status(status_file)["closure"], closure)
+        self.assertEqual(self.product_result["value"]["closure"], closure)
+
     def test_closed_only_after_store_release(self):
         from herzchen.kernel.store import Store
         self._prepared()

@@ -904,6 +904,7 @@ def cmd_service_status(args: argparse.Namespace) -> Any:
 
 
 def cmd_service_stop(args: argparse.Namespace) -> Any:
+    from . import lanes
     from .service import stop_marker
     home = _home(args)
     host_config.load(home)
@@ -912,8 +913,7 @@ def cmd_service_stop(args: argparse.Namespace) -> Any:
                                                        ("expected_return", getattr(args, "expected_return", None)))
                if isinstance(value, str) and value.strip()}
     from datetime import datetime, timezone
-    path.write_text(json.dumps({"requested_at": datetime.now(timezone.utc).isoformat(), **closure}, sort_keys=True) + "\n")
-    os.chmod(path, 0o600)
+    lanes.atomic_json(path, {"requested_at": datetime.now(timezone.utc).isoformat(), **closure})
     result = {"outcome": "stop_requested", "stop_marker": str(path),
               "next_action": "the service drains admitted work and closes; check `ottoctl service status`"}
     if closure:
