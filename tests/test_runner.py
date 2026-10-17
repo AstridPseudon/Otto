@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
-from herzchen.fleet.custody import Custody
+from herzchen.fleet.custody import Custody, Disposition, Proc
 from herzchen.fleet.runner import (
     EXIT_UNKNOWN,
     Entry,
@@ -548,6 +548,204 @@ def test_restart_kills_orphaned_tree_by_latch(harness):
         except OSError:
             pass
         leader.process.wait()
+
+
+def test_uncertain_scope_holds_only_its_own_units(harness):
+    class Process:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    class Scope:
+        process = Process()
+
+        def __init__(self, uncertain):
+            self.uncertain = uncertain
+
+        def release(self):
+            return Disposition("uncertain" if self.uncertain else "gone")
+
+    pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
+    runner = harness.runner(pool=pool, launch=lambda argv, **kw: Scope(argv[-1] == "uncertain"))
+    first = harness.submit(runner, ["fake", "uncertain"], weight=2, request_id="uncertain-scope")
+    wait_state(harness.store, first, "unknown")
+    wait_until(lambda: runner.status()["used"] == 2, "uncertain lease to retain two units")
+    assert harness.store.get(first)["custody"] == "uncertain"
+
+    second = harness.submit(runner, ["fake", "clean"], weight=1, request_id="clean-scope")
+    assert runner.await_run(second, timeout=10)["record"]["state"] == "settled"
+    wait_until(lambda: runner.status()["used"] == 2, "only the uncertain lease to remain")
+    assert pool.snapshot()["pool"]["held_units"] == 2
+
+
+def test_restart_restores_exact_lease_for_unresolved_scope(harness):
+    store = harness.store
+    record = harness.record(store, "unresolved-restart", ["fake", "old"], "c1", "running",
+                            units=2, started_at=time.time())
+    store.put(record)
+    latches = harness.state / "latches"
+    latches.mkdir(exist_ok=True)
+    (latches / "unresolved-restart.json").write_text(
+        json.dumps({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}))
+
+    class Process:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    class Scope:
+        process = Process()
+
+        def release(self):
+            return Disposition("gone")
+
+    for _ in range(2):
+        runner = harness.runner(store=harness.new_store(), launch=lambda argv, **kw: Scope())
+        assert runner.status()["used"] == 2
+        assert runner.await_run("unresolved-restart")["record"]["custody"] == "uncertain"
+        clean = harness.submit(runner, ["fake", "new"], weight=1)
+        assert runner.await_run(clean, timeout=10)["record"]["state"] == "settled"
+        assert runner.status()["used"] == 2
+        harness.retire(runner)
+
+
+def test_restart_does_not_restore_lease_after_latch_cleanup(harness, monkeypatch):
+    store = harness.store
+    record = harness.record(store, "cleaned-restart", ["fake", "old"], "c1", "unknown",
+                            units=2, custody="uncertain", outcome="lost_in_restart")
+    store.put(record)
+    latches = harness.state / "latches"
+    latches.mkdir(exist_ok=True)
+    latch = latches / "cleaned-restart.json"
+    latch.write_text("unresolved")
+
+    def cleanup(path, grace, census_fn):
+        assert path == str(latch)
+        latch.unlink()
+        return Disposition("gone")
+
+    monkeypatch.setattr("herzchen.fleet.runner.runner.custody.resume_cleanup", cleanup)
+    first = harness.runner(store=harness.new_store())
+    assert first.status()["used"] == 0 and not latch.exists()
+    harness.retire(first)
+    second = harness.runner(store=harness.new_store())
+    assert second.status()["used"] == 0
+    harness.retire(second)
+
+
+def test_peer_without_parent_credential_needs_own_lease(harness):
+    gate = threading.Event()
+
+    class Process:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            assert gate.wait(10)
+            return 0
+
+    class Scope:
+        process = Process()
+
+        def observe(self, snap):
+            return {4242: "peer-birth"}
+
+        def release(self):
+            return Disposition("gone")
+
+        def terminate(self, grace):
+            gate.set()
+            return Disposition("gone")
+
+    pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
+    runner = harness.runner(pool=pool, launch=lambda argv, **kw: Scope(),
+                            census_fn=lambda: {4242: Proc(4242, 11, 11, "peer-birth")})
+    try:
+        first = harness.submit(runner, ["fake", "parent"], weight=3, request_id="parent-scope")
+        wait_until(lambda: first in runner._leases and runner._leases[first].custody is not None,
+                   "parent custody to start")
+        response = runner.submit({"argv": ["fake", "unrelated"], "cwd": str(harness.cwd),
+                                  "request_id": "unrelated-peer"}, peer_pid=4242)
+        assert response["ok"] and response["nested"] is False
+        assert harness.store.get("unrelated-peer")["state"] == "queued"
+        assert harness.store.get("unrelated-peer")["units"] == 1
+        token = runner._leases[first].parent_token
+        malformed = runner.submit({"argv": ["fake", "malformed"], "cwd": str(harness.cwd),
+                                   "request_id": "malformed-peer", "parent_run_id": first,
+                                   "parent_token": "\u00e9"}, peer_pid=4242)
+        assert malformed["ok"] and malformed["nested"] is False
+        assert harness.store.get("malformed-peer")["state"] == "queued"
+        linked = runner.submit({"argv": ["fake", "linked"], "cwd": str(harness.cwd),
+                                "request_id": "linked-peer", "parent_run_id": first,
+                                "parent_token": token}, peer_pid=4242)
+        assert linked["ok"] and linked["nested"] is True
+        assert harness.store.get("linked-peer")["units"] == 0
+        gate.set()
+        wait_until(lambda: first not in runner._leases, "parent lease to finish")
+        stale = runner.submit({"argv": ["fake", "stale"], "cwd": str(harness.cwd),
+                               "request_id": "stale-peer", "parent_run_id": first,
+                               "parent_token": token}, peer_pid=4242)
+        assert stale["ok"] and stale["nested"] is False
+        assert harness.store.get("stale-peer")["units"] == 1
+    finally:
+        gate.set()
+
+
+def test_immediate_child_waits_for_parent_launch_identity(harness):
+    gate = threading.Event()
+    entered = threading.Event()
+    child_response = {}
+
+    class Process:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            assert gate.wait(10)
+            return 0
+
+    class Scope:
+        process = Process()
+
+        def release(self):
+            return Disposition("gone")
+
+        def terminate(self, grace):
+            gate.set()
+            return Disposition("gone")
+
+    runner = None
+
+    def launch(argv, **kwargs):
+        if argv[-1] == "parent":
+            env = kwargs["env"]
+
+            def child():
+                child_response.update(runner.submit(
+                    {"argv": ["fake", "child"], "cwd": str(harness.cwd), "request_id": "immediate-child",
+                     "parent_run_id": env["RUNNER_PARENT_RUN_ID"],
+                     "parent_token": env["RUNNER_PARENT_TOKEN"]}, peer_pid=4242))
+
+            threading.Thread(target=child, daemon=True).start()
+            assert entered.wait(5)
+        return Scope()
+
+    runner = harness.runner(launch=launch)
+    original = runner._parent_lease
+
+    def observed(request):
+        if request.get("request_id") == "immediate-child":
+            entered.set()
+        return original(request)
+
+    runner._parent_lease = observed
+    try:
+        harness.submit(runner, ["fake", "parent"], weight=3, request_id="immediate-parent")
+        wait_until(lambda: child_response, "immediate child submit response")
+        assert child_response["ok"] and child_response["nested"] is True
+        assert harness.store.get("immediate-child")["units"] == 0
+    finally:
+        gate.set()
 
 
 def test_git_commit_identity_clean_dirty_and_not_a_repo(harness):
