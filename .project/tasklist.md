@@ -26,7 +26,7 @@ No PL7 branch archive: the named branches from the packaged tasklist are Astrid 
 ## Current run status
 
 - PL1: merged at `964120e`; setsid escapee cleanup and its existing acceptance test are preserved.
-- PL2: ready to start. PL3 and PL4 depend on PL1; PL5 depends on PL2–PL4; PL6 depends on PL1–PL5.
+- PL2: merged at `eec2b98`; 19/99 direct legacy deletion lines credited. PL3 is in rework after Astra found native scope handoff and metadata-reader settlement gaps. PL4 depends on PL1 and may proceed independently; PL5 waits for PL2–PL4; PL6 waits for PL1–PL5.
 
 ## Canon changes to recheck before edits
 

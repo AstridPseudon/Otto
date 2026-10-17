@@ -11,6 +11,7 @@ Base: canon/main eb9b6cd. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T20:20:00Z | DIRECTION | decision received | — | — | Orchestrator directs PL1 to keep the existing setsid escapee test expectation unchanged and retain ancestry/census discovery and birth-fenced per-PID signalling for escaped workers. Same-group descendants may be removed where `killpg` makes that work redundant. Deletion budget fixed at 99 direct legacy lines; orchestrator will add PROCLIFE and that budget to PLAN.md §14.
 
 2026-10-17T20:24:47Z | PL1 | merged 964120e | +254/-24 | 12 targeted regressions passed; full `tests/test_fleet_custody.py` 27 passed/14 failed (`needs the gate`) | Preserved the existing setsid escapee test unchanged. Birth-fenced ancestry discovery and per-PID signalling remain for escaped descendants; same-group members use `killpg`. Astra reviewed the reworked diff and found no concrete defect. Correction: the earlier b70c817 interim tally of 22 target lines deleted does not apply after D19 rework; this merge retires no complete candidate legacy block, so budget credit is 0. The 24 net removed lines are not counted as candidate cleanup.
+2026-10-17T20:33:50Z | PL2 | merged eec2b98 | +315/-33 | `tests/test_runner.py` 9 passed/11 failed; `tests/test_runner_cli.py` 3 passed/6 failed (`needs the gate`); targeted runner regressions 5 passed and CLI credential regression 1 passed | Removed the 19 measured census-based nesting lines; authenticated run token is checked against one active parent lease, with launch synchronization, malformed-token rejection, and exact lease restoration after uncertain cleanup/restart. Astra re-reviewed through 8d6a1e8 and found no remaining concrete defect. Manager reran both focused files; Unix socket bind restrictions and unavailable process census (`ps`) account for gate failures. Direct deletion credit: 19/99.
 
 ## Xhard review
 
@@ -35,9 +36,22 @@ PL1 implementation/test files merged in `964120e`:
 - `src/herzchen/fleet/custody.py`
 - `tests/test_fleet_custody.py`
 
-Merged implementation deletions credited toward the agreed budget: 0. PL1 merged `+254/-24`, but no complete candidate legacy block was retired. The agreed 99-line Otto budget is still outstanding; the Astrid package's approximately 4,000-line ambition does not map to this clone.
+PL2 implementation/test files merged in `eec2b98`:
 
-Current committed branch diff from `eb9b6cd`: 10 files, +408/-24 (8 project-package files and the two PL1 files above).
+- `src/herzchen/fleet/runner/client.py`
+- `src/herzchen/fleet/runner/runner.py`
+- `tests/test_runner.py`
+- `tests/test_runner_cli.py`
+
+Merged implementation deletions credited toward the agreed budget: 19/99 (PL1: 0; PL2: 19). PL1's 24 net removed lines did not retire a complete candidate legacy block. The Astrid package's approximately 4,000-line ambition does not map to this clone.
+
+Current committed branch diff from `eb9b6cd`: 14 files, +728/-57 (8 project-package files, two PL1 files, and four PL2 files).
+
+## Gate checks
+
+- `tests/test_runner.py`: 11 failures need the gate. Several require Unix-domain socket bind; process lifecycle/capacity assertions also require `ps` census so Custody can prove settlement. The file had 9 passing tests in the manager rerun; focused PL2 regressions passed separately in the worker's test selection.
+- `tests/test_runner_cli.py`: 6 failures need the gate due Unix-domain socket bind (`EPERM`); 3 tests passed in the manager rerun.
+- PL3 `tests/test_worker_custody.py`: 13 failures need the gate because setup binds an AF_UNIX socket; 4 passed. `tests/test_host_contract.py`: 2 process-cleanup tests need the gate because `ps` is unavailable; 38 passed and the PL3 cleanup regression passed separately.
 
 ## Final project review
 
