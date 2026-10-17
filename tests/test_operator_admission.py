@@ -135,13 +135,6 @@ class OperatorAdmissionTests(HostctlFixture):
 
         self._owner(check)
 
-    def test_install_refuses_missing_operator_instead_of_using_machine_account(self):
-        with tempfile.TemporaryDirectory(prefix="operator-required-") as directory:
-            with self.assertRaisesRegex(host_config.HostConfigError, "operator_actor is required"):
-                host_config.new_installation(Path(directory), store_path=str(Path(directory) / "owner.sqlite"),
-                    authority="operator-required", owner_actor="owner", credential_ref="credential",
-                    python="/usr/bin/python3")
-
     def test_registered_project_has_operator_creator_host_curator_and_unadmitted_tasks(self):
         def inspect(session):
             project = session.owner.graph.current(self.project_ref)

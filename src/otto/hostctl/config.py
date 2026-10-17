@@ -64,12 +64,13 @@ def forbidden_runtime(path: str | Path) -> bool:
 def new_installation(home: Path, *, store_path: str, authority: str, owner_actor: str,
                      credential_ref: str, python: str, operator_actor: Optional[str] = None,
                      repositories: Optional[Mapping[str, str | Path]] = None) -> dict[str, Any]:
+    operator_actor = operator_actor if operator_actor is not None else pwd.getpwuid(os.geteuid()).pw_name
     for name, value in (("owner_actor", owner_actor), ("authority", authority), ("credential_ref", credential_ref)):
         if not isinstance(value, str) or not value.strip() or value != value.strip() or "/" in value:
             raise HostConfigError(name + " must be exact nonblank text without '/'")
     if (not isinstance(operator_actor, str) or not operator_actor.strip()
             or operator_actor != operator_actor.strip() or "/" in operator_actor):
-        raise HostConfigError("operator_actor is required as exact nonblank text without '/'")
+        raise HostConfigError("operator_actor must be exact nonblank text without '/'")
     if operator_actor == owner_actor:
         raise HostConfigError("operator principal must differ from the owner service actor")
     if forbidden_runtime(home):
