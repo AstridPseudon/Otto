@@ -19,6 +19,7 @@ import sys
 from typing import Any, Mapping, Optional, Sequence
 
 from herzchen.authoring.sessions import InvalidSessionError
+from herzchen.contracts import ResourceRef
 
 from .assessment import OttoAssessment
 from .intake import OttoPortfolio, PortfolioError
@@ -193,6 +194,8 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
 
     status = sub.add_parser("status", help="portfolio status: projects, tasks, pool, managers, lab count and slot kinds")
     status.add_argument("--portfolio-ref", help="canonical portfolio ResourceRef as JSON (default: this host's portfolio)")
+    status.add_argument("--project-ref", action="append", default=[],
+                        help="required with --friction; authorized work.project ResourceRef JSON (repeat for up to 32 projects)")
     status.add_argument("--friction", action="store_true", help="include a generated 30-day friction summary from authorized retained events")
     _add_format(status)
 
@@ -1431,23 +1434,46 @@ def _status_command(args: argparse.Namespace, session: Any, labs: Any,
     from .observability_views import friction_from_rows
     if observability_views is None or observability_grant is None or result.get("outcome") not in {None, "read"}:
         result["friction"] = friction_from_rows((), complete=False)
+        result["friction"]["coverage"] = "partial-or-inaccessible"
+        return result
+    try:
+        requested = tuple(_parse_ref(value, "project_ref") for value in args.project_ref)
+        grant_ids = set(getattr(observability_grant, "project_ids", ()))
+        visible = {item["project_ref"]["id"]: item["project_ref"] for item in result.get("projects", ())
+                   if isinstance(item.get("project_ref"), Mapping)}
+        selected = tuple(ref for ref in requested if ref.get("id") in visible and ref.get("id") in grant_ids
+                         and ref.get("authority") == visible[ref["id"]].get("authority")
+                         and ref.get("kind") == "work.project")
+    except (AttributeError, TypeError, ValueError):
+        selected = ()
+        requested = ()
+    if not selected or len(selected) != len(requested):
+        result["friction"] = friction_from_rows((), complete=False)
+        result["friction"]["coverage"] = "partial-or-inaccessible"
+        result["friction"]["scope_project_refs"] = [ref.to_dict() if hasattr(ref, "to_dict") else ref for ref in selected]
         return result
     end = datetime.now(timezone.utc)
-    refs = [row["project_ref"] for row in result.get("projects", ()) if isinstance(row.get("project_ref"), Mapping)]
+    refs = [ref.to_dict() if hasattr(ref, "to_dict") else ref for ref in selected]
     try:
         events = observability_views.read(
             "overview", projects=refs,
             from_at=(end - timedelta(days=30)).isoformat(), to_at=end.isoformat(),
             limit=200, grant=observability_grant,
+            actor=getattr(getattr(observability_grant, "principal", None), "actor", None),
         )
         coverage = events.get("coverage", {})
-        complete = (events.get("outcome") == "read" and not events.get("continuation", {}).get("has_more")
+        all_projects = set(visible)
+        complete = (set(ref.get("id") for ref in selected) == all_projects
+                    and events.get("outcome") == "read" and not events.get("continuation", {}).get("has_more")
                     and not events.get("continuation", {}).get("partial")
                     and coverage.get("lag") == 0)
         result["friction"] = friction_from_rows(events.get("rows", ()), complete=complete)
         result["friction"]["coverage"] = "complete" if complete else "partial-or-inaccessible"
+        result["friction"]["scope_project_refs"] = refs
     except (PermissionError, ValueError, OSError):
         result["friction"] = friction_from_rows((), complete=False)
+        result["friction"]["coverage"] = "partial-or-inaccessible"
+        result["friction"]["scope_project_refs"] = refs
     return result
 
 
@@ -1663,11 +1689,13 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
     from .document_editor_host import owner_editor_host
     words = list(argv)
     editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
+    observability_views, observability_grant = _owner_observability(session, words)
     out = StringIO()
     try:
         with redirect_stdout(out):
             code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session,
-                        bound_actor=session.owner.owner_actor.actor)
+                        bound_actor=session.owner.owner_actor.actor,
+                        observability_views=observability_views, observability_grant=observability_grant)
     except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
         return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
     text = out.getvalue()
@@ -1675,6 +1703,45 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
         return json.loads(text)
     except ValueError:
         return {"outcome": "read" if code == 0 else "error", "text": text}
+
+
+def _owner_observability(session: Any, argv: Sequence[str]) -> tuple[Any, Any]:
+    """Compose history reads from the exact finite project grant already issued to this owner call."""
+    actor = getattr(getattr(session, "owner", None), "owner_actor", None)
+    if actor is None:
+        return None, None
+    args = build_parser(bound_actor=actor.actor).parse_args(list(argv))
+    if getattr(args, "actor", actor.actor) != actor.actor:
+        return None, None
+    if args.command == "events":
+        requested = args.project_ref
+    elif args.command == "show" and args.show_command == "history":
+        requested = args.project_ref
+    elif args.command == "status" and args.friction:
+        requested = args.project_ref
+    else:
+        return None, None
+    source_grant = getattr(session.owner, "project_read_grant", None)
+    from herzchen.contracts import AuthenticatedActor
+    from .herzchen_binding import ProjectReadGrant
+    if (not isinstance(actor, AuthenticatedActor) or not isinstance(source_grant, ProjectReadGrant)
+            or source_grant.principal != actor
+            or not requested or len(requested) > 32):
+        return None, None
+    try:
+        refs = tuple(_parse_ref(value, "project_ref") for value in requested)
+        if len({ref.get("id") for ref in refs}) != len(refs) or any(
+                ref.get("kind") != "work.project" or not source_grant.allows(ResourceRef.from_dict(ref))
+                for ref in refs):
+            return None, None
+        from herzchen.kernel.project_history import ProjectHistoryGrant
+        from .observability_views import ObservabilityViews
+        grant = ProjectHistoryGrant(actor, tuple(ref["id"] for ref in refs),
+                                    source_grant.policy_source, source_grant.policy_revision)
+        reader = session.store.project_history_reader(grant=grant)
+        return ObservabilityViews(reader), grant
+    except (AttributeError, TypeError, ValueError, PermissionError):
+        return None, None
 
 
 def _client_options(tokens: list[str]) -> tuple[Optional[str], Optional[str], list[str]]:
