@@ -21,6 +21,8 @@ from herzchen.contracts import AuthenticatedActor
 from otto.agents.gateway import OwnerDueRecordAttemptCapture
 from otto.agents.herzchen_adapter import HerzchenCodexAdapter
 from otto.portfolio.identity_context import HostCallerBinding
+from otto.portfolio.owner_readers import assignment_reader, mandate_reader
+from otto.portfolio.operating_brief import OperatingBriefError, _require_setup_content_pin
 from tests import test_execution_application as application
 
 
@@ -117,6 +119,57 @@ class FreshWorkerAdmissionTests(unittest.TestCase):
  def fixture(self):
   f=application.ExecutionApplicationTests();f.setUp();self.addCleanup(f.doCleanups)
   handles=f.app.assign_worker(**f.request());return f,handles['schedule_id']
+
+ def test_ordinary_worker_start_preserves_assignment_and_mandate_revisions(self):
+  f,schedule=self.fixture();due=f.app._read(schedule)
+  self.assertEqual(f.app.start(schedule_id=schedule)['outcome'],'succeeded')
+  assignment=f.app.assignments.get(ResourceRef.from_dict(due.assignment_ref))
+  mandate=f.app.portfolio.operations.content_port.read(ResourceRef.from_dict(due.target['mandate_ref']))
+  self.assertEqual(assignment.ref.to_dict(),due.assignment_ref)
+  self.assertEqual(mandate['revision'],due.target['mandate_ref']['revision'])
+
+ def test_later_identical_mandate_revision_has_owner_content_proof(self):
+  f,schedule=self.fixture();due=f.app._read(schedule);pin=due.target['mandate_ref']
+  document_ref=ResourceRef(pin['authority'],pin['kind'],pin['id'])
+  observed=f.owner.content.read(document_ref)
+  document=ContentDocument.from_dict(observed['document'])
+  revision=ContentRevision(document.ref,'rev-2',observed['revision']['content'],f.actor,
+      parent_revision=pin['revision'])
+  context=TransactionContext(f.actor,'identical-mandate-content','a'*64,
+      expected_revision=pin['revision'])
+  f.owner.content.execute(f.owner.content.build_append_revision(context,document,revision))
+  reader=mandate_reader(f.app.portfolio.operations,due.target['project_ref'],pin)
+  current=reader({key:pin[key] for key in ('authority','kind','id')})
+  self.assertEqual(current['ref']['revision'],'rev-2')
+  self.assertTrue(current['mandate_pin_content_matches'])
+  self.assertEqual(f.app.start(schedule_id=schedule)['outcome'],'succeeded')
+
+ def test_changed_mandate_brief_refuses_start_with_reactivation_command(self):
+  f,schedule=self.fixture();due=f.app._read(schedule);pin=due.target['mandate_ref']
+  document_ref=ResourceRef(pin['authority'],pin['kind'],pin['id'])
+  observed=f.owner.content.read(document_ref)
+  document=ContentDocument.from_dict(observed['document'])
+  content=dict(observed['revision']['content'])
+  content['brief']={'role':'worker','mandate':'Changed worker mandate'}
+  revision=ContentRevision(document.ref,'rev-2',content,f.actor,parent_revision=pin['revision'])
+  context=TransactionContext(f.actor,'changed-mandate-content','b'*64,
+      expected_revision=pin['revision'])
+  f.owner.content.execute(f.owner.content.build_append_revision(context,document,revision))
+  refused=f.app.start(schedule_id=schedule)
+  self.assertEqual(refused['outcome'],'partial')
+  self.assertIn('mandate.brief',refused['error']['message'])
+  self.assertIn('operating-setup activate',refused['error']['message'])
+  self.assertEqual(f.provider.calls,[])
+
+ def test_changed_assignment_generation_is_rejected_by_content_pin(self):
+  f,schedule=self.fixture();due=f.app._read(schedule);pin=due.assignment_ref
+  f.app.assignments.reassign(ResourceRef.from_dict(pin),principal='replacement-worker',
+      expected_generation=due.generation,logical_request_key='changed-assignment',actor=f.actor)
+  reader=assignment_reader(f.app.portfolio.operations,pin)
+  current=reader({key:pin[key] for key in ('authority','kind','id')})
+  self.assertFalse(current['assignment_pin_content_matches'])
+  with self.assertRaisesRegex(OperatingBriefError,'assignment.generation.*operating-setup activate'):
+   _require_setup_content_pin(current['ref'],pin,current,'assignment')
  def test_live_authorized_worker_context_before_result_and_no_initializer_admission(self):
   f,schedule=self.fixture();original=OwnerDueRecordAttemptCapture.record_delivery_admission;seen=[]
   def capture(owner_capture,key,session,turn,stamp):

@@ -265,15 +265,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
         project = f.owner.graph.set_lifecycle(f.project.ref, Lifecycle.ACTIVE,
             logical_request_key="owner-project-advanced", actor=f.actor)
         self.assertNotEqual(project.ref.to_dict(), before["target"]["project_ref"])
-        with patch.object(f.app, "_manager_project_reference", side_effect=lambda due, assignment: due):
-            failed = f.app.start(schedule_id=schedule)
-        self.assertEqual(failed["outcome"], "partial", failed)
-        self.assertEqual(failed["error"]["message"], "project does not match the pinned canonical reference")
-        self.assertEqual(f.port.read_due(schedule), before)
-        self.assertEqual(len(f.provider.calls), self.provider_calls)
-        # This public same-occurrence recovery is the real retry of the previous
-        # pre-runtime failure, through canonical briefing and gateway/provider.
-        result = f.app.recover(schedule_id=schedule, execute=True)
+        result = f.app.start(schedule_id=schedule)
         self.assertEqual(result["outcome"], "succeeded", result)
         after = f.port.read_due(schedule)
         self.assertEqual(after["target"]["project_ref"], project.ref.to_dict())
