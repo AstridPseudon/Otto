@@ -142,6 +142,18 @@ class OperatorAdmissionTests(HostctlFixture):
         task = self._owner(lambda session: session.owner.graph.current(task_ref))
         self.assertNotIn("work.admission", task.payload.get("metadata_namespaces") or {})
 
+    def test_legacy_owner_save_selector_uses_bound_curator(self):
+        save = Path(self.home) / "owner-selector-save.json"
+        save.write_text(json.dumps({"project": {"title": "Owner selector", "outcome": "Saved"},
+                                    "tasks": []}))
+        code, result = self._ottoctl("portfolio", "--portfolio", PORTFOLIO, "save",
+                                     str(save), "--actor", "owner")
+        self.assertEqual((code, result["outcome"]), (0, "saved"), result)
+        project = self._owner(lambda session: session.owner.graph.current(
+            ResourceRef.from_dict(result["project_ref"])))
+        self.assertEqual(project.payload["provenance"]["creator"]["actor"], self.operator)
+        self.assertEqual(project.payload["provenance"]["curator"]["actor"], "otto-test-owner")
+
     def test_owner_proves_presence_writes_as_operator_and_logs_once(self):
         code, answer = self._admit()
         self.assertEqual((code, answer["outcome"]), (0, "admitted"), answer)
@@ -191,6 +203,7 @@ class OperatorAdmissionTests(HostctlFixture):
              "--revision", self.task_ref.revision, "--review-ref", json.dumps(self.review_ref.to_dict()),
              "--request-key", "host-admit"),
             ("--host", "claude-code", "portfolio", "save", str(save), "--actor", self.operator),
+            ("--host", "claude-code", "portfolio", "save", str(save), "--actor", "owner"),
             ("portfolio", "--portfolio", PORTFOLIO, "save", str(save), "--actor", self.operator),
         )
         for request in requests:
