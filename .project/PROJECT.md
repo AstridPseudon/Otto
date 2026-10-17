@@ -12,6 +12,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:07Z | PK3R | merged 0bcccd9700825fa897a77a5b61ab1071bab7694d | +211/-17 | test_host_contract.py 44 passed/23 subtests; test_hostctl_bundle.py 28 passed/3 subtests; test_claude_binding.py 10 passed/9 subtests and 8 need the gate; test_execution_application.py 28 need the gate; diff --check passed | New registrations pin role guidance; inert pending PK3 selections persist that pin before activation. Removed the remaining executable model/reasoning defaults (including Claude reasoning); omissions fail closed. Astra's final fix re-review found no further defect.
 2026-10-17T21:07Z | PK3R-UX | merged c5f6ab876679aa23a98aa44a6a6b3bfa1a653b9d | +3/-1 | test_host_contract.py 44 passed/23 subtests; diff --check passed | The missing model-binding refusal now carries a concrete next_action. Astra reviewed the narrow fix and found no defect.
 2026-10-17T21:19Z | PK3R-UX2 | merged a192e15103b8835a566b9a12e6e74cc9bce12f43 | +60/-13 | isolated registration-pin regression 1 passed; diff --check passed; full bundle file stalled after 24 passes; CLI owner setup needs the gate | Scoped role/profile pin refusals now retain next_action through the owner service and direct CLI error envelopes. No deletions.
+2026-10-17T21:26Z | PK3R-UX3 | merged 5832ee02207b07cf692d12edb43f01a168f7aedd | +36/-9 | test_host_neutral_defaults.py 19 passed; test_hostctl_bundle.py 29 passed/3 subtests; diff --check passed | Unknown, unqualified, unsupported and launcher-drift profile refusals now carry next_action through both error envelopes. No deletions.
 
 ## Questions for the orchestrator
 
@@ -24,9 +25,7 @@ Reviewed the merged project diff against the goal and deletion budget. Astra fou
 
 **Remaining scope:** The original PK1–PK5 tasks are merged, and PK5's cold-agent readback is recorded below. The profile table, duplicate Megado defaults, and static run-template bindings were removed in PK3; the approved §15 change preserves the test's intent by resolving all seven bindings from the pinned profile pack.
 
-The final Astra review then found that malformed or stale registration pins still lost `next_action` at the service and CLI exception boundaries. PK3R-UX2 fixes this with a scoped registration-pin exception and socket-free serialization checks. The isolated acceptance check passed; the broader bundle run stalled after 24 passes, and CLI owner setup remains a gate check.
-
-The latest whole-project Astra review found one remaining new refusal gap: explicit model-profile selection errors in `host_profiles.py` (unknown, unqualified, unsupported, or launcher qualification drift) lack `next_action` in both envelopes. PK3R-UX3 is scoped to add recovery guidance while preserving those host refusals; the final review will run again after it merges.
+The final Astra review then found two new refusal gaps in turn. PK3R-UX2 adds scoped registration-pin recovery guidance; PK3R-UX3 adds guidance for unknown, unqualified, unsupported and launcher-drift profile selections. Both preserve the refusal and the host boundary, and their CLI/service envelope checks are socket-free. The isolated PK3R-UX2 check passed; the later complete `test_hostctl_bundle.py` run passed all 29 tests and three subtests. The full CLI owner fixture remains a gate check.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
