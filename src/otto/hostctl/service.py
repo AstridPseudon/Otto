@@ -47,6 +47,14 @@ _RELAYED = object()
 _DEFAULT_PRESENCE = object()
 
 
+def _owner_exception_result(exc: Exception) -> dict[str, Any]:
+    """Build the owner lane's error envelope for a dispatch exception."""
+    from .register import RegistrationPinError, refusal_result
+    return (refusal_result(exc) if isinstance(exc, RegistrationPinError) else
+            {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
+             "provider_called": False})
+
+
 def owner_lane(home: Path) -> Path:
     return Path(home) / "owner-lane"
 
@@ -337,8 +345,7 @@ class OwnerService:
                 lanes.mark_pending(lane, token, "processing", lane_principal=who)
                 result = handler(who, request, token, lane)
             except Exception as exc:  # report, never crash the owner
-                result = {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
-                          "provider_called": False}
+                result = _owner_exception_result(exc)
             except KeyboardInterrupt:
                 raise
             except BaseException as exc:  # a request's SystemExit (e.g. argparse) must not close the shared owner

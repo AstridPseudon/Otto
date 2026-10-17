@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -319,8 +320,23 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         declared = plan({**bundle, "run": {**bundle["run"],
             "role_pack": registration["configuration"]["role_pack"]}}, profile=selected, **kwargs)
         self.assertEqual(declared["configuration"]["role_pack"], registration["configuration"]["role_pack"])
-        with self.assertRaisesRegex(ValueError, "role pack pin"):
+        with self.assertRaisesRegex(ValueError, "role pack pin") as refused:
             plan({**bundle, "run": {**bundle["run"], "role_pack": bad_pin}}, profile=selected, **kwargs)
+        from otto.hostctl.register import refusal_result
+        serialized = refusal_result(refused.exception)
+        self.assertEqual(serialized["error"], {"code": "ValueError", "message": str(refused.exception)})
+        self.assertIs(serialized["provider_called"], False)
+        self.assertIn("correct the stale or malformed pin", serialized["next_action"])
+        from otto.hostctl import cli, service
+        owner_serialized = service._owner_exception_result(refused.exception)
+        self.assertEqual(owner_serialized, serialized)
+        output = io.StringIO()
+        with mock.patch.object(cli, "client_request", side_effect=refused.exception), \
+                mock.patch("sys.stdout", output):
+            exit_code = cli.main(["--home", str(self.root.parent), "project", "register",
+                                  "--bundle", str(self.root)])
+        self.assertEqual(exit_code, cli.EXIT_ERROR)
+        self.assertEqual(json.loads(output.getvalue()), serialized)
         changed_facts = {**facts, "profile_selection": {**facts["profile_selection"], "role_pack": bad_pin}}
         host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
         with self.assertRaisesRegex(ValueError, "role pack pin"):
