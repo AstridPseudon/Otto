@@ -1198,14 +1198,16 @@ def test_reused_pgid_never_signalled(tmp_path):
         _reap_tree(bystander)
 
 
-def test_private_group_scope_never_signals_an_ancestry_or_tag_bystander(monkeypatch):
+def test_private_group_scope_never_signals_stale_ancestry_or_tag_bystander(monkeypatch):
     leader = custody.Proc(41001, 1, 41001, "leader")
-    escaped = custody.Proc(41002, leader.pid, 41002, "escaped")
+    recycled_parent = custody.Proc(41004, leader.pid, 41004, "new-birth")
+    escaped = custody.Proc(41002, recycled_parent.pid, 41002, "escaped")
     tagged = custody.Proc(41003, 1, 41003, "tagged")
-    snapshots = [{leader.pid: leader, escaped.pid: escaped, tagged.pid: tagged}]
+    snapshots = [{info.pid: info for info in (leader, recycled_parent, escaped, tagged)}]
     process = mock.Mock(pid=leader.pid)
     process.poll.return_value = None
-    owner = custody.Custody(process, leader.pid, leader.birth, {leader.pid: leader.birth},
+    owner = custody.Custody(process, leader.pid, leader.birth,
+                            {leader.pid: leader.birth, recycled_parent.pid: "old-birth"},
                             census_fn=lambda: snapshots[0])
     monkeypatch.setenv("OTTO_HEAVY_LEASE", "same-as-owner")
     with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
@@ -1216,7 +1218,29 @@ def test_private_group_scope_never_signals_an_ancestry_or_tag_bystander(monkeypa
     assert tagged.pid not in owner.known
 
 
-def test_recorded_escaped_identity_blocks_settlement_without_authorizing_pid_signal(tmp_path):
+def test_observed_setsid_descendant_gets_birth_fenced_pid_signal():
+    leader = custody.Proc(41101, 1, 41101, "leader")
+    grouped_child = custody.Proc(41102, leader.pid, leader.pgid, "child")
+    escapee = custody.Proc(41103, grouped_child.pid, 41103, "escapee")
+    snapshot = {info.pid: info for info in (leader, grouped_child, escapee)}
+    process = mock.Mock(pid=leader.pid)
+    process.poll.return_value = None
+    owner = custody.Custody(process, leader.pgid, leader.birth, {leader.pid: leader.birth},
+                            census_fn=lambda: snapshot)
+
+    assert escapee.pid in owner.observe(), "live tracked parent binds the escaped birth identity"
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        owner._send(signal.SIGTERM)
+    killpg.assert_called_once_with(leader.pgid, signal.SIGTERM)
+    kill.assert_called_once_with(escapee.pid, signal.SIGTERM)
+
+    snapshot[escapee.pid] = custody.Proc(escapee.pid, 1, escapee.pgid, "recycled")
+    with mock.patch.object(custody.os, "kill") as kill:
+        owner._send(signal.SIGKILL)
+    kill.assert_not_called()
+
+
+def test_recorded_escaped_identity_blocks_settlement_and_gets_birth_fenced_pid_signal(tmp_path):
     latch = _write_latch(tmp_path / "scope.json", 42001, "leader",
                          {42001: "leader", 42002: "escaped"})
     escaped = custody.Proc(42002, 1, 42002, "escaped")
@@ -1226,7 +1250,7 @@ def test_recorded_escaped_identity_blocks_settlement_without_authorizing_pid_sig
         verdict = owner.terminate(0)
     assert not verdict.gone
     assert os.path.exists(latch)
-    kill.assert_not_called()
+    kill.assert_any_call(escaped.pid, signal.SIGTERM)
     killpg.assert_not_called()
     snapshot.clear()
     snapshot[42003] = custody.Proc(42003, 1, 42003, "unrelated")

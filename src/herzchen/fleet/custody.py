@@ -1,4 +1,4 @@
-"""Private process-group custody with a birth-fenced recovery record.
+"""Private process-group custody with birth-fenced escaped descendant cleanup.
 
 A caller that launches a command through ``Custody.launch`` owns its private process group.
 The rules for group signal authority and settlement are:
@@ -12,12 +12,13 @@ The rules for group signal authority and settlement are:
 * The census is evidence only when it is non-empty and contains this very process. An empty or missing
   census is *uncertain*, never "all gone". Only a clean census with nothing of ours left is ``gone``.
 * A census gap while a group is live latches doubt; a later clean census cannot erase that gap.
+* Descendants observed through a live birth-matched parent can be recorded by identity. Escaped
+  descendants are signalled by pid only while their recorded birth still matches a fresh census.
 * The latch records launch intent before spawning and group identity before cleanup signals. A crashed
   cleanup resumes with ``resume_cleanup`` and the latch is removed only on ``gone``.
 
-An accidentally detached process that was not recorded while it belonged to the group is outside this
-scope's evidence. An already recorded escaped identity keeps settlement unresolved, but is not signalled
-through ancestry or a bare pid; it needs its own private-group scope for cleanup.
+An accidentally detached process that was never observed through a live tracked parent is outside this
+scope's evidence. An environment tag alone never grants signal authority.
 """
 from __future__ import annotations
 
@@ -143,6 +144,7 @@ class Custody:
         self._census = lambda: census_fn() or None     # an empty census is no census
         self.doubt = doubt
         self.state = state
+        self._persist_ok = True
 
     # -- birth -------------------------------------------------------------------------------
     @classmethod
@@ -193,8 +195,10 @@ class Custody:
                                            "members": {str(pid): birth for pid, birth in self.known.items()},
                                            "doubt": self.doubt})
             self.state = state
+            self._persist_ok = True
         except OSError:
             self.doubt = self.doubt or "cleanup latch could not be written"
+            self._persist_ok = False
 
     # -- census ------------------------------------------------------------------------------
     def _live(self, snap: Mapping[int, Proc], pid: int) -> bool:
@@ -221,36 +225,61 @@ class Custody:
         return "unproven" if members else "empty"
 
     def observe(self, snap: Optional[Mapping[int, Proc]] = None) -> Optional[dict]:
-        """Record proven group members and return live recorded identities.
+        """Record group members and descendants reached through birth-matched live parents.
 
         ``None`` means the census failed and latches doubt for this scope.
-        A parent pid or environment tag alone never grants signal authority.
+        A bare parent pid or environment tag alone never grants signal authority.
         """
         snap = self._census() if snap is None else snap
         if snap is None:
             self._record_census_gap()
             return None
         before = len(self.known)
+        prior_doubt = self.doubt
         if self._group_state(snap) == "ours":
             for info in snap.values():
                 if info.pgid == self.pgid and not info.zombie and info.pid not in self.known:
                     self.known[info.pid] = info.birth
-        if len(self.known) != before:
+        children: dict = {}
+        for info in snap.values():
+            children.setdefault(info.ppid, []).append(info)
+        pending = [pid for pid in self.known if self._live(snap, pid)]
+        while pending:
+            parent = pending.pop()
+            for info in children.get(parent, ()):
+                if info.pid not in self.known and not info.zombie:
+                    self.known[info.pid] = info.birth
+                    pending.append(info.pid)
+        for pid in self.known:
+            if not self._live(snap, pid) and any(c.pid not in self.known and not c.zombie
+                                                 for c in children.get(pid, ())):
+                self.doubt = self.doubt or "unverified child of a missing tracked parent"
+        if len(self.known) != before or self.doubt != prior_doubt:
             self._persist("running")
         return {pid: birth for pid, birth in self.known.items() if self._live(snap, pid)}
 
     # -- signals -----------------------------------------------------------------------------
     def _send(self, sig: int) -> None:
-        """Signal the proven private group after a fresh census."""
+        """Signal the proven group and recorded escaped descendants after a fresh census."""
         snap = self._census()
         if snap is None:
             self._record_census_gap()
             return
-        self.observe(snap)
+        live = self.observe(snap) or {}
+        if not self._persist_ok:
+            return
         grouped = self._group_state(snap) == "ours"
         if grouped:
             try:
                 os.killpg(self.pgid, sig)
+            except OSError:
+                pass
+        for pid in live:
+            info = snap.get(pid)
+            if info is None or info.pgid == self.pgid:
+                continue
+            try:
+                os.kill(pid, sig)
             except OSError:
                 pass
 
