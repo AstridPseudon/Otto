@@ -30,6 +30,7 @@ from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.contract import HostContractError
 from herzchen.fleet.custody import Custody
 from herzchen.fleet.tools import CHECK, DONE, TASK, ToolSpec
+from herzchen.fleet.tools.pins import exec_allow_for_commands
 # Re-exported: the owner-side adapters import these names from this module.
 from herzchen.fleet.hosts.claude import (MAX_LINE, MAX_STREAM, WORKER_BUILTIN_TOOLS, ClaudeBindingError,
                                          ClaudeStream, sandbox_policy, sandbox_wrap, text, validate_effort,
@@ -195,7 +196,7 @@ class MacWriteScope:
             if not os.path.isfile(resolved):
                 raise ClaudeBindingError('exec allowances must be existing absolute file paths')
             execs.append(resolved)
-        self.exec_allow = tuple(dict.fromkeys(execs))
+        self.exec_allow = tuple(dict.fromkeys(exec_allow_for_commands(execs)))
         # The policy text belongs to the host contract: one fence, one place.
         self.policy = sandbox_policy(self.workspace, self.state_root, allow_subprocesses=allow_subprocesses,
                                      extra_write_roots=self.extra_write_roots,

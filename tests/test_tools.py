@@ -795,7 +795,18 @@ def test_mac_write_scope_pins_the_server_exec(tmp_path):
     ws.mkdir()
     state.mkdir()
     granted = MacWriteScope(str(ws), str(state), authentication="isolated", exec_allow=(sys.executable,))
-    assert granted.pin["exec_allow"] == [os.path.realpath(sys.executable)]
+    # The interpreter itself, plus (for a framework Python stub such as Homebrew's) its own
+    # Python.app re-exec target, spelled out here rather than computed by the code under test.
+    real = os.path.realpath(sys.executable)
+    expected = [real]
+    head, name = os.path.split(real)
+    version = os.path.dirname(head)
+    if (os.path.basename(head) == "bin" and name.startswith("python")
+            and os.path.basename(os.path.dirname(version)) == "Versions"):
+        app = os.path.realpath(os.path.join(version, "Resources", "Python.app", "Contents", "MacOS", "Python"))
+        if os.path.isfile(app):
+            expected.append(app)
+    assert granted.pin["exec_allow"] == expected
     assert "(allow process-fork)" in granted.policy
 
     plain = MacWriteScope(str(ws), str(state), authentication="isolated")
