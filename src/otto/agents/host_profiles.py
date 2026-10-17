@@ -67,6 +67,35 @@ def load_profile_pack() -> dict[str, Any]:
                               for key in ("model", "reasoning"))
                        for binding in roles.values())):
             raise ProfilePackRecoveryError("Otto profile pack has an invalid seven-slot profile")
+        oracle = value.get("oracle", {})
+        if (not isinstance(oracle, dict)
+                or ("max_calls" in oracle and (not isinstance(oracle["max_calls"], int)
+                                               or isinstance(oracle["max_calls"], bool)
+                                               or oracle["max_calls"] < 0))):
+            raise ProfilePackRecoveryError("Otto profile pack has an invalid oracle policy")
+        stages = value.get("review_stages", [])
+        if (not isinstance(stages, list)
+                or any(not isinstance(stage, dict)
+                       or not isinstance(stage.get("id"), str) or not stage["id"]
+                       or any(key in stage and (not isinstance(stage[key], int)
+                                                or isinstance(stage[key], bool) or stage[key] < 0)
+                              for key in ("max_calls", "repeat_allowance"))
+                       or any(key in stage and not isinstance(stage[key], str)
+                              for key in ("scope", "reviewer", "trigger"))
+                       for stage in stages)):
+            raise ProfilePackRecoveryError("Otto profile pack has invalid review stages")
+        checks = value.get("scheduled_checks", [])
+        if (not isinstance(checks, list)
+                or any(not isinstance(check, dict)
+                       or not isinstance(check.get("id"), str) or not check["id"]
+                       or ("interval_seconds" in check and
+                           (not isinstance(check["interval_seconds"], int)
+                            or isinstance(check["interval_seconds"], bool)
+                            or check["interval_seconds"] <= 0))
+                       or any(key in check and not isinstance(check[key], str)
+                              for key in ("cadence", "who", "purpose"))
+                       for check in checks)):
+            raise ProfilePackRecoveryError("Otto profile pack has invalid scheduled checks")
     for kind, value in hosts["hosts"].items():
         if not isinstance(kind, str) or not isinstance(value, dict):
             raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
