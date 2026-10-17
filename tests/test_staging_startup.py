@@ -68,7 +68,7 @@ def wait_until(predicate, seconds=20):
 
 class StagingCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="s-", dir=os.environ.get("TMPDIR", "/tmp"))).resolve()
+        self.tmp = Path(tempfile.mkdtemp(prefix="s-", dir=os.environ.get("OTTO_LAND_TMPDIR", "/tmp"))).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.root = self.tmp / "_staging"
         self.tree = self.root / "tree"

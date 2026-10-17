@@ -23,7 +23,7 @@ class StagingRootTests(unittest.TestCase):
     def setUp(self):
         # The landing gate supplies a short private TMPDIR so the owner's socket path stays under
         # the Unix socket length limit.
-        self.tmp = Path(tempfile.mkdtemp(prefix="ps-", dir=os.environ.get("TMPDIR", "/tmp"))).resolve()
+        self.tmp = Path(tempfile.mkdtemp(prefix="ps-", dir=os.environ.get("OTTO_LAND_TMPDIR", "/tmp"))).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.stage = self.tmp / "_staging"
         self.sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,

@@ -83,6 +83,10 @@ LOCKED=1
 LAND_TMPDIR="$(mktemp -d /tmp/l.XXXXXX)" || die "could not create a private temporary root"
 TMPDIR="$LAND_TMPDIR"
 export TMPDIR
+# The staging tests root themselves here when it is set (outside the gate, macOS's own TMPDIR is too
+# long for the 100-byte socket limit, so they fall back to /tmp).
+OTTO_LAND_TMPDIR="$LAND_TMPDIR"
+export OTTO_LAND_TMPDIR
 LOG="$RUN/land.log"
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "$LOG"; }
 fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
