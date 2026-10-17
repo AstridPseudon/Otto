@@ -61,6 +61,7 @@ def load_profile_pack() -> dict[str, Any]:
         roles = value.get("roles") if isinstance(value, dict) else None
         if (not isinstance(name, str) or not isinstance(value, dict)
                 or not isinstance(roles, dict) or set(roles) != set(SLOTS)
+                or not isinstance(value.get("adapter"), str) or not value["adapter"].strip()
                 or not isinstance(value.get("host_kinds"), list)
                 or any(not isinstance(binding, dict)
                        or any(not isinstance(binding.get(key), str) or not binding[key]
