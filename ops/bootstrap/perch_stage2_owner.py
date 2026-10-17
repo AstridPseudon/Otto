@@ -59,27 +59,19 @@ def complete_landed_canary(context, landing):
     candidate_identity = owner.graph.reader.get_identity(candidate)
     if candidate_identity is None or candidate_identity.ref != candidate:
         raise RuntimeError("stage-2 landing candidate is no longer an exact stored revision")
-    payload = getattr(assessed, "payload", None)
-    raw_evidence_refs = payload.get("evidence_refs", ()) if isinstance(payload, Mapping) else ()
-    evidence_refs = tuple(ResourceRef.from_dict(ref) if isinstance(ref, Mapping) else ref
-                          for ref in raw_evidence_refs)
-    if not evidence_refs:
-        raise RuntimeError("stage-2 landing assessment has no managed evidence")
+    accepted_decisions = tuple(assessment.get_decision(ResourceRef.from_dict(ref)) for ref in decisions)
+    evidence_refs = tuple(dict.fromkeys(ref for decision in accepted_decisions
+                                        for ref in decision.evidence_refs))
     evidence_hashes = {}
     for evidence_ref in evidence_refs:
-        # As the landing does (fleet_landing.py): the resolver reads as the authenticated manager.
-        resolved = owner.evidence_payload_resolver.resolve(
-            evidence_ref, actor=owner.binding.authenticated_actor(server.state["manager"]), verify_full=True)
-        manifest = resolved.get("manifest") if isinstance(resolved, dict) else None
-        digest = manifest.get("byte_digest") if isinstance(manifest, dict) else None
-        if (not isinstance(resolved, dict)
-                or resolved.get("representation") != "managed"
-                or resolved.get("verification") != "full-verified"
-                or resolved.get("actual_digest") != digest
-                or not isinstance(digest, str) or len(digest) != 64):
-            raise RuntimeError("stage-2 landing evidence is not fully verified managed content")
-        evidence_hashes["%s:%s:%s" % (evidence_ref.kind, evidence_ref.id,
-                                      evidence_ref.revision)] = digest
+        pin = next((row for decision in accepted_decisions
+                    for row in decision.payload.get("evidence_digests", ())
+                    if isinstance(row, Mapping) and row.get("ref") == evidence_ref.to_dict()), None)
+        # Pass the digest recorded by acceptance through to the product check.
+        # Missing pins remain missing and are refused by WorkAssignments.complete.
+        if pin is not None and "digest" in pin:
+            evidence_hashes["%s:%s:%s" % (evidence_ref.kind, evidence_ref.id,
+                                          evidence_ref.revision)] = pin["digest"]
     task_ref = owner.graph.current(ResourceRef(task.ref.authority, "work.task", task.ref.id)).ref
     project_pin = context["project_ref"]
     project_ref = owner.graph.current(ResourceRef(project_pin["authority"], "work.project",

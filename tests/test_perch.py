@@ -1385,6 +1385,12 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                     raise ValueError("wrong result")
                 return assessed_result
 
+            def get_decision(self, ref):
+                if ref.kind != "assessment.decision":
+                    raise ValueError("wrong decision")
+                return SimpleNamespace(evidence_refs=(evidence,), payload={"evidence_digests": (
+                    {"ref": evidence.to_dict(), "digest": evidence_digest},)})
+
         class Portfolio:
             outcome = "completed"
 
@@ -1396,13 +1402,6 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         owner = SimpleNamespace(graph=Graph(), owner_actor=object(), evidence_payload_resolver=SimpleNamespace(),
                                 binding=SimpleNamespace(authenticated_actor=lambda actor: ("authenticated", actor)),
                                 assignments=SimpleNamespace(get=lambda ref: SimpleNamespace(ref=manager_ref)))
-        resolve_actors = []
-
-        def resolve(ref, *, actor, verify_full):  # the real resolver's signature: actor is required
-            resolve_actors.append(actor)
-            return {"representation": "managed", "verification": "full-verified",
-                    "actual_digest": evidence_digest, "manifest": {"byte_digest": evidence_digest}}
-        owner.evidence_payload_resolver.resolve = resolve
         server = SimpleNamespace(run_id="perch-stage2", owner=owner, store=object(), portfolio=portfolio,
                                  state={"assignment_ref": manager_ref.to_dict(), "manager": "perch-stage2-manager",
                                         "manager_generation": 1})

@@ -703,6 +703,59 @@ class _ResponsibilityAssignmentsEngine:
                 codes = ", ".join(dict.fromkeys(item["code"] for item in gate_state["blockers"]))
                 raise WorkValidationError("required completion gates blocked: " + codes)
 
+            # Completion citations are the accepted decisions' immutable
+            # evidence set. Retention alone is insufficient: a retained ref
+            # may belong to another task, or may be cited with a changed hash.
+            if not gate_state.get("required"):
+                raise WorkValidationError("governed task has no required assessment scope")
+            accepted_evidence: list[ResourceRef] = []
+            accepted_digests: dict[ResourceRef, str] = {}
+            for raw_decision_ref in gate_state.get("accepted_decision_refs", ()):
+                decision_identity = self.__writer.get_identity(self._as_ref(raw_decision_ref))
+                if decision_identity is None:
+                    raise WorkValidationError("accepted completion decision is not retained")
+                decision_payload = decision_identity.payload
+                for raw_evidence_ref in decision_payload.get("evidence_refs", ()):
+                    evidence_ref = self._as_ref(raw_evidence_ref)
+                    if evidence_ref not in accepted_evidence:
+                        accepted_evidence.append(evidence_ref)
+                for pin in decision_payload.get("evidence_digests", ()):
+                    if not isinstance(pin, Mapping) or not isinstance(pin.get("ref"), Mapping):
+                        continue
+                    pinned_ref = self._as_ref(pin["ref"])
+                    if pinned_ref in accepted_evidence and isinstance(pin.get("digest"), str):
+                        accepted_digests[pinned_ref] = pin["digest"]
+            if len(evidence_values) != len(accepted_evidence) or set(evidence_values) != set(accepted_evidence):
+                raise WorkValidationError("completion citations must exactly match accepted decision evidence")
+            if len(set(evidence_values)) != len(evidence_values):
+                raise WorkValidationError("completion citations must not contain duplicates")
+            if isinstance(hash_values, list):
+                if len(hash_values) != len(evidence_values):
+                    raise WorkValidationError("completion evidence digests must align with citations")
+                supplied_digests = dict(zip(evidence_values, hash_values))
+            else:
+                if len(hash_values) != len(evidence_values):
+                    raise WorkValidationError("completion evidence digests must align with citations")
+                keys = list(hash_values)
+                canonical_keys = [f"{ref.kind}:{ref.id}:{ref.revision or ''}" for ref in evidence_values]
+                if all(key in canonical_keys for key in keys):
+                    if set(keys) != set(canonical_keys):
+                        raise WorkValidationError("completion evidence digest keys must match citations")
+                    supplied_digests = {
+                        ref: hash_values[f"{ref.kind}:{ref.id}:{ref.revision or ''}"]
+                        for ref in evidence_values
+                    }
+                else:
+                    supplied_digests = dict(zip(evidence_values, hash_values.values()))
+            for evidence_ref in evidence_values:
+                expected_digest = accepted_digests.get(evidence_ref)
+                if evidence_ref.kind in {"wrk.result", "wrk.report"}:
+                    retained = self.__writer.get_identity(evidence_ref)
+                    if retained is not None and isinstance(retained.payload, Mapping) and "value" in retained.payload:
+                        expected_digest = _digest(retained.payload["value"])
+                if expected_digest is None or supplied_digests.get(evidence_ref) != expected_digest:
+                    raise WorkValidationError("completion evidence digest does not match accepted evidence")
+
             completion = {
                 "manager": selected_actor.actor,
                 "assignment_ref": assignment_ref,
