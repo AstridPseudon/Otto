@@ -1022,10 +1022,20 @@ class ManagerJourneyService:
             if (not isinstance(worker, Mapping) or worker.get("principal") != request.get("principal")
                     or worker.get("schedule_id") != request.get("schedule_id")):
                 raise PermissionError("worker handle is stale or belongs to another recipient")
+            automatic = worker.get("automatic") is True
+            if command in {"start-retained-worker", "worker-status"} and automatic:
+                prior_failure = (self.server.state.get("automatic_dispatch_failures") or {}).get(request["task"])
+                if (isinstance(prior_failure, Mapping)
+                        and prior_failure.get("schedule_id") == worker["schedule_id"]
+                        and prior_failure.get("admitted_revision") == worker.get("automatic_revision")):
+                    return {"outcome": "held", "schedule_id": worker["schedule_id"],
+                        "reason": str(prior_failure.get("reason") or "automatic start already settled as a known pre-effect failure")[:512],
+                        "provider_called": False, "effects_started": False,
+                        "automatic_failure_settled": True}
             app = self._execution(principal=worker["principal"], model=worker["model"],
                 reasoning=worker["reasoning"], evidence_id=worker["schedule_id"],
                 selection=((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
-            if command == "start-retained-worker":
+            if command == "start-retained-worker" and not automatic:
                 # The worker's original parent remains immutable historical evidence.
                 # Resource adoption may advance that parent's assignment pins;
                 # synchronize only the fixed view's current manager entrance.
@@ -1033,18 +1043,56 @@ class ManagerJourneyService:
                 sync = getattr(app, "synchronize_manual_manager_occurrence", None)
                 if callable(sync):
                     sync(schedule_id=manager_schedule)
-            result = (app.start(schedule_id=worker["schedule_id"]) if command == "start-retained-worker" else
-                      app.recover(schedule_id=worker["schedule_id"], execute=False))
+            if command == "start-retained-worker" and automatic:
+                from .execution_host import ExecutionAdmissionHeld
+                try:
+                    result = app.start(schedule_id=worker["schedule_id"])
+                except ExecutionAdmissionHeld as exc:
+                    result = {"outcome": "held", "stage": "admission",
+                        "schedule_id": worker["schedule_id"], "reason": str(exc)[:512],
+                        "provider_called": False, "effects_started": False}
+            else:
+                result = (app.start(schedule_id=worker["schedule_id"])
+                          if command == "start-retained-worker" else
+                          app.recover(schedule_id=worker["schedule_id"], execute=False))
             def complete(result):
-                external_parent = ((self.server.due_port.read_due(worker["schedule_id"]) or {}).get("target", {}).get("launch_request") or {}).get("external_parent")
+                due = self.server.due_port.read_due(worker["schedule_id"])
+                external_parent = (((due or {}).get("target", {}).get("launch_request") or {}).get("external_parent"))
+                runtime_preparation_failure = (
+                    command == "start-retained-worker" and automatic
+                    and isinstance(result, Mapping) and result.get("outcome") == "partial"
+                    and result.get("stage") == "runtime"
+                    and result.get("schedule_id") == worker["schedule_id"]
+                    and isinstance(due, Mapping)
+                    and json_value(result.get("assignment_ref")) == due.get("assignment_ref")
+                    and result.get("generation") == due.get("generation")
+                    and not ((due.get("host_evidence") or {}).get("gateway_attempt")))
+                if runtime_preparation_failure:
+                    # Execution.start emits this bounded result only when its
+                    # runtime preparation fails before ExecutionHost admission.
+                    result = {**result, "provider_called": False, "effects_started": False}
+                if (command == "start-retained-worker" and automatic
+                        and result.get("outcome") not in {"succeeded", "replayed"}
+                        and result.get("provider_called") is False
+                        and result.get("effects_started") is False
+                        and not result.get("automatic_failure_settled")
+                        and isinstance(due, Mapping)
+                        and not ((due.get("host_evidence") or {}).get("gateway_attempt"))
+                        and (due.get("target") or {}).get("project_ref") == self.server.state.get("project_ref")
+                        and (due.get("target") or {}).get("task_ref") == self.server.state.get("task_refs", {}).get(request["task"])):
+                    settle_failure = getattr(self.host, "settle_automatic_failure", None)
+                    if callable(settle_failure):
+                        result = {**result, "automatic_failure_settlement": settle_failure(
+                            self.server.state["project_ref"]["id"], request["task"],
+                            worker["schedule_id"], result)}
                 if result.get("outcome") in {"succeeded", "replayed"} and external_parent is None:
                     result = self._settle_shared_completion(result, review_task=request["task"])
-                    if result["completion_intents"]:
+                    if result["completion_intents"] and not automatic:
                         state = self.server.state
                         manager_app = self._execution(principal=state["manager"], model=state["requested_model"],
                             reasoning=state["requested_reasoning"], evidence_id="manager-task-settlement")
                         result = self._with_task_settlement_notification(result, manager_app)
-                    if command == "start-retained-worker":
+                    if command == "start-retained-worker" and not automatic:
                         if self.host._closing and not getattr(self.host, "bounded_transports", False):
                             retained = {"outcome": "held", "provider_called": False,
                                 "reason": "owner is draining; preserve worker result and prepare its manager continuation after restart"}

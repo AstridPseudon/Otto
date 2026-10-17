@@ -795,6 +795,10 @@ def bind_automatic_dispatch(host: Any, registry: OwnerFleetRegistry, views: Mapp
                     if (not due or due.get("completion_state") != "succeeded" or previous is None
                             or admitted_revision(previous.payload) == admitted_revision(task.payload)):
                         continue
+                failure = (state.get("automatic_dispatch_failures") or {}).get(alias)
+                if (isinstance(failure, Mapping)
+                        and failure.get("admitted_revision") == admitted_revision(task.payload)):
+                    continue
                 if plan(task).get("route") in {"normal", "xhard"}:
                     tasks.append(task)
         return tasks
@@ -830,17 +834,38 @@ def bind_automatic_dispatch(host: Any, registry: OwnerFleetRegistry, views: Mapp
         view = views[project["id"]]
         aliases = [alias for alias, ref in view.server.state["task_refs"].items() if ref["id"] == task.ref.id]
         if len(aliases) != 1:
-            raise DispatchError("task has no unique current project alias")
+            return {"outcome": "known-pre-effect-failure", "failure": {
+                "outcome": "rejected", "reason": "task has no unique current project alias",
+                "provider_called": False, "effects_started": False}, "alias": None,
+                "project_id": project["id"], "admitted_revision": admitted_revision(task.payload)}
         focus = (task.payload.get("fields", {}).get("instructions")
                  or task.payload.get("outcome") or task.title)
         if not isinstance(focus, str) or not focus.strip() or len(focus) > 4000:
-            raise DispatchError("task has no bounded worker intent")
+            return {"outcome": "known-pre-effect-failure", "failure": {
+                "outcome": "rejected", "reason": "task has no bounded worker intent",
+                "provider_called": False, "effects_started": False}, "alias": aliases[0],
+                "project_id": project["id"], "admitted_revision": admitted_revision(task.payload)}
         result = view._submit_worker({"command": "run-worker", "task": aliases[0],
             "route": plan(task)["route"], "principal": "worker-" + task.ref.id,
             "request_key": request_key(task), "focus": focus}, automatic=True,
             automatic_revision=admitted_revision(task.payload))
         if (result.get("outcome") not in {"admitted", "prepared", "retained"}
                 or result.get("assignment_ref", {}).get("id") != context["assignment"]):
+            # Only an explicit pre-effect refusal is safe to settle here. Any
+            # ambiguous result leaves FleetDispatcher's UNKNOWN fence intact.
+            previous_worker = (view.server.state.get("workers") or {}).get(aliases[0])
+            previous_due = (view.server.due_port.read_due(previous_worker.get("schedule_id"))
+                            if isinstance(previous_worker, Mapping)
+                            and isinstance(previous_worker.get("schedule_id"), str) else None)
+            previous_unsettled = bool(previous_due and previous_due.get("completion_state") != "succeeded")
+            if (isinstance(result, Mapping) and result.get("outcome") in {"held", "rejected", "partial"}
+                    and result.get("provider_called") is False
+                    and result.get("effects_started") is False
+                    and not result.get("schedule_id") and not result.get("assignment_ref")
+                    and not previous_unsettled):
+                return {"outcome": "known-pre-effect-failure", "failure": dict(result),
+                        "alias": aliases[0], "project_id": project["id"],
+                        "admitted_revision": admitted_revision(task.payload)}
             raise DispatchError("owner worker preparation did not retain the selected assignment")
         return result
 
@@ -850,7 +875,109 @@ def bind_automatic_dispatch(host: Any, registry: OwnerFleetRegistry, views: Mapp
         mcp_server_name="otto", mcp_tools=tuple(spec.name for spec in TOOL_SPECS), assignment_id=assignment_id,
         read_current=current)
     registry.bind_dispatcher(dispatcher)
-    host.dispatch_pump = lambda: dispatcher.dispatch_ready(candidates())
+
+    def settle_automatic_failure(project_id: str, alias: str, schedule_id: str,
+                                 result: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Settle only an exact retained automatic launch proven to have no effects."""
+        if (not isinstance(result, Mapping) or result.get("outcome") in {"succeeded", "replayed"}
+                or result.get("provider_called") is not False
+                or result.get("effects_started") is not False):
+            raise PermissionError("automatic failure lacks explicit pre-effect evidence")
+        view = views.get(project_id)
+        if view is None:
+            raise PermissionError("automatic failure project is no longer configured")
+        state = view.server.state
+        raw_ref = state.get("task_refs", {}).get(alias)
+        worker = (state.get("workers") or {}).get(alias)
+        if (not isinstance(raw_ref, Mapping) or not isinstance(worker, Mapping)
+                or worker.get("automatic") is not True or worker.get("schedule_id") != schedule_id):
+            raise PermissionError("automatic failure does not match the current retained worker")
+        task = owner.graph.current(ResourceRef.from_dict(raw_ref))
+        revision = admitted_revision(task.payload)
+        if worker.get("automatic_revision") != revision:
+            raise PermissionError("automatic failure task generation is no longer current")
+        due = view.server.due_port.read_due(schedule_id)
+        target = (due or {}).get("target") or {}
+        evidence = (due or {}).get("host_evidence") or {}
+        if (not isinstance(due, Mapping) or target.get("task_ref") != raw_ref
+                or target.get("project_ref") != state.get("project_ref")
+                or due.get("assignment_ref") != worker.get("assignment_ref")
+                or evidence.get("gateway_attempt") is not None):
+            raise PermissionError("automatic failure occurrence is missing, foreign, or uncertain")
+        assignment = assignment_id(task)
+        dispatch_record = dispatcher.records.get(assignment)
+        if (dispatch_record is None or dispatch_record.state not in {"launched", "unknown"}
+                or dispatch_record.task.ref.to_dict() != task.ref.to_dict()):
+            raise PermissionError("automatic failure has no matching dispatched task generation")
+        save_state = getattr(view.server, "_save_state", None)
+        if not callable(save_state):
+            raise PermissionError("automatic failure reason cannot be persisted by this project view")
+        failures = state.setdefault("automatic_dispatch_failures", {})
+        previous_failure = failures.get(alias)
+        failures[alias] = {
+            "admitted_revision": revision,
+            "schedule_id": schedule_id,
+            "reason": str((result.get("error") or {}).get("message")
+                          or result.get("reason") or result.get("outcome"))[:512],
+            "outcome": result.get("outcome"),
+        }
+        try:
+            save_state()
+        except Exception:
+            if previous_failure is None:
+                failures.pop(alias, None)
+            else:
+                failures[alias] = previous_failure
+            raise
+        dispatcher.finish(assignment, settled=True)
+        return {"outcome": "settled", "assignment": assignment,
+                "reason": state["automatic_dispatch_failures"][alias]["reason"]}
+
+    host.settle_automatic_failure = settle_automatic_failure
+
+    def dispatch_pump() -> Any:
+        record = dispatcher.dispatch_ready(candidates())
+        if record is None or not isinstance(record.result, Mapping):
+            return record
+        if record.result.get("outcome") != "known-pre-effect-failure":
+            return record
+        # dispatch_ready marks the callback returned normally as launched. Move
+        # this exact proven pre-effect refusal to a settled state after that
+        # transition, and remember its task generation so the alias does not
+        # spin on every capacity tick. The next admitted generation is eligible.
+        failure = record.result["failure"]
+        alias = record.result["alias"]
+        revision = record.result["admitted_revision"]
+        view = views.get(record.result["project_id"])
+        if view is not None and isinstance(alias, str):
+            state = view.server.state
+            expected_ref = getattr(record.task, "ref", None)
+            if (state.get("task_refs", {}).get(alias) != expected_ref.to_dict()
+                    or state.get("project_ref", {}).get("id") != record.result["project_id"]):
+                raise DispatchError("failed automatic dispatch alias changed before settlement")
+            save_state = getattr(view.server, "_save_state", None)
+            if not callable(save_state):
+                raise DispatchError("automatic failure reason cannot be persisted by this project view")
+            failures = state.setdefault("automatic_dispatch_failures", {})
+            previous_failure = failures.get(alias)
+            failures[alias] = {
+                "admitted_revision": revision,
+                "reason": str((failure.get("error") or {}).get("message")
+                              or failure.get("reason") or failure.get("outcome"))[:512],
+                "outcome": failure.get("outcome"),
+            }
+            try:
+                save_state()
+            except Exception:
+                if previous_failure is None:
+                    failures.pop(alias, None)
+                else:
+                    failures[alias] = previous_failure
+                raise
+        dispatcher.finish(record.assignment, settled=True)
+        return record
+
+    host.dispatch_pump = dispatch_pump
     return dispatcher
 
 

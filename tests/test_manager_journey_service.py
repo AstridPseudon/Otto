@@ -18,7 +18,7 @@ from herzchen.domains.work.admission import authoring_stamp
 from herzchen.domains.assessment import AssessmentModule
 from herzchen.domains.work import WorkGraph
 from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
-from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.execution_host import ExecutionAdmissionHeld, ExecutionHost
 from otto.portfolio.manager_journey_service import ManagerJourneyService
 from tests import test_manager_service_continuation as continuation
 from tests.test_execution_application import ProviderBinding, NOW
@@ -1110,6 +1110,161 @@ class ManagerJourneyWorkerWorkspaceTests(unittest.TestCase):
         self.assertEqual(captured[0]["evidence_id"], "worker-schedule")
 
 class AutomaticWorkerRetentionTests(unittest.TestCase):
+    def test_replayed_automatic_failure_does_not_start_same_generation_again(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        worker = {"automatic": True, "automatic_revision": "revision-4",
+            "schedule_id": "worker-auto-j01", "principal": "worker-J01",
+            "model": "fixture", "reasoning": "low"}
+        state = {"workers": {"J01": worker}, "automatic_dispatch_failures": {"J01": {
+            "admitted_revision": "revision-4", "schedule_id": "worker-auto-j01",
+            "reason": "paused task cannot be admitted"}}}
+        service.server = SimpleNamespace(state=state,
+            due_port=SimpleNamespace(read_due=lambda _schedule: {"target": {"launch_request": {}}}))
+        service.host = SimpleNamespace(_closing=False,
+            settle_automatic_failure=lambda *_args: self.fail("settled replay must not settle twice"))
+        service._execution = lambda **_kw: self.fail("settled replay must not construct or start execution")
+
+        for command in ("start-retained-worker", "worker-status"):
+            result = service({"command": command, "task": "J01",
+                              "principal": "worker-J01", "schedule_id": "worker-auto-j01"})
+            self.assertEqual(result["outcome"], "held")
+            self.assertEqual(result["reason"], "paused task cannot be admitted")
+            self.assertTrue(result["automatic_failure_settled"])
+
+    def test_automatic_admission_held_is_settled_as_known_pre_effect_failure(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        project_ref = {"authority": "fixture", "kind": "work.project", "id": "project-j01"}
+        task_ref = {"authority": "fixture", "kind": "work.task", "id": "task-j01"}
+        assignment_ref = {"authority": "fixture", "kind": "work.assignment", "id": "assignment-j01"}
+        due = {"assignment_ref": assignment_ref, "generation": 4, "host_evidence": {},
+               "target": {"project_ref": project_ref, "task_ref": task_ref, "launch_request": {}}}
+        settled = []
+        service.host = SimpleNamespace(_closing=False, settle_automatic_failure=lambda *args: (
+            settled.append(args) or {"outcome": "settled"}))
+        service.server = SimpleNamespace(state={"project_ref": project_ref, "task_refs": {"J01": task_ref},
+            "workers": {"J01": {"automatic": True, "schedule_id": "worker-auto-j01",
+                "principal": "worker-J01", "model": "fixture", "reasoning": "low"}}},
+            due_port=SimpleNamespace(read_due=lambda _schedule: due))
+        def start(**_kw):
+            raise ExecutionAdmissionHeld("paused task cannot be admitted")
+        service._execution = lambda **_kw: SimpleNamespace(start=start)
+
+        result = service({"command": "start-retained-worker", "task": "J01",
+                          "principal": "worker-J01", "schedule_id": "worker-auto-j01"})
+
+        self.assertEqual(result["outcome"], "held")
+        self.assertEqual(result["automatic_failure_settlement"], {"outcome": "settled"})
+        self.assertEqual(len(settled), 1)
+        self.assertIs(settled[0][3]["provider_called"], False)
+        self.assertIs(settled[0][3]["effects_started"], False)
+
+    def test_manual_retained_start_still_requires_current_manager_occurrence(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        service.host = SimpleNamespace(_closing=False)
+        service.server = SimpleNamespace(state={"workers": {"J01": {
+            "schedule_id": "worker-manual-j01", "principal": "worker-J01",
+            "model": "fixture", "reasoning": "low"}}},
+            due_port=SimpleNamespace(read_due=lambda _schedule: {"target": {"launch_request": {}}}))
+        started = []
+        service._execution = lambda **_kw: SimpleNamespace(start=lambda **_args: started.append(True))
+        service._current_manager_schedule = lambda: (_ for _ in ()).throw(
+            PermissionError("no current owner-issued manager occurrence"))
+
+        with self.assertRaisesRegex(PermissionError, "no current owner-issued manager occurrence"):
+            service({"command": "start-retained-worker", "task": "J01",
+                     "principal": "worker-J01", "schedule_id": "worker-manual-j01"})
+
+        self.assertEqual(started, [])
+
+    def test_automatic_known_pre_admission_failure_is_settled_with_bounded_reason(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        project_ref = {"authority": "fixture", "kind": "work.project", "id": "project-j01"}
+        task_ref = {"authority": "fixture", "kind": "work.task", "id": "task-j01", "revision": 3}
+        assignment_ref = {"authority": "fixture", "kind": "work.assignment", "id": "assignment-j01"}
+        worker = {"automatic": True, "schedule_id": "worker-auto-j01", "principal": "worker-J01",
+                  "model": "fixture", "reasoning": "low"}
+        due = {"assignment_ref": assignment_ref, "generation": 4, "host_evidence": {},
+               "target": {"project_ref": project_ref, "task_ref": task_ref, "launch_request": {}}}
+        settled = []
+        service.host = SimpleNamespace(_closing=False, settle_automatic_failure=lambda *args: (
+            settled.append(args) or {"outcome": "settled"}))
+        service.server = SimpleNamespace(state={"project_ref": project_ref, "task_refs": {"J01": task_ref},
+            "workers": {"J01": worker}}, due_port=SimpleNamespace(read_due=lambda _schedule: due))
+        app = SimpleNamespace(start=lambda **_kw: {"outcome": "partial", "stage": "runtime",
+            "schedule_id": "worker-auto-j01", "assignment_ref": assignment_ref, "generation": 4,
+            "error": {"code": "RuntimeUnavailable", "message": "runtime could not be prepared"}})
+        service._execution = lambda **_kw: app
+        result = service({"command": "start-retained-worker", "task": "J01",
+                          "principal": "worker-J01", "schedule_id": "worker-auto-j01"})
+
+        self.assertEqual(result["outcome"], "partial")
+        self.assertEqual(result["automatic_failure_settlement"], {"outcome": "settled"})
+        self.assertEqual(len(settled), 1)
+        self.assertEqual(settled[0][:3], ("project-j01", "J01", "worker-auto-j01"))
+        self.assertEqual(settled[0][3]["error"]["message"], "runtime could not be prepared")
+        self.assertIs(settled[0][3]["provider_called"], False)
+        self.assertIs(settled[0][3]["effects_started"], False)
+
+    def test_automatic_unknown_start_result_does_not_settle_or_retry(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        project_ref = {"authority": "fixture", "kind": "work.project", "id": "project-j01"}
+        task_ref = {"authority": "fixture", "kind": "work.task", "id": "task-j01"}
+        assignment_ref = {"authority": "fixture", "kind": "work.assignment", "id": "assignment-j01"}
+        due = {"assignment_ref": assignment_ref, "generation": 4,
+               "host_evidence": {"gateway_attempt": {"state": "unknown"}},
+               "target": {"project_ref": project_ref, "task_ref": task_ref, "launch_request": {}}}
+        callbacks = []
+        service.host = SimpleNamespace(_closing=False, settle_automatic_failure=lambda *args: callbacks.append(args))
+        service.server = SimpleNamespace(state={"project_ref": project_ref, "task_refs": {"J01": task_ref},
+            "workers": {"J01": {"automatic": True, "schedule_id": "worker-auto-j01",
+                "principal": "worker-J01", "model": "fixture", "reasoning": "low"}}},
+            due_port=SimpleNamespace(read_due=lambda _schedule: due))
+        unknown = {"outcome": "unknown", "provider_called": False, "effects_started": False}
+        service._execution = lambda **_kw: SimpleNamespace(start=lambda **_args: unknown)
+
+        result = service({"command": "start-retained-worker", "task": "J01",
+                          "principal": "worker-J01", "schedule_id": "worker-auto-j01"})
+
+        self.assertEqual(result, unknown)
+        self.assertEqual(callbacks, [])
+
+    def test_automatic_retained_start_does_not_require_manager_occurrence(self):
+        service = ManagerJourneyService.__new__(ManagerJourneyService)
+        service.commands = SimpleNamespace(_authorize=lambda: None)
+        submitted = []
+        service.host = SimpleNamespace(_closing=False, submit=lambda request: submitted.append(request))
+        state = {"workers": {"J01": {"automatic": True, "schedule_id": "worker-auto-j01",
+                                      "principal": "worker-J01", "model": "fixture",
+                                      "reasoning": "low"}}}
+        due = {"target": {"launch_request": {}}}
+        service.server = SimpleNamespace(state=state,
+            due_port=SimpleNamespace(read_due=lambda _schedule: due))
+        started = []
+        app = SimpleNamespace(start=lambda **kw: (started.append(kw) or {"outcome": "succeeded"}),
+                              synchronize_manual_manager_occurrence=lambda **_kw:
+                                  self.fail("automatic start must not synchronize a manager occurrence"))
+        service._execution = lambda **_kw: app
+        service._current_manager_schedule = lambda: (_ for _ in ()).throw(
+            PermissionError("no current owner-issued manager occurrence"))
+        landed_intents = [{"request_key": "accepted-finish", "result": {"outcome": "completed"}}]
+        service._settle_shared_completion = lambda result, **_kw: {
+            **result, "completion_intents": landed_intents}
+        service._with_task_settlement_notification = lambda *_args: self.fail(
+            "automatic completion must not prepare a manager settlement notification")
+
+        result = service({"command": "start-retained-worker", "task": "J01",
+                          "principal": "worker-J01", "schedule_id": "worker-auto-j01"})
+
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(started, [{"schedule_id": "worker-auto-j01"}])
+        self.assertEqual(result["completion_intents"], landed_intents)
+        self.assertEqual(submitted, [], "automatic completion must not schedule a manager continuation")
+
     def test_manager_run_worker_retains_automatic_task_occurrence(self):
         service = ManagerJourneyService.__new__(ManagerJourneyService)
         service.commands = SimpleNamespace(_authorize=lambda: None,
