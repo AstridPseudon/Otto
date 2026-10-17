@@ -10,6 +10,7 @@ import fcntl
 import os
 from pathlib import Path
 import subprocess
+import re
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from ..domains.work.admission import admitted_revision
@@ -60,6 +61,7 @@ class LandingService:
         """Run the current admitted check and return feedback. This never accepts or lands work."""
         task = self._task(task_id)
         lab = self.lab_lookup(lab_name)
+        task = dict(task, check_argv=_feedback_argv(Path(lab.path), list(task["check_argv"])))
         record = self._run_check(lab, task_id, task, require_clean=False)
         return {"ok": record["exit_code"] == 0, "feedback_only": True,
                 "run_id": record["run_id"], "commit": record["commit"],
@@ -381,6 +383,62 @@ class _suppress:
 def _valid_argv(value: Any) -> bool:
     return (isinstance(value, (list, tuple)) and bool(value)
             and all(isinstance(part, str) and "\0" not in part for part in value))
+
+
+def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
+    """Narrow a direct pytest check to tests importing changed source modules."""
+    if "pytest" not in argv:
+        return argv
+    try:
+        changed = subprocess.run(
+            ["git", "-C", os.fspath(repo), "status", "--porcelain", "-z", "--untracked-files=all"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.decode("utf-8", "surrogateescape")
+    except (OSError, subprocess.CalledProcessError):
+        return argv
+    paths = []
+    fields = changed.split("\0")
+    index = 0
+    while index < len(fields):
+        item = fields[index]
+        index += 1
+        if len(item) < 4:
+            continue
+        status, name = item[:2], item[3:]
+        paths.append(name)
+        if "R" in status and index < len(fields):
+            paths.append(fields[index])
+            index += 1
+    modules = []
+    for name in paths:
+        if name.startswith("src/") and name.endswith(".py"):
+            module = name[4:-3].replace("/", ".")
+            modules.append(module[:-9] if module.endswith(".__init__") else module)
+    tests: set[str] = set()
+    test_dir = repo / "tests"
+    if modules and test_dir.is_dir():
+        patterns = []
+        for module in modules:
+            parent, _, leaf = module.rpartition(".")
+            patterns.append(re.compile(r"^\s*(?:import\s+%s\b|from\s+%s\s+import\b)" %
+                                       (re.escape(module), re.escape(module)), re.M))
+            if parent:
+                patterns.append(re.compile(r"^\s*from\s+%s\s+import\b[^\n]*\b%s\b" %
+                                           (re.escape(parent), re.escape(leaf)), re.M))
+        for path in sorted(test_dir.glob("test_*.py")):
+            try:
+                source = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if any(pattern.search(source) for pattern in patterns):
+                tests.add("tests/" + path.name)
+    if not tests:
+        return argv
+    test_args = [arg for arg in argv if arg.startswith("tests/") or arg.startswith("tests\\")]
+    if not test_args:
+        return argv
+    result = [arg for arg in argv if arg not in test_args]
+    result.extend(sorted(tests))
+    return result
 
 
 def _runner_identity(record: Mapping[str, Any]) -> dict[str, Any]:
