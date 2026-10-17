@@ -27,6 +27,8 @@ Reviewed the merged project diff against the goal and deletion budget. Astra fou
 
 The final Astra review then found two new refusal gaps in turn. PK3R-UX2 adds scoped registration-pin recovery guidance; PK3R-UX3 adds guidance for unknown, unqualified, unsupported and launcher-drift profile selections. Both preserve the refusal and the host boundary, and their CLI/service envelope checks are socket-free. The isolated PK3R-UX2 check passed; the later complete `test_hostctl_bundle.py` run passed all 29 tests and three subtests. The full CLI owner fixture remains a gate check.
 
+Astra's second whole-project pass found that a retained profile can be correctly refused during activation for the wrong host or unsupported models yet still lose its recovery action. PK3R-UX4 will use the same typed profile-selection refusal at those activation checks and add focused coverage.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
