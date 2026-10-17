@@ -73,7 +73,7 @@ def compose_runner(home: Any, result_store: ResultStore,
         raise TypeError("admitted owner Store and actor are required")
     runner = Runner(CapacityPool(capacity_policy), result_store,
                     state_dir=Path(home) / "runner-state",
-                    effect_ledger=RunnerEffectLedger(owner.store, owner.owner_actor.actor))
+                    effect_ledger=RunnerEffectLedger(owner.store, owner.owner_actor))
     return RunnerLifecycle(runner)
 
 

@@ -6,8 +6,9 @@ Waits are polling loops with a 10 second deadline; no assertion depends on a fix
 """
 from __future__ import annotations
 
-import json
+import ast
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -40,6 +41,7 @@ from herzchen.kernel import OperationState, Store
 from herzchen.kernel.operations import OperationManager, request_digest
 from herzchen.fleet.runner.runner import RunnerEffectLedger
 from herzchen.fleet.runner.server import main as runner_server_main
+from otto.hostctl.fleet_landing import compose_runner
 
 PY = sys.executable
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -147,6 +149,38 @@ def alive(pid):
 
 def lines(path):
     return path.read_text().count("\n") if path.exists() else 0
+
+
+def test_compose_runner_binds_authenticated_owner_actor(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    store = Store.create(tmp_path / "owner.sqlite", authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    owner = type("Owner", (), {"store": store, "owner_actor": actor})()
+    result_store = ResultStore(tmp_path / "results")
+    lifecycle = None
+    try:
+        lifecycle = compose_runner(tmp_path, result_store, CapacityPolicy(), owner=owner)
+        assert isinstance(lifecycle.runner._effect_ledger._actor, AuthenticatedActor)
+        assert lifecycle.runner._effect_ledger._actor is actor
+    finally:
+        if lifecycle is not None:
+            lifecycle.close()
+        store.close()
+
+
+def test_product_service_compose_passes_authenticated_owner_actor():
+    source = Path(__file__).resolve().parents[1] / "src/otto/hostctl/product_service.py"
+    module = ast.parse(source.read_text())
+    compose = next(node for node in module.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "compose")
+    ledger_calls = [node for node in ast.walk(compose)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "RunnerEffectLedger"]
+
+    assert len(ledger_calls) == 1
+    actor_arg = ledger_calls[0].args[1]
+    assert isinstance(actor_arg, ast.Attribute) and actor_arg.attr == "owner_actor"
+    assert isinstance(actor_arg.value, ast.Name) and actor_arg.value.id == "owner"
 
 
 def gate_cmd(path):

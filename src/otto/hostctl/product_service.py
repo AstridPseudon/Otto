@@ -1237,7 +1237,7 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         runner_policy = capacity_policy(config)
         runner_core = Runner(CapacityPool(CapacityPolicy(heavy_headroom=runner_policy.heavy_headroom)),
                              result_store, state_dir=home / "runner-state",
-                             effect_ledger=RunnerEffectLedger(store, owner.owner_actor.actor))
+                             effect_ledger=RunnerEffectLedger(store, owner.owner_actor))
         runner_core.start()
         runner = _DirectRunnerClient(runner_core)
         fleet_registry = OwnerFleetRegistry(owner, config, home, result_store,
