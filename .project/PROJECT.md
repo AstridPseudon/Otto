@@ -81,7 +81,52 @@ PL5 implementation/test/guidance files merged in `05ec363`:
 
 Merged implementation deletions credited toward the agreed budget: 44/99 (PL1: 0; PL2: 19; PL3: 0; PL4: 25; PL5: 0). PL1 and PL3 net removed lines did not retire complete candidate legacy blocks. PL5 shortened prose but did not retire a measured lifecycle block. The Astrid package's approximately 4,000-line ambition does not map to this clone.
 
-Current committed branch diff from `eb9b6cd` before PL6: 29 files, +1888/-204 (8 project-package files, two PL1 files, four PL2 files, ten PL3 files, two PL4 files, and three PL5 source/doc/test files plus one new regression file; see inventory above for exact PL5 paths).
+Current committed branch diff from `eb9b6cd` before PL6: **30 files, +1910/-204** (`git diff --shortstat eb9b6cd..HEAD`). This is 8 project-package files, 22 implementation/test/docs files, and includes 30 lines of PL4 test deletion/addition churn as reported by git; the complete inventory follows.
+
+Complete implementation, test, and user-guidance inventory (all paths changed by PL1–PL5):
+
+- `docs/manager-journey-commands.md`
+- `src/herzchen/adapters/host.py`
+- `src/herzchen/fleet/custody.py`
+- `src/herzchen/fleet/hosts/contract.py`
+- `src/herzchen/fleet/runner/client.py`
+- `src/herzchen/fleet/runner/runner.py`
+- `src/otto/agents/claude_adapter.py`
+- `src/otto/agents/claude_cli.py`
+- `src/otto/agents/codex_host_reader.py`
+- `src/otto/agents/owner_runtime.py`
+- `src/otto/hostctl/heavy.py`
+- `src/otto/portfolio/execution_host.py`
+- `src/otto/portfolio/skills/references/worker.md`
+- `src/otto/runner_cli.py`
+- `tests/test_codex_host_reader.py`
+- `tests/test_fleet_custody.py`
+- `tests/test_heavy_lease.py`
+- `tests/test_host_contract.py`
+- `tests/test_runner.py`
+- `tests/test_runner_cli.py`
+- `tests/test_runner_cli_retry_key.py`
+- `tests/test_worker_custody.py`
+
+The eight project-package files are `.project/PROJECT.md`, `.project/agent_goal.md`, `.project/manager-brief.md`, `.project/northstar.md`, `.project/plan.md`, `.project/run.json`, `.project/status.md`, and `.project/tasklist.md`.
+
+### PL5 installed-owner cold-agent baseline
+
+**Result: needs the gate. No installed-owner measurement was run in this restricted worktree.** No baseline or post-change time, tool count, or outcome is claimed. Measure on the installed Otto staging owner with a cold agent receiving only its installed role introduction and entry point: (1) present a retained occurrence/run whose cleanup is `unknown`; (2) ask the agent to identify the scope and safe next action; (3) observe whether it reads the exact status/occurrence and follows `next_action` (wait or reconcile) without issuing a new request key or retrying provider work; (4) record elapsed time, exact verbs/tool calls, whether the scope was identified, whether recovery guidance was followed, and any unsafe retry. Run baseline against the parent install and result against PL5 install under identical fixtures and instructions. Attach both transcripts and measurements to the gate receipt.
+
+### Gate handoff probes — not run here
+
+The orchestrator/staging owner should run these using the current installed introduction and its pinned interpreter/client paths. Preserve raw request IDs, occurrence/run IDs, state snapshots, and process identities in the gate receipt.
+
+1. **Normal operation:** through the installed normal manager/runner route, submit one bounded harmless command with a stable request key, read its exact request/occurrence, follow/await it, and verify successful terminal status, captured result, parent consumption where applicable, and released capacity. Repeat the exact lookup with the same key/input and prove it returns the same occurrence without a second launch. Then exercise an unresolved-scope refusal and confirm `next_action` points to status/reconcile; do not create a new key to bypass it. For the lower-level Otto runner, use the installed `otto run submit`/`await`/`status` commands documented in the installed help and verify the minted `request_id` is returned.
+2. **SIGKILL recovery:** on an isolated staging host, start one bounded child through the installed owner and capture its exact occurrence, owner recovery row, PID/birth identity and process group. SIGKILL the owner at the controlled point after durable launch intent/identity exists but before settlement. Restart the owner; inspect the same occurrence and recovery row; verify only the matching recorded incarnation is cleaned up, the state remains unknown while evidence is incomplete, capacity/custody remain held as specified, and another independent project can proceed only within its own capacity. Reconcile, then prove terminal settlement and no provider retry. Repeat with PID/group reuse and require the replacement process to survive. This is a staging fault-injection probe, not a local test command.
+3. **Astrid film journey:** run only on the orchestrator's actual Astrid project/film installation (absent from this clone). Use the canonical film task and current installed manager route; capture the exact admission, worker/film execution, artifact/result publication, parent consumption, recovery/status, and final journey evidence. Inject an owner interruption at the documented recoverable boundary, restart/reconcile the same retained journey, and verify no duplicate film/provider execution and no false completion. Record the installed project/task refs, command/tool calls, artifact refs/hashes, timings, recovery result, and explicit pass/fail criteria. The Otto custody tests do not substitute for this film gate.
+
+All three probes remain **needs the gate**. PL6 has not run an owner, staging owner, `ottoctl`, `perch.sh`, `land.sh`, or staging/film gate.
+
+### PL6 integration checks
+
+Focused results and gate-dependent failures above are the PL1–PL5 evidence; no test suite was rerun during PL6. PL6 ran only `git diff --check` before commit. Full Otto staging, Unix socket/`ps`/`sandbox-exec` process checks, SIGKILL recovery, the cold-agent installed-owner comparison, and Astrid film journey remain gate-dependent.
 
 ## Gate checks
 
@@ -94,3 +139,4 @@ Current committed branch diff from `eb9b6cd` before PL6: 29 files, +1888/-204 (8
 ## Final project review
 
 - Astra's final review found stale run/status metadata and an incomplete changed-file inventory. Updated `.project/status.md` and `.project/run.json` to reflect the authorized run; listed all eight committed project files and the PL1 files above. After that review, the orchestrator resolved D19 and fixed the budget at 99 lines; PL1 then merged after fresh Astra review.
+- Astra xhard findings and dispositions for PL1–PL4 are recorded above. PL5/PL6 followed the normal route and did not require an Astra task review. The final whole-project Astra review is manager-owned and is still pending; do not treat PL6 completion as that review.

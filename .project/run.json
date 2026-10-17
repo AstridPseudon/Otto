@@ -3,7 +3,7 @@
   "portfolio": "otto-program",
   "project": "PROCLIFE",
   "control_root": "/Users/hannahomalley/Developer/otto-program/projects/process-lifecycle",
-  "mode": "active_pl6",
+  "mode": "pl6_handoff_complete_gate_pending",
   "profile": "codex",
   "profile_note": "Manager run authorized by the user on 17 Oct 2026 against Otto canon/main eb9b6cd. D19 directs PL1 to preserve the setsid escapee test and ancestry cleanup; the 99-line deletion budget is agreed.",
   "roles": {
@@ -32,7 +32,25 @@
       "reasoning": "high"
     }
   },
-  "review_stages": [],
+  "review_stages": [
+    {
+      "stage": "PL6 integration handoff",
+      "status": "complete",
+      "branch": "task/PL6",
+      "checks": ["git diff --check"],
+      "notes": "PL1-PL5 inventory, merged shortstat, 44/99 direct deletion accounting, focused evidence, gate-dependent tests, cold-agent measurement protocol, and normal/SIGKILL/Astrid film probes recorded in .project/PROJECT.md. No tests or gates rerun."
+    },
+    {
+      "stage": "whole-project Astra final review",
+      "status": "pending",
+      "owner": "manager"
+    },
+    {
+      "stage": "installed owner and external gates",
+      "status": "needs the gate",
+      "notes": "Otto staging, cold-agent baseline/result, ps/sandbox-exec/Unix-socket checks, SIGKILL recovery, and Astrid film journey are not runnable in this worktree."
+    }
+  ],
   "dependencies": [],
   "external_prerequisites": [
     "External gate for ps, sandbox-exec, Unix-socket, Otto staging, and Astrid film journey checks"
