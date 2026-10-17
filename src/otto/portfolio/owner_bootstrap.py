@@ -690,10 +690,12 @@ class PortfolioOwnerBootstrap:
         register_resources = getattr(work_domain, "register_assignment_resources", None)
         if register_resources is not None:
             register_resources(store)
-        self.sheet = ProjectSheet(store, actor=authenticated)
-        self.content = ContentCommandHandler(store)
         self.assignments = ResponsibilityAssignments(store, actor=authenticated,
             evidence_payload_resolver=evidence_payload_resolver)
+        # Sheet-governed manager completion must use the same configured
+        # assignment guard as direct owner completion and assessment reads.
+        self.sheet = ProjectSheet(store, actor=authenticated, assignments=self.assignments)
+        self.content = ContentCommandHandler(store)
         self.lifecycle = ProjectLifecycle(store, actor=authenticated, delegation_issuer=authenticated)
         self.authoring = AuthoringSessionService(store)
         orchestration_port = None
