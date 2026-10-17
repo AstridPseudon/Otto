@@ -57,6 +57,20 @@ def test_busy_queues_once(tmp_path):
     assert request.exists()
     assert request.read_bytes() == request_bytes
     assert lanes.read_private_json(lane / ('pending-' + token + '.json'))['state'] == 'queued'
+    response = lane / ('response-' + token + '.json')
+    assert not response.exists()
+
+    host._executions.clear()
+    def activate(*args):
+        service.handled.append(args)
+        return {'outcome': 'prepared'}
+
+    service._poll(lane, 'owner', activate)
+    assert len(service.handled) == 1
+    assert service.handled[0][2] == token
+    assert lanes.read_private_json(response)['outcome'] == 'prepared'
+    service._poll(lane, 'owner', activate)
+    assert len(service.handled) == 1
 
 
 def test_unknown_custody_and_installed_run_alias():
