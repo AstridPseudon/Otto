@@ -225,9 +225,17 @@ class Runner:
         for record in records:
             if record["state"] != "queued":
                 continue
-            if record["nested_in"] is not None:
+            latch = self._latch_path(record["run_id"])
+            if record["nested_in"] is not None or os.path.exists(latch):
+                custody_state = None
+                if os.path.exists(latch):
+                    cleaned.add(record["run_id"])
+                    disposition = custody.resume_cleanup(latch, self._grace, self._census_fn)
+                    custody_state = _custody_state(disposition)
+                    if not disposition.gone:
+                        unresolved.add(record["run_id"])
                 self._put_record(record, state="unknown", outcome="lost_in_restart", exit_code=None,
-                                 settled_at=self._clock())
+                                 custody=custody_state, settled_at=self._clock())
             elif self._resolve_commit(record["cwd"]) == record["commit"]:
                 self._queued[record["run_id"]] = record
                 self._queue.append(Entry(record["run_id"], min(record["units"], self._capacity), record["seq"]))
@@ -236,14 +244,31 @@ class Runner:
                                  settled_at=self._clock())
         for name in sorted(os.listdir(self._latches)):
             if name.endswith(".json") and name[:-len(".json")] not in cleaned:
-                custody.resume_cleanup(os.path.join(self._latches, name), self._grace, self._census_fn)
+                disposition = custody.resume_cleanup(os.path.join(self._latches, name), self._grace,
+                                                      self._census_fn)
+                if not disposition.gone:
+                    unresolved.add(name[:-len(".json")])
         records_by_id = {record["run_id"]: record for record in records}
-        pending = list(unresolved)
-        while pending:
-            parent_id = records_by_id[pending.pop()].get("nested_in")
-            if parent_id in records_by_id and parent_id not in unresolved:
+        unaccounted: set[str] = set()
+        for run_id in tuple(unresolved):
+            current = run_id
+            seen: set[str] = set()
+            while current in records_by_id and current not in seen:
+                seen.add(current)
+                record = records_by_id[current]
+                parent_id = record.get("nested_in")
+                if parent_id is None:
+                    if record["units"] <= 0:
+                        unaccounted.add(run_id)
+                    break
+                if parent_id not in records_by_id:
+                    unaccounted.add(run_id)
+                    break
                 unresolved.add(parent_id)
-                pending.append(parent_id)
+                current = parent_id
+            else:
+                # An unmatched latch or a broken ancestry cannot establish its owner units.
+                unaccounted.add(run_id)
         for record in records:
             if record["run_id"] not in unresolved:
                 continue
@@ -256,6 +281,21 @@ class Runner:
             lease = Lease(record["run_id"], ticket, units, False, record)
             lease.done = lease.closed = True
             self._leases[record["run_id"]] = lease
+        if unaccounted:
+            # A nested scope's zero units only mean that its parent held the claim.
+            # Without a verified parent (or any result for a surviving latch), the
+            # claim size is unknown. Retain the unclaimed heavy headroom for it.
+            remaining = self._capacity - sum(lease.units for lease in self._leases.values()
+                                             if lease.ticket is not None)
+            if remaining > 0:
+                run_id = sorted(unaccounted)[0]
+                ticket = self._pool.queue_heavy("runner:" + run_id, remaining, pid=None)
+                if not self._pool.claim_heavy(ticket):
+                    raise RuntimeError("cannot restore unresolved runner capacity for %s" % run_id)
+                record = records_by_id.get(run_id, {"task": "unverified", "purpose": "unmatched custody latch"})
+                lease = Lease(run_id, ticket, remaining, False, record)
+                lease.done = lease.closed = True
+                self._leases[run_id] = lease
 
     def start(self) -> None:
         """Begin admitting queued runs, and keep pumping while any wait."""
