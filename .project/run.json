@@ -41,6 +41,13 @@
       "notes": "PL1-PL5 inventory, merged shortstat, 44/99 direct deletion accounting, focused evidence, gate-dependent tests, cold-agent measurement protocol, and normal/SIGKILL/Astrid film probes recorded in .project/PROJECT.md. No tests or gates rerun."
     },
     {
+      "stage": "PL4-G1 xhard follow-up review",
+      "status": "complete",
+      "branch": "task/PL4-G1",
+      "checks": ["Astra review", "tests/test_heavy_lease.py selected census-gap regressions: 2 passed"],
+      "notes": "Whole-project review found sticky census-gap loss; same PL4 worker fixed and Astra re-reviewed the diff with no remaining defect."
+    },
+    {
       "stage": "whole-project Astra final review",
       "status": "pending",
       "owner": "manager"
