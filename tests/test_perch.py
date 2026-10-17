@@ -322,6 +322,51 @@ class AssertionKindTests(unittest.TestCase):
         self.tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
+    def make_canary_repo(self, name):
+        canon = self.tmp / name / "canon"
+        canon.mkdir(parents=True)
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        start = shell.index("make_canon() {")
+        end = shell.index("\n}\n", start) + len("\n}")
+        script = 'CANARY="$1"; CANON="$2"\n' + shell[start:end] + "\nmake_canon\n"
+        subprocess.run(["bash", "-c", script, "--", str(BOOTSTRAP / "canary"), str(canon)],
+                       check=True, capture_output=True, text=True)
+        return canon
+
+    def test_canary_first_commit_keeps_manager_marker_out_of_canon_status(self):
+        canon = self.make_canary_repo("manager-marker")
+        committed_ignore = subprocess.run(["git", "-C", str(canon), "show", "HEAD:.gitignore"],
+                                          check=True, capture_output=True, text=True).stdout
+        self.assertIn(".perch-*.pid\n", committed_ignore)
+        marker = canon / ".perch-manager.pid"
+        marker.write_text("4242\n", encoding="utf-8")
+        status = subprocess.run(["git", "-C", str(canon), "status", "--porcelain"],
+                                check=True, capture_output=True, text=True)
+        self.assertEqual(status.stdout, "")
+
+    def test_landed_canary_lab_commit_contains_no_worker_marker(self):
+        canon = self.make_canary_repo("landed-marker")
+        lab = canon.parent / "canon.otto-labs" / "branch-key" / "task-A"
+        subprocess.run(["git", "-C", str(canon), "worktree", "add", "-q", "-b", "lab/A",
+                        str(lab), "canon/main"], check=True, capture_output=True, text=True)
+        marker = lab / ".perch-worker-A.pid"
+        marker.write_text("4242\n", encoding="utf-8")
+        (lab / "README.md").write_text("# landed canary change\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(lab), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(lab), "-c", "user.name=perch-canary",
+                        "-c", "user.email=perch-canary@localhost", "commit", "-q", "-m", "Worker A"],
+                       check=True, capture_output=True, text=True)
+        lab_tree = subprocess.run(["git", "-C", str(lab), "ls-tree", "-r", "--name-only", "HEAD"],
+                                  check=True, capture_output=True, text=True).stdout.splitlines()
+        self.assertNotIn(marker.name, lab_tree)
+        subprocess.run(["git", "-C", str(canon), "-c", "user.name=perch-canary",
+                        "-c", "user.email=perch-canary@localhost", "merge", "-q", "--no-ff", "lab/A"],
+                       check=True, capture_output=True, text=True)
+        tree = subprocess.run(["git", "-C", str(canon), "ls-tree", "-r", "--name-only", "HEAD"],
+                              check=True, capture_output=True, text=True).stdout.splitlines()
+        self.assertIn("README.md", tree)
+        self.assertNotIn(marker.name, tree)
+
     def test_a_clean_run_passes_every_assertion(self):
         raw = clean_raw(self.tmp / "raw")
         self.assertEqual(statuses(raw), {name: "pass" for name in NAMES})
