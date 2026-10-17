@@ -188,6 +188,28 @@ if not Path(paths[4]).exists():raise RuntimeError("manager release expired")
         self.assertEqual(completed["completion"]["assessment_gate_check"]["blockers"], [])
         self.assertEqual(LimitService(self.fixture.store).get_pool(self.pool.ref).cumulative_used_units, 1)
 
+    def test_required_scope_survives_metadata_revision_but_rejects_task_content_edit(self):
+        f = self.fixture
+        task_pin = f.task.ref
+        AssessmentModule(f.store, actor=f.actor).declare_scope(
+            "content-bound-scope", parent_obligation=task_pin, protocol="manager-inspection",
+            criteria=[self.criterion], designated_approver="manager", authority=f.actor.authority,
+            policy={"required_for_completion": True}, logical_request_key="content-bound-scope")
+        commands = f.owner.manager_assessment(
+            project_ref=f.project.ref.to_dict(), task_ref=task_pin.to_dict(),
+            manager_assignment_ref=self.assignment.to_dict(), manager_actor="manager",
+            manager_generation=1, assessment_policy=self.policy)
+        metadata_revision = WorkGraph(f.store, actor=f.actor).revise(
+            task_pin, lifecycle="active", logical_request_key="assessment-metadata-revision", actor=f.actor)
+        self.assertNotEqual(metadata_revision.ref, task_pin)
+        self.assertIsNotNone(commands.required_scope())
+        edited = WorkGraph(f.store, actor=f.actor).revise(
+            metadata_revision.ref, title="Edited after activation",
+            logical_request_key="assessment-authored-edit", actor=f.actor)
+        self.assertNotEqual(edited.ref, metadata_revision.ref)
+        with self.assertRaises(PermissionError):
+            commands.required_scope()
+
     def test_local_pool_owner_setup_is_bounded_and_replay_safe(self):
         f = self.fixture
         created = f.owner.create_manager_assessment_pool(

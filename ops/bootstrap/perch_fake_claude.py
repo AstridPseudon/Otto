@@ -115,7 +115,8 @@ def main():
             except Exception as exc:
                 print(str(exc), file=sys.stderr)
                 emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
-                      "session_id": session, "uuid": "failed-" + uuid.uuid4().hex[:8]})
+                      "session_id": session, "uuid": "failed-" + uuid.uuid4().hex[:8],
+                      "result": str(exc)[:2000]})
                 return 1
             emit({"type": "user", "uuid": "done-tool-" + session, "session_id": session,
                   "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "done-1",

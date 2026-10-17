@@ -563,11 +563,14 @@ class AssertionKindTests(unittest.TestCase):
             self.assertEqual(parser.finish(rc)["outcome"], "succeeded")
             self.assertTrue(any(lab.glob("perch-worker-*.txt")))
             def red(_):
-                raise RuntimeError("seeded done refusal")
+                raise RuntimeError("seeded done refusal: " + "x" * 2100)
             with contextlib.redirect_stderr(io.StringIO()):
                 rc, events = turn(stage2_worker_prompt("B"), red)
             self.assertEqual(rc, 1)
             self.assertEqual(events[-1]["subtype"], "error_during_execution")
+            self.assertTrue(events[-1]["is_error"])
+            self.assertTrue(events[-1]["result"].startswith("seeded done refusal:"))
+            self.assertEqual(len(events[-1]["result"]), 2000)
         finally:
             os.chdir(original_cwd)
 

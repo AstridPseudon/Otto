@@ -74,7 +74,10 @@ class ManagerAssessmentCommands:
     def required_scope(self, *, require: bool = True, completed_read: bool = False) -> Any:
         """Resolve the one required scope without creating a competing gate."""
         self._authorize()
-        rows = self._assessment.coverage(self._task)["scopes"]
+        current_task = self._reader.get_identity(ResourceRef(self._task.authority, self._task.kind, self._task.id))
+        if current_task is None:
+            raise PermissionError("assessment task is no longer current")
+        rows = self._assessment.coverage(current_task.ref)["scopes"]
         scopes = [self._assessment.get_scope(ResourceRef.from_dict(row["ref"])) for row in rows]
         required = [scope for scope in scopes if scope.policy.get("required_for_completion") is True]
         if not required and not require:
@@ -82,7 +85,7 @@ class ManagerAssessmentCommands:
         if len(required) != 1:
             raise PermissionError("task must have exactly one required assessment scope; resolve owner scope configuration")
         scope = required[0]
-        if completed_read and scope.parent_obligation_ref != self._task:
+        if completed_read and current_task.payload.get("lifecycle") == "completed":
             self._completed_scope(scope)
         else:
             scope = self._scope(scope.ref)
@@ -111,16 +114,18 @@ class ManagerAssessmentCommands:
         gate = completion.get("assessment_gate_check", {}) if isinstance(completion, Mapping) else {}
         key = completion.get("logical_request_key") if isinstance(completion, Mapping) else None
         receipt = self._reader.get_receipt(key) if isinstance(key, str) and key else None
-        if (identity is None or identity.ref != self._task
+        if (identity is None or not self._task_content_matches(self._task, identity.payload)
+                or not self._task_content_matches(scope.parent_obligation_ref, identity.payload)
                 or identity.payload.get("lifecycle") != "completed"
                 or not isinstance(completion, Mapping) or not isinstance(gate, Mapping)
-                or completion.get("task_ref") != scope.parent_obligation_ref.to_dict()
+                or not self._same_task_content_ref(completion.get("task_ref"), scope.parent_obligation_ref)
                 or completion.get("manager") != self._actor.actor
                 or completion.get("disposition") not in {
                     "accept", "accepted", "accepted-for-task", "approved", "complete", "completed", "verified"}
                 or receipt is None or receipt.status.value != "committed"
-                or receipt.operation != "work.revise" or receipt.target != scope.parent_obligation_ref
-                or receipt.result_ref != self._task
+                or receipt.operation != "work.revise"
+                or receipt.target != ResourceRef.from_dict(completion.get("task_ref"))
+                or receipt.result_ref != identity.ref
                 or gate.get("required") is not True or gate.get("blockers") != []
                 or gate.get("scope_refs") != [scope.ref.to_dict()]
                 or not gate.get("accepted_decision_refs")
@@ -284,12 +289,35 @@ class ManagerAssessmentCommands:
             self._policy.require_pair(self._task, criterion)
         return criteria
 
+    def _task_content_matches(self, pinned: ResourceRef | None = None, payload: Any = None) -> bool:
+        """Bind the activated task by authored content across metadata revisions."""
+        from herzchen.domains.work.admission import task_content_matches
+
+        pinned = self._task if pinned is None else pinned
+        identity = self._reader.get_identity(ResourceRef(pinned.authority, pinned.kind, pinned.id))
+        if identity is None:
+            return False
+        return task_content_matches(self._reader, pinned, identity.payload if payload is None else payload,
+                                    current_ref=identity.ref)
+
+    def _same_task_content_ref(self, value: Any, pinned: ResourceRef) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        try:
+            ref = ResourceRef.from_dict(value)
+        except (TypeError, ValueError, KeyError):
+            return False
+        return ref == pinned or self._task_content_matches(ref)
+
     def _scope(self, ref: ResourceRef) -> Any:
+        current_task = self._reader.get_identity(ResourceRef(self._task.authority, self._task.kind, self._task.id))
+        if current_task is None or current_task.payload.get("lifecycle") == "completed":
+            raise PermissionError("assessment authority requires the exact current task")
         scope = self._assessment.get_scope(ref)
         for criterion in scope.criterion_refs:
             self._policy.require_pair(self._task, criterion)
-        if scope.parent_obligation_ref != self._task:
-            raise PermissionError("assessment scope is not bound to the exact current task")
+        if not self._task_content_matches(scope.parent_obligation_ref):
+            raise PermissionError("assessment scope is not bound to the current task content")
         if scope.designated_approver != self._actor.actor or scope.authority not in {None, self._actor.authority}:
             raise PermissionError("required assessment scope is not designated to this manager authority")
         return scope

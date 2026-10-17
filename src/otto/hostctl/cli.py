@@ -546,7 +546,9 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                 for criterion_ref in scope.criterion_refs:
                     criterion = session.owner.graph.reader.get_identity(criterion_ref)
                     criterion_definitions.append(criterion.payload.get("definition") if criterion is not None else None)
-                required_scopes.append({**row, "criterion_definitions": criterion_definitions})
+                required_scopes.append({**row, "criterion_definitions": criterion_definitions,
+                    "protocol": scope.protocol, "review_required": scope.review_required,
+                    "allow_no_review": scope.allow_no_review, "policy": scope.policy})
             tasks.append({"id": task.payload.get("alias") or task.ref.id, "title": task.title,
                           "lifecycle": task.lifecycle.value, "route": megado.get("route"),
                           "phase": megado.get("phase"), "repo": plan.get("repo"), "branch": plan.get("branch"),

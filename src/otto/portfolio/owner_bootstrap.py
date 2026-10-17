@@ -15,8 +15,9 @@ from typing import Any, Mapping, Optional, Protocol
 from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig, ProjectReadGrant, _json_value
 
 
-def _read_current_result_task(scope_reader: Any, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any]) -> Any:
-    """Reuse owner membership semantics while pinning both current revisions."""
+def _read_current_result_task(scope_reader: Any, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
+                              *, allow_task_content_revision: bool = False) -> Any:
+    """Reuse owner membership semantics, optionally accepting metadata-only task revisions."""
     from types import SimpleNamespace
     from .owner_readers import project_reader, task_reader
     operations = SimpleNamespace(reader=scope_reader)
@@ -26,7 +27,17 @@ def _read_current_result_task(scope_reader: Any, project_ref: Mapping[str, Any],
         task = task_reader(operations, project_ref, task_ref)(identity(task_ref))
     except (ValueError, KeyError, TypeError) as exc:
         raise PermissionError("result capability project/task scope changed") from exc
-    if project["ref"] != dict(project_ref) or task["ref"] != dict(task_ref) or task["project_ref"] != dict(project_ref):
+    task_ref_matches = task["ref"] == dict(task_ref)
+    if allow_task_content_revision and not task_ref_matches:
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.admission import task_content_matches
+        try:
+            pinned = ResourceRef.from_dict(task_ref)
+            current = ResourceRef.from_dict(task["ref"])
+            task_ref_matches = task_content_matches(scope_reader, pinned, task["payload"], current_ref=current)
+        except (TypeError, ValueError, KeyError):
+            task_ref_matches = False
+    if project["ref"] != dict(project_ref) or not task_ref_matches or task["project_ref"] != dict(project_ref):
         raise PermissionError("result capability project/task revision changed")
     return task
 
@@ -1004,7 +1015,7 @@ class PortfolioOwnerBootstrap:
             grant = self.project_read_grant
             if grant is None or grant.principal != self.owner_actor or not grant.allows(project):
                 raise PermissionError("manager assessment project is outside the owner grant")
-            _read_current_result_task(self.graph.reader, project.to_dict(), task.to_dict())
+            _read_current_result_task(self.graph.reader, project.to_dict(), task.to_dict(), allow_task_content_revision=True)
             assessment_policy.validate_binding(project, task, self.graph.reader)
             current = self.assignments.command_port.get(assignment)
             if (current.ref != assignment or current.generation != manager_generation

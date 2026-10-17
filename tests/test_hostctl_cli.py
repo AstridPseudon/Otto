@@ -303,11 +303,38 @@ class HostctlCliTest(HostctlFixture):
             scopes = task["required_assessment_scopes"]
             self.assertEqual(len(scopes), 1, task_id)
             self.assertEqual(scopes[0]["ref"], declared[task_id]["scope_ref"])
+            self.assertTrue(scopes[0]["review_required"])
+            self.assertFalse(scopes[0]["allow_no_review"])
+            self.assertEqual(scopes[0]["protocol"], "otto-registered-run")
+            self.assertNotIn("acceptance_mode", scopes[0]["policy"])
             self.assertEqual(scopes[0]["criteria"], declared[task_id]["criterion_refs"])
             self.assertEqual(scopes[0]["criterion_definitions"][0]["definition"],
                              "tests pass" if task_id == "T1" else "review passes")
         self.assertTrue(all(ref.get("revision") for task in task_rows.values()
                             for scope in task["required_assessment_scopes"] for ref in scope["criteria"]))
+
+    def test_check_accepted_registration_derives_activation_scope_without_review(self):
+        self._init()
+        run_path = Path(self.bundle, "run.json")
+        run = json.loads(run_path.read_text())
+        run["assessment_accounting"] = {
+            "kind": "owner_local_bookkeeping", "purpose": "check accepted", "local_only": True,
+            "pool_id": "demo-check-pool", "capacity_units": 1, "cumulative_allowance_units": 1,
+            "scope_mode": "check-accepted", "task_criterion_pairs": ["T1/C1"],
+        }
+        run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
+        self._register()
+        prepared = self._activate()
+        self.assertEqual(prepared["outcome"], "prepared", prepared)
+        code, status = self._ottoctl("project", "status", "--project", "demo-run")
+        self.assertEqual(code, 0, status)
+        for task in status["tasks"]:
+            scopes = task["required_assessment_scopes"]
+            self.assertEqual(len(scopes), 1)
+            self.assertFalse(scopes[0]["review_required"])
+            self.assertTrue(scopes[0]["allow_no_review"])
+            self.assertEqual(scopes[0]["protocol"], "check-accepted")
+            self.assertEqual(scopes[0]["policy"]["acceptance_mode"], "check-accepted")
 
     def test_register_refuses_duplicate_and_activate_replay_changes_nothing(self):
         self._ready()
