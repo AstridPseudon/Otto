@@ -805,6 +805,27 @@ def test_restart_nested_scope_uses_verified_parent_claim(harness):
     pool.release_turn("independent-turn")
 
 
+def test_legacy_grandchild_guidance_uses_held_root_claim(harness):
+    store = harness.store
+    store.put(harness.record(store, "root", ["fake", "root"], "c1", "unknown",
+                             units=2, custody="gone", outcome="lost_in_restart"))
+    store.put(harness.record(store, "child", ["fake", "child"], "c1", "unknown",
+                             units=0, nested_in="root", custody="gone", outcome="lost_in_restart"))
+    store.put(harness.record(store, "grandchild", ["fake", "grandchild"], "c1", "unknown",
+                             units=0, nested_in="child", custody="uncertain", outcome="lost_in_restart"))
+    latches = harness.state / "latches"
+    latches.mkdir(exist_ok=True)
+    (latches / "grandchild.json").write_text(
+        json.dumps({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}))
+
+    runner = harness.runner(store=harness.new_store())
+    assert runner.status()["used"] == 2
+    recovery = runner.status("grandchild")["recovery"]
+    assert recovery == {"scope_run_id": "grandchild", "latch_present": True,
+                        "claim_run_id": "root", "claim_held": True, "claim_units": 2}
+    assert "claim held for root" in runner.await_run("grandchild")["next_action"]
+
+
 def test_restart_queued_record_with_unresolved_latch_is_not_relaunched(harness):
     store = harness.store
     store.put(harness.record(store, "queued-with-latch", ["fake", "old"], "c1", "queued",

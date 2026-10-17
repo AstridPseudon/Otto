@@ -206,7 +206,27 @@ class Runner:
     def _recovery_state(self, record: dict[str, Any]) -> dict[str, Any]:
         """Current durable latch and admitted claim for one unknown run; caller holds _cond."""
         run_id = record["run_id"]
-        claim_id = record.get("claim_run_id") or record.get("nested_in") or run_id
+        claim_id = record.get("claim_run_id")
+        if not claim_id:
+            current = record
+            claim_id = run_id
+            seen = {run_id}
+            while current.get("nested_in"):
+                parent_id = current["nested_in"]
+                if parent_id in seen:
+                    break
+                seen.add(parent_id)
+                claim_id = parent_id
+                try:
+                    parent = self._store.get(parent_id)
+                except StoreError:
+                    break
+                if parent is None:
+                    break
+                current = parent
+                if current.get("claim_run_id"):
+                    claim_id = current["claim_run_id"]
+                    break
         held = [lease for lease in self._leases.values() if lease.ticket is not None and
                 (lease.run_id == claim_id or lease.record.get("claim_run_id") == claim_id or
                  lease.record.get("run_id") == run_id)]

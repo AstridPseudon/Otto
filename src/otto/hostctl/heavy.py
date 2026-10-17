@@ -245,16 +245,26 @@ def _alive(pid: int) -> bool:
 
 
 def _holder_alive(holder: dict) -> bool:
-    pid = int(holder.get("holder_pid") or 0)
+    return _holder_liveness(holder) != "dead"
+
+
+def _holder_liveness(holder: dict) -> str:
+    """Only an exact live birth proves that a retained holder is still active."""
+    try:
+        pid = int(holder.get("holder_pid") or 0)
+    except (TypeError, ValueError):
+        return "unverified"
+    if pid <= 0:
+        return "unverified"
     if not _alive(pid):
-        return False
+        return "dead"
     birth = holder.get("holder_birth")
     if birth is None:
-        return True
+        return "unverified"
     try:
-        return list(process_identity(pid).birth) == birth
+        return "active" if list(process_identity(pid).birth) == birth else "dead"
     except (OSError, PermissionError):
-        return True  # uncertain: retain the claim until identity can be checked
+        return "unverified"  # retain the claim until identity can be checked
 
 
 def _group_alive(pgid: int) -> bool:
@@ -476,13 +486,18 @@ def status() -> dict:
         shown = {k: holder.get(k) for k in ("lease_id", "owner", "purpose", "weight",
                                             "started_at", "expires_at")}
         shown["unresolved"] = holder.get("unresolved")
+        shown["holder_state"] = _holder_liveness(holder)
         if shown["unresolved"]:
             reasons = ", ".join(map(str, shown["unresolved"].get("remaining", []))) or "cleanup uncertain"
             shown["next_action"] = (f"Inspect retained lease {shown['lease_id']} ({reasons}) and run "
                                     "supported recovery; keep its capacity claim held until the scope is gone. "
                                     "Do not rerun the command from this status alone.")
-        else:
+        elif shown["holder_state"] == "active":
             shown["next_action"] = f"Lease {shown['lease_id']} is active; wait for its holder to finish."
+        else:
+            shown["next_action"] = (f"Lease {shown['lease_id']} has a {shown['holder_state']} holder; "
+                                    "custody is not settled by this status. Keep its capacity claim held "
+                                    "and run supported recovery before deciding whether to rerun the command.")
         visible_holders.append(shown)
     return {"capacity": cap, "used": used, "free": max(0, cap - used),
             "holders": visible_holders,
