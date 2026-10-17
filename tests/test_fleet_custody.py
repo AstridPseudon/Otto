@@ -409,6 +409,7 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
     from herzchen.fleet.runner.store import ResultStore
     from otto.hostctl.fleet_landing import make_landing_service
     from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
+    import hashlib
 
     project = ResourceRef("owner", "work.project", "project-1", "project-r1")
     task = ResourceRef("owner", "work.task", "task-1", "task-r1")
@@ -474,9 +475,22 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
             candidate_rows.append((target, value, kwargs))
             return SimpleNamespace(ref=candidate_ref, value=value)
 
+    evidence_ref = ResourceRef("owner", "dat.content.document", "runner-evidence", "evidence-r1")
+    evidence_capture = {}
+    class EvidenceResolver:
+        def submit(self, source, **_kwargs):
+            evidence_capture["bytes"] = source
+            return {"revision_ref": evidence_ref.to_dict()}
+        def resolve(self, _ref, **_kwargs):
+            digest = hashlib.sha256(evidence_capture["bytes"]).hexdigest()
+            return {"representation": "managed", "availability": "verified",
+                "verification": "full-verified", "actual_digest": digest,
+                "manifest": {"byte_digest": digest, "byte_length": len(evidence_capture["bytes"])}}
+
     owner = SimpleNamespace(
         graph=SimpleNamespace(reader=reader), owner_actor=AuthenticatedActor("owner", "host", "host"),
         assignments=Assignments(), binding=SimpleNamespace(authenticated_actor=lambda _name: actor),
+        evidence_payload_resolver=EvidenceResolver(),
         manager_assessment=lambda **kwargs: commands,
         create_manager_assessment_pool=lambda **_kwargs: None)
     dispatch = SimpleNamespace(assignment="dispatch-1", role="worker", admitted_revision="task-r1")
@@ -489,11 +503,18 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         "generation": 3, "project_state": state,
         "view": SimpleNamespace(server=SimpleNamespace(
             owner=owner, assert_assessment_policy_current=assert_policy_current))}
-    service = make_landing_service(fleet=SimpleNamespace(_lab=lambda _name: None), result_store=ResultStore(tmp_path / "results"),
+    result_store = ResultStore(tmp_path / "results")
+    service = make_landing_service(fleet=SimpleNamespace(_lab=lambda _name: None), result_store=result_store,
         repo_name="repo", repo_path=tmp_path, branch="main", owner=owner, runner=SimpleNamespace(call=lambda _r: {}),
         views_provider=lambda: {}, assignment_lookup=lambda assignment_id: binding if assignment_id == "dispatch-1" else {})
-    runner_record = {"run_id": "run-1", "commit": "a" * 40, "binding": "b" * 64,
-        "argv": ["pytest", "-q"], "cwd": "/repo/lab", "exit_code": 0}
+    runner_record = {"run_id": "run-1", "commit": "a" * 40,
+        "argv": ["pytest", "-q"], "cwd": "/repo/lab", "exit_code": 0,
+        "state": "settled", "outcome": "exited", "seq": 1}
+    runner_record["binding"] = ResultStore.binding(runner_record["argv"], runner_record["cwd"], runner_record["commit"])
+    result_store.put(runner_record)
+    runner_record = result_store.get("run-1")
+    runner_identity = {key: runner_record[key] for key in
+        ("run_id", "commit", "binding", "argv", "cwd", "exit_code")}
     from herzchen.domains.work.admission import authoring_stamp
     payload = {"kind": "task", "id": task.id, "title": "Task", "project_ref": project.to_dict(),
         "fields": {"check": {"argv": ["pytest", "-q"]}}, "dependencies": [],
@@ -520,12 +541,14 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         "task_ref": task.to_dict(), "admitted_revision": "task-r1",
         "assignment_ref": assignment.to_dict(), "assignment_id": "dispatch-1",
         "lab_commit": "a" * 40, "repo_name": "repo", "line_ref": "refs/heads/main",
-        "lab_name": task.id, "runner": runner_record}
+        "lab_name": task.id, "runner": runner_identity}
     packet_args = packet_requests[0]["arguments"]
     assert packet_args["candidate_ref"] == candidate_ref.to_dict()
     assert packet_args["criterion_refs"] == [criterion.to_dict()]
     assert packet_args["packet"]["admitted_revision"] == "task-r1"
     assert packet_args["packet"]["lab_commit"] == "a" * 40
+    assert packet_args["evidence_refs"] == [evidence_ref.to_dict()]
+    assert json.loads(evidence_capture["bytes"])["run_id"] == runner_record["run_id"]
     assert context["candidate"] == candidate_ref and context["criterion"] == criterion
     assert context["parent_obligation"] == task and context["actor"] == actor
 
@@ -591,11 +614,13 @@ def test_fleet_accept_rejects_result_with_non_fleet_role():
 
     candidate = ResourceRef("owner", "wrk.result", "candidate", "candidate-r1")
     criterion = ResourceRef("owner", "assessment.criterion", "criterion", "criterion-r1")
+    evidence = ResourceRef("owner", "dat.content.document", "evidence", "evidence-r1")
     commands = SimpleNamespace()
     adapter = _FleetAssessmentCommands(commands, candidate, (criterion,),
         ResourceRef("owner", "assessment.input", "packet", "packet-r1"),
-        ResourceRef("owner", "limit", "pool"), "manager", "request")
+        ResourceRef("owner", "limit", "pool"), "manager", "request", evidence_refs=(evidence,))
     result = SimpleNamespace(payload={"role": "review"})
+    commands._assessment = SimpleNamespace(get_result=lambda _ref: result)
 
     with pytest.raises(LandingError, match="retained fleet-check result"):
         adapter.accept(result, candidate=candidate, criterion=criterion,
@@ -603,9 +628,14 @@ def test_fleet_accept_rejects_result_with_non_fleet_role():
 
 
 def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path):
-    """Exercise the fleet adapter against the real owner assessment command and store."""
+    """Exercise the fleet adapter with a retained managed runner evidence revision."""
+    import hashlib
+    import json
+    from pathlib import Path
     from herzchen.contracts import ResourceRef
     from herzchen.domains.assessment import AssessmentModule
+    from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
+    from herzchen.evidence.model import load_evidence_pack
     from otto.hostctl.fleet_landing import _FleetAssessmentCommands
     from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy, compose_manager_assessment_state
     from otto.portfolio.manager_assessment_command import manager_assessment_pool_from_command
@@ -618,6 +648,19 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
         fixture = LocalAssessmentCompositionTests()
         fixture.setUp()
         f = fixture.f
+        register_evidence(f.store)
+        from tests import test_evidence_lifecycle as lifecycle
+        root, discover, loader = lifecycle._public_pack_hooks()
+        found = discover(project_root=root)[0]
+        found.entry.definition.version = "1.1.0"
+        found.entry.definition.to_dict = lambda: {"id": "evidence", "version": "1.1.0", "schema_version": 2}
+        found.entry.resource_handles += tuple(SimpleNamespace(path=path, kind="evidence_preset",
+            resolved=root / path, sha256=hashlib.sha256((root / path).read_bytes()).hexdigest())
+            for path in ("presets/list.json", "presets/read.json"))
+        pack = load_evidence_pack(project_root=root, discoverer=lambda **kwargs: (found,), loader=loader)
+        evidence_handler = EvidenceCommandHandler(f.store, Path(tmp_path) / "managed-evidence", pack=pack,
+            adopted_pins=[item.to_dict() for item in pack.resources])
+        f.owner.evidence_payload_resolver = evidence_handler
         criterion = ResourceRef.from_dict(fixture.state["criterion_refs"]["C09"])
         task = ResourceRef.from_dict(fixture.state["task_refs"]["PA06"])
 
@@ -644,9 +687,19 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
         fixture.state["task_refs"]["PA06"] = advanced.ref.to_dict()
         policy = LocalAssessmentPolicy.from_run_config(check_config, state=fixture.state)
         task = advanced.ref
+        runner_record = {"run_id": "fleet-run-1", "commit": "a" * 40,
+            "binding": "b" * 64, "argv": ["pytest", "-q"], "cwd": "/repo/lab",
+            "exit_code": 0, "state": "settled", "outcome": "exited"}
+        runner_bytes = json.dumps(runner_record, sort_keys=True, separators=(",", ":")).encode()
+        submitted = evidence_handler.submit(runner_bytes, actor=f.actor,
+            logical_request_key="fleet-runner-evidence", project_ref=f.project.ref,
+            task_ref=task, original_creator="manager", format="application/json",
+            provenance={"runner": runner_record})
+        evidence_ref = submitted["revision_ref"]
+        evidence_ref = evidence_ref.to_dict() if hasattr(evidence_ref, "to_dict") else evidence_ref
         packet_ref = fixture.call("PA06", "freeze-input", {"scope_ref": scope_ref,
             "candidate_ref": candidate.to_dict(), "criterion_refs": [criterion.to_dict()],
-            "source_refs": [candidate.to_dict()], "evidence_refs": [candidate.to_dict()],
+            "source_refs": [candidate.to_dict()], "evidence_refs": [evidence_ref],
             "packet": {"candidate": "verified-lab"}}, "fleet-adapter-input")["ref"]
 
         commands = f.owner.manager_assessment(project_ref=fixture.state["project_ref"],
@@ -655,7 +708,8 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
             manager_generation=1, assessment_policy=policy)
         actor = f.owner.binding.authenticated_actor("manager")
         adapter = _FleetAssessmentCommands(commands, candidate, (criterion,),
-            ResourceRef.from_dict(packet_ref), policy.pool_ref, "manager", "fleet-adapter")
+            ResourceRef.from_dict(packet_ref), policy.pool_ref, "manager", "fleet-adapter",
+            evidence_refs=(ResourceRef.from_dict(evidence_ref),))
         result = adapter.assess(scope.ref, candidate=candidate, criterion=criterion,
             input_packet=ResourceRef.from_dict(packet_ref), verdict="PASS",
             protocol_result={"passed": True}, limit_pool=policy.pool_ref, actor=actor)
@@ -664,9 +718,20 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
         assert accepted.payload["candidate_ref"] == candidate.to_dict()
         assert accepted.payload["criterion_ref"] == criterion.to_dict()
         assert accepted.payload["result_ref"] == result.ref.to_dict()
+        assert tuple(ResourceRef.from_dict(value) if isinstance(value, dict) else value
+                     for value in accepted.payload["evidence_refs"]) == (ResourceRef.from_dict(evidence_ref),)
         assert not accepted.payload["review_evidence"]
+        frozen = AssessmentModule(f.store, actor=f.actor).get_input(ResourceRef.from_dict(packet_ref))
+        assert ResourceRef.from_dict(evidence_ref) in frozen.consumed_refs
+        resolved = evidence_handler.resolve(ResourceRef.from_dict(evidence_ref), actor=f.actor,
+            verify_full=True)
+        assert resolved["availability"] == "verified"
+        assert hashlib.sha256(runner_bytes).hexdigest() == resolved["manifest"]["byte_digest"]
+        assert resolved["bytes"] == runner_bytes
         assert result.payload["role"] == "fleet-check"
         assert result.payload["protocol_result"] == {"passed": True}
+        assert tuple(ResourceRef.from_dict(value) if isinstance(value, dict) else value
+                     for value in result.payload["evidence_refs"]) == (ResourceRef.from_dict(evidence_ref),)
 
         # A retained fleet check cannot satisfy an ordinary review-required scope.
         review_scope = AssessmentModule(f.store, actor=f.actor).declare_scope(
@@ -675,17 +740,18 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
             logical_request_key="fleet-adapter-review-scope")
         review_packet_ref = fixture.call("PA06", "freeze-input", {"scope_ref": review_scope.ref.to_dict(),
             "candidate_ref": candidate.to_dict(), "criterion_refs": [criterion.to_dict()],
-            "source_refs": [candidate.to_dict()], "evidence_refs": [candidate.to_dict()],
+            "source_refs": [candidate.to_dict()], "evidence_refs": [evidence_ref],
             "packet": {"candidate": "verified-lab"}}, "fleet-adapter-review-input")["ref"]
         review_packet = ResourceRef.from_dict(review_packet_ref)
         review_result = commands._assessment._assessment.assess(review_scope.ref,
             candidate=candidate, criterion=criterion, input_packet=review_packet,
             verdict="PASS", limit_pool=policy.pool_ref, role="fleet-check",
+            evidence_refs=(ResourceRef.from_dict(evidence_ref),),
             protocol_result={"passed": True}, logical_request_key="fleet-adapter-review-result",
             actor=actor)
         review_adapter = _FleetAssessmentCommands(commands, candidate,
             (criterion,), review_packet, policy.pool_ref,
-            "manager", "fleet-adapter-review")
+            "manager", "fleet-adapter-review", evidence_refs=(ResourceRef.from_dict(evidence_ref),))
         from herzchen.domains.assessment.model import AssessmentAuthorityError
         with pytest.raises(AssessmentAuthorityError, match="required review evidence"):
             review_adapter.accept(review_result, candidate=candidate,
@@ -693,6 +759,201 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
     finally:
         if fixture is not None:
             fixture.doCleanups()
+
+
+def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commit=False,
+                                          evidence_resolver=True, corrupt_evidence=False):
+    """Build one real owner and drive its landing adapter through done."""
+    import hashlib
+    import json
+    from pathlib import Path
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.assessment import AssessmentModule
+    from herzchen.domains.work import WorkGraph
+    from herzchen.domains.work.admission import admitted_revision, authoring_stamp
+    from herzchen.evidence.commands import EvidenceCommandHandler, register_evidence
+    from herzchen.evidence.model import load_evidence_pack
+    from herzchen.fleet.runner.store import ResultStore
+    from otto.hostctl.fleet_landing import make_landing_service
+    from otto.portfolio.local_assessment_policy import compose_manager_assessment_state
+    from otto.portfolio.manager_assessment_command import manager_assessment_pool_from_command
+    from tests import test_evidence_lifecycle as lifecycle
+    from tests.test_landing import _project
+
+    fixture = None
+    try:
+        from tests.test_local_assessment_composition import LocalAssessmentCompositionTests
+        fixture = LocalAssessmentCompositionTests()
+        fixture.setUp()
+        f = fixture.f
+        register_evidence(f.store)
+        root, discover, loader = lifecycle._public_pack_hooks()
+        found = discover(project_root=root)[0]
+        found.entry.definition.version = "1.1.0"
+        found.entry.definition.to_dict = lambda: {"id": "evidence", "version": "1.1.0", "schema_version": 2}
+        found.entry.resource_handles += tuple(SimpleNamespace(path=path, kind="evidence_preset",
+            resolved=root / path, sha256=hashlib.sha256((root / path).read_bytes()).hexdigest())
+            for path in ("presets/list.json", "presets/read.json"))
+        pack = load_evidence_pack(project_root=root, discoverer=lambda **kwargs: (found,), loader=loader)
+        handler = EvidenceCommandHandler(f.store, Path(tmp_path) / "managed", pack=pack,
+            adopted_pins=[item.to_dict() for item in pack.resources])
+        resolver = handler
+        if corrupt_evidence:
+            real_resolve = handler.resolve
+            def mismatch_resolution(reference, **kwargs):
+                resolved = real_resolve(reference, **kwargs)
+                return dict(resolved, actual_digest="0" * 64)
+            resolver = SimpleNamespace(
+                submit=handler.submit, resolve=mismatch_resolution)
+        if evidence_resolver:
+            from otto.portfolio.herzchen_binding import ProjectReadGrant
+            from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
+            issuer = f.binding.authenticated_actor("manager")
+            f.owner = PortfolioOwnerBootstrap(f.store, binding=f.binding, owner_actor="manager",
+                project_read_grant=ProjectReadGrant(issuer, (f.project.id,), "test-host", "v1"),
+                evidence_payload_resolver=resolver)
+
+        graph = WorkGraph(f.store, actor=f.actor)
+        original_task = ResourceRef.from_dict(fixture.state["task_refs"]["PA06"])
+        original = f.owner.graph.reader.get_identity(original_task)
+        authored = dict(original.payload)
+        authored["fields"] = {**dict(authored.get("fields", {})),
+                               "check": {"argv": ["/usr/bin/true"]}}
+        stamp = authoring_stamp(original_task.revision, authored, "manager")
+        admitted = graph.revise(original_task, fields=authored["fields"],
+            metadata_namespaces={"work.admission": stamp}, logical_request_key="land-evidence-activate",
+            actor=f.actor)
+        active = graph.revise(admitted.ref, lifecycle="active",
+            logical_request_key="land-evidence-activate-task", actor=f.actor)
+        task_ref = active.ref
+        task_id = task_ref.id
+        admitted_stamp = admitted_revision(admitted.payload)
+        assert admitted_stamp == admitted.ref.revision
+
+        criterion = ResourceRef.from_dict(fixture.state["criterion_refs"]["C09"])
+        check_config = {**fixture.config, "scope_mode": "check-accepted"}
+        fixture.config_path.write_text(json.dumps({"assessment_accounting": check_config}))
+        fixture.state = compose_manager_assessment_state(fixture.state, config_path=fixture.config_path)
+        fixture.state["task_refs"]["PA06"] = task_ref.to_dict()
+        manager_assessment_pool_from_command(f.owner, state=fixture.state,
+            request=fixture.request("PA06", key="done-evidence-pool"))
+        fixture.call("PA06", "declare-scope", {"scope_ref": ResourceRef(
+            f.actor.authority, "assessment.scope", "done-evidence-scope").to_dict(),
+            "criterion_refs": [criterion.to_dict()], "protocol": "check-accepted"}, "done-evidence-scope")
+
+        worker = f.owner.assignments.command_port.assign(task_ref, role="worker", principal="worker",
+            manager="manager", session="done-evidence-dispatch", pins=[],
+            logical_request_key="done-evidence-dispatch", actor=f.actor)
+        project_ref = ResourceRef.from_dict(fixture.state["project_ref"])
+        result_store = ResultStore(Path(tmp_path) / "runner-results")
+        class Runner:
+            def __init__(self):
+                self.n = 0
+            def call(self, request):
+                if request["op"] == "submit":
+                    self.n += 1
+                    commit = subprocess.run(["git", "-C", request["cwd"], "rev-parse", "HEAD"],
+                        check=True, capture_output=True, text=True).stdout.strip()
+                    checked_commit = "f" * 40 if wrong_commit else commit
+                    argv, cwd = list(request["argv"]), str(Path(request["cwd"]).resolve())
+                    record = {"run_id": "land-run-" + str(self.n), "argv": argv, "cwd": cwd,
+                        "commit": checked_commit, "binding": ResultStore.binding(argv, cwd, checked_commit),
+                        "state": "settled", "outcome": "exited", "exit_code": exit_code, "seq": self.n}
+                    result_store.put(record)
+                    return {"ok": True, "run_id": record["run_id"]}
+                record = result_store.get(request["run_id"])
+                return {"ok": True, "done": True, "record": record}
+
+        git_root = Path(tmp_path) / "git"
+        git_root.mkdir()
+        line, base, fleet = _project(git_root)
+        dispatch = SimpleNamespace(assignment=worker.ref.id, role="worker", admitted_revision=admitted_stamp)
+        project_state = dict(fixture.state)
+        binding = {"record": dispatch, "task": SimpleNamespace(ref=task_ref),
+            "task_ref": task_ref.to_dict(), "project_ref": project_ref.to_dict(),
+            "assignment_ref": worker.ref.to_dict(), "generation": worker.generation,
+            "project_state": project_state,
+            "view": SimpleNamespace(server=SimpleNamespace(owner=f.owner,
+                assert_assessment_policy_current=lambda: None))}
+        def task_lookup(_task_id):
+            current = f.owner.graph.reader.get_identity(task_ref)
+            return {"id": task_id, "revision": current.ref.revision,
+                "current_revision": current.ref.revision, "payload": current.payload}
+        service = make_landing_service(fleet=fleet, result_store=result_store,
+            repo_name="repo", repo_path=line, branch="main", owner=f.owner,
+            runner=Runner(), views_provider=lambda: {},
+            assignment_lookup=lambda assignment_id: binding if assignment_id == worker.ref.id else {},
+            task_lookup=task_lookup)
+        try:
+            result = service.done("one", task_id, assignment_id=worker.ref.id)
+        except Exception:
+            from tests.test_landing import _run
+            assert _run(line, "rev-parse", "refs/heads/main") == base
+            if exit_code != 0 or wrong_commit or not evidence_resolver or corrupt_evidence:
+                assert not AssessmentModule(f.store, actor=f.actor).list_decisions(parent_obligation=task_ref)
+            raise
+        return result, result_store, handler, f, base, fixture
+    except BaseException:
+        if fixture is not None:
+            fixture.doCleanups()
+        raise
+
+
+def test_done_freezes_exact_sealed_check_evidence_and_accepts_through_owner_adapter(tmp_path):
+    from herzchen.contracts import ResourceRef
+    from herzchen.domains.assessment import AssessmentModule
+
+    result, result_store, handler, f, base, fixture = _run_real_landing_with_runner_evidence(tmp_path)
+    try:
+        assert result["ok"] and result["landed"]
+        assert result["commit"] != base
+        runner_record = result_store.get(result["runner_run_id"])
+        assessment = AssessmentModule(f.store, actor=f.actor)
+        assessed = assessment.get_result(ResourceRef.from_dict(result["assessment_results"][0]))
+        accepted = assessment.get_decision(ResourceRef.from_dict(result["acceptances"][0]))
+        evidence_value, = assessed.payload["evidence_refs"]
+        evidence = evidence_value if isinstance(evidence_value, ResourceRef) else ResourceRef.from_dict(evidence_value)
+        frozen = assessment.get_input(assessed.input_packet_ref)
+        exact_runner = {key: runner_record[key] for key in
+            ("run_id", "commit", "binding", "argv", "cwd", "exit_code")}
+        assert evidence.kind == "dat.content.document" and evidence.revision
+        assert evidence in frozen.consumed_refs
+        assert frozen.packet["inspection"]["runner"] == exact_runner
+        assert assessed.protocol_result["runner"] == exact_runner
+        assert accepted.evidence_refs == (evidence,)
+        completion = f.owner.assignments.completion_blockers(assessed.parent_obligation_ref,
+            candidate=assessed.candidate_ref, gate_refs=(accepted.ref,),
+            actor=f.binding.authenticated_actor("manager"))
+        assert completion["blockers"] == []
+        assert completion["evidence_verification"] == "verified"
+        resolved = handler.resolve(evidence, actor=f.binding.authenticated_actor("manager"), verify_full=True)
+        assert resolved["verification"] == "full-verified"
+        assert resolved["bytes"] == json.dumps(runner_record, sort_keys=True, separators=(",", ":")).encode()
+        current_task = f.owner.graph.reader.get_identity(assessed.parent_obligation_ref)
+        project_pin = ResourceRef.from_dict(fixture.state["project_ref"])
+        current_project = f.owner.graph.reader.get_identity(project_pin)
+        completion_result = f.owner.assignments.complete(
+            current_task.ref, project=current_project.ref, assignment=fixture.manager.ref,
+            expected_generation=fixture.manager.generation,
+            expected_project_revision=current_project.ref.revision,
+            expected_task_revision=current_task.ref.revision, disposition="accept",
+            evidence_refs=(evidence,), evidence_hashes=(resolved["manifest"]["byte_digest"],),
+            gate_refs=(accepted.ref,), candidate_ref=assessed.candidate_ref,
+            result_ref=assessed.ref, logical_request_key="done-evidence-task-complete",
+            actor=f.binding.authenticated_actor("manager"))
+        assert completion_result["outcome"] == "completed"
+    finally:
+        fixture.doCleanups()
+
+
+@pytest.mark.parametrize("case", ["failed", "wrong-commit", "missing-evidence", "unresolvable-evidence"])
+def test_done_refuses_failed_mismatched_or_unresolvable_check_evidence(tmp_path, case):
+    from herzchen.fleet.landing import LandingError
+    options = {"exit_code": 1} if case == "failed" else (
+        {"wrong_commit": True} if case == "wrong-commit" else (
+        {"evidence_resolver": False} if case == "missing-evidence" else {"corrupt_evidence": True}))
+    with pytest.raises(LandingError):
+        result = _run_real_landing_with_runner_evidence(tmp_path, **options)
 
 
 @pytest.mark.parametrize("plan, message", [

@@ -692,7 +692,8 @@ class PortfolioOwnerBootstrap:
             register_resources(store)
         self.sheet = ProjectSheet(store, actor=authenticated)
         self.content = ContentCommandHandler(store)
-        self.assignments = ResponsibilityAssignments(store, actor=authenticated)
+        self.assignments = ResponsibilityAssignments(store, actor=authenticated,
+            evidence_payload_resolver=evidence_payload_resolver)
         self.lifecycle = ProjectLifecycle(store, actor=authenticated, delegation_issuer=authenticated)
         self.authoring = AuthoringSessionService(store)
         orchestration_port = None
@@ -818,7 +819,8 @@ class PortfolioOwnerBootstrap:
             cached = self._late_usage_cache
             if cached is None:
                 assignments = ResponsibilityAssignments(
-                    self.store, actor=actor, native_bodies=native_bodies
+                    self.store, actor=actor, native_bodies=native_bodies,
+                    evidence_payload_resolver=self.evidence_payload_resolver
                 ).command_port
                 self._late_usage_cache = (native_bodies, assignments)
             elif cached[0] is not native_bodies:
@@ -1035,8 +1037,17 @@ class PortfolioOwnerBootstrap:
             # Recheck the owner's current project grant and manager assignment
             # for each exact evidence read. This grants no assessment write.
             authorize()
-            if parent != task or evidence.authority != task.authority or evidence.revision is None:
+            same_task = ((parent.authority, parent.kind, parent.id)
+                         == (task.authority, task.kind, task.id))
+            if (not same_task or parent.revision is None
+                    or evidence.authority != task.authority or evidence.revision is None):
                 raise PermissionError("assessment evidence is outside the owner-issued grant")
+            # Activation may pin a required scope to the admitted task revision
+            # before later owner metadata writes advance the task. Permit that
+            # historical parent only when the existing semantic task matcher
+            # proves its content is still the current task's content.
+            _read_current_result_task(self.graph.reader, project.to_dict(), parent.to_dict(),
+                                     allow_task_content_revision=True)
             return EvidenceReadGrant(self.owner_actor, actor, project, task, evidence)
 
         authorize()

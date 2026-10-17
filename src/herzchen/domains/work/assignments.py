@@ -181,7 +181,8 @@ def _json_safe(value: Any) -> Any:
 class _ResponsibilityAssignmentsEngine:
     """The shared generic responsibility/assignment command surface."""
 
-    def __init__(self, store: Any, *, actor: Optional[AuthenticatedActor] = None, native_bodies: Any = None) -> None:
+    def __init__(self, store: Any, *, actor: Optional[AuthenticatedActor] = None, native_bodies: Any = None,
+                 evidence_payload_resolver: Any = None) -> None:
         if not hasattr(store, "transaction") or not hasattr(store, "mutate"):
             raise TypeError("store must be the supplied FND writer")
         from .module import work_handler
@@ -189,6 +190,7 @@ class _ResponsibilityAssignmentsEngine:
         self.reader = self.__writer.consumer()
         self.default_actor = actor
         self._evidence_store = store
+        self._evidence_payload_resolver = evidence_payload_resolver
         self._usage_native_bodies = native_bodies
 
     def _create_in_transaction(
@@ -695,6 +697,7 @@ class _ResponsibilityAssignmentsEngine:
                 task_identity.ref, candidate=request_payload["candidate_ref"], gate_refs=gate_values,
                 actor=selected_actor, evidence_store=self._evidence_store,
                 completion_evidence_refs=evidence_values, completion_evidence_hashes=hash_values,
+                payload_resolver=self._evidence_payload_resolver,
             )
             if gate_state["blockers"]:
                 codes = ", ".join(dict.fromkeys(item["code"] for item in gate_state["blockers"]))
@@ -785,6 +788,7 @@ class _ResponsibilityAssignmentsEngine:
             actor=actor, evidence_store=self._evidence_store,
             completion_evidence_refs=completion_evidence_refs,
             completion_evidence_hashes=completion_evidence_hashes,
+            payload_resolver=self._evidence_payload_resolver,
         )
 
     def dispatch(
