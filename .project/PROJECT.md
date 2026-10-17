@@ -17,6 +17,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:32Z | PK3R-UX5 | merged 0499e8eb937c785e9419893d0260e81ae91f291d | +23/-6 | test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Legacy pending migration refusals for unavailable manager adapter or unsupported manager model now preserve next_action. No deletions.
 2026-10-17T21:34Z | PK3R-UX7 | merged 551cc7f41313a40c695a642ca460d8cd9dfd7474 | +24/-4 | test_host_onboarding_docs.py 1 passed; diff --check passed | Host onboarding now points to managed profile/host resources and keeps the Megado template steps. No deletions.
 2026-10-17T21:42Z | PK3R-UX6 | merged c03dfd882ad5f54cf363f83755cbe9448421ebed | +46/-13 | test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Retained run digest, selected-profile name, resolved-role and legacy migration integrity refusals now carry a reconciliation action through the service and CLI envelopes. No deletions.
+2026-10-17T21:49Z | PK3R-UX8 | merged 433c59d9668e83f998be03cf84fe1196a31c630c | +69/-13 | test_host_neutral_defaults.py 21 passed; diff --check passed | Managed loader/provenance and invalid profile/host resource refusals now explain how to restore/correct the pinned source. No deletions.
 
 ## Questions for the orchestrator
 
@@ -37,7 +38,7 @@ Astra's third whole-project pass found a remaining refusal in legacy pending-pro
 
 Astra's fourth pass found two remaining defects: retained run/binding/migration integrity refusals still lost `next_action` through both envelopes, and `docs/host-onboarding.md` still directed profile edits to the removed Python table. PK3R-UX6 and PK3R-UX7 now address these issues. The suspected host-admission path was withdrawn as unreachable. Retained-selection recovery is tested through all three error-envelope helpers; the doc assertion confirms the managed resource guidance.
 
-Astra's fifth pass found one remaining new-path refusal: missing, changed or structurally invalid `otto-profiles` sources fail closed but return no `next_action`. PK3R-UX8 will retain those provenance/schema checks while making the recovery path explicit.
+Astra's fifth pass found one remaining new-path refusal: missing, changed or structurally invalid `otto-profiles` sources failed closed but returned no `next_action`. PK3R-UX8 retains the PackAuthoringError and schema/qualification checks while making the recovery path explicit. Its socket-free test covers provenance failure, malformed schema and a missing default profile through both error envelopes.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
