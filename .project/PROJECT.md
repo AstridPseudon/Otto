@@ -151,3 +151,5 @@ The manager's manifest check prompted a baseline comparison with `install/build_
 ### SL9D inert public gateway entrypoint removal
 
 `git grep -n -E '(^|[[:space:]])(from|import)[[:space:]]+otto\\.cli|otto-gateway' -- src tests ops install pyproject.toml` found the only executable script reference in `pyproject.toml:15` and its packaging assertion in `tests/test_packaging.py:34`. The installed package had no source, test, ops, or install consumer of `otto.cli`; the only `OttoGateway` consumers are internal `otto.agents` modules and tests. The `otto-gateway-*` request-id prefixes and historical prepared gateway source are unrelated internal/history references and remain. Removed `src/otto/cli.py` (95 lines) and the console-script declaration; `test_packaging.py` now fails while either public surface remains. Changed files: `pyproject.toml`, `src/otto/cli.py` (deleted), `tests/test_packaging.py`, `.project/PROJECT.md`.
+
+2026-10-17 20:41 UTC | SL9D | merged f935261 | +6/-97 | packaging 7 passed; internal gateway 5 passed; diff check clean | inert public entrypoint removed, internal gateway retained.
