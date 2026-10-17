@@ -39,6 +39,19 @@ from herzchen.fleet.hosts.claude import (MAX_LINE, MAX_STREAM, WORKER_BUILTIN_TO
 VERSION = "2.1.293 (Claude Code)"
 MAX_ARTIFACT = 65536
 CLAUDE = get_host("claude-code")
+
+
+class ClaudeChildExitError(ClaudeBindingError):
+    """An owned CLI exited while its sealed input pipe was still being written."""
+
+    def __init__(self, exit_status: int, stderr_tail: str):
+        self.exit_status = exit_status
+        self.stderr_tail = stderr_tail
+        reason = f"child exited before stdin was accepted (exit status {exit_status})"
+        if stderr_tail:
+            reason += "; stderr tail: " + stderr_tail
+        super().__init__(reason)
+
 # Otto's side of the Claude surface: the parser schema and tool surfaces are Otto's policy, supplied
 # to the product-neutral fleet host rather than defined by it. Tool surfaces per role profile. A worker
 # leaf reads and writes files only; a manager also runs commands (tests, git, the owner's installed
@@ -352,7 +365,40 @@ class ClaudeCliTransport:
                     raise ClaudeBindingError("owned process timeout; native terminal unproved; no replay")
                 for key, _ in selector.select(min(.1, max(0, deadline - time.monotonic()))):
                     if key.data == 'stdin':
-                        offset += os.write(key.fd, data[offset:offset + 65536])
+                        try:
+                            offset += os.write(key.fd, data[offset:offset + 65536])
+                        except BrokenPipeError as exc:
+                            # The child may have exited before accepting its
+                            # sealed request. Keep that launch uncertain, while
+                            # preserving the evidence needed for reconciliation.
+                            while process.poll() is None:
+                                if time.monotonic() >= deadline:
+                                    raise ClaudeBindingError(
+                                        "owned process timeout; native terminal unproved; no replay") from exc
+                                try:
+                                    part = os.read(process.stderr.fileno(), 65536)
+                                except BlockingIOError:
+                                    time.sleep(.01)
+                                    continue
+                                if not part:
+                                    time.sleep(.01)
+                                    continue
+                                stderr.extend(part)
+                                if len(stderr) > MAX_LINE:
+                                    del stderr[:-MAX_LINE]
+                            code = process.wait(timeout=max(.01, deadline - time.monotonic()))
+                            while True:
+                                try:
+                                    part = os.read(process.stderr.fileno(), 65536)
+                                except BlockingIOError:
+                                    break
+                                if not part:
+                                    break
+                                stderr.extend(part)
+                                if len(stderr) > MAX_LINE:
+                                    del stderr[:-MAX_LINE]
+                            tail = stderr.decode('utf-8', errors='replace')[-1024:]
+                            raise ClaudeChildExitError(code, tail) from exc
                         if offset == len(data):
                             selector.unregister(key.fileobj); key.fileobj.close()
                         continue

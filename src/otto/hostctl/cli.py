@@ -609,6 +609,8 @@ def _task_dispatch_status(observed: Mapping[str, Any]) -> dict[str, Any]:
     reports = [item.get("payload") or {} for item in observed.get("reports") or ()
                if isinstance(item, Mapping)
                and (item.get("payload") or {}).get("assignment", {}).get("id") in assignment_refs]
+    unknown_seen = False
+    unknown_reason = None
     for payload in (*reports, *results):
         value = payload.get("value") or {}
         value = value if isinstance(value, Mapping) else {}
@@ -620,6 +622,11 @@ def _task_dispatch_status(observed: Mapping[str, Any]) -> dict[str, Any]:
             return {"state": "failed", "reason": str(reason or "dispatch failed")[:512]}
         if value.get("landed") is True or state == "landed":
             return {"state": "landed", "reason": None}
+        if state == "unknown":
+            unknown_seen = True
+            unknown_reason = reason
+    if unknown_seen:
+        return {"state": "unknown", "reason": str(unknown_reason)[:512] if unknown_reason is not None else None}
     if dispatches:
         return {"state": "launched", "reason": None}
     if assignments:
