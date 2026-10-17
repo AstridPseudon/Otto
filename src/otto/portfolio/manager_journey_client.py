@@ -505,11 +505,16 @@ def add_manager_journey_parsers(commands: Any) -> None:
     answer.add_argument("--next-action", required=True)
     route = commands.add_parser("route", help="reroute ready work or resume one exact retained occurrence")
     route.add_argument("--operation", required=True, choices=("reroute", "retry"))
-    route.add_argument("--task", help="required for reroute")
-    route.add_argument("--principal", help="required for reroute")
-    route.add_argument("--route", choices=("normal", "xhard"), help="required for reroute")
-    route.add_argument("--focus", help="required for reroute")
-    route.add_argument("--schedule-id", help="required for retry; exact current project occurrence")
+    # Keep absent operation arguments out of the request. The authenticated
+    # service deliberately rejects foreign fields, including fields supplied
+    # as null by a parser default.
+    route.add_argument("--task", default=argparse.SUPPRESS, help="required for reroute")
+    route.add_argument("--principal", default=argparse.SUPPRESS, help="required for reroute")
+    route.add_argument("--route", choices=("normal", "xhard"), default=argparse.SUPPRESS,
+                       help="required for reroute")
+    route.add_argument("--focus", default=argparse.SUPPRESS, help="required for reroute")
+    route.add_argument("--schedule-id", default=argparse.SUPPRESS,
+                       help="required for retry; exact current project occurrence")
     commands.add_parser("worker-readiness", help="bounded worker metadata read; no launch or admission verdict",
         description="Reads current metadata for this manager's own retained slots only. dispatch:false means this read launched nothing; it does not deny a separate authenticated run-worker request. Pending/unassigned/not-evaluated defaults and empty blocker lists are not admission verdicts. Missing/oversize/foreign pins remain unavailable, not zero. Named Due pools are observed accounting, never a promise that ordinary run-worker enforces a NORMAL pool or an assessment-budget grant.")
     add_help_parsers(commands)
@@ -538,13 +543,20 @@ def add_manager_journey_parsers(commands: Any) -> None:
     control = commands.add_parser("execution-control", help="startup recovery, drain host admission, or inspect/stop/resume an exact owned occurrence",
         description="Startup reconciles the bounded set of retained owner occurrences before new admission. Drain retains admitted children and transport handles; the host closes after they settle. Stop permanently fences one occurrence. Resume uses the same startup reconciliation path and never repeats a provider call. A paused trigger requires exact host reconciliation; process restart and installation remain host actions.")
     control.add_argument("--operation", choices=("read", "reminder-read", "recover", "stop", "resume", "startup", "drain"), default="read")
-    control.add_argument("--schedule-id", help="current manager or retained worker schedule; cannot select another project's occurrence")
-    control.add_argument("--request-key", help="required for stop or pinned gone-group recovery")
-    control.add_argument("--expected-version", type=int, help="exact Due version required for stop")
-    control.add_argument("--expected-due-sha256", help="exact Due hash for gone-group recovery")
-    control.add_argument("--expected-result-sha256", help="exact failed result hash for gone-group recovery")
-    control.add_argument("--expected-unknown-result-sha256", help="exact unknown result hash for gone-group recovery")
-    control.add_argument("--reason", help="short manager reason for gone-group recovery")
+    control.add_argument("--schedule-id", default=argparse.SUPPRESS,
+        help="current manager or retained worker schedule; cannot select another project's occurrence")
+    control.add_argument("--request-key", default=argparse.SUPPRESS,
+                         help="required for stop or pinned gone-group recovery")
+    control.add_argument("--expected-version", type=int, default=argparse.SUPPRESS,
+                         help="exact Due version required for stop")
+    control.add_argument("--expected-due-sha256", default=argparse.SUPPRESS,
+                         help="exact Due hash for gone-group recovery")
+    control.add_argument("--expected-result-sha256", default=argparse.SUPPRESS,
+                         help="exact failed result hash for gone-group recovery")
+    control.add_argument("--expected-unknown-result-sha256", default=argparse.SUPPRESS,
+                         help="exact unknown result hash for gone-group recovery")
+    control.add_argument("--reason", default=argparse.SUPPRESS,
+                         help="short manager reason for gone-group recovery")
     vision = commands.add_parser("vision", help="read adopted Vision through the current project identity; owner authoring remains separate")
     vision.add_argument("--operation", required=True, choices=("help", "read", "query", "context", "history"))
     vision.add_argument("--arguments", type=json.loads, default={}, help="JSON object; scoped reads require exact current project_ref")

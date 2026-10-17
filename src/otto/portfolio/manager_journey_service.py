@@ -1535,10 +1535,11 @@ class ManagerJourneyService:
         operation = request.get("operation", "read")
         if operation not in {"read", "reminder-read", "recover", "stop", "resume", "startup", "drain"}:
             raise ValueError("unsupported execution control operation")
-        if operation != "recover" and any(request.get(key) is not None for key in recovery_fields):
+        recovery_present = recovery_fields.intersection(request)
+        if operation != "recover" and recovery_present:
             raise ValueError("unknown worker disposition fields require recover")
         if operation == "drain":
-            if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
+            if {"schedule_id", "request_key", "expected_version"}.intersection(request):
                 raise ValueError("drain takes no occurrence fields")
             return self.host.begin_drain()
         state = self.server.state
@@ -1551,7 +1552,7 @@ class ManagerJourneyService:
             if isinstance(value, str) and value and value not in known:
                 known.append(value)
         if operation == "reminder-read":
-            if request.get("request_key") is not None or request.get("expected_version") is not None:
+            if {"request_key", "expected_version"}.intersection(request):
                 raise ValueError("reminder-read takes only an exact owner-known schedule")
             sid = request.get("schedule_id")
             if sid not in self._reminder_ids():
@@ -1561,7 +1562,7 @@ class ManagerJourneyService:
             return {**reader.reminder_status(sid), "read_only": True, "provider_called": False,
                     "host_readback_available": getattr(self.server, "reminder_host_executor", None) is not None}
         if operation == "startup":
-            if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
+            if {"schedule_id", "request_key", "expected_version"}.intersection(request):
                 raise ValueError("startup recovery takes no occurrence or mutation fields")
             if not known:
                 return self._startup_recovery(None, [], execute=False)
@@ -1598,9 +1599,11 @@ class ManagerJourneyService:
             return DurableAttention(None, due_port=self.server.due_port).stop(schedule,
                 request_id=key, expected_version=version, project_ref=due.project_ref,
                 manager_ref=due.manager_ref, generation=due.generation, lifecycle_owner=app.actor)
-        general_recovery = any(request.get(key) is not None for key in recovery_fields | {"request_key"})
+        # Presence is meaningful: explicitly supplying a null recovery value
+        # is an incomplete recovery request, not the absence of one.
+        general_recovery = bool(recovery_present or "request_key" in request)
         if general_recovery:
-            if request.get("expected_version") is not None:
+            if "expected_version" in request:
                 raise ValueError("general worker recovery does not accept expected_version")
             attempt_result = ((due.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}
             failed = attempt_result.get("outcome") == "failed"
@@ -1626,7 +1629,7 @@ class ManagerJourneyService:
                     "historical_result_preserved" if failed else "historical_unknown_preserved": True,
                     "provider_called": False,
                     "retry": False}
-        if request.get("request_key") is not None or request.get("expected_version") is not None:
+        if "request_key" in request or "expected_version" in request:
             raise ValueError("read/recover/resume take only the exact schedule")
         if operation == "read":
             from .execution_operations import compact_operation_status
