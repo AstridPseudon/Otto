@@ -4,7 +4,8 @@ This adapter owns no Store, per-project host or native semaphore. Its only
 thread is the short-lived cached-status pulse started after the shared host
 starts. Its finite poll runs on the existing serialized owner; all execution
 remains in the installed shared host. Activation waits in its owner lane while
-shared execution custody is active, then installs its view on the same router.
+the target project has execution custody, then installs its view on the same
+router.
 """
 from __future__ import annotations
 
@@ -71,22 +72,22 @@ class ProjectOwnerService(OwnerService):
         return self.shared_host._status_read({'command': 'host-client-operation'}, finite)
 
     def _project_has_custody(self, project_id: Any) -> bool:
-        # Activations wait for every live or queued execution, as they did
-        # before capacity holds gained project-scoped custody. Holds alone
-        # are scoped so an unrelated killed worker does not block activation.
-        if self.shared_host._executions:
-            return True
-        active = self.shared_host._capacity_holds
-        if project_id is None:
-            return bool(active)  # Unknown target keeps the conservative shared fence.
         # The operator may name an already installed project by its run ID.
         # Resolve that alias before comparing it with Due project IDs.
         for view in getattr(getattr(self, 'router', None), 'services', {}).values():
             if project_id == getattr(view.server, 'run_id', None):
                 project_id = view.server.state['project_ref']['id']
                 break
-        return any(scope.get('project') is None or scope.get('project') == project_id
-                   for scope in active.values())
+        # Both running and queued executions retain custody. An unknown target
+        # or missing scope keeps the conservative shared fence.
+        for execution in self.shared_host._executions.values():
+            scope = execution.get('scope')
+            if (project_id is None or not isinstance(scope, Mapping)
+                    or scope.get('project') is None or scope.get('project') == project_id):
+                return True
+        return any(project_id is None or scope.get('project') is None
+                   or scope.get('project') == project_id
+                   for scope in self.shared_host._capacity_holds.values())
 
     def poll(self) -> None:
         def finite():
