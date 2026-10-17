@@ -292,6 +292,8 @@ PY
 ( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
     "$HEAVY" --weight 1 --purpose "$TASK check" -- \
     bash -c "$CHECK_RUN" ) > "$G/check.txt" 2>&1 || CHECK_FAILED=1
+CHECK_SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$G/check.txt" || true)"
+[ -z "$CHECK_SKIPPED" ] || fail "the task's check has no executed tests: $CHECK_SKIPPED (output: $G/check.txt)"
 if grep -q -E 'no tests ran|Interrupted:' "$G/check.txt" \
     || { ! grep -q -E '[0-9]+ (passed|failed|skipped|xfailed|xpassed)' "$G/check.txt" \
          && { [ -z "${CHECK_FAILED:-}" ] || grep -q -E '^(ERROR|FAILED|SUBFAILED\([^)]*\)) ' "$G/check.txt"; }; }; then
@@ -403,6 +405,8 @@ for f in $SWEEP; do
   case " $CHECK " in *" -k "*|*::*) ;; *" $f "*) first=2; log "sweep $f run 1/2: 0 failing (the check's run)" ;; esac
   for n in $(seq "$first" 2); do
     run_pytest "$LAB" "$f" "$G/run$n.txt"
+    SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$G/run$n.txt" || true)"
+    [ -z "$SKIPPED" ] || fail "sweep $f has no executed tests: $SKIPPED (output: $G/run$n.txt)"
     ids="$(ids_of "$G/run$n.txt" "$f")"; kept=""
     if [ -n "$ids" ]; then
       printf '%s\n' "$ids" >> "$G/lab.ids"

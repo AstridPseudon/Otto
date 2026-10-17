@@ -1,5 +1,4 @@
 """Exercise the delivered service handler with only its provider substituted."""
-import importlib.util
 from datetime import timedelta
 from dataclasses import replace
 import json
@@ -20,6 +19,7 @@ from herzchen.domains.work import WorkGraph
 from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
 from otto.portfolio.execution_host import ExecutionAdmissionHeld, ExecutionHost
 from otto.portfolio.manager_journey_service import ManagerJourneyService
+from otto.hostctl.serve import HostOwnerService
 from tests import test_manager_service_continuation as continuation
 from tests.test_execution_application import ProviderBinding, NOW
 
@@ -54,28 +54,35 @@ class ManagerJourneyServiceTests(unittest.TestCase):
     def setUp(self):
         continuation.ManagerServiceContinuationTests.setUp(self)
         root = Path(__file__).resolve().parents[1]
-        fixture = os.environ.get("OTTO_OWNER_SERVICE_TEST_FIXTURE")
-        baseline = Path(fixture) if fixture else root.parents[1] / "controller" / "manager_server_baseline.py"
-        self.fixture_controller = baseline.parent
-        if not baseline.exists():
-            self.skipTest("owner service fixture is not installed")
-        spec = importlib.util.spec_from_file_location("journey_service_fixture", baseline)
-        self.service = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.service)
-        adapter_path = baseline.with_name("serve_manager_owner.py")
-        spec = importlib.util.spec_from_file_location("journey_owner_entry_fixture", adapter_path)
-        self.entry = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.entry)
         self.root = Path(self.fixture.temporary.name).resolve()
-        self.directory = self.root / "ipc"
-        controller = self.root / "controller"
-        controller.mkdir()
-        for name, value in {"HERE": controller, "WORKTREE": self.root,
-                            "RUN": baseline.parent.parent, "EVIDENCE": self.root,
-                            "STATE_PATH": self.root / "state.json"}.items():
-            setattr(self.service, name, value)
-        self.service.WORKER_RUN_CONFIG = self.service.RUN / "run.yaml"
+        self.service = SimpleNamespace(RUN=self.root / "run")
+        self.service.RUN.mkdir()
+        self.directory = self.root / "projects" / self.fixture.project.id / "manager-ipc"
         application = self.fixture
+        scope = AssessmentModule(application.store, actor=application.actor).declare_scope("criteria",
+            parent_obligation=application.project.ref, protocol="fixture",
+            criteria=[{"id": "C01", "source_alias": "C01"}],
+            logical_request_key="journey-criteria")
+        run_config = {"run_id": "manager-journey-fixture", "roles": {
+            "manager": {"model": "gpt-test", "reasoning": "high"},
+            "worker_normal": {"model": "gpt-test", "reasoning": "high"},
+            "worker_xhard": {"model": "gpt-test", "reasoning": "high"}},
+            "worker_operation_profiles": {}, "assessment_accounting": {
+            "kind": "owner_local_bookkeeping", "local_only": True, "purpose": "isolated journey",
+            "pool_id": "journey-local", "capacity_units": 1, "cumulative_allowance_units": 1,
+            "task_criterion_pairs": ["J01/C01"]}}
+        run_doc = application.app.portfolio.create_document(application.project.ref.to_dict(), actor="manager",
+            request_id="journey-run-config", document_id="journey-run-config", role="SOURCE",
+            visibility="shared", content=run_config)
+        application.app.portfolio.link_document(application.project.ref.to_dict(),
+            {key: value for key, value in run_doc["document_ref"].items() if key != "revision"}, actor="manager",
+            request_id="journey-run-config-link", namespace="project.files", key="run.json")
+        (self.service.RUN / "run.json").write_text(json.dumps({
+            "run_id": "manager-journey-fixture", "roles": {
+                "manager": {"model": "gpt-test", "reasoning": "high"},
+                "worker_normal": {"model": "gpt-test", "reasoning": "high"},
+                "worker_xhard": {"model": "gpt-test", "reasoning": "high"}},
+            "worker_operation_profiles": {}, "assessment_accounting": run_config["assessment_accounting"]}))
         state = {"authority": application.actor.authority, "owner": "manager", "manager": "manager",
                  "project_ref": application.project.ref.to_dict(), "task_refs": {"J01": application.task.ref.to_dict()},
                  "criterion_refs": {}, "assignment_ref": application.app._read(self.anchor).assignment_ref,
@@ -83,30 +90,93 @@ class ManagerJourneyServiceTests(unittest.TestCase):
                  "requested_model": "gpt-test", "requested_reasoning": "high",
                  "manager_continuation": {"schedule_id": self.anchor,
                                           "native_session_id": "manager-session"}}
-        self.server = self.entry.lifecycle_server_class(self.service)(owner=application.owner, portfolio=application.app.portfolio,
-            state=state, due_port=application.port, binding=application.binding, store=application.store)
+        state["schema"] = "otto.host-service-state.v1"
+        state["run_id"] = "manager-journey-fixture"
+        state["mandate_ref"] = application.app._read(self.anchor).target["mandate_ref"]
+        state_path = self.root / "projects" / application.project.id / "service-state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state))
+        record = SimpleNamespace(ref=application.project.ref, payload={"tasks": [], "custom": {}})
+
+        def adapter_factory(*, principal, model, reasoning, service=None, worker_mcp=None,
+                            workspace=None, source=None, roles=("worker", "manager")):
+            # The real owner chooses the adapter here; the adapter's binding factory is the fake model.
+            return application.app.runtime.adapter
+
+        session = SimpleNamespace(
+            config={"home": str(self.root), "store": {"authority": application.store.authority}},
+            owner=application.owner, due_port=application.port, binding=application.binding,
+            store=application.store, native_bodies=None,
+            execution_application=lambda adapter, manager_actor=None: application.app)
+        self.server = HostOwnerService(session, record, command_lock=threading.RLock(), adapter_factory=adapter_factory,
+            worker_mcp_provider=lambda due: {"fixture_grant": due["assignment_ref"]["id"]},
+            worker_lab_provider=lambda project, task: {"workspace": str(self.root)},
+            worker_context_provider=lambda due: {"workspace": str(self.root)})
         self.owner_threads = []
-
-        def execution(**options):
-            application.app.runtime.adapter.requested_model = options["model"]
-            application.app.runtime.adapter.requested_reasoning = options["reasoning"]
-            return application.app
-
-        self.server._execution = execution
         self.fixture.provider.work_started = threading.Event()
         self.fixture.provider.work_release = threading.Event()
-        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
-                                  owner_path=self.directory / "manager-status-owner.json")
+        from otto.portfolio.manager_journey_service import install_manager_journey_service
+        self.host = self.server.execution_host
+        install_manager_journey_service(self.server, run_path=self.service.RUN, workspace=self.root,
+            orchestrator_principal="manager", observe_schedules=lambda project: {
+                "mode": "no-owned-schedule", "pm_owned_schedule_ids": [],
+                "coverage": {"project": project, "fixture": "no schedule automation configured"},
+                "shared_records": []})
         self.host.start()
+        self.fixture.provider.manager_env = dict(os.environ, PYTHONPATH=str(root / "src"),
+            OTTO_MANAGER_IPC=str(self.directory), OTTO_CALLER_SOCKET=str(self.host.socket_path),
+            OTTO_PROJECT="manager-journey-fixture")
+        manager = '''import json,os,sys
+from otto.hostctl.manager_client import run_launched
+for line in sys.stdin:
+    request=json.loads(line); argv=[request.pop("command")]
+    for key,value in request.items():
+        if key=="finish":
+            if value is False: argv.append("--review-only")
+            continue
+        if key=="source_refs":
+            for item in value: argv.extend(("--source-ref",json.dumps(item)))
+            continue
+        flag="--"+key.replace("_","-")
+        if isinstance(value,bool):
+            if value: argv.append(flag)
+        else: argv.extend((flag,json.dumps(value) if isinstance(value,(dict,list)) else str(value)))
+    try: result=run_launched(argv,os.environ)
+    except BaseException as exc: result={"outcome":"error","error":type(exc).__name__,"message":str(exc)}
+    print(json.dumps(result),flush=True)
+'''
+        process = subprocess.Popen([sys.executable, "-u", "-c", manager], env=self.fixture.provider.manager_env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        due = application.port.read_due(self.anchor)
+        authorization = (due.get("host_evidence") or {}).get("gateway_attempt", {}).get("delivery_authorization")
+        self.assertIsInstance(authorization, dict, "the fixture manager turn must retain owner authorization")
+        self.fixture.provider.manager_release = self.server.native_callers.observe(process, authorization)
+        self.fixture.provider.manager_process = process
         self.addCleanup(self.close_host)
 
     def close_host(self):
         self.fixture.provider.work_release.set()
+        process = self.fixture.provider.manager_process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        if self.fixture.provider.manager_release is not None:
+            self.fixture.provider.manager_release()
         self.host.close()
 
     def send(self, token, request):
         (self.directory / ("request-" + token + ".json")).write_text(json.dumps(request))
         return self.directory / ("response-" + token + ".json")
+
+    def send_caller(self, token, request):
+        """Run an identity-bearing manager command through the maintained caller client."""
+        result = self.root / ("caller-" + token + ".json")
+        process = self.fixture.provider.manager_process
+        self.assertIsNotNone(process, "the fixture manager process must remain registered")
+        process.stdin.write(json.dumps(request) + "\n")
+        process.stdin.flush()
+        result.write_text(process.stdout.readline())
+        return result
 
     def wait_response(self, path):
         deadline = time.monotonic() + 15
@@ -202,7 +272,7 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         f.port.save_due(self.anchor, replace(prior, stop_state="active", completion_state="none",
             in_flight_request="fixture-live-manager").to_dict(),
             request_id="fixture-live-manager", expected_version=prior.version)
-        admitted = self.wait_response(self.send("1111", self.worker_request()))
+        admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
         f.provider.work_release.set()
         settled = self.wait_response(Path(admitted["response_path"]))
         self.assertEqual(settled["outcome"], "succeeded", settled)
@@ -228,33 +298,32 @@ class ManagerJourneyServiceTests(unittest.TestCase):
         self.assertEqual(repeat["outcome"], "replayed", repeat)
         self.assertEqual(len(f.provider.calls), 3)
 
-    def test_baseline_real_run_worker_starves_nested_report_until_worker_returns(self):
-        worker = self.send("1111", self.worker_request())
+    def test_manager_report_commits_while_worker_provider_is_blocked(self):
+        worker = self.send_caller("1111", self.worker_request())
         started = self.fixture.provider.work_started.wait(20)
         self.assertTrue(started, worker.read_text() if worker.exists() else "no response")
-        report = self.send("2222", {"command": "report", "task": "J01", "summary": "nested report",
+        admitted = self.wait_response(worker)
+        report = self.send_caller("2222", {"command": "report", "task": "J01", "summary": "nested report",
             "next_action": "inspect evidence", "request_key": "nested-report"})
-        status = self.send("3333", {"command": "status"})
-        self.assertEqual(self.wait_response(status)["outcome"], "ok")
-        time.sleep(.2)
-        self.assertFalse(report.exists())
-        self.assertFalse(worker.exists())
-        self.fixture.provider.work_release.set()
-        self.assertEqual(self.wait_response(worker)["outcome"], "succeeded")
         self.assertEqual(self.wait_response(report)["outcome"], "committed")
+        self.assertFalse(self.fixture.provider.work_release.is_set(),
+                         "the report committed before releasing the blocked worker model")
+        self.fixture.provider.work_release.set()
+        self.wait_response(Path(admitted["response_path"]))
 
     def install_candidate(self):
-        application = self.fixture
-        scope = AssessmentModule(application.store, actor=application.actor).declare_scope("criteria", parent_obligation=application.project.ref,
-            protocol="fixture", criteria=[{"id": "C01"}], logical_request_key="journey-criteria")
-        self.server.state["criterion_refs"] = {"C01": scope.criterion_refs[0].to_dict()}
-        config = {"kind": "owner_local_bookkeeping", "local_only": True, "purpose": "isolated journey",
-                  "pool_id": "journey-local", "capacity_units": 1, "cumulative_allowance_units": 1,
-                  "task_criterion_pairs": ["J01/C01"]}
-        policy = LocalAssessmentPolicy.from_run_config(config, state=self.server.state)
-        self.host.handler = ManagerJourneyService(server=self.server, host=self.host,
-            run_path=self.service.RUN, workspace=self.root, policy=policy,
-            orchestrator_principal="orchestrator", observe_schedules=lambda project: {
+        self.assertIn("C01", self.server.state["criterion_refs"])
+        self.assertIn("assessment_policy", self.server.state)
+        (self.service.RUN / "run.json").write_text(json.dumps({
+            "run_id": "manager-journey-fixture", "roles": {
+                "manager": {"model": "gpt-test", "reasoning": "high"},
+                "worker_normal": {"model": "gpt-test", "reasoning": "high"},
+                "worker_xhard": {"model": "gpt-test", "reasoning": "high"}},
+            "worker_operation_profiles": {},
+            "assessment_accounting": self.server.state["assessment_policy"]}))
+        from otto.portfolio.manager_journey_service import install_manager_journey_service
+        install_manager_journey_service(self.server, run_path=self.service.RUN, workspace=self.root,
+            orchestrator_principal="manager", observe_schedules=lambda project: {
                 "mode": "no-owned-schedule", "pm_owned_schedule_ids": [],
                 "coverage": {"project": project, "fixture": "no schedule automation configured"},
                 "shared_records": []})
@@ -273,21 +342,23 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             return original(port, *args, **kwargs)
 
         with patch.object(type(application.port), "save_due", new=save):
-            admitted = self.wait_response(self.send("1111", self.worker_request()))
+            admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
             self.assertEqual(admitted["outcome"], "admitted", admitted)
             self.assertTrue(application.provider.work_started.wait(10))
             self.assertFalse(Path(admitted["response_path"]).exists())
             nested = [
-                ("2222", {"command": "report", "task": "J01", "summary": "nested progress",
-                          "next_action": "review returned evidence", "request_key": "nested-report"}),
                 ("3333", {"command": "project-lifecycle-read", "task": "J01"}),
                 ("4444", self.status_request(admitted)),
                 ("5555", {"command": "status"}),
             ]
+            report = self.wait_response(self.send_caller("2222", {"command": "report", "task": "J01",
+                "summary": "nested progress", "next_action": "review returned evidence", "request_key": "nested-report"}))
             results = [self.wait_response(self.send(token, request)) for token, request in nested]
-            self.assertEqual([result["outcome"] for result in results], ["committed", "read", "pending", "ok"])
-            repeated = self.wait_response(self.send("6666", self.worker_request()))
-            self.assertEqual(repeated["retained_handle"], admitted["retained_handle"])
+            self.assertEqual(report["outcome"], "committed", report)
+            self.assertEqual([result["outcome"] for result in results], ["read", "pending", "ok"], results)
+            repeated = self.wait_response(self.send_caller("6666", self.worker_request()))
+            self.assertEqual(repeated["outcome"], "retained", repeated)
+            self.assertEqual(repeated["handles"]["start"], admitted["retained_handle"], repeated)
             self.assertEqual(len(application.provider.calls), 2)
             application.provider.work_release.set()
             settled_worker = self.wait_response(Path(admitted["response_path"]))
@@ -340,24 +411,6 @@ class ManagerJourneyServiceTests(unittest.TestCase):
     def test_native_review_pending_own_settlement_automatically_continues_to_close(self):
         self.install_candidate()
         f = self.fixture
-        client = self.fixture_controller / "manager_ctl.py"
-        script = self.root / "ordinary-manager.py"
-        script.write_text('''import importlib.util,json,sys
-from pathlib import Path
-spec=importlib.util.spec_from_file_location("client",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
-client.IPC=Path(sys.argv[2]);client.HERE=client.IPC;client.SERVICE=client.IPC/"unused.sock"
-if sys.argv[3]=="review":
-    inputs=client.call({"command":"review-input","task":"J01"})
-    result=client.call({"command":"review-task","task":"J01","request_key":"native-retained-review",
-        "candidate_ref":inputs["candidate_ref"],"source_refs":inputs["source_refs"],
-        "inspection":{"observed":"actual retained failed check, repair and passed check inspected"},
-        "judgments":{"C01":{"verdict":"PASS","rationale":"retained_native_inspection_pass","evidence_refs":inputs["evidence_refs"]}}})
-else:
-    result=client.call({"command":"finish-project","request_key":"native-terminal-close",
-        "dispositions":{name:{"status":"qualified","rationale":"isolated fixture has no publication remote or owned schedule"}
-                        for name in ("acceptance","publication","remote","runtime")}})
-Path(sys.argv[4]).write_text(json.dumps(result))
-''')
         outer = self
 
         class OrdinaryManager(ProviderBinding):
@@ -365,16 +418,28 @@ Path(sys.argv[4]).write_text(json.dumps(result))
                 result = super().execute(request)
                 if request.identity.logical_agent_id == "manager" and self.options.get("delivered_brief"):
                     phase = "close" if "Observed owner task-settlement context:" in self.options["prompt"] else "review"
-                    child = subprocess.run([sys.executable, str(script), str(client), str(outer.directory), phase,
-                                            str(outer.root / (phase + ".json"))], capture_output=True, text=True, timeout=20)
-                    if child.returncode:
-                        raise RuntimeError(child.stderr)
+                    if phase == "review":
+                        inputs = json.loads(outer.send_caller("native-review-input",
+                            {"command": "review-input", "task": "J01"}).read_text())
+                        reviewed = json.loads(outer.send_caller("native-review", {"command": "review-task",
+                            "task": "J01", "request_key": "native-retained-review",
+                            "candidate_ref": inputs["candidate_ref"], "source_refs": inputs["source_refs"],
+                            "inspection": {"observed": "actual retained failed check, repair and passed check inspected"},
+                            "judgments": {"C01": {"verdict": "PASS", "rationale": "retained_native_inspection_pass",
+                                "evidence_refs": inputs["evidence_refs"]}}}).read_text())
+                        (outer.root / "review.json").write_text(json.dumps(reviewed))
+                    else:
+                        closed = json.loads(outer.send_caller("native-terminal-close", {"command": "finish-project",
+                            "request_key": "native-terminal-close", "dispositions": {
+                                name: {"status": "qualified", "rationale": "isolated fixture has no publication remote or owned schedule"}
+                                for name in ("acceptance", "publication", "remote", "runtime")}}).read_text())
+                        (outer.root / "close.json").write_text(json.dumps(closed))
                 return result
 
         f.app.runtime.adapter.binding_factory = lambda **options: OrdinaryManager(f.provider, options)
         reports_before = self.reports()
         f.provider.work_release.set()
-        worker = self.wait_response(self.send("1111", self.worker_request()))
+        worker = self.wait_response(self.send_caller("1111", self.worker_request()))
         result = self.wait_response(Path(worker["response_path"]))
         reviewed = self.wait_response(Path(result["manager_result_notification"]["response_path"]))
         self.assertEqual(reviewed["outcome"], "succeeded", reviewed)
@@ -412,7 +477,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.install_candidate()
         f = self.fixture
         f.provider.work_release.set()
-        admitted = self.wait_response(self.send("1111", self.worker_request()))
+        admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
         settled = self.wait_response(Path(admitted["response_path"]))
         self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
         inputs = self.wait_response(self.send("abcd", {"command": "review-input", "task": "J01"}))
@@ -523,7 +588,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
             self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task")))
         self.assertEqual(f.owner.graph.current(old.ref).payload, old_payload)
         f.provider.work_release.set()
-        admitted = self.wait_response(self.send("1111", {**self.worker_request(), "task": "J02", "route": "normal",
+        admitted = self.wait_response(self.send_caller("1111", {**self.worker_request(), "task": "J02", "route": "normal",
             "principal": "corrective-worker", "request_key": "corrective-artifact-worker", "focus": outcome}))
         settled = self.wait_response(Path(admitted["response_path"]))
         self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
@@ -559,8 +624,6 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         f.compose(owner_actor="service-owner", manager_actor="manager")
         self.server.owner, self.server.portfolio = f.owner, f.app.portfolio
         self.server.state["owner"] = "service-owner"
-        legacy = self.server.handle({"command": "project-lifecycle-read", "task": "J01"})
-        self.assertEqual(legacy["error"]["code"], "project_scope_denied")
         self.install_candidate()
         request = {"command": "project-lifecycle-read", "task": "J01"}
         current = self.host.handler(request)
@@ -588,14 +651,11 @@ Path(sys.argv[4]).write_text(json.dumps(result))
 
     def test_worker_roots_follow_actual_adapter_and_owner_configured_cold_operation(self):
         self.install_candidate()
-        config = json.loads((self.service.RUN / "run.yaml").read_text())
+        config = json.loads((self.service.RUN / "run.json").read_text())
         config["worker_operation_profiles"] = {"J01": "cold_manager_operation"}
+        (self.service.RUN / "run.json").write_text(json.dumps(config))
         self.fixture.app.runtime.adapter.writable_roots = (str(self.root / "controller"),)
-        real_read = Path.read_text
-        def read(path, *args, **kwargs):
-            return json.dumps(config) if path == self.service.RUN / "run.yaml" else real_read(path, *args, **kwargs)
-        with patch.object(Path, "read_text", read):
-            admitted = self.wait_response(self.send("cccc", self.worker_request()))
+        admitted = self.wait_response(self.send_caller("cccc", self.worker_request()))
         self.assertEqual(admitted["outcome"], "admitted", admitted)
         self.assertTrue(self.fixture.provider.work_started.wait(10))
         due = self.fixture.app._read(admitted["schedule_id"])
@@ -614,14 +674,11 @@ Path(sys.argv[4]).write_text(json.dumps(result))
 
     def test_unknown_operation_profile_is_rejected_before_any_provider_or_assignment(self):
         self.install_candidate()
-        config = json.loads((self.service.RUN / "run.yaml").read_text())
+        config = json.loads((self.service.RUN / "run.json").read_text())
         config["worker_operation_profiles"] = {"J01": "invented_authority"}
-        real_read = Path.read_text
-        def read(path, *args, **kwargs):
-            return json.dumps(config) if path == self.service.RUN / "run.yaml" else real_read(path, *args, **kwargs)
+        (self.service.RUN / "run.json").write_text(json.dumps(config))
         calls = len(self.fixture.provider.calls)
-        with patch.object(Path, "read_text", read):
-            result = self.wait_response(self.send("dddd", self.worker_request()))
+        result = self.wait_response(self.send_caller("dddd", self.worker_request()))
         self.assertEqual(result["outcome"], "error")
         self.assertIn("owner must correct run policy", result["message"])
         self.assertEqual(len(self.fixture.provider.calls), calls)
@@ -631,7 +688,7 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         self.install_candidate()
         application = self.fixture
         application.provider.unknown = True
-        admitted = self.wait_response(self.send("1111", self.worker_request()))
+        admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
         self.assertTrue(application.provider.work_started.wait(10))
         application.provider.work_release.set()
         unknown = self.wait_response(Path(admitted["response_path"]))
@@ -643,11 +700,11 @@ Path(sys.argv[4]).write_text(json.dumps(result))
                                   owner_path=self.directory / "manager-status-owner.json")
         self.install_candidate()
         self.host.start()
-        repeated = self.wait_response(self.send("2222", self.worker_request()))
+        repeated = self.wait_response(self.send_caller("2222", self.worker_request()))
         self.assertEqual(repeated["retained_handle"], admitted["retained_handle"])
         self.assertEqual(len(application.provider.calls), calls)
         self.assertEqual(application.port.read_due(admitted["schedule_id"]), before)
-        held = self.wait_response(self.send("3333", {**self.worker_request(), "request_key": "unknown-new-key"}))
+        held = self.wait_response(self.send_caller("3333", {**self.worker_request(), "request_key": "unknown-new-key"}))
         self.assertEqual(held["outcome"], "held")
         self.assertEqual(len(application.provider.calls), calls)
 
@@ -666,24 +723,9 @@ Path(sys.argv[4]).write_text(json.dumps(result))
         plan.write_text(json.dumps([self.worker_request(), {"command": "project-lifecycle-read", "task": "J01"},
             {"command": "report", "task": "J01", "summary": "nested manager evidence",
              "next_action": "finish after native settlement", "request_key": "nested-progress"}, review]))
-        release = self.root / "release-parent"
+        parent_release = threading.Event()
         receipt = self.root / "native-commands.json"
-        script = self.root / "native-manager.py"
-        installed_client = self.fixture_controller / "manager_ctl.py"
-        client = self.root / "manager_ctl.py"
-        client.write_text(installed_client.read_text().replace("read_command_status(IPC, token)",
-                                                             "read_command_status(IPC, token, pending_only=True)"))
-        script.write_text('''import importlib.util,json,sys,time
-from pathlib import Path
-spec=importlib.util.spec_from_file_location("journey_client",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
-client.IPC=Path(sys.argv[2]);client.HERE=client.IPC;client.SERVICE=client.IPC/"unused.sock"
-results=[client.call(request) for request in json.loads(Path(sys.argv[3]).read_text())]
-Path(sys.argv[4]).write_text(json.dumps(results))
-deadline=time.monotonic()+20
-while not Path(sys.argv[5]).exists() and time.monotonic()<deadline:time.sleep(.01)
-if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
-''')
-        self.addCleanup(release.touch)
+        self.addCleanup(parent_release.set)
         outer = self
 
         class NativeManagerBinding(ProviderBinding):
@@ -696,12 +738,11 @@ if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
                     observed = super().execute(request)
                 finally:
                     application.provider.work_started, application.provider.work_release = started, released
-                native = subprocess.run([sys.executable, str(script), str(client), str(outer.directory),
-                                         str(plan), str(receipt), str(release)],
-                                        capture_output=True, text=True, timeout=25)
-                if native.returncode:
-                    (outer.root / "native-error.txt").write_text(native.stderr)
-                    raise RuntimeError(native.stderr)
+                results = [json.loads(outer.send_caller("nested-%d" % index, command).read_text())
+                           for index, command in enumerate(json.loads(plan.read_text()))]
+                receipt.write_text(json.dumps(results))
+                if not parent_release.wait(25):
+                    raise RuntimeError("parent manager release expired")
                 return observed
 
         application.app.runtime.adapter.binding_factory = lambda **options: NativeManagerBinding(application.provider, options)
@@ -720,7 +761,8 @@ if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
                         str(json.loads(response.read_text()).get("continuation", {}).get("result", {}).get("error")) if response.exists() else
                         json.dumps({path.name: path.read_text() for path in self.directory.glob("request-*.json")}))
         nested = json.loads(receipt.read_text())
-        self.assertEqual([value["outcome"] for value in nested], ["admitted", "read", "committed", "accepted"], nested)
+        self.assertEqual([value["outcome"] for value in nested], ["admitted", "read", "committed", "accepted"],
+                         [value.get("outcome") for value in nested])
         self.assertEqual(nested[-1]["completion"]["outcome"], "pending", nested)
         self.assertFalse(response.exists())
         closing = threading.Thread(target=self.host.close)
@@ -734,13 +776,13 @@ if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
             self.assertEqual(progress["outcome"], "read")
             application.provider.work_release.set()
             self.assertEqual(self.wait_response(Path(nested[0]["response_path"]))["outcome"], "succeeded")
-            release.touch()
+            parent_release.set()
             result = self.wait_response(response)
             self.assertEqual(result["outcome"], "succeeded", result)
             self.assertEqual(result["completion_intents"][0]["result"]["outcome"], "completed", result)
         finally:
             application.provider.work_release.set()
-            release.touch()
+            parent_release.set()
             closing.join(15)
         self.assertFalse(closing.is_alive())
         self.assertEqual(len(application.provider.calls), 3)
@@ -769,27 +811,8 @@ if not Path(sys.argv[5]).exists():raise RuntimeError("parent release expired")
         next_task = WorkGraph(f.store, actor=f.actor).create_task(f.project.ref,
             title="Next useful delivery", logical_request_key="intermediate-next-task")
         self.server.state["task_refs"]["J02"] = next_task.ref.to_dict()
-        client = self.fixture_controller / "manager_ctl.py"
         next_request = {**self.worker_request(), "task": "J02", "principal": "next-worker",
                         "request_key": "intermediate-next-worker", "focus": "Implement next useful delivery"}
-        script = self.root / "intermediate-manager.py"
-        script.write_text('''import importlib.util,json,sys
-from pathlib import Path
-spec=importlib.util.spec_from_file_location("client",sys.argv[1]);client=importlib.util.module_from_spec(spec);spec.loader.exec_module(client)
-client.IPC=Path(sys.argv[2]);client.HERE=client.IPC;client.SERVICE=client.IPC/"unused.sock"
-if sys.argv[3]=="review":
-    inputs=client.call({"command":"review-input","task":"J01"})
-    result=client.call({"command":"review-task","task":"J01","request_key":"intermediate-review",
-        "candidate_ref":inputs["candidate_ref"],"source_refs":inputs["source_refs"],"finish":False,
-        "inspection":{"observed":"genuine retained worker result inspected"},
-        "judgments":{"C01":{"verdict":"PASS","rationale":"retained_native_inspection_pass","evidence_refs":inputs["evidence_refs"]}}})
-    result=client.call({"command":"finish-task","task":"J01","request_key":"intermediate-finish","review_key":"intermediate-review"})
-elif sys.argv[3]=="advance":
-    result=client.call(json.loads(sys.argv[5]))
-else:
-    result=client.call({"command":"project-lifecycle-read","task":"J02"})
-Path(sys.argv[4]).write_text(json.dumps(result))
-''')
         outer = self
         phases = []
         class OrdinaryManager(ProviderBinding):
@@ -801,15 +824,30 @@ Path(sys.argv[4]).write_text(json.dumps(result))
                         outer.assertIn("Observed owner task-settlement context:", self.options["prompt"])
                         outer.assertIn("advance ready unfinished tasks", self.options["prompt"])
                     phases.append(phase)
-                    child = subprocess.run([sys.executable, str(script), str(client), str(outer.directory), phase,
-                        str(outer.root / (phase + ".json")), json.dumps(next_request)],
-                        capture_output=True, text=True, timeout=20)
-                    if child.returncode: raise RuntimeError(child.stderr)
+                    if phase == "review":
+                        inputs = json.loads(outer.send_caller("intermediate-review-input",
+                            {"command": "review-input", "task": "J01"}).read_text())
+                        reviewed = json.loads(outer.send_caller("intermediate-review", {"command": "review-task",
+                            "task": "J01", "request_key": "intermediate-review", "candidate_ref": inputs["candidate_ref"],
+                            "source_refs": inputs["source_refs"], "finish": False,
+                            "inspection": {"observed": "genuine retained worker result inspected"},
+                            "judgments": {"C01": {"verdict": "PASS", "rationale": "retained_native_inspection_pass",
+                                "evidence_refs": inputs["evidence_refs"]}}}).read_text())
+                        (outer.root / "review.json").write_text(json.dumps(reviewed))
+                        outer.send_caller("intermediate-finish", {"command": "finish-task", "task": "J01",
+                            "request_key": "intermediate-finish", "review_key": "intermediate-review"})
+                    elif phase == "advance":
+                        advanced = json.loads(outer.send_caller("intermediate-advance", next_request).read_text())
+                        (outer.root / "advance.json").write_text(json.dumps(advanced))
+                    else:
+                        inspected = json.loads(outer.send_caller("intermediate-inspect",
+                            {"command": "project-lifecycle-read", "task": "J02"}).read_text())
+                        (outer.root / "inspect.json").write_text(json.dumps(inspected))
                 return result
         f.app.runtime.adapter.binding_factory = lambda **options: OrdinaryManager(f.provider, options)
         reports_before = self.reports()
         f.provider.work_release.set()
-        first = self.wait_response(self.send("a101", self.worker_request()))
+        first = self.wait_response(self.send_caller("a101", self.worker_request()))
         worker = self.wait_response(Path(first["response_path"]))
         reviewed = self.wait_response(Path(worker["manager_result_notification"]["response_path"]))
         reviewed_finish = json.loads((self.root / "review.json").read_text())
