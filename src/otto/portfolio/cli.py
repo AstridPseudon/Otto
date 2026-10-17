@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import uuid
 from typing import Any, Mapping, Optional, Sequence
 
 from herzchen.authoring.sessions import InvalidSessionError
@@ -25,6 +26,9 @@ from .operating_brief import OperatingBriefError, prepare_canonical_operating_br
 from .resource_sync import ResourceSyncError, resolve_assignment_attachments
 from .observability_views import VIEW_PRESETS
 from .show import open_session, show_project
+from herzchen.kernel import OperationManager, OperationState
+from herzchen.contracts import ResourceRef
+from herzchen.kernel.operations import UnknownOutcomeError, OperationError
 
 
 TASK_VIEWS = ("all", "upcoming", "ready", "blocked", "in_progress", "completed")
@@ -48,6 +52,19 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     sub = parser.add_subparsers(dest="command")
     help_parser = sub.add_parser("help", help="show the manager entry contract")
     _add_format(help_parser)
+
+    effects = sub.add_parser("effects", help="inspect or reconcile one exact retained effect")
+    effects_sub = effects.add_subparsers(dest="effects_command", required=True)
+    effects_read = effects_sub.add_parser("read", help="read one effect by its canonical effect ResourceRef")
+    effects_read.add_argument("--effect-ref", required=True, help="canonical effect ResourceRef JSON")
+    _add_format(effects_read)
+    effects_resolve = effects_sub.add_parser("resolve", help="settle a held effect from exact retained terminal proof")
+    effects_resolve.add_argument("--effect-ref", required=True, help="canonical effect ResourceRef JSON")
+    effects_resolve.add_argument("--state", choices=("committed", "failed"), required=True)
+    effects_resolve.add_argument("--result-json", default="{}", help="result claimed by the retained terminal proof")
+    effects_resolve.add_argument("--evidence-key", required=True, help="owner receipt key for the exact effect.terminal proof")
+    effects_resolve.add_argument("--request-key", help="optional resolution key; generated when omitted")
+    _add_format(effects_resolve)
 
     wait_parser = sub.add_parser("wait", help="wait for an answer to one exact asking session")
     wait_parser.add_argument("--assignment-ref", required=True, help="asking work.assignment ResourceRef JSON")
@@ -1064,6 +1081,83 @@ def _emit(result: Any, output_format: str) -> None:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
 
+def _effect_command(args: Any, manager: Any, resolver: Any = None) -> dict[str, Any]:
+    """Read or prove one exact effect through the injected owner operation port."""
+    schema = "otto.effects.v1"
+    if manager is None:
+        return _surface_unavailable(
+            schema, "effect_owner_unavailable",
+            "Use the existing owner command lane; no local effect ledger is available.",
+        )
+    try:
+        raw_ref = _parse_ref(args.effect_ref, "effect_ref")
+        ref = ResourceRef.from_dict(raw_ref)
+        if ref.kind != "effect":
+            raise ValueError("effect_ref must have kind 'effect'")
+        record = manager.get(ref.id)
+        if record is None or record.effect_ref != ref:
+            return {"outcome": "not_found", "schema": schema, "effect_ref": ref.to_dict(),
+                    "next_action": "refresh the exact effect reference from the owner response"}
+        if args.effects_command == "read":
+            held = record.state.value in {"unknown", "uncertain"}
+            evidence_status = "required" if held else (
+                "retained" if record.state.value in {"committed", "failed"} else "not_required"
+            )
+            if held:
+                next_action = (
+                    "inspect the effect's source evidence, then use `otto effects resolve --effect-ref "
+                    + json.dumps(ref.to_dict(), separators=(",", ":"))
+                    + " --state committed --evidence-key RECEIPT_KEY --result-json RESULT_JSON` (use failed "
+                    "when the proof says failed); the owner accepts only an exact retained effect.terminal proof "
+                    "and generates the resolution request key"
+                )
+            else:
+                next_action = (
+                    "continue this prepared effect through its originating owner operation"
+                    if record.state.value == "prepared" else
+                    "no reconciliation is available or needed for this terminal effect state"
+                )
+            return {
+                "outcome": "read", "schema": schema, "effect_ref": ref.to_dict(),
+                "operation_ref": record.operation_ref.to_dict(), "operation": record.request.operation,
+                "state": record.state.value, "evidence_status": evidence_status,
+                "request_payload": dict(record.request.payload), "result": dict(record.result),
+                "next_action": next_action,
+            }
+        try:
+            if record.state.value not in {"unknown", "uncertain"}:
+                return {"outcome": "rejected", "schema": schema, "effect_ref": ref.to_dict(),
+                        "state": record.state.value,
+                        "next_action": "read this exact effect and continue through its originating owner operation"}
+            state = OperationState(args.state)
+            result = _parse_json(args.result_json, "result_json")
+            if not isinstance(result, Mapping):
+                raise ValueError("result_json must be a JSON object")
+            if resolver is None:
+                return _surface_unavailable(
+                    schema, "effect_resolver_unavailable",
+                    "Resolve this effect through the authenticated owner command lane.",
+                )
+            request_key = args.request_key or ("otto-effects-resolve:" + uuid.uuid4().hex)
+            resolved = manager.resolve_unknown(
+                record, state, result, resolver=resolver, evidence_key=args.evidence_key,
+                transition_key=request_key,
+            )
+            return {
+                "outcome": "resolved", "schema": schema, "effect_ref": resolved.effect_ref.to_dict(),
+                "state": resolved.state.value, "request_key": request_key,
+                "evidence_status": "verified", "result": dict(resolved.result),
+                "next_action": "read this exact effect to confirm its retained terminal state",
+            }
+        except (json.JSONDecodeError, ValueError, OperationError, UnknownOutcomeError) as exc:
+            return {"outcome": "held", "schema": schema, "effect_ref": ref.to_dict(),
+                    "error": {"code": "resolution_refused", "message": str(exc)},
+                    "next_action": ("retain effect " + ref.id + " in held state; inspect its exact source evidence "
+                                    "and use the matching terminal proof")}
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return _request_error(str(exc), code="invalid_effect_reference")
+
+
 def main(
     argv: Optional[list[str]] = None,
     *,
@@ -1082,6 +1176,8 @@ def main(
     status_session: Any = None,
     labs: Any = None,
     editor_host: Any = None,
+    effect_manager: Any = None,
+    effect_resolver: Any = None,
 ) -> int:
     if bound_actor is not None and (not isinstance(bound_actor, str) or not bound_actor.strip()):
         raise ValueError("bound_actor must be non-blank text")
@@ -1108,7 +1204,11 @@ def main(
     if portfolio is None:
         portfolio = OttoPortfolio()
     try:
-        if args.command == "wait":
+        if args.command == "effects":
+            result = _effect_command(args, effect_manager, effect_resolver)
+            _emit(result, args.format)
+            return _exit_code(result)
+        elif args.command == "wait":
             result = _surface_unavailable("otto.wait.v1", "caller_socket_required",
                 "Run otto wait through its authenticated native caller socket")
         elif args.command == "ask":
@@ -1138,6 +1238,7 @@ def main(
                     "superseded_guidance": "historical proposal/folder/transition examples are evidence; use the selected onboarding guide and current owner reads",
                     "events_operator_views": "python -m otto.portfolio.cli events {overview,timeline,agents,tasks-reviews,blockers,usage,recovery} --project-ref REF_JSON",
                     "events_operator_detail": "python -m otto.portfolio.cli events detail --facet-id FACET_ID --snapshot SNAPSHOT_JSON",
+                    "effects": "otto effects read --effect-ref REF_JSON; held effects resolve only with exact retained terminal proof via otto effects resolve",
                     "skills_index": "src/otto/portfolio/skills/SKILL.md (maintained Otto skill index)",
                     "recovery_skill": "src/otto/portfolio/skills/recovery/SKILL.md (inspect/resume/reassign/verify, including reminders)",
                     "task_detail": "python -m otto.portfolio.cli task --project-ref REF_JSON --task-ref REF_JSON",
@@ -1159,8 +1260,9 @@ def main(
                     "project_advisor_pair": "available only through an explicitly injected owner-bound OttoPortfolio and exact current manager pins",
                     "operating_brief": "available only through injected canonical owner readers; local staged bundles are never treated as adopted resources",
                     "vision": "available only through an explicitly injected authenticated VisionCommandSurface; selected resources and operation pins are returned by the surface",
+                    "effects": "available only through the existing authenticated owner command lane; resolution requires exact retained local terminal proof",
                 },
-                "cli_scope": "owner-backed reads, inert title+brief onboarding, finite authenticated Vision author/query/context/checkpoint operations, guarded task completion, and execution help; no provider launch or scheduler command",
+                "cli_scope": "owner-backed reads and exact held-effect reconciliation, inert title+brief onboarding, finite authenticated Vision author/query/context/checkpoint operations, guarded task completion, and execution help; no provider launch or scheduler command",
                 "document_injection": "Supply the accepted ProjectDocumentOperations instance through cli.main(argv, document_operations=...).",
                 "assessment_injection": "Supply the accepted OttoAssessment facade through cli.main(argv, assessment=...).",
                 "completion_gate_injection": "Supply the existing ResponsibilityAssignments owner through cli.main(argv, completion_owner=...).",
@@ -1656,11 +1758,14 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
     from .document_editor_host import owner_editor_host
     words = list(argv)
     editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
+    effect_manager = OperationManager(session.store) if words[:1] and words[0] == "effects" else None
+    effect_resolver = session.owner.owner_actor.actor if effect_manager is not None else None
     out = StringIO()
     try:
         with redirect_stdout(out):
             code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session,
-                        bound_actor=session.owner.owner_actor.actor)
+                        bound_actor=session.owner.owner_actor.actor,
+                        effect_manager=effect_manager, effect_resolver=effect_resolver)
     except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
         return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
     text = out.getvalue()

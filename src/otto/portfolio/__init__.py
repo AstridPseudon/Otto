@@ -28,7 +28,6 @@ from .operating_brief import (
     prepare_canonical_operating_brief,
     render_operating_brief,
 )
-from .execution_resume import ExecutionResumeError, execute_selected_packet, packet_digest
 from .sense_check import SenseCheckError, hourly_sense_check
 from .steady_state import SteadyStateError, build_manager_action_packet, fence_replacement
 from .resource_sync import (
@@ -135,9 +134,6 @@ __all__ = [
     "ROLE_OPERATING_CONTRACTS",
     "prepare_canonical_operating_brief",
     "render_operating_brief",
-    "ExecutionResumeError",
-    "execute_selected_packet",
-    "packet_digest",
     "SenseCheckError",
     "hourly_sense_check",
     "SteadyStateError",

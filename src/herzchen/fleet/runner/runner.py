@@ -108,13 +108,13 @@ class Runner:
                     return _error("evidence_invalid", str(exc))
                 response = {"ok": True, "run_id": run_id, "state": existing["state"], "existing": True,
                             "binding": binding, "commit": commit}
-                if existing["state"] == "unknown" and self._effect_ledger is not None:
-                    effect = self._effect_ledger.get(run_id)
-                    if effect is not None:
-                        if not self._effect_ledger.matches(existing, effect):
-                            return _error("evidence_invalid", "held effect does not match the sealed runner request")
-                        response["effect_ref"] = effect.effect_ref.to_dict()
-                        response["next_action"] = "inspect retained process evidence; resolve only with exact terminal proof"
+                held_effect = self._unknown_effect_guidance(existing)
+                if held_effect is not None:
+                    if held_effect.get("error"):
+                        return {**_error("evidence_invalid", held_effect["error"]),
+                                "effect_ref": held_effect.get("effect_ref"),
+                                "next_action": held_effect.get("next_action")}
+                    response.update(held_effect)
                 return response
             parent = self._parent_lease(peer_pid, snap)
             units = 0 if parent is not None else req["units"]
@@ -162,7 +162,15 @@ class Runner:
                     return {"ok": False, "error": "evidence_invalid"}
                 if record["state"] in ("settled", "unknown"):
                     code = record["exit_code"] if record["state"] == "settled" else EXIT_UNKNOWN
-                    return {"ok": True, "done": True, "record": record, "exit_code": code}
+                    response = {"ok": True, "done": True, "record": record, "exit_code": code}
+                    held_effect = self._unknown_effect_guidance(record)
+                    if held_effect is not None:
+                        if held_effect.get("error"):
+                            return {**_error("evidence_invalid", held_effect["error"]),
+                                    "effect_ref": held_effect.get("effect_ref"),
+                                    "next_action": held_effect.get("next_action")}
+                        response.update(held_effect)
+                    return response
                 if deadline is None:
                     self._cond.wait()
                     continue
@@ -191,6 +199,13 @@ class Runner:
                     out["record"] = self._store.get(run_id)
                     if out["record"] is not None:
                         self._refresh_unknown(out["record"])
+                        held_effect = self._unknown_effect_guidance(out["record"])
+                        if held_effect is not None:
+                            if held_effect.get("error"):
+                                return {**_error("evidence_invalid", held_effect["error"]),
+                                        "effect_ref": held_effect.get("effect_ref"),
+                                        "next_action": held_effect.get("next_action")}
+                            out.update(held_effect)
                 except StoreError as exc:
                     return _error("evidence_invalid", str(exc))
         return out
@@ -477,6 +492,21 @@ class Runner:
         effect = self._effect_ledger.get(record["run_id"])
         if effect is not None and self._effect_ledger.matches(record, effect):
             self._mirror_terminal_effect(record, effect)
+
+    def _unknown_effect_guidance(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+        if record.get("state") != "unknown" or self._effect_ledger is None:
+            return None
+        effect = self._effect_ledger.get(str(record.get("run_id", "")))
+        if effect is None:
+            return None
+        if not self._effect_ledger.matches(record, effect):
+            return {"effect_ref": effect.effect_ref.to_dict(),
+                    "error": "held effect does not match the sealed runner request",
+                    "next_action": "retain this exact effect hold and inspect its request binding"}
+        ref = json.dumps(effect.effect_ref.to_dict(), separators=(",", ":"))
+        return {"effect_ref": effect.effect_ref.to_dict(), "evidence_status": "required",
+                "next_action": "inspect retained process evidence, then run `otto effects read --effect-ref " + ref +
+                               "`; resolve only with exact terminal proof from this effect"}
 
     def _mirror_terminal_effect(self, record: dict[str, Any], effect: Any) -> bool:
         """Mirror a retained terminal kernel result only when its output file proves the digest."""
