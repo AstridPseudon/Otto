@@ -62,6 +62,8 @@ RUN_EVENTS = ("lab-created", "turn", "done", "check-passed", "check-failed", "la
 REQUIRED = {
     "landed": ("lab-created", "turn", "done", "check-passed", "landed", "lab-deleted"),
     "refused": ("lab-created", "turn", "done", "check-failed", "refused", "lab-deleted"),
+    # Conflict refusal is stage 4's dedicated assertion; keep the shared task timeline complete either way.
+    "conflict": ("lab-created", "turn", "done", "check-passed", "lab-deleted"),
 }
 
 
@@ -684,7 +686,21 @@ def seeded_read(path):
 def seed(raw, kind):
     """A seeded fault in one observation of the run, so that the assertion which reads it must turn red."""
     raw = Path(raw)
-    if kind == "census":
+    if kind == "conflict":
+        path = raw / "events.tsv"
+        lines = read_lines(path)
+        kept = [line for line in lines if not ("\tlanding-conflict\t" in line)]
+        if len(kept) == len(lines):
+            raise ValueError("no landing-conflict event in this run to seed a conflict fault into")
+        path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+    elif kind == "owner":
+        path = raw / "events.tsv"
+        lines = read_lines(path)
+        kept = [line for line in lines if "\towner-dispatch-launched\t" not in line]
+        if len(kept) == len(lines):
+            raise ValueError("no owner-dispatch-launched event in this run to seed an owner-path fault into")
+        path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+    elif kind == "census":
         (raw / "census.up.txt").write_text("", encoding="utf-8")
     elif kind == "store":
         timeline = read_json(raw / "timeline.json", {}) or {}
@@ -884,8 +900,9 @@ def cmd_init(args):
     stage = project["stages"][args.stage]
     # Stage 2 is driven through the staging owner; its task lifecycle is in stage2-observations.json,
     # not in the local fake-worker timeline used by stages 0 and 1.
-    tasks = [] if args.stage == "2" else [{"name": name, "expect": project["tasks"][name]["expect"]}
-                                          for name in stage["tasks"]]
+    tasks = [] if args.stage == "2" else [{"name": name, "expect": project["tasks"][name]["expect"],
+                                             "landing_conflict": project["tasks"][name].get("landing_conflict", False)}
+                                            for name in stage["tasks"]]
     config = {
         "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"], "stage_root": args.stage_root,
         "host": stage.get("host"),
@@ -1436,6 +1453,29 @@ def assertions(raw):
         if missing:
             failures.append("%s missing %s" % (task["name"], ", ".join(missing)))
     add("timeline-events", failures, "every task has its events")
+
+    if config.get("stage") == "4":
+        # A note saying that the scenario ran is not evidence. Require owner-side
+        # admission and automatic dispatch observations for the happy canary task,
+        # followed by its worker/check/landing lifecycle. Direct fake worktree runs
+        # do not satisfy this owner-driven acceptance assertion.
+        happy = next((task for task in config.get("tasks", []) if task.get("expect") == "landed"), None)
+        owner_kinds = {e["kind"] for e in events if happy and e["task"] == happy["name"]}
+        owner_required = {"owner-admitted", "owner-task-admitted", "owner-dispatch-launched",
+                          "lab-created", "turn", "done", "check-passed", "landed", "lab-deleted"}
+        add("owner-driven-canary", [] if owner_required <= owner_kinds else
+            ["owner journey missing " + ", ".join(sorted(owner_required - owner_kinds))],
+            "the owner admitted and automatically dispatched the canary through check, done, landing and lab deletion",
+            skip=("fake worktree harness does not exercise owner admission or automatic dispatch"
+                  if config.get("fake") else None))
+        conflict_task = next((task for task in config.get("tasks", []) if task.get("landing_conflict")), None)
+        kinds = [e["kind"] for e in events if conflict_task and e["task"] == conflict_task["name"]]
+        expected = {"lab-created", "turn", "done", "check-passed", "landing-conflict", "refused", "lab-deleted"}
+        add("landing-conflict-refused", [] if set(kinds) == expected and "landed" not in kinds else
+            ["conflict task events %s; expected %s and no landed event" % (kinds, sorted(expected))],
+            "the passing worker hit a merge conflict and landing was refused")
+        add("landing-conflict-lab-deleted", [] if "lab-deleted" in kinds else
+            ["conflict lab was not deleted"], "the conflict lab was removed after refusal")
 
     left = read_lines(raw / "leftovers.txt")
     add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")

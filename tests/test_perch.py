@@ -1504,8 +1504,8 @@ class StoreTimelineSubcommandTests(unittest.TestCase):
         self.assertEqual(data["tasks"], [])
 
 
-def run_perch(tmp, sha, fault=""):
-    """perch.sh 0 --fake in a temp folder, with the commit under test pinned to SHA. Returns (exit, log, report dir)."""
+def run_perch(tmp, sha, fault="", stage="0"):
+    """perch.sh STAGE --fake in a temp folder, with the commit under test pinned to SHA."""
     env = dict(
         os.environ, OTTO_STAGING_ROOT=str(tmp / "_staging"), OTTO_REPO=str(ROOT), OTTO_PYTHON=PY,
         OTTO_STAGING_REF=sha, OTTO_STAGING_READY_SECONDS="60", OTTO_STAGING_STOP_SECONDS="30",
@@ -1517,11 +1517,11 @@ def run_perch(tmp, sha, fault=""):
     log = tmp / "perch.log"
     with open(log, "w", encoding="utf-8") as out:
         try:
-            r = subprocess.run(["bash", str(PERCH), "0", "--fake"], env=env, stdin=subprocess.DEVNULL, stdout=out,
+            r = subprocess.run(["bash", str(PERCH), stage, "--fake"], env=env, stdin=subprocess.DEVNULL, stdout=out,
                                stderr=subprocess.STDOUT, timeout=600)
         except subprocess.TimeoutExpired:
             return None, log.read_text(encoding="utf-8")[-4000:], None
-    reports = list((tmp / "perch" / "0").glob("*/report.md"))
+    reports = list((tmp / "perch" / stage).glob("*/report.md"))
     return r.returncode, log.read_text(encoding="utf-8"), reports[0].parent if reports else None
 
 
@@ -1552,6 +1552,24 @@ class FakeRunTests(unittest.TestCase):
         self.assertEqual(timeline["tasks"], [], "the fake run drives no product task")
         self.assertFalse((self.tmp / "_staging" / "perch-canary").exists() and
                          any((self.tmp / "_staging" / "perch-canary").iterdir()), "canary scratch left behind")
+
+    def test_stage4_fake_run_lands_happy_path_refuses_conflict_and_deletes_labs(self):
+        code, log, report_dir = run_perch(self.tmp, self.sha, stage="4")
+        self.assertIsNotNone(code, "stage 4 fake perch did not finish; log tail:\n" + log)
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(report_dir, log)
+        got = results_of(report_dir)
+        self.assertEqual(got["landing-conflict-refused"], "pass", got)
+        self.assertEqual(got["landing-conflict-lab-deleted"], "pass", got)
+        self.assertTrue(all(got[name] == "pass" for name in NAMES[:7]), got)
+
+    def test_stage4_seeded_missing_conflict_turns_its_assertion_red(self):
+        code, log, report_dir = run_perch(self.tmp, self.sha, "conflict", stage="4")
+        self.assertIsNotNone(code, "stage 4 seeded-fault perch did not finish; log tail:\n" + log)
+        self.assertEqual(code, 1, log)
+        got = results_of(report_dir)
+        self.assertEqual({name for name, status in got.items() if status == "fail"},
+                         {"landing-conflict-refused"}, got)
 
 
 # The assertions each seeded fault turns red in a real run. A lab left behind also leaves its lab-deleted
