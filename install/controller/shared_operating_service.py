@@ -399,10 +399,13 @@ def compose(*, hold_dispatch=False):
   if not selection_ref:raise PermissionError('canonical Vision selection must be adopted before startup')
   expected=owner.content.read(ResourceRef.from_dict(selection_ref))['content']
   from herzchen.packs.authoring import read_managed_pack
+  from astrid.core.pack.discovery import discover_canonical_pack_metadata
+  from astrid.core.pack.loader import load_pack_manifest
   before_source_state=os.environ.get('ASTRID_SOURCE_STATE')
   try:
    os.environ['ASTRID_SOURCE_STATE']=str(C/'evidence/vision-managed-installation/source-state.json')
-   vision_managed=read_managed_pack('vision',project_root=base.ASTRID_DEPENDENCY_ROOT)
+   vision_managed=read_managed_pack('vision',project_root=base.ASTRID_DEPENDENCY_ROOT,
+    discoverer=discover_canonical_pack_metadata,loader=load_pack_manifest)
   finally:
    if before_source_state is None:os.environ.pop('ASTRID_SOURCE_STATE',None)
    else:os.environ['ASTRID_SOURCE_STATE']=before_source_state
