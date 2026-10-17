@@ -195,6 +195,13 @@ class RolePackSelectorTests(unittest.TestCase):
                 _role_pack(self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
                     "role_bindings": {}, "role_pack": {"pack_id": "missing"}}), "manager")
 
+    def test_role_pack_advertises_no_unimplemented_commands(self):
+        pack = json.loads((Path(__file__).resolve().parents[4] / "src" / "otto" / "packs" / "otto-roles" / "roles.json")
+                          .read_text(encoding="utf-8"))
+        advertised = {tool for role in pack["roles"].values() for tool in role.get("tools", [])}
+        self.assertNotIn("route-project", advertised)
+        self.assertNotIn("run-worker-result", advertised)
+
     def test_operating_brief_guidance_compatibility_reads_role_pack_and_appends_command(self):
         from otto.portfolio import operating_brief
         base = operating_brief._CODEX_ADAPTER_ROLE_BASE_GUIDANCE

@@ -74,14 +74,14 @@ CONTEXT_PINS = {
 RESOURCE_PINS = {
     "selected_pack": {
         "root": SELECTED_PACK_ROOT,
-        "pack_path": SELECTED_PACK_ROOT + "/src/otto/packs/megado/pack.yaml",
+        "pack_path": SELECTED_PACK_ROOT + "/policy-staging/megado/pack.yaml",
         "pack_sha256": "28c9de840bb71fe814abd4f537b9e620234763511d5c5cf55173dae1b3a6813f",
         "pack_version": "1.2.2",
         "protocol_version": "1.2.0",
         "source_commit": SOURCE_COMMIT,
     },
     "megado_skill": {
-        "path": SELECTED_PACK_ROOT + "/src/otto/packs/megado/skill/SKILL.md",
+        "path": SELECTED_PACK_ROOT + "/policy-staging/megado/skill/SKILL.md",
         "sha256": "06e3af1354ce56bfe9725fb5bdfd08d43cd753b14f5f56d7a5da8e09e00145bf",
     },
     "run_configuration": {

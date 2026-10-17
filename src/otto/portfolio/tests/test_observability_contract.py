@@ -29,6 +29,12 @@ class ObservabilityContractTests(unittest.TestCase):
         self.assertEqual(record["source"]["commit"], SOURCE_COMMIT)
         self.assertEqual(record["runtime"], RUNTIME_PIN)
         self.assertEqual(record["resources"], RESOURCE_PINS)
+        self.assertTrue(RESOURCE_PINS["selected_pack"]["pack_path"].endswith(
+            "/policy-staging/megado/pack.yaml"
+        ))
+        self.assertTrue(RESOURCE_PINS["megado_skill"]["path"].endswith(
+            "/policy-staging/megado/skill/SKILL.md"
+        ))
         self.assertEqual(len(record["source"]["seams"]), len(SOURCE_SEAMS))
         self.assertEqual(contract_digest(), contract_digest())
         self.assertEqual(len({pin.path for pin in SOURCE_SEAMS}), len(SOURCE_SEAMS))
