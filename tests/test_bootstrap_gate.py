@@ -194,6 +194,32 @@ class LandGate(Scratch):
         r = self.land("T11", "--check", "false")
         self.assertRefused(r, "T11", "the task's check failed: false")
 
+    def test_subfailed_check_failure_is_reported_by_id(self):
+        source = ("def test_new_failure(subtests):\n"
+                  "    with subtests.test(fault='new'):\n"
+                  "        assert False\n")
+        self.lab("T27", {"tests/test_subfailed.py": source})
+        check = ("set -o pipefail; %s -m pytest -q -rfE tests/test_subfailed.py "
+                 "| sed '/^FAILED /d'") % sys.executable
+        r = self.land("T27", "--check", check)
+        self.assertRefused(r, "T27", "the task's check failed: tests/test_subfailed.py::test_new_failure")
+
+    def test_all_and_joined_check_parts_run_and_new_failure_refuses(self):
+        marker = self.tmp / "new-check-part-ran"
+        self.write(self.repo, "tests/test_preexisting.py", "def test_pre_existing():\n    assert False\n")
+        self.commit(self.repo, "add pre-existing failure")
+        self.start()
+        source = ("from pathlib import Path\n"
+                  "def test_new_failure():\n"
+                  "    Path(%r).write_text('ran')\n"
+                  "    assert False\n" % str(marker))
+        self.lab("T28", {"tests/test_joined.py": source})
+        check = ("%s -m pytest -q tests/test_preexisting.py && "
+                 "%s -m pytest -q tests/test_joined.py") % (sys.executable, sys.executable)
+        r = self.land("T28", "--check", check)
+        self.assertTrue(marker.exists(), "the check skipped its second &&-joined part")
+        self.assertRefused(r, "T28", "the task's check failed: tests/test_joined.py::test_new_failure")
+
     def test_new_failure_is_refused(self):
         self.lab("T2", {"src/otto/mod.py": "def f():\n    return 2\n"})
         r = self.land("T2")

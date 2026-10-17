@@ -208,21 +208,55 @@ run_pytest() {  # DIR FILE OUT
       "$PY" -m pytest -q -rfE -p no:cacheprovider "$2" ) > "$3" 2>&1 || rc=$?
   echo "=== exit $rc" >> "$3"
 }
-# Failing test ids in a run's output; a nonzero exit with no FAILED/ERROR line becomes one id.
+# Failing test ids in a run's output; a nonzero exit with no failure line becomes one id.
 ids_of() {  # OUT FILE
   local rc; rc="$(sed -n 's/^=== exit //p' "$1" | tail -n 1)"
-  sed -n -E 's/^(FAILED|ERROR) ([^ ]+).*/\2/p' "$1"
-  if [ "$rc" != 0 ] && [ "$rc" != 5 ] && ! grep -q -E '^(FAILED|ERROR) ' "$1"; then echo "$2::exit-$rc"; fi
+  sed -n -E 's/^(FAILED|ERROR|SUBFAILED\([^)]*\)) ([^ ]+).*/\2/p' "$1"
+  if [ "$rc" != 0 ] && [ "$rc" != 5 ] && ! grep -q -E '^(FAILED|ERROR|SUBFAILED\([^)]*\)) ' "$1"; then echo "$2::exit-$rc"; fi
 }
+
+# Build a shell script that runs every top-level &&-joined check part and remembers any failure.
+CHECK_RUN="$("$PY" - "$CHECK" <<'PY'
+import sys
+
+command = sys.argv[1]
+parts = []
+start = 0
+quote = None
+escaped = False
+for index, char in enumerate(command):
+    if escaped:
+        escaped = False
+        continue
+    if char == "\\" and quote != "'":
+        escaped = True
+        continue
+    if quote:
+        if char == quote:
+            quote = None
+        continue
+    if char in ("'", '"'):
+        quote = char
+    elif command[index:index + 2] == "&&":
+        parts.append(command[start:index].strip())
+        start = index + 2
+parts.append(command[start:].strip())
+print("set +e\nfailed=0")
+for part in parts:
+    if part:
+        print("{\n%s\n}\nrc=$?\nif [ \"$rc\" -ne 0 ]; then failed=1; fi" % part)
+print('exit "$failed"')
+PY
+)"
 
 # 0. The task's own check, on the rebased commit (D19, rule 1). Until 15 Oct the gate parsed it and never ran it.
 # otto_gate_exit (beside this script): a run is over when pytest has reported, even if a test leaked a thread.
 ( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
     "$HEAVY" --weight 1 --purpose "$TASK check" -- \
-    bash -c "$CHECK" ) > "$G/check.txt" 2>&1 || CHECK_FAILED=1
+    bash -c "$CHECK_RUN" ) > "$G/check.txt" 2>&1 || CHECK_FAILED=1
 if grep -q -E 'no tests ran|Interrupted:' "$G/check.txt" \
     || { ! grep -q -E '[0-9]+ (passed|failed|skipped|xfailed|xpassed)' "$G/check.txt" \
-         && { [ -z "${CHECK_FAILED:-}" ] || grep -q -E '^(ERROR|FAILED) ' "$G/check.txt"; }; }; then
+         && { [ -z "${CHECK_FAILED:-}" ] || grep -q -E '^(ERROR|FAILED|SUBFAILED\([^)]*\)) ' "$G/check.txt"; }; }; then
   fail "the task's check did not complete a test run: $CHECK (output: $G/check.txt)"
 fi
 [ -n "${CHECK_FAILED:-}" ] || log "check passed: $CHECK"
