@@ -35,7 +35,7 @@ Unmerged PL1 worktree files on `task/PL1` at `b70c817`:
 - `src/herzchen/fleet/custody.py`
 - `tests/test_fleet_custody.py`
 
-The committed project diff is 8 files, +197/-0 at the initial package refresh (metadata records may add lines in later commits). Merged implementation deletions: 0. PL1 candidate deletion is 22 lines in its unmerged branch. The 99-line Otto figure is a provisional inventory, not completed savings; the Astrid package's approximately 4,000-line ambition does not map to this clone, and the program-level budget question remains open.
+The current committed project diff is 8 files, +158/-0. Merged implementation deletions: 0. PL1 candidate deletion is 22 lines in its unmerged branch. The 99-line Otto figure is a provisional inventory, not completed savings; the Astrid package's approximately 4,000-line ambition does not map to this clone, and the program-level budget question remains open.
 
 ## Final project review
 
