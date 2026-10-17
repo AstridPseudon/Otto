@@ -257,6 +257,7 @@ class ExecutionHost:
         self._capacity_holds: dict[str, dict[str, Any]] = {}
         self._capacity_freed: set[str] = set()
         self._process_groups = self._load_process_groups()
+        self._terminate_recorded_process_groups()
         self._reconcile_checked = 0.0
         self._last_project: str | None = None
         self._project_order: list[str] = []
@@ -696,6 +697,13 @@ class ExecutionHost:
     def _save_process_groups(self) -> None:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         _atomic_json(self.directory / self._PROCESS_GROUPS, self._process_groups)
+
+    def _terminate_recorded_process_groups(self) -> dict[str, bool]:
+        """Best-effort owner lifecycle cleanup, fenced by each recorded birth identity."""
+        from otto.agents.claude_cli import terminate_recorded_process_group
+        return {key: terminate_recorded_process_group(record, birth_reader=lambda pid:
+                    _process_start_identity(pid)['birth'])
+                for key, record in self._process_groups.items()}
 
     def _forget_process_group(self, schedule_id: str) -> None:
         self._capacity_freed.discard(schedule_id)
@@ -2025,6 +2033,9 @@ class ExecutionHost:
     def close(self) -> None:
         """Keep commands/status available while retained children settle."""
         self.begin_drain()
+        # Stop independently sessioned workers before joining owner command
+        # lanes; a child blocked on a worker must not postpone forced cleanup.
+        self._terminate_recorded_process_groups()
         while True:
             with self._lock:
                 children = tuple(self._children)
@@ -2038,6 +2049,7 @@ class ExecutionHost:
         # thread retains it without a healthy-work duration cap.
         if self._threads:
             self._threads[0].join()
+        self._terminate_recorded_process_groups()
         if self._socket is not None:
             self._threads[-1].join()
         self._stop.set()

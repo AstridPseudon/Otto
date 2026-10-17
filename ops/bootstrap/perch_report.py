@@ -38,8 +38,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # Otto's own processes are found by their stage root (the --home in their command line), not by name, so a
 # scratch root is watched as well as the default one. ottoctl and otto.hostctl match every root, so they are gone.
-CENSUS_MARKERS = ("_staging", "fake_worker", "perch-canary")
-LEAK_MARKERS = ("_staging", "fake_worker")
+CENSUS_MARKERS = ("_staging", "fake_worker", "perch-canary", "perch-fake-claude")
+LEAK_MARKERS = ("_staging", "fake_worker", "perch-fake-claude")
 # What `down` leaves in home/run: the published status (closed), the generation and the stop marker.
 AT_REST_RUN = ("service.json", "generation", "service-stop")
 LIFECYCLE = ("status-while-up", "status-after-kill-is-stale", "restart-after-kill-keeps-store",
@@ -542,10 +542,38 @@ def cmd_save_doc(args):
 def cmd_census(args):
     mine = str(os.getpid())
     root = args.stage_root or ""
+    groups_file = getattr(args, "groups_file", "")
+    records = (read_json(groups_file, {}) or {}) if groups_file else {}
+    pgids = {str(row.get("pgid")) for row in records.values()
+             if isinstance(row, dict) and type(row.get("pgid")) is int and row["pgid"] > 0}
     # perch's own tools (this script, sampling or reporting) are not the Otto's processes.
     lines = [line for line in ps_lines() if line.split(None, 1)[0] != mine and "perch_report.py" not in line
-             and ((root and root in line) or any(marker in line for marker in CENSUS_MARKERS))]
+             and ((root and root in line) or any(marker in line for marker in CENSUS_MARKERS)
+                  or len(line.split(None, 2)) > 1 and line.split(None, 2)[1] in pgids)]
     Path(args.out).write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return 1 if getattr(args, "fail_workers", False) and worker_processes(lines) else 0
+
+
+def worker_processes(lines):
+    """All known harness/fake-Claude workers, regardless of which staging root owns them."""
+    return [line for line in lines if "fake_worker.py" in line or "perch-fake-claude" in line]
+
+
+def recorded_groups_gone(records, lines):
+    """Whether no process remains in any group named by the pre-down custody record."""
+    pgids = {row.get("pgid") for row in records.values()
+             if isinstance(row, dict) and type(row.get("pgid")) is int and row["pgid"] > 0}
+    remaining = []
+    for line in lines:
+        fields = line.split(None, 2)
+        if len(fields) >= 2:
+            try:
+                pgid = int(fields[1])
+            except ValueError:
+                continue
+            if pgid in pgids:
+                remaining.append(int(fields[0]))
+    return not remaining, sorted(set(remaining))
 
 
 def store_bytes(store):
@@ -956,13 +984,22 @@ def pids_of(lines):
 
 
 def leaks(raw, config):
-    """Processes still running after down that belong to this run: under its own stage root.
-
-    Another run's Otto or worker is not this run's leak, so the census is matched on the root, not the marker.
-    """
+    """Processes still running after down under this root, or any recorded worker group/known worker."""
     root = config.get("stage_root")
-    return [line for line in read_lines(raw / "census.after.txt")
-            if (root and root in line) or (not root and any(m in line for m in LEAK_MARKERS))]
+    lines = read_lines(raw / "census.after.txt")
+    records = read_json(raw / "recorded-process-groups.json", {}) or {}
+    gone, _remaining = recorded_groups_gone(records, lines)
+    pgids = {row.get("pgid") for row in records.values()
+             if isinstance(row, dict) and type(row.get("pgid")) is int and row["pgid"] > 0}
+    leaked = [line for line in lines if (root and root in line)
+              or (not root and any(m in line for m in LEAK_MARKERS))
+              or line in worker_processes(lines)]
+    if not gone:
+        for line in lines:
+            fields = line.split(None, 2)
+            if len(fields) >= 2 and fields[1].isdigit() and int(fields[1]) in pgids and line not in leaked:
+                leaked.append(line)
+    return leaked
 
 
 # ---- assertions --------------------------------------------------------------------------------
@@ -1856,6 +1893,7 @@ def build_parser():
     p.add_argument("--name", required=True); p.add_argument("--ref-from", default="")
     p.add_argument("--out", required=True); p.set_defaults(fn=cmd_save_doc)
     p = sub.add_parser("census"); p.add_argument("--out", required=True); p.add_argument("--stage-root", default="")
+    p.add_argument("--groups-file", default=""); p.add_argument("--fail-workers", action="store_true")
     p.set_defaults(fn=cmd_census)
     p = sub.add_parser("sample")
     p.add_argument("--raw", required=True); p.add_argument("--stage-root", required=True)
