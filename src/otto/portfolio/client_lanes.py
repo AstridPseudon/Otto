@@ -23,11 +23,12 @@ import stat
 import time
 from typing import Any, Iterator, Mapping, Optional
 import uuid
+from ..hostctl import lanes as host_lanes
 
 REQUEST_SCHEMA = "otto.host-lane-request.v1"
 STATUS_FILE = "status.json"
 MANAGER_START_RESPONSE_SCHEMA = "otto.orchestrator-manager-start-response.v1"
-_CLIENT_RESPONSE_LIMIT = 1048576
+_CLIENT_RESPONSE_LIMIT = host_lanes.LANE_RESPONSE_LIMIT
 # Same window as ipc_retention.ANSWERED_RESPONSE_GRACE_SECONDS.
 ANSWERED_PAIR_GRACE_SECONDS = 24 * 3600
 
@@ -72,21 +73,8 @@ def _default(item: Any) -> Any:
 
 
 def read_private_json(path: Path) -> Optional[dict]:
-    """A regular 0600-class file of this account, or None. Never follows a symlink."""
-    try:
-        info = Path(path).lstat()
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-        raise PermissionError(str(path) + " is not a private regular file of this account")
-    if info.st_size > 1048576:
-        raise ValueError("client lane record exceeds 1 MiB; use its bounded retained reference")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(fd) as stream:
-        value = json.load(stream)
-    if not isinstance(value, dict):
-        raise ValueError(str(path) + " is not a JSON object")
-    return value
+    """Read a private client lane record using the shared 1 MiB bound."""
+    return host_lanes.read_private_json(path, max_bytes=_CLIENT_RESPONSE_LIMIT)
 
 
 def submit(lane: Path, request: Mapping[str, Any], *, token: Optional[str] = None) -> str:

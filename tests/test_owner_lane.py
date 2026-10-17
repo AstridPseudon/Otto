@@ -8,7 +8,10 @@ owner's project-history projection is caught up before it serves.
 import argparse
 import json
 import tempfile
+import threading
+import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.domains.work import WorkGraph, contributions
@@ -16,7 +19,9 @@ from herzchen.kernel.store import Store
 from otto.hostctl import config as host_config, lanes
 from otto.hostctl.owner import HostSession
 from otto.hostctl.portfolio import prepare_portfolio_request
-from otto.hostctl.service import owner_lane
+from otto.hostctl.service import owner_lane, status_path
+from otto.hostctl.project_service import ProjectOwnerService
+from otto.portfolio.execution_host import ExecutionHost
 from test_hostctl_cli import HostctlFixture
 
 PORTFOLIO = "claude-code-portfolio"
@@ -118,6 +123,78 @@ class PortfolioForwardingTests(HostctlFixture):
         args = argparse.Namespace(portfolio_args=["--portfolio=" + PORTFOLIO, "read", "demo", "--actor", OWNER])
         prepare_portfolio_request(args)
         self.assertEqual((args.portfolio, args.portfolio_args), (PORTFOLIO, ["read", "demo", "--actor", OWNER]))
+
+
+class RelaySafetyTests(unittest.TestCase):
+    def test_retained_reply_failures_are_finite_in_the_embedded_poll(self):
+        cases = (
+            ("array", b'["not an object"]\n', 0o600),
+            ("public file", b'{"outcome":"succeeded"}\n', 0o644),
+            ("oversize", b'{"outcome":"succeeded","payload":"'
+             + b"x" * 1_048_576 + b'"}\n', 0o600),
+        )
+        for label, raw, mode in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory(prefix="owner-lane-relay-") as directory:
+                    home = Path(directory)
+                    lane = lanes.private_dir(home / "host-lane")
+                    ipc = lanes.private_dir(home / "manager-ipc")
+                    host = ExecutionHost(directory=ipc, handler=lambda _request: {}, bounded_transports=True)
+                    host._owner_thread = threading.get_ident()
+                    router = SimpleNamespace(host=host, store=object(), services={})
+                    config = {
+                        "home": str(home), "max_active_manager_turns": 3,
+                        "owner": {"actor": "owner"},
+                        "store": {"authority": "test", "domain_descriptor_digest": "digest"},
+                        "hosts": {"supervisor": {"lane": str(lane)}},
+                    }
+                    service = ProjectOwnerService(config, router=router)
+
+                    outer, inner = "a" * 32, "b" * 32
+                    good_outer, good_inner = "c" * 32, "d" * 32
+                    for client_id, manager_id in ((outer, inner), (good_outer, good_inner)):
+                        lanes.submit(lane, {"command": "orchestrator", "args": {}}, token=client_id)
+                        lanes.mark_pending(lane, client_id, "relayed", manager_token=manager_id,
+                                           ipc=str(ipc), command="manager-continue")
+                        lanes.submit(ipc, {"command": "manager-continue"}, token=manager_id)
+
+                    original_request = lane / f"request-{outer}.json"
+                    manager_request = ipc / f"request-{inner}.json"
+                    original_bytes = original_request.read_bytes()
+                    manager_bytes = manager_request.read_bytes()
+                    response = ipc / f"response-{inner}.json"
+                    response.write_bytes(raw)
+                    response.chmod(mode)
+                    lanes.atomic_json(ipc / f"response-{good_inner}.json",
+                                      {"outcome": "succeeded", "marker": "intact"})
+
+                    service.poll()
+
+                    bad_lane_response = lane / f"response-{outer}.json"
+                    wire = bad_lane_response.read_bytes()
+                    self.assertLess(len(wire), 4096)
+                    reply = json.loads(wire)
+                    self.assertEqual(reply["outcome"], "unknown")
+                    self.assertIs(reply["retry"], False)
+                    self.assertEqual(reply["request_id"], outer)
+                    self.assertEqual(reply["relayed"]["original_request_id"], outer)
+                    self.assertEqual(reply["relayed"]["manager_request_id"], inner)
+                    self.assertEqual(reply["retained_response"]["path"], str(response))
+                    self.assertEqual(reply["summary_availability"]["state"], "detail-required")
+
+                    good = lanes.read_private_json(lane / f"response-{good_outer}.json")
+                    self.assertEqual(good["outcome"], "succeeded")
+                    self.assertEqual(good["marker"], "intact")
+                    self.assertEqual(json.loads(status_path(home).read_text())["state"], "serving")
+                    self.assertEqual(response.read_bytes(), raw)
+                    self.assertEqual(original_request.read_bytes(), original_bytes)
+                    self.assertEqual(manager_request.read_bytes(), manager_bytes)
+
+                    service.poll()
+                    self.assertEqual(bad_lane_response.read_bytes(), wire)
+                    self.assertEqual(
+                        {p.name for p in ipc.glob("request-*.json")},
+                        {f"request-{inner}.json", f"request-{good_inner}.json"})
 
 
 class HistoryProjectionAtStartTests(HostctlFixture):

@@ -25,6 +25,8 @@ import uuid
 
 REQUEST_SCHEMA = "otto.host-lane-request.v1"
 STATUS_FILE = "status.json"
+# Manager replies and client lane records share a finite 1 MiB transport bound.
+LANE_RESPONSE_LIMIT = 1024 * 1024
 # Same window as portfolio/ipc_retention.ANSWERED_RESPONSE_GRACE_SECONDS.
 ANSWERED_PAIR_GRACE_SECONDS = 24 * 3600
 
@@ -68,17 +70,34 @@ def _default(item: Any) -> Any:
     return str(item)
 
 
-def read_private_json(path: Path) -> Optional[dict]:
-    """A regular 0600-class file of this account, or None. Never follows a symlink."""
+def read_private_json(path: Path, *, max_bytes: Optional[int] = None) -> Optional[dict]:
+    """Read a private JSON object, optionally enforcing a byte bound.
+
+    Bounded reads validate the opened file descriptor and cap the read itself,
+    so a changing or specially shaped file cannot evade the size check.
+    """
+    if max_bytes is not None and (isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0):
+        raise ValueError("max_bytes must be a non-negative integer")
     try:
         info = Path(path).lstat()
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
         raise PermissionError(str(path) + " is not a private regular file of this account")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(fd) as stream:
-        value = json.load(stream)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid() or opened.st_mode & 0o077:
+            raise PermissionError(str(path) + " is not a private regular file of this account")
+        if max_bytes is not None and opened.st_size > max_bytes:
+            raise ValueError(str(path) + " exceeds the %d-byte limit" % max_bytes)
+        raw = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise ValueError(str(path) + " exceeds the %d-byte limit" % max_bytes)
+    value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError(str(path) + " is not a JSON object")
     return value
