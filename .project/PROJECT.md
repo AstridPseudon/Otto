@@ -33,6 +33,8 @@ Astra's second whole-project pass found that a retained profile can be correctly
 
 Astra's third whole-project pass found a remaining refusal in legacy pending-profile migration: unavailable manager adapters and unsupported overridden manager models raised plain `ValueError`, losing `next_action`. PK3R-UX5 uses the existing profile-selection refusal type while retaining host/model qualification checks. The full bundle file passed with 30 tests and seven subtests; all three envelope serializers were exercised without an owner socket.
 
+Astra's fourth pass found two remaining defects: retained run/binding/migration integrity refusals still lost `next_action` through both envelopes, and `docs/host-onboarding.md` still directed profile edits to the removed Python table. PK3R-UX6 and PK3R-UX7 address those issues; the suspected host-admission path was withdrawn as unreachable.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
