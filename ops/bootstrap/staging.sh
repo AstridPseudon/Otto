@@ -25,19 +25,20 @@ RUN="$STAGE_ROOT/run"
 PIDFILE="$RUN/staging.pid"
 LOG="$RUN/staging.log"
 STATUS_JSON="$RUN/staging.json"
+CLI_ENTRY='import sys; from otto.hostctl.cli import main; sys.exit(main())'
 
 # The product CLI, run from the staging tree's own src. --home is always passed, and the variables
 # that point a process at a live install are removed, so nothing can fall back to ~/.otto.
 ottoctl() {
   env -u OTTO_HOST_KIND -u OTTO_MANAGER_IPC -u OTTO_CALLER_SOCKET -u OTTO_HOME \
     PYTHONPATH="$TREE/src" \
-    "$PY" -c 'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$HOME_DIR" "$@"
+    "$PY" -c "$CLI_ENTRY" --home "$HOME_DIR" "$@"
 }
 
 # The staging root must be an absolute folder that is not a live owner folder, a synced folder,
 # the canon checkout or the home folder itself. Checked before anything is written.
 guard_root() {
-  local p real=""
+  local p real="" socket_path
   case "$STAGE_ROOT" in
     /*) ;;
     *) die "refused: the staging root must be an absolute path" ;;
@@ -51,6 +52,11 @@ guard_root() {
         die "refused: staging root $STAGE_ROOT is a live, synced, canon or home folder" ;;
     esac
   done
+  # Check the longest generated caller socket path before startup writes anything.
+  socket_path="$HOME_DIR/run/c-000000000000.sock"
+  if [ "$(LC_ALL=C printf '%s' "$socket_path" | wc -c | tr -d ' ')" -gt 100 ]; then
+    die "refused: staging caller socket path exceeds the 100-byte Unix socket limit ($socket_path); set OTTO_STAGING_ROOT to a shorter absolute path"
+  fi
 }
 
 # The pid we started, from the pidfile (line 1), whether or not it is still alive.
@@ -200,7 +206,7 @@ up() {
   # shell, so $! would name the wrapper and not the holder that status reports. env execs the Python process.
   set -m
   env -u OTTO_HOST_KIND -u OTTO_MANAGER_IPC -u OTTO_CALLER_SOCKET -u OTTO_HOME PYTHONPATH="$TREE/src" \
-    "$PY" -c 'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$HOME_DIR" service run \
+    "$PY" -c "$CLI_ENTRY" --home "$HOME_DIR" service run \
     </dev/null >>"$LOG" 2>&1 &
   pid=$!
   set +m

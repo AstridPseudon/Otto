@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--operator", required=True, help="the human operator principal, distinct from owner and hosts")
     install.add_argument("--credential-ref", required=True, help="the owner binding's credential label (no secret)")
     install.add_argument("--create", action="store_true", help="create a NEW Store (fresh machine or tests only)")
+    repo = sub.add_parser("repo", help="manage the owner's local repository checkout map")
+    repo_sub = repo.add_subparsers(dest="repo_command", required=True)
+    repo_map = repo_sub.add_parser("map", help="add or update an owner-local repository checkout")
+    repo_map.add_argument("--name", required=True, help="repo alias used by tasklist.md")
+    repo_map.add_argument("--path", required=True, help="local checkout path")
     host = sub.add_parser("host", help="inspect a joined host")
     host_sub = host.add_subparsers(dest="host_command", required=True)
     host_sub.add_parser("show", help="installation, Store custody, host principal and launcher pin (no provider call)")
@@ -221,6 +226,11 @@ def cmd_install(args: argparse.Namespace) -> Any:
     _receipt(home, "install", {"installation": config})
     return {"outcome": "created" if args.create else "attached", "home": str(home), "store": config["store"],
             "owner": config["owner"], "provider_called": False}
+
+
+def cmd_repo_map(args: argparse.Namespace) -> Any:
+    repositories = host_config.map_repository(_home(args), args.name, args.path)
+    return {"outcome": "mapped", "repositories": repositories, "provider_called": False}
 
 
 def cmd_host_show(args: argparse.Namespace) -> Any:
@@ -518,9 +528,11 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
             ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
             task = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
             megado = (task.payload.get("custom") or {}).get("megado") or {}
+            plan = (task.payload.get("custom") or {}).get("otto.plan") or {}
             tasks.append({"id": task.payload.get("alias") or task.ref.id, "title": task.title,
                           "lifecycle": task.lifecycle.value, "route": megado.get("route"),
-                          "phase": megado.get("phase"), "depends_on": len(task.payload.get("dependencies") or ())})
+                          "phase": megado.get("phase"), "repo": plan.get("repo"), "branch": plan.get("branch"),
+                          "depends_on": len(task.payload.get("dependencies") or ())})
         view = session.owner.sheet.export(record.ref)
         observed = view.project.get("observed", {}) if hasattr(view, "project") else {}
         assignments = []
@@ -558,7 +570,8 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                  "stop_state": due.get("stop_state"), "execution_mode": due.get("execution_mode")}
                 for due in session.due_port.list_due({"project_ref": record.ref.id})]
         return {"outcome": "read", "project_ref": record.ref.to_dict(), "title": record.title,
-                "lifecycle": record.lifecycle.value, "registration": custom, "tasks": tasks,
+                "lifecycle": record.lifecycle.value, "registration": custom,
+                "assessment_scope": custom.get("assessment_scope"), "tasks": tasks,
                 "assignments": assignments, "documents": documents, "allowances": pools, "schedules": dues,
                 "provider_called": False}
 
@@ -942,6 +955,7 @@ HOST_OPERATIONS = {
 # Run by the invoking process itself (operator commands, local reads).
 LOCAL_COMMANDS = {
     ("install", None): cmd_install,
+    ("repo", "map"): cmd_repo_map,
     ("service", "run"): cmd_service_run, ("service", "admit-host"): cmd_service_admit,
     ("service", "admit"): cmd_service_admit_revision,
     ("service", "status"): cmd_service_status, ("service", "stop"): cmd_service_stop,
@@ -980,7 +994,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         setattr(args, "manager_args" if args.command == "manager" else "portfolio_args", rest)
     sub = (getattr(args, "host_command", None) or getattr(args, "project_command", None)
            or getattr(args, "admission_command", None) or getattr(args, "skills_command", None)
-           or getattr(args, "service_command", None) or getattr(args, "help_command", None))
+           or getattr(args, "service_command", None) or getattr(args, "help_command", None)
+           or getattr(args, "repo_command", None))
     key = (args.command, sub)
     launched = os.environ.get("OTTO_MANAGER_IPC") or os.environ.get("OTTO_CALLER_SOCKET")
     try:

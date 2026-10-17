@@ -60,7 +60,7 @@ def wait_until(predicate, seconds=20):
 
 class StagingCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="stage-")).resolve()
+        self.tmp = Path(tempfile.mkdtemp(prefix="s-", dir="/tmp")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.root = self.tmp / "_staging"
         self.tree = self.root / "tree"
@@ -140,6 +140,16 @@ class StagingCase(unittest.TestCase):
         self.assertFalse(svc["provider_called"])
         self.assertIn('"outcome": "ready"', self.log_text())
         self.assertIn('"dues_started": 0', self.log_text())
+
+    def test_too_long_socket_path_is_refused_before_startup_writes(self):
+        long_root = self.tmp / ("s" * 100)
+        self.env["OTTO_STAGING_ROOT"] = str(long_root)
+        r = self.stage("up")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("100-byte Unix socket limit", r.stderr + r.stdout)
+        self.assertIn("shorter absolute path", r.stderr + r.stdout)
+        self.assertFalse(long_root.exists(), "guard wrote staging files before refusing")
+        self.env["OTTO_STAGING_ROOT"] = str(self.root)
 
     def test_restart_after_kill_recovers(self):
         self.assertEqual(self.stage("up").returncode, 0)

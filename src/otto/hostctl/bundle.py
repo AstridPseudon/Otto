@@ -251,6 +251,7 @@ def _make_task(phase, cells: dict, known: set) -> dict:
         "route": _route(route_text),
         "route_text": route_text,
         "repo": cells["repo"].strip() if "repo" in cells else None,
+        "branch": cells["branch"].strip() if "branch" in cells else None,
         "proof": cells["proof"].strip() if "proof" in cells else None,
         "who": cells["who"].strip() if "who" in cells else None,
         "columns": {k: v.strip() for k, v in cells.items()},
