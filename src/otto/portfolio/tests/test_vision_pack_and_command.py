@@ -31,7 +31,7 @@ def managed_vision_pack() -> ManagedPack:
     manifest_data = json.loads(manifest.read_text())
     for entry in manifest_data["resources"]:
         path = entry["path"]
-        resource_ref = ResourceRef("astrid-managed", "managed_pack", "vision", source.source_revision)
+        resource_ref = ResourceRef("managed-source", "managed_pack", "vision", source.source_revision)
         content = (PACK_ROOT / path).read_bytes()
         resources.append(ManagedResource(path, entry["kind"], content, hashlib.sha256(content).hexdigest(), resource_ref))
     return ManagedPack("vision", "1.0.0", source, manifest_data, tuple(resources), (), ())

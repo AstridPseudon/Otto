@@ -213,7 +213,7 @@ class EvidenceResourcePack:
         for item in self.resources:
             if item.source_ref is None:
                 raise EvidencePackError("managed resource is missing its source identity")
-            if item.source_ref.authority != "astrid-managed" or item.source_ref.id != self.pack_id:
+            if item.source_ref.authority != "managed-source" or item.source_ref.id != self.pack_id:
                 raise EvidencePackError("managed resource source identity is foreign")
             if item.source_ref.revision != self.source.source_revision:
                 raise EvidencePackError("managed resource source revision is stale")

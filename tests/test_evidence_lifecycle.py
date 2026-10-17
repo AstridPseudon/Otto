@@ -1,6 +1,5 @@
 import hashlib
 import builtins
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -335,12 +334,7 @@ class EvidenceLifecycleTests(unittest.TestCase):
                 with self.assertRaises(EvidencePackError):
                     load_evidence_pack(project_root=controller_root)
 
-    @unittest.skipUnless(importlib.util.find_spec("astrid") is not None,
-                         "Astrid is not installed in this test environment")
-    def test_native_source_provenance_matches_astrid_for_same_pack(self):
-        from astrid.core.pack.discovery import discover_canonical_pack_metadata
-        from astrid.core.pack.loader import load_pack_manifest
-        from astrid.core.pack.source_setup import _tree_digest
+    def test_native_source_provenance_matches_offline_recorded_fixture_field_by_field(self):
         from herzchen.packs import authoring
 
         with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as state_temporary:
@@ -348,43 +342,99 @@ class EvidenceLifecycleTests(unittest.TestCase):
             repo_root = Path(temporary)
             pack_root = copied_herzchen / "packs" / "evidence_resource_pack"
             copied_authoring = copied_herzchen / "packs" / "authoring.py"
+            tree_hash = hashlib.sha256()
+            for resource in sorted(path for path in pack_root.rglob("*") if path.is_file()):
+                relative = resource.relative_to(pack_root).as_posix().encode("utf-8")
+                content = resource.read_bytes()
+                tree_hash.update(len(relative).to_bytes(8, "big"))
+                tree_hash.update(relative)
+                tree_hash.update(len(content).to_bytes(8, "big"))
+                tree_hash.update(content)
+            tree_digest = tree_hash.hexdigest()
+            manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
+            # Offline copy of the recorded managed-source inventory entry.
+            companion_root = repo_root / "managed-companion"
+            import shutil
+            shutil.copytree(pack_root, companion_root)
+            companion_manifest = json.loads((companion_root / "pack.yaml").read_text(encoding="utf-8"))
+            companion_manifest["id"] = "recorded-companion"
+            (companion_root / "pack.yaml").write_text(json.dumps(companion_manifest), encoding="utf-8")
+            subprocess.run(["git", "add", "managed-companion"], cwd=repo_root, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=PACKLOAD tests", "-c", "user.email=packload@example.invalid",
+                 "commit", "-qm", "companion fixture"], cwd=repo_root, check=True,
+            )
             revision = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True,
                 capture_output=True, text=True,
             ).stdout.strip()
-            tree_digest = _tree_digest(pack_root)
-            manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-            state_path = Path(state_temporary) / "astrid-source-state.json"
+            recorded_inventory_entry = {
+                "pack_id": "evidence",
+                "pack_root": str(pack_root.resolve()),
+                "repository": "https://example.invalid/packload.git",
+                "revision": revision,
+                "pack_subpath": pack_root.relative_to(repo_root).as_posix(),
+                "manifest_sha256": manifest_digest,
+                "tree_sha256": tree_digest,
+                "source_kind": "managed",
+            }
+            companion_root = repo_root / "managed-companion"
+            companion_tree_hash = hashlib.sha256()
+            for resource in sorted(path for path in companion_root.rglob("*") if path.is_file()):
+                relative = resource.relative_to(companion_root).as_posix().encode("utf-8")
+                content = resource.read_bytes()
+                companion_tree_hash.update(len(relative).to_bytes(8, "big"))
+                companion_tree_hash.update(relative)
+                companion_tree_hash.update(len(content).to_bytes(8, "big"))
+                companion_tree_hash.update(content)
+            companion_entry = {
+                "pack_id": "recorded-companion",
+                "pack_root": str(companion_root.resolve()),
+                "repository": "https://example.invalid/packload.git",
+                "revision": revision,
+                "pack_subpath": companion_root.relative_to(repo_root).as_posix(),
+                "manifest_sha256": hashlib.sha256((companion_root / "pack.yaml").read_bytes()).hexdigest(),
+                "tree_sha256": companion_tree_hash.hexdigest(),
+                "source_kind": "managed",
+            }
+            recorded_inventory = sorted(
+                [recorded_inventory_entry, companion_entry], key=lambda entry: entry["pack_id"]
+            )
+            inventory_identity = hashlib.sha256(json.dumps(
+                recorded_inventory, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")).hexdigest()
+            recorded_astrid_provenance = {
+                "pack_id": "evidence",
+                "source_kind": "managed",
+                "source_revision": revision,
+                "source_tree_sha256": tree_digest,
+                "source_manifest_sha256": manifest_digest,
+                "source_inventory_identity": inventory_identity,
+                "pack_root": str(pack_root.resolve()),
+                "manifest_path": str((pack_root / "pack.yaml").resolve()),
+            }
+            state_path = Path(state_temporary) / "managed-source-state.json"
             state_path.write_text(json.dumps({
                 "version": 1,
-                "active": {
-                    "evidence": {
-                        "pack_id": "evidence",
-                        "pack_root": str(pack_root.resolve()),
-                        "repository": "https://example.invalid/packload.git",
-                        "revision": revision,
-                        "pack_subpath": pack_root.relative_to(repo_root).as_posix(),
-                        "manifest_sha256": manifest_digest,
-                        "tree_sha256": tree_digest,
-                        "source_kind": "managed",
-                    }
-                },
+                "active": {entry["pack_id"]: entry for entry in recorded_inventory},
                 "cached": {},
                 "disabled": [],
             }), encoding="utf-8")
-            with patch.dict(os.environ, {"ASTRID_SOURCE_STATE": str(state_path)}), \
+            for entry in recorded_inventory:
+                root = Path(entry["pack_root"])
+                checkout = root
+                if entry["pack_subpath"] != ".":
+                    for _ in entry["pack_subpath"].split("/"):
+                        checkout = checkout.parent
+                actual_revision, _verified_tree, actual_subpath = authoring._native_tree(checkout, root)
+                self.assertEqual(actual_revision, entry["revision"])
+                self.assertEqual(actual_subpath, entry["pack_subpath"])
+                self.assertEqual(authoring._recorded_source_tree_digest(root), entry["tree_sha256"])
+            with patch.dict(os.environ, {"HERZCHEN_SOURCE_STATE": str(state_path)}), \
                     patch.object(authoring, "__file__", str(copied_authoring)):
-                astrid_items = discover_canonical_pack_metadata(project_root=repo_root)
-                matching = [item for item in astrid_items if item.id == "evidence"]
-                self.assertEqual(len(matching), 1)
-                self.assertEqual(matching[0].source_kind, "managed")
-                astrid_pack = read_managed_pack(
-                    "evidence", project_root=repo_root,
-                    discoverer=lambda *, project_root: matching,
-                    loader=load_pack_manifest,
-                )
                 native_pack = read_managed_pack("evidence", project_root=repo_root)
-        self.assertEqual(native_pack.source.to_dict(), astrid_pack.source.to_dict())
+        self.assertEqual(native_pack.source.to_dict(), recorded_astrid_provenance)
+        self.assertEqual(set(native_pack.source.to_dict()), set(recorded_astrid_provenance))
 
     def test_native_loader_refuses_tampered_manifest_and_tree(self):
         from herzchen.packs import authoring

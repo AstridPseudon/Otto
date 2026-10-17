@@ -22,7 +22,7 @@ from herzchen.usage.contract import (
     OBSERVATION_SCHEMA as USAGE_OBSERVATION_SCHEMA,
     UsageContractError,
     adapter_descriptors,
-    contract_definition,
+    contract_definition as _contract_definition,
     fixture_catalog,
     normalize_usage_event,
     physical_span_identity,
@@ -82,6 +82,36 @@ from .adapter_conformance import (
 
 from .claude_cli import ClaudeBindingError, ClaudeCliTransport, ClaudeStream, LauncherPin, MacWriteScope
 from .claude_adapter import ClaudeWorkerAdapter, ClaudeNativeResultVerifier
+
+
+def contract_definition():
+    """Bind the shared usage contract to Otto's selected pack provenance."""
+
+    return _contract_definition(
+        selected_pack_ref={
+            "authority": "otto-project-operating-setup-20261005-owner-v1",
+            "id": "usage-bootstrap-20261010-v1-selected-pack",
+            "kind": "dat.content.document",
+            "revision": "rev-1",
+        },
+        selected_pack_root=(
+            "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/"
+            "otto-usage-cost-20261010/controller/selected-pack-source"
+        ),
+        source_root=(
+            "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/"
+            "otto-usage-cost-20261010/work/integration-owner"
+        ),
+        runtime_interpreter=(
+            "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/"
+            "Versions/3.9/bin/python3.9"
+        ),
+        runtime_command=(
+            "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/"
+            "Versions/3.9/bin/python3.9 /Users/hannahomalley/Documents/Codex/2026-09-13/"
+            "can-x20/.otto/runs/otto-usage-cost-20261010/controller/manager_ctl.py"
+        ),
+    )
 
 __all__ = [
     "ClaudeBindingError", "ClaudeCliTransport", "ClaudeStream", "LauncherPin", "MacWriteScope",

@@ -30,6 +30,22 @@ def _otto_imports(path: Path) -> list[str]:
 
 
 OTTO_OR_MEGADO = re.compile(r"otto|megado", re.IGNORECASE)
+PROVENANCE_BOUNDARY_TOKENS = re.compile(
+    r"astrid|Documents/Codex|otto-project-operating-setup-20261005-owner-v1",
+    re.IGNORECASE,
+)
+
+
+def _provenance_boundary_offenders(source_root: Path) -> dict[str, list[str]]:
+    offenders = {}
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file() or "tests" in path.parts or path.suffix in {".pyc", ".sqlite"}:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        matches = sorted(set(match.group(0) for match in PROVENANCE_BOUNDARY_TOKENS.finditer(text)))
+        if matches:
+            offenders[str(path.relative_to(source_root))] = matches
+    return offenders
 
 
 def _docstring_ids(tree: ast.AST) -> set[int]:
@@ -102,3 +118,16 @@ def test_fleet_carries_no_otto_or_megado_names():
         for lineno, text in _otto_names(path):
             offenders.setdefault(f"{path.relative_to(ROOT)}:{lineno}", []).append(text[:80])
     assert offenders == {}
+
+
+def test_managed_provenance_source_has_no_upstream_product_or_host_paths(tmp_path):
+    assert _provenance_boundary_offenders(HERZCHEN) == {}
+
+    doctored_source = tmp_path / "herzchen"
+    doctored_source.mkdir()
+    (doctored_source / "doctored.py").write_text(
+        "RESOURCE_ROOT = '/workspace/Documents/Codex/source'\n", encoding="utf-8"
+    )
+    assert _provenance_boundary_offenders(doctored_source) == {
+        "doctored.py": ["Documents/Codex"]
+    }

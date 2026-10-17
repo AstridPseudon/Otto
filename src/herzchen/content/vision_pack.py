@@ -138,7 +138,7 @@ class VisionResourcePack:
         for item in self.resources:
             if EXPECTED_RESOURCES[item.path] != item.kind:
                 raise VisionPackError(f"Vision resource kind mismatch: {item.path}")
-            if item.source_ref != ResourceRef("astrid-managed", "managed_pack", self.pack_id, self.source.source_revision):
+            if item.source_ref != ResourceRef("managed-source", "managed_pack", self.pack_id, self.source.source_revision):
                 raise VisionPackError(f"Vision resource source pin is foreign or stale: {item.path}")
 
     @classmethod

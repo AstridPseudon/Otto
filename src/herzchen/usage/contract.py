@@ -26,17 +26,6 @@ MODEL = "gpt-5.6-luna"
 REASONING = "high"
 PROFILE = "workspace-write"
 
-SELECTED_PACK_REF = {
-    "authority": "otto-project-operating-setup-20261005-owner-v1",
-    "id": "usage-bootstrap-20261010-v1-selected-pack",
-    "kind": "dat.content.document",
-    "revision": "rev-1",
-}
-SELECTED_RESOURCE_ROOT = (
-    "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/"
-    "otto-usage-cost-20261010/controller/selected-pack-source"
-)
-
 METRIC_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
@@ -192,19 +181,14 @@ PROVENANCE = {
     "source": {
         "commit": SOURCE_COMMIT,
         "workspace_role": "candidate-source",
-        "root": "/Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-usage-cost-20261010/work/integration-owner",
     },
     "runtime": {
         "model": MODEL,
         "reasoning": REASONING,
         "profile": PROFILE,
         "adapter": "otto.usage.installed-codex-cli.v1",
-        "interpreter": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9",
-        "command": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9 /Users/hannahomalley/Documents/Codex/2026-09-13/can-x20/.otto/runs/otto-usage-cost-20261010/controller/manager_ctl.py",
     },
     "resource": {
-        "selected_pack_ref": SELECTED_PACK_REF,
-        "selected_pack_root": SELECTED_RESOURCE_ROOT,
         "pack_content_sha256": "6089b3dd22bf82d32d7b94ab23187a6db8fdf0357bd1d587a78ba2c13bc68846",
         "bundle_digest": "e8c2eb3fecb51961e99ee7740c1c04aba49989fdc84ea3fdd0f4808ec2e52826",
         "export_manifest_digest": "f4c6832bc44a8d31ea602b855cd54f4b152fc0893bca8e4ee4f79757549ff1c6",
@@ -607,13 +591,32 @@ def normalize_usage_event(
     return result
 
 
-def contract_definition() -> dict[str, Any]:
-    """Return the immutable, JSON-safe D01 contract and predecessor map."""
+def contract_definition(
+    *,
+    selected_pack_ref: Mapping[str, Any],
+    selected_pack_root: str,
+    source_root: str,
+    runtime_interpreter: str,
+    runtime_command: str,
+) -> dict[str, Any]:
+    """Return the immutable contract with caller-owned selected-pack provenance."""
+
+    pack_ref = _ref(selected_pack_ref, "selected_pack_ref")
+    pack_root = _text(selected_pack_root, "selected_pack_root")
+    source_root = _text(source_root, "source_root")
+    runtime_interpreter = _text(runtime_interpreter, "runtime_interpreter")
+    runtime_command = _text(runtime_command, "runtime_command")
+    provenance = deepcopy(PROVENANCE)
+    provenance["source"]["root"] = source_root
+    provenance["runtime"]["interpreter"] = runtime_interpreter
+    provenance["runtime"]["command"] = runtime_command
+    provenance["resource"]["selected_pack_ref"] = pack_ref
+    provenance["resource"]["selected_pack_root"] = pack_root
 
     return {
         "schema": CONTRACT_SCHEMA,
         "revision": "usage-d01.v1",
-        "provenance": deepcopy(PROVENANCE),
+        "provenance": provenance,
         "adapters": adapter_descriptors(),
         "metric_schema": {
             "scope": "per-turn or one authoritative invocation/span",
