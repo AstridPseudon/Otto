@@ -745,7 +745,29 @@ class OperatingSetupTests(unittest.TestCase):
             "task_criterion_pairs": ["D01/C01", "D02/C02", "D03/C03", "D04/C04", "D05/C05"]}
         state["assessment_policy"] = original_policy
         aliases = {"D01": "C01", "D02": "C02", "D03": "C03"}
+        configured_d03 = None
         for task_alias, criterion_alias in aliases.items():
+            if task_alias == "D02":
+                # Setup pins D02 at rev-1; owner admission advances its
+                # revision without changing authored content before review.
+                from herzchen.domains.work import admission
+                pinned = ResourceRef.from_dict(original[task_alias])
+                current_task = graph.current(pinned)
+                admitted = graph.revise(current_task.ref, metadata_namespaces={admission.NAMESPACE: {
+                    "revision": pinned.revision,
+                    "digest": admission.content_digest(current_task.payload),
+                    "reviewed_digest": admission.reviewed_content_digest(current_task.payload),
+                    "basis": admission.BASIS_AUTHORING}},
+                    logical_request_key="historical-admit-D02", actor=f.actor)
+                state["task_refs"][task_alias] = admitted.ref.to_dict()
+            if task_alias == "D03":
+                # Preserve the original setup pin, then accept a later task
+                # revision with changed authored instructions.
+                changed = graph.revise(ResourceRef.from_dict(original[task_alias]),
+                    title="D03 instructions changed before acceptance",
+                    logical_request_key="historical-change-D03", actor=f.actor)
+                state["task_refs"][task_alias] = changed.ref.to_dict()
+                configured_d03 = changed.ref.to_dict()
             proof_evidence = None
             if task_alias == "D01":
                 # Exercise the canonical mixed WRK+DAT evidence shape. The
@@ -789,8 +811,9 @@ class OperatingSetupTests(unittest.TestCase):
                 self.assertEqual(reviewed["completion"]["completion"]["assessment_gate_check"]["evidence_verification"], "unknown")
             state["task_refs"][task_alias] = reviewed["completion"]["task_ref"]
 
-        # Preserve the admitted D01-D05 rev-1 setup pins before current heads move.
-        configured = [original[key] for key in ("D01", "D02", "D03", "D04", "D05")]
+        # Preserve the setup pins before completion advances their heads.
+        configured = [original["D01"], original["D02"], configured_d03,
+            original["D04"], original["D05"]]
         current_policy = {"kind": "owner_local_bookkeeping", "purpose": "current D04/D05 readiness",
             "local_only": True, "pool_id": "current-two-review", "capacity_units": 1,
             "cumulative_allowance_units": 2, "task_criterion_pairs": ["D04/C04", "D05/C05"]}
@@ -810,6 +833,8 @@ class OperatingSetupTests(unittest.TestCase):
             logical_request_key="current-two-review-pool", assessment_policy=policy)
         runtime = f.owner.role_runtime(due_port=f.port, adapter=f.app.runtime.adapter, assessment_policy=policy)
         pool = LimitService(f.store).get_pool(policy.pool_ref)
+        foreign_task = graph.create_task(f.project.ref, title="Foreign historical task",
+            logical_request_key="foreign-historical-task")
         counts = f.owner.graph.reader.snapshot_counts()
         ready = runtime.acceptance_readiness(state["project_ref"],
             {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
@@ -817,6 +842,18 @@ class OperatingSetupTests(unittest.TestCase):
         self.assertEqual(len(ready["required_scopes"]), 2)
         self.assertEqual([row["configured_task_ref"] for row in ready["completed_task_readbacks"]],
             configured[:3])
+        changed_instructions = list(configured)
+        changed_instructions[2] = original["D03"]
+        with self.assertRaisesRegex(PermissionError, "content differs from completion predecessor"):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                 "generation": state["manager_generation"]}, changed_instructions)
+        changed = list(configured)
+        changed[1] = foreign_task.ref.to_dict()
+        with self.assertRaises(PermissionError):
+            runtime.acceptance_readiness(state["project_ref"],
+                {"assignment_ref": state["assignment_ref"], "principal": state["manager"],
+                 "generation": state["manager_generation"]}, changed)
         self.assertFalse(ready["allowance_created"])
         self.assertEqual(LimitService(f.store).get_pool(policy.pool_ref), pool)
         self.assertEqual(f.owner.graph.reader.snapshot_counts(), counts)

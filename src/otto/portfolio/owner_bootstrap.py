@@ -1248,14 +1248,26 @@ class PortfolioOwnerBootstrap:
                     raise PermissionError("historical setup task lacks canonical accepted completion proof")
                 predecessor = ResourceRef.from_dict(completion.get("task_ref"))
                 configured_ref = ResourceRef.from_dict(configured_task)
-                if predecessor != configured_ref and configured_ref != current.ref:
-                    raise PermissionError("historical setup task lacks exact committed completion predecessor")
+                if ((predecessor.authority, predecessor.kind, predecessor.id)
+                        != (configured_ref.authority, configured_ref.kind, configured_ref.id)):
+                    raise PermissionError("historical setup task completion predecessor is another task")
                 key = completion.get("logical_request_key")
                 receipt = self.graph.reader.get_receipt(key) if isinstance(key, str) and key else None
                 if (receipt is None or receipt.status.value != "committed"
                         or receipt.operation != "work.revise" or receipt.target != predecessor
                         or receipt.result_ref != current.ref):
                     raise PermissionError("historical setup task lacks exact committed completion predecessor")
+                # Setup may have pinned an earlier metadata-only revision.
+                # Prove its authored content against the exact completion
+                # predecessor, while retaining the separate exact completed
+                # head case for setups prepared after completion.
+                if configured_ref != current.ref:
+                    from herzchen.domains.work.admission import task_content_matches
+                    predecessor_record = self.graph.reader.get_revision(predecessor)
+                    if (predecessor_record is None or predecessor_record.ref != predecessor
+                            or not task_content_matches(self.graph.reader, configured_ref,
+                                predecessor_record.payload, current_ref=predecessor)):
+                        raise PermissionError("historical setup task content differs from completion predecessor")
                 assignment_ref = ResourceRef.from_dict(completion.get("assignment_ref"))
                 if (assignment_ref.kind != "wrk.assignment" or assignment_ref.authority != project.authority
                         or type(completion.get("generation")) is not int or completion["generation"] < 1):
