@@ -98,7 +98,28 @@ def _worker_checkpoint(workspace: str) -> tuple[str, str] | None:
         commit = _git_output(workspace, 'rev-parse', 'HEAD')
         if (not entries or entries[0].partition('\t')[0] != commit or
                 not entries[0].partition('\t')[2].startswith('commit: land ')):
-            raise ClaudeBindingError('worker land checkpoint reflog entry is missing')
+            # Manager workers can publish their authorized Write output before
+            # invoking the landing flow. Accept that state only when HEAD is
+            # still exactly the checked-out remote base and there is no land
+            # or rebase evidence anywhere in this worktree's HEAD reflog.
+            has_landing_evidence = any(
+                entry.partition('\t')[2].startswith(('commit: land ', 'rebase (start):',
+                                                       'rebase (finish):'))
+                for entry in entries)
+            upstream = subprocess.run(
+                ['git', '-C', workspace, 'rev-parse', '@{u}'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            remote_heads = subprocess.run(
+                ['git', '-C', workspace, 'for-each-ref', '--format=%(objectname)',
+                 'refs/remotes/'], check=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True).stdout.splitlines()
+            current_reflog = entries[0].partition('\t')[2]
+            fresh_checkout = (current_reflog.startswith('checkout:') and
+                              any(entry.partition('\t')[2].startswith('clone:') for entry in entries))
+            at_base = upstream.stdout.strip() == commit if upstream.returncode == 0 else commit in remote_heads
+            if has_landing_evidence or not fresh_checkout or not at_base:
+                raise ClaudeBindingError('worker land checkpoint reflog entry is missing')
+            return None
     subject = _git_output(workspace, 'show', '-s', '--format=%s', commit)
     if not subject.startswith('land '):
         raise ClaudeBindingError('worker land checkpoint cannot be identified')

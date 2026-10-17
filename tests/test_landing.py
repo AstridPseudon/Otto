@@ -442,6 +442,31 @@ def test_capture_uses_successful_edit_sequence_from_worker_checkpoint(tmp_path, 
     assert base64.b64decode(captured[0]['content_base64']) == final.encode()
 
 
+def test_prelanding_git_lab_allows_direct_write_live_verification(tmp_path):
+    from otto.agents.claude_adapter import ClaudeBindingError, capture_artifacts
+
+    line, base, _fleet = _project(tmp_path)
+    lab_path = tmp_path / 'prelanding-lab'
+    subprocess.run(['git', '-C', str(tmp_path), 'clone', '--no-checkout', '-q',
+                    str(line), str(lab_path)], check=True, stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE)
+    subprocess.run(['git', '-C', str(lab_path), 'checkout', '-q', '-b', 'lab/one', base],
+                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    path = lab_path / 'answer.txt'
+    path.write_text('authorized result\n')
+    native = {'tools': {'write': {'name': 'Write', 'input': {
+        'file_path': str(path), 'content': 'authorized result\n'}}},
+        'tool_results': {'write': {'is_error': False}}}
+
+    captured = capture_artifacts(native, str(lab_path))
+
+    assert captured[0]['name'] == 'answer.txt'
+    assert base64.b64decode(captured[0]['content_base64']) == b'authorized result\n'
+    native['tools']['write']['input']['content'] = 'different authorized result\n'
+    with pytest.raises(ClaudeBindingError, match='artifact bytes differ'):
+        capture_artifacts(native, str(lab_path))
+
+
 def test_capture_rejects_uncalled_checkpoint_drift_and_unsafe_paths(tmp_path):
     from otto.agents.claude_adapter import ClaudeBindingError, capture_artifacts
 
