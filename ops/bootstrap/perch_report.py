@@ -231,6 +231,38 @@ def stage2_admission_check(response, task_ref):
         raise ValueError("operator admission did not pin the activated task revision")
 
 
+def stage2_admission_held(response):
+    return (isinstance(response, dict) and response.get("outcome") == "held"
+            and response.get("reason") == "execution-changing operation requires a closed owner boundary"
+            and response.get("effects_started") is False
+            and response.get("provider_called") is False)
+
+
+def cmd_stage2_admission_held(args):
+    return 0 if stage2_admission_held(read_json(args.response, {}) or {}) else 1
+
+
+def stage2_owner_boundary_closed(status):
+    if not isinstance(status, dict):
+        return False
+    capacity = status.get("native_capacity") or {}
+    turns = status.get("manager_turns") or {}
+    if not isinstance(capacity, dict) or not isinstance(turns, dict):
+        return False
+    active = capacity.get("active_or_uncertain")
+    managers = turns.get("active")
+    return (status.get("state") == "serving"
+            and status.get("outcome") in {"running", "serving"}
+            and type(active) is int and active == 0
+            and capacity.get("holds") == []
+            and type(managers) is int and managers == 0
+            and status.get("manager_turn_active") is False)
+
+
+def cmd_stage2_boundary_closed(args):
+    return 0 if stage2_owner_boundary_closed(read_json(args.status, {}) or {}) else 1
+
+
 def cmd_stage2_admission_check(args):
     stage2_admission_check(read_json(args.response, {}) or {}, json.loads(args.task_ref))
 
@@ -1582,6 +1614,31 @@ def staging_lines(raw):
     ]
 
 
+def stage2_admission_attempt_lines(raw):
+    rows = []
+    for task in ("A", "B", "C"):
+        paths = sorted(raw.glob("stage2-admit-%s-attempt-*.json" % task),
+                       key=lambda path: int(path.stem.rsplit("-", 1)[-1]))
+        for path in paths:
+            try:
+                response = read_json(path, {}) or {}
+            except ValueError:
+                response = {"outcome": "unreadable receipt"}
+            if not isinstance(response, dict):
+                response = {"outcome": "unreadable receipt"}
+            key_path = path.with_suffix(".request-key")
+            request_key = key_path.read_text(encoding="utf-8").strip() if key_path.exists() else "missing"
+            rows.append([task, path.stem.rsplit("-", 1)[-1], request_key,
+                         response.get("outcome", "missing"), response.get("reason", ""),
+                         "[raw receipt](raw/%s)" % path.name])
+    lines = table(["task", "attempt", "request key", "outcome", "reason", "evidence"], rows) if rows else ["(no admission attempts recorded)"]
+    for task in ("A", "B", "C"):
+        path = raw / ("stage2-admit-%s-boundary-status.json" % task)
+        if path.exists():
+            lines.append("- %s boundary status: [raw owner status](raw/%s)" % (task, path.name))
+    return lines
+
+
 def at_rest_lines(raw):
     snap = read_json(raw / "store-at-rest.json", None) or {}
     rest = read_json(raw / "at-rest.json", None) or {}
@@ -1617,6 +1674,8 @@ def cmd_render(args):
     out += table(["assertion", "result", "detail"],
                  [[r["name"], r["status"], r["detail"]] for r in results]) if results else ["(not checked)"]
     out += ["", "## Staging lifecycle", ""] + staging_lines(raw)
+    if config.get("stage") == "2":
+        out += ["", "## Operator admission attempts", ""] + stage2_admission_attempt_lines(raw)
     out += ["", "## Task timelines", ""]
     for task in config.get("tasks", []):
         rows = [[e["at"], e["source"], e["kind"], e["detail"]] for e in events if e["task"] == task["name"]]
@@ -1681,6 +1740,10 @@ def build_parser():
     p = sub.add_parser("stage2-admission-check")
     p.add_argument("--response", required=True); p.add_argument("--task-ref", required=True)
     p.set_defaults(fn=cmd_stage2_admission_check)
+    p = sub.add_parser("stage2-admission-held")
+    p.add_argument("--response", required=True); p.set_defaults(fn=cmd_stage2_admission_held)
+    p = sub.add_parser("stage2-boundary-closed")
+    p.add_argument("--status", required=True); p.set_defaults(fn=cmd_stage2_boundary_closed)
     p = sub.add_parser("stage2-dispatch-check")
     p.add_argument("--status", required=True); p.add_argument("--activation", required=True)
     p.add_argument("--admission", required=True); p.add_argument("--task", required=True)

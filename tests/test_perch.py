@@ -818,7 +818,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
 
-    def test_operator_admission_waits_for_each_closed_owner_boundary(self):
+    def test_held_operator_admission_waits_for_owner_status_then_reuses_request_key(self):
         import re
         import shlex
 
@@ -828,10 +828,12 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                         "revision": "rev-" + alias} for alias in ("A", "B", "C")}
         shell = PERCH.read_text(encoding="utf-8")
         admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        boundary = re.search(r"(?ms)^stage2_wait_admission_boundary\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(admit)
+        self.assertIsNotNone(boundary)
 
-        def run(seed_open_boundary=False):
-            raw = root / ("held" if seed_open_boundary else "closed")
+        def run(seed_stuck=False):
+            raw = root / ("stuck" if seed_stuck else "closed")
             raw.mkdir()
             (raw / "stage2-activation.json").write_text(json.dumps(
                 {"activation": {"steps": {"tasks": {"task_refs": refs}}}}), encoding="utf-8")
@@ -844,41 +846,86 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
                 "PY=" + shlex.quote(sys.executable),
                 "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+                "sleep() { :; }",
+                "date() {",
+                '  if [ "${SEED_BOUNDARY_STUCK:-0}" != 1 ] || [ "$1" != +%s ]; then command date "$@"; return; fi',
+                '  n=$(cat "$RAW/date-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/date-calls"',
+                '  case "$n" in 1|2|3) echo 1000 ;; 4) echo 1001 ;; *) echo 1180 ;; esac',
+                "}",
                 "cold_client() {",
+                '  if [ "$*" = "service status" ]; then',
+                '    n=$(cat "$RAW/status-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/status-calls"',
+                '    if [ "$n" = 1 ] || [ "${SEED_BOUNDARY_STUCK:-0}" = 1 ]; then',
+                '      echo status-busy >> "$RAW/trace"',
+                '      printf \'%s\\n\' \'{"state":"serving","outcome":"running","native_capacity":{"active_or_uncertain":1,"holds":[]},"manager_turns":{"active":1},"manager_turn_active":true}\'',
+                '    else',
+                '      echo status-closed >> "$RAW/trace"',
+                '      printf \'%s\\n\' \'{"state":"serving","outcome":"running","native_capacity":{"active_or_uncertain":0,"holds":[]},"manager_turns":{"active":0},"manager_turn_active":false}\'',
+                '    fi',
+                '    return 0',
+                '  fi',
+                '  local alias',
                 '  case "$*" in *task-A*) alias=A ;; *task-B*) alias=B ;; *task-C*) alias=C ;; *) return 31 ;; esac',
-                '  case "$*" in *plan-review-document*) ;; *) return 32 ;; esac',
-                '  echo "admit-$alias" >> "$RAW/trace"',
-                '  if { [ "$alias" = B ] && [ ! -f "$RAW/wait-A" ]; } ||',
-                '     { [ "$alias" = C ] && [ ! -f "$RAW/wait-B" ]; } ||',
-                '     { [ "${SEED_OPEN_BOUNDARY_C:-0}" = 1 ] && [ "$alias" = C ]; }; then',
-                '    printf \'%s\\n\' \'{"outcome":"held","reason":"execution-changing operation requires a closed owner boundary","retry":false,"effects_started":false}\'',
+                '  case "$*" in *plan-review-document*rev-review*) ;; *) return 32 ;; esac',
+                '  case "$*" in *"--request-key perch-stage2-admit-$alias"*) ;; *) return 33 ;; esac',
+                '  echo "admit-$alias:perch-stage2-admit-$alias" >> "$RAW/trace"',
+                '  if [ "$alias" = C ] && [ ! -f "$RAW/c-held" ]; then',
+                '    : > "$RAW/c-held"',
+                '    printf \'%s\\n\' \'{"outcome":"held","reason":"execution-changing operation requires a closed owner boundary","retry":false,"effects_started":false,"provider_called":false}\'',
                 '    return 0',
                 '  fi',
                 '  printf \'{"outcome":"admitted","admitted_revision":"rev-%s"}\\n\' "$alias"',
                 "}",
                 "stage2_wait_worker() {",
-                '  [ -f "$RAW/stage2-admit-$2.json" ] || return 34',
+                '  for alias in A B C; do [ -f "$RAW/stage2-admit-$alias.json" ] || return 34; done',
                 '  echo "wait-$2" >> "$RAW/trace"',
-                '  : > "$RAW/wait-$2"',
                 "}",
+                boundary.group(),
                 admit.group(),
                 "stage2_admit_tasks",
             ))
             result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                                    env={**os.environ, "SEED_OPEN_BOUNDARY_C": "1" if seed_open_boundary else "0"},
+                                    env={**os.environ, "SEED_BOUNDARY_STUCK": "1" if seed_stuck else "0"},
                                     timeout=30)
             return raw, result
 
         raw, result = run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
-                         ["admit-A", "wait-A", "admit-B", "wait-B", "admit-C", "wait-C"])
-        raw, result = run(seed_open_boundary=True)
+                         ["admit-A:perch-stage2-admit-A", "admit-B:perch-stage2-admit-B",
+                          "admit-C:perch-stage2-admit-C", "status-busy", "status-closed",
+                          "admit-C:perch-stage2-admit-C", "wait-A", "wait-B", "wait-C"])
+        self.assertEqual(json.loads((raw / "stage2-admit-C-attempt-1.json").read_text())["outcome"], "held")
+        self.assertEqual(json.loads((raw / "stage2-admit-C-attempt-2.json").read_text())["outcome"], "admitted")
+        self.assertEqual((raw / "stage2-admit-C-attempt-1.request-key").read_text(),
+                         (raw / "stage2-admit-C-attempt-2.request-key").read_text())
+        self.assertEqual(json.loads((raw / "stage2-admit-C.json").read_text())["outcome"], "admitted")
+        raw, result = run(seed_stuck=True)
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
-                         ["admit-A", "wait-A", "admit-B", "wait-B", "admit-C"])
+                         ["admit-A:perch-stage2-admit-A", "admit-B:perch-stage2-admit-B",
+                          "admit-C:perch-stage2-admit-C", "status-busy"])
         self.assertEqual(json.loads((raw / "stage2-admit-C.json").read_text())["outcome"], "held")
-        self.assertFalse((raw / "wait-C").exists())
+        self.assertFalse((raw / "stage2-admit-C-attempt-2.json").exists())
+        self.assertIn("boundary stayed open", (raw / "stage2-setup-errors.txt").read_text())
+
+    def test_only_pre_effect_boundary_hold_can_be_retried(self):
+        held = {"outcome": "held", "reason": "execution-changing operation requires a closed owner boundary",
+                "effects_started": False, "provider_called": False}
+        self.assertTrue(perch_report.stage2_admission_held(held))
+        for changed in ({"effects_started": True}, {"provider_called": True},
+                        {"reason": "other hold"}, {"outcome": "pending"}):
+            self.assertFalse(perch_report.stage2_admission_held({**held, **changed}))
+        closed = {"state": "serving", "outcome": "running", "native_capacity": {
+            "active_or_uncertain": 0, "holds": []}, "manager_turns": {"active": 0},
+            "manager_turn_active": False}
+        self.assertTrue(perch_report.stage2_owner_boundary_closed(closed))
+        self.assertFalse(perch_report.stage2_owner_boundary_closed({**closed,
+            "native_capacity": {"active_or_uncertain": 1, "holds": []}}))
+        self.assertFalse(perch_report.stage2_owner_boundary_closed({**closed,
+            "native_capacity": {"active_or_uncertain": 0, "holds": ["task-A"]}}))
+        self.assertFalse(perch_report.stage2_owner_boundary_closed({**closed,
+            "native_capacity": {"active_or_uncertain": False, "holds": []}}))
 
     def test_dispatch_poll_resolves_one_pending_request_before_read(self):
         import re
@@ -1150,6 +1197,26 @@ class RenderTests(unittest.TestCase):
         out = self.tmp / "report.md"
         perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
         self.assertIn("fake_worker.py", out.read_text(encoding="utf-8"))
+
+    def test_stage_two_report_records_held_receipt_and_same_key_retry(self):
+        raw = clean_raw(self.tmp / "raw")
+        patch(raw, "config.json", lambda value: value.update(stage="2"))
+        for number, response in ((1, {"outcome": "held", "reason":
+                "execution-changing operation requires a closed owner boundary"}),
+                                 (2, {"outcome": "admitted", "admitted_revision": "rev-C"})):
+            prefix = raw / ("stage2-admit-C-attempt-%s" % number)
+            prefix.with_suffix(".json").write_text(json.dumps(response), encoding="utf-8")
+            prefix.with_suffix(".request-key").write_text("perch-stage2-admit-C\n", encoding="utf-8")
+        (raw / "stage2-admit-C-boundary-status.json").write_text(json.dumps({
+            "state": "serving", "native_capacity": {"active_or_uncertain": 0, "holds": []}}), encoding="utf-8")
+        out = self.tmp / "report.md"
+        perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
+        report = out.read_text(encoding="utf-8")
+        self.assertIn("## Operator admission attempts", report)
+        self.assertIn("| C | 1 | perch-stage2-admit-C | held |", report)
+        self.assertIn("| C | 2 | perch-stage2-admit-C | admitted |", report)
+        self.assertIn("[raw receipt](raw/stage2-admit-C-attempt-1.json)", report)
+        self.assertIn("[raw owner status](raw/stage2-admit-C-boundary-status.json)", report)
 
 
 class StagingRootSnapshotTests(unittest.TestCase):
