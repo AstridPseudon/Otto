@@ -282,12 +282,14 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     if (not isinstance(kind, str) or kind not in selection.get("host_kinds", ())
             or not isinstance(adapter, str) or not isinstance(host_settings, Mapping)
             or not isinstance(roles, Mapping) or not isinstance(selection.get("pin"), Mapping)):
-        raise ValueError("retained profile is not qualified by this host")
+        from otto.agents.host_profiles import ProfileSelectionError
+        raise ProfileSelectionError("retained profile is not qualified by this host")
     allowed_models = host_settings.get("models")
     if allowed_models is not None and any(not isinstance(value, Mapping)
                                           or value.get("model") not in allowed_models
                                           for value in roles.values()):
-        raise ValueError("retained profile model is unsupported by this host")
+        from otto.agents.host_profiles import ProfileSelectionError
+        raise ProfileSelectionError("retained profile model is unsupported by this host")
     retained_profile = {"name": selection["name"], "adapter": adapter,
                         "host_kinds": list(selection["host_kinds"]),
                         "roles": copy.deepcopy(dict(roles)), "oracle": copy.deepcopy(selection.get("oracle") or {}),
