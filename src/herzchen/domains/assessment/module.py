@@ -1238,6 +1238,10 @@ class _AssessmentModuleEngine:
                                 if isinstance(row, Mapping) and row.get("ref") == evidence.to_dict()), None)
                     if pin is None or actor is None or evidence_store is None:
                         evidence_states.append("unknown")
+                        if evidence.kind == "dat.content.document" or pin is not None:
+                            block("completion_evidence_unverified",
+                                  "pinned DAT evidence cannot be verified without its acceptance pin and owner read inputs",
+                                  scope, criterion)
                         continue
                     from herzchen.content.reads import EvidenceReadGrant
                     grant_data = pin.get("evidence_read_grant")
