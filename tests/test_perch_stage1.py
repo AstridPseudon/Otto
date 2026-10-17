@@ -351,10 +351,10 @@ class StageFourLandingAssertionTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="perch-stage4-")
         self.addCleanup(self.temporary.cleanup)
 
-    def _raw(self):
+    def _raw(self, *, fake=True):
         raw = stage_one_run(Path(self.temporary.name) / "clean")
         config = json.loads((raw / "config.json").read_text(encoding="utf-8"))
-        config.update(stage="4", tasks=[{"name": "canary-stage4-happy", "expect": "landed"},
+        config.update(stage="4", fake=fake, tasks=[{"name": "canary-stage4-happy", "expect": "landed"},
                                          {"name": "canary-stage4-conflict", "expect": "conflict",
                                           "landing_conflict": True}])
         (raw / "config.json").write_text(json.dumps(config), encoding="utf-8")
@@ -384,10 +384,10 @@ class StageFourLandingAssertionTests(unittest.TestCase):
         self.assertEqual(got["timeline-events"], "pass", got)
         self.assertEqual(got["landing-conflict-refused"], "pass", got)
         self.assertEqual(got["landing-conflict-lab-deleted"], "pass", got)
-        self.assertEqual(got["owner-driven-canary"], "pass", got)
+        self.assertEqual(got["owner-driven-canary"], "skip", got)
 
     def test_missing_owner_dispatch_turns_only_owner_journey_assertion_red(self):
-        raw = self._raw()
+        raw = self._raw(fake=False)
         before = {row["name"]: row["status"] for row in report.assertions(raw)}
         report.seed(raw, "owner")
         after = {row["name"]: row["status"] for row in report.assertions(raw)}
@@ -401,7 +401,7 @@ class StageFourLandingAssertionTests(unittest.TestCase):
         events.write_text("".join(line for line in events.read_text(encoding="utf-8").splitlines(keepends=True)
                                    if "\towner-" not in line), encoding="utf-8")
         got = {row["name"]: row["status"] for row in report.assertions(raw)}
-        self.assertEqual(got["owner-driven-canary"], "fail", got)
+        self.assertEqual(got["owner-driven-canary"], "skip", got)
 
     def test_seeded_missing_conflict_turns_only_the_conflict_assertion_red(self):
         raw = self._raw()

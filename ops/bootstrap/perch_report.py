@@ -1465,7 +1465,9 @@ def assertions(raw):
                           "lab-created", "turn", "done", "check-passed", "landed", "lab-deleted"}
         add("owner-driven-canary", [] if owner_required <= owner_kinds else
             ["owner journey missing " + ", ".join(sorted(owner_required - owner_kinds))],
-            "the owner admitted and automatically dispatched the canary through check, done, landing and lab deletion")
+            "the owner admitted and automatically dispatched the canary through check, done, landing and lab deletion",
+            skip=("fake worktree harness does not exercise owner admission or automatic dispatch"
+                  if config.get("fake") else None))
         conflict_task = next((task for task in config.get("tasks", []) if task.get("landing_conflict")), None)
         kinds = [e["kind"] for e in events if conflict_task and e["task"] == conflict_task["name"]]
         expected = {"lab-created", "turn", "done", "check-passed", "landing-conflict", "refused", "lab-deleted"}

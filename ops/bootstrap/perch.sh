@@ -685,13 +685,13 @@ run_stage() {  # STAGE
       landing-conflict)
         # The task's normal worker/check/landing flow seeds the conflict after a passing check.
         # This observation names the harness mode; it is not a product-owned real-worker proof.
-        if [ "$FAKE" = true ]; then
+        if [ -n "$FAKE" ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "fake-harness"
         else
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key landing-conflict --value "owner-managed-landing-conflict-not-wired"
         fi ;;
       owner-driven-canary)
-        if [ "$FAKE" = true ]; then
+        if [ -n "$FAKE" ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "fake-harness-only"
         else
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "owner-project-activation-and-dispatch-not-wired"
@@ -710,7 +710,7 @@ run_stage() {  # STAGE
     # Two workers held on the first task's lab for the whole run: two units against a limit of one.
     HOLD_POOL="$(hold_worker "$LABS/$first" "$first") $(hold_worker "$LABS/$first" "$first")"
   fi
-  if [ "$stage" != 2 ] && { [ "$stage" != 4 ] || [ "$FAKE" = true ]; }; then
+  if [ "$stage" != 2 ] && { [ "$stage" != 4 ] || [ -n "$FAKE" ]; }; then
     for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage "$stage"); do
       run_task "$task" "$([ "$task" = "$first" ] && echo yes || echo no)" "$([ "$task" = "$last" ] && echo yes || echo no)"
     done
