@@ -166,13 +166,20 @@ class LocalAssessmentPolicy:
         # The retained task content also pins its project parent. Require that
         # parent to remain in the configured project identity, while allowing
         # the stored parent ref to name an earlier project metadata revision.
+        # Some trusted owner task views omit the parent ref entirely. In that
+        # case the task's identity is already anchored by the configured
+        # policy and the current project/task identity checks above. If a
+        # parent is present, however, it must be well formed and name this
+        # project identity.
+        task_has_project = "project_ref" in current_task.payload
         task_project = current_task.payload.get("project_ref")
-        if isinstance(task_project, Mapping):
+        if task_has_project and isinstance(task_project, Mapping):
             try:
                 task_project = ResourceRef.from_dict(task_project)
             except (TypeError, ValueError):
                 task_project = None
-        if (not isinstance(task_project, ResourceRef)
+        if task_has_project and (
+                not isinstance(task_project, ResourceRef)
                 or not same_identity(task_project, project_pin)):
             raise PermissionError("local assessment policy task is outside the configured project")
 

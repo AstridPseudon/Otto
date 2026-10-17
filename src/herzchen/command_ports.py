@@ -33,7 +33,7 @@ _FORBIDDEN = frozenset({
 })
 _COMPOSITION = threading.local()
 _READER_ENDPOINTS = (
-    "foreign_keys_enabled", "get_identity", "get_record", "registered_domains",
+    "foreign_keys_enabled", "get_identity", "get_revision", "get_record", "registered_domains",
     "get_reference", "get_receipt", "list_events", "snapshot_counts",
     "get_identity_bounded", "get_identity_ref", "read_identity_page",
 )
