@@ -7,7 +7,7 @@ import unittest
 from otto.portfolio.identity_context import HostIngress
 from otto.portfolio.occurrence_reads import digest, handle
 from otto.portfolio.worker_occurrences import manager_consumption_parent
-from .test_worker_occurrences import WorkerOccurrenceTests
+from otto.portfolio.tests.test_worker_occurrences import WorkerOccurrenceTests
 
 
 class ManagerConsumptionTests(unittest.TestCase):
@@ -18,10 +18,16 @@ class ManagerConsumptionTests(unittest.TestCase):
         self.x, self.f = self.fixture, self.fixture.f
         request = dict(self.f.request(), request_key="ordinary-manager-child", principal="ordinary-leaf")
         request["instruction_contract"]["authority"]["owner_actor"] = "ordinary-leaf"
+        request["instruction_contract"]["authority"]["workspace_roots"] = [str(self.x.root / "worker-lab")]
         started = self.f.app.assign_and_start(**request)
         self.assertEqual(started["outcome"], "succeeded", started)
         self.child = self.f.app._read(started["schedule_id"])
         self.assertIsNone(self.child.target.get("parent"))
+        # The callback resumes the original manager launch, whose contract is
+        # bound to the fixture root; the separately launched child uses worker-lab.
+        self.f.app.runtime.adapter.worktree = str(self.x.root)
+        self.f.app.runtime.adapter.source = str(self.x.root)
+        self.f.app.runtime.adapter.writable_roots = (str(self.x.root),)
         delivered = self.f.app.continue_manager_from_worker(manager_schedule_id=self.x.server.state["schedule_id"],
             worker_schedule_id=self.child.schedule_id, execute=True)
         self.assertEqual(delivered["outcome"], "succeeded", delivered)
@@ -61,7 +67,7 @@ class ManagerConsumptionTests(unittest.TestCase):
         context = {**self.context,"occurrence_ref":{"schedule_id":caller["schedule_id"]}}
         records = {caller["schedule_id"]:caller,callback["schedule_id"]:callback}
         service = SimpleNamespace(server=SimpleNamespace(state=self.x.server.state,owner=self.f.owner,
-            due_port=SimpleNamespace(read_due=records.get)))
+            due_port=SimpleNamespace(read_due=records.get), portfolio=self.f.app.portfolio))
         parent = manager_consumption_parent(service,context,self.child.to_dict())
         self.assertEqual(parent["callback_schedule_id"],callback["schedule_id"])
         callback["message"] = "changed exact record"
@@ -73,7 +79,7 @@ class ManagerConsumptionTests(unittest.TestCase):
         callback = self.callback.to_dict();child = self.child.to_dict()
         records = {callback["schedule_id"]:callback}
         service = SimpleNamespace(server=SimpleNamespace(state=self.x.server.state,owner=self.f.owner,
-            due_port=SimpleNamespace(read_due=records.get)))
+            due_port=SimpleNamespace(read_due=records.get), portfolio=self.f.app.portfolio))
         count = self.f.store.consumer().snapshot_counts()
         cases=[]
         for field,value in (("role","worker"),("generation",2),("assignment_ref",{**self.context["assignment_ref"],"id":"foreign"}),
