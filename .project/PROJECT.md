@@ -8,6 +8,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17 20:05 UTC | SL4 | merged 9fdc4be | +22/-781 | `tests/test_usage_contract.py` (9 passed); `src/otto/portfolio/tests/test_observability_views.py`, `tests/test_portfolio_status.py`, `tests/test_host_startup_composition.py` needs the gate (AF_UNIX bind denied) | retired proof-only Events modules and wrappers; no controller files deleted; ledger regenerated. Files listed in SL4 evidence below.
 2026-10-17 20:20 UTC | SL1 | merged cd4d611 | +55/-414 | `tests/test_manager_journey_service.py -k effective_manager_brief` (2 passed); broader journey, advisor delivery, and direction invocation checks need the gate (AF_UNIX bind denied) | adopted exact direction revisions now reach the effective replacement brief; removed 282-line unused advisor adapter; Astra found no concrete defect. Files listed in SL1 evidence below.
 2026-10-17 20:30 UTC | SL3 | merged 29c6530 | +210/-76 | `tests/test_cli_read_routes.py` (3 passed); `tests/test_otto_show_status.py`, `tests/test_project_history.py` need the gate (AF_UNIX bind denied) | removed root overview/tasks/task routes; kept `events` compatibility; ledger regenerated. Files listed in SL3 evidence below.
+2026-10-17 20:40 UTC | SL8 | merged 24eeda2 | +195/-3 | `tests/test_status_friction.py` (2 passed) | added bounded, authorized `otto status --friction`; unavailable values remain explicit; no deletion; ledger regenerated. Files listed in SL8 evidence below.
 
 ### SL3 worker evidence
 
