@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 from pathlib import Path
 import sys
@@ -58,7 +59,10 @@ def complete_landed_canary(context, landing):
     candidate_identity = owner.graph.reader.get_identity(candidate)
     if candidate_identity is None or candidate_identity.ref != candidate:
         raise RuntimeError("stage-2 landing candidate is no longer an exact stored revision")
-    evidence_refs = assessed.evidence_refs
+    payload = getattr(assessed, "payload", None)
+    raw_evidence_refs = payload.get("evidence_refs", ()) if isinstance(payload, Mapping) else ()
+    evidence_refs = tuple(ResourceRef.from_dict(ref) if isinstance(ref, Mapping) else ref
+                          for ref in raw_evidence_refs)
     if not evidence_refs:
         raise RuntimeError("stage-2 landing assessment has no managed evidence")
     evidence_hashes = {}

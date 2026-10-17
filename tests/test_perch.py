@@ -1278,6 +1278,32 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         candidate = Ref("owner", "wrk.result", "candidate-A", "rev-1")
         evidence = Ref("owner", "dat.content.document", "runner-receipt-A", "rev-evidence")
         evidence_digest = "d" * 64
+        with mock_patch.object(sys, "path", [str(ROOT / "src"), *sys.path]):
+            from herzchen.domains.assessment.model import AssessmentResult, Invocation, Verdict
+
+        assessed_result = AssessmentResult(
+            ref=Ref("owner", "assessment.result", "result-A", "rev-1"),
+            scope_ref=Ref("owner", "assessment.scope", "scope-A", "rev-1"),
+            parent_obligation_ref=Ref("owner", "work.obligation", "obligation-A", "rev-1"),
+            criterion_ref=Ref("owner", "assessment.criterion", "criterion-A", "rev-1"),
+            candidate_ref=candidate,
+            input_packet_ref=Ref("owner", "assessment.input", "input-A", "rev-1"),
+            verdict=Verdict.PASS,
+            guidance={},
+            protocol_result={},
+            invocation=Invocation(
+                ref=Ref("owner", "assessment.invocation", "invocation-A", "rev-1"),
+                operation_ref=Ref("owner", "assessment.operation", "operation-A", "rev-1"),
+                reservation_ref=Ref("owner", "resource.reservation", "reservation-A", "rev-1"),
+                route="test", role="fleet-check", state="completed", declared_units=1,
+                actual_units=1, result={}, version=1, payload={}),
+            findings=(),
+            correction_refs=(),
+            version=1,
+            payload={"evidence_refs": [evidence.to_dict()]},
+        )
+        self.assertIsInstance(assessed_result, AssessmentResult)
+        self.assertFalse(hasattr(assessed_result, "evidence_refs"))
         task_ref = Ref("owner", "work.task", "task-A", "rev-admitted")
         project_ref = Ref("owner", "work.project", "project", "rev-4")
         manager_ref = Ref("owner", "wrk.assignment", "manager", "rev-2")
@@ -1302,7 +1328,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 self_ref = ref.to_dict()
                 if self_ref["kind"] != "assessment.result":
                     raise ValueError("wrong result")
-                return SimpleNamespace(candidate_ref=candidate, evidence_refs=(evidence,))
+                return assessed_result
 
         class Portfolio:
             outcome = "completed"
