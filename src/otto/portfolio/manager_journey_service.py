@@ -1495,14 +1495,15 @@ class ManagerJourneyService:
     def _execution_control(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Use current service bindings and existing Due/host recovery ports."""
         self.commands._authorize()
-        recovery_fields = {"expected_due_sha256", "expected_unknown_result_sha256", "reason"}
+        recovery_fields = {"expected_due_sha256", "expected_unknown_result_sha256",
+                           "expected_result_sha256", "reason"}
         if set(request) - {"command", "operation", "schedule_id", "request_key", "expected_version",
                            *recovery_fields}:
             raise ValueError("execution control cannot change the bound owner or assignment")
         operation = request.get("operation", "read")
         if operation not in {"read", "reminder-read", "recover", "stop", "resume", "startup", "drain"}:
             raise ValueError("unsupported execution control operation")
-        if operation != "recover" and any(key in request for key in recovery_fields):
+        if operation != "recover" and any(request.get(key) is not None for key in recovery_fields):
             raise ValueError("unknown worker disposition fields require recover")
         if operation == "drain":
             if any(request.get(k) is not None for k in ("schedule_id", "request_key", "expected_version")):
@@ -1565,12 +1566,15 @@ class ManagerJourneyService:
             return DurableAttention(None, due_port=self.server.due_port).stop(schedule,
                 request_id=key, expected_version=version, project_ref=due.project_ref,
                 manager_ref=due.manager_ref, generation=due.generation, lifecycle_owner=app.actor)
-        general_recovery = any(key in request for key in recovery_fields | {"request_key"})
+        general_recovery = any(request.get(key) is not None for key in recovery_fields | {"request_key"})
         if general_recovery:
             if request.get("expected_version") is not None:
                 raise ValueError("general worker recovery does not accept expected_version")
-            required = recovery_fields | {"request_key"}
-            missing = sorted(key for key in required if key not in request)
+            attempt_result = ((due.host_evidence or {}).get("gateway_attempt") or {}).get("result") or {}
+            failed = attempt_result.get("outcome") == "failed"
+            required = {"expected_due_sha256", "reason", "request_key",
+                        "expected_result_sha256" if failed else "expected_unknown_result_sha256"}
+            missing = sorted(key for key in required if request.get(key) is None)
             if missing:
                 raise ValueError("general worker recovery missing required fields: " + ", ".join(missing))
             if operation != "recover" or due.role != "worker":
@@ -1581,12 +1585,14 @@ class ManagerJourneyService:
             key = request.get("request_key")
             if not isinstance(key, str) or not key.strip():
                 raise ValueError("general worker recovery requires request_key")
-            settled = self.host.recover_gone_unknown_worker(app, schedule_id=schedule,
+            settled = self.host.recover_gone_worker(app, schedule_id=schedule,
                 request_key=key, expected_due_sha256=request.get("expected_due_sha256"),
+                expected_result_sha256=request.get("expected_result_sha256"),
                 expected_unknown_result_sha256=request.get("expected_unknown_result_sha256"),
                 reason=reason.strip())
             return {**settled, "manager_recovery": True,
-                    "historical_unknown_preserved": True, "provider_called": False,
+                    "historical_result_preserved" if failed else "historical_unknown_preserved": True,
+                    "provider_called": False,
                     "retry": False}
         if request.get("request_key") is not None or request.get("expected_version") is not None:
             raise ValueError("read/recover/resume take only the exact schedule")
@@ -1595,7 +1601,9 @@ class ManagerJourneyService:
             return {"outcome": "read", **compact_operation_status(raw),
                     "occurrence": {key: raw.get(key) for key in ("schedule_id", "version",
                         "assignment_ref", "generation", "stop_state", "host_state",
-                        "completion_state", "in_flight_request")}, "provider_called": False}
+                        "completion_state", "in_flight_request")},
+                    "recovery": app.recovery_status(schedule_id=schedule),
+                    "provider_called": False}
         if operation == "recover" and due.role == "worker":
             # One explicit manager recovery action may settle only the exact
             # retained terminal capacity-failure disposition. Process death or

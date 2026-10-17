@@ -1510,14 +1510,27 @@ class ExecutionApplication:
                 state, action = "completed_missing_response", "reconcile the retained completion response"
             else:
                 state, action = "completed", "inspect the retained result and continue the next actor"
+        elif (due.role == "worker" and due.stop_state == "active"
+              and attempt.get("state") == "result" and result.get("outcome") == "failed"):
+            state = "held_failed"
+            action = ("manager may settle the exact failed result after the recorded worker "
+                      "process group is proven gone; never replay the provider effect")
         else:
             state, action = "held", "inspect the retained occurrence before continuation"
+        recovery = None
+        if state == "held_failed":
+            recovery = {"operation": "recover", "schedule_id": schedule_id,
+                        "expected_due_sha256": _digest(due.to_dict()),
+                        "expected_result_sha256": _digest(result),
+                        "requires": ["distinct_request_key", "manager_reason", "recorded_process_group_gone"],
+                        "provider_called": False, "retry": False}
         return {
             "schema": "otto.owner-recovery-projection.v1", "schedule_id": due.schedule_id,
             "assignment_ref": due.assignment_ref, "generation": due.generation,
             "stop_state": due.stop_state, "host_state": due.host_state,
             "completion_state": due.completion_state, "delivery_state": due.delivery_state,
             "state": state, "next_action": action, "provider_called": False,
+            "manager_gone_group_recovery": recovery,
             "dispatch": False, "launch": False,
             "correlation_id": stable_correlation_id(attempt, fallback=due.in_flight_request or due.last_completed_request or due.schedule_id),
             "phase_timing": timing_from_receipt(

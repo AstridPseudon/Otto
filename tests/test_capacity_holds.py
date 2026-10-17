@@ -5,9 +5,11 @@ costing capacity but keeps its custody fence. A reused pid or pgid stays held.
 """
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +20,48 @@ import unittest
 from herzchen.contracts import ResourceRef
 from otto.portfolio.execution_host import ExecutionHost
 from tests import test_worker_custody
+
+
+CLAUDE_DONE_PROCESS = r'''
+import json, os, socket, sys
+frame = json.loads(sys.stdin.readline())
+prompt = frame['message']['content'][0]['text']
+session = frame.get('session_id') or 'failed-worker-session'
+def emit(value):
+    print(json.dumps(value), flush=True)
+def done():
+    payload = {'op': 'call', 'token': os.environ['OTTO_DONE_TOKEN'],
+               'tool': 'done', 'args': {'summary': 'Worker submitted before native terminal.'}}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.connect(os.environ['OTTO_DONE_SOCKET'])
+        channel.sendall((json.dumps(payload) + '\n').encode())
+        reply = json.loads(channel.makefile().readline())
+    with open(os.environ['OTTO_DONE_REPLY'], 'w') as out:
+        json.dump(reply, out)
+    if not reply.get('ok') or not reply.get('submitted'):
+        raise RuntimeError('real owner worker-done refused: ' + repr(reply))
+    return reply
+emit({'type': 'system', 'subtype': 'init', 'session_id': session,
+      'cwd': os.getcwd(), 'model': 'claude-haiku-5-5', 'permissionMode': 'dontAsk',
+      'tools': ['Edit', 'Glob', 'Grep', 'Read', 'Write', 'mcp__otto__done'],
+      'mcp_servers': [{'name': 'otto'}], 'plugins': [], 'skills': [], 'slash_commands': []})
+emit({'type': 'user', 'uuid': 'input-work', 'session_id': session,
+      'message': {'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}})
+if os.environ['OTTO_DONE_ORDER'] == 'before':
+    emit({'type': 'assistant', 'uuid': 'assistant-done', 'session_id': session,
+          'message': {'role': 'assistant', 'model': 'claude-haiku-5-5',
+                      'content': [{'type': 'tool_use', 'id': 'done-1',
+                                   'name': 'mcp__otto__done', 'input': {'summary': 'submitted'}}]}})
+    reply = done()
+    emit({'type': 'user', 'uuid': 'done-result', 'session_id': session,
+          'message': {'role': 'user', 'content': [{'type': 'tool_result',
+                      'tool_use_id': 'done-1', 'is_error': False, 'content': json.dumps(reply)}]}})
+emit({'type': 'result', 'subtype': 'error_max_turns', 'is_error': True,
+      'session_id': session, 'uuid': 'terminal-error', 'result': 'turn limit reached',
+      'usage': {'input_tokens': 10, 'output_tokens': 4}})
+if os.environ['OTTO_DONE_ORDER'] == 'after':
+    done()
+'''
 
 
 def spawn_group(command=("sleep", "60")):
@@ -363,6 +407,246 @@ class CapacityHoldTests(unittest.TestCase):
         self.assertTrue(finished.wait(10), "fresh same-project owner execution did not finish")
         self.assertEqual(launch_result.get("outcome"), "succeeded", launch_result)
         self.assertEqual(len(f.provider.calls), 1, "fresh same-project dispatch reaches the provider")
+
+    def test_manager_settles_gone_failed_worker_before_next_launch(self):
+        from otto.portfolio.execution import _digest
+
+        f = self.fixture.f
+        due = f.app._read(self.schedule)
+        evidence = deepcopy(due.host_evidence)
+        result = evidence["gateway_attempt"]["result"]
+        result["outcome"] = "failed"
+        result["delivery_state"] = "failed"
+        result["error"] = {"code": "claude_native_failure", "message": "error_max_turns"}
+        f.port.save_due(self.schedule, replace(due, host_evidence=evidence).to_dict(),
+                        request_id="failed-native-result", expected_version=due.version)
+        due = f.app._read(self.schedule)
+        original_attempt = deepcopy(due.host_evidence["gateway_attempt"])
+        host = self.host()
+        host.restore_execution(f.app, due)
+        process = self.group()
+        host.record_process_group(self.schedule, process.pid)
+
+        request = dict(schedule_id=self.schedule, request_key="settle-gone-failed-worker",
+            expected_due_sha256=_digest(due.to_dict()), expected_result_sha256=_digest(result),
+            reason="The native worker ended with error_max_turns.")
+        before = f.port.read_due(self.schedule)
+        live = host.recover_gone_worker(f.app, **request)
+        self.assertEqual(live["outcome"], "refused", live)
+        self.assertEqual(live["cause"], "process_group_alive")
+        self.assertEqual(f.port.read_due(self.schedule), before)
+
+        self.kill_group(process)
+        self.assertEqual(host.reconcile_dead_holds(), [self.schedule])
+        scope = host._capacity_holds[self.schedule]
+        follow_on = {**scope, "schedule_id": "follow-on-worker",
+                     "assignment": ("execution-owner", "next-assignment", 1),
+                     "session": "next-session"}
+        self.assertFalse(host._eligible(follow_on))
+        self.assertTrue(host._eligible({**follow_on, "project": "project-b",
+            "workspace": str(self.directory / "project-b")}))
+
+        calls = len(f.provider.calls)
+        settled = host.recover_gone_worker(f.app, **request)
+        self.assertEqual(settled["outcome"], "settled", settled)
+        after = f.port.read_due(self.schedule)
+        self.assertEqual(after["stop_state"], "stopped")
+        self.assertEqual(after["completion_state"], "failed")
+        self.assertIsNone(after["in_flight_request"])
+        self.assertEqual(after["host_evidence"]["gateway_attempt"], original_attempt)
+        self.assertNotIn(self.schedule, host._capacity_holds)
+        self.assertTrue(host._eligible(follow_on))
+        self.assertEqual(len(f.provider.calls), calls)
+        self.assertEqual(host.recover_gone_worker(f.app, **request)["outcome"], "replayed")
+        self.assertEqual(f.port.read_due(self.schedule), after)
+        reports = f.app.assignments.list_observations(
+            ResourceRef.from_dict(after["assignment_ref"]), kind="report")
+        self.assertEqual(len(reports), 1)
+
+        fresh = f.app.assign_worker(**{**f.request(), "request_key": "worker-after-failed-fence"})
+        f.app.assignments.dispatch(ResourceRef.from_dict(fresh["assignment_ref"]),
+            expected_generation=fresh["generation"],
+            logical_request_key="dispatch-after-failed-fence", actor=f.actor)
+        host.start()
+        self.addCleanup(host.close)
+        with host._command_lock:
+            launched = host._owned(lambda: f.app.start(schedule_id=fresh["schedule_id"]))
+        finished = threading.Event()
+        answer = {}
+        launched.then(lambda value: (answer.update(value or {}), finished.set()),
+                      lambda error: (answer.update(error=str(error)), finished.set()))
+        self.assertTrue(finished.wait(10), "fresh worker did not finish")
+        self.assertEqual(answer["outcome"], "succeeded", answer)
+        self.assertEqual(len(f.provider.calls), calls + 1)
+
+    def test_failed_manager_recovery_exposes_pins_and_verifies_restart(self):
+        from otto.portfolio.manager_journey_service import ManagerJourneyService
+        from otto.portfolio.execution import _digest
+
+        f = self.fixture.f
+        due = f.app._read(self.schedule)
+        evidence = deepcopy(due.host_evidence)
+        result = evidence["gateway_attempt"]["result"]
+        result.update(outcome="failed", delivery_state="failed",
+                      error={"code": "claude_native_failure", "message": "error_max_turns"})
+        f.port.save_due(self.schedule, replace(due, host_evidence=evidence).to_dict(),
+                        request_id="failed-manager-fixture", expected_version=due.version)
+        host = self.host()
+        host.restore_execution(f.app, f.app._read(self.schedule))
+        process = self.group()
+        host.record_process_group(self.schedule, process.pid)
+        state = {"project_ref": f.project.ref.to_dict(), "manager": "manager",
+                 "schedule_id": self.schedule, "workers": {"J01": {"schedule_id": self.schedule}},
+                 "requested_model": "gpt-test", "requested_reasoning": "high"}
+        server = SimpleNamespace(owner=f.owner, portfolio=f.app.portfolio, due_port=f.port,
+                                 store=f.store, state=state, _execution=lambda **_options: f.app)
+        service = ManagerJourneyService(server=server, host=host,
+            run_path=self.directory, workspace=Path(f.temporary.name))
+        service._execution = lambda **_options: f.app
+        service.commands._authorize = lambda: f.actor
+        control = {"command": "execution-control", "schedule_id": self.schedule}
+        read = service._execution_control({**control, "operation": "read",
+            "request_key": None, "expected_due_sha256": None,
+            "expected_result_sha256": None, "expected_unknown_result_sha256": None,
+            "reason": None})
+        recovery = read["recovery"]
+        self.assertEqual(recovery["state"], "held_failed")
+        pins = recovery["manager_gone_group_recovery"]
+        self.assertEqual(pins["expected_result_sha256"], _digest(result))
+        before_startup = f.port.read_due(self.schedule)
+        startup = service._execution_control({"command": "execution-control", "operation": "startup"})
+        worker_row = next(row for row in startup["occurrences"]
+                          if row["schedule_id"] == self.schedule)
+        self.assertEqual(worker_row["before"]["state"], "held_failed")
+        self.assertEqual(worker_row["after"]["state"], "held_failed")
+        self.assertEqual(f.port.read_due(self.schedule), before_startup)
+        self.assertEqual(f.provider.calls, [])
+        request = {**control, **pins, "operation": "recover",
+                   "request_key": "manager-failed-v1", "reason": "Native turn exhausted."}
+        request.pop("requires")
+        request.pop("provider_called")
+        request.pop("retry")
+        from otto.hostctl.manager_client import build_parser
+        parsed = vars(build_parser().parse_args(["execution-control", "--operation", "recover",
+            "--schedule-id", self.schedule, "--request-key", request["request_key"],
+            "--expected-due-sha256", request["expected_due_sha256"],
+            "--expected-result-sha256", request["expected_result_sha256"],
+            "--reason", request["reason"]]))
+        self.assertEqual(parsed["expected_result_sha256"], request["expected_result_sha256"])
+        self.assertEqual(service._execution_control(request)["cause"], "process_group_alive")
+        self.assertEqual(service._execution_control({**request,
+            "expected_result_sha256": "0" * 64})["cause"], "stale_pins")
+        self.kill_group(process)
+        self.assertEqual(host.reconcile_dead_holds(), [self.schedule])
+        settled = service._execution_control(request)
+        self.assertEqual(settled["outcome"], "settled", settled)
+        self.assertTrue(settled["historical_result_preserved"])
+        self.assertFalse(settled["provider_called"])
+        self.assertFalse(settled["retry"])
+        self.assertEqual(service._execution_control(request)["outcome"], "replayed")
+        after = f.app._read(self.schedule)
+        restarted = self.host()
+        restarted.restore_execution(f.app, after)
+        self.assertNotIn(self.schedule, restarted._capacity_holds)
+
+        changed = deepcopy(after.host_evidence)
+        changed["gateway_attempt"]["result"]["error"]["message"] = "changed"
+        f.port.save_due(self.schedule, replace(after, host_evidence=changed).to_dict(),
+                        request_id="tamper-failed-result", expected_version=after.version)
+        restarted.restore_execution(f.app, f.app._read(self.schedule))
+        self.assertIn(self.schedule, restarted._capacity_holds)
+
+    def _claude_done_order(self, order):
+        from herzchen.fleet.tools import (DONE, FeedbackLedger, ToolFacade,
+                                          ToolSpec, TokenBook, FacadeServer)
+        from herzchen.fleet.tools.facade import LandingOwnerPort
+        from herzchen.fleet.tools.pins import sole_server_grant
+        from otto.agents.claude_cli import (ClaudeCliTransport, LauncherPin,
+            VERSION, WORKER_TOOLS, file_digest)
+        from otto.portfolio.execution import _digest
+        from tests.test_claude_manager_admission import SyntheticScope
+        from tests.test_landing import _Runner, _criterion, _project, _run, _service
+
+        project_root = Path(self.fixture.f.temporary.name).resolve() / ("claude-" + order)
+        project_root.mkdir()
+        line, base, fleet = _project(project_root)
+        landing, _ = _service(fleet, _Runner())
+        context = lambda assignment: {"service": landing, "lab_name": "one", "task_id": "task-1",
+            "assignment_id": assignment, "candidate": "candidate@1", "criterion": _criterion(),
+            "parent_obligation": "obligation@1", "actor": "owner"}
+        book = TokenBook()
+        token = book.issue("worker-assignment", "worker")
+        facade = ToolFacade((ToolSpec("done", DONE, "worker-done", args=("summary",)),),
+                            {"worker": ("done",)}, LandingOwnerPort(context),
+                            book, FeedbackLedger())
+        socket_dir = tempfile.TemporaryDirectory(prefix="otto-done-", dir="/tmp")
+        self.addCleanup(socket_dir.cleanup)
+        socket_path = str(Path(socket_dir.name) / "s")
+        server = FacadeServer(facade, socket_path)
+        server.start()
+        self.addCleanup(server.stop)
+        reply_path = project_root / "done-reply.json"
+        grant = sole_server_grant(server="otto", tools=("done",), command=sys.executable,
+            token=token, token_env="OTTO_DONE_TOKEN", token_env_prefix="OTTO_")
+        executable = str(Path(sys.executable).resolve())
+        pin = LauncherPin(executable, executable, file_digest(Path(executable)), VERSION)
+        state_root = project_root / "state"
+        state_root.mkdir()
+        processes = []
+        def factory(_command, **kwargs):
+            process = subprocess.Popen([sys.executable, "-c", CLAUDE_DONE_PROCESS], **kwargs)
+            processes.append(process)
+            return process
+        transport = ClaudeCliTransport(pin,
+            SyntheticScope(str(fleet.labs["one"].path), str(state_root), subprocesses=False),
+            model="claude-haiku-5-5", reasoning="medium", timeout_seconds=20,
+            process_factory=factory, tools=WORKER_TOOLS, mcp=grant,
+            extra_env={"OTTO_DONE_SOCKET": socket_path, "OTTO_DONE_TOKEN": token,
+                       "OTTO_DONE_REPLY": str(reply_path), "OTTO_DONE_ORDER": order})
+        f = self.fixture.f
+        host = self.host()
+        host.restore_execution(f.app, f.app._read(self.schedule))
+        def record(process):
+            host.record_process_group(self.schedule, process.pid)
+            return lambda: None
+        result = transport.run("Finish the worker result.", session="failed-worker-session",
+                               on_process=record)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["result"]["subtype"], "error_max_turns")
+        self.assertEqual(len(processes), 1)
+        self.assertEqual(processes[0].poll(), 0)
+        self.assertEqual(host.reconcile_dead_holds(), [self.schedule])
+        self.assertTrue(json.loads(reply_path.read_text())["submitted"])
+        self.assertNotEqual(_run(line, "rev-parse", "refs/heads/main"), base,
+                            "real worker-done must have landed before recovery")
+        due = f.app._read(self.schedule)
+        evidence = deepcopy(due.host_evidence)
+        failed = evidence["gateway_attempt"]["result"]
+        failed.update(outcome="failed", delivery_state="failed",
+                      error={"code": "claude_native_failure", "message": "error_max_turns"},
+                      native_failure=result["result"])
+        f.port.save_due(self.schedule, replace(due, host_evidence=evidence).to_dict(),
+                        request_id="claude-" + order + "-failed-result", expected_version=due.version)
+        due = f.app._read(self.schedule)
+        original_attempt = deepcopy(due.host_evidence["gateway_attempt"])
+        host.restore_execution(f.app, due)
+        request = {"schedule_id": self.schedule, "request_key": "claude-" + order + "-settlement",
+                   "expected_due_sha256": _digest(due.to_dict()),
+                   "expected_result_sha256": _digest(failed),
+                   "reason": "Native error_max_turns after owner landing."}
+        settled = host.recover_gone_worker(f.app, **request)
+        self.assertEqual(settled["outcome"], "settled", settled)
+        after = f.port.read_due(self.schedule)
+        self.assertEqual(after["host_evidence"]["gateway_attempt"], original_attempt)
+        self.assertEqual(after["completion_state"], "failed")
+        self.assertNotIn(self.schedule, host._capacity_holds)
+        self.assertEqual(f.provider.calls, [])
+
+    def test_claude_error_then_landed_worker_done(self):
+        self._claude_done_order("after")
+
+    def test_claude_landed_worker_done_then_error(self):
+        self._claude_done_order("before")
 
 
 
