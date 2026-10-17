@@ -54,7 +54,8 @@ def load_profile_pack() -> dict[str, Any]:
             or not isinstance(profiles.get("profiles"), dict) or not isinstance(hosts.get("hosts"), dict)):
         raise ProfilePackRecoveryError("Otto profile pack has an unsupported schema")
     names = profiles["profiles"]
-    if profiles.get("default_profile") not in names:
+    default_profile = profiles.get("default_profile")
+    if not isinstance(default_profile, str) or default_profile not in names:
         raise ProfilePackRecoveryError("Otto profile pack lacks its default profile")
     for name, value in names.items():
         roles = value.get("roles") if isinstance(value, dict) else None
@@ -67,24 +68,34 @@ def load_profile_pack() -> dict[str, Any]:
                        for binding in roles.values())):
             raise ProfilePackRecoveryError("Otto profile pack has an invalid seven-slot profile")
     for kind, value in hosts["hosts"].items():
+        if not isinstance(kind, str) or not isinstance(value, dict):
+            raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
         try:
             REGISTRY.get(kind)
         except UnknownHostKind as exc:
             raise ProfilePackRecoveryError("Otto profile pack declares an unsupported host kind") from exc
-        selected = names.get(value.get("model_profile")) if isinstance(value, dict) else None
-        if (not isinstance(selected, dict) or selected.get("adapter") != value.get("adapter")
-                or kind not in selected["host_kinds"]
-                or not isinstance(value.get("adapter_settings"), dict)
-                or not isinstance(value.get("launcher_qualification"), dict)):
+        model_profile = value.get("model_profile")
+        adapter = value.get("adapter")
+        settings = value.get("adapter_settings")
+        qualification = value.get("launcher_qualification")
+        if (not isinstance(model_profile, str) or not isinstance(adapter, str)
+                or not isinstance(settings, dict) or not isinstance(qualification, dict)):
             raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
-        allowed = value["adapter_settings"].get("models")
+        selected = names.get(model_profile)
+        if (not isinstance(selected, dict) or selected.get("adapter") != adapter
+                or kind not in selected["host_kinds"]):
+            raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
+        allowed = settings.get("models")
+        if allowed is not None and (not isinstance(allowed, list)
+                                    or any(not isinstance(model, str) for model in allowed)):
+            raise ProfilePackRecoveryError("Otto profile pack host adapter model list is invalid")
         if allowed is not None and any(role["model"] not in allowed for role in selected["roles"].values()):
             raise ProfilePackRecoveryError("Otto profile pack binds a model this host cannot serve")
     pin = {"pack_id": pack.pack_id, "pack_version": pack.version,
            "source_revision": pack.source.source_revision,
            "source_inventory_identity": pack.source.source_inventory_identity,
            "resource_digests": {path: resources[path].source_digest for path in ("profiles.json", "hosts.json")}}
-    return {"default_profile": profiles["default_profile"], "profiles": names,
+    return {"default_profile": default_profile, "profiles": names,
             "hosts": hosts["hosts"], "pin": pin}
 
 
