@@ -1,8 +1,11 @@
 """Real owner-store joins with a synthetic provider; not installed-host proof."""
 import copy
 import json
+import subprocess
+import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from herzchen.contracts import ResourceRef
 from otto.portfolio.external_owner_execution import OwnerExecutionIngress
 from otto.portfolio.owner_authoring_ingress import OwnerAuthoringIngress
@@ -129,5 +132,265 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         self.assertEqual(_nested_capability(self.request('launch',focus='read')),'held')
         self.assertEqual(_nested_capability(self.request('consume',occurrence={})),'held')
         self.assertEqual(_nested_capability(self.request('result',occurrence={})),'admitted')
+
+    def test_owner_claude_write_done_removes_landed_lab_after_rejected_capture_acceptance(self):
+        """A real owner Due captures its synthetic Claude Write before cleanup."""
+        import base64
+        from tests import test_execution_application as owner_fixture
+        from test_landing import _Runner, _admitted_task, _advance, _project, _service
+        from otto.agents.claude_adapter import (ClaudeNativeResultVerifier, ClaudeWorkerAdapter,
+                                                ROLE_PROFILES)
+        from otto.agents.owner_runtime import OwnerAuthorizedRoleCapture
+        from otto.agents.tests.test_claude_binding import local_transport
+        from otto.portfolio.occurrence_reads import read_captured_artifact, result_view
+        from herzchen.fleet.labs import LabFleet
+        from otto.hostctl.product_service import OwnerFleetRegistry
+
+        f = owner_fixture.ExecutionApplicationTests()
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        project_root = Path(f.temporary.name) / 'landed-project'
+        project_root.mkdir()
+        line, _base, _fake_fleet = _project(project_root)
+
+        def checkpoint(worktree, paths, *, message):
+            subprocess.run(['git', '-C', str(worktree), 'add', '--', *paths], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(['git', '-C', str(worktree), '-c', 'user.name=LAND test',
+                            '-c', 'user.email=land@test.invalid', 'commit', '-m', message], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        fleet = LabFleet(line, project_root / 'real-labs', checkpoint=checkpoint, shared_dirs=())
+        lab = fleet.create('one', base='refs/heads/main')
+        workspace = str(lab.path.resolve())
+        landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        state = tempfile.TemporaryDirectory(prefix='owner-claude-state-')
+        self.addCleanup(state.cleanup)
+        transport = local_transport(workspace, str(Path(state.name).resolve()))
+        order = []
+        landed_commits = []
+        original_run = transport.run
+
+        def write_then_done(prompt, **options):
+            native = original_run(prompt, **options)
+            if not options.get('initializer'):
+                order.append('Write')
+                landed_commits.append(_advance(landing)['commit'])
+                order.append('done')
+            return native
+
+        transport.run = write_then_done
+        adapter = ClaudeWorkerAdapter(owner='worker', source=workspace, worktree=workspace,
+            launcher_pin=transport.pin, state_root=str(Path(state.name).resolve()),
+            requested_model='gpt-test', requested_reasoning='high', transport=transport)
+
+        def settle_landed_worker(**kwargs):
+            # Runtime calls this after artifact publication and the acceptance
+            # decision, even when that decision rejects. The lab must remain
+            # readable through this callback.
+            assert kwargs['published']
+            assert (lab.path / 'answer.txt').read_bytes() == b'Useful artifact\n'
+            due = f.port.read_due(kwargs['schedule_id'])
+            view = result_view(due)
+            assert view['required_capture'] is True
+            assert 'manager_acceptance' not in due['host_evidence']['gateway_attempt']
+            predicate = object.__new__(OwnerFleetRegistry)
+            assert predicate._captured_worker_due(due, task_ref=kwargs['task_ref'],
+                assignment_ref=kwargs['assignment_ref'], generation=kwargs['generation'],
+                published=kwargs['published']) is True
+            captured = read_captured_artifact(due, artifact_ref=view['artifacts'][0]['ref'])
+            assert base64.b64decode(captured['content_base64']) == b'Useful artifact\n'
+            order.append('capture')
+            swept = fleet.sweep_landed('refs/heads/main', lambda name, commit: (
+                name == 'one' and landed_commits == [commit]
+                and result_view(due)['required_capture'] is True))
+            assert any(item.name == 'one' and item.action == 'removed' for item in swept), swept
+            return {'cleanup_pending': False}
+
+        f.owner.landed_worker_settler = settle_landed_worker
+        app = f.owner.execution_application(due_port=f.port, adapter=adapter,
+            clock=lambda: owner_fixture.NOW, native_result_verifier=ClaudeNativeResultVerifier())
+        request = f.request()
+        worker_effects = ROLE_PROFILES['worker']['effects']
+        request['instruction_contract']['authority']['effect_profile'] = 'workspace-write-worker'
+        request['instruction_contract']['authority']['permitted_effects'] = sorted(worker_effects)
+        request['instruction_contract']['authority']['workspace_roots'] = [str(lab.path.resolve())]
+        request['instruction_contract']['read_targets'] = [workspace]
+
+        # Model the owner capture settling while its acceptance CAS rejects.
+        # Cleanup must follow the retained artifact capture, not that decision.
+        with patch.object(OwnerAuthorizedRoleCapture, 'accept_result',
+                return_value={'outcome': 'rejected', 'accepted': False}):
+            result = app.assign_and_start(**request)
+
+        self.assertEqual(result['outcome'], 'succeeded', result)
+        self.assertEqual(order, ['Write', 'done', 'capture'], result)
+        due = f.port.read_due(result['schedule_id'])
+        view = result_view(due)
+        self.assertTrue(view['required_capture'])
+        captured = read_captured_artifact(due, artifact_ref=view['artifacts'][0]['ref'])
+        self.assertEqual(base64.b64decode(captured['content_base64']), b'Useful artifact\n')
+        self.assertFalse(lab.path.exists())
+
+
+    def test_owner_claude_write_done_captures_before_landed_lab_removal(self):
+        """A real owner Due captures its synthetic Claude Write before cleanup."""
+        import base64
+        from tests import test_execution_application as owner_fixture
+        from test_landing import _Runner, _admitted_task, _advance, _project, _service
+        from otto.agents.claude_adapter import (ClaudeNativeResultVerifier, ClaudeWorkerAdapter,
+                                                ROLE_PROFILES)
+        from otto.agents.tests.test_claude_binding import local_transport
+        from otto.portfolio.occurrence_reads import read_captured_artifact, result_view
+        from herzchen.fleet.labs import LabFleet
+        from otto.hostctl.product_service import OwnerFleetRegistry
+
+        f = owner_fixture.ExecutionApplicationTests()
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        project_root = Path(f.temporary.name) / 'landed-project'
+        project_root.mkdir()
+        line, _base, _fake_fleet = _project(project_root)
+
+        def checkpoint(worktree, paths, *, message):
+            subprocess.run(['git', '-C', str(worktree), 'add', '--', *paths], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(['git', '-C', str(worktree), '-c', 'user.name=LAND test',
+                            '-c', 'user.email=land@test.invalid', 'commit', '-m', message], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        fleet = LabFleet(line, project_root / 'real-labs', checkpoint=checkpoint, shared_dirs=())
+        lab = fleet.create('one', base='refs/heads/main')
+        workspace = str(lab.path.resolve())
+        landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        state = tempfile.TemporaryDirectory(prefix='owner-claude-state-')
+        self.addCleanup(state.cleanup)
+        transport = local_transport(workspace, str(Path(state.name).resolve()))
+        order = []
+        landed_commits = []
+        original_run = transport.run
+
+        def write_then_done(prompt, **options):
+            native = original_run(prompt, **options)
+            if not options.get('initializer'):
+                order.append('Write')
+                landed_commits.append(_advance(landing)['commit'])
+                order.append('done')
+            return native
+
+        transport.run = write_then_done
+        adapter = ClaudeWorkerAdapter(owner='worker', source=workspace, worktree=workspace,
+            launcher_pin=transport.pin, state_root=str(Path(state.name).resolve()),
+            requested_model='gpt-test', requested_reasoning='high', transport=transport)
+
+        def settle_landed_worker(**kwargs):
+            # Runtime calls this only after artifact publication and result
+            # acceptance. The lab must remain readable through this callback.
+            assert kwargs['published']
+            assert (lab.path / 'answer.txt').read_bytes() == b'Useful artifact\n'
+            due = f.port.read_due(kwargs['schedule_id'])
+            view = result_view(due)
+            assert view['required_capture'] is True
+            assert due['host_evidence']['gateway_attempt']['manager_acceptance']['accepted'] is True
+            predicate = object.__new__(OwnerFleetRegistry)
+            assert predicate._captured_worker_due(due, task_ref=kwargs['task_ref'],
+                assignment_ref=kwargs['assignment_ref'], generation=kwargs['generation'],
+                published=kwargs['published']) is True
+            captured = read_captured_artifact(due, artifact_ref=view['artifacts'][0]['ref'])
+            assert base64.b64decode(captured['content_base64']) == b'Useful artifact\n'
+            order.append('capture')
+            swept = fleet.sweep_landed('refs/heads/main', lambda name, commit: (
+                name == 'one' and landed_commits == [commit]
+                and result_view(due)['required_capture'] is True))
+            assert any(item.name == 'one' and item.action == 'removed' for item in swept), swept
+            return {'cleanup_pending': False}
+
+        f.owner.landed_worker_settler = settle_landed_worker
+        app = f.owner.execution_application(due_port=f.port, adapter=adapter,
+            clock=lambda: owner_fixture.NOW, native_result_verifier=ClaudeNativeResultVerifier())
+        request = f.request()
+        worker_effects = ROLE_PROFILES['worker']['effects']
+        request['instruction_contract']['authority']['effect_profile'] = 'workspace-write-worker'
+        request['instruction_contract']['authority']['permitted_effects'] = sorted(worker_effects)
+        request['instruction_contract']['authority']['workspace_roots'] = [str(lab.path.resolve())]
+        request['instruction_contract']['read_targets'] = [workspace]
+
+        result = app.assign_and_start(**request)
+
+        self.assertEqual(result['outcome'], 'succeeded', result)
+        self.assertEqual(order, ['Write', 'done', 'capture'], result)
+        due = f.port.read_due(result['schedule_id'])
+        view = result_view(due)
+        self.assertEqual(due['completion_state'], 'succeeded')
+        self.assertTrue(view['required_capture'])
+        captured = read_captured_artifact(due, artifact_ref=view['artifacts'][0]['ref'])
+        self.assertEqual(base64.b64decode(captured['content_base64']), b'Useful artifact\n')
+        self.assertFalse(lab.path.exists())
+
+    def test_owner_claude_done_without_write_capture_does_not_complete_or_remove_lab(self):
+        """Landing alone cannot settle a worker whose Claude Write was not captured."""
+        from tests import test_execution_application as owner_fixture
+        from test_landing import _Runner, _admitted_task, _advance, _project, _service
+        from herzchen.fleet.labs import LabFleet
+        from otto.agents.claude_adapter import (ClaudeNativeResultVerifier, ClaudeWorkerAdapter,
+                                                ROLE_PROFILES)
+        from otto.agents.tests.test_claude_binding import local_transport
+        from otto.portfolio.occurrence_reads import result_view
+
+        f = owner_fixture.ExecutionApplicationTests()
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        project_root = Path(f.temporary.name) / 'missing-write-project'
+        project_root.mkdir()
+        line, _base, _fake_fleet = _project(project_root)
+
+        def checkpoint(worktree, paths, *, message):
+            subprocess.run(['git', '-C', str(worktree), 'add', '--', *paths], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(['git', '-C', str(worktree), '-c', 'user.name=LAND test',
+                            '-c', 'user.email=land@test.invalid', 'commit', '-m', message], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        fleet = LabFleet(line, project_root / 'real-labs', checkpoint=checkpoint, shared_dirs=())
+        lab = fleet.create('one', base='refs/heads/main')
+        workspace = str(lab.path.resolve())
+        landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        state = tempfile.TemporaryDirectory(prefix='owner-claude-missing-write-')
+        self.addCleanup(state.cleanup)
+        transport = local_transport(workspace, str(Path(state.name).resolve()))
+        original_run = transport.run
+
+        def write_then_done(prompt, **options):
+            native = original_run(prompt, **options)
+            if not options.get('initializer'):
+                _advance(landing)
+                # Preserve the real Write event and done call, then model a
+                # vanished source file before native stream capture begins.
+                (lab.path / 'answer.txt').unlink()
+            return native
+
+        transport.run = write_then_done
+        adapter = ClaudeWorkerAdapter(owner='worker', source=workspace, worktree=workspace,
+            launcher_pin=transport.pin, state_root=str(Path(state.name).resolve()),
+            requested_model='gpt-test', requested_reasoning='high', transport=transport)
+        cleanup_calls = []
+        f.owner.landed_worker_settler = lambda **kwargs: cleanup_calls.append(kwargs)
+        app = f.owner.execution_application(due_port=f.port, adapter=adapter,
+            clock=lambda: owner_fixture.NOW, native_result_verifier=ClaudeNativeResultVerifier())
+        request = f.request()
+        request['instruction_contract']['authority']['effect_profile'] = 'workspace-write-worker'
+        request['instruction_contract']['authority']['permitted_effects'] = sorted(ROLE_PROFILES['worker']['effects'])
+        request['instruction_contract']['authority']['workspace_roots'] = [workspace]
+        request['instruction_contract']['read_targets'] = [workspace]
+
+        result = app.assign_and_start(**request)
+
+        self.assertNotEqual(result['outcome'], 'succeeded', result)
+        due = f.port.read_due(result['schedule_id'])
+        self.assertNotEqual(due['completion_state'], 'succeeded')
+        self.assertFalse(result_view(due)['required_capture'])
+        self.assertEqual(cleanup_calls, [])
+        self.assertTrue(lab.path.is_dir())
+
 
 if __name__=='__main__':unittest.main()

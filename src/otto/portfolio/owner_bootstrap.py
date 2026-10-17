@@ -622,6 +622,7 @@ class PortfolioOwnerBootstrap:
         "_direction_bindings_instance",
         "_late_usage_lock",
         "_late_usage_cache",
+        "landed_worker_settler",
     )
 
     def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
@@ -686,6 +687,7 @@ class PortfolioOwnerBootstrap:
         # bound to one provider, retained alongside its assignment port.
         self._late_usage_lock = threading.RLock()
         self._late_usage_cache = None
+        self.landed_worker_settler = None
         # Called after a project's lifecycle becomes completed or withdrawn (see project_finished).
         self.on_project_finished = None
         self.reviewed_policy = reviewed_policy
@@ -1382,6 +1384,7 @@ class PortfolioOwnerBootstrap:
             acceptance_readiness=acceptance_readiness,
             allowance_readiness=allowance_readiness,
             completed_task_readiness=completed_task_readiness, native_result_verifier=native_result_verifier, native_bodies=native_bodies,
+            landed_worker_settler=self.landed_worker_settler,
         )
 
 

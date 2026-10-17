@@ -470,15 +470,6 @@ stage2_kill_worker() {
   return 1
 }
 
-stage2_cleanup_owner_labs() {
-  # These are disposable clones in the canary staging root. The fake owner
-  # reports cleanup_pending so artifact capture can finish before teardown.
-  case "$CANARY_DIR/canon.otto-labs" in
-    "$STAGE_ROOT"/perch-canary/*/canon.otto-labs)
-      rm -rf "$CANARY_DIR/canon.otto-labs" ;;
-  esac
-}
-
 # One save of the stage's document NAME through the owner socket, from REF_FROM's project ref when it is an edit or a
 # stale base. Its answer is raw/save-NAME.json; a client that gives none is recorded as unavailable, which fails.
 save_step() {  # NAME REF_FROM
@@ -732,7 +723,6 @@ run_stage() {  # STAGE
   t="$(date +%s)"
   bash "$STAGING" down < /dev/null > "$RAW/staging-down.log" 2>&1 || true
   phase staging-down "" "$t"
-  if [ "$stage" = 2 ] && [ -d "$CANON/.git" ]; then stage2_cleanup_owner_labs; fi
   kill -- "-$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true
   # Its group, a status call it may still be running included, must be gone before the census reads the root.
   for i in $(seq 1 50); do kill -0 -- "-$SAMPLER" 2>/dev/null || break; sleep 0.2; done

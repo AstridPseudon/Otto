@@ -46,6 +46,13 @@ class StartupStopped(RuntimeError):
     """An explicit stop was requested while the owner was still composing."""
 
 
+def _start_owner_host(owner: Any) -> None:
+    """Start serving first, then retry landed-lab cleanup under owner custody."""
+    owner.host.start()
+    if owner.host._owns_owner_file and owner.fleet_registry is not None:
+        owner.fleet_registry.startup_landed_sweep = owner.fleet_registry.sweep_landed_at_start()
+
+
 def capacity_policy(config: Mapping[str, Any]) -> CapacityPolicy:
     """The pool's per-role limits from the installation; defaults when absent."""
     if 'capacity' not in config:
@@ -270,11 +277,13 @@ class OwnerFleetRegistry:
     """
 
     def __init__(self, owner: Any, config: Mapping[str, Any], home: Any, result_store: Any,
-                 *, checkpoint: Callable[..., Any], landing_factory: Optional[Callable[..., Any]] = None) -> None:
+                 *, checkpoint: Callable[..., Any], landing_factory: Optional[Callable[..., Any]] = None,
+                 due_port: Any = None) -> None:
         self.owner, self.config, self.home = owner, config, Path(home)
         self.result_store = result_store
         self.checkpoint = checkpoint
         self.landing_factory = landing_factory
+        self.due_port = due_port
         self.views_provider: Callable[[], Mapping[str, Any]] = lambda: {}
         self.runner = None
         self.dispatcher = None
@@ -290,6 +299,130 @@ class OwnerFleetRegistry:
         self._due_bindings: dict[tuple[str, str], tuple[int, str]] = {}
         self._lock = threading.RLock()
         self._start_facade()
+        self.startup_landed_sweep: Optional[list] = None
+
+    def _captured_worker_due(self, due: Mapping[str, Any], *, task_ref: Mapping[str, Any] | None = None,
+                             assignment_ref: Mapping[str, Any] | None = None,
+                             generation: int | None = None,
+                             published: Mapping[str, Any] | None = None) -> bool:
+        """One exact retained-capture predicate shared by callback and startup sweep."""
+        evidence = due.get("host_evidence") if isinstance(due.get("host_evidence"), Mapping) else {}
+        attempt = evidence.get("gateway_attempt") if isinstance(evidence.get("gateway_attempt"), Mapping) else {}
+        result = attempt.get("result") if isinstance(attempt.get("result"), Mapping) else {}
+        target = due.get("target") if isinstance(due.get("target"), Mapping) else {}
+        due_task = target.get("task_ref")
+        due_assignment = due.get("assignment_ref")
+        due_generation = due.get("generation")
+        summary = evidence.get("captured_result_summary") if isinstance(evidence.get("captured_result_summary"), Mapping) else {}
+        artifacts = evidence.get("captured_artifacts")
+        bound = result.get("task_bound_evidence") if isinstance(result.get("task_bound_evidence"), Mapping) else {}
+        operation_result = bound.get("operation_result") if isinstance(bound.get("operation_result"), Mapping) else {}
+        output = operation_result.get("output") if isinstance(operation_result.get("output"), Mapping) else {}
+        captured = output.get("artifacts")
+        summary_result_ref = summary.get("result_ref")
+        operation_result_ref = operation_result.get("result_ref")
+        result_refs_match = (not isinstance(summary_result_ref, (Mapping, str))
+                             or not isinstance(operation_result_ref, type(summary_result_ref))
+                             or summary_result_ref == operation_result_ref)
+        if (due.get("role") != "worker" or attempt.get("state") != "result"
+                or result.get("outcome") != "succeeded" or not isinstance(due_task, Mapping)
+                or not isinstance(due_assignment, Mapping) or type(due_generation) is not int
+                or not attempt.get("logical_request_key")
+                or attempt.get("logical_request_key") != result.get("logical_request_key")
+                or summary.get("logical_request_key") != attempt.get("logical_request_key")
+                or summary.get("assignment_ref") != due_assignment
+                or summary.get("generation") != due_generation
+                or not isinstance(artifacts, list) or not artifacts
+                or not isinstance(captured, list) or not captured
+                or not isinstance(summary.get("verification"), Mapping)
+                or summary["verification"].get("context_digest_verified") is not True
+                or not summary_result_ref or not operation_result_ref or not result_refs_match
+                or summary.get("result_digest") != bound.get("result_digest")
+                or bound.get("task_ref") != due_task
+                or bound.get("assignment_ref") != due_assignment or bound.get("generation") != due_generation):
+            return False
+        if task_ref is not None and dict(due_task) != dict(task_ref):
+            return False
+        if assignment_ref is not None and dict(due_assignment) != dict(assignment_ref):
+            return False
+        if generation is not None and due_generation != generation:
+            return False
+        if published is not None and (published.get("result_ref") != summary.get("result_ref")
+                                       or published.get("result_digest") != summary.get("result_digest")):
+            return False
+        return True
+
+    def settle_landed_worker(self, *, task_ref: Mapping[str, Any], assignment_ref: Mapping[str, Any],
+                             generation: int, schedule_id: str,
+                             published: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Remove a landed worker lab after its exact turn result is captured."""
+        if self.due_port is None:
+            return {"cleanup_pending": True, "reason": "owner Due capture reader is unavailable"}
+        from herzchen.contracts import ResourceRef
+        due = self.due_port.read_due(schedule_id)
+        if (not isinstance(due, Mapping) or not self._captured_worker_due(
+                due, task_ref=task_ref, assignment_ref=assignment_ref,
+                generation=generation, published=published)):
+            return {"cleanup_pending": True, "reason": "exact captured worker Due is unavailable"}
+        task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
+        plan_data = task.payload.get("metadata_namespaces", {}).get("otto.plan", {})
+        repo_name, branch = plan_data.get("repo"), plan_data.get("branch")
+        repositories = self.config.get("repositories")
+        if (not isinstance(repo_name, str) or not isinstance(branch, str)
+                or not isinstance(repositories, Mapping) or repo_name not in repositories):
+            return {"cleanup_pending": True, "reason": "current admitted task plan is unavailable"}
+        repo = Path(repositories[repo_name]).resolve()
+        with self._pair_lock:
+            fleet, _landing = self._pair((repo_name, branch), repo, branch)
+            lab_name = task_ref.get("id")
+            if lab_name not in fleet.names():
+                return {"cleanup_pending": False}
+            line_ref = "refs/heads/" + branch
+            results = fleet.sweep_landed(line_ref, lambda name, commit: self._captured_worker_due(
+                due, task_ref=task_ref, assignment_ref=assignment_ref,
+                generation=generation, published=published) and name == lab_name)
+            remains = lab_name in fleet.names()
+        failed = remains or any(item.name == lab_name and item.action != "removed" for item in results)
+        return {"cleanup_pending": failed}
+
+    def sweep_landed_at_start(self) -> list:
+        """Retry marker-indexed cleanup from exact captured worker Due records."""
+        if self.due_port is None:
+            return []
+        from herzchen.contracts import ResourceRef
+        outcomes = []
+        try:
+            retained_dues = self.due_port.list_due()
+        except Exception as exc:
+            return [{"action": "kept-error", "detail": repr(exc)}]
+        for due in retained_dues:
+            if not isinstance(due, Mapping) or not self._captured_worker_due(due):
+                continue
+            target = due.get("target") or {}
+            task_ref = target.get("task_ref") if isinstance(target, Mapping) else None
+            if not isinstance(task_ref, Mapping):
+                continue
+            try:
+                task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
+                plan_data = task.payload.get("metadata_namespaces", {}).get("otto.plan", {})
+                repo_name, branch = plan_data.get("repo"), plan_data.get("branch")
+                repositories = self.config.get("repositories")
+                if (not isinstance(repo_name, str) or not isinstance(branch, str)
+                        or not isinstance(repositories, Mapping) or repo_name not in repositories):
+                    continue
+                repo = Path(repositories[repo_name]).resolve()
+                with self._pair_lock:
+                    fleet, _landing = self._pair((repo_name, branch), repo, branch)
+                eligible = lambda name, commit, raw=due, selected=task_ref: (
+                    name == selected.get("id") and self._captured_worker_due(
+                        raw, task_ref=selected,
+                        assignment_ref=raw.get("assignment_ref"),
+                        generation=raw.get("generation")))
+                outcomes.extend(fleet.sweep_landed("refs/heads/" + branch, eligible))
+            except Exception as exc:
+                outcomes.append({"schedule_id": due.get("schedule_id"), "action": "kept-error",
+                                 "detail": repr(exc)})
+        return outcomes
 
     def _start_facade(self) -> None:
         from herzchen.fleet.tools import AllowlistedPort, FacadeServer, FeedbackLedger, ToolFacade
@@ -1106,7 +1239,8 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         runner_core.start()
         runner = _DirectRunnerClient(runner_core)
         fleet_registry = OwnerFleetRegistry(owner, config, home, result_store,
-                                            checkpoint=commit_local_checkpoint)
+                                            checkpoint=commit_local_checkpoint,
+                                            due_port=root.due_port)
         fleet_registry.bind_runner(runner)
         views: dict[str, Any] = {}
         fleet_registry.bind_views(lambda: views)
@@ -1175,6 +1309,7 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
                     view_session = HostSession(installation, host=installed_hosts[kind], project_ids=(project_id,)).__enter__()
                     # One Due port for the whole composition: ProjectServices requires identity, not equality.
                     view_session.due_port = root.due_port
+                    view_session.owner.landed_worker_settler = fleet_registry.settle_landed_worker
                     server = HostOwnerService(view_session, record, adapter_factory=adapter_factory,
                                               execution_host=host,
                                               worker_mcp_provider=fleet_registry.grant_for_due,
@@ -1324,7 +1459,7 @@ def run_product_service(config: Mapping[str, Any], *, emit: Callable[[Mapping[st
             emit({'outcome': 'stopped-before-serving', 'provider_called': False})
             result = {'outcome': 'stopped', 'provider_called': False}
         else:
-            owner.host.start()
+            _start_owner_host(owner)
             served = True
             owner.service.start_heartbeat()
             policy = owner.policy

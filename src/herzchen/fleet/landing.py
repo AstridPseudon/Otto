@@ -94,12 +94,10 @@ class LandingService:
             result = self._accept_and_advance(lab_name, task_id, lab, repo, base, prepared,
                                               assignment_id, candidate, criterion, parent_obligation, actor,
                                               tuple(gate_refs))
-        cleanup_pending = False
-        try:
-            self.fleet.remove(lab_name, merged_into=result["commit"])
-        except Exception:
-            cleanup_pending = True
-        return dict(result, cleanup_pending=cleanup_pending)
+        # Landing and worker-turn capture are separate owner operations. Keep
+        # the lab available until the enclosing native turn has returned and
+        # its Write artifacts have been captured by the owner.
+        return result
 
     def _prepare(self, lab_name: str, task_id: str, task: Mapping[str, Any], lab: Any,
                  repo: Path, old_line: str) -> tuple[Mapping[str, Any], dict[str, Any], tuple]:
@@ -215,6 +213,12 @@ class LandingService:
         if self._git(repo, "rev-parse", "--verify", self.line_ref).strip() != old_line:
             raise LandingError("line advanced during landing; lab returned to worker")
         rebased = record["commit"]
+        mark_landed = getattr(self.fleet, "_mark_landed_locked", None)
+        if callable(mark_landed):
+            # Persist exact verified intent before advancing the line. The
+            # owner Due capture predicate and ancestry check are both required
+            # before a later cleanup may remove this lab.
+            mark_landed(lab_name, rebased, self.line_ref)
         self._git(repo, "merge", "--ff-only", rebased)
         if self._git(repo, "rev-parse", "HEAD").strip() != rebased:
             raise LandingError("line checkout did not advance to the verified lab commit")

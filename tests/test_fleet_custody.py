@@ -3,6 +3,7 @@
 Every test launches real processes and kills every group or pid it launched in a ``finally``.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -347,6 +348,9 @@ def test_worker_facade_check_is_feedback_and_done_lands_only_its_bound_lab_and_l
     assert landed["result"]["landed"] is True
     assert landed["result"]["task"] == "task-owned-by-worker"
     assert _run(line, "rev-parse", "refs/heads/main") != base
+    # The native stream has not emitted its final ``done`` event yet.  Keep the
+    # owner lab available until the adapter captures the delivered Write bytes.
+    assert lab.path.is_dir(), "worker-done removed the lab before stream artifact capture"
     assert (line / "one.txt").exists(), "the bound task lab did not land on its project line"
     assert not (line / "two.txt").exists(), "another task's lab was landed"
 
@@ -378,6 +382,129 @@ def test_worker_facade_refuses_foreign_assignment_token(monkeypatch, tmp_path):
     assert refused["detail"] == "LookupError: assignment has no active dispatch record"
     assert record.assignment == "assignment-owned-by-worker"
     assert _run(line, "rev-parse", "refs/heads/main") == base, "foreign token advanced the project's line"
+
+
+def test_owner_start_retries_only_captured_landed_lab_after_remove_failure(monkeypatch, tmp_path):
+    from herzchen.fleet.labs import LabFleet
+    from otto.hostctl.product_service import OwnerFleetRegistry
+    from test_landing import _project, _run
+
+    project_root = tmp_path / "landed-start"
+    project_root.mkdir()
+    line, _base, _fake_fleet = _project(project_root)
+
+    def checkpoint(worktree, paths, *, message):
+        _run(Path(worktree), "add", "--", *paths)
+        _run(Path(worktree), "-c", "user.name=LAND test", "-c", "user.email=land@test.invalid",
+             "commit", "-m", message)
+
+    branch_hash = hashlib.sha256(b"main").hexdigest()[:20]
+    labs_root = line.parent / (line.name + ".otto-labs") / branch_hash
+    fleet = LabFleet(line, labs_root, checkpoint=checkpoint, shared_dirs=())
+    task_lab = fleet.create("task-lab", base="refs/heads/main")
+    output = task_lab.path / "task-lab.txt"
+    output.write_text("task-lab output\n")
+    fleet.checkpoint(str(task_lab.path), [output.name], message="worker output")
+    task_commit = task_lab.head()
+    _run(line, "fetch", str(task_lab.path), "HEAD")
+    _run(line, "merge", "--ff-only", "FETCH_HEAD")
+    fleet.mark_landed("task-lab", task_commit, "refs/heads/main")
+    fleet.create("unsettled-lab", base="refs/heads/main")
+
+    task_ref = {"authority": "fixture", "kind": "work.task", "id": "task-lab", "revision": "task-r1"}
+    assignment_ref = {"authority": "fixture", "kind": "wrk.assignment", "id": "assignment-r1", "revision": "assign-r1"}
+    result_digest = "captured-result-digest"
+    bound = {"task_ref": task_ref, "assignment_ref": assignment_ref, "generation": 1,
+             "result_digest": result_digest,
+             "operation_result": {"result_ref": "result-r1", "output": {"artifacts": [{"name": "task.txt"}]}}}
+    request_key = "worker-request-r1"
+    result = {"outcome": "succeeded", "logical_request_key": request_key,
+              "task_bound_evidence": bound}
+    acceptance_digest = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    accepted_due = {
+        "role": "worker", "schedule_id": "schedule-r1", "lifecycle_owner": "owner-r1",
+        "assignment_ref": assignment_ref, "generation": 1, "target": {"task_ref": task_ref},
+        "host_evidence": {
+            "gateway_attempt": {"state": "result", "logical_request_key": request_key, "result": result,
+                "manager_acceptance": {"accepted": False, "owner": "owner-r1",
+                    "logical_request_key": request_key, "result_digest": acceptance_digest}},
+            "captured_artifacts": [{"ref": "artifact-r1"}],
+            "captured_result_summary": {"result_ref": "result-r1", "result_digest": result_digest,
+                "logical_request_key": request_key, "assignment_ref": assignment_ref, "generation": 1,
+                "verification": {"context_digest_verified": True}},
+        },
+    }
+
+    class DuePort:
+        def list_due(self):
+            return [accepted_due]
+
+    task = SimpleNamespace(payload={"metadata_namespaces": {"otto.plan": {"repo": "repo-a", "branch": "main"}}})
+    owner = SimpleNamespace(graph=SimpleNamespace(reader=SimpleNamespace(
+        get_identity=lambda _ref: task)))
+    monkeypatch.setattr(OwnerFleetRegistry, "_start_facade", lambda _self: None)
+    original_remove = LabFleet.remove
+    fail_once = {"pending": True}
+
+    def transient_remove(self, name, *args, **kwargs):
+        if name == "task-lab" and fail_once["pending"]:
+            fail_once["pending"] = False
+            raise OSError("transient unlink failure")
+        return original_remove(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(LabFleet, "remove", transient_remove)
+    registry = OwnerFleetRegistry(owner, {"repositories": {"repo-a": str(line)}}, tmp_path / "owner-home",
+        object(), checkpoint=checkpoint, due_port=DuePort(), landing_factory=lambda **_kwargs: object())
+
+    assert registry.startup_landed_sweep is None, "registry construction swept before owner custody"
+    mismatched = json.loads(json.dumps(accepted_due))
+    mismatched["host_evidence"]["captured_result_summary"]["logical_request_key"] = "different-request"
+    assert registry._captured_worker_due(accepted_due) is True
+    assert registry._captured_worker_due(mismatched) is False, "mismatched capture key authorized lab cleanup"
+    registry.startup_landed_sweep = registry.sweep_landed_at_start()
+    assert any(getattr(item, "action", None) == "kept-error" for item in registry.startup_landed_sweep), registry.startup_landed_sweep
+    assert (labs_root / "task-lab").is_dir(), "failed cleanup discarded the captured landed lab"
+    assert (labs_root / "unsettled-lab").is_dir(), "startup sweep removed a lab without a captured Due"
+
+    restarted_registry = OwnerFleetRegistry(owner, {"repositories": {"repo-a": str(line)}},
+        tmp_path / "owner-home-restarted", object(), checkpoint=checkpoint, due_port=DuePort(),
+        landing_factory=lambda **_kwargs: object())
+    assert restarted_registry.startup_landed_sweep is None
+    retried = restarted_registry.sweep_landed_at_start()
+
+    assert any(getattr(item, "action", None) == "removed" for item in retried)
+    assert not (labs_root / "task-lab").exists(), "owner-start retry left a removable landed lab"
+    assert (labs_root / "unsettled-lab").is_dir()
+
+
+def test_landed_lab_start_sweep_runs_after_owner_file_custody(tmp_path, monkeypatch):
+    from otto.hostctl.product_service import OwnerFleetRegistry, _start_owner_host
+
+    monkeypatch.setattr(OwnerFleetRegistry, "_start_facade", lambda _self: None)
+    owner_file = tmp_path / "owner.json"
+    owner = SimpleNamespace(graph=SimpleNamespace(reader=SimpleNamespace()), host=None,
+                            fleet_registry=None)
+    registry = OwnerFleetRegistry(owner, {}, tmp_path / "home", object(), checkpoint=lambda *_a, **_k: None)
+    assert registry.startup_landed_sweep is None
+    observed = []
+
+    class Host:
+        _owns_owner_file = False
+
+        def start(self):
+            assert not observed
+            owner_file.write_text("owned")
+            self._owns_owner_file = True
+
+    owner.host = Host()
+    owner.fleet_registry = registry
+    registry.sweep_landed_at_start = lambda: observed.append(
+        (owner.host._owns_owner_file, owner_file.exists())) or []
+
+    _start_owner_host(owner)
+
+    assert observed == [(True, True)]
+    assert registry.startup_landed_sweep == []
 
 
 def test_landing_owner_port_forwards_only_owner_assignment_identity():

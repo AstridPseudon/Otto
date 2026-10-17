@@ -573,7 +573,8 @@ class CanonicalRoleRuntime:
                  result_capture_factory: Optional[Callable[..., HerzchenAttemptCapture]] = None,
                  acceptance_readiness: Any = None, allowance_readiness: Any = None,
                  completed_task_readiness: Any = None, native_result_verifier: Any = None,
-                 native_bodies: Any = None) -> None:
+                 native_bodies: Any = None,
+                 landed_worker_settler: Optional[Callable[..., Mapping[str, Any]]] = None) -> None:
         required = ("reader", "assignments_port", "content_port", "binding")
         if operations is None or any(getattr(operations, name, None) is None for name in required):
             raise TypeError("operations must be the finite owner-backed Herzchen operations")
@@ -600,6 +601,9 @@ class CanonicalRoleRuntime:
         from .native_result_verifier import CodexNativeResultVerifier, require_native_verifier
         self.native_result_verifier = require_native_verifier(native_result_verifier or CodexNativeResultVerifier())
         self.native_bodies = native_bodies
+        if landed_worker_settler is not None and not callable(landed_worker_settler):
+            raise TypeError("landed_worker_settler must be a trusted owner callback")
+        self.landed_worker_settler = landed_worker_settler
 
     def prepare_execution_readiness(self, *, due: Any) -> Mapping[str, Any]:
         """Resolve exact BASE and execution scope without admitting an effect."""
@@ -1129,7 +1133,23 @@ class CanonicalRoleRuntime:
             capture.source_result_validator = getattr(self.adapter, "verify_source_result", None)
             published = capture.publish_analytical_result(result, result_owner)
         accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
-        return {**accepted, "published_analytical_result": published}
+        response = {**accepted, "published_analytical_result": published}
+        if (role == "worker" and published is not None
+                and callable(self.landed_worker_settler)):
+            try:
+                cleanup = self.landed_worker_settler(
+                    task_ref=task_ref, assignment_ref=assignment_ref,
+                    generation=expected_generation, schedule_id=schedule_id,
+                    published=published,
+                )
+                if isinstance(cleanup, Mapping) and cleanup.get("cleanup_pending") is True:
+                    response["cleanup_pending"] = True
+            except Exception as exc:
+                # Capture and acceptance have already settled. Cleanup retries
+                # from durable owner evidence on the next owner start.
+                response["cleanup_pending"] = True
+                response["cleanup_error"] = type(exc).__name__ + ": " + str(exc)
+        return response
 
     def reconcile_completed_resume_capture(self, *, schedule_id: str,
                                           expected_unknown_sha256: str,

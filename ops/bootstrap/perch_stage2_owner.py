@@ -8,27 +8,6 @@ from pathlib import Path
 import sys
 
 
-def defer_fake_lab_cleanup(root):
-    """Keep fake worker artifacts readable until native result capture finishes.
-
-    The real landing/check/assessment still runs. Landing reports
-    ``cleanup_pending`` when this fixture defers its final lab unlink; the
-    harness removes those disposable labs after the staging owner closes.
-    """
-    from herzchen.fleet.labs import LabFleet, LabRefused
-
-    original = LabFleet.remove
-    canary = (Path(root) / "perch-canary").resolve()
-
-    def defer(self, name, merged_into=None, before_unlink=None):
-        repo = Path(self.repo).resolve()
-        if (merged_into is not None and canary in repo.parents and repo.name == "canon"):
-            raise LabRefused("PERCH fake worker lab retained for native artifact capture")
-        return original(self, name, merged_into=merged_into, before_unlink=before_unlink)
-
-    LabFleet.remove = defer
-
-
 def complete_landed_canary(context, landing):
     """Close A/B through the owner's ordinary guarded manager completion.
 
@@ -120,7 +99,6 @@ def main(argv=None):
             or Path(argv[1]).resolve() != (Path(root) / "home").resolve()):
         raise SystemExit("stage-2 owner launcher requires the staging owner's service run")
     if os.environ.get("OTTO_STAGING_FAKE_PRESENCE") == "1":
-        defer_fake_lab_cleanup(root)
         install_fake_completion()
         from perch_fake_presence import main as fake_main
         return fake_main(argv)
