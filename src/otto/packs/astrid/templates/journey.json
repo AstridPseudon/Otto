@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "astrid.journey",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {"type": "string", "minLength": 1},
+      "outcome": {"type": "string", "minLength": 1}
+    },
+    "required": ["title", "outcome"],
+    "additionalProperties": false
+  },
+  "seed": {
+    "project": {
+      "local_id": "project",
+      "kind": "project",
+      "title": {"$param": "title"},
+      "outcome": {"$param": "outcome"}
+    },
+    "tasks": [
+      {
+        "local_id": "journey-design",
+        "kind": "task",
+        "title": "Develop the visual journey",
+        "outcome": {"$param": "outcome"},
+        "instructions": "Plan a clear sequence of scenes and frames that communicates the intended emotional and visual progression."
+      }
+    ],
+    "criteria": [
+      {
+        "local_id": "journey-continuity",
+        "kind": "criterion",
+        "title": "Journey continuity",
+        "description": "The scene sequence has a legible beginning, progression and resolution; character, place and object details remain continuous across transitions."
+      },
+      {
+        "local_id": "frame-composition",
+        "kind": "criterion",
+        "title": "Frame composition",
+        "description": "Each key frame has a readable subject, intentional composition and framing that supports the scene's purpose."
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "id": "astrid",
+  "name": "Astrid creative project templates",
+  "version": "1.0.0",
+  "description": "Versioned data templates for creative journeys, frames and film edits.",
+  "resources": [
+    {
+      "path": "templates/journey.json",
+      "kind": "work_template"
+    },
+    {
+      "path": "templates/film-edit.json",
+      "kind": "work_template"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "engineering.code-task",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {"type": "string", "minLength": 1},
+      "outcome": {"type": "string", "minLength": 1}
+    },
+    "required": ["title", "outcome"],
+    "additionalProperties": false
+  },
+  "seed": {
+    "project": {
+      "local_id": "project",
+      "kind": "project",
+      "title": {"$param": "title"},
+      "outcome": {"$param": "outcome"}
+    },
+    "tasks": [
+      {
+        "local_id": "implementation",
+        "kind": "task",
+        "title": "Implement the code change",
+        "outcome": {"$param": "outcome"},
+        "instructions": "Make the smallest complete change. Add a focused regression test that fails before the change. Run only that test file with `/opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_<focused>.py`."
+      }
+    ],
+    "criteria": [
+      {
+        "local_id": "focused-pytest",
+        "kind": "criterion",
+        "title": "Focused pytest check",
+        "description": "A focused regression check fails before the implementation and passes afterward. Run one test file only: /opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_<focused>.py."
+      },
+      {
+        "local_id": "implementation-behavior",
+        "kind": "criterion",
+        "title": "Implementation behavior",
+        "description": "The requested behavior is implemented and the focused check covers the changed contract."
+      }
+    ]
+  }
+}
