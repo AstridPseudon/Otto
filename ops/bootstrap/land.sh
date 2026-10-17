@@ -66,10 +66,24 @@ fi
 
 if [ -z "$CHECK" ]; then
   CHECK_RAW="$(brief_field "$LAB" 'Check command')"
-  CHECK="${CHECK_RAW#\`}"
-  CHECK="${CHECK%\`}"
+  CHECK_LINE="$(awk '/^[*]*Check command:/ { print NR; exit }' "$LAB/.brief.md")"
+  if [[ "$CHECK_RAW" == \`*\`* ]]; then
+    CHECK="${CHECK_RAW#\`}"
+    CHECK="${CHECK%%\`*}"
+  else
+    CHECK=""
+  fi
+  if [ -n "$CHECK" ] && "$PY" - "$CHECK" <<'PY'
+import re
+import sys
+
+raise SystemExit(0 if re.search(r"<[^>]*>", sys.argv[1]) else 1)
+PY
+  then
+    die "Check command on brief line ${CHECK_LINE:-unknown} contains a placeholder; fill it in before landing"
+  fi
 fi
-[ -n "$CHECK" ] || die "no check command: add a 'Check command:' line to the brief, or pass --check"
+[ -n "$CHECK" ] || die "no backticked check command: add a 'Check command: \`...\`' line to the brief, or pass --check"
 if [ -z "$TITLE" ]; then
   TITLE="$(brief_field "$LAB" 'Title')"
 fi

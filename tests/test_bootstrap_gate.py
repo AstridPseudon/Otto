@@ -146,6 +146,27 @@ class LandGate(Scratch):
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
 
+    def test_brief_check_ignores_text_after_closing_backtick(self):
+        self.lab("T29", {"note.txt": "x\n"})
+        brief = self.labs / "T29" / ".brief.md"
+        brief.write_text(brief.read_text().rstrip() + " this trailing prose is not part of the command\n")
+        r = self.land("T29")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_placeholder_in_brief_check_is_refused_before_sweep(self):
+        self.lab("T30", {"note.txt": "x\n"})
+        marker = self.tmp / "check-ran"
+        check = "%s -c \"from pathlib import Path; Path('%s').write_text('ran')\"" % (sys.executable, marker)
+        brief = self.labs / "T30" / ".brief.md"
+        brief.write_text("**Title:** Do T30\nCheck command: `%s --target <fill-me>`\n" % check)
+        r = self.land("T30")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.head(), self.base, "canon/main moved")
+        self.assertTrue((self.labs / "T30").exists())
+        self.assertIn("brief line 2 contains a placeholder; fill it in", r.stdout + r.stderr)
+        self.assertFalse(marker.exists(), "the check began before placeholder validation")
+        self.assertFalse((self.ops / "runs" / "T30" / "land.log").exists(), "the sweep began before placeholder validation")
+
     def test_temporary_service_owner_under_another_root_is_ignored(self):
         self.lab("T26", {"note.txt": "x\n"})
         home = self.tmp / "other-session" / "older-orphan-home"
