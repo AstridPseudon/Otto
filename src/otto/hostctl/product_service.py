@@ -828,13 +828,15 @@ class OwnerFleetRegistry:
         if self.facade_server is None:
             raise PermissionError("owner worker tool facade is not composed")
         from herzchen.fleet.hosts.contract import McpGrant, McpServer
+        from herzchen.fleet.tools.launch import isolated_stdio_server_args
         python = self.config.get("python")
         if not isinstance(python, str) or not os.path.isabs(python):
             raise PermissionError("owner Python executable is not configured")
         tools = tuple(spec.name for spec in __import__("otto.agents.claude_cli", fromlist=["TOOL_SPECS"]).TOOL_SPECS)
         return McpGrant(servers=(McpServer(name="otto", command=python,
-                                            args=("-I", "-m", "herzchen.fleet.tools.stdio_server", "--socket",
-                                                  str(self.facade_socket), "--token-env", "OTTO_WORKER_TOKEN"),
+                                            args=isolated_stdio_server_args(
+                                                "--socket", str(self.facade_socket), "--token-env",
+                                                "OTTO_WORKER_TOKEN"),
                                             tools=tools),),
                         token_env="OTTO_WORKER_TOKEN", token=record.token,
                         token_env_prefix="OTTO_WORKER_")
