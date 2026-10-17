@@ -44,7 +44,10 @@ def main():
         return 0
     args = sys.argv[1:]
     model = args[args.index("--model") + 1]
-    tools = args[args.index("--tools") + 1].split(",")
+    # The real host passes --tools "" for its inert initializer. Its native
+    # init event must report no tools so the owner can authorize the work turn.
+    tool_names = args[args.index("--tools") + 1]
+    tools = tool_names.split(",") if tool_names else []
     request = json.loads(sys.stdin.readline())
     prompt = request["message"]["content"][0]["text"]
     initializer = prompt.startswith("Initialize this session only.")

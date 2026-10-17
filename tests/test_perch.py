@@ -777,6 +777,19 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertEqual(built.returncode, 0, built.stderr)
         version = subprocess.run([str(launcher), "--version"], capture_output=True, text=True, timeout=10)
         self.assertEqual((version.returncode, version.stdout.strip()), (0, "2.1.293 (Claude Code)"))
+        initializer_prompt = "Initialize this session only. Do not use tools or do task work. Return READY."
+        initializer_frame = {"message": {"content": [{"text": initializer_prompt}]}}
+        initializer = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", ""],
+                                     input=json.dumps(initializer_frame) + "\n", capture_output=True,
+                                     text=True, cwd=root, timeout=10)
+        self.assertEqual(initializer.returncode, 0, initializer.stderr)
+        with mock_patch.object(sys, "path", [str(ROOT / "src"), *sys.path]):
+            from herzchen.fleet.hosts.claude import ClaudeStream
+        parser = ClaudeStream(prompt=initializer_prompt, cwd=str(root.resolve()), model="claude-haiku-5-5",
+                              tools=(), phase="initializer")
+        for line in initializer.stdout.splitlines():
+            parser.feed(line.encode("utf-8"))
+        self.assertEqual(parser.finish(initializer.returncode)["result"]["result"], "READY")
         frame = {"message": {"content": [{"text": "Canary dispatch A"}]}}
         turn = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", "Read,Write"],
                               input=json.dumps(frame) + "\n", capture_output=True, text=True,
