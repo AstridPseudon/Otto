@@ -23,6 +23,11 @@ Routes are normal or xhard. Xhard is reserved for a specific plausible mistake t
 
 No PL7 branch archive: the named branches from the packaged tasklist are Astrid branches absent from this clone. PL0's Codex threat-model agreement is superseded by this explicit manager authorization; any decision beyond the preserved compatibility contract is recorded under “Questions for the orchestrator” while independent work continues.
 
+## Current run status
+
+- PL1: blocked before merge on the D19 Opus decision for the existing setsid escapee expectation. Reviewed implementation is preserved on `task/PL1` at `b70c817` in `.worktrees/PL1`.
+- PL2–PL6: blocked behind PL1; their task worktrees have not been created.
+
 ## Canon changes to recheck before edits
 
 - `db1ac48` CUSTODY: birth-fenced group kill, fail-closed census and cleanup latch; integrated into Claude/Codex/reader launches.
