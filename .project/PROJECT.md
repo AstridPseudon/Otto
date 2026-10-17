@@ -15,7 +15,10 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17 20:35Z | EF3-ASTRA-FIX | merged 5141e5d | +195/-17 | `tests/test_owner_result_reconciliation.py`: 15 passed, 22 subtests passed, 1 needs the gate (AF_UNIX bind PermissionError during Store facade setup). `git diff --check` passes. Astra found a raced assignment claim could point at the incoming rather than retained prior effect; fixed to return and use the prior logical key. Re-reviewed; no remaining concrete defect. Fail-first regression confirms `incoming` incorrectly selected before fix; adapter remains uninvoked. | Changed `src/otto/agents/gateway.py`, `tests/test_owner_result_reconciliation.py`. Held native-turn and owner-bound refusal guidance now exposes exact retained effect_ref and shell-safe `otto effects read`; assignment-level competing claim identifies the prior held effect. No deletions.
 
 ## Questions for the orchestrator
-
 - The package deletion budget names “the successor remains” but no concrete module or symbol is identifiable in this clone. Please name the intended target when convenient; this does not block EF1–EF5.
 
-## Questions for the orchestrator
+## Final Astra review
+
+Reviewed `git diff 163925e...proj/effects` at `e460ec2`. Astra found no additional concrete correctness, security, or custody defect after the EF4 actor, EF5 owner-resolver/shell-quoting, and EF3 native held-effect/raced-claim fixes recorded above. Astra independently reran `tests/test_effect_owner_verb.py` (1 passed) and `tests/test_effect_command_shell.py` (2 passed).
+
+The project remains partial against the northstar and deletion ambition: `execution_resume.py` is fully deleted (269 lines), but `manager_capture_reconciliation.py` is a 93% similar rename to `native_terminal_proof.py` with only 15 net lines removed; per-case proof procedures remain, `worker_custody.py` is unchanged, and `owner_runtime.py` retains separate capture procedures and grows. The agent UX now exposes exact identity, shell-safe read commands, and minted resolution keys; the end-to-end cold-agent proof-discovery and reconciliation journey remains unverified. Full acceptance needs the gate for production startup, AF_UNIX-dependent tests, and process-custody observations. No project task is blocked; these are remaining northstar/deletion and gate-validation gaps, with the unidentified “successor remains” target still awaiting the orchestrator.
