@@ -82,7 +82,7 @@ def save_parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("save",))
     result.add_argument("file")
     result.add_argument("--actor")
-    result.add_argument("--request-id", default=None)
+    result.add_argument("--request-id", "--request-key", dest="request_id", default=None)
     result.add_argument("--format", choices=("json", "text"), default="json")
     return result
 

@@ -108,14 +108,15 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     save = sub.add_parser("save", help="save one project from a save file (template seed shape); a stale project_ref revision is refused with a diff")
     save.add_argument("file", help="JSON save file: project, tasks, criteria, plus project_ref to save an existing project")
     save.add_argument("--actor", required=True)
-    save.add_argument("--request-id", default=None, help="logical request key (default: derived from the file's content)")
+    save.add_argument("--request-id", "--request-key", dest="request_id", default=None,
+                      help="logical request key (default: derived from the file's content)")
     _add_format(save)
 
     retire = sub.add_parser("retire", help="retire a work record with a reason and optional successor")
     retire.add_argument("ref", help="canonical work ResourceRef as JSON")
     retire.add_argument("--reason", required=True)
     retire.add_argument("--by", help="successor work ResourceRef as JSON")
-    retire.add_argument("--request-id", default=None)
+    retire.add_argument("--request-id", "--request-key", dest="request_id", default=None)
     _add_format(retire)
 
     show = sub.add_parser("show", help="read one project or task; the output is the same on the Claude and Codex lanes")
@@ -194,7 +195,7 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
 
     create = sub.add_parser("create-pending", help="create an inert pending project (legacy command)")
     create.add_argument("--actor", required=True)
-    create.add_argument("--request-id", required=True)
+    create.add_argument("--request-id", "--request-key", dest="request_id", required=True)
     create.add_argument("--edit-json", default="{}")
     create.add_argument("--template", default=None)
     create.add_argument("--open", action="store_true", dest="open_project")
@@ -212,7 +213,7 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     onboarding_sub = onboarding.add_subparsers(dest="onboarding_command", required=True)
     onboarding_create = onboarding_sub.add_parser("create", help="create an inert draft with brief.md")
     onboarding_create.add_argument("--actor", required=True)
-    onboarding_create.add_argument("--request-id", required=True)
+    onboarding_create.add_argument("--request-id", "--request-key", dest="request_id", required=True)
     onboarding_create.add_argument("--title", required=True)
     onboarding_create.add_argument("--brief", required=True)
     onboarding_create.add_argument("--supporting-files", help="JSON object of relative paths to UTF-8 text")
@@ -226,7 +227,7 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     _add_format(onboarding_find)
     onboarding_reopen = onboarding_sub.add_parser("reopen", help="reopen the same draft through the EDT projection")
     onboarding_reopen.add_argument("--actor", required=True)
-    onboarding_reopen.add_argument("--request-id", required=True)
+    onboarding_reopen.add_argument("--request-id", "--request-key", dest="request_id", required=True)
     onboarding_reopen.add_argument("--project-ref", required=True)
     _add_format(onboarding_reopen)
 
@@ -355,7 +356,7 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
         help="read or create the one advisor assignment for an exact current manager",
     )
     advisor.add_argument("--actor", required=True)
-    advisor.add_argument("--request-id", required=True)
+    advisor.add_argument("--request-id", "--request-key", dest="request_id", required=True)
     advisor.add_argument("--project-ref", required=True, help="exact current work.project ResourceRef JSON")
     advisor.add_argument("--manager-assignment-ref", required=True, help="exact current manager wrk.assignment ResourceRef JSON")
     advisor.add_argument("--manager-generation", required=True, type=int)
