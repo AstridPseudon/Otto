@@ -7,6 +7,7 @@ Waits are polling loops with a 10 second deadline; no assertion depends on a fix
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -33,6 +34,12 @@ from herzchen.fleet.runner import (
     git_commit_identity,
     pick,
 )
+from herzchen.contracts import (AuthenticatedActor, CommandEnvelope, ResourceRef,
+                                TransactionContext)
+from herzchen.kernel import OperationState, Store
+from herzchen.kernel.operations import OperationManager, request_digest
+from herzchen.fleet.runner.runner import RunnerEffectLedger
+from herzchen.fleet.runner.server import main as runner_server_main
 
 PY = sys.executable
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -382,6 +389,265 @@ def test_await_returns_exit_code(harness):
     got = client.call({"op": "await", "run_id": "killed", "timeout": 10})
     assert got["exit_code"] == 128 + 9
     assert got["record"]["outcome"] == "exited"
+
+
+def test_durable_start_claim_before_running_mirror_never_launches_after_crash(harness, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+    owner_path = harness.tmp / "owner.sqlite"
+    owner_store = Store.create(owner_path, authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    ledger = RunnerEffectLedger(owner_store, actor)
+    starts = harness.tmp / "starts"
+    argv = [PY, "-c", COUNT_CODE, str(starts)]
+    original_put = harness.store.put
+    crashed = False
+
+    def crash_after_claim(record):
+        nonlocal crashed
+        if record.get("state") == "running" and not crashed:
+            crashed = True
+            raise SystemExit("simulated process death after kernel start claim")
+        return original_put(record)
+
+    monkeypatch.setattr(harness.store, "put", crash_after_claim)
+    first = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                   state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                   grace_seconds=0.1, poll_seconds=0.02, effect_ledger=ledger)
+    harness._runners.append(first)
+    first.start()
+    response = first.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "claim-crash"})
+    assert response["ok"] is True
+    wait_until(lambda: crashed, "crash after durable start claim")
+    first.stop()
+
+    monkeypatch.setattr(harness.store, "put", original_put)
+    restarted_ledger = RunnerEffectLedger(owner_store, actor)
+    second = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                    state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                    grace_seconds=0.1, poll_seconds=0.02, effect_ledger=restarted_ledger)
+    harness._runners.append(second)
+    second.start()
+    replay = second.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "claim-crash"})
+    assert replay["ok"] is True and replay["existing"] is True
+    wait_state(harness.store, "claim-crash", "unknown")
+    assert lines(starts) == 0
+    assert restarted_ledger.get("claim-crash").state is OperationState.UNKNOWN
+    owner_store.close()
+
+
+def test_crash_after_launch_replay_has_exactly_one_process_start(harness, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+    owner_path = harness.tmp / "owner-after-launch.sqlite"
+    owner_store = Store.create(owner_path, authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    ledger = RunnerEffectLedger(owner_store, actor)
+    starts = harness.tmp / "starts-after-launch"
+    marker = harness.tmp / "process-started"
+    code = "import sys,time\nopen(sys.argv[1], 'a').write('x\\n')\nopen(sys.argv[2], 'w').write('started')\ntime.sleep(30)\n"
+    argv = [PY, "-c", code, str(starts), str(marker)]
+    from herzchen.fleet.custody import Custody
+    launched = []
+
+    def launch_then_crash(*args, **kwargs):
+        launched.append(Custody.launch(*args, **kwargs))
+        harness._procs.append(launched[-1].process)
+        wait_until(lambda: marker.exists(), "process start before simulated crash")
+        raise SystemExit("simulated owner death before process observation")
+
+    first = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                   state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                   grace_seconds=0.1, poll_seconds=0.02, launch=launch_then_crash,
+                   effect_ledger=ledger)
+    harness._runners.append(first)
+    first.start()
+    response = first.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "after-launch"})
+    assert response["ok"] is True
+    wait_until(lambda: marker.exists(), "launched process marker")
+    wait_state(harness.store, "after-launch", "running")
+    first.stop()
+
+    restarted_ledger = RunnerEffectLedger(owner_store, actor)
+    second = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                    state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                    grace_seconds=0.1, poll_seconds=0.02, effect_ledger=restarted_ledger)
+    harness._runners.append(second)
+    second.start()
+    replay = second.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "after-launch"})
+    assert replay["ok"] is True and replay["existing"] is True
+    assert replay["effect_ref"]["kind"] == "effect"
+    assert "exact terminal proof" in replay["next_action"]
+    wait_state(harness.store, "after-launch", "unknown")
+    assert lines(starts) == 1
+    assert restarted_ledger.get("after-launch").state is OperationState.UNKNOWN
+    if launched[0].process.poll() is None:
+        launched[0].process.kill()
+    launched[0].process.wait()
+    owner_store.close()
+
+
+def test_kernel_terminal_result_precedes_sealed_runner_result(harness, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    owner_store = Store.create(harness.tmp / "owner-terminal.sqlite", authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    ledger = RunnerEffectLedger(owner_store, actor)
+    runner = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                    state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                    grace_seconds=0.1, poll_seconds=0.02, effect_ledger=ledger)
+    harness._runners.append(runner)
+    runner.start()
+    response = runner.submit({"argv": QUICK, "cwd": str(harness.cwd), "request_id": "terminal-order"})
+    assert response["ok"] is True
+    wait_state(harness.store, "terminal-order", "settled")
+    result = harness.store.get("terminal-order")
+    effect = ledger.get("terminal-order")
+    assert effect.state is OperationState.COMMITTED
+    assert effect.result["output_sha256"] == result["output_sha256"]
+    assert effect.result["output_bytes"] == result["output_bytes"]
+    owner_store.close()
+
+
+def test_exact_kernel_proof_resolves_unknown_and_restart_mirrors_settled(harness, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+    owner_store = Store.create(harness.tmp / "owner-proof.sqlite", authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    ledger = RunnerEffectLedger(owner_store, actor)
+    starts = harness.tmp / "proof-starts"
+    marker = harness.tmp / "proof-started"
+    code = ("import sys\nopen(sys.argv[1], 'a').write('x\\n')\n"
+            "open(sys.argv[2], 'w').write('started')\nprint('retained output')\nsys.exit(7)\n")
+    argv = [PY, "-c", code, str(starts), str(marker)]
+    observed_code = {}
+
+    def launch_then_lose_observation(*args, **kwargs):
+        custody = Custody.launch(*args, **kwargs)
+        wait_until(lambda: marker.exists(), "command start marker")
+        custody.process.wait(timeout=10)
+        observed_code["code"] = custody.process.returncode
+        raise SystemExit("simulated crash before runner observes process result")
+
+    first = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                   state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                   grace_seconds=0.1, poll_seconds=0.02, launch=launch_then_lose_observation,
+                   effect_ledger=ledger)
+    harness._runners.append(first)
+    first.start()
+    response = first.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "proof-reconcile"})
+    assert response["ok"] is True
+    wait_until(lambda: marker.exists(), "command launch")
+    wait_until(lambda: "proof-reconcile" not in first._leases, "crashed runner thread to retire")
+    first.stop()
+
+    held_restart = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                          state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                          grace_seconds=0.1, poll_seconds=0.02,
+                          effect_ledger=RunnerEffectLedger(owner_store, actor))
+    harness._runners.append(held_restart)
+    held_restart.start()
+    unresolved = held_restart.await_run("proof-reconcile", timeout=0)
+    assert unresolved["ok"] is True and unresolved["done"] is True
+    assert unresolved["exit_code"] == EXIT_UNKNOWN
+    assert unresolved["record"]["state"] == "unknown"
+    held_restart.stop()
+
+    record = harness.store.get("proof-reconcile")
+    assert record["state"] == "unknown"
+    assert lines(starts) == 1
+    assert observed_code["code"] == 7
+    held = OperationManager(owner_store).get(ledger.key("proof-reconcile"))
+    assert held.state is OperationState.UNKNOWN
+
+    output = harness.store.output_path("proof-reconcile").read_bytes()
+    digest = hashlib.sha256(output).hexdigest()
+    seconds = round(max(0.001, time.time() - record["started_at"]), 3)
+    result = {"outcome": "exited", "exit_code": observed_code["code"],
+              "output_sha256": digest, "output_bytes": len(output), "seconds": seconds,
+              "unit_seconds": round(record["units"] * seconds, 3), "tokens": 0,
+              "custody": record["custody"], "backfill": record["backfill"], "settled_at": time.time()}
+    proof_key = "runner-terminal-proof:proof-reconcile"
+    proof = {"effect_ref": held.effect_ref.to_dict(), "state": OperationState.COMMITTED.value,
+             "result": result}
+    target = ResourceRef(actor.authority, "effect-proof", proof_key)
+    envelope = CommandEnvelope("effect.proof", "fnd-04.operation.v1", target,
+        TransactionContext(actor, proof_key, request_digest(proof), expected_version=0), proof)
+    owner_store.mutate(envelope, event_type="effect.terminal",
+        result_ref=ResourceRef(actor.authority, "effect-proof", proof_key, "rev-1"),
+        effects=proof, stream="effects")
+    resolved = OperationManager(owner_store).resolve_unknown(
+        held, OperationState.COMMITTED, result, resolver=actor, evidence_key=proof_key,
+        transition_key=proof_key + ":settle")
+    assert resolved.state is OperationState.COMMITTED
+
+    restarted = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                       state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                       grace_seconds=0.1, poll_seconds=0.02,
+                       effect_ledger=RunnerEffectLedger(owner_store, actor))
+    harness._runners.append(restarted)
+    restarted.start()
+    awaited = restarted.await_run("proof-reconcile", timeout=1)
+    assert awaited["ok"] is True and awaited["done"] is True
+    assert awaited["exit_code"] == 7
+    assert awaited["record"]["state"] == "settled"
+    assert awaited["record"]["output_sha256"] == digest
+    assert restarted.status("proof-reconcile")["record"]["state"] == "settled"
+    replay = restarted.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "proof-reconcile"})
+    assert replay["ok"] is True and replay["existing"] is True and replay["state"] == "settled"
+    assert lines(starts) == 1
+    owner_store.close()
+
+
+def test_public_runner_daemon_fails_closed_without_owner_ledger(tmp_path, capsys):
+    state_dir = tmp_path / "unowned-runner-state"
+    result = runner_server_main(["--socket", str(tmp_path / "runner.sock"),
+                                 "--state-dir", str(state_dir)])
+    assert result == 2
+    assert not state_dir.exists()
+    assert "owner-bound effect ledger" in capsys.readouterr().err
+
+
+def test_restart_mirrors_exact_kernel_terminal_after_seal_crash(harness, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+    owner_store = Store.create(harness.tmp / "owner-seal-crash.sqlite", authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    ledger = RunnerEffectLedger(owner_store, actor)
+    starts = harness.tmp / "terminal-starts"
+    argv = [PY, "-c", COUNT_CODE, str(starts)]
+    original_put = harness.store.put
+    crashed = False
+
+    def crash_before_seal(record):
+        nonlocal crashed
+        if record.get("state") == "settled":
+            crashed = True
+            raise SystemExit("simulated death after kernel outcome")
+        return original_put(record)
+
+    monkeypatch.setattr(harness.store, "put", crash_before_seal)
+    first = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                   state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                   grace_seconds=0.1, poll_seconds=0.02, effect_ledger=ledger)
+    harness._runners.append(first)
+    first.start()
+    assert first.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "seal-crash"})["ok"]
+    wait_until(lambda: crashed and not first._leases, "death after committed kernel result")
+    assert ledger.get("seal-crash").state is OperationState.COMMITTED
+    first.stop()
+    monkeypatch.setattr(harness.store, "put", original_put)
+
+    second = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                    state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                    grace_seconds=0.1, poll_seconds=0.02,
+                    effect_ledger=RunnerEffectLedger(owner_store, actor))
+    harness._runners.append(second)
+    second.start()
+    replay = second.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "seal-crash"})
+    assert replay["ok"] and replay["existing"] and replay["state"] == "settled"
+    assert second.await_run("seal-crash", timeout=1)["exit_code"] == 0
+    assert lines(starts) == 1
+    owner_store.close()
 
 
 # -- 3. the lab cannot write results ---------------------------------------------------------------

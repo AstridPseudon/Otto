@@ -129,13 +129,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, effect_ledger: Any = None) -> int:
     args = _parser().parse_args(argv)
+    if effect_ledger is None:
+        print("standalone runner daemon requires an owner-bound effect ledger", file=sys.stderr)
+        return 2
     state_dir = os.path.abspath(args.state_dir)
     os.makedirs(state_dir, mode=0o700, exist_ok=True)
     pool = CapacityPool(CapacityPolicy(heavy_headroom=args.capacity))
     store = ResultStore(os.path.join(state_dir, "store"), forbidden_roots=args.forbid_root)
-    runner = Runner(pool, store, state_dir=state_dir)
+    runner = Runner(pool, store, state_dir=state_dir, effect_ledger=effect_ledger)
     runner.start()
     try:
         server = RunnerServer(runner, args.socket)

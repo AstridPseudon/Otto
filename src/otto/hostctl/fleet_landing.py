@@ -18,6 +18,7 @@ from herzchen.domains.work.admission import admitted_revision, task_content_matc
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 from herzchen.fleet.landing import LandingError, LandingService
 from herzchen.fleet.runner.runner import Runner
+from herzchen.fleet.runner.effect_ledger import RunnerEffectLedger
 from herzchen.fleet.runner.store import ResultStore
 
 
@@ -58,7 +59,7 @@ class RunnerLifecycle:
 
 
 def compose_runner(home: Any, result_store: ResultStore,
-                   capacity_policy: CapacityPolicy) -> RunnerLifecycle:
+                   capacity_policy: CapacityPolicy, *, owner: Any) -> RunnerLifecycle:
     """Compose one direct runner over the owner's shared result store.
 
     The caller starts this once for the owner and closes it during owner
@@ -68,8 +69,11 @@ def compose_runner(home: Any, result_store: ResultStore,
         raise TypeError("owner ResultStore is required")
     if not isinstance(capacity_policy, CapacityPolicy):
         raise TypeError("owner CapacityPolicy is required")
+    if getattr(owner, "store", None) is None or getattr(owner, "owner_actor", None) is None:
+        raise TypeError("admitted owner Store and actor are required")
     runner = Runner(CapacityPool(capacity_policy), result_store,
-                    state_dir=Path(home) / "runner-state")
+                    state_dir=Path(home) / "runner-state",
+                    effect_ledger=RunnerEffectLedger(owner.store, owner.owner_actor.actor))
     return RunnerLifecycle(runner)
 
 
