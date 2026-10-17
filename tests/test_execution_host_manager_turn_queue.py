@@ -12,10 +12,26 @@ from herzchen.contracts import ResourceRef
 from herzchen.domains.work.admission import authoring_stamp
 from herzchen.fleet.tools.tokens import TokenBook
 from otto.hostctl.product_service import bind_automatic_dispatch
+from otto.hostctl.service import OwnerService
 from otto.portfolio.execution_host import ExecutionHost
 
 
 class ManagerTurnQueueTests(unittest.TestCase):
+    def test_hold_during_turn_operations_remain_held_at_owner_boundary(self):
+        host = SimpleNamespace(_external_waiting=1,
+                               _status_read=lambda *_args: self.fail("held operation reached the host"))
+        service = OwnerService.__new__(OwnerService)
+        service.lock = threading.RLock()
+        service.journeys = {"project-a": SimpleNamespace(execution_host=host)}
+        service._dispatch_context = SimpleNamespace(project_id="project-a")
+        calls = []
+
+        result = service.call(lambda: calls.append("ran"), hold_during_turn=True)
+
+        self.assertEqual(result["outcome"], "held")
+        self.assertTrue(result["retry"])
+        self.assertEqual(calls, [])
+
     def test_queued_turn_does_not_hold_shared_command_lock(self):
         """A full turn lane must not stop an admitted project's owner pump."""
         with tempfile.TemporaryDirectory(prefix="otto-turn-queue-") as temporary:

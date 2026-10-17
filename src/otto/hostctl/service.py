@@ -406,7 +406,7 @@ class OwnerService:
     def _owner_command(self, who: str, request: Mapping[str, Any], token: str, lane: Path) -> Any:
         command, raw_args = request.get("command"), request.get("args") or {}
         if command == "admit":
-            return self.call(lambda: self._admit_revision(raw_args), hold_during_turn=True)
+            return self.call(lambda: self._admit_revision(raw_args))
         args = dict(raw_args)
         if command == "admit-host":
             return self.call(lambda: self._admit_host(args))
