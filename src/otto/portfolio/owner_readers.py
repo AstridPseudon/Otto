@@ -50,13 +50,13 @@ def _resource_ref(value: Mapping[str, Any]) -> Any:
 
 _PROJECT_SETUP_FIELDS = (
     "title", "name", "outcome", "scope", "approach", "acceptance",
-    "protocol", "resources", "criteria", "custom", "fields", "tasks",
+    "protocol", "resources", "criteria", "custom", "fields",
     "metadata", "metadata_namespaces", "documents", "document_links",
 )
 
 
 def _project_setup_content(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Authored project content; task revision pointers are only roster links."""
+    """Authored project setup content, excluding post-setup owner markers."""
     content = {key: json_value(payload.get(key)) for key in _PROJECT_SETUP_FIELDS}
     fields = content["fields"]
     if isinstance(fields, Mapping):
@@ -65,13 +65,6 @@ def _project_setup_content(payload: Mapping[str, Any]) -> dict[str, Any]:
                              if key != "reviewed_activation"}
     elif fields is None:
         content["fields"] = {}
-    tasks = content["tasks"]
-    if isinstance(tasks, list):
-        identities = [
-            {key: task.get(key) for key in ("authority", "kind", "id")}
-            if isinstance(task, Mapping) else task for task in tasks
-        ]
-        content["tasks"] = sorted(identities, key=lambda task: str(task))
     return content
 
 
