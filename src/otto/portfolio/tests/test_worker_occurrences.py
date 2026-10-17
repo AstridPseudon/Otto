@@ -149,6 +149,13 @@ class WorkerOccurrenceTests(unittest.TestCase):
         launched = self.owner("start-retained-child", child.schedule_id)
         self.assertEqual(launched["outcome"], "succeeded", launched)
         self.assertEqual(len(self.f.provider.calls), calls + 1)
+        dispatch_stream = "dispatch:" + child.assignment_ref["id"]
+        dispatch_events = self.f.store.list_events(stream=dispatch_stream)
+        self.assertEqual([event.event_type for event in dispatch_events], ["work.assignment.dispatched"])
+        replayed = self.owner("start-retained-child", child.schedule_id)
+        self.assertIn(replayed["outcome"], {"succeeded", "replayed"}, replayed)
+        self.assertEqual(self.f.store.list_events(stream=dispatch_stream), dispatch_events)
+        self.assertEqual(len(self.f.provider.calls), calls + 1)
         captured = self.f.port.read_due(child.schedule_id)
         without_capture = copy.deepcopy(captured)
         without_capture["host_evidence"].pop("captured_result_summary")

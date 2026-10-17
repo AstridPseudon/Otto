@@ -167,6 +167,8 @@ class ExecutionApplicationTests(unittest.TestCase):
         result = self.app.assign_and_start(**self.request())
         self.assertEqual(result["outcome"], "succeeded", result)
         self.assertEqual(len(self.provider.calls), 1)
+        events = self.store.list_events(stream="dispatch:" + result["assignment_ref"]["id"])
+        self.assertEqual([event.event_type for event in events], ["work.assignment.dispatched"])
         self.assertIn(self.request()["instructions"], self.provider.calls[0])
         due = self.port.read_due(result["schedule_id"])
         self.assertEqual(due["completion_state"], "succeeded")
@@ -179,6 +181,8 @@ class ExecutionApplicationTests(unittest.TestCase):
         duplicate = self.app.assign_and_start(**self.request())
         self.assertEqual(duplicate["outcome"], "replayed")
         self.assertEqual(len(self.provider.calls), 1)
+        replayed_events = self.store.list_events(stream="dispatch:" + duplicate["assignment_ref"]["id"])
+        self.assertEqual(replayed_events, events)
 
     def test_direct_start_rechecks_worker_admission_and_retains_admitted_revision(self):
         prepared = self.app.assign_worker(**self.request())
@@ -209,6 +213,9 @@ class ExecutionApplicationTests(unittest.TestCase):
         resumed = self.app.correct_worker(schedule_id=first["schedule_id"],
             request_key="admission-resume", instruction="Review the retained result and add one focused check.")
         self.assertEqual(resumed["outcome"], "succeeded", resumed)
+        events = self.store.list_events(stream="dispatch:" + first["assignment_ref"]["id"])
+        self.assertEqual([event.event_type for event in events], [
+            "work.assignment.dispatched", "work.assignment.dispatched"])
         due = self.port.read_due(resumed["schedule_id"])
         admission = due["host_evidence"]["execution_admission"]
         stamp = self.task.payload["metadata_namespaces"]["work.admission"]
