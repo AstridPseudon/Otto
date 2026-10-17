@@ -26,6 +26,8 @@ Reviewed the merged project diff against the goal and deletion budget. Astra fou
 
 The final Astra review then found that malformed or stale registration pins still lost `next_action` at the service and CLI exception boundaries. PK3R-UX2 fixes this with a scoped registration-pin exception and socket-free serialization checks. The isolated acceptance check passed; the broader bundle run stalled after 24 passes, and CLI owner setup remains a gate check.
 
+The latest whole-project Astra review found one remaining new refusal gap: explicit model-profile selection errors in `host_profiles.py` (unknown, unqualified, unsupported, or launcher qualification drift) lack `next_action` in both envelopes. PK3R-UX3 is scoped to add recovery guidance while preserving those host refusals; the final review will run again after it merges.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
