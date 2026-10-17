@@ -11,6 +11,8 @@ import secrets
 import tempfile
 from typing import Any, Iterable, Mapping
 
+from herzchen.kernel.operations import OperationRecord, OperationState
+
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _TERMINAL = ("settled", "unknown")
 _STATES = frozenset(("queued", "running", "settled", "unknown"))
@@ -143,8 +145,8 @@ class ResultStore:
         self._path(run_id)
         return Path(self._root, "output", run_id + ".log")
 
-    def put(self, record: dict[str, Any]) -> None:
-        """Write a record atomically and set its seal. Refuses invalid, terminal or non-monotonic writes."""
+    def put(self, record: dict[str, Any], *, resolved_effect: Any = None) -> None:
+        """Seal evidence; an unknown run may settle only from a matching kernel result."""
         if not isinstance(record, dict):
             raise StoreError("record must be an object")
         self._check_forbidden()
@@ -166,7 +168,16 @@ class ResultStore:
         if previous is not None:
             old = previous["state"]
             if old in _TERMINAL:
-                raise StoreError("record %s is already %s and is never overwritten" % (run_id, old))
+                if not (old == "unknown" and record.get("state") == "settled"
+                        and isinstance(resolved_effect, OperationRecord)
+                        and resolved_effect.state in (OperationState.COMMITTED, OperationState.FAILED)
+                        and record.get("seal") == previous["seal"]
+                        and resolved_effect.request.payload.get("request_id") == run_id
+                        and resolved_effect.request.payload.get("binding") == record["binding"]
+                        and all(resolved_effect.result.get(field) == record.get(field) for field in (
+                            "outcome", "exit_code", "output_sha256", "output_bytes", "seconds",
+                            "unit_seconds", "tokens", "custody", "backfill", "settled_at"))):
+                    raise StoreError("record %s is already %s and is never overwritten" % (run_id, old))
             if previous["binding"] != record["binding"]:
                 raise StoreError("record %s cannot change its binding" % run_id)
         if record.get("state") not in _STATES:

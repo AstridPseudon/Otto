@@ -7,6 +7,7 @@ Waits are polling loops with a 10 second deadline; no assertion depends on a fix
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -33,9 +34,12 @@ from herzchen.fleet.runner import (
     git_commit_identity,
     pick,
 )
-from herzchen.contracts import AuthenticatedActor
+from herzchen.contracts import (AuthenticatedActor, CommandEnvelope, ResourceRef,
+                                TransactionContext)
 from herzchen.kernel import OperationState, Store
+from herzchen.kernel.operations import OperationManager, request_digest
 from herzchen.fleet.runner.runner import RunnerEffectLedger
+from herzchen.fleet.runner.server import main as runner_server_main
 
 PY = sys.executable
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -502,6 +506,105 @@ def test_kernel_terminal_result_precedes_sealed_runner_result(harness, monkeypat
     assert effect.result["output_sha256"] == result["output_sha256"]
     assert effect.result["output_bytes"] == result["output_bytes"]
     owner_store.close()
+
+
+def test_exact_kernel_proof_resolves_unknown_and_restart_mirrors_settled(harness, monkeypatch):
+    monkeypatch.setenv("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", "1")
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+    owner_store = Store.create(harness.tmp / "owner-proof.sqlite", authority="runner-test")
+    actor = AuthenticatedActor("runner-test", "runner", "runner-test-credential")
+    ledger = RunnerEffectLedger(owner_store, actor)
+    starts = harness.tmp / "proof-starts"
+    marker = harness.tmp / "proof-started"
+    code = ("import sys\nopen(sys.argv[1], 'a').write('x\\n')\n"
+            "open(sys.argv[2], 'w').write('started')\nprint('retained output')\nsys.exit(7)\n")
+    argv = [PY, "-c", code, str(starts), str(marker)]
+    observed_code = {}
+
+    def launch_then_lose_observation(*args, **kwargs):
+        custody = Custody.launch(*args, **kwargs)
+        wait_until(lambda: marker.exists(), "command start marker")
+        custody.process.wait(timeout=10)
+        observed_code["code"] = custody.process.returncode
+        raise SystemExit("simulated crash before runner observes process result")
+
+    first = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                   state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                   grace_seconds=0.1, poll_seconds=0.02, launch=launch_then_lose_observation,
+                   effect_ledger=ledger)
+    harness._runners.append(first)
+    first.start()
+    response = first.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "proof-reconcile"})
+    assert response["ok"] is True
+    wait_until(lambda: marker.exists(), "command launch")
+    wait_until(lambda: "proof-reconcile" not in first._leases, "crashed runner thread to retire")
+    first.stop()
+
+    held_restart = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                          state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                          grace_seconds=0.1, poll_seconds=0.02,
+                          effect_ledger=RunnerEffectLedger(owner_store, actor))
+    harness._runners.append(held_restart)
+    held_restart.start()
+    unresolved = held_restart.await_run("proof-reconcile", timeout=0)
+    assert unresolved["ok"] is True and unresolved["done"] is True
+    assert unresolved["exit_code"] == EXIT_UNKNOWN
+    assert unresolved["record"]["state"] == "unknown"
+    held_restart.stop()
+
+    record = harness.store.get("proof-reconcile")
+    assert record["state"] == "unknown"
+    assert lines(starts) == 1
+    assert observed_code["code"] == 7
+    held = OperationManager(owner_store).get(ledger.key("proof-reconcile"))
+    assert held.state is OperationState.UNKNOWN
+
+    output = harness.store.output_path("proof-reconcile").read_bytes()
+    digest = hashlib.sha256(output).hexdigest()
+    seconds = round(max(0.001, time.time() - record["started_at"]), 3)
+    result = {"outcome": "exited", "exit_code": observed_code["code"],
+              "output_sha256": digest, "output_bytes": len(output), "seconds": seconds,
+              "unit_seconds": round(record["units"] * seconds, 3), "tokens": 0,
+              "custody": record["custody"], "backfill": record["backfill"], "settled_at": time.time()}
+    proof_key = "runner-terminal-proof:proof-reconcile"
+    proof = {"effect_ref": held.effect_ref.to_dict(), "state": OperationState.COMMITTED.value,
+             "result": result}
+    target = ResourceRef(actor.authority, "effect-proof", proof_key)
+    envelope = CommandEnvelope("effect.proof", "fnd-04.operation.v1", target,
+        TransactionContext(actor, proof_key, request_digest(proof), expected_version=0), proof)
+    owner_store.mutate(envelope, event_type="effect.terminal",
+        result_ref=ResourceRef(actor.authority, "effect-proof", proof_key, "rev-1"),
+        effects=proof, stream="effects")
+    resolved = OperationManager(owner_store).resolve_unknown(
+        held, OperationState.COMMITTED, result, resolver=actor, evidence_key=proof_key,
+        transition_key=proof_key + ":settle")
+    assert resolved.state is OperationState.COMMITTED
+
+    restarted = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                       state_dir=harness.state, resolve_commit=lambda cwd: "c1", environ=ENV,
+                       grace_seconds=0.1, poll_seconds=0.02,
+                       effect_ledger=RunnerEffectLedger(owner_store, actor))
+    harness._runners.append(restarted)
+    restarted.start()
+    awaited = restarted.await_run("proof-reconcile", timeout=1)
+    assert awaited["ok"] is True and awaited["done"] is True
+    assert awaited["exit_code"] == 7
+    assert awaited["record"]["state"] == "settled"
+    assert awaited["record"]["output_sha256"] == digest
+    assert restarted.status("proof-reconcile")["record"]["state"] == "settled"
+    replay = restarted.submit({"argv": argv, "cwd": str(harness.cwd), "request_id": "proof-reconcile"})
+    assert replay["ok"] is True and replay["existing"] is True and replay["state"] == "settled"
+    assert lines(starts) == 1
+    owner_store.close()
+
+
+def test_public_runner_daemon_fails_closed_without_owner_ledger(tmp_path, capsys):
+    state_dir = tmp_path / "unowned-runner-state"
+    result = runner_server_main(["--socket", str(tmp_path / "runner.sock"),
+                                 "--state-dir", str(state_dir)])
+    assert result == 2
+    assert not state_dir.exists()
+    assert "owner-bound effect ledger" in capsys.readouterr().err
 
 
 def test_restart_mirrors_exact_kernel_terminal_after_seal_crash(harness, monkeypatch):

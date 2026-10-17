@@ -102,6 +102,10 @@ class Runner:
             if existing is not None:
                 if existing["binding"] != binding:
                     return _error("binding_mismatch", "run_id %s names a different command" % run_id)
+                try:
+                    self._refresh_unknown(existing)
+                except StoreError as exc:
+                    return _error("evidence_invalid", str(exc))
                 response = {"ok": True, "run_id": run_id, "state": existing["state"], "existing": True,
                             "binding": binding, "commit": commit}
                 if existing["state"] == "unknown" and self._effect_ledger is not None:
@@ -152,6 +156,10 @@ class Runner:
                     return {"ok": False, "error": "evidence_invalid"}
                 if record is None:
                     return {"ok": False, "error": "unknown_run"}
+                try:
+                    self._refresh_unknown(record)
+                except StoreError:
+                    return {"ok": False, "error": "evidence_invalid"}
                 if record["state"] in ("settled", "unknown"):
                     code = record["exit_code"] if record["state"] == "settled" else EXIT_UNKNOWN
                     return {"ok": True, "done": True, "record": record, "exit_code": code}
@@ -181,6 +189,8 @@ class Runner:
             if run_id is not None:
                 try:
                     out["record"] = self._store.get(run_id)
+                    if out["record"] is not None:
+                        self._refresh_unknown(out["record"])
                 except StoreError as exc:
                     return _error("evidence_invalid", str(exc))
         return out
@@ -244,6 +254,8 @@ class Runner:
             else:
                 self._put_record(record, state="unknown", outcome="stale_commit", exit_code=None,
                                  settled_at=self._clock())
+        for record in records:
+            self._refresh_unknown(record)
         for name in sorted(os.listdir(self._latches)):
             if name.endswith(".json") and name[:-len(".json")] not in running:
                 custody.resume_cleanup(os.path.join(self._latches, name), self._grace, self._census_fn)
@@ -450,9 +462,21 @@ class Runner:
             self._cond.notify_all()
         return True
 
-    def _put_record(self, record: dict[str, Any], **fields: Any) -> None:
-        record.update(fields)
-        self._store.put(record)
+    def _put_record(self, record: dict[str, Any], *, resolved_effect: Any = None, **fields: Any) -> None:
+        candidate = dict(record, **fields)
+        if resolved_effect is None:
+            self._store.put(candidate)
+        else:
+            self._store.put(candidate, resolved_effect=resolved_effect)
+        record.update(candidate)
+
+    def _refresh_unknown(self, record: dict[str, Any]) -> None:
+        """Copy a resolved kernel terminal result into its exact sealed run evidence."""
+        if record["state"] != "unknown" or self._effect_ledger is None:
+            return
+        effect = self._effect_ledger.get(record["run_id"])
+        if effect is not None and self._effect_ledger.matches(record, effect):
+            self._mirror_terminal_effect(record, effect)
 
     def _mirror_terminal_effect(self, record: dict[str, Any], effect: Any) -> bool:
         """Mirror a retained terminal kernel result only when its output file proves the digest."""
@@ -475,7 +499,8 @@ class Runner:
                 or not isinstance(result.get("settled_at"), (int, float))
                 or result.get("outcome") not in ("exited", "timed_out")):
             return False
-        self._put_record(record, state="settled", outcome=result["outcome"],
+        self._put_record(record, resolved_effect=effect if record["state"] == "unknown" else None,
+                         state="settled", outcome=result["outcome"],
                          exit_code=result["exit_code"], tokens=result.get("tokens", 0),
                          output_sha256=digest, output_bytes=size,
                          seconds=result["seconds"], unit_seconds=result["unit_seconds"],
