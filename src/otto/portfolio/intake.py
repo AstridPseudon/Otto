@@ -458,8 +458,8 @@ class OttoPortfolio:
                 },
                 "supported_read_operations": [
                     "python -m otto.portfolio.cli projects --actor ACTOR",
-                    "python -m otto.portfolio.cli overview --actor ACTOR --project-ref REF_JSON",
-                    "python -m otto.portfolio.cli task --actor ACTOR --project-ref PROJECT_REF_JSON --task-ref TASK_REF_JSON",
+                    "python -m otto.portfolio.cli show project --actor ACTOR --project-ref REF_JSON",
+                    "python -m otto.portfolio.cli show task --actor ACTOR --project-ref PROJECT_REF_JSON --task-ref TASK_REF_JSON",
                     "python -m otto.portfolio.cli find-and-continue --actor ACTOR --project-ref PROJECT_REF_JSON",
                     "python -m otto.portfolio.cli events overview --actor ACTOR --project-ref PROJECT_REF_JSON",
                     "python -m otto.portfolio.cli events timeline --actor ACTOR --project-ref PROJECT_REF_JSON",

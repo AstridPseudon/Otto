@@ -34,6 +34,32 @@ def _add_format(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=("json", "text"), default="json", help="structured JSON or readable text with the full canonical response")
 
 
+def _add_history_routes(parent: Any) -> None:
+    history_sub = parent.add_subparsers(dest="events_view", required=True)
+    for view_name in VIEW_PRESETS:
+        view_parser = history_sub.add_parser(view_name, help="read the authorized bounded %s view" % view_name)
+        view_parser.add_argument("--actor", required=True)
+        view_parser.add_argument("--project-ref", action="append", required=True,
+                                 help="authorized work.project ResourceRef JSON; repeat for up to 32 projects")
+        view_parser.add_argument("--from", dest="from_at")
+        view_parser.add_argument("--to", dest="to_at")
+        view_parser.add_argument("--timezone", dest="timezone_name")
+        view_parser.add_argument("--active-during", help="JSON [from,to) range for authorized active discovery")
+        view_parser.add_argument("--limit", type=int, default=50)
+        view_parser.add_argument("--cursor")
+        view_parser.add_argument("--snapshot", help="original snapshot JSON for continuation")
+        view_parser.add_argument("--filters", help="supported role/outcome/facet_type filter JSON")
+        _add_format(view_parser)
+    detail = history_sub.add_parser("detail", help="read one selected authorized bounded history detail")
+    detail.add_argument("--actor", required=True)
+    detail.add_argument("--project-ref", action="append", required=True,
+                        help="authorized work.project ResourceRef JSON; used to establish the grant scope")
+    detail.add_argument("--facet-id", required=True)
+    detail.add_argument("--snapshot", required=True, help="original snapshot JSON from an Events view")
+    detail.add_argument("--max-detail-bytes", type=int, default=64 * 1024)
+    _add_format(detail)
+
+
 def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m otto.portfolio.cli",
@@ -95,14 +121,27 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     show_project_parser = show_sub.add_parser("project", help="one project's row and its task rows")
     show_project_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
     show_project_parser.add_argument("--actor", required=True)
+    show_project_parser.add_argument("--view", choices=TASK_VIEWS, default="all")
     show_project_parser.add_argument("--limit", type=int, default=100)
+    show_project_parser.add_argument("--cursor")
     _add_format(show_project_parser)
     show_task_parser = show_sub.add_parser("task", help="one task's detail")
     show_task_parser.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
     show_task_parser.add_argument("--task-ref", required=True, help="canonical task ResourceRef as JSON")
     show_task_parser.add_argument("--actor", required=True)
-    show_task_parser.add_argument("--limit", type=int, default=100)
+    show_task_parser.add_argument("--limit", type=int, default=1000,
+                                  help="page size used while locating the task (1..1000)")
     _add_format(show_task_parser)
+    show_tasks_parser = show_sub.add_parser("tasks", help="filter owner-backed tasks and preserve the continuation cursor")
+    show_tasks_parser.add_argument("--actor", required=True)
+    show_tasks_parser.add_argument("--view", choices=TASK_VIEWS, default="all")
+    show_tasks_parser.add_argument("--project-ref", help="canonical project ResourceRef as JSON")
+    show_tasks_parser.add_argument("--parent-ref", help="canonical parent project ResourceRef as JSON")
+    show_tasks_parser.add_argument("--limit", type=int, default=100)
+    show_tasks_parser.add_argument("--cursor")
+    _add_format(show_tasks_parser)
+    show_history = show_sub.add_parser("history", help="read bounded retained Events history through the authorized history facade")
+    _add_history_routes(show_history)
 
     open_parser = sub.add_parser("open", help="open, autosave, finish or release one project document's authoring session through the owner editor")
     open_sub = open_parser.add_subparsers(dest="open_command", required=True)
@@ -226,53 +265,7 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
     _add_format(recovery)
 
     events = sub.add_parser("events", help="read bounded retained Events operator views")
-    events_sub = events.add_subparsers(dest="events_view", required=True)
-    for view_name in VIEW_PRESETS:
-        view_parser = events_sub.add_parser(view_name, help="read the authorized bounded %s view" % view_name)
-        view_parser.add_argument("--actor", required=True)
-        view_parser.add_argument("--project-ref", action="append", required=True,
-                                 help="authorized work.project ResourceRef JSON; repeat for up to 32 projects")
-        view_parser.add_argument("--from", dest="from_at")
-        view_parser.add_argument("--to", dest="to_at")
-        view_parser.add_argument("--timezone", dest="timezone_name")
-        view_parser.add_argument("--active-during", help="JSON [from,to) range for authorized active discovery")
-        view_parser.add_argument("--limit", type=int, default=50)
-        view_parser.add_argument("--cursor")
-        view_parser.add_argument("--snapshot", help="original snapshot JSON for continuation")
-        view_parser.add_argument("--filters", help="supported role/outcome/facet_type filter JSON")
-        _add_format(view_parser)
-    detail = events_sub.add_parser("detail", help="read one selected authorized bounded history detail")
-    detail.add_argument("--actor", required=True)
-    detail.add_argument("--project-ref", action="append", required=True,
-                        help="authorized work.project ResourceRef JSON; used to establish the grant scope")
-    detail.add_argument("--facet-id", required=True)
-    detail.add_argument("--snapshot", required=True, help="original snapshot JSON from an Events view")
-    detail.add_argument("--max-detail-bytes", type=int, default=64 * 1024)
-    _add_format(detail)
-
-    overview = sub.add_parser("overview", help="read one project's overview and a task page")
-    overview.add_argument("--actor", required=True)
-    overview.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
-    overview.add_argument("--view", choices=TASK_VIEWS, default="all")
-    overview.add_argument("--limit", type=int, default=100)
-    overview.add_argument("--cursor")
-    _add_format(overview)
-
-    tasks = sub.add_parser("tasks", help="filter owner-backed tasks and preserve the continuation cursor")
-    tasks.add_argument("--actor", required=True)
-    tasks.add_argument("--view", choices=TASK_VIEWS, default="all")
-    tasks.add_argument("--project-ref", help="canonical project ResourceRef as JSON")
-    tasks.add_argument("--parent-ref", help="canonical parent project ResourceRef as JSON")
-    tasks.add_argument("--limit", type=int, default=100)
-    tasks.add_argument("--cursor")
-    _add_format(tasks)
-
-    task = sub.add_parser("task", help="read one task detail through owner pagination")
-    task.add_argument("--actor", required=True)
-    task.add_argument("--project-ref", required=True, help="canonical project ResourceRef as JSON")
-    task.add_argument("--task-ref", required=True, help="canonical task ResourceRef as JSON")
-    task.add_argument("--limit", type=int, default=1000, help="page size used while locating the task (1..1000)")
-    _add_format(task)
+    _add_history_routes(events)
 
     documents = sub.add_parser("documents", help="read canonical project documents and navigation")
     doc_sub = documents.add_subparsers(dest="document_command", required=True)
@@ -1140,7 +1133,8 @@ def main(
                     "events_operator_detail": "python -m otto.portfolio.cli events detail --facet-id FACET_ID --snapshot SNAPSHOT_JSON",
                     "skills_index": "src/otto/portfolio/skills/SKILL.md (maintained Otto skill index)",
                     "recovery_skill": "src/otto/portfolio/skills/recovery/SKILL.md (inspect/resume/reassign/verify, including reminders)",
-                    "task_detail": "python -m otto.portfolio.cli task --project-ref REF_JSON --task-ref REF_JSON",
+                    "task_detail": "python -m otto.portfolio.cli show task --actor ACTOR --project-ref PROJECT_REF_JSON --task-ref TASK_REF_JSON",
+                    "project_overview": "python -m otto.portfolio.cli show project --actor ACTOR --project-ref REF_JSON",
                     "document_reader": "ProjectDocumentReader.list_documents/read_document/list_revisions",
                     "document_navigation": "ProjectDocumentOperations.search_documents/resolve_relative_link/export_bundle",
                     "assessment_coverage": "OttoAssessment.coverage",
@@ -1238,8 +1232,14 @@ def main(
         elif args.command == "show":
             if args.show_command == "project":
                 result = show_project(portfolio, actor=args.actor,
-                                      project_ref=_parse_ref(args.project_ref, "project_ref"), limit=args.limit)
-            else:
+                                      project_ref=_parse_ref(args.project_ref, "project_ref"), limit=args.limit,
+                                      view=args.view, cursor=args.cursor)
+            elif args.show_command == "tasks":
+                project_ref = _parse_ref(args.project_ref, "project_ref") if args.project_ref else None
+                parent_ref = _parse_ref(args.parent_ref, "parent_ref") if args.parent_ref else None
+                result = portfolio.list_work(actor=args.actor, view=args.view, project_ref=project_ref,
+                                             parent_ref=parent_ref, cursor=args.cursor, limit=args.limit)
+            elif args.show_command == "task":
                 project_ref = _parse_ref(args.project_ref, "project_ref")
                 task_ref = _parse_ref(args.task_ref, "task_ref")
                 if project_ref.get("kind") != "work.project" or task_ref.get("kind") != "work.task":
@@ -1247,6 +1247,8 @@ def main(
                 else:
                     result = _task_detail(portfolio, actor=args.actor, project_ref=project_ref,
                                           task_ref=task_ref, limit=args.limit)
+            else:
+                result = _events_command(args, observability_views, observability_grant)
         elif args.command == "open" and args.open_command == "folder":
             result = _open_folder_command(args, portfolio)
         elif args.command == "release":
@@ -1294,27 +1296,6 @@ def main(
             )
         elif args.command == "events":
             result = _events_command(args, observability_views, observability_grant)
-        elif args.command in {"overview", "tasks"}:
-            project_ref = _parse_ref(args.project_ref, "project_ref") if args.project_ref else None
-            parent_ref = _parse_ref(args.parent_ref, "parent_ref") if args.command == "tasks" and args.parent_ref else None
-            if args.command == "overview" and project_ref is None:
-                result = _request_error("overview requires a canonical project_ref", code="project_ref_required")
-            else:
-                result = portfolio.list_work(
-                    actor=args.actor, view=getattr(args, "view", "all"),
-                    project_ref=project_ref, parent_ref=parent_ref,
-                    cursor=getattr(args, "cursor", None), limit=args.limit,
-                )
-        elif args.command == "task":
-            project_ref = _parse_ref(args.project_ref, "project_ref")
-            task_ref = _parse_ref(args.task_ref, "task_ref")
-            if project_ref.get("kind") != "work.project" or task_ref.get("kind") != "work.task":
-                result = _request_error("task detail requires a work.project ref and work.task ref")
-            else:
-                result = _task_detail(
-                    portfolio, actor=args.actor, project_ref=project_ref,
-                    task_ref=task_ref, limit=args.limit,
-                )
         elif args.command == "assessment-coverage":
             result = _assessment_coverage_command(args, assessment)
         elif args.command == "completion-gate":
