@@ -1276,6 +1276,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 return dict(authority=self.authority, kind=self.kind, id=self.id, revision=self.revision)
 
         candidate = Ref("owner", "wrk.result", "candidate-A", "rev-1")
+        evidence = Ref("owner", "dat.content.document", "runner-receipt-A", "rev-evidence")
+        evidence_digest = "d" * 64
         task_ref = Ref("owner", "work.task", "task-A", "rev-admitted")
         project_ref = Ref("owner", "work.project", "project", "rev-4")
         manager_ref = Ref("owner", "wrk.assignment", "manager", "rev-2")
@@ -1300,7 +1302,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 self_ref = ref.to_dict()
                 if self_ref["kind"] != "assessment.result":
                     raise ValueError("wrong result")
-                return SimpleNamespace(candidate_ref=candidate)
+                return SimpleNamespace(candidate_ref=candidate, evidence_refs=(evidence,))
 
         class Portfolio:
             outcome = "completed"
@@ -1310,8 +1312,11 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 return {"outcome": self.outcome, "task_ref": task}
 
         portfolio = Portfolio()
-        owner = SimpleNamespace(graph=Graph(), owner_actor=object(), evidence_payload_resolver=object(),
+        owner = SimpleNamespace(graph=Graph(), owner_actor=object(), evidence_payload_resolver=SimpleNamespace(),
                                 assignments=SimpleNamespace(get=lambda ref: SimpleNamespace(ref=manager_ref)))
+        owner.evidence_payload_resolver.resolve = lambda ref, verify_full: {
+            "representation": "managed", "verification": "full-verified",
+            "actual_digest": evidence_digest, "manifest": {"byte_digest": evidence_digest}}
         server = SimpleNamespace(run_id="perch-stage2", owner=owner, store=object(), portfolio=portfolio,
                                  state={"assignment_ref": manager_ref.to_dict(), "manager": "perch-stage2-manager",
                                         "manager_generation": 1})
@@ -1331,17 +1336,28 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             self.assertEqual(result["outcome"], "completed")
             self.assertEqual(calls[0][3]["gate_refs"], landing["acceptances"])
             self.assertEqual(calls[0][3]["candidate_ref"], candidate.to_dict())
-            self.assertEqual(calls[0][3]["evidence_refs"], [candidate.to_dict()])
+            self.assertEqual(calls[0][3]["evidence_refs"], [evidence.to_dict()])
+            self.assertEqual(calls[0][3]["evidence_hashes"], {
+                "dat.content.document:runner-receipt-A:rev-evidence": evidence_digest})
             self.assertEqual(calls[0][3]["actor"], "perch-stage2-manager")
             self.assertEqual(calls[1], "refresh")
+            context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "B"})
+            completed_b = self.launcher.complete_landed_canary(context, landing)
+            self.assertEqual(completed_b["outcome"], "completed")
             # Seed a refused owner completion. The fake manager must turn red.
             portfolio.outcome = "held"
             with self.assertRaisesRegex(RuntimeError, "manager completion refused"):
+                context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "B"})
                 self.launcher.complete_landed_canary(context, landing)
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 5)
+            portfolio.outcome = "completed"
             context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "C"})
-            self.assertIsNone(self.launcher.complete_landed_canary(context, landing))
-            self.assertEqual(len(calls), 3)
+            completed_c = self.launcher.complete_landed_canary(context, landing)
+            self.assertEqual(completed_c["outcome"], "completed")
+            self.assertEqual(len(calls), 7)
+            self.assertEqual([calls[index][3]["request_id"] for index in (0, 2, 5)],
+                             ["perch-stage2-complete-A", "perch-stage2-complete-B",
+                              "perch-stage2-complete-C"])
 
     def test_task_lifecycle_wait_is_red_until_owner_completes(self):
         status = {"tasks": [{"id": "A", "lifecycle": "completed"}]}
