@@ -458,7 +458,7 @@ class Runner:
     def _parent_lease(self, request: Mapping[str, Any]) -> Lease | None:
         """A live run may delegate its already held capacity with its private credential."""
         run_id, token = request.get("parent_run_id"), request.get("parent_token")
-        if not isinstance(run_id, str) or not isinstance(token, str):
+        if not isinstance(run_id, str) or not isinstance(token, str) or len(token) != 64 or not token.isascii():
             return None
         lease = self._leases.get(run_id)
         if lease is None:

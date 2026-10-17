@@ -671,6 +671,11 @@ def test_peer_without_parent_credential_needs_own_lease(harness):
         assert harness.store.get("unrelated-peer")["state"] == "queued"
         assert harness.store.get("unrelated-peer")["units"] == 1
         token = runner._leases[first].parent_token
+        malformed = runner.submit({"argv": ["fake", "malformed"], "cwd": str(harness.cwd),
+                                   "request_id": "malformed-peer", "parent_run_id": first,
+                                   "parent_token": "\u00e9"}, peer_pid=4242)
+        assert malformed["ok"] and malformed["nested"] is False
+        assert harness.store.get("malformed-peer")["state"] == "queued"
         linked = runner.submit({"argv": ["fake", "linked"], "cwd": str(harness.cwd),
                                 "request_id": "linked-peer", "parent_run_id": first,
                                 "parent_token": token}, peer_pid=4242)
