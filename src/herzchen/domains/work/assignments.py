@@ -923,6 +923,10 @@ class _ResponsibilityAssignmentsEngine:
                 raise admission.TaskNotAdmittedError(
                     f"task {scope.id} admission project revision is missing or malformed")
         if basis == admission.BASIS_POLICY:
+            reviewed = self.__writer.get_revision(pinned_ref)
+            if reviewed is None or reviewed.ref != pinned_ref:
+                raise admission.TaskNotAdmittedError(
+                    f"task {scope.id} policy admission does not retain its original task revision")
             reviewed_stamp = admission.stamp_of(reviewed.payload)
             if admitted != "rev-1" or reviewed_stamp != stamp:
                 raise admission.TaskNotAdmittedError(
