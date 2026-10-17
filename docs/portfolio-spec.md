@@ -4,6 +4,10 @@
 **Author:** the Claude Code orchestrator, 11 Oct 2026.
 **Builder:** Astra (Codex CLI); review and integration by the Otto host lead.
 
+**Historical proposal:** this document records an earlier design snapshot.
+Its `sync-docs` command examples were not retained by the current parser.
+For supported current routes, see [the portfolio guide](portfolio.md).
+
 ## Why
 One orchestrator runs a PORTFOLIO of related projects end to end. Each project has its own manager; managers run in parallel; projects depend on each other's milestones; they share programme documents (contracts, the North Star); and the orchestrator sees the whole portfolio at a glance.
 
@@ -47,7 +51,7 @@ One orchestrator runs a PORTFOLIO of related projects end to end. Each project h
 - **Visibility:** extend `_subject_allowed` (documents.py) so that a project's readers (its manager and workers) can READ documents associated with that project through the `portfolio.shared` namespace. Only the orchestrator principal (and the owner) can WRITE them.
 - **Commands:**
   - `ottoctl portfolio documents --operation list|read --path …` (orchestrator);
-  - `ottoctl portfolio sync-docs --dir DIR` registers or updates a directory of UTF-8 files as portfolio documents (nested up to 4 levels, digest-based like project `sync-docs`, never overwriting an Otto-side edit);
+  - current implementation: `ottoctl portfolio apply --root DIR` reconciles portfolio root files; `ottoctl portfolio documents --operation list|read` reads shared documents;
   - the manager's `project-documents --operation list` shows them in a separate "portfolio" section, and `read` works for them.
 
 ### F3. Portfolio status
@@ -93,7 +97,7 @@ One orchestrator runs a PORTFOLIO of related projects end to end. Each project h
 - readiness flips when a gate passes or a dependency project completes;
 - activate is refused when blocked, and the override is recorded;
 - portfolio document visibility: a manager of project 3 can read it, a worker can read it, a worker can't write it, a project outside the portfolio can't read it;
-- sync-docs conflict detection;
+- portfolio-apply conflict detection;
 - detach is refused while a manager is running.
 
 **End to end on a DISPOSABLE new store** (never Codex's live store), deleted afterwards:
@@ -102,7 +106,7 @@ One orchestrator runs a PORTFOLIO of related projects end to end. Each project h
 3. register ~10 projects:
    - prefer the real timeline portfolio bundles under `/Users/hannahomalley/Developer/astrid-video/.otto/runs/timeline-platform-r4/projects/NN-*/` if they exist (read-only);
    - otherwise a synthetic fixture mirroring PORTFOLIO-PROPOSAL.md;
-4. sync the portfolio documents from that dir's `portfolio.md` + `spec-*.md`;
+4. apply the portfolio root containing `portfolio.md` + `spec-*.md`;
 5. declare the dependencies (2–7 → 1#contracts-frozen; 8 → 4#…, 9 → 5#…; 10 → all);
 6. `portfolio status` shows the right blocked/ready;
 7. pass project 1's gate → 2–7 become ready;

@@ -50,18 +50,26 @@ portfolio:
 
 It creates no tasks, roles, pools or schedules.
 
-## 3. Keep editing; record it
+## 3. Edit through the supported owner route
+
+Registration imports the bundle's documents once. There is no
+`project sync-docs` command. For an existing portfolio rooted in files, use
+`portfolio apply` to reconcile its project bundles and shared root documents;
+review conflicts before editing either copy:
 
 ```sh
-ottoctl project sync-docs --project timeline-platform-r4 --check   # what differs
-ottoctl project sync-docs --project timeline-platform-r4           # record it
+ottoctl portfolio apply --root /path/to/timeline-platform-r4 --dry-run
+ottoctl portfolio apply --root /path/to/timeline-platform-r4
 ```
 
-Until activation the run directory is the authority. After it, Otto is, and
-the run directory is the working copy your agents write. Either way, every
-review, decision and status entry should end up in Otto: sync after each
-meaningful change. An Otto-side edit is never overwritten; it is reported as
-`otto_newer` or `conflict`.
+For a bound manager's project.json, use its owner-backed
+`ottoctl manager --project timeline-platform-r4 project-authoring` operations
+(`open`, `check-in`, and `read`). Project documents can be read with
+`ottoctl manager --project timeline-platform-r4 project-documents`. Shared
+portfolio documents are read with `ottoctl portfolio documents`; managers read
+associated shared files through `project-documents`. Keep decisions and status
+in the project's documents and check them in through the owning authoring
+operation.
 
 ## 4. Activate (nothing starts yet)
 
@@ -70,8 +78,7 @@ ottoctl project activate --project timeline-platform-r4
 ottoctl admission dry-run --project timeline-platform-r4    # would_admit, writes nothing
 ```
 
-Activation materializes everything from Otto's own documents, not from the
-run directory:
+Activation materializes everything from Otto's own documents:
 - the tasks, with Megado ids kept as aliases;
 - the role configuration;
 - the manager assignment and mandate;
