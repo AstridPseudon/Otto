@@ -608,6 +608,43 @@ class AssertionKindTests(unittest.TestCase):
         self.assertEqual((lab / ".perch-worker-C.pid").read_text(encoding="utf-8").strip(),
                          str(os.getpid()))
 
+    def test_fake_claude_owner_turns_hold_in_discoverable_labs_without_staging_env(self):
+        import contextlib
+        import io
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        canary = self.tmp / "perch-canary" / "2-20261017T184257Z"
+        cases = (("A", canary / "canon.otto-labs" / "branch-key" / "task-A", ".perch-worker-A.pid"),
+                 ("B", canary / "canon.otto-labs" / "branch-key" / "task-B", ".perch-worker-B.pid"),
+                 ("manager", canary / "canon", ".perch-manager.pid"))
+        original_cwd = os.getcwd()
+        try:
+            for role, cwd, marker_name in cases:
+                with self.subTest(role=role):
+                    cwd.mkdir(parents=True, exist_ok=True)
+                    os.chdir(cwd)
+                    prompt = ("Manager turn for perch-stage2" if role == "manager"
+                              else stage2_worker_prompt(role))
+                    frame = {"message": {"content": [{"text": prompt}]}}
+                    argv = ["perch-fake-claude", "--model", "claude-haiku-5-5", "--tools", "Read,Write"]
+                    with mock_patch.dict(os.environ, {}, clear=True), \
+                            mock_patch.object(sys, "argv", argv), \
+                            mock_patch.object(sys, "stdin", io.StringIO(json.dumps(frame) + "\n")), \
+                            mock_patch.object(launcher.signal, "signal", lambda *_: None), \
+                            mock_patch.object(launcher.signal, "pause", side_effect=RuntimeError("turn held")), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(RuntimeError, "turn held"):
+                            launcher.main()
+                    marker = cwd / marker_name
+                    self.assertEqual(marker.read_text(encoding="utf-8").strip(), str(os.getpid()))
+                    found = subprocess.run(["find", str(canary), "-name", marker_name,
+                                            "-print", "-quit"], check=True, capture_output=True,
+                                           text=True)
+                    self.assertEqual(found.stdout.strip(), str(marker))
+        finally:
+            os.chdir(original_cwd)
+
     def test_fake_claude_initializer_is_inert_and_useful_turn_submits_done(self):
         import contextlib
         import io

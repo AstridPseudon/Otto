@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import uuid
+from pathlib import Path
 
 
 def await_release(marker):
@@ -72,6 +73,19 @@ def canary_alias(prompt):
     raise ValueError("fake worker brief has no exact stage-2 task identity")
 
 
+def canary_workspace_role():
+    """Recognize the owner-supplied canary worktree or its fenced lab cwd."""
+    cwd = Path.cwd()
+    if (cwd.name == "canon" and cwd.parent.name.startswith("2-")
+            and cwd.parent.parent.name == "perch-canary"):
+        return "manager"
+    for parent in cwd.parents:
+        if (parent.name == "canon.otto-labs" and parent.parent.name.startswith("2-")
+                and parent.parent.parent.name == "perch-canary"):
+            return "worker"
+    return None
+
+
 def main():
     if "--version" in sys.argv:
         print("2.1.293 (Claude Code)")
@@ -101,14 +115,15 @@ def main():
               "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
               "result": "READY", "usage": {"input_tokens": 1, "output_tokens": 1}})
         return 0
+    workspace_role = canary_workspace_role()
     try:
         alias = canary_alias(prompt)
     except ValueError:
-        if not os.environ.get("OTTO_STAGING_ROOT"):
+        if workspace_role != "manager":
             raise
         alias = None
     if alias is None:
-        if os.environ.get("OTTO_STAGING_ROOT"):
+        if workspace_role == "manager":
             await_release(".perch-manager.pid")
         emit({"type": "result", "subtype": "success", "is_error": False,
               "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
@@ -122,7 +137,7 @@ def main():
                 marker.write(str(os.getpid()) + "\n")
             signal.pause()
             return 1
-        if alias in {"A", "B"} and os.environ.get("OTTO_STAGING_ROOT"):
+        if alias in {"A", "B"} and workspace_role == "worker":
             await_release(".perch-worker-" + alias + ".pid")
         path = os.path.join(os.getcwd(), "perch-worker-" + session + ".txt")
         content = "PERCH stage-2 worker artifact from " + model + "\n"
