@@ -30,7 +30,7 @@ from herzchen.adapters.recovery_timing import timing_from_receipt
 from herzchen.fleet.hosts import McpGrant, TurnSpec, get_host
 from herzchen.fleet.hosts.codex import CodexStream, native_caller_permission_overrides  # noqa: F401  (re-exported)
 from herzchen.usage.capture import UsageStream
-from herzchen.fleet.custody import Custody
+from herzchen.fleet.custody import Custody, Disposition
 
 RUNNER_ID = "codex-cli"
 CODEX = get_host("codex")     # the one place the Codex launch flags are built
@@ -836,6 +836,7 @@ class CodexCliBinding(HostPort):
         caller_cleanup = None
         custody = None
         custody_disposition = None
+        postspawn_error = None
         def resolve_usage_turn(session_id):
             # Fresh initializer usage may omit a CLI turn ID. Reuse the exact
             # host trace selector and prompt binding, with its bounded read.
@@ -857,8 +858,11 @@ class CodexCliBinding(HostPort):
                 "locator": self.evidence_path}, on_usage=self._usage_callback,
             turn_resolver=resolve_usage_turn)
         try:
+            prepare_launch = getattr(self._process_pin, "prepare_launch", None)
+            latch_path = prepare_launch() if callable(prepare_launch) else (
+                self.evidence_path + ".custody" if self.evidence_path else None)
             custody = Custody.launch(command,
-                latch_path=self.evidence_path + ".custody" if self.evidence_path else None,
+                latch_path=latch_path,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 cwd=self.worktree, env={**os.environ, **plan.env})
             process = custody.process
@@ -918,17 +922,31 @@ class CodexCliBinding(HostPort):
                         if pipe is not None: pipe.close()
             exit_status = None
         except OSError as exc:
-            return (HostReceipt(request.operation, HostOutcome.FAILED, request.identity,
-                                request.identity.logical_agent_id, request.requested_profile,
-                                observed_runner=RUNNER_ID, unsupported_reason="codex_launcher_os_error"),
-                    {"command": command, "started_at": started, "stderr": str(exc),
-                     "delivery_state": "unknown"})
+            if custody is None:
+                return (HostReceipt(request.operation, HostOutcome.FAILED, request.identity,
+                                    request.identity.logical_agent_id, request.requested_profile,
+                                    observed_runner=RUNNER_ID, unsupported_reason="codex_launcher_os_error"),
+                        {"command": command, "started_at": started, "stderr": str(exc),
+                         "delivery_state": "unknown"})
+            # A process already exists. Classify its native turn only after
+            # the finally block has established cleanup disposition.
+            postspawn_error = str(exc)
+            stdout, stderr, exit_status = "", str(exc), None
         finally:
             if caller_cleanup is not None:
                 caller_cleanup()
             if custody is not None:
                 # Sweeps stragglers the CLI left behind; a no-op once the tree is already proven gone.
-                custody_disposition = custody.release()
+                try:
+                    custody_disposition = custody.release()
+                except Exception:
+                    custody_disposition = Disposition("uncertain", "scope cleanup failed")
+                settle_scope = getattr(self._process_pin, "settle_scope", None)
+                if custody_disposition.gone and callable(settle_scope):
+                    try:
+                        settle_scope(custody_disposition)
+                    except Exception:
+                        custody_disposition = Disposition("uncertain", "owner scope settlement not recorded")
         observed_model = None
         observed_reasoning = None
         observed_profile = None
@@ -942,7 +960,7 @@ class CodexCliBinding(HostPort):
         observed_turn_id = stream.turn_id
         native_turn_started = stream.turn_started
         invocation_turn_verified = False
-        trace_error = None
+        trace_error = postspawn_error
         if (request.operation == HostOperation.RESUME and observed_session is not None
                 and observed_session != request.identity.physical_session_id):
             trace_error = "resumed session differs"
@@ -1002,7 +1020,8 @@ class CodexCliBinding(HostPort):
         ):
             physical_session = request.identity.physical_session_id
         identity = type(request.identity)(request.identity.logical_agent_id, physical_session)
-        if trace_error is not None:
+        cleanup_unresolved = custody_disposition is not None and not custody_disposition.gone
+        if trace_error is not None or cleanup_unresolved:
             outcome = HostOutcome.UNKNOWN
         elif exit_status == 0 and physical_session:
             outcome = HostOutcome.SUCCEEDED
@@ -1014,10 +1033,11 @@ class CodexCliBinding(HostPort):
                               request.requested_profile, observed_runner=RUNNER_ID,
                               observed_profile=observed_profile, process_id=str(process.pid),
                               unsupported_reason=None if outcome == HostOutcome.SUCCEEDED else (
+                                  "native_cleanup_unresolved" if cleanup_unresolved else (
                                   "native_invocation_context_unverified" if trace_error is not None else (
                                       "codex_execution_timeout" if exit_status is None
                                       else "codex_execution_interrupted" if exit_status < 0
-                                      else "codex_execution_failed")))
+                                      else "codex_execution_failed"))))
         verification_failures = []
         native_context = _native_host_context(
             native_lines,

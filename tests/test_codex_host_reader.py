@@ -122,6 +122,20 @@ class CodexHostReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(reader_module.HostThreadReadError, "^app_server_cleanup_failed$"):
                 reader("issued-session")
 
+    def test_valid_metadata_requires_settled_scope_cleanup(self):
+        from herzchen.fleet.custody import Custody, Disposition
+        reader = self.fixture_reader()
+        with patch.object(Custody, 'release', return_value=Disposition('uncertain', 'census unavailable')):
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, '^app_server_cleanup_failed$'):
+                reader('issued-session')
+
+    def test_valid_metadata_requires_cleanup_without_exception(self):
+        from herzchen.fleet.custody import Custody
+        reader = self.fixture_reader()
+        with patch.object(Custody, 'release', side_effect=OSError('fixture cleanup failure')):
+            with self.assertRaisesRegex(reader_module.HostThreadReadError, '^app_server_cleanup_failed$'):
+                reader('issued-session')
+
 
 if __name__ == "__main__":
     unittest.main()

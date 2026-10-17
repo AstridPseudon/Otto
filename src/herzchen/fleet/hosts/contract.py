@@ -354,14 +354,18 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
             process.kill()      # our unreaped leader: a direct kill is safe even when the census is blind
         process.communicate()
         return TurnResult(None, None, "unknown", error="host process timed out", plan=plan)
-    custody.release()
+    disposition = custody.release()
     code = process.returncode
     try:
         for line in stdout.splitlines():
             events.extend(parser.feed(line))
         result = parser.finish(code)
     except HostContractError as exc:
-        return TurnResult(None, None, "unknown", events=tuple(events), exit_status=code, error=str(exc), plan=plan)
+        error = str(exc) + (("; host cleanup unresolved: " + disposition.reason) if not disposition.gone else "")
+        return TurnResult(None, None, "unknown", events=tuple(events), exit_status=code, error=error, plan=plan)
+    if not disposition.gone:
+        return replace(result, outcome="unknown", events=tuple(events), exit_status=code, plan=plan,
+                       error="host cleanup unresolved: " + disposition.reason)
     return replace(result, events=tuple(events), exit_status=code, plan=plan,
                    error=result.error or (stderr.decode("utf-8", "replace")[:512] if code else None))
 

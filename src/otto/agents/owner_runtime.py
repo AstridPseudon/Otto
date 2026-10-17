@@ -43,10 +43,10 @@ def _pin_process_group(adapter, schedule_id):
     the admitted transport wait is open. Installing it here, on the owner thread,
     is what gives ``owner_callback`` the context to wrap.
 
-    The pin only lets a later restart prove the group gone; a process that is
-    already gone or an unknown occurrence leaves the hold conservatively held.
-    A pin failure never breaks the launch: claude_cli kills a turn whose
-    on_process raises, so the hook swallows its own errors.
+    The required prepare callback associates PL1's latch with this occurrence
+    before spawn. A failed prepare stops the launch. The later pin captures
+    native birth evidence when available; its failure leaves the latch for
+    restart recovery and does not break the launch.
     """
     from otto.portfolio.execution_host import ExecutionHost
 
@@ -59,11 +59,30 @@ def _pin_process_group(adapter, schedule_id):
             pass
     owned = ExecutionHost.owner_callback(pin)
 
+    def prepare_launch():
+        host = ExecutionHost.current_bounded()
+        if host is None:
+            raise RuntimeError("native launch has no bounded execution owner")
+        return host.record_process_launch_intent(schedule_id)
+    owned_prepare = ExecutionHost.owner_callback(prepare_launch)
+
+    def settle_scope(disposition):
+        host = ExecutionHost.current_bounded()
+        if host is None:
+            raise RuntimeError("scope settlement has no bounded execution owner")
+        host.record_process_scope_disposition(schedule_id, disposition)
+    owned_settle = ExecutionHost.owner_callback(settle_scope)
+    owned_prepare.settle_scope = owned_settle
+
     def safe(process):
         try:
             owned(process)
         except (RuntimeError, PermissionError, OSError):
             pass
+    # This callback is mandatory before Custody.launch. Unlike the later pin,
+    # a failed durable association must prevent the process effect.
+    safe.prepare_launch = owned_prepare
+    safe.settle_scope = owned_settle
     adapter.process_pin = safe
 
 

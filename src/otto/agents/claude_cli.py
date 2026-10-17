@@ -112,6 +112,8 @@ def terminate_recorded_process_group(record: Mapping[str, Any], *,
     if current_birth != birth:
         return False
     try:
+        if os.getpgid(pid) != pgid:
+            return False
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         return False
@@ -352,7 +354,7 @@ class ClaudeCliTransport:
 
     def run(self, prompt: str, *, session: str | None = None,
             initializer: bool = False, on_init: Any = None, on_input: Any = None, on_usage: Any = None,
-            on_process: Any = None) -> Mapping[str, Any]:
+            on_process: Any = None, on_launch: Any = None) -> Mapping[str, Any]:
         proof = self.preflight()  # Before process creation, including initialization.
         try:
             # The host contract owns every launch flag; the proven scope is the fence it wraps them in.
@@ -369,7 +371,9 @@ class ClaudeCliTransport:
             raise ClaudeBindingError(str(exc)) from exc
         command, data = list(plan.argv), plan.stdin
         env = {**self.environment(), **plan.env}
-        custody = Custody.launch(list(plan.command()), popen=self.process_factory, cwd=self.scope.workspace,
+        latch_path = on_launch() if callable(on_launch) else None
+        custody = Custody.launch(list(plan.command()), latch_path=latch_path,
+            popen=self.process_factory, cwd=self.scope.workspace,
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         process = custody.process
         cleanup = None
@@ -452,11 +456,14 @@ class ClaudeCliTransport:
             code = process.wait(timeout=max(.01, deadline - time.monotonic()))
             turn = parser.finish(code)
             disposition = custody.release()     # sweeps stragglers the CLI left in its tree
+            settle_scope = getattr(on_launch, "settle_scope", None)
+            if disposition.gone and callable(settle_scope):
+                settle_scope(disposition)
+            if not disposition.gone:
+                raise ClaudeBindingError("owned process cleanup unresolved: " + disposition.reason)
             result = {**dict(turn.native), 'usage': turn.usage, 'usage_capture': turn.usage_capture, 'scope': proof,
                     'command': command, 'exit_status': code, 'stderr': stderr.decode('utf-8', errors='replace')[:4096],
                     'launcher': vars(self.pin), 'parser_schema': PARSER_SCHEMA}
-            if not disposition.gone:
-                result['custody'] = {'state': disposition.state, 'reason': disposition.reason}
             return result
         finally:
             selector.close()
@@ -465,9 +472,15 @@ class ClaudeCliTransport:
             if disposition is None:
                 # Only this owned process tree; no provider-session deletion.
                 if process.poll() is None:
-                    custody.terminate()
+                    cleanup_disposition = custody.terminate()
                     process.wait(timeout=5)
                 else:
-                    custody.release()
+                    cleanup_disposition = custody.release()
+                settle_scope = getattr(on_launch, "settle_scope", None)
+                if cleanup_disposition.gone and callable(settle_scope):
+                    try:
+                        settle_scope(cleanup_disposition)
+                    except Exception:
+                        pass  # The original unknown turn propagates; restart retains its owner row.
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream and not stream.closed: stream.close()
