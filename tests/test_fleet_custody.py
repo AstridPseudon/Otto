@@ -186,7 +186,8 @@ def test_census_distinguishes_pids_reused_within_one_display_second(monkeypatch)
                         _fake_ps_rows((own, 1, own), (target, 1, target)))
 
     def identity(pid):
-        return SimpleNamespace(birth=(1, 1) if pid == own else next(readings))
+        return SimpleNamespace(pid=pid, parent=1, pgid=pid,
+                               birth=(1, 1) if pid == own else next(readings))
 
     monkeypatch.setattr(custody, "process_identity", identity)
     first, second = custody.census(), custody.census()
@@ -208,7 +209,7 @@ def test_missing_exact_birth_keeps_scope_unresolved_and_unsignalled(monkeypatch,
     def identity(pid):
         if pid == target:
             raise PermissionError("kernel birth unavailable")
-        return SimpleNamespace(birth=(1, 1))
+        return SimpleNamespace(pid=pid, parent=1, pgid=pid, birth=(1, 1))
 
     monkeypatch.setattr(custody, "process_identity", identity)
     snap = custody.census()
@@ -224,13 +225,45 @@ def test_missing_exact_birth_keeps_scope_unresolved_and_unsignalled(monkeypatch,
     killpg.assert_not_called()
 
 
+@pytest.mark.parametrize("kernel_parent,kernel_group", [(1, 50302), (50301, 50303)])
+def test_census_rejects_replaced_child_with_stale_ps_binding(monkeypatch, tmp_path,
+                                                             kernel_parent, kernel_group):
+    own, leader, child = os.getpid(), 50301, 50302
+    monkeypatch.setattr(custody, "_REAL_POPEN", lambda *_args, **_kwargs:
+                        _fake_ps_rows((own, 1, own), (leader, 1, leader),
+                                      (child, leader, 50302)))
+
+    def identity(pid):
+        if pid == child:
+            return SimpleNamespace(pid=pid, parent=kernel_parent, pgid=kernel_group, birth=(300, 2))
+        return SimpleNamespace(pid=pid, parent=1, pgid=pid, birth=(300, 1))
+
+    monkeypatch.setattr(custody, "process_identity", identity)
+    snap = custody.census()
+    assert snap[child].birth is None
+    process = mock.Mock(pid=leader)
+    process.poll.return_value = None
+    latch = _write_latch(tmp_path / "replaced-child.json", leader, [300, 1], {leader: [300, 1]})
+    owner = custody.Custody(process, leader, [300, 1], {leader: [300, 1]},
+                            latch_path=latch, census_fn=lambda: snap)
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        owner._send(signal.SIGTERM)
+    kill.assert_not_called()
+    killpg.assert_not_called()
+    assert child not in owner.known
+    assert json.loads(Path(latch).read_text())["doubt"]
+
+
 def test_otto_identity_entry_points_share_the_kernel_reader():
     from herzchen.kernel.process_identity import process_identity
     from otto.portfolio.execution_host import _process_start_identity
     from otto.portfolio.native_caller_ingress import process_identity as native_reader
 
     assert native_reader is process_identity
-    assert _process_start_identity(os.getpid())["birth"] == list(process_identity(os.getpid()).birth)
+    identity = process_identity(os.getpid())
+    assert identity.parent == os.getppid()
+    assert identity.pgid == os.getpgid(os.getpid())
+    assert _process_start_identity(os.getpid())["birth"] == list(identity.birth)
 
 
 def test_unreadable_child_birth_blocks_group_and_persists_doubt(tmp_path):

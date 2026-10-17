@@ -90,8 +90,13 @@ def census() -> Optional[dict]:
         except ValueError:
             continue
         try:
-            birth = process_identity(pid).birth
-        except (OSError, PermissionError, ValueError, IndexError):
+            identity = process_identity(pid)
+            # ps enumerates a PID before the kernel identity read. A replacement
+            # must not inherit the old row's ancestry or group signal authority.
+            if identity.pid != pid or identity.parent != ppid or identity.pgid != pgid:
+                raise PermissionError("ps row and kernel process differ")
+            birth = identity.birth
+        except (OSError, PermissionError, ValueError, IndexError, AttributeError):
             birth = None
         table[pid] = Proc(pid, ppid, pgid, birth, fields[3].startswith("Z"))
     if not table or os.getpid() not in table:

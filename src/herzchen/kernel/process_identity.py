@@ -13,6 +13,7 @@ class ProcessIdentity:
     parent: int
     birth: tuple[int, ...]
     uid: int
+    pgid: int | None = None
 
 
 def process_identity(pid: int) -> ProcessIdentity:
@@ -37,12 +38,13 @@ def process_identity(pid: int) -> ProcessIdentity:
         size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
         if size != ctypes.sizeof(info) or info.pid != pid or info.status == 5 or info.flags & 4:
             raise PermissionError("kernel process is absent or exiting")
-        return ProcessIdentity(pid, info.ppid, (info.seconds, info.micros), info.uid)
+        return ProcessIdentity(pid, info.ppid, (info.seconds, info.micros), info.uid, info.pgid)
     if sys.platform.startswith("linux"):
         path = Path("/proc") / str(pid)
         raw = (path / "stat").read_text()
         fields = raw[raw.rindex(")") + 2:].split()
         if fields[0] in {"Z", "X"}:
             raise PermissionError("kernel process is exiting")
-        return ProcessIdentity(pid, int(fields[1]), (int(fields[19]),), path.stat().st_uid)
+        return ProcessIdentity(pid, int(fields[1]), (int(fields[19]),), path.stat().st_uid,
+                               int(fields[2]))
     raise PermissionError("kernel peer process authentication is unsupported on this host")
