@@ -166,22 +166,28 @@ class ManagerTurnQueueTests(unittest.TestCase):
 
             dispatch = threading.Thread(target=host._serve_files, args=(False,), daemon=True)
             dispatch.start()
-            self.assertTrue(waiting.wait(2), "project B did not reach turn admission")
-            # Project A's owner pump must still be able to run a finite
-            # callback while B waits for a turn slot.
-            lock_available = shared_lock.acquire(timeout=0.25)
-            if lock_available:
-                shared_lock.release()
+            waiting.wait()
+
+            callback_done = threading.Event()
+
+            def owner_callback():
+                with shared_lock:
+                    callback_done.set()
+
+            callback = threading.Thread(target=owner_callback)
+            callback.start()
+            callback_done.wait()
+            callback.join()
+            self.assertTrue(dispatch.is_alive(), "queued manager must remain blocked until a turn slot is free")
+            response_path = ipc / ("response-" + token + ".json")
+            self.assertFalse(response_path.exists(), "queued manager responded before capacity was freed")
 
             slots.release()
-            dispatch.join(timeout=5)
+            dispatch.join()
             self.assertFalse(dispatch.is_alive(), "queued manager did not resume after capacity freed")
-            response_path = ipc / ("response-" + token + ".json")
             self.assertTrue(response_path.exists(), "queued manager request did not receive its response")
             response = json.loads(response_path.read_text())
             self.assertEqual(response.get("outcome"), "ok", response)
-            self.assertTrue(lock_available,
-                            "queued turn held the shared command lock and blocked another project's owner pump")
 
     def test_two_owner_pumps_racing_manager_request_admit_one_worker(self):
         with tempfile.TemporaryDirectory(prefix="otto-auto-dispatch-") as temporary:
