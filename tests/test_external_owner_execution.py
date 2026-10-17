@@ -16,6 +16,30 @@ from otto.portfolio.resource_sync import normalize_instruction_contract
 from otto.portfolio.tests import test_worker_occurrences as fixtures
 from otto.portfolio.identity_context import HostIngress
 
+
+def _pin_synthetic_landing_occurrence(landing, due_port):
+    """Give the real LabFleet marker the exact active Due pins in this harness."""
+    def assessment_context(record, task, **kwargs):
+        due_rows = [item for item in due_port.list_due() if item.get("role") == "worker"]
+        assignment_id = kwargs.get("assignment_id")
+        due = next((item for item in due_rows
+                    if item.get("assignment_ref", {}).get("id") == assignment_id), due_rows[-1])
+        evidence = due.get("host_evidence", {})
+        attempt = evidence.get("gateway_attempt", {})
+        occurrence = {
+            "task_ref": due["target"]["task_ref"],
+            "assignment_ref": due["assignment_ref"],
+            "generation": due["generation"],
+            "schedule_id": due["schedule_id"],
+            "logical_request_key": (due.get("in_flight_request") or attempt.get("logical_request_key")
+                                    or due["schedule_id"]),
+            "candidate_ref": {"authority": "fixture", "kind": "wrk.result",
+                              "id": "synthetic-candidate", "revision": "candidate-r1"},
+        }
+        return {"scope": "scope@1", "input_packet": "packet@1", "limit_pool": "pool@1",
+                "occurrence": occurrence}
+    landing.assessment_context = assessment_context
+
 class ExternalOwnerExecutionTests(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.WorkerOccurrenceTests(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
@@ -165,6 +189,7 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         lab = fleet.create('one', base='refs/heads/main')
         workspace = str(lab.path.resolve())
         landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        _pin_synthetic_landing_occurrence(landing, f.port)
         state = tempfile.TemporaryDirectory(prefix='owner-claude-state-')
         self.addCleanup(state.cleanup)
         transport = local_transport(workspace, str(Path(state.name).resolve()))
@@ -202,8 +227,12 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
             captured = read_captured_artifact(due, artifact_ref=view['artifacts'][0]['ref'])
             assert base64.b64decode(captured['content_base64']) == b'Useful artifact\n'
             order.append('capture')
-            swept = fleet.sweep_landed('refs/heads/main', lambda name, commit: (
-                name == 'one' and landed_commits == [commit]
+            swept = fleet.sweep_landed('refs/heads/main', lambda marker: (
+                marker['name'] == 'one' and landed_commits == [marker['commit']]
+                and marker['schedule_id'] == kwargs['schedule_id']
+                and marker['task_ref'] == kwargs['task_ref']
+                and marker['assignment_ref'] == kwargs['assignment_ref']
+                and marker['generation'] == kwargs['generation']
                 and result_view(due)['required_capture'] is True))
             assert any(item.name == 'one' and item.action == 'removed' for item in swept), swept
             return {'cleanup_pending': False}
@@ -264,6 +293,7 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
         lab = fleet.create('one', base='refs/heads/main')
         workspace = str(lab.path.resolve())
         landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        _pin_synthetic_landing_occurrence(landing, f.port)
         state = tempfile.TemporaryDirectory(prefix='owner-claude-state-')
         self.addCleanup(state.cleanup)
         transport = local_transport(workspace, str(Path(state.name).resolve()))
@@ -300,8 +330,12 @@ class ExternalOwnerExecutionTests(unittest.TestCase):
             captured = read_captured_artifact(due, artifact_ref=view['artifacts'][0]['ref'])
             assert base64.b64decode(captured['content_base64']) == b'Useful artifact\n'
             order.append('capture')
-            swept = fleet.sweep_landed('refs/heads/main', lambda name, commit: (
-                name == 'one' and landed_commits == [commit]
+            swept = fleet.sweep_landed('refs/heads/main', lambda marker: (
+                marker['name'] == 'one' and landed_commits == [marker['commit']]
+                and marker['schedule_id'] == kwargs['schedule_id']
+                and marker['task_ref'] == kwargs['task_ref']
+                and marker['assignment_ref'] == kwargs['assignment_ref']
+                and marker['generation'] == kwargs['generation']
                 and result_view(due)['required_capture'] is True))
             assert any(item.name == 'one' and item.action == 'removed' for item in swept), swept
             return {'cleanup_pending': False}

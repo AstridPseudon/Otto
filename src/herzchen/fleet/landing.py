@@ -238,6 +238,7 @@ class LandingService:
                                           gate_records=tuple(gate_records))
         if not isinstance(context, Mapping):
             raise LandingError("assessment context did not provide the admitted scope, input and pool")
+        occurrence = context.get("occurrence")
         # Owner adapters may resolve identity pins only after the lab commit and
         # its sealed check result are known.  Caller pins remain a compatibility
         # input for existing injected services; the Otto owner adapter always
@@ -303,7 +304,9 @@ class LandingService:
                 # Persist exact verified intent before advancing the line. The
                 # owner Due capture predicate and ancestry check are both required
                 # before a later cleanup may remove this lab.
-                mark_landed(lab_name, rebased, self.line_ref)
+                if not isinstance(occurrence, Mapping):
+                    raise LandingError("owner assessment context did not provide exact worker occurrence pins")
+                mark_landed(lab_name, rebased, self.line_ref, occurrence=occurrence)
             self._git(repo, "merge", "--ff-only", rebased)
             if self._git(repo, "rev-parse", "HEAD").strip() != rebased:
                 raise LandingError("line checkout did not advance to the verified lab commit")

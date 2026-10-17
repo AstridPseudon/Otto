@@ -78,6 +78,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                          runner: Any, views_provider: Callable[[], Mapping[str, Any]],
                          assignment_lookup: Callable[..., Mapping[str, Any]] | None = None,
                          task_lookup: Callable[[str], Mapping[str, Any]] | None = None,
+                         occurrence_lookup: Callable[..., Mapping[str, Any]] | None = None,
                          timeout: float = 3600) -> LandingService:
     """Build a repo/branch landing service from owner-issued dependencies.
 
@@ -297,6 +298,55 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             except Exception as exc:
                 raise LandingError("owner could not record the verified lab commit as its candidate: " + str(exc)) from exc
 
+            if callable(occurrence_lookup):
+                occurrence = occurrence_lookup(task_ref=task_ref.to_dict(),
+                    assignment_ref=assignment_ref.to_dict(), generation=generation,
+                    candidate_ref=candidate.to_dict())
+            else:
+                due_port = getattr(server, "due_port", None)
+                list_due = getattr(due_port, "list_due", None)
+                if not callable(list_due):
+                    raise LandingError("owner Due reader is unavailable for landing occurrence")
+                matches = []
+                for due in list_due():
+                    if not isinstance(due, Mapping):
+                        continue
+                    target = due.get("target") if isinstance(due.get("target"), Mapping) else {}
+                    key = due.get("in_flight_request")
+                    target_assignment = target.get("assignment_ref")
+                    if (due.get("role") != "worker" or due.get("stop_state", "active") != "active"
+                            or target.get("task_ref") != task_ref.to_dict()
+                            or (target_assignment is not None and target_assignment != assignment_ref.to_dict())
+                            or due.get("assignment_ref") != assignment_ref.to_dict()
+                            or type(due.get("generation")) is not int or due.get("generation") != generation
+                            or not isinstance(due.get("schedule_id"), str) or not due.get("schedule_id")
+                            or not isinstance(key, str) or not key):
+                        continue
+                    attempt = ((due.get("host_evidence") or {}).get("gateway_attempt")
+                               if isinstance(due.get("host_evidence"), Mapping) else None)
+                    attempt_key = attempt.get("logical_request_key") if isinstance(attempt, Mapping) else None
+                    if attempt_key is None or attempt_key == key:
+                        matches.append((due, key))
+                if len(matches) != 1:
+                    raise LandingError("landing does not identify one active exact worker Due")
+                due, key = matches[0]
+                occurrence = {"task_ref": task_ref.to_dict(), "assignment_ref": assignment_ref.to_dict(),
+                    "generation": generation, "schedule_id": due["schedule_id"],
+                    "logical_request_key": key, "candidate_ref": candidate.to_dict()}
+            required_occurrence = ("task_ref", "assignment_ref", "generation", "schedule_id",
+                                  "logical_request_key", "candidate_ref")
+            if (not isinstance(occurrence, Mapping)
+                    or any(key not in occurrence for key in required_occurrence)
+                    or occurrence.get("task_ref") != task_ref.to_dict()
+                    or occurrence.get("assignment_ref") != assignment_ref.to_dict()
+                    or occurrence.get("generation") != generation
+                    or occurrence.get("candidate_ref") != candidate.to_dict()
+                    or not isinstance(occurrence.get("schedule_id"), str)
+                    or not occurrence.get("schedule_id")
+                    or not isinstance(occurrence.get("logical_request_key"), str)
+                    or not occurrence.get("logical_request_key")):
+                raise LandingError("owner Due resolver returned incomplete or mismatched occurrence pins")
+
             execution_key = "fleet:" + candidate_key
             expected = {"expected_task_ref": task_ref.to_dict(),
                         "expected_assignment_ref": manager_ref.to_dict(),
@@ -335,6 +385,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                                                    (evidence_ref,))
             transferred = True
             return {"candidate": candidate, "criterion": criterion, "parent_obligation": task_ref,
+                    "occurrence": dict(occurrence),
                     "actor": project_owner.binding.authenticated_actor(manager_actor),
                     "criteria": criteria,
                     "scope": scope_ref, "input_packet": packet_ref, "limit_pool": policy.pool_ref,

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import fnmatch
+import json
 import os
 from pathlib import Path
 import re
@@ -35,7 +36,8 @@ import stat
 import subprocess
 import tempfile
 import threading
-from typing import Any, Callable, Iterator, Optional, Sequence
+import uuid
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from .hosts.contract import TurnSpec
 
@@ -114,6 +116,17 @@ def _within(child: Path, parent: Path) -> bool:
 def _single_component(name: Any) -> bool:
     return (isinstance(name, str) and name not in ("", ".", "..")
             and "/" not in name and "\x00" not in name)
+
+
+def _exact_ref(value: Any, kind: str) -> bool:
+    return (isinstance(value, Mapping) and set(value) == {"authority", "kind", "id", "revision"}
+            and value.get("kind") == kind
+            and all(isinstance(value.get(key), str) and value[key]
+                    for key in ("authority", "id", "revision")))
+
+
+def _canonical_commit(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is not None
 
 
 def _exempt_path(rel: str, exempt: Sequence[str]) -> bool:
@@ -294,6 +307,9 @@ class LabFleet:
     def writing(self, name: str) -> Iterator[None]:
         """Hold the lab shared for the duration of one worker's writes. Refused while an exclusive holder exists."""
         with self._hold(name, fcntl.LOCK_SH, "lab %s is held by a writer or an operation" % name):
+            marker = self._read_landed_marker(name)
+            if marker is not None and marker.get("phase") == "deleting":
+                raise LabRefused("lab %s is being removed after captured landing" % name)
             yield
 
     # -- create and resume ------------------------------------------------------------------------
@@ -305,11 +321,12 @@ class LabFleet:
             raise LabRefused("base %s does not name a commit in the line" % base)
         with self._hold(name, fcntl.LOCK_EX, "lab %s is busy" % name):
             path = self.labs_root / name
+            if self._has_landed_marker(name):
+                raise LabRefused("lab %s has a landed marker and cannot be recreated" % name)
             if (path.exists() or path.is_symlink()) and not self._marker(name).exists():
                 raise LabRefused("lab %s already exists" % name)
             if _resolve(self.repo, "refs/labs/" + name) is not None:
                 raise LabRefused("refs/labs/%s is already parked; resume it or pick another name" % name)
-            self._landed_marker(name).unlink(missing_ok=True)
             self._refuse_dirty(self.repo, "the line")
             if self.template != self.repo and self._is_worktree(self.template):
                 self._refuse_dirty(self.template, "the template")
@@ -321,12 +338,13 @@ class LabFleet:
         self._check_name(name)
         with self._hold(name, fcntl.LOCK_EX, "lab %s is busy" % name):
             path = self.labs_root / name
+            if self._has_landed_marker(name):
+                raise LabRefused("lab %s has a landed marker and cannot be resumed" % name)
             if (path.exists() or path.is_symlink()) and not self._marker(name).exists():
                 raise LabRefused("lab %s already exists" % name)
             start = _resolve(self.repo, "refs/labs/" + name + "^{commit}")
             if start is None:
                 raise LabRefused("nothing is parked as %s" % name)
-            self._landed_marker(name).unlink(missing_ok=True)
             self._discard_stale(name, path)
             self._populate(name, path, start)
         return self._lab(name)
@@ -341,6 +359,8 @@ class LabFleet:
                before_unlink: Optional[Callable[[Path], Any]] = None) -> RemoveResult:
         """Unlink a clean lab. Never commits: dirty work is refused, not checkpointed."""
         with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
+            if self._has_landed_marker(name):
+                raise LabRefused("generic remove refuses a landed lab")
             lab = self._existing(name)
             leftover = lab.dirty()
             if leftover:
@@ -351,37 +371,66 @@ class LabFleet:
             self._unlink(lab, before_unlink)
             if merged:
                 _git(self.repo, "update-ref", "-d", "refs/labs/" + name)
-            self._landed_marker(name).unlink(missing_ok=True)
             return RemoveResult(name, head, kept_ref=not merged)
 
-    def mark_landed(self, name: str, commit: str, merged_into: str) -> None:
+    def mark_landed(self, name: str, commit: str, merged_into: str, *, occurrence: Mapping[str, Any]) -> None:
         """Record landing intent; cleanup also requires owner capture and line ancestry."""
         self._check_name(name)
-        if not isinstance(commit, str) or not commit or not isinstance(merged_into, str) or not merged_into:
+        if not _canonical_commit(commit) or not isinstance(merged_into, str) or not merged_into.startswith("refs/heads/"):
             raise LabRefused("landed commit and owner line ref are required")
         with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
-            self._mark_landed_locked(name, commit, merged_into)
+            self._mark_landed_locked(name, commit, merged_into, occurrence=occurrence)
 
-    def _mark_landed_locked(self, name: str, commit: str, merged_into: str) -> None:
+    def _mark_landed_locked(self, name: str, commit: str, merged_into: str, *, occurrence: Mapping[str, Any]) -> None:
         """Record intent for a caller already holding this lab's exclusive lock."""
         lab = self._existing(name)
         if lab.head() != commit:
             raise LabRefused("landed marker commit differs from lab HEAD")
+        if not isinstance(occurrence, Mapping):
+            raise LabRefused("landed marker requires exact worker occurrence pins")
+        required = ("task_ref", "assignment_ref", "generation", "schedule_id",
+                    "logical_request_key", "candidate_ref")
+        if any(key not in occurrence for key in required):
+            raise LabRefused("landed marker occurrence pins are incomplete")
+        expected_kinds = {"task_ref": "work.task", "assignment_ref": "wrk.assignment",
+                          "candidate_ref": "wrk.result"}
+        if (any(not _exact_ref(occurrence[key], kind) for key, kind in expected_kinds.items())
+                or not isinstance(occurrence["generation"], int)
+                or isinstance(occurrence["generation"], bool) or occurrence["generation"] < 1
+                or any(not isinstance(occurrence[key], str) or not occurrence[key]
+                       for key in ("schedule_id", "logical_request_key"))):
+            raise LabRefused("landed marker occurrence pins are malformed")
+        incarnation = self._read_incarnation(name)
+        if incarnation is None:
+            # Labs created before incarnation sidecars existed acquire one at their first
+            # exclusively locked landing. Subsequent reuse always gets a fresh ID in _populate.
+            incarnation = uuid.uuid4().hex
+            self._write_incarnation(name, incarnation)
+        retained = _resolve(self.repo, "refs/labs/" + name)
+        if retained is not None and retained != commit:
+            raise LabRefused("refs/labs/%s already retains a different commit" % name)
+        if retained is None:
+            self._capture(lab)
+            retained = _resolve(self.repo, "refs/labs/" + name)
+        if retained != commit:
+            raise LabRefused("landed lab commit is not retained at refs/labs/%s" % name)
         marker = self._landed_marker(name)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(dir=str(marker.parent), prefix=".landed-")
-        try:
-            with os.fdopen(fd, "w", encoding="ascii") as stream:
-                stream.write(commit + "\n" + merged_into + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, marker)
-        except BaseException:
-            with suppress(FileNotFoundError):
-                os.unlink(temporary)
-            raise
+        value = {"version": 2, "phase": "landed", "name": name,
+                 "incarnation_id": incarnation, "task_ref": dict(occurrence["task_ref"]),
+                 "assignment_ref": dict(occurrence["assignment_ref"]),
+                 "generation": occurrence["generation"], "schedule_id": occurrence["schedule_id"],
+                 "logical_request_key": occurrence["logical_request_key"],
+                 "candidate_ref": dict(occurrence["candidate_ref"]),
+                 "commit": commit, "line_ref": merged_into}
+        if self._has_landed_marker(name):
+            current = self._read_landed_marker(name)
+            if current == value:
+                return
+            raise LabRefused("a different landed occurrence already owns this lab marker")
+        self._write_landed_marker(name, value)
 
-    def sweep_landed(self, merged_into: str, is_captured: Callable[[str, str], bool],
+    def sweep_landed(self, merged_into: str, is_captured: Callable[[Mapping[str, Any]], bool],
                      before_unlink: Optional[Callable[[Path], Any]] = None) -> list:
         """Retry removal only for labs with durable, exact landing evidence."""
         if not isinstance(merged_into, str) or not merged_into or not callable(is_captured):
@@ -394,37 +443,53 @@ class LabFleet:
             name = marker.name
             try:
                 self._check_name(name)
-                if marker.is_symlink() or not marker.is_file():
-                    raise LabRefused("landed marker is not a regular file")
-                marker_fields = marker.read_text(encoding="ascii").splitlines()
-                if len(marker_fields) != 2 or marker_fields[1] != merged_into:
-                    raise LabRefused("landed marker does not identify the requested owner line")
-                commit = marker_fields[0]
-                if not is_captured(name, commit):
-                    results.append(SweepResult(name, "kept-unsettled", "captured worker result is unavailable"))
-                    continue
-                if not self._is_ancestor(commit, merged_into):
-                    raise LabRefused("landed marker commit is not on the owner line")
-                lab_path = self.labs_root / name
-                if (lab_path.exists() or lab_path.is_symlink()) and not _is_lab_dir(lab_path):
-                    raise LabRefused("unlinked landed lab path is not a normal directory")
-                if not lab_path.exists():
-                    # Removal may have unlinked the directory and then failed
-                    # while deleting its captured lab ref. Finish that exact
-                    # cleanup from the marker and owner result evidence.
-                    parked = _resolve(self.repo, "refs/labs/" + name)
-                    if parked is not None and parked != commit:
-                        raise LabRefused("unlinked landed lab ref differs from its marker")
-                    if parked is not None:
-                        _git(self.repo, "update-ref", "-d", "refs/labs/" + name)
-                    marker.unlink()
+                with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
+                    current = self._read_landed_marker(name)
+                    if current is None:
+                        continue
+                    commit = current["commit"]
+                    if current["line_ref"] != merged_into:
+                        raise LabRefused("landed marker does not identify the requested owner line")
+                    if current["incarnation_id"] != self._read_incarnation(name):
+                        raise LabRefused("landed marker belongs to a different lab incarnation")
+                    if not is_captured(current):
+                        results.append(SweepResult(name, "kept-unsettled", "captured worker result is unavailable"))
+                        continue
+                    if not self._is_ancestor(commit, merged_into):
+                        raise LabRefused("landed marker commit is not on the owner line")
+                    if _resolve(self.repo, "refs/labs/" + name) != commit:
+                        raise LabRefused("landed lab ref is missing or differs from its marker")
+                    lab_path = self.labs_root / name
+                    deleting = current["phase"] == "deleting"
+                    if not deleting:
+                        if not _is_lab_dir(lab_path):
+                            raise LabRefused("landed lab path is not a normal directory")
+                        lab = self._lab(name)
+                        if lab.head() != commit:
+                            raise LabRefused("landed marker no longer matches the lab HEAD")
+                        leftover = lab.dirty()
+                        if leftover:
+                            raise LabRefused("landed lab has uncommitted work: " + "; ".join(leftover))
+                        if _resolve(self.repo, "refs/labs/" + name) != commit:
+                            raise LabRefused("landed lab ref differs from its marker")
+                        deleting_marker = dict(current, phase="deleting")
+                        self._write_landed_marker(name, deleting_marker)
+                        current = deleting_marker
+                    elif lab_path.exists() or lab_path.is_symlink():
+                        if lab_path.is_symlink() or not lab_path.is_dir():
+                            raise LabRefused("partially removed lab path is not a normal directory")
+                        if self._read_incarnation(name) != current["incarnation_id"]:
+                            raise LabRefused("partially removed lab belongs to a different incarnation")
+                    if before_unlink is not None and (lab_path.exists() or lab_path.is_symlink()):
+                        before_unlink(lab_path)
+                    if lab_path.exists() or lab_path.is_symlink():
+                        shutil.rmtree(lab_path)
+                    if _resolve(self.repo, "refs/labs/" + name) != commit:
+                        raise LabRefused("landed lab ref is missing or differs from its marker")
+                    _git(self.repo, "update-ref", "-d", "refs/labs/" + name, commit)
+                    self._incarnation_marker(name).unlink(missing_ok=True)
+                    self._landed_marker(name).unlink()
                     results.append(SweepResult(name, "removed", commit))
-                    continue
-                lab = self.get(name)
-                if lab.head() != commit:
-                    raise LabRefused("landed marker no longer matches the lab HEAD")
-                removed = self.remove(name, merged_into=merged_into, before_unlink=before_unlink)
-                results.append(SweepResult(name, "removed", removed.commit))
             except Exception as exc:
                 results.append(SweepResult(name, "kept-error", repr(exc)))
         return results
@@ -445,6 +510,87 @@ class LabFleet:
 
     def _landed_marker(self, name: str) -> Path:
         return self.labs_root / ".landed" / name
+
+    def _has_landed_marker(self, name: str) -> bool:
+        marker = self._landed_marker(name)
+        return marker.exists() or marker.is_symlink()
+
+    def _incarnation_marker(self, name: str) -> Path:
+        return self.labs_root / ".incarnations" / name
+
+    def _write_incarnation(self, name: str, incarnation: str) -> None:
+        marker = self._incarnation_marker(name)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        temporary = marker.with_name("." + marker.name + "." + uuid.uuid4().hex)
+        try:
+            with temporary.open("x", encoding="ascii") as stream:
+                stream.write(incarnation + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, marker)
+            dir_fd = os.open(marker.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _read_incarnation(self, name: str) -> Optional[str]:
+        marker = self._incarnation_marker(name)
+        if marker.is_symlink() or not marker.is_file():
+            return None
+        value = marker.read_text(encoding="ascii").strip()
+        return value if value else None
+
+    def _read_landed_marker(self, name: str) -> Optional[dict]:
+        marker = self._landed_marker(name)
+        if not marker.exists() and not marker.is_symlink():
+            return None
+        if marker.is_symlink() or not marker.is_file():
+            raise LabRefused("landed marker is not a regular file")
+        try:
+            value = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise LabRefused("landed marker is malformed") from exc
+        required = {"version", "phase", "name", "incarnation_id", "task_ref", "assignment_ref",
+                    "generation", "schedule_id", "logical_request_key", "candidate_ref", "commit", "line_ref"}
+        if (not isinstance(value, dict) or set(value) != required or value.get("version") != 2
+                or value.get("phase") not in {"landed", "deleting"} or value.get("name") != name
+                or not _exact_ref(value.get("task_ref"), "work.task")
+                or not _exact_ref(value.get("assignment_ref"), "wrk.assignment")
+                or not _exact_ref(value.get("candidate_ref"), "wrk.result")
+                or not isinstance(value.get("generation"), int) or isinstance(value.get("generation"), bool)
+                or value["generation"] < 1
+                or re.fullmatch(r"[0-9a-f]{32}", value.get("incarnation_id", "")) is None
+                or any(not isinstance(value.get(key), str) or not value[key] for key in
+                       ("schedule_id", "logical_request_key"))
+                or not _canonical_commit(value.get("commit"))
+                or not isinstance(value.get("line_ref"), str)
+                or not value["line_ref"].startswith("refs/heads/")):
+            raise LabRefused("landed marker has invalid versioned pins")
+        return value
+
+    def _write_landed_marker(self, name: str, value: Mapping[str, Any]) -> None:
+        marker = self._landed_marker(name)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=str(marker.parent), prefix=".landed-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, marker)
+            dir_fd = os.open(marker.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except BaseException:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary)
+            raise
 
     def _lab(self, name: str) -> Lab:
         return Lab(name, self.labs_root / name, "lab/" + name, self.exempt)
@@ -510,8 +656,10 @@ class LabFleet:
                 _git(path, "checkout", "-q", "-b", "lab/" + name, start)
                 self._copy_shared(path)
                 self._rewrite_venv(path)
+                self._write_incarnation(name, uuid.uuid4().hex)
             except BaseException:
                 shutil.rmtree(path, ignore_errors=True)
+                self._incarnation_marker(name).unlink(missing_ok=True)
                 marker.unlink(missing_ok=True)
                 raise
             marker.unlink()
@@ -540,6 +688,8 @@ class LabFleet:
             _rewrite_file(target, old, new)
 
     def _park_locked(self, name: str, before_unlink: Optional[Callable[[Path], Any]]) -> ParkResult:
+        if self._has_landed_marker(name):
+            raise LabRefused("park refuses a landed lab")
         lab = self._existing(name)
         # Unstage first: the working tree is untouched, so no work is lost, and a staged rename or
         # staged add becomes plain paths that the checkpoint can stage (``git add`` rejects the
@@ -586,6 +736,8 @@ class LabFleet:
             if not is_orphan(name):
                 return None
             with self._hold(name, fcntl.LOCK_EX, "lab %s is held by a writer" % name):
+                if self._landed_marker(name).exists() or self._landed_marker(name).is_symlink():
+                    return None
                 parked = self._park_locked(name, before_unlink)
         except LabBusy as exc:
             return SweepResult(name, "skipped-running", str(exc))

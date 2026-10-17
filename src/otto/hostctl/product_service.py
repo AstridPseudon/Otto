@@ -306,7 +306,8 @@ class OwnerFleetRegistry:
         self._start_facade()
         self.startup_landed_sweep: Optional[list] = None
 
-    def _captured_worker_due(self, due: Mapping[str, Any], *, task_ref: Mapping[str, Any] | None = None,
+    def _captured_worker_due(self, due: Mapping[str, Any], *, occurrence: Mapping[str, Any] | None = None,
+                             task_ref: Mapping[str, Any] | None = None,
                              assignment_ref: Mapping[str, Any] | None = None,
                              generation: int | None = None,
                              published: Mapping[str, Any] | None = None) -> bool:
@@ -359,6 +360,22 @@ class OwnerFleetRegistry:
                 or bound.get("task_ref") != due_task
                 or bound.get("assignment_ref") != due_assignment or bound.get("generation") != due_generation):
             return False
+        if occurrence is not None:
+            required = ("task_ref", "assignment_ref", "generation", "schedule_id",
+                        "logical_request_key", "candidate_ref", "commit", "line_ref", "name")
+            if (any(key not in occurrence for key in required)
+                    or not isinstance(occurrence.get("task_ref"), Mapping)
+                    or not isinstance(occurrence.get("assignment_ref"), Mapping)
+                    or type(occurrence.get("generation")) is not int
+                    or any(not isinstance(occurrence.get(key), str) or not occurrence[key]
+                           for key in ("schedule_id", "logical_request_key", "commit", "line_ref", "name"))):
+                return False
+            task_ref = occurrence.get("task_ref")
+            assignment_ref = occurrence.get("assignment_ref")
+            generation = occurrence.get("generation")
+            if (due.get("schedule_id") != occurrence.get("schedule_id")
+                    or attempt.get("logical_request_key") != occurrence.get("logical_request_key")):
+                return False
         if task_ref is not None and dict(due_task) != dict(task_ref):
             return False
         if assignment_ref is not None and dict(due_assignment) != dict(assignment_ref):
@@ -370,6 +387,78 @@ class OwnerFleetRegistry:
             return False
         return True
 
+    def _resolve_landing_occurrence(self, *, task_ref: Mapping[str, Any],
+                                    assignment_ref: Mapping[str, Any], generation: int,
+                                    candidate_ref: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Resolve the one active Due which authorizes this trusted landing."""
+        if self.due_port is None:
+            raise LookupError("owner Due reader is unavailable for landing occurrence")
+        matches = []
+        for due in self.due_port.list_due():
+            if not isinstance(due, Mapping):
+                continue
+            target = due.get("target") if isinstance(due.get("target"), Mapping) else {}
+            request_key = due.get("in_flight_request")
+            target_assignment = target.get("assignment_ref")
+            if (due.get("role") == "worker" and due.get("stop_state", "active") == "active"
+                    and target.get("task_ref") == dict(task_ref)
+                    and (target_assignment is None or target_assignment == dict(assignment_ref))
+                    and due.get("assignment_ref") == dict(assignment_ref)
+                    and type(due.get("generation")) is int and due.get("generation") == generation
+                    and isinstance(due.get("schedule_id"), str) and due.get("schedule_id")
+                    and isinstance(request_key, str) and request_key):
+                attempt = ((due.get("host_evidence") or {}).get("gateway_attempt")
+                           if isinstance(due.get("host_evidence"), Mapping) else None)
+                attempt_key = attempt.get("logical_request_key") if isinstance(attempt, Mapping) else None
+                if attempt_key is not None and attempt_key != request_key:
+                    continue
+                matches.append((due, request_key))
+        if len(matches) != 1:
+            raise LookupError("landing does not identify one active exact worker Due")
+        due, request_key = matches[0]
+        return {"task_ref": dict(task_ref), "assignment_ref": dict(assignment_ref),
+                "generation": generation, "schedule_id": due["schedule_id"],
+                "logical_request_key": request_key, "candidate_ref": dict(candidate_ref)}
+
+    def _candidate_matches_landing_marker(self, marker: Mapping[str, Any], *,
+                                          repo_name: str, line_ref: str) -> bool:
+        """Check the retained candidate's full identity and commit before cleanup."""
+        try:
+            from herzchen.contracts import ResourceRef
+            ref_data = marker.get("candidate_ref")
+            if not isinstance(ref_data, Mapping):
+                return False
+            ref = ResourceRef.from_dict(ref_data)
+            if ref.kind != "wrk.result":
+                return False
+            identity = self.owner.graph.reader.get_identity(ref)
+            identity_ref = getattr(identity, "ref", None)
+            identity_ref = (identity_ref.to_dict() if callable(getattr(identity_ref, "to_dict", None))
+                            else identity_ref)
+            if identity is None or identity_ref != ref.to_dict():
+                return False
+            payload = identity.payload
+            value = payload.get("value") if isinstance(payload, Mapping) else None
+            task_ref = marker.get("task_ref")
+            assignment_ref = marker.get("assignment_ref")
+            payload_assignment = payload.get("assignment") if isinstance(payload, Mapping) else None
+            payload_assignment = (payload_assignment.to_dict()
+                if callable(getattr(payload_assignment, "to_dict", None)) else payload_assignment)
+            return (isinstance(payload, Mapping)
+                    and payload_assignment == assignment_ref
+                    and type(payload.get("generation")) is int
+                    and payload.get("generation") == marker.get("generation")
+                    and isinstance(value, Mapping)
+                    and value.get("task_ref") == task_ref
+                    and value.get("assignment_ref") == assignment_ref
+                    and value.get("lab_commit") == marker.get("commit")
+                    and value.get("repo_name") == repo_name
+                    and value.get("line_ref") == line_ref
+                    and value.get("lab_name") == marker.get("name")
+                    and marker.get("name") == (task_ref or {}).get("id"))
+        except Exception:
+            return False
+
     def settle_landed_worker(self, *, task_ref: Mapping[str, Any], assignment_ref: Mapping[str, Any],
                              generation: int, schedule_id: str,
                              published: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -377,11 +466,6 @@ class OwnerFleetRegistry:
         if self.due_port is None:
             return {"cleanup_pending": True, "reason": "owner Due capture reader is unavailable"}
         from herzchen.contracts import ResourceRef
-        due = self.due_port.read_due(schedule_id)
-        if (not isinstance(due, Mapping) or not self._captured_worker_due(
-                due, task_ref=task_ref, assignment_ref=assignment_ref,
-                generation=generation, published=published)):
-            return {"cleanup_pending": True, "reason": "exact captured worker Due is unavailable"}
         task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(task_ref))
         plan_data = task.payload.get("metadata_namespaces", {}).get("otto.plan", {})
         repo_name, branch = plan_data.get("repo"), plan_data.get("branch")
@@ -393,15 +477,22 @@ class OwnerFleetRegistry:
         with self._pair_lock:
             fleet, _landing = self._pair((repo_name, branch), repo, branch)
             lab_name = task_ref.get("id")
-            if lab_name not in fleet.names():
-                return {"cleanup_pending": False}
             line_ref = "refs/heads/" + branch
-            results = fleet.sweep_landed(line_ref, lambda name, commit: self._captured_worker_due(
-                due, task_ref=task_ref, assignment_ref=assignment_ref,
-                generation=generation, published=published) and name == lab_name)
-            remains = lab_name in fleet.names()
-        failed = remains or any(item.name == lab_name and item.action != "removed" for item in results)
-        return {"cleanup_pending": failed}
+            def captured(marker: Mapping[str, Any]) -> bool:
+                if (marker.get("name") != lab_name or marker.get("schedule_id") != schedule_id
+                        or marker.get("task_ref") != dict(task_ref)
+                        or marker.get("assignment_ref") != dict(assignment_ref)
+                        or marker.get("generation") != generation
+                        or not self._candidate_matches_landing_marker(marker, repo_name=repo_name,
+                                                                      line_ref=line_ref)):
+                    return False
+                due = self.due_port.read_due(schedule_id)
+                return (isinstance(due, Mapping)
+                        and self._captured_worker_due(due, occurrence=marker, published=published))
+            results = fleet.sweep_landed(line_ref, captured)
+        selected = [item for item in results if item.name == lab_name]
+        removed = any(item.action == "removed" for item in selected)
+        return {"cleanup_pending": bool(selected) and not removed}
 
     def sweep_landed_at_start(self) -> list:
         """Retry marker-indexed cleanup from exact captured worker Due records."""
@@ -414,7 +505,7 @@ class OwnerFleetRegistry:
         except Exception as exc:
             return [{"action": "kept-error", "detail": repr(exc)}]
         for due in retained_dues:
-            if not isinstance(due, Mapping) or not self._captured_worker_due(due):
+            if not isinstance(due, Mapping):
                 continue
             target = due.get("target") or {}
             task_ref = target.get("task_ref") if isinstance(target, Mapping) else None
@@ -431,12 +522,17 @@ class OwnerFleetRegistry:
                 repo = Path(repositories[repo_name]).resolve()
                 with self._pair_lock:
                     fleet, _landing = self._pair((repo_name, branch), repo, branch)
-                eligible = lambda name, commit, raw=due, selected=task_ref: (
-                    name == selected.get("id") and self._captured_worker_due(
-                        raw, task_ref=selected,
-                        assignment_ref=raw.get("assignment_ref"),
-                        generation=raw.get("generation")))
-                outcomes.extend(fleet.sweep_landed("refs/heads/" + branch, eligible))
+                line_ref = "refs/heads/" + branch
+                def eligible(marker: Mapping[str, Any]) -> bool:
+                    if (not isinstance(marker, Mapping)
+                            or marker.get("name") != (marker.get("task_ref") or {}).get("id")
+                            or not self._candidate_matches_landing_marker(
+                                marker, repo_name=repo_name, line_ref=line_ref)):
+                        return False
+                    exact_due = self.due_port.read_due(marker.get("schedule_id"))
+                    return (isinstance(exact_due, Mapping)
+                            and self._captured_worker_due(exact_due, occurrence=marker))
+                outcomes.extend(fleet.sweep_landed(line_ref, eligible))
             except Exception as exc:
                 outcomes.append({"schedule_id": due.get("schedule_id"), "action": "kept-error",
                                  "detail": repr(exc)})
@@ -667,7 +763,8 @@ class OwnerFleetRegistry:
             factory = make_landing_service
         landing = factory(fleet=fleet, result_store=self.result_store, runner=self.runner,
                           repo_name=key[0], repo_path=repo, branch=branch, owner=self.owner,
-                          views_provider=self.views_provider, assignment_lookup=self.assignment_lookup)
+                          views_provider=self.views_provider, assignment_lookup=self.assignment_lookup,
+                          occurrence_lookup=self._resolve_landing_occurrence)
         pair = (fleet, landing)
         self._pairs[key] = pair
         return pair

@@ -554,6 +554,30 @@ def test_real_owner_claude_edit_capture_settles_and_removes_lab(tmp_path, mode):
                                   stdout=subprocess.PIPE, text=True).stdout.strip()
         workspace = str(lab.path.resolve())
         landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        synthetic_candidate_ref = {"authority": "fixture", "kind": "wrk.result",
+                                  "id": "synthetic-candidate", "revision": "candidate-r1"}
+        synthetic_assessment_context = landing.assessment_context
+
+        def assessment_context(record, task, **kwargs):
+            context = dict(synthetic_assessment_context(record, task, **kwargs))
+            due_rows = [item for item in f.port.list_due()
+                        if item.get("role") == "worker"
+                        and item.get("stop_state") == "active"
+                        and item.get("in_flight_request")]
+            if len(due_rows) != 1:
+                raise AssertionError("expected one active worker Due for the synthetic landing")
+            due = due_rows[0]
+            context["occurrence"] = {
+                "task_ref": due["target"]["task_ref"],
+                "assignment_ref": due["assignment_ref"],
+                "generation": due["generation"],
+                "schedule_id": due["schedule_id"],
+                "logical_request_key": due["in_flight_request"],
+                "candidate_ref": synthetic_candidate_ref,
+            }
+            return context
+
+        landing.assessment_context = assessment_context
         edit_path = 'shared.txt' if mode in {'edit', 'auto_merge_write'} else 'answer.txt'
         if mode == 'edit':
             operations = [('Edit', {'old_string': 'base\n', 'new_string': 'edited\n'})]
@@ -617,7 +641,15 @@ emit({'type':'result','subtype':'success','is_error':False,'session_id':session,
             assert view['required_capture'] is True
             assert base64.b64decode(read_captured_artifact(due,
                 artifact_ref=view['artifacts'][0]['ref'])['content_base64']) == expected
-            swept = fleet.sweep_landed('refs/heads/main', lambda _name, commit: commit in landed_commits)
+            swept = fleet.sweep_landed('refs/heads/main', lambda marker: (
+                marker['name'] == 'one' and landed_commits == [marker['commit']]
+                and marker['schedule_id'] == kwargs['schedule_id']
+                and marker['task_ref'] == kwargs['task_ref']
+                and marker['assignment_ref'] == kwargs['assignment_ref']
+                and marker['generation'] == kwargs['generation']
+                and marker['logical_request_key'] == due['host_evidence']['gateway_attempt']['logical_request_key']
+                and marker['candidate_ref'] == synthetic_candidate_ref
+                and result_view(due)['required_capture'] is True))
             assert any(item.name == 'one' and item.action == 'removed' for item in swept)
             return {'cleanup_pending': False}
 

@@ -536,13 +536,17 @@ def test_owner_start_retries_only_captured_landed_lab_after_remove_failure(monke
     output.write_text("task-lab output\n")
     fleet.checkpoint(str(task_lab.path), [output.name], message="worker output")
     task_commit = task_lab.head()
-    _run(line, "fetch", str(task_lab.path), "HEAD")
-    _run(line, "merge", "--ff-only", "FETCH_HEAD")
-    fleet.mark_landed("task-lab", task_commit, "refs/heads/main")
+    _run(line, "fetch", str(task_lab.path), "lab/task-lab:refs/labs/task-lab")
+    _run(line, "merge", "--ff-only", "refs/labs/task-lab")
     fleet.create("unsettled-lab", base="refs/heads/main")
 
     task_ref = {"authority": "fixture", "kind": "work.task", "id": "task-lab", "revision": "task-r1"}
     assignment_ref = {"authority": "fixture", "kind": "wrk.assignment", "id": "assignment-r1", "revision": "assign-r1"}
+    candidate_ref = {"authority": "fixture", "kind": "wrk.result", "id": "candidate-r1", "revision": "candidate-r1"}
+    occurrence = {"task_ref": task_ref, "assignment_ref": assignment_ref, "generation": 1,
+                  "schedule_id": "schedule-r1", "logical_request_key": "worker-request-r1",
+                  "candidate_ref": candidate_ref}
+    fleet.mark_landed("task-lab", task_commit, "refs/heads/main", occurrence=occurrence)
     result_digest = "captured-result-digest"
     bound = {"task_ref": task_ref, "assignment_ref": assignment_ref, "generation": 1,
              "result_digest": result_digest,
@@ -569,20 +573,28 @@ def test_owner_start_retries_only_captured_landed_lab_after_remove_failure(monke
         def list_due(self):
             return [accepted_due]
 
+        def read_due(self, schedule_id):
+            return accepted_due if accepted_due["schedule_id"] == schedule_id else None
+
     task = SimpleNamespace(payload={"metadata_namespaces": {"otto.plan": {"repo": "repo-a", "branch": "main"}}})
+    candidate = SimpleNamespace(ref=candidate_ref, payload={"assignment": assignment_ref,
+        "generation": 1, "value": {"task_ref": task_ref, "assignment_ref": assignment_ref,
+        "lab_commit": task_commit, "repo_name": "repo-a", "line_ref": "refs/heads/main",
+        "lab_name": "task-lab"}})
     owner = SimpleNamespace(graph=SimpleNamespace(reader=SimpleNamespace(
-        get_identity=lambda _ref: task)))
+        get_identity=lambda ref: candidate if ref.kind == "wrk.result" else task)))
     monkeypatch.setattr(OwnerFleetRegistry, "_start_facade", lambda _self: None)
-    original_remove = LabFleet.remove
+    from herzchen.fleet import labs as labs_module
+    original_rmtree = labs_module.shutil.rmtree
     fail_once = {"pending": True}
 
-    def transient_remove(self, name, *args, **kwargs):
-        if name == "task-lab" and fail_once["pending"]:
+    def transient_rmtree(path, *args, **kwargs):
+        if Path(path) == task_lab.path and fail_once["pending"]:
             fail_once["pending"] = False
             raise OSError("transient unlink failure")
-        return original_remove(self, name, *args, **kwargs)
+        return original_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(LabFleet, "remove", transient_remove)
+    monkeypatch.setattr(labs_module.shutil, "rmtree", transient_rmtree)
     registry = OwnerFleetRegistry(owner, {"repositories": {"repo-a": str(line)}}, tmp_path / "owner-home",
         object(), checkpoint=checkpoint, due_port=DuePort(), landing_factory=lambda **_kwargs: object())
 
@@ -635,6 +647,280 @@ def test_landed_lab_start_sweep_runs_after_owner_file_custody(tmp_path, monkeypa
 
     assert observed == [(True, True)]
     assert registry.startup_landed_sweep == []
+
+
+def test_startup_retains_new_landing_until_its_due_is_captured(tmp_path):
+    import threading
+    from herzchen.fleet.labs import LabFleet
+    from otto.hostctl.product_service import OwnerFleetRegistry
+    from test_landing import _project, _run
+
+    line, _, _ = _project(tmp_path)
+
+    def checkpoint(worktree, paths, *, message):
+        _run(Path(worktree), "add", "--", *paths)
+        _run(Path(worktree), "-c", "user.name=LAND test",
+             "-c", "user.email=land@test.invalid", "commit", "-m", message)
+
+    fleet = LabFleet(line, line.parent / (line.name + ".otto-labs") /
+                     hashlib.sha256(b"main").hexdigest()[:20],
+                     checkpoint=checkpoint, shared_dirs=())
+    candidates = {}
+    dues = []
+    race = [False]
+    start_writer, b_landed = threading.Event(), threading.Event()
+
+    def occurrence(label, generation):
+        task = dict(authority="fixture", kind="work.task", id="task-lab",
+                    revision="task-" + label)
+        assignment = dict(authority="fixture", kind="wrk.assignment",
+                          id="assignment-" + label, revision="assign-" + label)
+        candidate = dict(authority="fixture", kind="wrk.result",
+                         id="candidate-" + label, revision="rev-1")
+        key, digest = "request-" + label, "digest-" + label
+        pin = dict(task_ref=task, assignment_ref=assignment, generation=generation,
+                   schedule_id="schedule-" + label, logical_request_key=key,
+                   candidate_ref=candidate)
+        bound = dict(task_ref=task, assignment_ref=assignment, generation=generation,
+                     result_digest=digest, operation_result=dict(
+                         result_ref="result-" + label,
+                         output={"artifacts": [{"name": "work.txt"}]}))
+        result = dict(outcome="succeeded", logical_request_key=key,
+                      task_bound_evidence=bound)
+        due = dict(role="worker", schedule_id=pin["schedule_id"],
+                   assignment_ref=assignment, generation=generation,
+                   target={"task_ref": task}, host_evidence=dict(
+                       gateway_attempt=dict(state="result", logical_request_key=key,
+                                            result=result),
+                       captured_artifacts=[{"ref": "artifact-" + label}],
+                       captured_result_summary=dict(
+                           result_ref="result-" + label, result_digest=digest,
+                           logical_request_key=key, assignment_ref=assignment,
+                           generation=generation,
+                           verification={"context_digest_verified": True})))
+        return pin, due
+
+    pin_a, due_a = occurrence("A", 1)
+    pin_b, due_b = occurrence("B", 2)
+    dues.append(due_a)
+    task = SimpleNamespace(payload={"metadata_namespaces": {
+        "otto.plan": {"repo": "repo-a", "branch": "main"}}})
+
+    def read_identity(ref):
+        return candidates[ref.id] if ref.kind == "wrk.result" else task
+
+    def list_due():
+        if race[0]:
+            race[0] = False
+            start_writer.set()
+            b_landed.wait()
+        return tuple(dues)
+
+    registry = OwnerFleetRegistry.__new__(OwnerFleetRegistry)
+    registry.owner = SimpleNamespace(graph=SimpleNamespace(
+        reader=SimpleNamespace(get_identity=read_identity)))
+    registry.config = {"repositories": {"repo-a": str(line)}}
+    registry.due_port = SimpleNamespace(
+        list_due=list_due,
+        read_due=lambda schedule: next(d for d in dues if d["schedule_id"] == schedule))
+    registry._pair_lock = threading.RLock()
+    registry._pairs = {("repo-a", "main"): (fleet, None)}
+
+    def land(lab, pin, label):
+        with fleet.writing("task-lab"):
+            (lab.path / "work.txt").write_text(label + "\n")
+            checkpoint(lab.path, ["work.txt"], message="worker " + label)
+        commit = lab.head()
+        _run(line, "fetch", str(lab.path), "lab/task-lab:refs/labs/task-lab")
+        _run(line, "merge", "--ff-only", "refs/labs/task-lab")
+        ref = pin["candidate_ref"]
+        candidates[ref["id"]] = SimpleNamespace(ref=ref, payload=dict(
+            assignment=pin["assignment_ref"], generation=pin["generation"],
+            value=dict(task_ref=pin["task_ref"], assignment_ref=pin["assignment_ref"],
+                       admitted_revision="admitted-" + label, lab_commit=commit,
+                       repo_name="repo-a", line_ref="refs/heads/main",
+                       lab_name="task-lab")))
+        fleet.mark_landed("task-lab", commit, "refs/heads/main", occurrence=pin)
+        return commit
+
+    lab_a = fleet.create("task-lab", base="refs/heads/main")
+    land(lab_a, pin_a, "A")
+    assert any(x.action == "removed" for x in registry.sweep_landed_at_start())
+    assert not lab_a.path.exists()
+
+    lab_b = fleet.create("task-lab", base="refs/heads/main")
+    dues.append({**due_b, "host_evidence": {}})
+    commits, errors = [], []
+
+    def writer():
+        try:
+            start_writer.wait()
+            commits.append(land(lab_b, pin_b, "B"))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            b_landed.set()
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    race[0] = True
+    outcomes = registry.sweep_landed_at_start()
+    thread.join()
+    assert not errors, errors
+    assert any(x.name == "task-lab" and x.action == "kept-unsettled"
+               for x in outcomes), outcomes
+    assert lab_b.path.is_dir() and lab_b.head() == commits[0]
+    assert (lab_b.path / "work.txt").read_text() == "B\n"
+
+    dues[1] = due_b
+    assert any(x.action == "removed" for x in registry.sweep_landed_at_start())
+    assert not lab_b.path.exists()
+
+
+def test_landed_sweep_retries_a_partially_unlinked_lab(tmp_path, monkeypatch):
+    from herzchen.fleet.labs import LabFleet
+    from herzchen.fleet import labs as labs_module
+    from test_landing import _project, _run
+
+    line, _, _ = _project(tmp_path)
+
+    def checkpoint(worktree, paths, *, message):
+        _run(Path(worktree), "add", "--", *paths)
+        _run(Path(worktree), "-c", "user.name=LAND test", "-c", "user.email=land@test.invalid",
+             "commit", "-m", message)
+
+    fleet = LabFleet(line, tmp_path / "partial-labs", checkpoint=checkpoint, shared_dirs=())
+    lab = fleet.create("partial-lab", base="refs/heads/main")
+    output = lab.path / "work.txt"
+    output.write_text("retained output\n")
+    fleet.checkpoint(str(lab.path), [output.name], message="worker output")
+    commit = lab.head()
+    _run(line, "fetch", str(lab.path), "lab/partial-lab:refs/labs/partial-lab")
+    _run(line, "merge", "--ff-only", "refs/labs/partial-lab")
+    task_ref = {"authority": "fixture", "kind": "work.task", "id": "partial-lab", "revision": "task-r1"}
+    assignment_ref = {"authority": "fixture", "kind": "wrk.assignment", "id": "assignment-r1", "revision": "assign-r1"}
+    occurrence = {"task_ref": task_ref, "assignment_ref": assignment_ref, "generation": 1,
+                  "schedule_id": "schedule-r1", "logical_request_key": "request-r1",
+                  "candidate_ref": {"authority": "fixture", "kind": "wrk.result",
+                                    "id": "candidate-r1", "revision": "candidate-r1"}}
+    fleet.mark_landed("partial-lab", commit, "refs/heads/main", occurrence=occurrence)
+
+    original_rmtree = labs_module.shutil.rmtree
+    fail_once = {"pending": True}
+
+    def partially_remove(path, *args, **kwargs):
+        if Path(path) == lab.path and fail_once["pending"]:
+            fail_once["pending"] = False
+            output.unlink()
+            raise OSError("simulated interruption during directory removal")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(labs_module.shutil, "rmtree", partially_remove)
+    captured = lambda marker: marker["name"] == "partial-lab" and marker["commit"] == commit
+    first = fleet.sweep_landed("refs/heads/main", captured)
+    assert any(item.action == "kept-error" for item in first), first
+    marker = json.loads((fleet.labs_root / ".landed" / "partial-lab").read_text())
+    assert marker["phase"] == "deleting"
+    assert lab.path.is_dir() and not output.exists()
+
+    retried = fleet.sweep_landed("refs/heads/main", captured)
+    assert any(item.action == "removed" for item in retried), retried
+    assert not lab.path.exists()
+    assert not (fleet.labs_root / ".landed" / "partial-lab").exists()
+    assert subprocess.run(["git", "-C", str(line), "show-ref", "--verify", "--quiet",
+                           "refs/labs/partial-lab"]).returncode != 0
+
+
+def test_landed_sweep_cannot_remove_a_lab_while_its_writer_holds_the_lock(tmp_path):
+    import threading
+    from herzchen.fleet.labs import LabFleet
+    from test_landing import _project, _run
+
+    line, _, _ = _project(tmp_path)
+
+    def checkpoint(worktree, paths, *, message):
+        _run(Path(worktree), "add", "--", *paths)
+        _run(Path(worktree), "-c", "user.name=LAND test", "-c", "user.email=land@test.invalid",
+             "commit", "-m", message)
+
+    fleet = LabFleet(line, tmp_path / "locked-labs", checkpoint=checkpoint, shared_dirs=())
+    lab = fleet.create("locked-lab", base="refs/heads/main")
+    output = lab.path / "work.txt"
+    output.write_text("landed version\n")
+    fleet.checkpoint(str(lab.path), [output.name], message="landed version")
+    landed_commit = lab.head()
+    _run(line, "fetch", str(lab.path), "lab/locked-lab:refs/labs/locked-lab")
+    _run(line, "merge", "--ff-only", "refs/labs/locked-lab")
+    occurrence = {"task_ref": {"authority": "fixture", "kind": "work.task", "id": "locked-lab", "revision": "task-r1"},
+                  "assignment_ref": {"authority": "fixture", "kind": "wrk.assignment", "id": "assignment-r1", "revision": "assign-r1"},
+                  "generation": 1, "schedule_id": "schedule-r1", "logical_request_key": "request-r1",
+                  "candidate_ref": {"authority": "fixture", "kind": "wrk.result", "id": "candidate-r1", "revision": "candidate-r1"}}
+    fleet.mark_landed("locked-lab", landed_commit, "refs/heads/main", occurrence=occurrence)
+    acquired, release = threading.Event(), threading.Event()
+    writer_errors = []
+
+    def writer():
+        try:
+            with fleet.writing("locked-lab"):
+                acquired.set()
+                release.wait()
+                output.write_text("writer version\n")
+                checkpoint(lab.path, [output.name], message="writer update")
+        except BaseException as exc:
+            writer_errors.append(exc)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    acquired.wait()
+    try:
+        outcomes = fleet.sweep_landed("refs/heads/main", lambda marker: True)
+    finally:
+        release.set()
+    thread.join()
+    assert not writer_errors, writer_errors
+    assert any(item.name == "locked-lab" and item.action == "kept-error" for item in outcomes), outcomes
+    assert lab.path.is_dir()
+    assert output.read_text() == "writer version\n"
+    assert lab.head() != landed_commit
+
+
+def test_landed_sweep_keeps_dirty_lab_and_ref_mismatch(tmp_path):
+    from herzchen.fleet.labs import LabFleet
+    from test_landing import _project, _run
+
+    line, base, _ = _project(tmp_path)
+
+    def checkpoint(worktree, paths, *, message):
+        _run(Path(worktree), "add", "--", *paths)
+        _run(Path(worktree), "-c", "user.name=LAND test", "-c", "user.email=land@test.invalid",
+             "commit", "-m", message)
+
+    fleet = LabFleet(line, tmp_path / "evidence-labs", checkpoint=checkpoint, shared_dirs=())
+    lab = fleet.create("evidence-lab", base="refs/heads/main")
+    output = lab.path / "work.txt"
+    output.write_text("landed version\n")
+    fleet.checkpoint(str(lab.path), [output.name], message="landed version")
+    commit = lab.head()
+    _run(line, "fetch", str(lab.path), "lab/evidence-lab:refs/labs/evidence-lab")
+    _run(line, "merge", "--ff-only", "refs/labs/evidence-lab")
+    occurrence = {"task_ref": {"authority": "fixture", "kind": "work.task", "id": "evidence-lab", "revision": "task-r1"},
+                  "assignment_ref": {"authority": "fixture", "kind": "wrk.assignment", "id": "assignment-r1", "revision": "assign-r1"},
+                  "generation": 1, "schedule_id": "schedule-r1", "logical_request_key": "request-r1",
+                  "candidate_ref": {"authority": "fixture", "kind": "wrk.result", "id": "candidate-r1", "revision": "candidate-r1"}}
+    fleet.mark_landed("evidence-lab", commit, "refs/heads/main", occurrence=occurrence)
+
+    output.write_text("dirty edit\n")
+    dirty = fleet.sweep_landed("refs/heads/main", lambda marker: True)
+    assert any(item.action == "kept-error" for item in dirty), dirty
+    assert lab.path.is_dir() and output.read_text() == "dirty edit\n"
+
+    output.write_text("landed version\n")
+    _run(line, "update-ref", "refs/labs/evidence-lab", base)
+    mismatched = fleet.sweep_landed("refs/heads/main", lambda marker: True)
+    assert any(item.action == "kept-error" for item in mismatched), mismatched
+    assert lab.path.is_dir()
+    assert _run(line, "rev-parse", "refs/labs/evidence-lab") == base
+    assert (fleet.labs_root / ".landed" / "evidence-lab").is_file()
 
 
 def test_landing_owner_port_forwards_only_owner_assignment_identity():
@@ -759,7 +1045,11 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         "project_ref": project.to_dict(), "assignment_ref": assignment.to_dict(),
         "generation": 3, "project_state": state,
         "view": SimpleNamespace(server=SimpleNamespace(
-            owner=owner, assert_assessment_policy_current=assert_policy_current))}
+            owner=owner, assert_assessment_policy_current=assert_policy_current,
+            due_port=SimpleNamespace(list_due=lambda: [{
+                "role": "worker", "stop_state": "active", "schedule_id": "schedule-dispatch-1",
+                "in_flight_request": "dispatch-request-1", "assignment_ref": binding["assignment_ref"],
+                "generation": binding["generation"], "target": {"task_ref": binding["task_ref"]}}]))) }
     result_store = ResultStore(tmp_path / "results")
     service = make_landing_service(fleet=SimpleNamespace(_lab=lambda _name: None), result_store=result_store,
         repo_name="repo", repo_path=tmp_path, branch="main", owner=owner, runner=SimpleNamespace(call=lambda _r: {}),
@@ -1126,12 +1416,18 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
         line, base, fleet = _project(git_root)
         dispatch = SimpleNamespace(assignment=worker.ref.id, role="worker", admitted_revision=admitted_stamp)
         project_state = dict(fixture.state)
+        occurrence_due = {"role": "worker", "stop_state": "active",
+            "schedule_id": "schedule-" + worker.ref.id,
+            "in_flight_request": "done-evidence-dispatch",
+            "assignment_ref": worker.ref.to_dict(), "generation": worker.generation,
+            "target": {"task_ref": task_ref.to_dict()}}
         binding = {"record": dispatch, "task": SimpleNamespace(ref=task_ref),
             "task_ref": task_ref.to_dict(), "project_ref": project_ref.to_dict(),
             "assignment_ref": worker.ref.to_dict(), "generation": worker.generation,
             "project_state": project_state,
             "view": SimpleNamespace(server=SimpleNamespace(owner=f.owner,
-                assert_assessment_policy_current=lambda: None))}
+                assert_assessment_policy_current=lambda: None,
+                due_port=SimpleNamespace(list_due=lambda: [occurrence_due])))}
         def task_lookup(_task_id):
             current = f.owner.graph.reader.get_identity(task_ref)
             return {"id": task_id, "revision": current.ref.revision,
