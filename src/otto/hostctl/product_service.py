@@ -282,6 +282,7 @@ class OwnerFleetRegistry:
         self.records: dict[str, Any] = {}
         self._due_keys: dict[tuple[str, str], str] = {}
         self._due_bindings: dict[tuple[str, str], tuple[int, str]] = {}
+        self._active_due: dict[str, str] = {}
         self._lock = threading.RLock()
         self._start_facade()
         self.startup_landed_sweep: Optional[list] = None
@@ -417,7 +418,8 @@ class OwnerFleetRegistry:
         self.facade = ToolFacade(tools, {"worker": tuple(spec.name for spec in tools)},
                                  AllowlistedPort(_OwnerExecutorPort(
                                      LandingOwnerPort(self.assignment_context, fallback=_TaskContextPort(self)),
-                                     lambda: self.owner_executor, self.settle_assignment),
+                                     lambda: self.owner_executor, self.settle_assignment,
+                                     self.retain_landing_refusal),
                                                  tuple(spec.operation for spec in tools)),
                                  self.tokens, FeedbackLedger())
         self.facade_server = FacadeServer(self.facade, str(self.facade_socket))
@@ -788,6 +790,8 @@ class OwnerFleetRegistry:
             if grant.assignment != record.assignment:
                 raise PermissionError("worker token does not match its dispatch record")
         self.assignment_context(record.assignment, token=record.token)
+        with self._lock:
+            self._active_due[assignment_id] = schedule_id
         if self.facade_server is None:
             raise PermissionError("owner worker tool facade is not composed")
         from herzchen.fleet.hosts.contract import McpGrant, McpServer
@@ -801,6 +805,49 @@ class OwnerFleetRegistry:
                                             tools=tools),),
                         token_env="OTTO_WORKER_TOKEN", token=record.token,
                         token_env_prefix="OTTO_WORKER_")
+
+    def retain_landing_refusal(self, assignment_id: str, error: Any) -> None:
+        """CAS a tool refusal onto the exact active owner Due, if still current."""
+        from dataclasses import replace
+        from otto.attention import DueRecord
+        if self.due_port is None:
+            return
+        with self._lock:
+            schedule_id = self._active_due.get(assignment_id)
+        if not schedule_id:
+            return
+        raw = self.due_port.read_due(schedule_id)
+        if not isinstance(raw, Mapping):
+            return
+        due = DueRecord.from_dict(raw)
+        context = self.assignment_context(assignment_id)
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        authorization = attempt.get("delivery_authorization") or {}
+        admission = attempt.get("delivery_admission") or {}
+        if (due.role != "worker" or due.assignment_ref != context["assignment_ref"]
+                or due.generation != context["generation"]
+                or due.target.get("task_ref") != context["task_ref"]
+                or due.stop_state != "active" or not due.in_flight_request
+                or attempt.get("logical_request_key") != due.in_flight_request
+                or authorization.get("status") != "authorized"
+                or authorization.get("assignment_ref") != due.assignment_ref
+                or authorization.get("generation") != due.generation
+                or authorization.get("task_ref") != due.target.get("task_ref")
+                or admission.get("native_turn_started") is not True
+                or admission.get("physical_session_id") != authorization.get("physical_session_id")
+                or (due.host_evidence or {}).get("landing_success") is True):
+            return
+        refusal = {"schema": "otto.worker-landing-refusal.v1",
+                   "schedule_id": schedule_id, "assignment_ref": due.assignment_ref,
+                   "generation": due.generation, "task_ref": due.target["task_ref"],
+                   "lab_path": context["workspace"], "message": str(error),
+                   "settled": getattr(error, "settled", None) is True,
+                   "outcome": "conflict" if str(error).startswith("rebase conflict") else "failed"}
+        evidence = {**(due.host_evidence or {}), "landing_refusal": refusal}
+        self.due_port.save_due(schedule_id, replace(due, host_evidence=evidence).to_dict(),
+            request_id="worker-landing-refusal:" + hashlib.sha256(json.dumps(
+                refusal, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            expected_version=due.version)
 
     def _record_from_due(self, due: Any, assignment_id: str, task_id: Any,
                          due_key: tuple[str, str]) -> Any:
@@ -864,6 +911,7 @@ class OwnerFleetRegistry:
     def settle_assignment(self, assignment_id: str) -> None:
         """Revoke a worker token after its owner landing has settled."""
         with self._lock:
+            self._active_due.pop(assignment_id, None)
             if callable(getattr(self.dispatcher, "finish", None)):
                 self.dispatcher.finish(assignment_id)
                 return

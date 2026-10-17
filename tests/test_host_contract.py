@@ -652,6 +652,29 @@ class FakeHarness(Workspace):
 # continued worker sessions
 # ---------------------------------------------------------------------------
 class ContinuationContract(Workspace):
+    @staticmethod
+    def _process(command, **kwargs):
+        """Emit a native stream while the real contract owns process launch."""
+        script = """import json,os,sys
+frame=json.loads(sys.stdin.readline())
+prompt=frame['message']['content'][0]['text']
+session=frame['session_id']
+def emit(value): print(json.dumps(value),flush=True)
+emit({'type':'system','subtype':'init','session_id':session,'cwd':os.getcwd(),
+      'model':os.environ['HOST_TEST_MODEL'],'permissionMode':'bypassPermissions',
+      'tools':os.environ['HOST_TEST_TOOLS'].split(','),'mcp_servers':[],
+      'plugins':[],'skills':[],'slash_commands':[]})
+emit({'type':'user','uuid':'input-work','session_id':session,
+      'message':{'role':'user','content':[{'type':'text','text':prompt}]}})
+emit({'type':'result','subtype':'success','is_error':False,'session_id':session,
+      'uuid':'result-work','result':prompt,'usage':{'input_tokens':1,'output_tokens':1}})
+"""
+        env = dict(kwargs["env"])
+        env["HOST_TEST_MODEL"] = command[command.index("--model") + 1]
+        env["HOST_TEST_TOOLS"] = command[command.index("--tools") + 1]
+        kwargs["env"] = env
+        return subprocess.Popen([sys.executable, "-c", script], **kwargs)
+
     def test_claude_continuation_uses_exact_parked_session_and_landing_log(self):
         H = hosts()
         C = importlib.import_module("herzchen.fleet.hosts.contract")
@@ -665,21 +688,18 @@ class ContinuationContract(Workspace):
                          settled=True, landing_outcome="conflict")
         authorized = []
         captured = {}
-        def fake_run_turn(host, resumed, **kwargs):
-            captured["spec"] = resumed
-            captured["plan"] = host.launch(resumed, kwargs.get("fence"))
-            return object()
-        with mock.patch("herzchen.fleet.hosts.contract.run_turn", fake_run_turn):
-            result = C.run_continuation(H.ClaudeHost(), spec, request,
-                                        authorize=lambda r: authorized.append(r.attempt_id) or True)
-        self.assertIsNotNone(result)
+        def process(command, **kwargs):
+            captured["command"] = list(command)
+            captured["cwd"] = kwargs["cwd"]
+            return self._process(command, **kwargs)
+        result = C.run_continuation(H.ClaudeHost(), spec, request,
+            authorize=lambda r: authorized.append(r.attempt_id) or True,
+            fence=C.NativeFlagFence("test", (), {}), process_factory=process)
+        self.assertEqual(result.outcome, "succeeded")
         self.assertEqual(authorized, ["attempt-1"])
-        plan = captured["plan"]
-        self.assertEqual(plan.cwd, self.root)
-        self.assertEqual(plan.session, "native-parked")
-        self.assertEqual(plan.argv[-2:], ("--resume", "native-parked"))
-        frame = json.loads(plan.stdin.decode())
-        admitted = frame["message"]["content"][0]["text"]
+        self.assertEqual(captured["cwd"], self.root)
+        self.assertEqual(captured["command"][-2:], ["--resume", "native-parked"])
+        admitted = result.native["result"]["result"]
         self.assertIn(request.landing_log, admitted)
         self.assertIn("[Landing log from the prior settled attempt]", admitted)
 
@@ -695,15 +715,16 @@ class ContinuationContract(Workspace):
         def authorize(request):
             calls.append(request.attempt_id)
             return len(calls) < 2
-        def fake_run_turn(*args, **kwargs):
-            launches.append(1)
-            return object()
-        with mock.patch("herzchen.fleet.hosts.contract.run_turn", fake_run_turn):
-            C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize)
-            with self.assertRaises(H.HostContractError):
-                C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize)
+        def process(command, **kwargs):
+            launches.append(list(command))
+            return self._process(command, **kwargs)
+        C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize,
+                           fence=C.NativeFlagFence("test", (), {}), process_factory=process)
+        with self.assertRaises(H.HostContractError):
+            C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize,
+                               fence=C.NativeFlagFence("test", (), {}), process_factory=process)
         self.assertEqual(calls, ["attempt", "attempt"])
-        self.assertEqual(launches, [1])
+        self.assertEqual(len(launches), 1)
 
     def test_unsettled_and_mismatched_requests_refuse_before_authorize(self):
         H = hosts()

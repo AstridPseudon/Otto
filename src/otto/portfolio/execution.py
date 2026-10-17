@@ -533,7 +533,8 @@ class ExecutionApplication:
                      binding_schedule_id: str | None = None,
                      allowance_ref: Mapping[str, Any] | None = None,
                      timeout_seconds: int = 1200, preview: bool = False,
-                     fresh_manager: bool = False) -> dict[str, Any]:
+                     fresh_manager: bool = False,
+                     worker_rework: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Prepare an already-assigned role from exact public owner handles.
 
         Native identity for a continuation is checked against the assignment's
@@ -599,8 +600,12 @@ class ExecutionApplication:
         _text(request_key, "request_key")
         _text(instruction, "instruction")
         validate_owner_timeout_seconds(timeout_seconds)
-        semantic = _digest([role, project_ref, task_ref, assignment_ref, generation, mandate_ref,
-                            context_refs, instruction, model, reasoning, profile, native_session_id, timeout_seconds, allowance_ref])
+        semantic_input = [role, project_ref, task_ref, assignment_ref, generation, mandate_ref,
+                          context_refs, instruction, model, reasoning, profile, native_session_id,
+                          timeout_seconds, allowance_ref]
+        if worker_rework is not None:
+            semantic_input.append(worker_rework)
+        semantic = _digest(semantic_input)
         schedule = "role-" + _digest([project_ref, assignment_ref, request_key])[:28]
         prior = self.due_port.read_due(schedule)
         if prior is not None:
@@ -651,6 +656,10 @@ class ExecutionApplication:
                 proof = self.due_port.read_due(binding_schedule_id)
                 target["native_binding"] = {"schedule_id": binding_schedule_id,
                                             "due_sha256": _digest(proof)}
+            if worker_rework is not None:
+                if role != "worker" or binding_schedule_id != worker_rework.get("prior_schedule_id"):
+                    raise OccurrencePreparationError("worker rework requires its exact prior Due")
+                target["worker_rework"] = dict(worker_rework)
         elif preinitialization_recovery is not None:
             target["preinitialization_recovery"] = preinitialization_recovery
             if role == "worker":
@@ -850,6 +859,70 @@ class ExecutionApplication:
             native_session_id=prior.last_result["physical_session_id"], binding_schedule_id=schedule_id,
             timeout_seconds=prior.timeout_seconds)
         return self.start(schedule_id=prepared["schedule_id"]) if execute and prepared["outcome"] in {"committed", "prepared"} else prepared
+
+    def _verified_worker_rework(self, due: DueRecord) -> dict[str, Any]:
+        """Read the original captured turn and its exact owner-settled refusal."""
+        refusal = (due.host_evidence or {}).get("landing_refusal") or {}
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        result = attempt.get("result") or {}
+        summary = (due.host_evidence or {}).get("captured_result_summary") or {}
+        artifacts = (due.host_evidence or {}).get("captured_artifacts")
+        session = (due.last_result or {}).get("physical_session_id")
+        workspace = getattr(getattr(self.runtime, "adapter", None), "worktree", None)
+        if (due.role != "worker" or due.stop_state != "completed"
+                or due.completion_state != "succeeded" or due.in_flight_request is not None
+                or not isinstance(session, str) or not session
+                or attempt.get("state") != "result" or result.get("outcome") != "succeeded"
+                or result.get("physical_session_id") != session
+                or result.get("context_digest_verified") is not True
+                or not isinstance(summary, Mapping) or not isinstance(artifacts, list) or not artifacts
+                or summary.get("assignment_ref") != due.assignment_ref
+                or summary.get("generation") != due.generation
+                or not isinstance(summary.get("verification"), Mapping)
+                or summary["verification"].get("context_digest_verified") is not True
+                or refusal.get("schema") != "otto.worker-landing-refusal.v1"
+                or refusal.get("settled") is not True
+                or refusal.get("outcome") not in {"failed", "conflict"}
+                or refusal.get("schedule_id") != due.schedule_id
+                or refusal.get("assignment_ref") != due.assignment_ref
+                or refusal.get("generation") != due.generation
+                or refusal.get("task_ref") != due.target.get("task_ref")
+                or refusal.get("lab_path") != workspace
+                or not isinstance(refusal.get("message"), str) or not refusal["message"]
+                or due.target.get("worker_rework") is not None):
+            raise OccurrencePreparationError("worker rework requires one captured, settled refusal in its exact lab")
+        current = self._current(due.assignment_ref, due.generation)
+        if current.ref.to_dict() != due.assignment_ref or current.principal != due.recipient:
+            raise OccurrencePreparationError("worker rework assignment is stale")
+        return {"schema": "otto.worker-rework.v1", "prior_schedule_id": due.schedule_id,
+                "attempt_id": due.schedule_id,
+                "session_id": session, "workspace": workspace,
+                "landing_log": refusal["message"], "settled": True,
+                "landing_outcome": refusal["outcome"]}
+
+    def rework_worker(self, *, schedule_id: str, execute: bool = True) -> dict[str, Any]:
+        """Prepare/recover one deterministic same-session turn per settled refusal."""
+        prior = self._read(schedule_id)
+        receipt = self._verified_worker_rework(prior)
+        key = "worker-rework:" + _digest([prior.schedule_id, receipt])
+        target = prior.target
+        prepared = self.prepare_role(role="worker", project_ref=target["project_ref"],
+            task_ref=target["task_ref"], assignment_ref=prior.assignment_ref,
+            generation=prior.generation, mandate_ref=target["mandate_ref"],
+            context_refs=prior.context_refs, request_key=key,
+            instruction=prior.instruction + "\nRepair the retained landing refusal and call done again.",
+            model=prior.requested_model, reasoning=prior.requested_reasoning,
+            profile=prior.profile, native_session_id=receipt["session_id"],
+            binding_schedule_id=prior.schedule_id, allowance_ref=prior.allowance_ref,
+            timeout_seconds=prior.timeout_seconds, worker_rework=receipt)
+        due = self._read(prepared["schedule_id"])
+        if due.target.get("worker_rework") != receipt:
+            raise OccurrencePreparationError("retained worker rework differs from its original refusal")
+        if not execute:
+            return prepared
+        return (self.recover(schedule_id=due.schedule_id, execute=False)
+                if (due.host_evidence or {}).get("gateway_attempt") is not None
+                else self.start(schedule_id=due.schedule_id))
 
     def _read(self, schedule_id: str, *, hydrate_native: bool = True) -> DueRecord:
         if type(hydrate_native) is not bool:
@@ -1276,6 +1349,12 @@ class ExecutionApplication:
         if attempt is not None or due.stop_state != "active" or due.host_state == "paused":
             return self.recover(schedule_id=schedule_id, execute=False)
         try:
+            if due.role == "worker" and due.target.get("worker_rework") is not None:
+                prior = self._read(due.target["worker_rework"]["prior_schedule_id"])
+                if (self._verified_worker_rework(prior) != due.target["worker_rework"]
+                        or due.target.get("native_id") != due.target["worker_rework"]["session_id"]
+                        or due.target.get("native_binding", {}).get("due_sha256") != _digest(prior.to_dict())):
+                    raise OccurrencePreparationError("worker rework source or native binding changed")
             if due.role == "manager":
                 try:
                     synchronization = self.synchronize_manual_manager_occurrence(schedule_id=due.schedule_id)

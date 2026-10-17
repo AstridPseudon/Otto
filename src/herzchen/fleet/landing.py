@@ -21,6 +21,15 @@ from .runner.store import ResultStore
 class LandingError(RuntimeError):
     """Landing was refused or could not safely complete; the lab is retained."""
 
+    code = "landing_refused"
+
+    def __init__(self, message: str, *, settled: bool | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        # Owner-only effect fact. A refusal code or worker-visible text is not
+        # proof that the line was untouched after a failed merge/update.
+        self.settled = settled
+
 
 class LandingService:
     """Owner-injected lab landing service.
@@ -86,10 +95,15 @@ class LandingService:
             common = self._git(repo, "rev-parse", "--git-common-dir").strip()
             lock_path = (repo / common / "landing.lock").resolve()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._assert_line_clean(repo)
-        base = self._git(repo, "rev-parse", "--verify", self.line_ref).strip()
-        with self._lab_lock(lab_name):
-            prepared = self._prepare(lab_name, task_id, task, lab, repo, base)
+        try:
+            self._assert_line_clean(repo)
+            base = self._git(repo, "rev-parse", "--verify", self.line_ref).strip()
+            with self._lab_lock(lab_name):
+                prepared = self._prepare(lab_name, task_id, task, lab, repo, base)
+        except LandingError as exc:
+            if exc.settled is None:
+                exc.settled = True  # No line advancement has been attempted.
+            raise
         with _exclusive_lock(lock_path), self._lab_lock(lab_name):
             result = self._accept_and_advance(lab_name, task_id, lab, repo, base, prepared,
                                               assignment_id, candidate, criterion, parent_obligation, actor,
@@ -101,15 +115,36 @@ class LandingService:
 
     def _prepare(self, lab_name: str, task_id: str, task: Mapping[str, Any], lab: Any,
                  repo: Path, old_line: str) -> tuple[Mapping[str, Any], dict[str, Any], tuple]:
-        # Commit through the fleet's one checkpoint mechanism, preserving its path policy.
-        self._checkpoint(lab, lab_name)
+        if self._rebase_in_progress(lab):
+            # The owner deliberately reopened the refused rebase for this
+            # bounded worker turn. The worker may edit conflict markers, but
+            # only the owner stages and advances Git's rebase metadata.
+            paths = _paths_to_commit(_work(Path(lab.path), getattr(self.fleet, "exempt", ())))
+            if not paths:
+                raise LandingError("rebase conflict has no worker resolution", settled=True)
+            try:
+                self._git(Path(lab.path), "diff", "--check")
+            except LandingError as exc:
+                raise LandingError("rebase conflict markers or whitespace errors remain",
+                                   settled=True) from exc
+            self._git(Path(lab.path), "add", "-A", "--", *paths)
+            self._git(Path(lab.path), "-c", "core.editor=true", "rebase", "--continue")
+        else:
+            # Commit through the fleet's one checkpoint mechanism, preserving its path policy.
+            self._checkpoint(lab, lab_name)
         # Rebase the lab commit before checking. A failed rebase leaves the worker's lab intact.
+        self._git(Path(lab.path), "fetch", "--no-tags", "origin", self.line_ref)
         try:
             self._git(Path(lab.path), "rebase", old_line)
         except LandingError as exc:
-            with _suppress():
+            aborted = False
+            try:
                 self._git(Path(lab.path), "rebase", "--abort")
-            raise LandingError("rebase conflict; lab returned to worker: %s" % exc) from exc
+                aborted = True
+            except LandingError:
+                pass
+            raise LandingError("rebase conflict; lab returned to worker: %s" % exc,
+                               settled=aborted) from exc
         rebased = lab.head()
         if lab.dirty():
             raise LandingError("rebased lab is dirty; refusing to run check")
@@ -139,6 +174,26 @@ class LandingService:
                 or current_task.get("payload") != task.get("payload")):
             raise LandingError("task admission changed during landing")
         return current_task, record, tuple(gate_records)
+
+    def _rebase_in_progress(self, lab: Any) -> bool:
+        git_dir = self._git(Path(lab.path), "rev-parse", "--absolute-git-dir").strip()
+        return any((Path(git_dir) / name).exists() for name in ("rebase-merge", "rebase-apply"))
+
+    def prepare_rework(self, lab_name: str) -> None:
+        """Reopen one settled conflict in the same lab for a bounded owner turn."""
+        lab = self.lab_lookup(lab_name)
+        repo = Path(self.fleet.repo)
+        self._assert_line_clean(repo)
+        with self._lab_lock(lab_name):
+            if self._rebase_in_progress(lab):
+                return
+            line = self._git(repo, "rev-parse", "--verify", self.line_ref).strip()
+            self._git(Path(lab.path), "fetch", "--no-tags", "origin", self.line_ref)
+            try:
+                self._git(Path(lab.path), "rebase", line)
+            except LandingError:
+                if not self._rebase_in_progress(lab):
+                    raise
 
     def _accept_and_advance(self, lab_name: str, task_id: str, lab: Any, repo: Path, old_line: str,
                             prepared: tuple, assignment_id: str | None, candidate: Any, criterion: Any, parent: Any,
@@ -369,13 +424,6 @@ def _exclusive_lock(path: Path):
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
-
-
-class _suppress:
-    def __enter__(self):
-        return self
-    def __exit__(self, *_exc):
-        return True
 
 
 def _valid_argv(value: Any) -> bool:

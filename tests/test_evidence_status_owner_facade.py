@@ -145,10 +145,11 @@ class EvidenceStatusOwnerFacadeTests(unittest.TestCase):
             (ToolSpec("done", DONE, "worker-done"),),
             {"worker": ("done",)}, port, book, FeedbackLedger())
 
+        # D19: classified landing refusals expose their stable code and exact text.
         self.assertEqual(facade.call(token, "done"), {
             "ok": False,
-            "error": "owner_unavailable",
-            "detail": "LandingError: owner assessment policy does not bind this task: local assessment policy task content is stale",
+            "error": "landing_refused",
+            "detail": "owner assessment policy does not bind this task: local assessment policy task content is stale",
         })
 
     def test_tool_facade_keeps_generic_fallback_for_unclassified_owner_errors(self):
