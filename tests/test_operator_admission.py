@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -195,6 +196,50 @@ class OperatorAdmissionTests(HostctlFixture):
         self.assertEqual((code, answer["outcome"]), (0, "admitted"), answer)
         self.assertEqual(self.prover.reasons,
                          [f"Admit Otto task {self.task_ref.id} at revision {self.task_ref.revision[:12]}"])
+
+    def _submit_while_dispatching(self, *, request_key, status="approved"):
+        """Exercise the owner lane while an attached execution host is waiting."""
+        from otto.hostctl.service import owner_lane
+        host = SimpleNamespace(_external_waiting=1, begin_drain=lambda: None, close=lambda: None)
+        self.owner_service.journeys["dispatching-project"] = SimpleNamespace(
+            execution_host=host, run_id="dispatching-project", state={"manager": "test"},
+            paths={"ipc": Path(self.home) / "ipc", "socket": Path(self.home) / "socket"})
+        self.prover.status = status
+        request = {"command": "admit", "args": {
+            "task_ref": self.task_ref.to_dict(), "revision": self.task_ref.revision,
+            "review_ref": self.review_ref.to_dict(), "request_key": request_key}}
+        lane = owner_lane(Path(self.home))
+        token = lanes.submit(lane, request)
+        # The request remains pending, with no presence prompt or audit entry,
+        # for the whole open dispatch boundary.
+        import time
+        time.sleep(0.15)
+        self.assertTrue((lane / ("request-" + token + ".json")).exists())
+        self.assertEqual(self.prover.calls, 0)
+        self.assertEqual(self._audit(), [])
+        host._external_waiting = 0
+        reply = lanes.wait(lane, token, timeout_seconds=10)
+        self.owner_service.journeys.pop("dispatching-project")
+        return reply
+
+    def test_admission_waits_for_dispatch_then_checks_presence_and_applies_once(self):
+        reply = self._submit_while_dispatching(request_key="same-held-admission")
+        self.assertEqual(reply["outcome"], "admitted", reply)
+        state = self._owner(lambda session: session.owner.graph.admission_state(self.task_ref))
+        self.assertEqual(state["admitted_revision"], self.task_ref.revision)
+        self.assertEqual(state["stamp"]["admitted_by"]["actor"], self.operator)
+        self.assertEqual(self.prover.calls, 1)
+        self.assertEqual(len(self._audit()), 1)
+        self.assertEqual(self._audit()[0]["outcome"], "admitted")
+
+    def test_admission_declined_after_dispatch_wait_leaves_store_unchanged(self):
+        baseline = self._store_bytes()
+        reply = self._submit_while_dispatching(request_key="declined-held-admission", status="declined")
+        self.assertEqual(reply["error"]["code"], "presence_declined", reply)
+        self.assertEqual(self.prover.calls, 1)
+        self.assertEqual(self._store_bytes(), baseline)
+        self.assertEqual(len(self._audit()), 1)
+        self.assertEqual(self._audit()[0]["outcome"], "rejected")
 
     def test_decline_missing_prover_and_timeout_leave_store_byte_identical(self):
         baseline = self._store_bytes()
