@@ -148,12 +148,18 @@ class LandGate(Scratch):
     def test_temporary_service_owner_left_before_the_landing_is_logged_not_refused(self):
         self.lab("T26", {"note.txt": "x\n"})
         home = self.tmp / "older-orphan-home"
-        line = "424242 python service run --home %s\n" % home
+        line = "424242 1 python service run --home %s\n" % home
         (self.tmp / "ps-listing.before").write_text(line)
         self.ps_listing.write_text(line)
         r = self.land("T26")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("left before this landing (not its own)", self.log("T26"))
+
+    def test_a_live_owner_with_a_parent_is_not_an_orphan(self):
+        self.lab("T27", {"note.txt": "x\n"})
+        self.ps_listing.write_text("434343 4242 python service run --home %s\n" % (self.tmp / "live-home"))
+        r = self.land("T27")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_temporary_service_owner_orphan_is_named(self):
         self.lab("T25", {"note.txt": "x\n"})
@@ -162,7 +168,7 @@ class LandGate(Scratch):
             [sys.executable, "-c", "import time; time.sleep(60) # service run --home " + str(home)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        self.ps_listing.write_text("%d python service run --home %s\n" % (owner.pid, home))
+        self.ps_listing.write_text("%d 1 python service run --home %s\n" % (owner.pid, home))
         try:
             r = self.land("T25")
             self.assertRefused(r, "T25", "orphan service run")
@@ -193,6 +199,32 @@ class LandGate(Scratch):
         self.lab("T11", {"note.txt": "x\n"})
         r = self.land("T11", "--check", "false")
         self.assertRefused(r, "T11", "the task's check failed: false")
+
+    def test_subfailed_check_failure_is_reported_by_id(self):
+        source = ("def test_new_failure(subtests):\n"
+                  "    with subtests.test(fault='new'):\n"
+                  "        assert False\n")
+        self.lab("T27", {"tests/test_subfailed.py": source})
+        check = ("set -o pipefail; %s -m pytest -q -rfE tests/test_subfailed.py "
+                 "| sed '/^FAILED /d'") % sys.executable
+        r = self.land("T27", "--check", check)
+        self.assertRefused(r, "T27", "the task's check failed: tests/test_subfailed.py::test_new_failure")
+
+    def test_all_and_joined_check_parts_run_and_new_failure_refuses(self):
+        marker = self.tmp / "new-check-part-ran"
+        self.write(self.repo, "tests/test_preexisting.py", "def test_pre_existing():\n    assert False\n")
+        self.commit(self.repo, "add pre-existing failure")
+        self.start()
+        source = ("from pathlib import Path\n"
+                  "def test_new_failure():\n"
+                  "    Path(%r).write_text('ran')\n"
+                  "    assert False\n" % str(marker))
+        self.lab("T28", {"tests/test_joined.py": source})
+        check = ("%s -m pytest -q tests/test_preexisting.py && "
+                 "%s -m pytest -q tests/test_joined.py") % (sys.executable, sys.executable)
+        r = self.land("T28", "--check", check)
+        self.assertTrue(marker.exists(), "the check skipped its second &&-joined part")
+        self.assertRefused(r, "T28", "the task's check failed: tests/test_joined.py::test_new_failure")
 
     def test_new_failure_is_refused(self):
         self.lab("T2", {"src/otto/mod.py": "def f():\n    return 2\n"})

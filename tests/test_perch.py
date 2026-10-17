@@ -27,6 +27,11 @@ PERCH = BOOTSTRAP / "perch.sh"
 PY = "/opt/homebrew/bin/python3.11"
 
 
+def short_temp_root():
+    """Keep nested staging socket paths below macOS's UNIX-domain socket limit."""
+    return Path(tempfile.mkdtemp(prefix="p-", dir="/private/tmp")).resolve()
+
+
 def stage2_worker_prompt(alias, *, linked_task=""):
     brief = {"operating_core": {"role": "worker",
                                 "priorities": [{"id": alias.lower(), "text": "Canary dispatch " + alias}]},
@@ -219,7 +224,7 @@ SEEDED_FAULTS = {
 
 class AssertionKindTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="perch-raw-")).resolve()
+        self.tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_a_clean_run_passes_every_assertion(self):
@@ -755,7 +760,7 @@ class FakePresenceLauncherTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("perch_fake_presence", BOOTSTRAP / "perch_fake_presence.py")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
-        root = Path(tempfile.mkdtemp(prefix="perch-fake-launcher-")).resolve()
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         home = root / "home"
         observed = []
@@ -796,7 +801,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         spec.loader.exec_module(self.launcher)
 
     def test_fake_worker_has_native_entrypoint_and_executes_python_turn(self):
-        root = Path(tempfile.mkdtemp(prefix="perch-native-fake-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         launcher = root / "perch-fake-claude"
         shutil.copy2(BOOTSTRAP / "perch_fake_claude.py", root / "perch-fake-claude.py")
@@ -865,7 +870,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         import re
         import shlex
 
-        root = Path(tempfile.mkdtemp(prefix="perch-stage2-admit-order-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         refs = {alias: {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
                         "revision": "rev-" + alias} for alias in ("A", "B", "C")}
@@ -980,7 +985,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         import re
         import shlex
 
-        root = Path(tempfile.mkdtemp(prefix="perch-stage2-admit-pending-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         refs = {alias: {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
                         "revision": "rev-" + alias} for alias in ("A", "B", "C")}
@@ -1088,7 +1093,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         import re
         import shlex
 
-        root = Path(tempfile.mkdtemp(prefix="perch-owner-request-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         owner_lane = root / "home" / "owner-lane"
         host_lane = root / "perch-canary" / "client" / "lanes" / "claude-code"
@@ -1131,7 +1136,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         import re
         import shlex
 
-        root = Path(tempfile.mkdtemp(prefix="perch-pending-dispatch-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         raw = clean_stage2_raw(root / "pending-dispatch")
         request_id = "a0ebbb3fece74d328ad1d290385a13ae"
@@ -1192,7 +1197,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                       shell)
 
     def test_real_stage_two_keeps_real_prover_and_fake_uses_stub(self):
-        root = Path(tempfile.mkdtemp(prefix="perch-stage2-owner-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         calls = []
         cli = ModuleType("otto.hostctl.cli")
@@ -1218,7 +1223,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                     self.launcher.main(args)
 
     def test_fake_lab_cleanup_is_deferred_only_after_a_landing(self):
-        root = Path(tempfile.mkdtemp(prefix="perch-stage2-lab-"))
+        root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
         canary_repo = root / "perch-canary" / "2-test" / "canon"
         other_repo = root / "other" / "canon"
@@ -1374,7 +1379,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
 
 class RenderTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="perch-render-")).resolve()
+        self.tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_the_report_has_every_section_the_stage_review_reads(self):
@@ -1431,7 +1436,7 @@ class StagingRootSnapshotTests(unittest.TestCase):
     """The Store at rest and the staging root after down, read from real files: a SQLite Store and a socket."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="perch-rest-")).resolve()
+        self.tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_store_snapshot_counts_rows_and_checks_integrity(self):
@@ -1487,7 +1492,7 @@ class StagingRootSnapshotTests(unittest.TestCase):
 
 class StoreTimelineSubcommandTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="perch-store-")).resolve()
+        self.tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_a_missing_store_is_reported_not_invented(self):
@@ -1528,7 +1533,7 @@ class FakeRunTests(unittest.TestCase):
     """perch.sh 0 --fake in a temp staging root, with the lab's committed HEAD as the commit under test."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="perch-e2e-")).resolve()
+        self.tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
                                   capture_output=True, check=True).stdout.strip()
@@ -1574,7 +1579,7 @@ class SeededFaultRunTests(unittest.TestCase):
                              capture_output=True, check=True).stdout.strip()
         for fault, red in EXPECTED_RED.items():
             with self.subTest(fault=fault):
-                tmp = Path(tempfile.mkdtemp(prefix="perch-fault-")).resolve()
+                tmp = short_temp_root()
                 self.addCleanup(shutil.rmtree, tmp, True)
                 code, log, report_dir = run_perch(tmp, sha, fault)
                 self.assertIsNotNone(code, "perch.sh did not finish in 600 s; its log so far:\n" + log)
@@ -1597,7 +1602,7 @@ class PerchExitStatus(unittest.TestCase):
         text = PERCH.read_text()
         marker = "run_stage() {  # STAGE"  # inside a function, where bash 3.2 lost the status
         self.assertIn(marker, text)
-        tmp = Path(tempfile.mkdtemp(prefix="perchexit-"))
+        tmp = short_temp_root()
         self.addCleanup(shutil.rmtree, tmp, True)
         boot = tmp / "bootstrap"
         shutil.copytree(PERCH.parent, boot)  # perch.sh sources its siblings
