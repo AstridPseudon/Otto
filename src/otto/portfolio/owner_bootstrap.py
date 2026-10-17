@@ -679,6 +679,8 @@ class PortfolioOwnerBootstrap:
         # role calls would retain a pair of descriptors for every invocation.
         from herzchen.kernel import LimitService
         self._limit_service = LimitService(store)
+        from otto.agents.effect_ledger import NativeEffectLedger
+        self._native_effect_ledger = NativeEffectLedger(store, authenticated)
         # These owner capabilities own command transports.  Keep one for the
         # lifetime of this bootstrap instead of binding a fresh listening
         # socket each time a manager asks for its direction surface.
@@ -1379,7 +1381,6 @@ class PortfolioOwnerBootstrap:
             assignment = assignments.get(ResourceRef.from_dict(due.assignment_ref))
             return completed_occurrence_task_reader(result_reader, due, assignment)
 
-        from otto.agents.effect_ledger import NativeEffectLedger
         return CanonicalRoleRuntime(
             operations=operations, portfolio=portfolio, due_port=due_port,
             adapter=adapter, actor=self.owner_actor.actor, runtime_probe=runtime_probe,
@@ -1387,7 +1388,7 @@ class PortfolioOwnerBootstrap:
             acceptance_readiness=acceptance_readiness,
             allowance_readiness=allowance_readiness,
             completed_task_readiness=completed_task_readiness, native_result_verifier=native_result_verifier, native_bodies=native_bodies,
-            effect_ledger=NativeEffectLedger(self.store, self.owner_actor),
+            effect_ledger=self._native_effect_ledger,
             landed_worker_settler=self.landed_worker_settler,
         )
 
