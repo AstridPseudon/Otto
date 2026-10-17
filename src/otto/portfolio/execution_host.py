@@ -697,6 +697,13 @@ class ExecutionHost:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         _atomic_json(self.directory / self._PROCESS_GROUPS, self._process_groups)
 
+    def _terminate_recorded_process_groups(self) -> dict[str, bool]:
+        """Best-effort owner lifecycle cleanup, fenced by each recorded birth identity."""
+        from otto.agents.claude_cli import terminate_recorded_process_group
+        return {key: terminate_recorded_process_group(record, birth_reader=lambda pid:
+                    _process_start_identity(pid)['birth'])
+                for key, record in self._process_groups.items()}
+
     def _forget_process_group(self, schedule_id: str) -> None:
         self._capacity_freed.discard(schedule_id)
         if self._process_groups.pop(schedule_id, None) is not None:
@@ -1073,6 +1080,9 @@ class ExecutionHost:
                 stream.flush()
                 os.fsync(stream.fileno())
             self._owns_owner_file = True
+            # Only the owner that has claimed this directory may clean up its
+            # prior worker records. A competing constructor must leave them alone.
+            self._terminate_recorded_process_groups()
         # A partial atomic response from a crashed host is never a terminal
         # response. Only our own response-temp naming convention is removed.
         for temporary in self.directory.glob(".response-*.json.tmp"):
@@ -2038,6 +2048,7 @@ class ExecutionHost:
         # thread retains it without a healthy-work duration cap.
         if self._threads:
             self._threads[0].join()
+        self._terminate_recorded_process_groups()
         if self._socket is not None:
             self._threads[-1].join()
         self._stop.set()

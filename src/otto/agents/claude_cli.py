@@ -90,6 +90,36 @@ def file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
+def terminate_recorded_process_group(record: Mapping[str, Any], *,
+                                    birth_reader: Callable[[int], Any] | None = None) -> bool:
+    """Kill a recorded worker group only while its recorded leader birth still matches.
+
+    A PID or PGID can be reused after a worker exits. The durable record is
+    therefore authority to signal only when the current leader has the same
+    kernel birth identity. False means the group was not safely signalled.
+    """
+    pid, pgid, birth = record.get('pid'), record.get('pgid'), record.get('birth')
+    if (type(pid) is not int or type(pgid) is not int or pid <= 0 or pgid <= 0
+            or not isinstance(birth, list) or not birth or any(type(value) is not int for value in birth)):
+        return False
+    if birth_reader is None:
+        from otto.portfolio.execution_host import _process_start_identity
+        birth_reader = lambda selected: _process_start_identity(selected)['birth']
+    try:
+        current_birth = list(birth_reader(pid))
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return False
+    if current_birth != birth:
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return False
+    return True
+
+
 def _preflight_interpreter() -> Mapping[str, str]:
     """Pin the host interpreter that runs without spawning a framework wrapper.
 

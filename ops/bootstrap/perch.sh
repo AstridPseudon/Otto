@@ -595,7 +595,10 @@ run_stage() {  # STAGE
   STARTED="$(now)"
   RESTART_RC=0
 
-  "$PY" -I "$REPORT_PY" census --out "$RAW/census.before.txt" --stage-root "$STAGE_ROOT"
+  if ! "$PY" -I "$REPORT_PY" census --out "$RAW/census.before.txt" --stage-root "$STAGE_ROOT" --fail-workers; then
+    echo "perch: worker or perch-fake-claude process is already alive in a staging root" >&2
+    return 1
+  fi
   # The sampler records the product's reading of the staging Otto, not its raw file. It has a process group of its
   # own, so stopping it also stops a status call it is waiting on.
   set -m
@@ -720,6 +723,12 @@ run_stage() {  # STAGE
     HOLD_LEAK="$(hold_worker "$LABS/$last" "$last")"
   fi
 
+  if [ -f "$STAGE_ROOT/home/shared-host/capacity-process-groups.json" ]; then
+    cp "$STAGE_ROOT/home/shared-host/capacity-process-groups.json" "$RAW/recorded-process-groups.json"
+  else
+    printf '{}\n' > "$RAW/recorded-process-groups.json"
+  fi
+
   t="$(date +%s)"
   bash "$STAGING" down < /dev/null > "$RAW/staging-down.log" 2>&1 || true
   phase staging-down "" "$t"
@@ -728,7 +737,8 @@ run_stage() {  # STAGE
   for i in $(seq 1 50); do kill -0 -- "-$SAMPLER" 2>/dev/null || break; sleep 0.2; done
   SAMPLER=""
   if [ -n "$RUN_LIFECYCLE" ]; then status_to "$RAW/status-stopped.json"; fi
-  "$PY" -I "$REPORT_PY" census --out "$RAW/census.after.txt" --stage-root "$STAGE_ROOT"
+  "$PY" -I "$REPORT_PY" census --out "$RAW/census.after.txt" --stage-root "$STAGE_ROOT" \
+    --groups-file "$RAW/recorded-process-groups.json"
   if [ -n "$HOLD_LEAK" ]; then kill "$HOLD_LEAK" 2>/dev/null || true; wait "$HOLD_LEAK" 2>/dev/null || true; HOLD_LEAK=""; fi
 
   "$PY" -I "$REPORT_PY" snapshot --canon "$CANON" --labs "$LABS" --out "$RAW/leftovers.txt"

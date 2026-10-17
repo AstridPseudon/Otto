@@ -2,7 +2,11 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 from types import SimpleNamespace
 import unittest
 
@@ -96,6 +100,78 @@ class WorkerCustodyTests(unittest.TestCase):
         host = deepcopy(due.host_evidence); mutate(host['gateway_attempt'])
         f.port.save_due(self.schedule, replace(due, host_evidence=host).to_dict(),
             request_id='fixture-mutated', expected_version=due.version)
+
+    def spawn_fake_worker(self):
+        script = Path(__file__).resolve().parents[1] / 'ops' / 'bootstrap' / 'canary' / 'fake_worker.py'
+        root = self.f.temporary.name
+        return subprocess.Popen([sys.executable, str(script), '--lab', root, '--task', 'hold',
+                                 '--project', str(Path(root) / 'unused-project.json'),
+                                 '--events', str(Path(root) / 'unused-events.jsonl'), '--hold'],
+                                start_new_session=True)
+
+    def test_forced_owner_stop_kills_recorded_fake_worker_but_not_a_reused_pid(self):
+        from otto.agents.claude_cli import terminate_recorded_process_group
+        from otto.portfolio.execution_host import _process_start_identity
+
+        process = self.spawn_fake_worker()
+        self.addCleanup(lambda: (process.poll() is None and os.killpg(process.pid, signal.SIGKILL),
+                                 process.wait()))
+        record = {'pid': process.pid, 'pgid': process.pid,
+                  'birth': _process_start_identity(process.pid)['birth']}
+        self.assertTrue(terminate_recorded_process_group(record))
+        self.assertLess(process.wait(timeout=2), 0, 'the forced owner stop left its fake worker alive')
+
+        stale = self.spawn_fake_worker()
+        self.addCleanup(lambda: (stale.poll() is None and os.killpg(stale.pid, signal.SIGKILL), stale.wait()))
+        reused = {'pid': stale.pid, 'pgid': stale.pid,
+                  'birth': [value + 1 for value in _process_start_identity(stale.pid)['birth']]}
+        self.assertFalse(terminate_recorded_process_group(reused))
+        self.assertIsNone(stale.poll(), 'a reused PID must be left alone')
+
+    def test_owner_startup_terminates_a_recorded_worker_group(self):
+        from otto.portfolio.execution_host import ExecutionHost, _process_start_identity
+        directory = Path(self.f.temporary.name) / 'startup-host'
+        directory.mkdir()
+        process = self.spawn_fake_worker()
+        self.addCleanup(lambda: (process.poll() is None and os.killpg(process.pid, signal.SIGKILL),
+                                 process.wait()))
+        record = {'pid': process.pid, 'pgid': process.pid,
+                  'birth': _process_start_identity(process.pid)['birth']}
+        (directory / 'capacity-process-groups.json').write_text(json.dumps({'worker': record}))
+        host = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        host.start()
+        self.addCleanup(host.close)
+        self.assertLess(process.wait(timeout=2), 0, 'owner startup left its recorded fake worker alive')
+
+    def test_competing_owner_cannot_kill_worker_before_claiming_custody(self):
+        from otto.portfolio.execution_host import ExecutionHost, _process_start_identity
+        directory = Path(self.f.temporary.name) / 'competing-host'
+        owner = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        owner.start()
+        self.addCleanup(owner.close)
+
+        process = self.spawn_fake_worker()
+        self.addCleanup(lambda: (process.poll() is None and os.killpg(process.pid, signal.SIGKILL),
+                                 process.wait()))
+        record = {'pid': process.pid, 'pgid': process.pid,
+                  'birth': _process_start_identity(process.pid)['birth']}
+        (directory / 'capacity-process-groups.json').write_text(json.dumps({'worker': record}))
+        contender = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        with self.assertRaisesRegex(RuntimeError, 'another execution host owns this command directory'):
+            contender.start()
+        self.assertIsNone(process.poll(), 'the rejected contender killed a worker owned by the live owner')
+
+    def test_forced_owner_close_terminates_recorded_fake_worker(self):
+        from otto.portfolio.execution_host import ExecutionHost, _process_start_identity
+        directory = Path(self.f.temporary.name) / 'stop-host'
+        process = self.spawn_fake_worker()
+        self.addCleanup(lambda: (process.poll() is None and os.killpg(process.pid, signal.SIGKILL),
+                                 process.wait()))
+        host = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+        host._process_groups['worker'] = {'pid': process.pid, 'pgid': process.pid,
+                                          'birth': _process_start_identity(process.pid)['birth']}
+        host.close()
+        self.assertLess(process.wait(timeout=2), 0, 'forced owner close left its fake worker alive')
 
     def test_release_restart_exact_one_request_preserves_unknown_and_no_provider(self):
         f = self.f; released = self.release()

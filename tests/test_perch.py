@@ -1573,6 +1573,49 @@ class StagingRootSnapshotTests(unittest.TestCase):
         self.assertNotIn(proc.pid, perch_report.pids_of(perch_report.read_lines(found)),
                          "a root that is not given is not matched by its name")
 
+    def test_start_census_rejects_worker_processes_from_any_staging_root(self):
+        lines = [
+            "101 101 0:01 /tmp/labs/_staging-a/tree/src/fake_worker.py --lab /tmp/a",
+            "202 202 0:01 /tmp/labs/_staging-b/perch-canary/perch-fake-claude --model test",
+            "303 303 0:01 /usr/bin/python unrelated.py",
+        ]
+        self.assertEqual(perch_report.worker_processes(lines), lines[:2])
+
+    def test_down_confirms_all_previously_recorded_worker_groups_are_gone(self):
+        records = {"one": {"pid": 101, "pgid": 101, "birth": [1, 2]},
+                   "two": {"pid": 202, "pgid": 202, "birth": [3, 4]}}
+        self.assertTrue(perch_report.recorded_groups_gone(records, ["303 303 0:01 unrelated"])[0])
+        gone, remaining = perch_report.recorded_groups_gone(
+            records, ["303 101 0:01 unrelated", "202 202 0:01 /tmp/_staging/perch-fake-claude"])
+        self.assertFalse(gone)
+        self.assertEqual(remaining, [202, 303])
+
+    def test_forced_staging_down_helper_kills_recorded_fake_worker(self):
+        from otto.portfolio.execution_host import _process_start_identity
+        root = self.tmp / 'forced-down'
+        root.mkdir()
+        worker = subprocess.Popen([PY, str(BOOTSTRAP / 'canary' / 'fake_worker.py'),
+                                   '--lab', str(root), '--task', 'held', '--project', str(root / 'unused.json'),
+                                   '--events', str(root / 'events.jsonl'), '--hold'], start_new_session=True)
+        self.addCleanup(lambda: (worker.poll() is None and os.killpg(worker.pid, 9), worker.wait()))
+        records = root / 'home' / 'shared-host' / 'capacity-process-groups.json'
+        records.parent.mkdir(parents=True)
+        records.write_text(json.dumps({'held': {'pid': worker.pid, 'pgid': worker.pid,
+            'birth': _process_start_identity(worker.pid)['birth']}}), encoding='utf-8')
+
+        source = (BOOTSTRAP / 'staging.sh').read_text(encoding='utf-8')
+        begin = source.index('terminate_recorded_worker_groups() {')
+        end = source.index('\n}\n', begin) + len('\n}\n')
+        helper = source[begin:end]
+        env = {**os.environ, 'PY': PY, 'TREE': str(ROOT), 'HOME_DIR': str(root / 'home')}
+        result = subprocess.run(['bash', '-c', helper + '\nterminate_recorded_worker_groups'],
+                                env=env, capture_output=True, text=True, check=True)
+        self.assertIn('down: killed recorded worker group %s (held)' % worker.pid, result.stdout)
+        self.assertLess(worker.wait(timeout=2), 0)
+
+        down = source[source.index('down() {'):source.index('\n}\n', source.index('down() {'))]
+        self.assertLess(down.index('stop_group "$pid"'), down.index('terminate_recorded_worker_groups'))
+
     def test_store_snapshot_says_when_there_is_no_store(self):
         self.assertEqual(perch_report.store_snapshot(str(self.tmp / "none.store")), {"error": "no Store file"})
 
