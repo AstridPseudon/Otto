@@ -82,12 +82,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def save_parser() -> argparse.ArgumentParser:
-    """`ottoctl portfolio [--portfolio P] save FILE --actor A`: the save the owner lane carries, --portfolio before or after."""
+    """Parse a save forwarded to the owner lane; the owner binds an omitted actor."""
     result = argparse.ArgumentParser(prog="ottoctl portfolio save")
     result.add_argument("--portfolio", help="owner: select an admitted portfolio by id")
     result.add_argument("command", choices=("save",))
     result.add_argument("file")
-    result.add_argument("--actor", required=True)
+    result.add_argument("--actor")
     result.add_argument("--request-id", default=None)
     result.add_argument("--format", choices=("json", "text"), default="json")
     return result
@@ -119,13 +119,13 @@ def prepare_portfolio_request(args: argparse.Namespace) -> None:
         args.portfolio, args.portfolio_args = portfolio, words
         return
     if command == "save":
-        # The owner reads the save file, so its path is made absolute here; the forwarded form is validated like any command.
-        from otto.portfolio.cli import build_parser as portfolio_cli_parser
+        # The owner reads the save file, so its path is made absolute here.
         options = save_parser().parse_args(args.portfolio_args)
-        forwarded = ["save", str(Path(options.file).absolute()), "--actor", options.actor, "--format", options.format]
+        forwarded = ["save", str(Path(options.file).absolute()), "--format", options.format]
+        if options.actor is not None:
+            forwarded += ["--actor", options.actor]
         if options.request_id is not None:
             forwarded += ["--request-id", options.request_id]
-        portfolio_cli_parser().parse_args(forwarded)
         args.portfolio = options.portfolio
         args.portfolio_args = forwarded
         return
