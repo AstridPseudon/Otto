@@ -91,6 +91,23 @@ class RunnerCliTests(unittest.TestCase):
         self.assertEqual(payload["record"]["state"], "settled")
         self.assertEqual(payload["record"]["exit_code"], 7)
 
+    def test_submit_mints_request_id_before_client_transport(self):
+        seen = []
+
+        class Client:
+            def call(self, request):
+                seen.append(dict(request))
+                return {"ok": True, "run_id": "run-minted"}
+
+        args = SimpleNamespace(argv=["/bin/true"], cwd=None, weight=1, task="untasked",
+                               purpose=None, max_minutes=None, request_id=None, wait=False)
+        out = io.StringIO()
+        with patch.object(runner_cli.uuid, "uuid4", return_value=SimpleNamespace(hex="stable-minted-key")), contextlib.redirect_stdout(out):
+            code = runner_cli._submit(args, Client())
+        self.assertEqual(code, 0)
+        self.assertEqual(seen[0]["request_id"], "stable-minted-key")
+        self.assertEqual(json.loads(out.getvalue())["request_id"], "stable-minted-key")
+
     def test_submit_wait_returns_command_exit_code(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

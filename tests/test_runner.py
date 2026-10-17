@@ -572,6 +572,9 @@ def test_uncertain_scope_holds_only_its_own_units(harness):
     wait_state(harness.store, first, "unknown")
     wait_until(lambda: runner.status()["used"] == 2, "uncertain lease to retain two units")
     assert harness.store.get(first)["custody"] == "uncertain"
+    assert runner.status(first).get("next_action")
+    assert runner.await_run(first).get("next_action")
+    assert "Do not resubmit" in runner.await_run(first)["next_action"]
 
     second = harness.submit(runner, ["fake", "clean"], weight=1, request_id="clean-scope")
     assert runner.await_run(second, timeout=10)["record"]["state"] == "settled"
