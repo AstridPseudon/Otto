@@ -184,10 +184,78 @@ def test_a_process_without_the_lease_is_never_signalled(tmp_path):
         proc = heavy(tmp_path, "--", *py(detached_sleeper(pidfile)))
         proc.communicate(timeout=60)
         assert wait_gone(int(pidfile.read_text()))
-        assert alive(bystander.pid)
+        assert bystander.poll() is None
     finally:
         bystander.kill()
         bystander.wait()
+
+
+def test_a_tagged_bystander_is_not_a_lease_cleanup_target():
+    from otto.hostctl import heavy as module
+
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 start_new_session=True,
+                                 env=dict(os.environ, OTTO_HEAVY_LEASE="unrelated-lease"))
+    try:
+        # A copied environment is a discovery hint, not custody.
+        module.stop_lease({"lease_id": "unrelated-lease", "pgid": None, "processes": {}})
+        assert bystander.poll() is None
+    finally:
+        bystander.kill()
+        bystander.wait()
+
+
+def test_reused_pid_with_same_display_start_is_not_signalled(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 43210, "pgid": 43210,
+              "processes": {"43210": {"birth": [100, 1], "pgid": 43210}}}
+    monkeypatch.setattr(module, "_processes", lambda: {
+        43210: {"ppid": 1, "pgid": 43210, "birth": [100, 2], "display_start": "same second"}})
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("reused PID was signalled"))
+    monkeypatch.setattr(module.os, "killpg", lambda *_args: pytest.fail("reused group was signalled"))
+    assert module.stop_lease(record)["reaped"] == []
+
+
+def test_missing_exact_birth_for_known_pid_keeps_lease_unresolved(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 43210, "pgid": 43210,
+              "processes": {"43210": {"birth": [100, 1], "pgid": 43210}}}
+    monkeypatch.setattr(module, "_processes", lambda: {
+        43210: {"ppid": 1, "pgid": 43210, "birth": None}})
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("unverified PID was signalled"))
+    monkeypatch.setattr(module.os, "killpg", lambda *_args: pytest.fail("unverified group was signalled"))
+    assert module.stop_lease(record)["remaining"] == ["identity-unavailable:43210"]
+
+
+def test_unresolved_dead_holder_keeps_capacity_claim_until_settled(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    (directory / "holders").mkdir(parents=True)
+    (directory / "waiting").mkdir()
+    (directory / "slots").mkdir()
+    holder_file = directory / "holders" / "unresolved.json"
+    holder_file.write_text(json.dumps({"lease_id": "unresolved", "holder_pid": 99999999,
+                                       "weight": 1, "purpose": "first", "pgid": None}))
+    monkeypatch.setattr(module, "stop_lease", lambda *_args, **_kwargs: {"remaining": [12345]})
+    assert module._reap_dead_holders(directory)[0]["remaining"] == [12345]
+    assert holder_file.exists(), "unresolved custody was silently discarded"
+
+    ticket = directory / "waiting" / "next.json"
+    with ticket.open("w+") as mine:
+        fcntl.flock(mine, fcntl.LOCK_EX)
+        mine.write(json.dumps({"weight": 1, "purpose": "next", "queued_at": time.time()}))
+        mine.flush()
+        assert module._take(directory, 1, 1, ticket.name, False, lambda _backfill: None)[0] is None
+        slots, _, _ = module._take(directory, 2, 1, ticket.name, False, lambda _backfill: None)
+        assert slots is not None, "free capacity beside unresolved custody could not be used"
+        for handle in slots:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
 
 
 def test_a_heavy_call_inside_a_heavy_job_runs_straight_through(tmp_path):

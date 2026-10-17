@@ -20,11 +20,10 @@ machine).
 ``slots/<i>.lock``, so the kernel frees it when its holder dies. Each lease names itself in
 ``holders/<id>.json`` (marked ``backfill`` if it took slots ahead of the head).
 
-**Cleanup:** CMD runs in its own session with ``OTTO_HEAVY_LEASE=<id>`` in its environment. When it
-ends, fails, is interrupted or runs out of time, the lease stops its process group and every process
-still carrying that id: ones that left the group (``setsid``, a detached browser) and paused ones,
-with TERM + CONT, a grace period, then KILL. Nothing without the id is ever signalled. A lease whose
-holder died is cleaned up by the next lease to start.
+**Cleanup:** CMD runs in a private session. Its group and observed descendants are recorded with
+process birth identities in the holder record. TERM + CONT, a grace period, then KILL apply only to
+verified members of that lease. An unresolved dead holder keeps its capacity claim until recovery
+can verify that its processes are gone. ``OTTO_HEAVY_LEASE`` only lets nested heavy calls reuse slots.
 
 Exit codes: CMD's own; 75 no capacity (with --no-wait); 124 time ran out; 130/143 interrupted.
 Every lease appends one JSON line to ``<dir>/heavy.log``: who, what, weight, waited, ran, and the
@@ -39,12 +38,15 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
 import uuid
+
+from otto.portfolio.native_caller_ingress import process_identity
 
 LEASE_ENV = "OTTO_HEAVY_LEASE"
 EXIT_BUSY, EXIT_TIMEOUT = 75, 124
@@ -111,31 +113,86 @@ def machine_state() -> dict:
     return state
 
 
-def tagged_pids(lease_id: str) -> list[int] | None:
-    """Pids whose environment carries this lease (None: this host can't list environments)."""
-    marker = f"{LEASE_ENV}={lease_id}"
-    me = os.getpid()
-    if platform.system() == "Darwin":
-        try:
-            out = subprocess.run(["ps", "-axwwE", "-o", "pid=,command="], capture_output=True, text=True,
-                                 timeout=15).stdout
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return [int(line.split(None, 1)[0]) for line in out.splitlines()
-                if marker in line and int(line.split(None, 1)[0]) != me]
-    pids = []
+def _birth_at(pid: int, ppid: int, pgid: int) -> list[int] | None:
+    """Join the ancestry snapshot to the same live kernel process occurrence."""
     try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return None
-    for entry in entries:
-        if entry.isdigit() and int(entry) != me:
-            try:
-                if marker.encode() in Path("/proc", entry, "environ").read_bytes().split(b"\0"):
-                    pids.append(int(entry))
-            except OSError:
+        identity = process_identity(pid)
+        if identity.parent == ppid and os.getpgid(pid) == pgid:
+            return list(identity.birth)
+    except (OSError, PermissionError):
+        pass
+    return None
+
+
+def _processes() -> dict[int, dict] | None:
+    """One ancestry snapshot, with exact kernel birth identity for signal authority."""
+    if Path("/proc").is_dir():
+        processes = {}
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return None
+        for entry in entries:
+            if not entry.isdigit():
                 continue
-    return pids
+            try:
+                stat = Path("/proc", entry, "stat").read_text().rsplit(") ", 1)[1].split()
+                if stat[0] != "Z":
+                    processes[int(entry)] = {"ppid": int(stat[1]), "pgid": int(stat[2]),
+                                             "birth": None}
+            except (OSError, IndexError, ValueError):
+                continue
+        for pid, info in processes.items():
+            info["birth"] = _birth_at(pid, info["ppid"], info["pgid"])
+        return processes
+    try:
+        result = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="],
+                                capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode:
+        return None
+    processes = {}
+    for line in result.stdout.splitlines():
+        match = re.match(r"\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)", line)
+        if match and not match[4].startswith("Z"):
+            pid = int(match[1])
+            ppid, pgid = int(match[2]), int(match[3])
+            processes[pid] = {"ppid": ppid, "pgid": pgid,
+                              "birth": _birth_at(pid, ppid, pgid)}
+    return processes
+
+
+def _observe(record: dict, processes: dict[int, dict], *, seed_root: bool = False) -> bool:
+    """Add descendants reached through an already verified process, including new private groups."""
+    known = record.setdefault("processes", {})
+    root = int(record.get("pid") or 0)
+    changed = False
+    if seed_root and root in processes and processes[root]["birth"] is not None and str(root) not in known:
+        known[str(root)] = {"birth": processes[root]["birth"], "pgid": processes[root]["pgid"]}
+        changed = True
+    while True:
+        live = {int(pid) for pid, identity in known.items()
+                if int(pid) in processes and processes[int(pid)]["birth"] == identity["birth"]}
+        group_anchored = any(processes[pid]["pgid"] == record.get("pgid") for pid in live)
+        unidentified = set(record.get("unidentified", []))
+        found = {pid: info for pid, info in processes.items()
+                 if str(pid) not in known and pid not in unidentified and (info["ppid"] in live or
+                     (info["pgid"] == record.get("pgid") and group_anchored))}
+        if not found:
+            return changed
+        for pid, info in found.items():
+            if info["birth"] is None:
+                record.setdefault("unidentified", []).append(pid)
+            else:
+                known[str(pid)] = {"birth": info["birth"], "pgid": info["pgid"]}
+        changed = True
+
+
+def _write_holder(path: Path, record: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(record, indent=1))
+    os.replace(temporary, path)
 
 
 def _alive(pid: int) -> bool:
@@ -148,6 +205,19 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _holder_alive(holder: dict) -> bool:
+    pid = int(holder.get("holder_pid") or 0)
+    if not _alive(pid):
+        return False
+    birth = holder.get("holder_birth")
+    if birth is None:
+        return True
+    try:
+        return list(process_identity(pid).birth) == birth
+    except (OSError, PermissionError):
+        return True  # uncertain: retain the claim until identity can be checked
+
+
 def _group_alive(pgid: int) -> bool:
     try:
         os.killpg(pgid, 0)
@@ -158,37 +228,68 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def stop_lease(lease_id: str, pgid: int | None) -> dict:
-    """Stop the lease's group and every process still carrying its id: TERM (+CONT), grace, KILL."""
-    def targets() -> set[int]:
-        return {pid for pid in (tagged_pids(lease_id) or []) if _alive(pid)}
+def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
+    """Signal only live identities in this record and its verified private process group."""
+    pgid = record.get("pgid")
+
+    def targets() -> tuple[set[int], bool, bool, set[int]]:
+        processes = _processes()
+        if processes is None:
+            return set(), False, False, set()
+        if _observe(record, processes) and holder_file is not None:
+            _write_holder(holder_file, record)
+        live = {int(pid) for pid, identity in record.get("processes", {}).items()
+                if int(pid) in processes and processes[int(pid)]["birth"] == identity["birth"]}
+        unverified = {int(pid) for pid in record.get("processes", {})
+                      if int(pid) in processes and processes[int(pid)]["birth"] is None}
+        group = bool(pgid and any(processes[pid]["pgid"] == pgid for pid in live))
+        return live, group, True, unverified
 
     def signal_all(sig: int) -> None:
-        if pgid:
+        live, group, scanned, _ = targets()
+        if not scanned:
+            return
+        if group:
             try:
                 os.killpg(pgid, sig)
             except (ProcessLookupError, PermissionError):
                 pass
-        for pid in targets():
-            try:
-                os.kill(pid, sig)
-            except (ProcessLookupError, PermissionError):
-                pass
+        for pid in live:
+            # Recheck directly before signalling, since a PID can have exited since the snapshot.
+            current = _processes()
+            if current is not None and pid in current and current[pid]["birth"] == record["processes"][str(pid)]["birth"]:
+                if group and current[pid]["pgid"] == pgid:
+                    continue
+                try:
+                    os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
 
-    sweep = "complete" if tagged_pids(lease_id) is not None else "unavailable"
-    before = targets()
-    if not before and not (pgid and _group_alive(pgid)):
-        return {"reaped": [], "sweep": sweep}
-    signal_all(signal.SIGTERM)
-    signal_all(signal.SIGCONT)  # a stopped process only acts on TERM once continued
-    deadline = time.monotonic() + GRACE_SECONDS
-    while time.monotonic() < deadline and (targets() or (pgid and _group_alive(pgid))):
-        time.sleep(0.2)
-    killed = sorted(targets())
-    if killed or (pgid and _group_alive(pgid)):
+    before, group, scanned, unverified = targets()
+    if before or group:
+        signal_all(signal.SIGTERM)
+        signal_all(signal.SIGCONT)
+        deadline = time.monotonic() + GRACE_SECONDS
+        while time.monotonic() < deadline:
+            live, group, scanned, unverified = targets()
+            if not live and not group:
+                break
+            time.sleep(0.2)
+    killed, group, scanned, unverified = targets()
+    if killed or group:
         signal_all(signal.SIGKILL)
         time.sleep(0.2)
-    return {"reaped": sorted(before), "needed_kill": killed, "remaining": sorted(targets()), "sweep": sweep}
+    remaining, group, scanned, unverified = targets()
+    unresolved = sorted(remaining) + [f"identity-unavailable:{pid}" for pid in sorted(unverified)]
+    unresolved += [f"unidentified:{pid}" for pid in record.get("unidentified", [])]
+    if record.get("pid") and str(record["pid"]) not in record.get("processes", {}):
+        unresolved.append("root-identity-unavailable")
+    if pgid and not group and _group_alive(pgid):
+        unresolved.append(f"group:{pgid}")
+    if not scanned and (record.get("processes") or (pgid and _group_alive(pgid))):
+        unresolved.append("process-table-unavailable")
+    return {"reaped": sorted(before), "needed_kill": sorted(killed), "remaining": unresolved,
+            "sweep": "complete" if scanned else "unavailable"}
 
 
 def _holders(directory: Path) -> list[dict]:
@@ -202,13 +303,20 @@ def _holders(directory: Path) -> list[dict]:
 
 
 def _reap_dead_holders(directory: Path) -> list[dict]:
-    """Leases whose holder process died: stop what they left behind and drop their record."""
+    """Recover dead holders; retain unresolved claims for later attempts and capacity accounting."""
     cleaned = []
-    for holder in _holders(directory):
-        if holder.get("holder_pid") and not _alive(int(holder["holder_pid"])):
-            result = stop_lease(holder["lease_id"], holder.get("pgid"))
-            (directory / "holders" / f"{holder['lease_id']}.json").unlink(missing_ok=True)
-            cleaned.append({"owner": holder.get("owner"), "purpose": holder.get("purpose"), **result})
+    with open(directory / "reap.lock", "a+") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        for holder in _holders(directory):
+            if holder.get("holder_pid") and not _holder_alive(holder):
+                path = directory / "holders" / f"{holder['lease_id']}.json"
+                result = stop_lease(holder, path)
+                if result.get("remaining") or result.get("sweep") == "unavailable":
+                    holder["unresolved"] = result
+                    _write_holder(path, holder)
+                else:
+                    path.unlink(missing_ok=True)
+                cleaned.append({"owner": holder.get("owner"), "purpose": holder.get("purpose"), **result})
     return cleaned
 
 
@@ -265,9 +373,11 @@ def _take(directory: Path, cap: int, weight: int, ticket: str, blocked: bool, cl
         fcntl.flock(guard, fcntl.LOCK_EX)
         queue = _waiting(directory)
         ahead = next((i for i, t in enumerate(queue) if t["ticket"] == ticket), None)
-        running = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
+        running = _holders(directory)
         if ahead is None or (blocked and running):
             return None, ahead or 0, running
+        if cap - sum(int(h.get("weight", 1)) for h in running) < weight:
+            return None, ahead, running
         backfill = ahead > 0
         if backfill:
             head = int(queue[0].get("weight", cap))
@@ -295,7 +405,7 @@ def _append_log(directory: Path, record: dict) -> None:
 def status() -> dict:
     directory = state_dir()
     cap = capacity(directory)
-    holders = [h for h in _holders(directory) if _alive(int(h.get("holder_pid") or 0))]
+    holders = _holders(directory)
     used = sum(int(h.get("weight", 1)) for h in holders)
     return {"capacity": cap, "used": used, "free": max(0, cap - used),
             "holders": [{k: h.get(k) for k in ("owner", "purpose", "weight", "started_at", "expires_at")}
@@ -333,7 +443,12 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     mine.flush()
     os.replace(ticket.with_suffix(".tmp"), ticket)
     lease_id = uuid.uuid4().hex[:12]
+    try:
+        holder_birth = list(process_identity(os.getpid()).birth)
+    except (OSError, PermissionError):
+        holder_birth = None
     record = {"lease_id": lease_id, "owner": owner, "purpose": purpose, "weight": weight, "capacity": cap,
+              "holder_birth": holder_birth,
               "holder_pid": os.getpid(), "command": command}
     holder_file = directory / "holders" / f"{lease_id}.json"
 
@@ -342,7 +457,7 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
         record.update(backfill=backfill, admitted_ns=time.time_ns(), waited_seconds=round(now - queued_at, 1),
                       started_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
                       expires_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now + max_minutes * 60)))
-        holder_file.write_text(json.dumps(record, indent=1))
+        _write_holder(holder_file, record)
         ticket.unlink(missing_ok=True)
 
     handlers = {sig: signal.signal(sig, lambda signum, _f: sys.exit(128 + signum))
@@ -378,22 +493,36 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     env = dict(os.environ, **{LEASE_ENV: lease_id})
     child = subprocess.Popen(command, env=env, start_new_session=True)
     record.update(pid=child.pid, pgid=child.pid)
-    holder_file.write_text(json.dumps(record, indent=1))
+    birth = _birth_at(child.pid, os.getpid(), child.pid)
+    if birth is not None:
+        record["processes"] = {str(child.pid): {"birth": birth, "pgid": child.pid}}
+    processes = _processes()
+    if processes is not None:
+        _observe(record, processes, seed_root=True)
+    _write_holder(holder_file, record)
 
     outcome, code = "exited", None
     stop_signal: list[int] = []
 
     def on_signal(signum, _frame):
         stop_signal.append(signum)
-        try:
-            os.killpg(child.pid, signum)
-        except ProcessLookupError:
-            pass
 
     previous_handlers = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         try:
-            code = child.wait(timeout=max_minutes * 60)
+            deadline = time.monotonic() + max_minutes * 60
+            while True:
+                if stop_signal:
+                    break
+                processes = _processes()
+                if processes is not None and _observe(record, processes, seed_root=child.poll() is None):
+                    _write_holder(holder_file, record)
+                try:
+                    code = child.wait(timeout=min(0.1, max(0, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        raise
         except subprocess.TimeoutExpired:
             outcome, code = "timed_out", EXIT_TIMEOUT
             print(f"heavy: time ran out after {max_minutes:g} min; stopping the lease's processes", file=sys.stderr)
@@ -401,7 +530,7 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
             outcome = "interrupted"
             code = 128 + stop_signal[0]
     finally:
-        sweep = stop_lease(lease_id, child.pid)
+        sweep = stop_lease(record, holder_file)
         try:
             child.wait(timeout=GRACE_SECONDS)
         except subprocess.TimeoutExpired:
@@ -413,7 +542,11 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
         _append_log(directory, {**record, "outcome": outcome, "exit_code": code,
                                 "seconds": round(time.time() - started, 1), "machine_after": machine_state(),
                                 "leftovers": sweep, "inherited_leftovers": inherited})
-        holder_file.unlink(missing_ok=True)
+        if sweep.get("remaining") or sweep.get("sweep") == "unavailable":
+            record["unresolved"] = sweep
+            _write_holder(holder_file, record)
+        else:
+            holder_file.unlink(missing_ok=True)
         for handle in slots or []:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
