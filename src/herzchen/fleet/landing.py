@@ -474,7 +474,8 @@ def _feedback_argv(repo: Path, argv: list[str], base_ref: str = "HEAD") -> list[
             skip_next = True
             continue
         if (arg.startswith("-") and arg not in flag_options and "=" not in arg and index + 1 < len(argv)
-                and argv[index + 1].startswith(("tests/", "tests\\"))):
+                and (argv[index + 1] == "tests"
+                     or argv[index + 1].startswith(("tests/", "tests\\")))):
             # Unknown options may consume their next token; do not reinterpret it as a test target.
             return argv
         if arg == "--":
