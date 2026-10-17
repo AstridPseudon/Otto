@@ -402,17 +402,24 @@ class OwnerFleetRegistry:
             project_ref = current.payload.get("project_ref") if isinstance(current.payload, Mapping) else None
             if not isinstance(project_ref, Mapping):
                 raise LookupError("admitted task has no exact project reference")
+            parent = ResourceRef.from_dict(project_ref)
+            if parent.authority != authority or parent.kind != "work.project" or not parent.revision:
+                raise LookupError("admitted task has no exact owner project reference")
+            current_project = self.owner.graph.current(ResourceRef(parent.authority, parent.kind, parent.id))
+            if (current_project.ref.authority, current_project.ref.kind, current_project.ref.id) != (
+                    parent.authority, parent.kind, parent.id):
+                raise LookupError("admitted task project identity is not current")
             assignment = self.owner.assignments.get(ResourceRef(authority, "wrk.assignment", assignment_id))
             if (assignment.role != "executor"
                     or (assignment.scope.authority, assignment.scope.kind, assignment.scope.id) !=
                        (current.ref.authority, current.ref.kind, current.ref.id)):
                 raise PermissionError("dispatch record assignment does not own its admitted task")
             views = self.views_provider()
-            view = views.get(project_ref.get("id")) if isinstance(views, Mapping) else None
+            view = views.get(parent.id) if isinstance(views, Mapping) else None
             return {"record": record, "assignment_id": record.assignment, "task": current, "task_id": task_id,
                     "admitted_revision": admitted, "assignment_ref": assignment.ref.to_dict(),
                     "generation": assignment.generation, "task_ref": current.ref.to_dict(),
-                    "project_ref": project_ref, "view": view,
+                    "project_ref": current_project.ref.to_dict(), "view": view,
                     "project_state": getattr(getattr(view, "server", None), "state", None)}
 
     def prepare_worker_lab(self, project_ref: Any, task_ref: Any) -> dict[str, Any]:

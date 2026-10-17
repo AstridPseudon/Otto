@@ -8,6 +8,28 @@ from typing import Any, Mapping
 from herzchen.contracts import ResourceRef
 
 
+_PROJECT_CONTENT_KEYS = (
+    "title", "name", "outcome", "scope", "approach", "acceptance",
+    "protocol", "custom", "criteria",
+)
+
+
+def _project_content(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Stable authored project fields; owner metadata and linked refs can advance."""
+    result = {key: payload.get(key) for key in _PROJECT_CONTENT_KEYS}
+    tasks = payload.get("tasks", ())
+    if isinstance(tasks, (list, tuple)):
+        result["tasks"] = tuple(
+            (item.get("authority"), item.get("kind"), item.get("id"))
+            if isinstance(item, Mapping) else
+            (item.authority, item.kind, item.id) if isinstance(item, ResourceRef) else item
+            for item in tasks
+        )
+    else:
+        result["tasks"] = tasks
+    return result
+
+
 @dataclass(frozen=True)
 class LocalAssessmentPolicy:
     purpose: str
@@ -109,13 +131,82 @@ class LocalAssessmentPolicy:
                    tuple(pairs), configured.get("scope_mode", "review-required"))
 
     def validate_binding(self, project: ResourceRef, task: ResourceRef, reader: Any) -> None:
-        if project != self.scope_project_ref or not any(pair[0] == task for pair in self.task_criterion_pairs):
-            raise PermissionError("local assessment policy is outside the exact current project/task")
-        refs = (project, task, *(criterion for member, criterion in self.task_criterion_pairs if member == task))
-        for ref in refs:
-            current = reader.get_identity(ResourceRef(ref.authority, ref.kind, ref.id))
-            if current is None or current.ref != ref:
-                raise PermissionError("local assessment policy project/task/criterion is stale")
+        project_pin = self.scope_project_ref
+        task_pins = tuple(member for member, _ in self.task_criterion_pairs)
+        same_identity = lambda left, right: (
+            left.authority, left.kind, left.id
+        ) == (right.authority, right.kind, right.id)
+        if (not isinstance(project, ResourceRef) or not isinstance(task, ResourceRef)
+                or not same_identity(project, project_pin)
+                or not any(same_identity(task, pin) for pin in task_pins)):
+            raise PermissionError("local assessment policy is outside the configured project/task")
+
+        current_project = reader.get_identity(
+            ResourceRef(project.authority, project.kind, project.id)
+        )
+        current_task = reader.get_identity(
+            ResourceRef(task.authority, task.kind, task.id)
+        )
+        if (current_project is None or current_task is None
+                or current_project.ref != project
+                or current_task.ref != task):
+            raise PermissionError("local assessment policy project/task is missing")
+
+        if not isinstance(current_task.payload, Mapping):
+            raise PermissionError("local assessment policy task content is stale")
+
+        if project != project_pin:
+            retained_project = reader.get_revision(project_pin)
+            if (retained_project is None or retained_project.ref != project_pin
+                    or not isinstance(retained_project.payload, Mapping)
+                    or not isinstance(current_project.payload, Mapping)
+                    or _project_content(retained_project.payload) != _project_content(current_project.payload)):
+                raise PermissionError("local assessment policy project content is stale")
+
+        # The retained task content also pins its project parent. Require that
+        # parent to remain in the configured project identity, while allowing
+        # the stored parent ref to name an earlier project metadata revision.
+        # Some trusted owner task views omit the parent ref entirely. In that
+        # case the task's identity is already anchored by the configured
+        # policy and the current project/task identity checks above. If a
+        # parent is present, however, it must be well formed and name this
+        # project identity.
+        task_has_project = "project_ref" in current_task.payload
+        task_project = current_task.payload.get("project_ref")
+        if task_has_project and isinstance(task_project, Mapping):
+            try:
+                task_project = ResourceRef.from_dict(task_project)
+            except (TypeError, ValueError):
+                task_project = None
+        if task_has_project and (
+                not isinstance(task_project, ResourceRef)
+                or not same_identity(task_project, project_pin)):
+            raise PermissionError("local assessment policy task is outside the configured project")
+
+        # Task revisions may advance for admission or other metadata writes,
+        # while authored content remains pinned to the policy's retained ref.
+        from herzchen.domains.work.admission import task_content_matches
+
+        matching_pins = tuple(pin for pin in task_pins if same_identity(task, pin))
+        try:
+            content_matches = all(task_content_matches(reader, pin, current_task.payload,
+                                                       current_ref=current_task.ref)
+                                  for pin in matching_pins)
+        except (AttributeError, KeyError, LookupError, TypeError, ValueError):
+            content_matches = False
+        if not content_matches:
+            raise PermissionError("local assessment policy task content is stale")
+
+        # Criteria remain exact revision bindings. Preserve the existing
+        # criterion fence even when the task pin survives metadata revisions.
+        for member, criterion in self.task_criterion_pairs:
+            if not same_identity(member, task):
+                continue
+            current_criterion = reader.get_identity(
+                ResourceRef(criterion.authority, criterion.kind, criterion.id)
+            )
+            if current_criterion is None or current_criterion.ref != criterion:
+                raise PermissionError("local assessment policy criterion is stale")
 
     def require_pair(self, task: ResourceRef, criterion: ResourceRef) -> None:
         if (task, criterion) not in self.task_criterion_pairs:

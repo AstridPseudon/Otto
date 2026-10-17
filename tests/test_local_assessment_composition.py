@@ -71,6 +71,24 @@ class LocalAssessmentCompositionTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             stale.validate_binding(policy.scope_project_ref, policy.task_criterion_pairs[0][0], self.f.owner.graph.reader)
 
+        # Lifecycle state advances the task revision without changing its
+        # authored content. The serialized read-only reader must still expose
+        # the exact historical revision so the policy can compare that content.
+        pinned_task = policy.task_criterion_pairs[0][0]
+        revised = WorkGraph(self.f.store, actor=self.f.actor).revise(
+            pinned_task, lifecycle="active", logical_request_key="metadata-only-task-revision",
+            actor=self.f.actor)
+        self.assertNotEqual(revised.ref, pinned_task)
+        retained = self.f.owner.graph.reader.get_revision(pinned_task)
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained.ref, pinned_task)
+        policy.validate_binding(policy.scope_project_ref, revised.ref, self.f.owner.graph.reader)
+        edited = WorkGraph(self.f.store, actor=self.f.actor).revise(
+            revised.ref, title="Changed task content", logical_request_key="edited-task-revision",
+            actor=self.f.actor)
+        with self.assertRaises(PermissionError):
+            policy.validate_binding(policy.scope_project_ref, edited.ref, self.f.owner.graph.reader)
+
     def test_scope_mode_is_owner_configured_and_review_required_by_default(self):
         criterion = self.state["criterion_refs"]["C01"]
         review_ref = self.call("PA01", "declare-scope", {"scope_ref": {"authority": self.f.actor.authority,

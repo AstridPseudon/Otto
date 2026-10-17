@@ -126,6 +126,49 @@ class EvidenceStatusOwnerFacadeTests(unittest.TestCase):
                 capability.call({"handle": {"view": "evidence-status", "reference": reference}},
                                 root=root, actor=self.f.actor)
 
+    def test_tool_facade_names_the_owner_error_in_its_detail(self):
+        from herzchen.fleet.landing import LandingError
+        from herzchen.fleet.tools.facade import LandingOwnerPort, ToolFacade
+        from herzchen.fleet.tools.rules import DONE, FeedbackLedger, ToolSpec
+        from herzchen.fleet.tools.tokens import TokenBook
+
+        class Landing:
+            def done(self, _lab_name, _task_id, **_pins):
+                raise LandingError("owner assessment policy does not bind this task: local assessment policy task content is stale")
+
+        book = TokenBook()
+        token = book.issue("assignment-1", "worker")
+        port = LandingOwnerPort(lambda _assignment: {
+            "service": Landing(), "lab_name": "task-lab", "task_id": "task-1",
+            "assignment_id": "assignment-1"})
+        facade = ToolFacade(
+            (ToolSpec("done", DONE, "worker-done"),),
+            {"worker": ("done",)}, port, book, FeedbackLedger())
+
+        self.assertEqual(facade.call(token, "done"), {
+            "ok": False,
+            "error": "owner_unavailable",
+            "detail": "LandingError: owner assessment policy does not bind this task: local assessment policy task content is stale",
+        })
+
+    def test_tool_facade_keeps_generic_fallback_for_unclassified_owner_errors(self):
+        from herzchen.fleet.tools.facade import ToolFacade
+        from herzchen.fleet.tools.rules import FeedbackLedger, TASK, ToolSpec
+        from herzchen.fleet.tools.tokens import TokenBook
+
+        class Owner:
+            def call(self, *_args, **_kwargs):
+                raise RuntimeError()
+
+        book = TokenBook()
+        token = book.issue("assignment-1", "worker")
+        facade = ToolFacade(
+            (ToolSpec("task", TASK, "read-task"),),
+            {"worker": ("task",)}, Owner(), book, FeedbackLedger())
+
+        self.assertEqual(facade.call(token, "task"), {
+            "ok": False, "error": "owner_unavailable", "detail": "RuntimeError"})
+
 
 if __name__ == "__main__":
     unittest.main()
