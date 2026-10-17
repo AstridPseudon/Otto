@@ -22,6 +22,10 @@ def _files(count=200, size=25 * 1024):
 
 
 class ProjectFolderScaleTests(ProjectFolderProof):
+    # This subclass raises the request bound on purpose; these live-bound proofs still run through ProjectFolderProof itself.
+    test_large_folder_uses_bounded_child_requests_and_preserves_exact_bytes = None
+    test_single_document_over_live_request_bound_is_rejected_before_creation = None
+
     def bind(self):
         # The installed host lane is an atomic private file transport. Its
         # trusted composition qualifies operation-sized requests; old bounded
@@ -80,7 +84,7 @@ class ProjectFolderScaleTests(ProjectFolderProof):
 
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(ProjectFolderScaleTests(name) for name in ProjectFolderScaleTests.__dict__
-                              if name.startswith("test_"))
+                              if name.startswith("test_") and callable(getattr(ProjectFolderScaleTests, name)))
 
 
 if __name__ == "__main__":
