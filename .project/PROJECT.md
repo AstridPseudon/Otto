@@ -143,3 +143,5 @@ The manager's manifest check prompted a baseline comparison with `install/build_
 - Focused validation: `tests/test_advisor_host_retirement.py` (1 passed). `tests/test_project_advisor_delivery.py` ran 28 passed and 1 failed at owner-service AF_UNIX bind (`PermissionError`); this case needs the gate. No assertions were weakened.
 
 - Follow-up: restored the 15 Oct pinned runtime manifest unchanged after verifying its provenance in `install/README.md`; the snapshot remains historical evidence and its candidate path is not a live caller.
+
+2026-10-17 20:29 UTC | SL9B | merged 3053409 | +17/-305 | retirement 1 passed; advisor delivery 28 passed, 1 AF_UNIX case needs the gate; diff check clean | pinned historical manifest preserved.
