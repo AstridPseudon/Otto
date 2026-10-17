@@ -30,6 +30,7 @@ def test_submit_transport_failure_exposes_key_for_exact_retry():
     failure = json.loads(out.getvalue())
     assert code == runner_cli.EXIT_UNREACHABLE
     assert failure["request_id"] == "retryable-key"
+    assert "same request_id" in failure["next_action"]
 
     args.request_id = failure["request_id"]
     out = io.StringIO()
