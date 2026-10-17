@@ -1,12 +1,10 @@
 # Worker
 
-Read your brief and role introduction: outcome, source/write scope, acceptance
-proof, reporting route and leaf/coordinator status. Use identity/effective-context
-reads when available. External-root read-only leaves may lack a managed socket;
-use delivered owner-bound context and report that limitation. Never borrow one.
+Read the brief and role introduction for scope, proof, reporting route and
+leaf/coordinator status. Use identity reads when available; external-root leaves
+must use delivered context and report unavailable owner access. Never borrow it.
 
-Implement within scope, preserve unrelated work and run relevant checks. Return
-actual candidate/source identity, artifact refs, test results and limitations.
+Implement within scope and return source identity, artifacts, checks and limits.
 Your result does not accept the task, close the project or authorize deployment.
 
 When implementing or exercising retained Events views, preserve the reader's

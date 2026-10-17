@@ -24,6 +24,14 @@ _MAX_SECONDS = 86400
 _PURPOSE_CHARS = 120
 
 
+def _recovery_action(record: dict[str, Any]) -> str:
+    """Explain how to inspect an unknown run without implying that it settled."""
+    if record.get("custody") == "uncertain":
+        return ("Inspect the retained runner record and custody latch; keep its capacity claim held "
+                "until supported recovery proves the process scope is gone. Do not resubmit this request.")
+    return "Inspect the retained runner record and its outcome before deciding whether a new request is safe."
+
+
 class Lease:
     """A run that holds units (a nested run holds none) from its start until its tree is gone."""
 
@@ -143,7 +151,10 @@ class Runner:
                     return {"ok": False, "error": "unknown_run"}
                 if record["state"] in ("settled", "unknown"):
                     code = record["exit_code"] if record["state"] == "settled" else EXIT_UNKNOWN
-                    return {"ok": True, "done": True, "record": record, "exit_code": code}
+                    result = {"ok": True, "done": True, "record": record, "exit_code": code}
+                    if record["state"] == "unknown":
+                        result["next_action"] = _recovery_action(record)
+                    return result
                 if deadline is None:
                     self._cond.wait()
                     continue
@@ -172,6 +183,8 @@ class Runner:
                     out["record"] = self._store.get(run_id)
                 except StoreError as exc:
                     return _error("evidence_invalid", str(exc))
+                if out["record"] is not None and out["record"].get("state") == "unknown":
+                    out["next_action"] = _recovery_action(out["record"])
         return out
 
     def report(self, task: str | None = None) -> dict[str, Any]:

@@ -1,8 +1,8 @@
 # Otto manager-journey operator path
 
-This run uses the root-owned manager service and its maintained command client.
-The service owns canonical task, assignment, assessment, Due, and project records;
-this document is a concise entrypoint, not a second state store.
+Use the root-owned manager service and its maintained client for canonical task,
+assignment, assessment, Due and project records. This guide is an entrypoint,
+not a state store.
 
 For the setup/help distinction and recovery matrix, use the maintained
 [operating setup and help guide](operating-setup-and-help.md). This document
@@ -175,7 +175,9 @@ Read the point-of-use guide path and canonical resource pin from the current
 role introduction. A controller may materialize it as `selected-role-guide.md`;
 verify the emitted path instead of assuming a copied `docs/` directory.
 
-For recovery, read the exact retained command or occurrence before acting:
+For recovery, inspect the exact retained command or occurrence first. Unknown
+scope keeps its capacity claim held; follow the returned `next_action`, and do
+not infer cleanup or settlement from a lost response.
 
 ```sh
 "$PYTHON" "$CONTROL" command-status --request-id TRANSPORT_HANDLE

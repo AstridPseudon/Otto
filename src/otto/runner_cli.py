@@ -1,9 +1,10 @@
-"""Otto verbs for the fleet runner: otto run submit|await|status|report|daemon."""
+"""CLI for submitting, observing and recovering fleet runner work."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import uuid
 from typing import Any, Optional
 
 from herzchen.fleet.runner.client import RunnerClient, RunnerUnavailable
@@ -21,7 +22,7 @@ def default_socket() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="otto run", description="fleet runner: submit, await, status, report")
+    parser = argparse.ArgumentParser(prog="otto run", description="submit work and inspect runner lifecycle")
     parser.add_argument("--socket", default=None, help="runner socket (default $OTTO_RUNNER_SOCKET or <otto home>/runner.sock)")
     sub = parser.add_subparsers(dest="command")
     shared = argparse.ArgumentParser(add_help=False)
@@ -38,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     await_ = sub.add_parser("await", parents=[shared], help="wait for a run and exit with its code")
     await_.add_argument("run_id")
     await_.add_argument("--timeout", type=float, default=None)
-    status = sub.add_parser("status", parents=[shared], help="show runner capacity, holders and waiting runs")
+    status = sub.add_parser("status", parents=[shared], help="show capacity and run state")
     status.add_argument("run_id", nargs="?", default=None)
     report = sub.add_parser("report", parents=[shared], help="sum stored results per task")
     report.add_argument("--task", default=None)
@@ -87,9 +88,9 @@ def _submit(args: argparse.Namespace, client: RunnerClient) -> int:
         request["purpose"] = args.purpose
     if args.max_minutes is not None:
         request["max_seconds"] = args.max_minutes * 60
-    if args.request_id is not None:
-        request["request_id"] = args.request_id
+    request["request_id"] = args.request_id or uuid.uuid4().hex
     response = client.call(request)
+    response.setdefault("request_id", request["request_id"])
     if not response.get("ok") or not args.wait:
         return _emit_ok(response)
     print(json.dumps(response, sort_keys=True))
