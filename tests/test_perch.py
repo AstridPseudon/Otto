@@ -793,6 +793,63 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
 
+    def test_dispatch_poll_resolves_one_pending_request_before_read(self):
+        import re
+        import shlex
+
+        root = Path(tempfile.mkdtemp(prefix="perch-pending-dispatch-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        raw = clean_stage2_raw(root / "pending-dispatch")
+        request_id = "a0ebbb3fece74d328ad1d290385a13ae"
+        pending = {"outcome": "pending", "request_id": request_id, "terminal": False,
+                   "service_state": "processing"}
+        (raw / "pending.json").write_text(json.dumps(pending), encoding="utf-8")
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        wait = re.search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(wait)
+        script = "\n".join((
+            "set -euo pipefail",
+            "RAW=" + shlex.quote(str(raw)),
+            "PY=" + shlex.quote(sys.executable),
+            "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+            "REQUEST_ID=" + shlex.quote(request_id),
+            "stage2_host_client() {",
+            '  case "$*" in',
+            '    *"--wait-seconds 0 project status --project perch-stage2")',
+            '      if [ -e "$RAW/project-called" ]; then echo "resubmitted status" >&2; return 91; fi',
+            '      : > "$RAW/project-called"; cat "$RAW/pending.json" ;;',
+            '    *"request-status --request-id $REQUEST_ID")',
+            '      if [ -e "$RAW/request-called" ]; then cat "$RAW/read.json";',
+            '      else : > "$RAW/request-called"; cat "$RAW/pending.json"; fi ;;',
+            '    *) echo "unexpected host command: $*" >&2; return 92 ;;',
+            '  esac',
+            '}',
+            "cold_client() { printf '%s\\n' '{\"native_capacity\":{\"active_or_uncertain\":1}}'; }",
+            "sleep() { :; }",
+            wait.group(),
+            "stage2_wait_worker claude-code C",
+        ))
+
+        def run_with(response):
+            for name in ("project-called", "request-called"):
+                (raw / name).unlink(missing_ok=True)
+            (raw / "read.json").write_text(json.dumps(response), encoding="utf-8")
+            return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+
+        read = {"outcome": "read", "tasks": [{"id": "C", "repo": "toy", "branch": "canon/main",
+                "dispatch": {"state": "launched", "reason": None}}]}
+        result = run_with(read)
+        self.assertEqual(result.returncode, 0, result.stderr + (raw / "stage2-setup-errors.txt").read_text())
+        self.assertTrue((raw / "request-called").exists())
+        self.assertEqual(json.loads((raw / "stage2-dispatch-C.json").read_text()), read)
+        self.assertEqual(json.loads((raw / "stage2-dispatch-C-pending.json").read_text()), pending)
+        with self.assertRaisesRegex(ValueError, "changed its retained request id"):
+            perch_report.stage2_dispatch_request_id(
+                {**pending, "request_id": "b" * 32}, expected=request_id)
+        result = run_with({"outcome": "error", "error": {"message": "seeded status error"}})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seeded status error", (raw / "stage2-setup-errors.txt").read_text())
+
     def test_stage_two_preserves_operator_log_and_copies_raw_evidence(self):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
         self.assertNotIn("stage2_cleanup_operator_log", shell)

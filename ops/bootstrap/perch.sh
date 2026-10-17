@@ -241,11 +241,33 @@ stage2_admit_tasks() {
 # reads each task's retained dispatch state through product project status.
 # Manager status requires a native manager caller.
 stage2_wait_worker() {  # HOST TASK
-  local host="$1" task="$2" saw_dispatch="" deadline=$(( $(date +%s) + 180 ))
+  local host="$1" task="$2" saw_dispatch="" request_id="" next_request="" deadline=$(( $(date +%s) + 180 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if ! stage2_host_client --host "$host" project status --project perch-stage2 \
+    # Return a retained receipt promptly; only request-status may read it until terminal.
+    if ! stage2_host_client --host "$host" --wait-seconds 0 project status --project perch-stage2 \
         > "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then
       echo "owner project status failed while waiting for $task; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
+    if ! request_id="$("$PY" -I "$REPORT_PY" stage2-dispatch-request \
+          --status "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
+    if [ -n "$request_id" ]; then
+      cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-dispatch-$task-pending.json"
+    fi
+    while [ -n "$request_id" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+      sleep 0.5
+      if ! stage2_host_client --host "$host" request-status --request-id "$request_id" \
+          > "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then
+        echo "retained project status request $request_id failed; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
+        return 1
+      fi
+      if ! next_request="$("$PY" -I "$REPORT_PY" stage2-dispatch-request \
+            --status "$RAW/stage2-dispatch-$task.json" --expected-request-id "$request_id" \
+            2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
+      request_id="$next_request"
+    done
+    if [ -n "$request_id" ]; then
+      echo "retained project status request $request_id stayed pending for $task within the 180-second dispatch budget" >> "$RAW/stage2-setup-errors.txt"
       return 1
     fi
     if ! "$PY" -I "$REPORT_PY" stage2-dispatch-no-failure \

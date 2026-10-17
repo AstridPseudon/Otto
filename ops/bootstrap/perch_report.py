@@ -255,6 +255,25 @@ def cmd_stage2_dispatch_check(args):
                           read_json(args.admission, {}) or {}, args.task)
 
 
+def stage2_dispatch_request_id(status, expected=None):
+    """Return the retained request to read again, or None for a completed status read."""
+    if status.get("outcome") == "pending":
+        request_id = status.get("request_id")
+        if (status.get("terminal") is not False or not isinstance(request_id, str)
+                or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id)):
+            raise ValueError("project status has an invalid pending request receipt: " + repr(status))
+        if expected is not None and request_id != expected:
+            raise ValueError("project status changed its retained request id")
+        return request_id
+    if status.get("outcome") != "read":
+        raise ValueError("project status request did not return a read: " + repr(status))
+    return None
+
+
+def cmd_stage2_dispatch_request(args):
+    print(stage2_dispatch_request_id(read_json(args.status, {}) or {}, args.expected_request_id) or "")
+
+
 def stage2_status_task(status, alias):
     if status.get("outcome") != "read" or not isinstance(status.get("tasks"), list):
         raise ValueError("staging project status lacks the product task dispatch state")
@@ -1666,6 +1685,9 @@ def build_parser():
     p.add_argument("--status", required=True); p.add_argument("--activation", required=True)
     p.add_argument("--admission", required=True); p.add_argument("--task", required=True)
     p.set_defaults(fn=cmd_stage2_dispatch_check)
+    p = sub.add_parser("stage2-dispatch-request")
+    p.add_argument("--status", required=True); p.add_argument("--expected-request-id")
+    p.set_defaults(fn=cmd_stage2_dispatch_request)
     p = sub.add_parser("stage2-dispatch-no-failure")
     p.add_argument("--status", required=True); p.add_argument("--task", required=True)
     p.set_defaults(fn=cmd_stage2_dispatch_no_failure)
