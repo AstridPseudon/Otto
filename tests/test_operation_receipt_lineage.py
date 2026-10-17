@@ -2,9 +2,9 @@
 from dataclasses import replace
 import tempfile,unittest
 from pathlib import Path
-from herzchen.contracts import AuthenticatedActor,ResourceRef,CommandReceipt,ReceiptStatus
+from herzchen.contracts import AuthenticatedActor,ResourceRef,CommandReceipt,ReceiptStatus,CommandEnvelope,TransactionContext
 from herzchen.kernel import Store
-from herzchen.kernel.operations import OperationManager,OperationRequest,OperationState,UnknownOutcomeError,request_digest
+from herzchen.kernel.operations import OperationManager,OperationRequest,OperationState,UnknownOutcomeError,OperationError,request_digest
 from herzchen.kernel.store import OperationOwnerCapability,RuntimeOperationOwner,RuntimeOperationReader
 
 class ReceiptLineageTests(unittest.TestCase):
@@ -156,4 +156,92 @@ class ReceiptLineageTests(unittest.TestCase):
   self.assertEqual(unknown.state,OperationState.UNKNOWN)
   with self.assertRaises(UnknownOutcomeError):
    recovered_manager.claim_start(unknown,transition_key='unknown-held-retry')
+
+ def test_process_gone_effect_unknown_reconciles_once(self):
+  prepared=self.manager.prepare(self.request('gone-effect'))
+  started=self.manager.claim_start(prepared,transition_key='gone-effect-start')
+  effect_ref=started.effect_ref
+  self.store.close()
+  self.store=Store.open(Path(self.directory.name)/'owner.sqlite',authority='owner')
+  self.addCleanup(self.store.close)
+  manager=OperationManager(self.store)
+  unknown=manager.get('gone-effect')
+  self.assertEqual(unknown.state,OperationState.UNKNOWN)
+  result={'verified':True,'output':'artifact-1'}
+
+  def retain_proof(key,*,proof_effect_ref=effect_ref,result_value=result):
+   payload={'effect_ref':proof_effect_ref.to_dict(),'state':'committed','result':result_value}
+   target=ResourceRef('owner','effect-proof',key)
+   envelope=CommandEnvelope('effect.proof','fnd-04.operation.v1',target,
+    TransactionContext(self.actor,key,request_digest(payload),expected_version=0),payload)
+   return self.store.mutate(envelope,event_type='effect.terminal',
+    result_ref=ResourceRef('owner','effect-proof',key,'rev-1'),effects=payload,stream='effects')
+
+  with self.assertRaises(OperationError):
+   manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='missing-proof',transition_key='gone-effect-resolve-missing')
+  self.assertEqual(manager.get('gone-effect').state,OperationState.UNKNOWN)
+  retain_proof('foreign-proof',proof_effect_ref=ResourceRef('owner','effect','other'))
+  with self.assertRaises(OperationError):
+   manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='foreign-proof',transition_key='gone-effect-resolve-foreign')
+  retain_proof('changed-proof',result_value={'verified':False})
+  with self.assertRaises(OperationError):
+   manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='changed-proof',transition_key='gone-effect-resolve-changed')
+  self.assertEqual(manager.get('gone-effect').state,OperationState.UNKNOWN)
+
+  retain_proof('valid-proof')
+  original_identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  altered_custody=replace(unknown.request,external_owner_ref=ResourceRef('owner','external-owner','forged'))
+  forged_custody=replace(unknown,request=altered_custody)
+  self.assertEqual(forged_custody.effect_ref,unknown.effect_ref)
+  self.assertEqual(forged_custody.version,unknown.version)
+  with self.assertRaises(UnknownOutcomeError):
+   manager.resolve_unknown(forged_custody,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='valid-proof',transition_key='gone-effect-forged-custody')
+  retained=manager.get('gone-effect')
+  retained_identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  self.assertEqual(retained.state,OperationState.UNKNOWN)
+  self.assertEqual(retained.request.external_owner_ref,unknown.request.external_owner_ref)
+  self.assertEqual(retained_identity.version,original_identity.version)
+  self.assertEqual(retained_identity.payload['external_owner_ref'],original_identity.payload['external_owner_ref'])
+  altered_payload=replace(unknown.request,payload={'task':'forged'})
+  forged_payload=replace(unknown,request=altered_payload)
+  self.assertEqual(forged_payload.effect_ref,unknown.effect_ref)
+  self.assertEqual(forged_payload.version,unknown.version)
+  with self.assertRaises(UnknownOutcomeError):
+   manager.resolve_unknown(forged_payload,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='valid-proof',transition_key='gone-effect-forged-payload')
+  retained=manager.get('gone-effect')
+  retained_identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  self.assertEqual(retained.state,OperationState.UNKNOWN)
+  self.assertEqual(retained.request.external_owner_ref,unknown.request.external_owner_ref)
+  self.assertEqual(retained.request.payload,unknown.request.payload)
+  self.assertEqual(retained_identity.ref,original_identity.ref)
+  self.assertEqual(retained_identity.version,original_identity.version)
+  self.assertEqual(retained_identity.payload['external_owner_ref'],original_identity.payload['external_owner_ref'])
+  self.assertEqual(retained_identity.payload['request_payload'],original_identity.payload['request_payload'])
+  retain_proof('bool-int-proof',result_value={'verified':1,'output':'artifact-1'})
+  with self.assertRaises(UnknownOutcomeError):
+   manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='bool-int-proof',transition_key='gone-effect-bool-int')
+  self.assertEqual(manager.get('gone-effect').state,OperationState.UNKNOWN)
+
+  reconciled=manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+   evidence_key='valid-proof',transition_key='gone-effect-resolve')
+  self.assertEqual(reconciled.state,OperationState.COMMITTED)
+  self.assertEqual(reconciled.result,result)
+  identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  evidence=identity.payload['resolution_evidence']
+  self.assertEqual(evidence['evidence_key'],'valid-proof')
+  self.assertTrue(evidence['event_id'])
+  receipt_count=len(self.store.list_events(stream='operations'))
+  replay=manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+   evidence_key='valid-proof',transition_key='gone-effect-resolve')
+  self.assertEqual(replay.operation_ref,reconciled.operation_ref)
+  with self.assertRaises(OperationError):
+   manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='valid-proof',transition_key='gone-effect-resolve-again')
+  self.assertEqual(len(self.store.list_events(stream='operations')),receipt_count)
 if __name__=='__main__':unittest.main()
