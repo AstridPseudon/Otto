@@ -100,6 +100,23 @@ def _completed_worker_support_refs(result, verifier, authorization):
     return tuple(item["ref"] for item in brief.get("context", {}).get("supporting_context", []))
 
 
+def _completed_worker_brief_readers(brief, project_ref, task_ref):
+    """Replay delivered work state after current owner scope has been checked."""
+    state = brief.get("context", {}).get("project_state", {})
+    readers = []
+    for name, pin in (("project", project_ref), ("task", task_ref)):
+        retained = state.get(name)
+        if not isinstance(retained, Mapping) or retained.get("ref") != pin or not isinstance(retained.get("payload"), Mapping):
+            raise OwnerRoleRuntimeError("completed worker delivered work state is unavailable")
+        def read(identity, *, name=name, pin=pin, retained=retained):
+            if any(identity.get(key) != pin[key] for key in ("authority", "kind", "id")):
+                raise OwnerRoleRuntimeError(f"completed worker {name} lookup escaped its delivered identity")
+            return {**deepcopy(dict(retained)),
+                    **({"project_ref": project_ref, "task_pin_content_matches": True} if name == "task" else {})}
+        readers.append(read)
+    return tuple(readers)
+
+
 class OwnerAuthorizedRoleCapture(OwnerDueRecordAttemptCapture):
     """Finite delivery authorization within the existing owner attempt CAS."""
 
@@ -731,10 +748,29 @@ class CanonicalRoleRuntime:
                 current_due = self.due_port.read_due(schedule_id)
                 if current_due is None or current_due.get("timeout_seconds") != due.timeout_seconds:
                     return "canonical owner occurrence timeout changed"
-                for name in ("project", "task", "assignment", "mandate"):
+                exact = ("assignment", "mandate") if role == "worker" else (
+                    "project", "task", "assignment", "mandate")
+                for name in exact:
                     current = _json(readers[name](identities[name]))
                     if current != snapshots[name]:
                         return f"canonical {name} changed after instruction preparation"
+                if role == "worker":
+                    project_now = _json(project_reader(identities["project"]))
+                    task_now = _json(task_reader(identities["task"]))
+                    for name, observed in (("project", project_now), ("task", task_now)):
+                        ref = observed.get("ref")
+                        if not isinstance(ref, Mapping) or any(
+                                ref.get(key) != identities[name][key] for key in ("authority", "kind", "id")):
+                            return f"canonical {name} changed after instruction preparation"
+                    parent = task_now.get("project_ref")
+                    if not isinstance(parent, Mapping) or any(
+                            parent.get(key) != identities["project"][key]
+                            for key in ("authority", "kind", "id")):
+                        return "canonical task changed after instruction preparation"
+                    # The identity-fenced task reader computes this with
+                    # admission.task_content_matches against the retained pin.
+                    if task_now.get("task_pin_content_matches") is not True:
+                        return "canonical task changed after instruction preparation"
             except Exception:
                 return "canonical owner scope is unavailable"
             return None
@@ -946,13 +982,18 @@ class CanonicalRoleRuntime:
                     brief = resource.get("brief") or {}
                     support = _completed_worker_support_refs(envelope, self.native_result_verifier,
                         (capture._attempt(capture._record()) or {}).get("delivery_authorization"))
+                    completed_project_reader, completed_task_reader = _completed_worker_brief_readers(
+                        brief, project_ref, task_ref)
                     def completed_brief_digest():
+                        failure = capture.completed_scope_validator()
+                        if failure:
+                            raise OwnerRoleRuntimeError(str(failure))
                         prepared = prepare_canonical_assignment_role_brief(
                             role=role, project_ref=project_ref, task_ref=task_ref,
                             assignment_ref=assignment_ref, mandate_ref=mandate_ref,
                             expected_generation=expected_generation,
-                            project_reader=self._project_reader(project_ref),
-                            task_reader=self._task_reader(project_ref, task_ref),
+                            project_reader=completed_project_reader,
+                            task_reader=completed_task_reader,
                             assignment_reader=self._assignment_reader(assignment_ref),
                             mandate_reader=self._mandate_reader(project_ref, mandate_ref),
                             resource_reader=self.operations.content_port,
@@ -1041,19 +1082,25 @@ class CanonicalRoleRuntime:
         retained_context = ((resource or {}).get("brief") or {}).get("context", {}).get("operating_setup")
         completed_support_refs = _completed_worker_support_refs(result, self.native_result_verifier,
             attempt.get("delivery_authorization")) if role == "worker" else ()
+        completed_readers = _completed_worker_brief_readers(
+            resource["brief"], project_ref, task_ref) if role == "worker" and isinstance(resource, Mapping) else None
 
         def current_brief_digest() -> str:
+            if role == "worker":
+                failure = capture.scope_validator()
+                if failure:
+                    raise OwnerRoleRuntimeError(str(failure))
             prepared = prepare_canonical_assignment_role_brief(
                 role=role, project_ref=project_ref, assignment_ref=assignment_ref,
                 mandate_ref=mandate_ref, expected_generation=expected_generation,
-                project_reader=self._project_reader(project_ref),
+                project_reader=completed_readers[0] if completed_readers else self._project_reader(project_ref),
                 assignment_reader=self._assignment_reader(assignment_ref),
                 mandate_reader=self._mandate_reader(project_ref, mandate_ref),
                 resource_reader=self.operations.content_port,
                 supervisor_reader=(lambda: self._manager_supervisor(project_ref)) if role == "manager" else None,
                 direction_context_reader=getattr(self.operations, "direction_context_reader", None), lifecycle=lifecycle,
                 as_of=as_of, required_resource_names=required_resource_names,
-                task_ref=task_ref, task_reader=self._task_reader(project_ref, task_ref),
+                task_ref=task_ref, task_reader=completed_readers[1] if completed_readers else self._task_reader(project_ref, task_ref),
                 # Settlement verifies the admitted packet. A peer replacement
                 # or setup revision affects future turns, not this observation.
                 operating_context_reader=lambda: retained_context,

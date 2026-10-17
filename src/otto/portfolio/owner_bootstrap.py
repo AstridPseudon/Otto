@@ -17,7 +17,7 @@ from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig, Proje
 
 def _read_current_result_task(scope_reader: Any, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
                               *, allow_task_content_revision: bool = False) -> Any:
-    """Reuse owner membership semantics, optionally accepting metadata-only task revisions."""
+    """Read a bound task, optionally accepting content-stable task and project revisions."""
     from types import SimpleNamespace
     from .owner_readers import project_reader, task_reader
     operations = SimpleNamespace(reader=scope_reader)
@@ -37,7 +37,13 @@ def _read_current_result_task(scope_reader: Any, project_ref: Mapping[str, Any],
             task_ref_matches = task_content_matches(scope_reader, pinned, task["payload"], current_ref=current)
         except (TypeError, ValueError, KeyError):
             task_ref_matches = False
-    if project["ref"] != dict(project_ref) or not task_ref_matches or task["project_ref"] != dict(project_ref):
+    project_matches = project["ref"] == dict(project_ref) and task["project_ref"] == dict(project_ref)
+    if allow_task_content_revision and not project_matches:
+        project_matches = all(
+            isinstance(ref, Mapping) and all(ref.get(key) == project_ref[key]
+                for key in ("authority", "kind", "id"))
+            for ref in (project["ref"], task["project_ref"]))
+    if not project_matches or not task_ref_matches:
         raise PermissionError("result capability project/task revision changed")
     return task
 
@@ -71,7 +77,8 @@ class _BoundResultAccess:
     def get(self, target: Any) -> Any:
         if _json_value(target) != self.__assignment.to_dict():
             raise PermissionError("result capability assignment mismatch")
-        _read_current_result_task(self.__scope_reader, self.__project.to_dict(), self.__task.to_dict())
+        _read_current_result_task(self.__scope_reader, self.__project.to_dict(), self.__task.to_dict(),
+                                  allow_task_content_revision=True)
         current = self.__assignments.get(self.__assignment)
         scope = _json_value(current.scope)
         task_scope = scope == self.__task.to_dict()
@@ -1173,7 +1180,7 @@ class PortfolioOwnerBootstrap:
             project, task = ResourceRef.from_dict(project_ref), ResourceRef.from_dict(task_ref)
             if grant is None or grant.principal != owner_actor or not grant.allows(project):
                 raise PermissionError("result capability requires the admitted project/task scope")
-            _read_current_result_task(scope_reader, project_ref, task_ref)
+            _read_current_result_task(scope_reader, project_ref, task_ref, allow_task_content_revision=True)
             access = _BoundResultAccess(assignments=assignments, reader=result_reader, scope_reader=scope_reader,
                 actor=owner_actor, project_ref=project_ref, task_ref=task_ref, assignment_ref=assignment_ref,
                 generation=generation, logical_request_key=logical_request_key,
