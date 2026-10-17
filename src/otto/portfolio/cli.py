@@ -9,7 +9,7 @@ application supplies those dependencies.
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 import json
@@ -1688,16 +1688,18 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
     """
     from .document_editor_host import owner_editor_host
     words = list(argv)
-    editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
-    observability_views, observability_grant = _owner_observability(session, words)
     out = StringIO()
+    err = StringIO()
     try:
-        with redirect_stdout(out):
+        with redirect_stdout(out), redirect_stderr(err):
+            observability_views, observability_grant = _owner_observability(session, words)
+            editor_host = owner_editor_host(session, home) if words[:1] and words[0] in OWNER_EDITOR_VERBS else None
             code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session,
                         bound_actor=session.owner.owner_actor.actor,
                         observability_views=observability_views, observability_grant=observability_grant)
     except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
-        return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
+        return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code,
+                "message": (out.getvalue() + err.getvalue()).strip()}}
     text = out.getvalue()
     try:
         return json.loads(text)

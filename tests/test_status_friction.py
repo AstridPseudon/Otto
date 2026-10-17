@@ -1,8 +1,10 @@
 import unittest
 from unittest.mock import patch
+import json
 
-from herzchen.contracts import ResourceRef
+from herzchen.contracts import AuthenticatedActor, ResourceRef
 from herzchen.kernel.history import transition
+from herzchen.kernel.project_history import ProjectHistoryGrant
 from otto.portfolio import cli
 from otto.portfolio.observability_views import ObservabilityViews, friction_from_rows
 
@@ -79,9 +81,10 @@ class StatusFrictionTests(unittest.TestCase):
         reader = RetainedReader(rows)
         views = ObservabilityViews(reader)
         project = {"authority": "owner", "kind": "work.project", "id": "p"}
-        grant = object()
+        actor = AuthenticatedActor("owner", "reader", "credential")
+        grant = ProjectHistoryGrant(actor, (project["id"],), "tests", "grant-1")
         base = {"outcome": "read", "projects": [{"project_ref": project}]}
-        args = cli.build_parser().parse_args(["status", "--friction"])
+        args = cli.build_parser().parse_args(["status", "--friction", "--project-ref", json.dumps(project)])
         with patch("otto.portfolio.status.portfolio_status", return_value=base):
             result = cli._status_command(args, object(), None, views, grant)
 
@@ -96,6 +99,7 @@ class StatusFrictionTests(unittest.TestCase):
         self.assertEqual(friction["tokens_per_accepted_task"]["value"], 900)
         self.assertEqual(reader.kwargs["grant"], grant)
         self.assertEqual(reader.kwargs["projects"], [project])
+        self.assertIs(reader.kwargs["actor"], actor)
         self.assertEqual(reader.kwargs["limit"], 200)
 
     def test_inaccessible_or_incomplete_events_are_unavailable_not_zero(self):
@@ -103,9 +107,12 @@ class StatusFrictionTests(unittest.TestCase):
             def read(self, *args, **kwargs):
                 raise PermissionError("scope denied")
 
-        args = cli.build_parser().parse_args(["status", "--friction"])
-        with patch("otto.portfolio.status.portfolio_status", return_value={"outcome": "read", "projects": []}):
-            result = cli._status_command(args, object(), None, DeniedViews(), object())
+        project = {"authority": "owner", "kind": "work.project", "id": "p"}
+        actor = AuthenticatedActor("owner", "reader", "credential")
+        grant = ProjectHistoryGrant(actor, (project["id"],), "tests", "grant-1")
+        args = cli.build_parser().parse_args(["status", "--friction", "--project-ref", json.dumps(project)])
+        with patch("otto.portfolio.status.portfolio_status", return_value={"outcome": "read", "projects": [{"project_ref": project}]}):
+            result = cli._status_command(args, object(), None, DeniedViews(), grant)
         friction = result["friction"]
         self.assertEqual(friction["coverage"], "partial-or-inaccessible")
         for item in friction["counts"].values():

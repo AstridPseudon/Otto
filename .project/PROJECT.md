@@ -56,6 +56,13 @@ The focused CLI regression was added before implementation and passes: `/opt/hom
 - Changed files: `src/otto/portfolio/cli.py`, `src/otto/hostctl/cli.py`, `tests/test_owner_observability_cli.py`, `.project/PROJECT.md`.
 - `tests/test_owner_observability_cli.py`: 5 passed through the production `cmd_portfolio` and `owner_verb` entrypoints with fake owner sessions/history reader; checks `--project-ref=JSON` forwarding, actor binding, project grant restriction, `show history`, and `status --friction`. `tests/test_cli_read_routes.py`: 3 passed. The regression avoids starting an Otto owner, as required by the session boundary.
 
+### SL3/SL8 focused test and usage follow-up
+
+- Updated `tests/test_status_friction.py` to pass an explicit `--project-ref` and a matching `ProjectHistoryGrant`; the denied-read case now also has an explicit scoped project and grant. This keeps the finite-scope requirement intact.
+- Moved owner observability composition and editor-host setup inside `owner_verb`'s existing `SystemExit` guard and capture parser stderr. Malformed history CLI arguments now return the established structured `usage` error instead of escaping the owner handler. Added a regression without using `--help`.
+- Changed files: `.project/PROJECT.md`, `src/otto/portfolio/cli.py`, `tests/test_owner_observability_cli.py`, `tests/test_status_friction.py`.
+- `tests/test_status_friction.py`: 3 passed. `tests/test_owner_observability_cli.py`: 6 passed. Ran each file in a separate pytest process; no owner or staging run was started.
+
 ## Questions for the orchestrator
 
 1. **SL5 Vision / Native5:** Do you want these surfaces kept or retired? The code scan shows live production composition: Vision is injected in `install/controller/shared_operating_service.py:399-413`; Native5 packets are imported by `shared_operating_service.py:157,365,368,389,589` and `scoped_client_service.py:41`, with an additional prepared-context route at `install/controller/prepared_context_hold.py:50`. The finite Vision CLI and manager read paths also remain. Code evidence favors keeping both pending actual Store-event usage data. Obtaining that event data requires owner access, which this session is explicitly forbidden to start or query. I will leave code unchanged until your keep/retire decision.
