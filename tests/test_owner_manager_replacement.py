@@ -9,6 +9,7 @@ class OwnerManagerReplacementTests(unittest.TestCase):
     def setUp(self):
         self.f=fixture.ExecutionApplicationTests();self.f.setUp();self.addCleanup(self.f.doCleanups)
         self.manager,guide,mandate=self.f.role_handles('manager','manager','old-manager-session')
+        self.guide, self.mandate = guide, mandate
         prepared=self.f.app.prepare_role(role='manager',project_ref=self.f.project.ref.to_dict(),
             task_ref=self.f.task.ref.to_dict(),assignment_ref=self.manager.ref.to_dict(),generation=1,
             mandate_ref=mandate,context_refs=(guide,mandate),request_key='old-manager',
@@ -34,6 +35,29 @@ class OwnerManagerReplacementTests(unittest.TestCase):
         self.assertEqual(replay['outcome'],'replayed',replay)
         self.assertEqual(self.acquisitions,[self.schedule])
         self.assertEqual(self.f.app._read(self.schedule).generation,1)
+
+    def test_already_queued_old_generation_due_cannot_start_after_replacement(self):
+        queued = self.f.app.prepare_role(role='manager', project_ref=self.f.project.ref.to_dict(),
+            task_ref=self.f.task.ref.to_dict(), assignment_ref=self.manager.ref.to_dict(), generation=1,
+            mandate_ref=self.mandate, context_refs=(self.guide, self.mandate),
+            request_key='queued-old-generation', instruction='Must remain inert', model='gpt-test',
+            reasoning='high', profile='workspace-write')
+        result = self.port.replace(schedule_id=self.schedule, request_key='replace-with-queued-due')
+        self.assertEqual(result['outcome'], 'replaced', result)
+        calls_before = len(self.f.provider.calls)
+        started = self.f.app.start(schedule_id=queued['schedule_id'])
+        self.assertNotEqual(started.get('outcome'), 'succeeded', started)
+        self.assertEqual(len(self.f.provider.calls), calls_before)
+
+    def test_failed_native_acquisition_is_not_retried_under_a_new_request_key(self):
+        calls = []
+        self.port.acquire_session = lambda prior: calls.append(prior['schedule_id']) or {
+            'outcome': 'error', 'terminal_verified': False, 'error': 'native start failed'}
+        first = self.port.replace(schedule_id=self.schedule, request_key='failed-acquisition')
+        self.assertEqual(first['outcome'], 'held', first)
+        second = self.port.replace(schedule_id=self.schedule, request_key='failed-acquisition-retry')
+        self.assertEqual(second['outcome'], 'held', second)
+        self.assertEqual(calls, [self.schedule])
 
     def test_current_context_can_refresh_identical_BASE_in_the_new_generation(self):
         def context(assignment,generation,native):

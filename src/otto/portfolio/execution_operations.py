@@ -1234,6 +1234,11 @@ def recheck_execution_admission(app: Any, due: Any) -> dict[str, Any]:
     role = _value(due, "role")
     result: dict[str, Any] = {"role": role, "schedule_id": _value(due, "schedule_id")}
     if role != "worker":
+        # A manager turn can wait in the host queue while its native session
+        # is replaced. The earlier preparation check is no longer sufficient
+        # at this final provider boundary.
+        if role == "manager":
+            app._current(_value(due, "assignment_ref"), _value(due, "generation"))
         result["worker_readiness"] = "not_applicable"
         return result
 
