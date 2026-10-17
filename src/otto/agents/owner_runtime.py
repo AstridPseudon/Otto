@@ -1134,7 +1134,7 @@ class CanonicalRoleRuntime:
             published = capture.publish_analytical_result(result, result_owner)
         accepted = capture.accept_result(logical_request_key, manager_actor=self.actor)
         response = {**accepted, "published_analytical_result": published}
-        if (role == "worker" and accepted.get("accepted") is True and published is not None
+        if (role == "worker" and published is not None
                 and callable(self.landed_worker_settler)):
             try:
                 cleanup = self.landed_worker_settler(

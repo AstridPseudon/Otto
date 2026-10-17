@@ -417,18 +417,20 @@ def test_owner_start_retries_only_captured_landed_lab_after_remove_failure(monke
     bound = {"task_ref": task_ref, "assignment_ref": assignment_ref, "generation": 1,
              "result_digest": result_digest,
              "operation_result": {"result_ref": "result-r1", "output": {"artifacts": [{"name": "task.txt"}]}}}
-    result = {"outcome": "succeeded", "task_bound_evidence": bound}
     request_key = "worker-request-r1"
+    result = {"outcome": "succeeded", "logical_request_key": request_key,
+              "task_bound_evidence": bound}
     acceptance_digest = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     accepted_due = {
         "role": "worker", "schedule_id": "schedule-r1", "lifecycle_owner": "owner-r1",
         "assignment_ref": assignment_ref, "generation": 1, "target": {"task_ref": task_ref},
         "host_evidence": {
             "gateway_attempt": {"state": "result", "logical_request_key": request_key, "result": result,
-                "manager_acceptance": {"accepted": True, "owner": "owner-r1",
+                "manager_acceptance": {"accepted": False, "owner": "owner-r1",
                     "logical_request_key": request_key, "result_digest": acceptance_digest}},
             "captured_artifacts": [{"ref": "artifact-r1"}],
             "captured_result_summary": {"result_ref": "result-r1", "result_digest": result_digest,
+                "logical_request_key": request_key, "assignment_ref": assignment_ref, "generation": 1,
                 "verification": {"context_digest_verified": True}},
         },
     }
@@ -452,19 +454,57 @@ def test_owner_start_retries_only_captured_landed_lab_after_remove_failure(monke
 
     monkeypatch.setattr(LabFleet, "remove", transient_remove)
     registry = OwnerFleetRegistry(owner, {"repositories": {"repo-a": str(line)}}, tmp_path / "owner-home",
-        object(), checkpoint=checkpoint, due_port=DuePort())
+        object(), checkpoint=checkpoint, due_port=DuePort(), landing_factory=lambda **_kwargs: object())
 
-    assert any(getattr(item, "action", None) == "kept-error" for item in registry.startup_landed_sweep)
+    assert registry.startup_landed_sweep is None, "registry construction swept before owner custody"
+    mismatched = json.loads(json.dumps(accepted_due))
+    mismatched["host_evidence"]["captured_result_summary"]["logical_request_key"] = "different-request"
+    assert registry._captured_worker_due(accepted_due) is True
+    assert registry._captured_worker_due(mismatched) is False, "mismatched capture key authorized lab cleanup"
+    registry.startup_landed_sweep = registry.sweep_landed_at_start()
+    assert any(getattr(item, "action", None) == "kept-error" for item in registry.startup_landed_sweep), registry.startup_landed_sweep
     assert (labs_root / "task-lab").is_dir(), "failed cleanup discarded the captured landed lab"
     assert (labs_root / "unsettled-lab").is_dir(), "startup sweep removed a lab without a captured Due"
 
     restarted_registry = OwnerFleetRegistry(owner, {"repositories": {"repo-a": str(line)}},
-        tmp_path / "owner-home-restarted", object(), checkpoint=checkpoint, due_port=DuePort())
-    retried = restarted_registry.startup_landed_sweep
+        tmp_path / "owner-home-restarted", object(), checkpoint=checkpoint, due_port=DuePort(),
+        landing_factory=lambda **_kwargs: object())
+    assert restarted_registry.startup_landed_sweep is None
+    retried = restarted_registry.sweep_landed_at_start()
 
     assert any(getattr(item, "action", None) == "removed" for item in retried)
     assert not (labs_root / "task-lab").exists(), "owner-start retry left a removable landed lab"
     assert (labs_root / "unsettled-lab").is_dir()
+
+
+def test_landed_lab_start_sweep_runs_after_owner_file_custody(tmp_path, monkeypatch):
+    from otto.hostctl.product_service import OwnerFleetRegistry, _start_owner_host
+
+    monkeypatch.setattr(OwnerFleetRegistry, "_start_facade", lambda _self: None)
+    owner_file = tmp_path / "owner.json"
+    owner = SimpleNamespace(graph=SimpleNamespace(reader=SimpleNamespace()), host=None,
+                            fleet_registry=None)
+    registry = OwnerFleetRegistry(owner, {}, tmp_path / "home", object(), checkpoint=lambda *_a, **_k: None)
+    assert registry.startup_landed_sweep is None
+    observed = []
+
+    class Host:
+        _owns_owner_file = False
+
+        def start(self):
+            assert not observed
+            owner_file.write_text("owned")
+            self._owns_owner_file = True
+
+    owner.host = Host()
+    owner.fleet_registry = registry
+    registry.sweep_landed_at_start = lambda: observed.append(
+        (owner.host._owns_owner_file, owner_file.exists())) or []
+
+    _start_owner_host(owner)
+
+    assert observed == [(True, True)]
+    assert registry.startup_landed_sweep == []
 
 
 def test_landing_owner_port_forwards_only_owner_assignment_identity():

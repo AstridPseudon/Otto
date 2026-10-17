@@ -46,6 +46,13 @@ class StartupStopped(RuntimeError):
     """An explicit stop was requested while the owner was still composing."""
 
 
+def _start_owner_host(owner: Any) -> None:
+    """Start serving first, then retry landed-lab cleanup under owner custody."""
+    owner.host.start()
+    if owner.host._owns_owner_file and owner.fleet_registry is not None:
+        owner.fleet_registry.startup_landed_sweep = owner.fleet_registry.sweep_landed_at_start()
+
+
 def capacity_policy(config: Mapping[str, Any]) -> CapacityPolicy:
     """The pool's per-role limits from the installation; defaults when absent."""
     if 'capacity' not in config:
@@ -292,7 +299,7 @@ class OwnerFleetRegistry:
         self._due_bindings: dict[tuple[str, str], tuple[int, str]] = {}
         self._lock = threading.RLock()
         self._start_facade()
-        self.startup_landed_sweep = self.sweep_landed_at_start()
+        self.startup_landed_sweep: Optional[list] = None
 
     def _captured_worker_due(self, due: Mapping[str, Any], *, task_ref: Mapping[str, Any] | None = None,
                              assignment_ref: Mapping[str, Any] | None = None,
@@ -302,7 +309,6 @@ class OwnerFleetRegistry:
         evidence = due.get("host_evidence") if isinstance(due.get("host_evidence"), Mapping) else {}
         attempt = evidence.get("gateway_attempt") if isinstance(evidence.get("gateway_attempt"), Mapping) else {}
         result = attempt.get("result") if isinstance(attempt.get("result"), Mapping) else {}
-        acceptance = attempt.get("manager_acceptance") if isinstance(attempt.get("manager_acceptance"), Mapping) else {}
         target = due.get("target") if isinstance(due.get("target"), Mapping) else {}
         due_task = target.get("task_ref")
         due_assignment = due.get("assignment_ref")
@@ -313,20 +319,24 @@ class OwnerFleetRegistry:
         operation_result = bound.get("operation_result") if isinstance(bound.get("operation_result"), Mapping) else {}
         output = operation_result.get("output") if isinstance(operation_result.get("output"), Mapping) else {}
         captured = output.get("artifacts")
+        summary_result_ref = summary.get("result_ref")
+        operation_result_ref = operation_result.get("result_ref")
+        result_refs_match = (not isinstance(summary_result_ref, (Mapping, str))
+                             or not isinstance(operation_result_ref, type(summary_result_ref))
+                             or summary_result_ref == operation_result_ref)
         if (due.get("role") != "worker" or attempt.get("state") != "result"
                 or result.get("outcome") != "succeeded" or not isinstance(due_task, Mapping)
                 or not isinstance(due_assignment, Mapping) or type(due_generation) is not int
-                or acceptance.get("accepted") is not True
-                or acceptance.get("owner") != due.get("lifecycle_owner")
-                or acceptance.get("logical_request_key") != attempt.get("logical_request_key")
-                or acceptance.get("result_digest") != hashlib.sha256(json.dumps(
-                    result, sort_keys=True, separators=(",", ":")
-                ).encode()).hexdigest()
+                or not attempt.get("logical_request_key")
+                or attempt.get("logical_request_key") != result.get("logical_request_key")
+                or summary.get("logical_request_key") != attempt.get("logical_request_key")
+                or summary.get("assignment_ref") != due_assignment
+                or summary.get("generation") != due_generation
                 or not isinstance(artifacts, list) or not artifacts
                 or not isinstance(captured, list) or not captured
                 or not isinstance(summary.get("verification"), Mapping)
                 or summary["verification"].get("context_digest_verified") is not True
-                or not summary.get("result_ref") or not operation_result.get("result_ref")
+                or not summary_result_ref or not operation_result_ref or not result_refs_match
                 or summary.get("result_digest") != bound.get("result_digest")
                 or bound.get("task_ref") != due_task
                 or bound.get("assignment_ref") != due_assignment or bound.get("generation") != due_generation):
@@ -345,7 +355,7 @@ class OwnerFleetRegistry:
     def settle_landed_worker(self, *, task_ref: Mapping[str, Any], assignment_ref: Mapping[str, Any],
                              generation: int, schedule_id: str,
                              published: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Remove a landed worker lab only after its exact captured Due is accepted."""
+        """Remove a landed worker lab after its exact turn result is captured."""
         if self.due_port is None:
             return {"cleanup_pending": True, "reason": "owner Due capture reader is unavailable"}
         from herzchen.contracts import ResourceRef
@@ -401,11 +411,8 @@ class OwnerFleetRegistry:
                         or not isinstance(repositories, Mapping) or repo_name not in repositories):
                     continue
                 repo = Path(repositories[repo_name]).resolve()
-                branch_key = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:20]
-                labs_root = repo.parent / (repo.name + ".otto-labs") / branch_key
-                if not labs_root.is_dir():
-                    continue
-                fleet = LabFleet(repo, labs_root, checkpoint=self.checkpoint)
+                with self._pair_lock:
+                    fleet, _landing = self._pair((repo_name, branch), repo, branch)
                 eligible = lambda name, commit, raw=due, selected=task_ref: (
                     name == selected.get("id") and self._captured_worker_due(
                         raw, task_ref=selected,
@@ -1452,7 +1459,7 @@ def run_product_service(config: Mapping[str, Any], *, emit: Callable[[Mapping[st
             emit({'outcome': 'stopped-before-serving', 'provider_called': False})
             result = {'outcome': 'stopped', 'provider_called': False}
         else:
-            owner.host.start()
+            _start_owner_host(owner)
             served = True
             owner.service.start_heartbeat()
             policy = owner.policy
