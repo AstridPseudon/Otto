@@ -14,6 +14,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:19Z | PK3R-UX2 | merged a192e15103b8835a566b9a12e6e74cc9bce12f43 | +60/-13 | isolated registration-pin regression 1 passed; diff --check passed; full bundle file stalled after 24 passes; CLI owner setup needs the gate | Scoped role/profile pin refusals now retain next_action through the owner service and direct CLI error envelopes. No deletions.
 2026-10-17T21:26Z | PK3R-UX3 | merged 5832ee02207b07cf692d12edb43f01a168f7aedd | +36/-9 | test_host_neutral_defaults.py 19 passed; test_hostctl_bundle.py 29 passed/3 subtests; diff --check passed | Unknown, unqualified, unsupported and launcher-drift profile refusals now carry next_action through both error envelopes. No deletions.
 2026-10-17T21:29Z | PK3R-UX4 | merged 945d5bb71cc451bfeb56d9d26b9c42f1659393af | +29/-2 | test_hostctl_bundle.py 30 passed/5 subtests; diff --check passed | Retained-profile activation refusals for host/model qualification now use the recovery-aware refusal type. No deletions.
+2026-10-17T21:32Z | PK3R-UX5 | merged 0499e8eb937c785e9419893d0260e81ae91f291d | +23/-6 | test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Legacy pending migration refusals for unavailable manager adapter or unsupported manager model now preserve next_action. No deletions.
 
 ## Questions for the orchestrator
 
@@ -30,7 +31,7 @@ The final Astra review then found two new refusal gaps in turn. PK3R-UX2 adds sc
 
 Astra's second whole-project pass found that a retained profile can be correctly refused during activation for the wrong host or unsupported models yet still lose its recovery action. PK3R-UX4 uses the same typed profile-selection refusal at those activation checks. The full bundle file passed with 30 tests and five subtests; both envelope helpers were checked without an owner socket.
 
-Astra's third whole-project pass found a remaining refusal in legacy pending-profile migration: unavailable manager adapters and unsupported overridden manager models raise plain `ValueError`, losing `next_action`. PK3R-UX5 will preserve recovery guidance while retaining the host/model qualification checks.
+Astra's third whole-project pass found a remaining refusal in legacy pending-profile migration: unavailable manager adapters and unsupported overridden manager models raised plain `ValueError`, losing `next_action`. PK3R-UX5 uses the existing profile-selection refusal type while retaining host/model qualification checks. The full bundle file passed with 30 tests and seven subtests; all three envelope serializers were exercised without an owner socket.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
