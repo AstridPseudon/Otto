@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from otto.hostctl import cli
 from otto.hostctl import config as host_config
@@ -358,7 +359,10 @@ class HostctlCliTest(HostctlFixture):
     @unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"), SANDBOX_SKIP)
     def test_admission_dry_run_would_admit(self):
         self._ready()
-        code, out = self._ottoctl("admission", "dry-run", "--project", "demo-run")
+        # This test covers owner admission; scope enforcement has dedicated tests.
+        with patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
+                   side_effect=lambda scope: {**scope.pin, "verified": True}):
+            code, out = self._ottoctl("admission", "dry-run", "--project", "demo-run")
         self.assertEqual(code, 0, out)
         self.assertEqual(out["outcome"], "would_admit")
         self.assertIs(out["checks"]["inert"]["ok"], True)
@@ -374,19 +378,22 @@ class HostctlCliTest(HostctlFixture):
         self._ready()
         _write_launcher(self.launcher, DRIFTED_VERSION)
 
-        code, out = self._ottoctl("admission", "dry-run", "--project", "demo-run")
-        self.assertEqual(code, 1, out)
-        self.assertEqual(out["outcome"], "blocked")
-        self.assertIs(out["checks"]["launcher"]["ok"], False)
+        # This test covers launcher qualification; scope enforcement has dedicated tests.
+        with patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
+                   side_effect=lambda scope: {**scope.pin, "verified": True}):
+            code, out = self._ottoctl("admission", "dry-run", "--project", "demo-run")
+            self.assertEqual(code, 1, out)
+            self.assertEqual(out["outcome"], "blocked")
+            self.assertIs(out["checks"]["launcher"]["ok"], False)
 
-        code, out = self._ottoctl("host", "qualify-launcher", "--version", DRIFTED_VERSION, "--evidence", "test")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(out["outcome"], "recorded")
-        self.assertIn(DRIFTED_VERSION, out["qualified_versions"])
+            code, out = self._ottoctl("host", "qualify-launcher", "--version", DRIFTED_VERSION, "--evidence", "test")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(out["outcome"], "recorded")
+            self.assertIn(DRIFTED_VERSION, out["qualified_versions"])
 
-        code, out = self._ottoctl("admission", "dry-run", "--project", "demo-run")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(out["outcome"], "would_admit")
+            code, out = self._ottoctl("admission", "dry-run", "--project", "demo-run")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(out["outcome"], "would_admit")
 
     # -- 9. projects --------------------------------------------------------
     def test_projects_lists_exactly_one_pending_project(self):

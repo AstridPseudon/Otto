@@ -155,4 +155,4 @@ class ManagerCorrectionPlanningTests(unittest.TestCase):
             self.assertFalse(result['effects_started'])
             self.assertEqual(called,[])
         self.assertTrue(requires_native_caller('task-list-author'))
-        self.assertFalse(requires_native_caller('review-task'))
+        self.assertTrue(requires_native_caller('review-task'))

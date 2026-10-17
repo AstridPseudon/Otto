@@ -101,11 +101,26 @@ if {escalate!r}:
         finish("Manager turn 2: applied the ruling.")
     finish("Manager turn %d: done." % turn)
 if {dispatch!r} and turn in (1, 2):
+    if turn == 2:
+        review = json.loads(bash("bash-review-input", ottoctl + ["review-input", "--task", "T1"]))
+        judgments = {{alias: {{"verdict": "PASS", "rationale": "inspected_fixture_artifact",
+            "evidence_refs": review["evidence_refs"]}} for alias in review["criterion_aliases"]}}
+        review_args = ottoctl + ["review-task", "--task", "T1", "--request-key", "T1-review",
+            "--candidate-ref", json.dumps(review["candidate_ref"]), "--judgments", json.dumps(judgments),
+            "--inspection", json.dumps({{"observed": "Inspected the retained T1 worker artifact"}})]
+        for source_ref in review["source_refs"]:
+            review_args += ["--source-ref", json.dumps(source_ref)]
+        bash("bash-review", review_args)
+        bash("bash-finish", ottoctl + ["finish-task", "--task", "T1",
+            "--request-key", "T1-review:finish", "--review-key", "T1-review"])
+        finish("Manager turn 2: accepted T1 and yielding for owner settlement.")
+if {dispatch!r} and turn in (1, 3):
+    dispatch_number = 1 if turn == 1 else 2
     task, route = ("T1", "normal") if turn == 1 else ("T2", "xhard")
-    out = bash("bash-run-%d" % turn, ottoctl + ["run-worker", "--task", task, "--route", route, "--principal",
-                                               "demo-run-worker-%d" % turn, "--request-key", task + "-worker",
+    out = bash("bash-run-%d" % dispatch_number, ottoctl + ["run-worker", "--task", task, "--route", route, "--principal",
+                                               "demo-run-worker-%d" % dispatch_number, "--request-key", task + "-worker",
                                                "--focus", "Write the " + task + " answer"])
-    open(os.path.join(cwd, "run-worker-%d.json" % turn), "w").write(out)
+    open(os.path.join(cwd, "run-worker-%d.json" % dispatch_number), "w").write(out)
     finish("Manager turn %d: dispatched %s (%s) and yielding for its result." % (turn, task, route))
 finish("Manager turn %d: done." % turn)
 '''
@@ -416,7 +431,13 @@ class ServeTests(HostctlFixture):
         code, applied = self._ottoctl("operating-setup", "--project", "demo-run", "--operation", "apply")
         self.assertEqual((code, applied["outcome"], applied["started"]), (0, "replayed", False), applied)
         schedule = applied["setup"]["roles"]["manager"]
-        started = self.orchestrator("start-manager", "--schedule-id", schedule)
+        # The journey assertions cover owner authentication and document reads;
+        # the nested OS fence is independently exercised by the scope tests.
+        with patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
+                   side_effect=lambda scope: {**scope.pin, "verified": True}), \
+             patch("otto.agents.claude_cli.MacWriteScope.wrap", autospec=True,
+                   side_effect=lambda scope, command, **options: command):
+            started = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(started.get("outcome"), "succeeded", started)
         root = Path(self.worktree)
         whoami = json.loads((root / "whoami.json").read_text())
@@ -458,10 +479,23 @@ class ManagerLoopTests(ServeTests):
         from otto.hostctl import register
         from otto.hostctl import serve
         from otto.hostctl.product_service import OwnerFleetRegistry
+        import test_hostctl_cli
+
+        # The manager loop now follows the same explicit review path as a
+        # real manager. Give this fixture owner-declared criteria and a local
+        # assessment allowance so the retained worker result can be judged.
+        run = dict(test_hostctl_cli.RUN)
+        run["assessment_accounting"] = {
+            "kind": "owner_local_bookkeeping", "purpose": "manager loop fixture",
+            "local_only": True, "pool_id": "manager-loop-checks", "capacity_units": 2,
+            "cumulative_allowance_units": 2,
+            "task_criterion_pairs": ["T1/C01", "T2/C02"]}
+        run_patcher = patch.object(test_hostctl_cli, "RUN", run)
+        run_patcher.start()
+        self.addCleanup(run_patcher.stop)
 
         materialize = register.materialize
         task_refs = register._task_refs
-
         def materialize_with_worker_plans(session, record, registration, **kwargs):
             registration = dict(registration)
             planned = []
@@ -474,17 +508,28 @@ class ManagerLoopTests(ServeTests):
             registration["tasks"] = planned
 
             def admitted_task_refs(session, project_record):
-                refs = task_refs(session, project_record)
-                actor = session.binding.authenticated_actor(session.host_principal())
+                from herzchen.contracts import ResourceRef
+                project_ref = ResourceRef.from_dict(project_record.ref.to_dict())
+                project = session.owner.graph.current(project_ref)
+                creator = project.payload["provenance"]["creator"]
+                project_user = session.binding.authenticated_actor(creator["actor"])
+                refs = task_refs(session, project)
                 for alias, raw in refs.items():
-                    current = session.owner.graph.current(ResourceRef.from_dict(raw))
-                    admitted = session.owner.graph.revise(current.ref,
-                        fields={"manager_loop_fixture_admitted": True}, actor=actor,
-                        logical_request_key="manager-loop-admit:" + alias)
-                    refs[alias] = admitted.ref.to_dict()
+                    task = session.owner.graph.current(ResourceRef.from_dict(raw))
+                    review = session.owner.graph.create_effort(project_ref, title="Fixture admission for " + alias,
+                        logical_request_key="manager-loop-review:" + alias, actor=project_user)
+                    admitted = session.owner.graph.admit(task.ref, revision=task.ref.revision,
+                        review_ref=review.ref, logical_request_key="manager-loop-admit:" + alias,
+                        actor=project_user)
+                    refs[alias] = admitted["task_ref"].to_dict()
+                    from herzchen.domains.assessment import AssessmentModule
+                    AssessmentModule(session.owner.store, actor=project_user).declare_scope(
+                        "manager-loop-scope:" + alias,
+                        parent_obligation=ResourceRef.from_dict(refs[alias]), protocol="fixture",
+                        criteria=[{"id": "C01" if alias == "T1" else "C02"}],
+                        logical_request_key="manager-loop-scope:" + alias)
                 return refs
 
-            from herzchen.contracts import ResourceRef
             with patch.object(register, "_task_refs", admitted_task_refs):
                 return materialize(session, record, registration, **kwargs)
 
@@ -574,11 +619,13 @@ class ManagerLoopTests(ServeTests):
 
     @staticmethod
     def service_adapter_factory(*, principal, model, reasoning, service, worker_mcp=None, workspace=None, **_):
-        """Real manager fence (children allowed); the worker leaf skips sandbox-exec.
+        """Synthetic manager scope (children allowed); the worker leaf skips sandbox-exec.
 
         A scripted launcher is an interpreter script, which the leaf fence's
         single-executable exec rule correctly refuses; the leaf fence itself is
-        proven in test_claude_binding and test_claude_manager_admission.
+        proven in test_claude_binding and test_claude_manager_admission. The
+        manager journey tests exercise owner routing and continuation, so their
+        scope preflight is synthetic and independent of nested sandbox support.
         """
         from otto.agents.claude_adapter import ClaudeWorkerAdapter
         from otto.agents.claude_cli import ClaudeCliTransport, LauncherPin, MANAGER_TOOLS, MacWriteScope
@@ -593,8 +640,16 @@ class ManagerLoopTests(ServeTests):
                     "evidence_kind": "SYNTHETIC-UNFENCED-LEAF"},
             "preflight": lambda self: {**self.pin, "verified": True}, "wrap": lambda self, command, **o: command})()
         worker = ClaudeCliTransport(pin, unfenced, model=model, reasoning=reasoning, timeout_seconds=60)
-        manager = ClaudeCliTransport(pin, MacWriteScope(worktree, state, allow_subprocesses=True,
-                                                        extra_write_roots=launch["write_roots"]),
+        class SyntheticManagerScope(MacWriteScope):
+            def preflight(self):
+                return {**self.pin, "verified": True}
+
+            def wrap(self, command, **options):
+                return command
+
+        manager_scope = SyntheticManagerScope(worktree, state, allow_subprocesses=True,
+                                               extra_write_roots=launch["write_roots"])
+        manager = ClaudeCliTransport(pin, manager_scope,
             model=model, reasoning=reasoning, timeout_seconds=120, tools=MANAGER_TOOLS, max_turns=200,
             extra_env=launch["env"])
         return ClaudeWorkerAdapter(owner=principal, source=worktree, worktree=worktree, launcher_pin=pin,
@@ -611,7 +666,7 @@ class ManagerLoopTests(ServeTests):
         self.assertEqual(started.get("outcome"), "succeeded", started)
         first_receipt = root / "run-worker-1.json"
         second_receipt = root / "run-worker-2.json"
-        required = (first_receipt, second_receipt, root / "manager-turn-3.txt")
+        required = (first_receipt, second_receipt, root / "manager-turn-4.txt")
         deadline = time.monotonic() + 180
         last_read_error = None
         while time.monotonic() < deadline:
@@ -627,8 +682,7 @@ class ManagerLoopTests(ServeTests):
         else:
             missing = [path.name for path in required if not path.exists()]
             self.fail("manager dispatch/resume timed out; missing: " + ", ".join(missing) +
-                      "; last receipt read error: " + repr(last_read_error) +
-                      "; observed files: " + ", ".join(sorted(path.name for path in root.iterdir())))
+                      "; last receipt read error: " + repr(last_read_error))
         # Routing is proven from run.json (Otto's generated view): normal -> Haiku, xhard -> Sonnet.
         self.assertEqual((first["outcome"], first["selection"]["model"], first["selection"]["reasoning"]),
                          ("admitted", "claude-haiku-5-5", "high"), first)
@@ -648,7 +702,7 @@ class ManagerLoopTests(ServeTests):
                          "xhard-route worker wrote the manager workspace")
         # Each worker result was delivered back by resuming the same manager session.
         self.assertTrue((root / "manager-turn-2.txt").exists(), "manager not resumed after T1")
-        self.assertTrue((root / "manager-turn-3.txt").exists(), "manager not resumed after T2")
+        self.assertTrue((root / "manager-turn-4.txt").exists(), "manager not resumed after T2")
         self.assertEqual(len(list(root.glob(".turns-*"))), 1, "the manager continued one session")
 
 
@@ -666,7 +720,11 @@ class EscalationTests(ServeTests):
         code, applied = self._ottoctl("operating-setup", "--project", "demo-run", "--operation", "apply")
         schedule = applied["setup"]["roles"]["manager"]
         root = Path(self.worktree)
-        started = self.orchestrator("start-manager", "--schedule-id", schedule)
+        with patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
+                   side_effect=lambda scope: {**scope.pin, "verified": True}), \
+             patch("otto.agents.claude_cli.MacWriteScope.wrap", autospec=True,
+                   side_effect=lambda scope, command, **options: command):
+            started = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(started.get("outcome"), "succeeded", started)
         # The manager's request-help went through its file lane during its own turn.
         requested = json.loads((root / "request-help.json").read_text())
@@ -686,6 +744,14 @@ class EscalationTests(ServeTests):
         # ... and the orchestrator cannot smuggle it through the manager relay.
         smuggled = self.orchestrator("respond-help", "--request-key", "smuggled", *fields)
         self.assertEqual(smuggled["outcome"], "error", smuggled)
+        scope_patches = [
+            patch("otto.agents.claude_cli.MacWriteScope.preflight", autospec=True,
+                  side_effect=lambda scope: {**scope.pin, "verified": True}),
+            patch("otto.agents.claude_cli.MacWriteScope.wrap", autospec=True,
+                  side_effect=lambda scope, command, **options: command)]
+        for scope_patch in scope_patches:
+            scope_patch.start()
+            self.addCleanup(scope_patch.stop)
         code, answered = self._ottoctl("--wait-seconds", "60", "help", "respond", "--project", "demo-run",
             "--issue-id", issue_id, "--request-key", "ruling-1-answer", "--response", "Use design A",
             "--proposed-solution", "Design A keeps one resolver", "--next-action", "Implement T1 with design A")
@@ -694,6 +760,8 @@ class EscalationTests(ServeTests):
         deadline = time.monotonic() + 60
         while not (root / "resolve-help.json").exists() and time.monotonic() < deadline:
             time.sleep(0.2)
+        for scope_patch in reversed(scope_patches):
+            scope_patch.stop()
         resolved = json.loads((root / "resolve-help.json").read_text())
         self.assertNotEqual(resolved.get("outcome"), "error", resolved)
         self.assertIn("Use design A", (root / "manager-turn-2.txt").read_text())
