@@ -77,9 +77,12 @@ def _role_pack(configuration: Mapping[str, Any] | None, role: str) -> tuple[dict
             or any(not isinstance(item, str) or not item.strip() for item in role_value.get("tools", []))):
         raise RoleContextError("selected role pack has no valid role " + role)
     if (not isinstance(role_value.get("tool_entrypoint"), str) or not role_value["tool_entrypoint"].strip()
+            or (role == "manager" and "manager_actions" not in role_value)
             or not isinstance(role_value.get("manager_actions", []), list)
             or any(not isinstance(item, str) or not item.strip() for item in role_value.get("manager_actions", []))):
         raise RoleContextError("selected role pack has invalid tools for " + role)
+    if role == "manager" and (not isinstance(guidance.get("help"), str) or not guidance["help"].strip()):
+        raise RoleContextError("selected role pack has no valid manager help guidance")
     base_manager = content.get("base_manager_brief")
     if (not isinstance(base_manager, Mapping)
             or base_manager.get("schema") != "otto.base-manager-brief.v1"
