@@ -152,7 +152,7 @@ def _processes() -> dict[int, dict] | None:
                 info["birth"] = _birth_at(pid, info["ppid"], info["pgid"])
         return processes
     try:
-        result = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="],
+        result = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,stat="],
                                 capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -160,7 +160,7 @@ def _processes() -> dict[int, dict] | None:
         return None
     processes = {}
     for line in result.stdout.splitlines():
-        match = re.match(r"\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)", line)
+        match = re.match(r"\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$", line)
         if match and not match[4].startswith("Z"):
             pid = int(match[1])
             ppid, pgid = int(match[2]), int(match[3])
