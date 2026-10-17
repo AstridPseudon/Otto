@@ -229,6 +229,17 @@ class AssertionKindTests(unittest.TestCase):
         self.assertTrue(stage["admission"]["unadmitted_revision"])
         self.assertEqual(stage["scenarios"], ["admit-and-dispatch"])
 
+    def test_composefleet_detection_uses_landed_modules_not_a_marker_string(self):
+        stage_root = self.tmp / "staging"
+        self.assertFalse(perch_report.composefleet_landed(stage_root))
+        source = stage_root / "tree" / "src"
+        for relative in ("otto/hostctl/product_service.py", "otto/hostctl/fleet_landing.py",
+                         "herzchen/fleet/landing.py", "herzchen/domains/work/admission.py"):
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("module implementation\n", encoding="utf-8")
+        self.assertTrue(perch_report.composefleet_landed(stage_root))
+
     def test_stage_two_scenario_skip_is_explicit_and_gate_fails(self):
         raw = self.tmp / "raw-stage2-skip"
         raw.mkdir()

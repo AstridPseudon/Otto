@@ -296,10 +296,10 @@ run_stage() {  # STAGE
       admit-and-dispatch)
         if [ "$RESTART_RC" -ne 0 ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: staging did not start"
-        elif ! grep -R -q 'COMPOSEFLEET' "$STAGE_ROOT/tree/src/otto" 2>/dev/null; then
+        elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: COMPOSEFLEET has not landed"
         else
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: COMPOSEFLEET dispatch adapter unavailable"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: COMPOSEFLEET landed; stage 2 has no registered active canary project or authenticated manager occurrence"
         fi ;;
       *) die "perch.sh has no scenario called $scenario" ;;
     esac

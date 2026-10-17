@@ -89,6 +89,22 @@ def cmd_stages(args):
         print(stage)
 
 
+def composefleet_landed(stage_root):
+    """Recognize the landed owner/Herzchen composition by its implementation modules, not a label string."""
+    source = Path(stage_root) / "tree" / "src"
+    required = (
+        source / "otto" / "hostctl" / "product_service.py",
+        source / "otto" / "hostctl" / "fleet_landing.py",
+        source / "herzchen" / "fleet" / "landing.py",
+        source / "herzchen" / "domains" / "work" / "admission.py",
+    )
+    return all(path.is_file() for path in required)
+
+
+def cmd_capability(args):
+    print("true" if composefleet_landed(args.stage_root) else "false")
+
+
 def cmd_tasks(args):
     for name in read_json(args.project)["stages"][args.stage]["tasks"]:
         print(name)
@@ -1190,6 +1206,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("stages"); p.add_argument("--project", required=True); p.set_defaults(fn=cmd_stages)
+    p = sub.add_parser("composefleet"); p.add_argument("--stage-root", required=True); p.set_defaults(fn=cmd_capability)
     p = sub.add_parser("tasks"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
     p.set_defaults(fn=cmd_tasks)
     p = sub.add_parser("stage"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
