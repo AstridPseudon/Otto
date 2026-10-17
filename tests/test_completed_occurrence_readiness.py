@@ -1,5 +1,5 @@
 """Readiness follows one authentic settled completion input; effects stay strict."""
-import copy,hashlib,json,unittest
+import copy,hashlib,json,os,unittest
 from types import SimpleNamespace
 from herzchen.contracts import ResourceRef
 from otto.portfolio.owner_readers import completed_occurrence_task_reader,OwnerRoleRuntimeError
@@ -30,3 +30,11 @@ class CompletedOccurrenceReadinessTests(unittest.TestCase):
    with self.assertRaises(OwnerRoleRuntimeError):completed_occurrence_task_reader(f.owner.graph.reader,altered,self.assignment)
   self.assertEqual(f.owner.graph.reader.snapshot_counts(),before)
   self.assertEqual(f.provider.calls,[])
+
+ def test_role_runtime_reuses_owner_limit_service_without_descriptor_growth(self):
+  f=self.f.application
+  before=len(os.listdir('/dev/fd'))
+  for _ in range(200):
+   f.owner.role_runtime(due_port=f.port,adapter=f.app.runtime.adapter)
+  after=len(os.listdir('/dev/fd'))
+  self.assertLessEqual(after-before,3,f'role_runtime leaked {after-before} file descriptors')
