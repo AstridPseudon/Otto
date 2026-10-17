@@ -366,6 +366,12 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
     run_id = registration["run_id"]
     key = key or "activate:" + run_id + ":v1"
     principal = session.host_principal()
+    from .config import installation_principals, validate_assignment_principal
+    manager = registration.get("manager")
+    if not isinstance(manager, Mapping):
+        raise ValueError("activation requires a manager assignment principal")
+    validate_assignment_principal(manager.get("principal"), installation_principals(session.config),
+                                  label="manager principal")
     project = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
     receipt: dict[str, Any] = {"schema": REGISTRATION_SCHEMA + ".activation", "run_id": run_id, "request_key": key,
                                "provider_called": False, "dispatch": False, "steps": {}}
@@ -436,7 +442,6 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
                                   registration["configuration"], "configuration")
     receipt["steps"]["role_configuration"] = configuration_ref
     # 4. Manager: BASE guide, assignment, adopted BASE, mandate. No Due.
-    manager = registration["manager"]
     instructions = manager["brief"]
     name = "manager-base-" + project.id
     guide = {"schema": "herzchen.instructions.v1", "name": name, "entrypoint": "manager-brief.md",

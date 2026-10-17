@@ -624,8 +624,8 @@ class OwnerService:
             entry = host_config.host_entry(kind, principal=args.get("principal") or kind + "-orchestrator",
                                            launcher=args.get("launcher"), qualified_versions=qualified,
                                            model_profile=profile_for_host(kind), conversation=args.get("conversation"))
-            if entry["principal"] == config["operator"]["actor"]:
-                raise host_config.HostConfigError("host principal must differ from the operator principal")
+            host_config.validate_assignment_principal(entry["principal"],
+                host_config.installation_principals(config), label="host principal")
             entry.update(lane=str(lane), client_home=str(client_home))
             entry = join_host(config, entry)
             host_config.write(self.home, config, replace=True)

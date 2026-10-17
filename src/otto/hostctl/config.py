@@ -30,6 +30,33 @@ class HostConfigError(ValueError):
     pass
 
 
+def validate_assignment_principal(principal: Any, reserved: Any, *, label: str = "assignment principal") -> str:
+    """Reject an exact collision with installation actors before an assignment write."""
+    if not isinstance(principal, str) or not principal.strip() or principal != principal.strip():
+        raise HostConfigError(label + " must be exact nonblank text")
+    collisions = {value for value in reserved if isinstance(value, str)}
+    if principal in collisions:
+        raise HostConfigError(label + " must differ from the owner, operator, and admitted host principals")
+    return principal
+
+
+def installation_principals(config: Mapping[str, Any]) -> set[str]:
+    """Return owner, operator and host principals reserved by an installation."""
+    values: set[str] = set()
+    owner = config.get("owner")
+    operator = config.get("operator")
+    if isinstance(owner, Mapping) and isinstance(owner.get("actor"), str):
+        values.add(owner["actor"])
+    if isinstance(operator, Mapping) and isinstance(operator.get("actor"), str):
+        values.add(operator["actor"])
+    hosts = config.get("hosts")
+    if isinstance(hosts, Mapping):
+        for entry in hosts.values():
+            if isinstance(entry, Mapping) and isinstance(entry.get("principal"), str):
+                values.add(entry["principal"])
+    return values
+
+
 def otto_home(explicit: Optional[str] = None, *, environ: Optional[Mapping[str, str]] = None) -> Path:
     """--home > OTTO_HOME > ~/.otto."""
     env = os.environ if environ is None else environ
@@ -136,11 +163,23 @@ def load(home: Path) -> dict[str, Any]:
     for key in ("store", "owner", "operator", "hosts", "home"):
         if key not in value:
             raise HostConfigError(str(path) + " lacks " + key)
+    owner = value["owner"].get("actor") if isinstance(value["owner"], Mapping) else None
     operator = value["operator"].get("actor") if isinstance(value["operator"], Mapping) else None
+    hosts = value["hosts"]
+    if (not isinstance(owner, str) or not owner.strip() or owner != owner.strip() or "/" in owner):
+        raise HostConfigError(str(path) + " has an invalid owner service principal")
     if (not isinstance(operator, str) or not operator.strip() or operator != operator.strip()
-            or "/" in operator or operator == value["owner"].get("actor")
-            or any(entry.get("principal") == operator for entry in value["hosts"].values())):
+            or "/" in operator or operator == owner):
         raise HostConfigError(str(path) + " has an invalid or shared operator principal")
+    if not isinstance(hosts, Mapping):
+        raise HostConfigError(str(path) + " hosts must be an object mapping host kinds to entries")
+    seen = {owner, operator}
+    for kind, entry in hosts.items():
+        principal = entry.get("principal") if isinstance(entry, Mapping) else None
+        if (not isinstance(principal, str) or not principal.strip() or principal != principal.strip()
+                or "/" in principal or principal in seen):
+            raise HostConfigError(str(path) + " has an invalid or shared host principal for " + repr(kind))
+        seen.add(principal)
     if Path(value["home"]) != home:
         raise HostConfigError("installation belongs to " + value["home"] + ", not " + str(home))
     repositories = value.setdefault("repositories", {})

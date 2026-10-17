@@ -225,6 +225,15 @@ for line in sys.stdin:
         self.server._save_state()
         return task, pool.ref
 
+    def test_worker_preparation_rejects_host_principal_before_assignment_write(self):
+        self.install_candidate()
+        with patch.object(self.fixture.app, "assign_worker", wraps=self.fixture.app.assign_worker) as assign:
+            result_path = self.send("reserved-worker", {**self.worker_request(), "principal": "orchestrator"})
+            result = self.wait_response(result_path)
+        self.assertNotEqual(result.get("outcome"), "admitted", result)
+        assign.assert_not_called()
+        self.assertNotIn("J01", self.server.state.get("workers", {}))
+
     def test_manager_actions_are_authenticated_project_scoped_and_save_notes(self):
         self.install_candidate()
         service = self.host.handler

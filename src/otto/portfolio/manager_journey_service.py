@@ -2278,6 +2278,20 @@ class ManagerJourneyService:
             raise ValueError("worker requires a current task and configured route")
         if not isinstance(principal, str) or not principal.strip() or principal != principal.strip():
             raise ValueError("worker principal must be exact nonblank text")
+        from otto.hostctl.config import installation_principals, validate_assignment_principal
+        owner = getattr(self.server, "owner", None)
+        reserved = set()
+        installation = getattr(self.server, "config", None) or getattr(owner, "config", None)
+        if isinstance(installation, Mapping):
+            reserved.update(installation_principals(installation))
+        for actor in (getattr(owner, "owner_actor", None), getattr(owner, "operator_actor", None)):
+            actor_name = getattr(actor, "actor", None)
+            if isinstance(actor_name, str):
+                reserved.add(actor_name)
+        orchestrator_principal = getattr(self, "orchestrator_principal", None)
+        if isinstance(orchestrator_principal, str):
+            reserved.add(orchestrator_principal)
+        validate_assignment_principal(principal, reserved, label="worker principal")
         focus = request.get("focus")
         if not isinstance(focus, str) or not focus.strip() or len(focus) > 4000:
             # This validation precedes canonical lookup/preparation/allowance

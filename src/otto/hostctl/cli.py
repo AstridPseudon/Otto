@@ -406,8 +406,11 @@ def cmd_register(args: argparse.Namespace) -> Any:
     run_id = run.get("run_id") or Path(bundle["root"]).name
     worktree = args.worktree or str(Path(run.get("control_root") or bundle["root"]).parents[2])
     entry = _host(args, config)
+    manager_principal = args.manager_principal or run_id + "-manager"
+    host_config.validate_assignment_principal(manager_principal, host_config.installation_principals(config),
+                                              label="manager principal")
     computed = plan(bundle, profile=model_profile(entry["model_profile"]),
-                    manager_principal=args.manager_principal or run_id + "-manager", worktree=worktree,
+                    manager_principal=manager_principal, worktree=worktree,
                     tool_entrypoint=str(home / "bin" / "ottoctl"))
     if args.plan_only:
         shown = dict(computed)
@@ -462,10 +465,18 @@ def cmd_activate(args: argparse.Namespace) -> Any:
     home = _home(args)
     config = host_config.load(home)
     entry = _host(args, config)
+    if args.manager_principal:
+        host_config.validate_assignment_principal(args.manager_principal,
+            host_config.installation_principals(config), label="manager principal")
     with HostSession(config, host=entry) as session:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=entry, project_ids=(record.ref.id,)) as session:
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
+        run_id = registration.get("run_id") or record.ref.id
+        manager_principal = args.manager_principal or run_id + "-manager"
+        host_config.validate_assignment_principal(manager_principal, host_config.installation_principals(config),
+                                                  label="manager principal")
         from .portfolio import dependency_service
         readiness = dependency_service(session, args).activation_check(
             record.ref, override=getattr(args, "override_readiness", False),
@@ -476,10 +487,9 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         bundle = stored_bundle(session, record)
-        run_id = registration.get("run_id") or record.ref.id
         worktree = args.worktree or str(Path(bundle["run"].get("control_root") or home).resolve().parents[2])
         computed = plan(bundle, profile=model_profile(entry["model_profile"]),
-                        manager_principal=args.manager_principal or run_id + "-manager", worktree=worktree,
+                        manager_principal=manager_principal, worktree=worktree,
                         tool_entrypoint=str(home / "bin" / "ottoctl"))
         available = set((entry.get("adapters") or {}).keys())
         # Activation prepares only the manager. Optional worker/reviewer/

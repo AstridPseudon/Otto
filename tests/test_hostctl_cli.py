@@ -331,6 +331,62 @@ class HostctlCliTest(HostctlFixture):
                 authority="a", owner_actor="o", operator_actor="human-operator",
                 credential_ref="c", python="/usr/bin/python3")
 
+    def test_installation_load_rejects_owner_operator_and_host_principal_collisions(self):
+        self._init()
+        path = Path(self.home) / "installation.json"
+        original = json.loads(path.read_text())
+        cases = (("owner", "operator"), ("operator", "host"))
+        for first, second in cases:
+            with self.subTest(first=first, second=second):
+                value = json.loads(json.dumps(original))
+                if first == "owner":
+                    value["owner"]["actor"] = value["operator"]["actor"]
+                else:
+                    value["hosts"]["claude-code"]["principal"] = value["operator"]["actor"]
+                path.write_text(json.dumps(value))
+                with self.assertRaises(host_config.HostConfigError):
+                    host_config.load(Path(self.home))
+        value = json.loads(json.dumps(original))
+        value["hosts"]["codex"] = {**value["hosts"]["claude-code"]}
+        path.write_text(json.dumps(value))
+        with self.assertRaises(host_config.HostConfigError):
+            host_config.load(Path(self.home))
+        path.write_text(json.dumps(original))
+
+    def test_host_admission_rejects_owner_and_other_host_principals(self):
+        self._init()
+        owner = "otto-test-owner"
+        before = _sha256(self._store_path())
+        code, rejected = self._ottoctl("service", "admit-host", "--host", "codex", "--principal", owner)
+        self.assertNotEqual(code, 0, rejected)
+        self.assertNotIn("codex", host_config.load(Path(self.home))["hosts"])
+        self.assertNotIn("codex", host_config.load_client(Path(self.home))["hosts"])
+        self.assertEqual(_sha256(self._store_path()), before)
+        code, rejected = self._ottoctl("service", "admit-host", "--host", "codex", "--principal",
+                                       "claude-code-orchestrator")
+        self.assertNotEqual(code, 0, rejected)
+        self.assertNotIn("codex", host_config.load(Path(self.home))["hosts"])
+        self.assertEqual(_sha256(self._store_path()), before)
+
+    def test_register_rejects_reserved_manager_principals_before_creating_a_draft(self):
+        self._init()
+        for principal in ("otto-test-owner", OPERATOR, "claude-code-orchestrator"):
+            with self.subTest(principal=principal):
+                before = _sha256(self._store_path())
+                code, answer = self._ottoctl("project", "register", "--bundle", self.bundle,
+                    "--worktree", self.worktree, "--manager-principal", principal)
+                self.assertNotEqual(code, 0, answer)
+                self.assertEqual(_sha256(self._store_path()), before)
+
+    def test_activation_rejects_reserved_manager_principal_without_writes(self):
+        self._init()
+        self._register()
+        before = _sha256(self._store_path())
+        code, answer = self._ottoctl("project", "activate", "--project", "demo-run", "--worktree", self.worktree,
+                                     "--manager-principal", "otto-test-owner")
+        self.assertNotEqual(code, 0, answer)
+        self.assertEqual(_sha256(self._store_path()), before)
+
     def test_repo_map_command_updates_owner_installation(self):
         self._init()
         checkout = os.path.join(os.path.dirname(self.bundle), "checkout")
