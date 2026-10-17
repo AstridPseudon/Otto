@@ -48,7 +48,7 @@
       "notes": "Whole-project review found sticky census-gap loss; same PL4 worker fixed and Astra re-reviewed the diff with no remaining defect."
     },
     {
-      "stage": "whole-project Astra final review",
+      "stage": "prior whole-project Astra review before canon corrections",
       "status": "complete",
       "owner": "manager",
       "notes": "Reviewed git diff eb9b6cd...proj/proclife at deea8ca after fixes 4e195a1 and 7209c93. No remaining evidence-backed defects; D19, G1/G2, inventory, 31 files +2077/-204, 44/99 deletion accounting and gate disclosures confirmed. Reviewer ran no tests."
@@ -60,8 +60,14 @@
     },
     {
       "stage": "Astra canon integration corrections",
-      "status": "in_progress",
-      "notes": "Six findings plus PL4 timed crash-test blocker are being fixed in task worktrees from the existing project branch; final whole-project Astra review follows. PL6 remains evidence only."
+      "status": "complete",
+      "notes": "All six original findings, the PL4 timed crash-test blocker, and the PL4 per-process missing-birth identity gap are fixed and merged. Fresh whole-project Astra review is underway. PL6 remains evidence only."
+    },
+    {
+      "stage": "whole-project Astra review after canon corrections",
+      "status": "complete",
+      "owner": "manager",
+      "notes": "Fresh Astra review at f5f58a4 found no remaining concrete defects. Inventory is 39 files +3480/-345, direct deletion credit 44/99, D19 escapee test and original PINALL expectations remain unchanged. Astra ran no tests; three focused identity-gap regressions passed before final review."
     }
   ],
   "dependencies": [],

@@ -84,24 +84,32 @@ PL5 implementation/test/guidance files merged in `05ec363`:
 
 Merged implementation deletions credited toward the agreed 99-line ambition: 44/99 (PL1: 0; PL2: 19; PL3: 0; PL4: 25; PL4-G1: 0; PL5: 0). The remaining 55 measured candidate lines are PL1's escaped-descendant ancestry and exact per-PID cleanup retained by D19. PL3's proposed helpers were retained because production callers still rely on them; PL5 shortened prose but did not retire a measured lifecycle block. This is a recorded shortfall against the §15 ambition, not a claim that 99 lines were removed. The Astrid package's approximately 4,000-line ambition does not map to this clone.
 
-Current committed branch diff from `eb9b6cd`: **31 files, +2077/-204** (`git diff --shortstat eb9b6cd...proj/proclife`). The inventory is 8 original project-package files, one PL5 gate-evidence file, and 22 implementation/test/docs files.
+Current committed branch diff from `eb9b6cd`: **39 files, +3480/-345** (`git diff --shortstat eb9b6cd...proj/proclife`). The inventory is 8 original project-package files, one PL5 gate-evidence file, and 30 implementation/test/docs files.
 
 Complete implementation, test, and user-guidance inventory (all paths changed by PL1–PL5):
 
 - `docs/manager-journey-commands.md`
+- `install/controller/operating_service.py`
+- `install/controller/shared_operating_service.py`
+- `install/controller/w0_codex_view_join.py`
 - `src/herzchen/adapters/host.py`
 - `src/herzchen/fleet/custody.py`
+- `src/herzchen/fleet/hosts/__init__.py`
 - `src/herzchen/fleet/hosts/contract.py`
 - `src/herzchen/fleet/runner/client.py`
 - `src/herzchen/fleet/runner/runner.py`
+- `src/herzchen/kernel/process_identity.py`
 - `src/otto/agents/claude_adapter.py`
 - `src/otto/agents/claude_cli.py`
 - `src/otto/agents/codex_host_reader.py`
+- `src/otto/agents/orchestrator_route.py`
 - `src/otto/agents/owner_runtime.py`
 - `src/otto/hostctl/heavy.py`
 - `src/otto/portfolio/execution_host.py`
+- `src/otto/portfolio/native_caller_ingress.py`
 - `src/otto/portfolio/skills/references/worker.md`
 - `src/otto/runner_cli.py`
+- `tests/test_capacity_holds.py`
 - `tests/test_codex_host_reader.py`
 - `tests/test_fleet_custody.py`
 - `tests/test_heavy_lease.py`
@@ -135,24 +143,24 @@ Focused results and gate-dependent failures above are the PL1–PL5 evidence; no
 
 ## Gate checks
 
-- `tests/test_runner.py`: 11 failures need the gate. Several require Unix-domain socket bind; process lifecycle/capacity assertions also require `ps` census so Custody can prove settlement. The file had 9 passing tests in the manager rerun; focused PL2 regressions passed separately in the worker's test selection.
+- `tests/test_runner.py`: the full PL5 manager run had 15 passes and 11 failures that need the gate. Several failures require Unix-domain socket bind; process lifecycle/capacity assertions also require `ps` census so Custody can prove settlement. The four PL5 guidance regressions passed on the manager rerun.
 - `tests/test_runner_cli.py`: 6 failures need the gate due Unix-domain socket bind (`EPERM`); 3 tests passed in the manager rerun.
 - PL3 `tests/test_worker_custody.py`: 13 failures need the gate because setup binds an AF_UNIX socket; 9 passed. `tests/test_host_contract.py`: 2 process-cleanup tests need the gate because `ps` is unavailable; 39 passed. `tests/test_codex_host_reader.py`: 1 valid metadata lookup fails closed because `ps` is unavailable; 9 passed. Targeted PL3 regressions passed separately as recorded above.
 - PL4 `tests/test_heavy_lease.py`: manager run had 8 failures and 14 passes before interruption after 463 seconds. Failed cleanup cases leave exact claims unresolved when macOS process census (`ps`) is denied; waiting integration tests then time out behind those correctly retained claims. These process-census/cleanup cases need the gate. The worker's 11 selected custody regressions, including the spawn crash handshake, passed.
-- PL4-G1 `tests/test_heavy_lease.py` census-gap regressions: manager selected run 2 passed; worker's selected set 13 passed. The full file remains gate-dependent because macOS `ps` census is denied.
+- PL4-G1 `tests/test_heavy_lease.py` census-gap regressions: manager selected run 2 passed; worker's selected set 13 passed. The PL4-G1-BIRTH-GAP regressions passed 3 cases, covering a missing identity at discovery and both signal rechecks, with restart persistence. The full file remains gate-dependent because macOS `ps` census is denied.
 - PL5 `tests/test_runner_cli.py`: socket fixture bind is denied (`EPERM`), so its manager-targeted mint test failed at setup and worker full-file run had 7 socket-gate failures (3 passed). The standalone transport retry key regression passed after both retry-key and `next_action` fixes. The installed-owner cold-agent measurement needs the gate.
 
 ## Final project review
 
 - Astra's final review found stale run/status metadata and an incomplete changed-file inventory. Updated `.project/status.md` and `.project/run.json` to reflect the authorized run; listed all eight committed project files and the PL1 files above. After that review, the orchestrator resolved D19 and fixed the budget at 99 lines; PL1 then merged after fresh Astra review.
-- Astra's first whole-project review found two concrete defects: PL4 census-gap loss could falsely settle custody after a later empty scan; PL5's transport refusal lacked `next_action` for exact-key recovery. The same PL4 worker fixed the census gap and dedicated Astra review found no remaining defect. The same PL5 worker added exact-key recovery guidance and the focused regression passed. Fresh final whole-project Astra review at `deea8ca` found no remaining evidence-backed defect and confirmed D19, G1/G2, inventory, 31 files +2077/-204, 44/99 deletion accounting, and gate disclosure. Astra ran no tests. External gates remain pending.
+- Astra's first whole-project review found two concrete defects: PL4 census-gap loss could falsely settle custody after a later empty scan; PL5's transport refusal lacked `next_action` for exact-key recovery. The same PL4 worker fixed the census gap and dedicated Astra review found no remaining defect. The same PL5 worker added exact-key recovery guidance and the focused regression passed. Fresh final whole-project Astra review at `deea8ca` found no remaining evidence-backed defect on the pre-correction tree and confirmed D19, G1/G2, inventory, 31 files +2077/-204, 44/99 deletion accounting, and gate disclosure. This review is historical; the requested correction review is recorded below after completion. Astra ran no tests. External gates remain pending.
 - Astra xhard findings and dispositions for PL1–PL4 are recorded above. PL5/PL6 used the normal route; the PL5 retry-response follow-up came from final review. Do not treat PL6 completion as the final whole-project review.
 
-## Canon integration audit — corrections in progress
+## Canon integration audit — corrections complete; external gates pending
 
-On 17 Oct 2026, Astra's integration audit `ops/audits/astra-strategy/INTEGRATE-PROCLIFE.md` reviewed `df534f3` against `eb9b6cd`; canon had advanced to `d02e46e` with FAILEDFENCE, OWNERCOMPLETION, FACADEFD, CTLRACE and CAPTUREEDIT. The audit blocks wholesale integration and identifies six corrections: exact kernel birth identity for PL1; PINALL-compatible PL3 capacity settlement; PL2 missing-parent/unmatched-latch accounting; durable PL3 metadata-reader custody; PL4 same-group descendant cleanup; and PL5 guidance based on current custody plus heavy status details. It also blocks PL4's timing-only spawn crash test. These are being handled as isolated failing-first follow-ups and receive Astra review before merge. PL6 remains evidence only and is not a canon source landing.
+On 17 Oct 2026, Astra's integration audit `ops/audits/astra-strategy/INTEGRATE-PROCLIFE.md` reviewed `df534f3` against `eb9b6cd`; canon had advanced to `d02e46e` with FAILEDFENCE, OWNERCOMPLETION, FACADEFD, CTLRACE and CAPTUREEDIT. The audit blocked wholesale integration and identified six corrections: exact kernel birth identity for PL1; PINALL-compatible PL3 capacity settlement; PL2 missing-parent/unmatched-latch accounting; durable PL3 metadata-reader custody; PL4 same-group descendant cleanup; and PL5 guidance based on current custody plus heavy status details. It also blocked PL4's timing-only spawn crash test. These corrections and the later PL4 missing-birth gap were handled as isolated failing-first tasks, reviewed by Astra, and merged. PL6 remains evidence only and is not a canon source landing.
 
-The audit also names D14 placement: fleet custody mechanisms stay in Herzchen. PL1's birth reader will therefore be a single shared primitive in the fleet layer, with `otto.portfolio.execution_host._process_start_identity` kept as the ORPHANWORKER-compatible entry point. The changed bystander assertion from D19 remains an orchestrator question in `.project/tasklist.md`; earlier D19 approval preserved the setsid escapee test and did not explicitly decide this assertion. The audit's 99-line deletion ambition is met by 44 credited lines; the remaining 55 stay for escaped-descendant custody under D19. The audit's full eight-file/twice-on-unrestricted-host check and staging/owner/film probes remain gate work and are not claimed here.
+The audit also names D14 placement: fleet custody mechanisms stay in Herzchen. PL1's birth reader will therefore be a single shared primitive in the fleet layer, with `otto.portfolio.execution_host._process_start_identity` kept as the ORPHANWORKER-compatible entry point. The changed bystander assertion from D19 remains an orchestrator question in `.project/tasklist.md`; earlier D19 approval preserved the setsid escapee test and did not explicitly decide this assertion. The project records 44/99 direct deletion lines; the remaining 55 measured candidate lines stay for escaped-descendant custody under D19. The audit's full eight-file/twice-on-unrestricted-host check and staging/owner/film probes remain gate work and are not claimed here.
 
 ### Correction merge log
 
@@ -162,3 +170,11 @@ The audit also names D14 placement: fleet custody mechanisms stay in Herzchen. P
 - 2026-10-17 22:12 UTC | PL4-GROUP | merged `6491c707510b25102fcbd1f80d8d92564aa7bdcf` | +229/-9 | manager deterministic anchor tests 4 passed; Astra deterministic anchor tests 4 passed | Astra found no defect. Real root-exit child cleanup and the full lease file need the process-census gate; no unsafe numeric group signal was added.
 - 2026-10-17 22:13 UTC | PL3-READER | merged `7be57a22795b4300e62b3a0d7e3a9b68c8554c78` | +269/-82 | manager reader regressions 3 passed and host-contract regressions 2 passed | Astra found missing constructor paths, evidence-ID-specific scopes, and native-writable latch/lock placement; fixed all three with one stable owner-private latch path per controller and serialized recovery, then Astra found no further defect. Real owner-death cleanup and full reader/contract files need the process gate.
 - 2026-10-17 22:15 UTC | PL4-CRASH-TEST | merged `0bd4af9c449fddd8b2045cab19368c1f42045769` | +27/-2 | focused crash-at-spawn test 1 passed | Astra found no defect. The test now waits for the exact helper incarnation to exit before checking no command marker; a delayed-exec mutation failed as intended.
+- 2026-10-17 22:20 UTC | PL5-GUIDANCE | merged `9a2ae0cd8cda84109253a115c75de59a6588cc96` | +180/-15 | manager focused runner regressions 4 passed; heavy status regressions 2 passed | Failing-first tests cover current latch/claim status, legacy grandchild root claim, unresolved lease detail, and stale holder guidance. Astra found stale-holder advice and incomplete legacy ancestry; fixed both and re-review found no remaining defect. Full runner file had 15 passes/11 sandbox failures (`AF_UNIX`/process census), needs the gate.
+- 2026-10-17 22:27 UTC | PL4-G1-BIRTH-GAP | merged `f5f58a4f8baa35fe9f640882858f71359dcf9f3f` | +91/-4 | manager focused heavy identity-gap regressions 3 passed; Astra re-review 3 passed | Final Astra review found a per-process missing birth could disappear across later empty scans, including signal-time rechecks. Persisted birth gaps from every fresh census before signal decisions; failing-first tests cover group and PID-only rechecks plus restart. No unverified identity is signalled; Astra found no remaining defect. Full heavy lease file remains `needs the gate` due unavailable `ps`.
+
+Correction tasks PL1-BIRTH, PL2-ACCOUNTING, PL3-CAPACITY, PL3-READER, PL4-GROUP, PL4-CRASH-TEST, PL5-GUIDANCE and PL4-G1-BIRTH-GAP are merged. PL6 remains evidence only. Fresh whole-project Astra review passes; unrestricted-host checks, the cold-agent measurement, staging recovery probes, and Astrid film journey remain gate work.
+
+### Final correction review
+
+The fresh Astra review of `git diff eb9b6cd...proj/proclife` at `f5f58a4` found no remaining concrete defects. It confirmed 39 changed files, `+3480/-345`, 44/99 direct deletion credit, D19's unchanged setsid escapee acceptance, unchanged original PINALL tests, and PL6 as evidence only. Astra ran no tests during this final pass; the three focused identity-gap regressions had passed earlier. `git diff --check` passed. Earlier task-level Astra findings and fixes are recorded on each correction merge row above. External gate work and the outstanding bystander-assertion landing question remain as recorded; no implementation task is blocked.

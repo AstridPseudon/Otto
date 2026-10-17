@@ -23,7 +23,7 @@ Routes are normal or xhard. Xhard is reserved for a specific plausible mistake t
 
 No PL7 branch archive: the named branches from the packaged tasklist are Astrid branches absent from this clone. PL0's Codex threat-model agreement is superseded by this explicit manager authorization; any decision beyond the preserved compatibility contract is recorded under “Questions for the orchestrator” while independent work continues.
 
-## Current run status
+## Original project run status
 
 - PL1: merged at `964120e`; setsid escapee cleanup and its existing acceptance test are preserved.
 - PL2: merged at `eec2b98`; 19/99 direct legacy deletion lines credited. PL3 merged at `f9d18e3`; native turns now associate the exact PL1 latch with the existing owner recovery row before spawn. PL4 merged at `580c6c4`; Astra later found and PL4 fixed sticky census-gap loss in merge `4e195a1`. PL5 merged at `05ec363`; final Astra review prompted missing transport-refusal `next_action`, fixed at `7209c93`. PL6 handoff merged at `e6b27eb` (see `.project/PROJECT.md` and `.project/status.md`).
@@ -39,10 +39,13 @@ The integration audit is static against `df534f3`; it reports canon at `d02e46e`
 | PL3-CAPACITY | PL3 / xhard | Follow PINALL: an actually empty process group proves the worker gone; a live same-number group with a reused leader stays held. Restore the original tests' expectations; do not reverse both tests. | Existing `test_reused_pid_stays_held` and `test_reused_pid_after_group_death_stays_held` pass unchanged; only empty PGID releases physical capacity. |
 | PL3-READER | PL3 / xhard | Give `CodexAppServerThreadReader` a durable latch connected to owner recovery, including owner death. Keep the public `run_turn()` custody contract coherent. | Failing-first production-construction/restart test proves uncertain reader scope remains recoverable. |
 | PL4-GROUP | PL4 / xhard | Clean up a surviving ordinary same-group descendant after the leader exits, using a sound persisted group anchor; never signal an unfenced numeric PGID. | Failing-first fork-child test exits root before first census, then proves owned child is stopped and a recycled/unrelated group survives. |
+| PL4-G1-BIRTH-GAP | PL4 / xhard | Make a per-process missing exact birth identity sticky across later empty scans and restart; a later census must not erase the ancestry gap or delete the retained holder. | Failing-first mocked census sequence records a PID with unavailable birth, then empty scans; holder remains unresolved. |
 | PL4-CRASH-TEST | PL4 / xhard | Replace the 0.3-second absence check in `test_holder_crash_at_spawn_cannot_launch_command_without_durable_root` with synchronization and proof the helper is terminal without executing CMD. | Regression fails on the timing-only test implementation and deterministically observes helper exit/no-exec. |
 | PL5-GUIDANCE | PL5 / xhard | Derive current cleanup guidance from retained latch/claim evidence, not immutable historical `custody="uncertain"` alone. Add lease identity, unresolved cleanup details and next action to heavy status. Preserve unknown task outcome and no-provider-retry rule. | Failing-first restart test proves released cleanup is not reported as currently held; unresolved heavy status names the exact lease and recovery action. |
 
 PL6 remains evidence only; it is not a canon source landing. Re-run the eight focused project test files on an unrestricted host as recorded in `.project/PROJECT.md`. Do not claim that their previous sandbox runs satisfy integration.
+
+Correction status: PL1-BIRTH, PL2-ACCOUNTING, PL3-CAPACITY, PL3-READER, PL4-GROUP, PL4-CRASH-TEST, PL5-GUIDANCE and PL4-G1-BIRTH-GAP are merged on `proj/proclife`. Fresh whole-project Astra review passed. See `.project/PROJECT.md` for merge SHAs, focused results, Astra dispositions, and gate work.
 
 ## Questions for the orchestrator
 
