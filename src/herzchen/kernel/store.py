@@ -285,6 +285,18 @@ class OperationOwnerCapability:
     def registered_domains(self) -> Tuple[DomainContribution, ...]:
         return self.__owner.registered_domains()
 
+    def ensure_durable_start_boundary(self) -> None:
+        """Refuse a start claim that could still roll back in an outer unit."""
+        if isinstance(self.__owner, Store):
+            active = getattr(self.__owner._local, "transaction", None)
+            if active is not None and active._active:
+                raise StoreAdmissionError("effect start claim requires its own committed transaction")
+            return
+        boundary = getattr(self.__owner, "ensure_durable_start_boundary", None)
+        if not callable(boundary):
+            raise StoreAdmissionError("Runtime operation owner cannot attest a durable start boundary")
+        boundary()
+
     def transaction(self) -> Any:
         """Return the owner's re-entrant transaction/savepoint context."""
         return self.__owner.transaction()
@@ -493,9 +505,10 @@ def _authority_root(value: str) -> str:
 # optional domain must instead declare its operation/event/resource surface in
 # its persisted DomainContribution.  The operation manager intentionally
 # accepts a caller's typed external operation name, but only for the kernel's
-# ``operation`` identity and its two fixed lifecycle events.
+# ``operation`` identity and its fixed lifecycle events.
 _CORE_MUTATION_PORTS = (
     (None, ("operation",), ("operation.prepared",), None),
+    ("operation.start", ("operation",), ("operation.started",), None),
     ("operation.outcome", ("operation",), ("operation.outcome",), None),
     ("limit.create", ("limit",), ("limit.created",), "fnd-04.limit.v1"),
     ("limit.reserve", ("reservation",), ("reservation.held",), "fnd-04.limit.v1"),
@@ -2314,7 +2327,7 @@ class Store:
             if existing is not None:
                 prior = self._receipt_from_row(existing)
                 validate_replay(prior, envelope)
-                return prior
+                return replace(prior, replayed=True)
 
             target = envelope.target
             if target.authority != self.authority:
