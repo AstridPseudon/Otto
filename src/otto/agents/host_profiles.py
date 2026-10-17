@@ -203,7 +203,10 @@ def profile(name: str, *, host_kind: Optional[str] = None) -> dict[str, Any]:
 
 def profile_for_run(run: Mapping[str, Any], *, host_kind: str, default_profile: str) -> dict[str, Any]:
     """Resolve a project's explicit profile before the host default, then qualify it."""
-    selected = run.get("model_profile") or default_profile
+    explicit = run.get("model_profile")
+    if explicit is not None and not isinstance(explicit, str):
+        raise ProfileSelectionError("run model_profile must be a string when specified")
+    selected = explicit or default_profile
     return profile(selected, host_kind=host_kind)
 
 

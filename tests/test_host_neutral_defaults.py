@@ -194,6 +194,21 @@ class ModelProfileTests(unittest.TestCase):
             host_profiles.profile_for_run({"model_profile": "codex"}, host_kind="claude-code",
                                           default_profile="claude")
 
+    def test_non_string_run_profile_is_refused_instead_of_using_host_default(self):
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.service import _owner_exception_result
+
+        for malformed in (["codex"], {"name": "codex"}, []):
+            with self.subTest(model_profile=malformed), self.assertRaises(
+                    host_profiles.ProfileSelectionError) as refused:
+                host_profiles.profile_for_run({"model_profile": malformed}, host_kind="codex",
+                                               default_profile="codex")
+            for serialize in (_cli_exception_result, _owner_exception_result):
+                result = serialize(refused.exception)
+                self.assertEqual(result["error"]["code"], "ValueError")
+                self.assertEqual(result["error"]["message"], str(refused.exception))
+                self.assertEqual(result["next_action"], host_profiles.ProfileSelectionError.next_action)
+
     def test_host_pack_rejects_a_profile_model_outside_its_qualified_adapter(self):
         pack = host_profiles.load_profile_pack()
         altered = json.loads(json.dumps(pack))
