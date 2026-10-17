@@ -455,6 +455,7 @@ def load_evidence_pack(
     managed_pack: ManagedPack | None = None,
     discoverer: Any = None,
     loader: Any = None,
+    source_state_path: str | Path | None = None,
 ) -> EvidenceResourcePack:
     """Resolve Evidence through the public managed-source discovery boundary."""
     if managed_pack is None:
@@ -465,6 +466,7 @@ def load_evidence_pack(
                 project_root=selected_project_root,
                 discoverer=discoverer,
                 loader=loader,
+                source_state_path=source_state_path,
             )
         except Exception as exc:
             raise EvidencePackError("managed Evidence pack admission failed through the public loader") from exc

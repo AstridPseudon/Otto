@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -558,7 +557,10 @@ def _runtime_source_record(
     )
 
 
-def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -> ManagedSourceIdentity:
+def _native_source_record(
+    pack_id: str, pack_root: Path, manifest_digest: str,
+    source_state_path: str | Path | None = None,
+) -> ManagedSourceIdentity:
     module_pack_root = Path(__file__).resolve().parent
     repo_root = module_pack_root.parents[2]
     runtime_context = _runtime_manifest_context(module_pack_root)
@@ -605,7 +607,8 @@ def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -
     if matching_ids != {pack_id} or len({item["pack_id"] for item in source_entries}) != len(source_entries):
         raise PackProvenanceError("native pack inventory has missing or duplicate pack identities")
     inventory_identity = _configured_inventory_identity(
-        pack_id, pack_root, revision, tree_digest, manifest_digest, source_entries
+        pack_id, pack_root, revision, tree_digest, manifest_digest, source_entries,
+        source_state_path=source_state_path,
     )
     return ManagedSourceIdentity(
         pack_id=pack_id,
@@ -626,21 +629,20 @@ def _configured_inventory_identity(
     tree_digest: str,
     manifest_digest: str,
     fallback_entries: list[dict[str, str]],
+    *,
+    source_state_path: str | Path | None,
 ) -> str:
-    """Use a configured source inventory only when it names this exact root.
-
-    This reads only an explicitly configured state path. It does not probe the
-    user's default state location, and the native loader has no product import.
-    """
-    raw_state_path = os.environ.get("HERZCHEN_SOURCE_STATE", "").strip()
-    if not raw_state_path:
+    """Use a caller-supplied source inventory only when it names this exact root."""
+    if source_state_path is None:
         entries = sorted(fallback_entries, key=lambda item: item["pack_id"])
         payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
-    state_candidate = Path(raw_state_path).expanduser()
+    state_candidate = Path(source_state_path).expanduser()
     if state_candidate.is_symlink():
         raise PackProvenanceError("configured managed-source state must not be a symlink")
     state_path = state_candidate.resolve()
+    if not state_path.exists():
+        return hashlib.sha256(b"[]").hexdigest()
     if not state_path.is_file():
         raise PackProvenanceError("configured managed-source state is unavailable")
     try:
@@ -796,7 +798,12 @@ def _native_manifest(pack_root: Path, expected_pack_id: str) -> tuple[dict[str, 
     return manifest, tuple(result)
 
 
-def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> ManagedPack:
+def _read_native_managed_pack(
+    pack_id: str,
+    project_root: str | Path,
+    *,
+    source_state_path: str | Path | None = None,
+) -> ManagedPack:
     module_pack_root = Path(__file__).resolve().parent
     repo_root = module_pack_root.parents[2]
     supplied_root = Path(project_root).expanduser().resolve()
@@ -820,7 +827,7 @@ def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> Managed
     pack_root = candidates[0]
     manifest, declarations = _native_manifest(pack_root, pack_id)
     manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-    source = _native_source_record(pack_id, pack_root, manifest_digest)
+    source = _native_source_record(pack_id, pack_root, manifest_digest, source_state_path)
     runtime_context = _runtime_manifest_context(module_pack_root)
     # Re-read admission after provenance calculation so a concurrent edit is
     # refused before any resource bytes enter the returned pack.
@@ -845,7 +852,9 @@ def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> Managed
             ResourceRef("managed-source", MANAGED_PACK_KIND, pack_id, source.source_revision),
         ))
     manifest_after_read = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-    source_after_read = _native_source_record(pack_id, pack_root, manifest_after_read)
+    source_after_read = _native_source_record(
+        pack_id, pack_root, manifest_after_read, source_state_path
+    )
     if (source_after_read.source_revision != source.source_revision
             or source_after_read.source_tree_sha256 != source.source_tree_sha256
             or source_after_read.source_manifest_sha256 != source.source_manifest_sha256
@@ -901,6 +910,7 @@ def read_managed_pack(
     project_root: str | Path,
     discoverer: PublicPackDiscoverer | None = None,
     loader: PublicPackLoader | None = None,
+    source_state_path: str | Path | None = None,
 ) -> ManagedPack:
     """Read a bundled Herzchen pack, or an injected external managed source."""
     if not isinstance(pack_id, str) or not pack_id.strip():
@@ -910,7 +920,9 @@ def read_managed_pack(
             "discoverer and loader must be supplied together; do not mix an admission adapter with native discovery"
         )
     if discoverer is None:
-        return _read_native_managed_pack(pack_id, project_root)
+        return _read_native_managed_pack(
+            pack_id, project_root, source_state_path=source_state_path
+        )
     discover, load = discoverer, loader
     try:
         discovered = tuple(discover(project_root=project_root))

@@ -26,6 +26,16 @@ from herzchen.contracts import ResourceRef
 _SERVICE_STORE: ContextVar[Any] = ContextVar("otto_service_store", default=None)
 
 
+def _managed_source_state_path() -> Path:
+    """Resolve the managed pack inventory path at Otto's product boundary."""
+
+    configured = os.environ.get("ASTRID_SOURCE_STATE", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return (state_home / "astrid" / "default" / "pack-sources.json").resolve()
+
+
 class _LazyEvidencePayloadResolver:
     """Load the managed Evidence pack only when an Evidence operation is used."""
 
@@ -38,7 +48,8 @@ class _LazyEvidencePayloadResolver:
         if self._handler is None:
             from herzchen.evidence.commands import EvidenceCommandHandler
             self._handler = EvidenceCommandHandler(
-                self._store.domain_handler(host_domains()), self._payload_root)
+                self._store.domain_handler(host_domains()), self._payload_root,
+                source_state_path=_managed_source_state_path())
         return self._handler
 
     def __getattr__(self, name: str) -> Any:
