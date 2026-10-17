@@ -251,6 +251,25 @@ def test_unreadable_child_birth_blocks_group_and_persists_doubt(tmp_path):
     assert json.loads(Path(latch).read_text())["doubt"]
 
 
+def test_unreadable_grandchild_birth_blocks_signal_after_discovery(tmp_path):
+    leader = custody.Proc(50111, 1, 50111, (100, 1))
+    child = custody.Proc(50112, leader.pid, 50112, (100, 2))
+    grandchild = custody.Proc(50113, child.pid, 50113, None)
+    process = mock.Mock(pid=leader.pid)
+    process.poll.return_value = None
+    latch = _write_latch(tmp_path / "grandchild.json", leader.pgid, list(leader.birth),
+                         {leader.pid: list(leader.birth)})
+    owner = custody.Custody(process, leader.pgid, list(leader.birth),
+                            {leader.pid: list(leader.birth)}, latch_path=latch,
+                            census_fn=lambda: {info.pid: info for info in (leader, child, grandchild)})
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        owner._send(signal.SIGTERM)
+    kill.assert_not_called()
+    killpg.assert_not_called()
+    assert child.pid in owner.known
+    assert json.loads(Path(latch).read_text())["doubt"]
+
+
 def test_old_display_birth_latch_is_uncertain(tmp_path):
     display = "Sat Oct 17 10:00:00 2026"
     latch = _write_latch(tmp_path / "old.json", 50201, display, {50201: display})

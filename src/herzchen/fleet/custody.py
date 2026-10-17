@@ -294,6 +294,7 @@ class Custody:
             if not self._live(snap, pid) and any(c.pid not in self.known and not c.zombie
                                                  for c in children.get(pid, ())):
                 self.doubt = self.doubt or "unverified child of a missing tracked parent"
+        missing_birth |= self._missing_birth(snap)
         if len(self.known) != before or self.doubt != prior_doubt:
             self._persist("running")
         if missing_birth:
@@ -310,6 +311,8 @@ class Custody:
         if self._missing_birth(snap):
             return
         live = self.observe(snap) or {}
+        if self._missing_birth(snap):
+            return
         if not self._persist_ok:
             return
         grouped = self._group_state(snap) == "ours"
