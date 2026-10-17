@@ -1375,24 +1375,29 @@ def assertions(raw):
     add("store-matches-stage", failures, "the Store contains the stage's admitted work tasks and assignment history",
         skip=skip)
 
-    # After down the staging root holds only what a closed Otto leaves: no socket, no Store holder, no canary scratch.
+    # Stage 2 keeps the operator audit log across restart/down. Other stages
+    # retain their existing run-folder contract.
     rest = read_json(raw / "at-rest.json", None)
     failures = []
+    allowed_run = AT_REST_RUN + (("operator-admission.jsonl",) if config.get("stage") == "2" else ())
     if rest is None:
         failures.append("the staging root was not checked after down")
     else:
         if rest.get("error"):
             failures.append("the staging root could not be read: " + rest["error"])
         failures += ["home/run holds %s, which down does not leave" % name
-                     for name in rest.get("home_run", []) if name not in AT_REST_RUN]
+                     for name in rest.get("home_run", []) if name not in allowed_run]
         if rest.get("service_state") not in (None, "closed"):
             failures.append("service.json says %s after down" % rest.get("service_state"))
         failures += ["socket left behind: %s" % path for path in rest.get("sockets", [])]
         failures += ["%s is still held by pid %s" % (name, " ".join(pids))
                      for name, pids in sorted(rest.get("store_holders", {}).items()) if pids]
         failures += ["perch-canary/ still holds %s" % entry for entry in rest.get("perch_canary", [])]
-    add("staging-at-rest-clean", failures, "after down: home/run holds only service.json (closed), generation and "
-        "service-stop; no socket, no Store holder, no canary scratch")
+    detail = "after down: home/run holds only service.json (closed), generation and service-stop"
+    if config.get("stage") == "2":
+        detail += ", and operator-admission.jsonl"
+    detail += "; no socket, no Store holder, no canary scratch"
+    add("staging-at-rest-clean", failures, detail)
 
     # The lifecycle scenario: its observations exist only when it ran; otherwise each of its checks is skipped, and says why.
     lifecycle = notes.get("staging-lifecycle")

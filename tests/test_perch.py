@@ -277,6 +277,32 @@ class AssertionKindTests(unittest.TestCase):
         (raw / "at-rest.json").unlink()
         self.assertEqual(statuses(raw)["staging-at-rest-clean"], "fail", "an unchecked root must not pass")
 
+    def test_stage_two_at_rest_keeps_only_the_operator_audit_log(self):
+        raw = clean_raw(self.tmp / "stage2-audit")
+        patch(raw, "config.json", lambda value: value.update(stage="2"))
+        patch(raw, "at-rest.json", lambda value: value["home_run"].append("operator-admission.jsonl"))
+        self.assertEqual(statuses(raw)["staging-at-rest-clean"], "pass")
+        self.assertIn("operator-admission.jsonl", next(row["detail"] for row in perch_report.assertions(raw)
+                                                       if row["name"] == "staging-at-rest-clean"))
+        patch(raw, "at-rest.json", lambda value: value["home_run"].append("unexpected.tmp"))
+        self.assertEqual(statuses(raw)["staging-at-rest-clean"], "fail")
+        for name, change in (
+                ("socket", lambda value: value["sockets"].append("/x/home/run/stray.sock")),
+                ("Store holder", lambda value: value["store_holders"].update({"staging.store": ["4242"]})),
+                ("canary scratch", lambda value: value["perch_canary"].append("old-run"))):
+            with self.subTest(name=name):
+                other = clean_raw(self.tmp / ("stage2-audit-" + name.replace(" ", "-")))
+                patch(other, "config.json", lambda value: value.update(stage="2"))
+                patch(other, "at-rest.json", lambda value: value["home_run"].append("operator-admission.jsonl"))
+                patch(other, "at-rest.json", change)
+                self.assertEqual(statuses(other)["staging-at-rest-clean"], "fail")
+        for stage in ("0", "1"):
+            with self.subTest(stage=stage):
+                other = clean_raw(self.tmp / ("stage-" + stage + "-audit"))
+                patch(other, "config.json", lambda value: value.update(stage=stage))
+                patch(other, "at-rest.json", lambda value: value["home_run"].append("operator-admission.jsonl"))
+                self.assertEqual(statuses(other)["staging-at-rest-clean"], "fail")
+
     def test_a_lifecycle_that_did_not_run_is_skipped_and_says_why(self):
         raw = clean_raw(self.tmp / "raw")
         (raw / "notes.json").write_text(json.dumps({"staging-lifecycle": "skipped: staging did not start"}), encoding="utf-8")
@@ -894,28 +920,12 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks the owner's retained dispatch state"):
             perch_report.stage2_dispatch_no_failure(observed, "A")
 
-    def test_stage_two_teardown_removes_copied_operator_log_only(self):
-        import re
+    def test_stage_two_preserves_operator_log_and_copies_raw_evidence(self):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
-        helper = re.search(r"(?ms)^stage2_cleanup_operator_log\(\) \{\n.*?^\}\n", shell)
-        self.assertIsNotNone(helper)
-        scratch = Path(tempfile.mkdtemp(prefix="perch-stage2-log-"))
-        self.addCleanup(shutil.rmtree, scratch, True)
-        root = scratch / "staging"
-        run = root / "home" / "run"
-        run.mkdir(parents=True)
-        log = run / "operator-admission.jsonl"
-        log.write_text("approved\n", encoding="utf-8")
-        retained = scratch / "raw-admission.jsonl"
-        retained.write_text(log.read_text(encoding="utf-8"), encoding="utf-8")
-        result = subprocess.run(["bash", "-c", "STAGE_ROOT=" + str(root) + "\n" + helper.group()
-                                 + "\nstage2_cleanup_operator_log\n"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(log.exists())
-        self.assertEqual(retained.read_text(encoding="utf-8"), "approved\n")
-        teardown = shell[shell.index('  bash "$STAGING" down < /dev/null'):]
-        self.assertLess(teardown.index('bash "$STAGING" down'), teardown.index('stage2_cleanup_operator_log'))
-        self.assertLess(teardown.index('stage2_cleanup_operator_log'), teardown.index('at-rest --stage-root'))
+        self.assertNotIn("stage2_cleanup_operator_log", shell)
+        self.assertNotIn('rm -f "$STAGE_ROOT/home/run/operator-admission.jsonl"', shell)
+        self.assertIn('cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"',
+                      shell)
 
     def test_real_stage_two_keeps_real_prover_and_fake_uses_stub(self):
         root = Path(tempfile.mkdtemp(prefix="perch-stage2-owner-"))
