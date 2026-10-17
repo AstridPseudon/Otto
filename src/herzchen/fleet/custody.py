@@ -122,10 +122,14 @@ def _sync_parent(path: str) -> None:
         os.close(directory)
 
 
-def _write_launch_intent(path: str) -> None:
+def _write_launch_intent(path: str, claim_run_id: str | None = None,
+                         claim_units: int | None = None) -> None:
     # Exclusive creation preserves any previous unresolved scope at this path.
+    record: dict[str, Any] = {"pgid": None, "leader_birth": None, "state": "launching", "members": {}}
+    if claim_run_id is not None and claim_units is not None:
+        record.update(claim_run_id=claim_run_id, claim_units=claim_units)
     with open(path, "x", encoding="utf-8") as handle:
-        json.dump({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}, handle)
+        json.dump(record, handle)
         handle.flush()
         os.fsync(handle.fileno())
     _sync_parent(path)
@@ -145,7 +149,8 @@ class Custody:
 
     def __init__(self, process: Any, pgid: int, leader_birth: Any, members: Mapping[int, Any],
                  latch_path: Optional[str] = None, census_fn: Optional[Callable[[], Optional[dict]]] = None,
-                 doubt: Optional[str] = None, state: str = "running") -> None:
+                 doubt: Optional[str] = None, state: str = "running",
+                 claim_run_id: str | None = None, claim_units: int | None = None) -> None:
         self.process = process
         self.pgid = pgid
         self.leader_birth = leader_birth
@@ -155,16 +160,20 @@ class Custody:
         self._census = lambda: census_fn() or None     # an empty census is no census
         self.doubt = doubt
         self.state = state
+        self.claim_run_id = claim_run_id
+        self.claim_units = claim_units
         self._persist_ok = True
 
     # -- birth -------------------------------------------------------------------------------
     @classmethod
     def launch(cls, argv: Any, *, latch_path: Optional[str] = None, popen: Optional[Callable[..., Any]] = None,
-               census_fn: Optional[Callable[[], Optional[dict]]] = None, **kwargs: Any) -> "Custody":
+               census_fn: Optional[Callable[[], Optional[dict]]] = None,
+               claim_run_id: str | None = None, claim_units: int | None = None,
+               **kwargs: Any) -> "Custody":
         """Record intent, then start ``argv`` as a fresh session leader and fence its identity."""
         if latch_path is not None:
             # A crash between spawn and identity capture leaves an unresolved launch intent.
-            _write_launch_intent(latch_path)
+            _write_launch_intent(latch_path, claim_run_id, claim_units)
         kwargs["start_new_session"] = True
         try:
             process = (subprocess.Popen if popen is None else popen)(argv, **kwargs)  # patches apply
@@ -173,7 +182,8 @@ class Custody:
             if latch_path is not None:
                 _remove(latch_path)
             raise
-        custody = cls(process, process.pid, None, {}, latch_path, census_fn)
+        custody = cls(process, process.pid, None, {}, latch_path, census_fn,
+                      claim_run_id=claim_run_id, claim_units=claim_units)
         snap = custody._census()
         leader = snap.get(process.pid) if snap else None
         if leader is None or leader.pgid != process.pid or leader.birth is None:
@@ -200,7 +210,8 @@ class Custody:
                 if marker not in (doubt or ""):
                     doubt = "%s; %s" % (doubt, marker) if doubt else marker
             return cls(None, int(record["pgid"]), record.get("leader_birth"), members, latch_path,
-                       census_fn, doubt=doubt, state=record.get("state", "running"))
+                       census_fn, doubt=doubt, state=record.get("state", "running"),
+                       claim_run_id=record.get("claim_run_id"), claim_units=record.get("claim_units"))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             return cls(None, -1, None, {}, latch_path, census_fn, doubt="latch unreadable: %s" % type(exc).__name__)
 
@@ -210,9 +221,11 @@ class Custody:
         if self.state == "terminating":
             state = "terminating"
         try:
-            _write_latch(self.latch_path, {"pgid": self.pgid, "leader_birth": self.leader_birth, "state": state,
-                                           "members": {str(pid): birth for pid, birth in self.known.items()},
-                                           "doubt": self.doubt})
+            record = {"pgid": self.pgid, "leader_birth": self.leader_birth, "state": state,
+                      "members": {str(pid): birth for pid, birth in self.known.items()}, "doubt": self.doubt}
+            if self.claim_run_id is not None and self.claim_units is not None:
+                record.update(claim_run_id=self.claim_run_id, claim_units=self.claim_units)
+            _write_latch(self.latch_path, record)
             self.state = state
             self._persist_ok = True
         except OSError:
