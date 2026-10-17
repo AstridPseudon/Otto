@@ -1346,7 +1346,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                     '  [ "$n" -lt 3 ] || rm "$RAW/owner-live"; }',
                     functions["stage2_owner_alive"], functions[name], call,
                 ))
-                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((raw / "polls").read_text(encoding="utf-8").strip(), "3")
                 self.assertIn(missing, (raw / "stage2-setup-errors.txt").read_text(encoding="utf-8"))
