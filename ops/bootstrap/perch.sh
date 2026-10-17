@@ -705,10 +705,8 @@ run_stage() {  # STAGE
   LABS="$CANARY_DIR/labs"
   mkdir -p "$RAW"
   if [ "$stage" = 2 ]; then
-    "$PY" -I -c 'import json,sys; from pathlib import Path; root=Path(sys.argv[1]);
-items=sorted(p.name for p in root.iterdir()) if root.exists() else [];
-Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists(),"entries":items})+"\n")' \
-      "$CANON.otto-labs" "$RAW/stage2-owner-labs-before.json"
+    "$PY" -I "$REPORT_PY" stage2-owner-labs --root "$CANON.otto-labs" \
+      --out "$RAW/stage2-owner-labs-before.json"
   fi
   mkdir -p "$LABS" "$CANARY_DIR/ops"
   : > "$RAW/events.tsv"; : > "$RAW/started.tsv"; : > "$RAW/durations.tsv"
@@ -863,10 +861,8 @@ Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists()
 
   "$PY" -I "$REPORT_PY" snapshot --canon "$CANON" --labs "$LABS" --out "$RAW/leftovers.txt"
   if [ "$stage" = 2 ]; then
-    "$PY" -I -c 'import json,sys; from pathlib import Path; root=Path(sys.argv[1]);
-items=sorted(p.name for p in root.iterdir()) if root.exists() else [];
-Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists(),"entries":items})+"\n")' \
-      "$CANON.otto-labs" "$RAW/stage2-owner-labs-after.json"
+    "$PY" -I "$REPORT_PY" stage2-owner-labs --root "$CANON.otto-labs" \
+      --out "$RAW/stage2-owner-labs-after.json"
   fi
   "$PY" -I "$REPORT_PY" timeline --src "$STAGE_ROOT/tree/src" --store "$STAGE_ROOT/store/staging.store" \
     --authority "$AUTHORITY" --out "$RAW/timeline.json" \
@@ -875,7 +871,6 @@ Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists()
     "$PY" -I "$HERE/perch_stage2_evidence.py" --src "$STAGE_ROOT/tree/src" \
       --store "$STAGE_ROOT/store/staging.store" --authority "$AUTHORITY" \
       --out "$RAW/stage2-store-events.json" || true
-    "$PY" -I "$REPORT_PY" stage2-observations --raw "$RAW"
   fi
 
   # The line's git history: report.sh's own landed and spend sections, read-only. OPS_DIR is an empty
@@ -896,6 +891,14 @@ Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists()
   fi
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
+  INIT_ARGS=()
+  [ -z "$FAKE" ] || INIT_ARGS+=(--fake)
+  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} \
+    --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
+    --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
+  if [ "$stage" = 2 ]; then
+    "$PY" -I "$REPORT_PY" stage2-observations --raw "$RAW"
+  fi
   for kind in census store restart admit canary readback typed edit nothing revision history stale growth stage2_scenario stage2_canary stage2_review admission_presence admit_order unadmitted reserve worker_kill store_snapshot stage2_census conflict owner; do
     # A fault whose observation this run does not have is named in seeded.txt, not left to look like a clean run.
     if has_fault "$kind"; then
@@ -903,12 +906,6 @@ Path(sys.argv[2]).write_text(json.dumps({"root":str(root),"exists":root.exists()
         || printf 'seeded %s not applied: this run has no such observation\n' "$kind" >> "$RAW/seeded.txt"
     fi
   done
-
-  INIT_ARGS=()
-  [ -z "$FAKE" ] || INIT_ARGS+=(--fake)
-  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} \
-    --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
-    --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
   STAGE_RC=0
   "$PY" -I "$REPORT_PY" check --raw "$RAW" || STAGE_RC=$?
   "$PY" -I "$REPORT_PY" render --raw "$RAW" --out "$run/report.md"

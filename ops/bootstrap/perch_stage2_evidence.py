@@ -59,7 +59,8 @@ def capture(src, store_path, authority):
         result = {"error": None, "tasks": tasks, "assignments": assignments,
                   "revisions": revisions, "events": []}
         for event in store.list_events():
-            if event.event_type not in {"work.assignment.dispatched", "work.result.appended", "work.revised"}:
+            if event.event_type not in {"work.assignment.dispatched", "work.result.appended",
+                                        "work.revised", "work.project-sheet.applied"}:
                 continue
             assignment_id = (event.stream.split(":", 1)[1]
                              if event.stream.startswith(("dispatch:", "result:")) else None)
@@ -70,6 +71,17 @@ def capture(src, store_path, authority):
                 value = (record.payload.get("value") if record is not None else None)
             elif event.event_type == "work.revised":
                 task_id = event.subject.id if event.subject.kind == "work.task" else None
+            elif event.event_type == "work.project-sheet.applied":
+                effects = plain(event.effects)
+                child_refs = (effects or {}).get("child_refs") or ()
+                if not any(isinstance(ref, Mapping) and ref.get("kind") == "work.task"
+                           and ref.get("id") in tasks for ref in child_refs):
+                    continue
+                result["events"].append({"task_id": None, "alias": None, "assignment_id": None,
+                    "event_type": event.event_type, "stream": event.stream,
+                    "recorded_at": event.recorded_at, "subject": plain(event.subject),
+                    "effects": effects, "value": None})
+                continue
             if task_id not in tasks:
                 continue
             result["events"].append({"task_id": task_id, "alias": tasks[task_id],

@@ -201,11 +201,14 @@ def clean_stage2_raw(root):
          "subject": {"kind": "work.task", "id": "task-C"},
          "effects": {"result_payload": {"metadata_namespaces": {"work.admission": {
              "revision": "rev-C"}}}}, "value": None},
-        {"task_id": "task-C", "alias": "C", "assignment_id": None,
-         "event_type": "work.revised", "stream": "work:task-C",
+        {"task_id": None, "alias": None, "assignment_id": None,
+         "event_type": "work.project-sheet.applied", "stream": "work:project-canary",
          "recorded_at": "2026-10-17T10:00:00.200000Z",
-         "subject": {"kind": "work.task", "id": "task-C"},
-         "effects": {"result_payload": {"instructions": "Canary dispatch C (post-admission edit)"}},
+         "subject": {"kind": "work.project", "id": "project-canary"},
+         "effects": {"child_refs": [{"kind": "work.task", "id": "task-C", "revision": "rev-C-edit"}],
+                     "history_summary": {"facets": [{"subject": {"kind": "work.task", "id": "task-C",
+                                                       "revision": "rev-C-edit"},
+                                                    "changed_fields": ["instructions"]}]}},
          "value": None},
     ])
     for index, alias in enumerate(tasks):
@@ -250,7 +253,7 @@ def clean_stage2_raw(root):
             {"id": "C", "lifecycle": "pending", "dispatch": {"state": "unknown"}}]},
         "stage2-instruction-edit-C.input.json": {"tasks": [{"id": "C", "instructions":
             "Canary dispatch C (post-admission edit)"}]},
-        "stage2-instruction-edit-C.json": {"outcome": "saved", "task_refs": {
+        "stage2-instruction-edit-C.json": {"outcome": "saved", "project_ref": {"id": "project-canary"}, "task_refs": {
             "C": {**task_refs["C"], "revision": "rev-C-edit"}}},
         "stage2-edited-C-no-launch.json": {"tasks": [
             {"id": "B", "lifecycle": "completed"},
@@ -269,8 +272,10 @@ def clean_stage2_raw(root):
                                                   {"id": "B", "dispatch": {"state": "admitted"}}]},
         "stage2-manager-start.json": {"outcome": "pending"},
         "stage2-repository-map.json": {"repositories": {"toy": "/tmp/perch/canon"}},
-        "stage2-owner-labs-before.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [], "exists": False},
-        "stage2-owner-labs-after.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [], "exists": True},
+        "stage2-owner-labs-before.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [],
+                                          "labs": [], "unexpected": [], "exists": False},
+        "stage2-owner-labs-after.json": {"root": "/tmp/perch/canon.otto-labs", "entries": [],
+                                         "labs": [], "unexpected": [], "exists": True},
     }
     for name, value in extra.items():
         (raw / name).write_text(json.dumps(value), encoding="utf-8")
@@ -997,6 +1002,109 @@ class AssertionKindTests(unittest.TestCase):
                                   if row["name"] == assertion)
                     self.assertIn(label.split("-")[1], detail)
 
+    def test_stage_two_missing_final_status_keeps_store_completion_observations(self):
+        raw = clean_stage2_raw(self.tmp / "missing-final-status")
+        (raw / "stage2-dispatch-status.json").unlink()
+        failures = perch_report.stage2_timeline_failures(raw, json.loads((raw / "config.json").read_text()))
+        self.assertTrue(any("final product status snapshot missing" in detail
+                            and "A, B" in detail for detail in failures), failures)
+        self.assertFalse(any("has no landed and completed product status" in detail for detail in failures), failures)
+        patch(raw, "stage2-store-events.json", lambda value: value.update(events=[
+            row for row in value["events"] if not (row.get("alias") == "A"
+                                                    and row.get("event_type") == "work.result.appended")]))
+        failures = perch_report.stage2_timeline_failures(raw, json.loads((raw / "config.json").read_text()))
+        self.assertTrue(any("A missing landing observation" in detail for detail in failures), failures)
+
+    def test_stage_two_instruction_edit_requires_exact_project_sheet_event(self):
+        cases = (
+            ("missing-sheet", lambda value: value.update(events=[row for row in value["events"]
+                if row.get("event_type") != "work.project-sheet.applied"])),
+            ("wrong-child-revision", lambda value: next(row for row in value["events"]
+                if row.get("event_type") == "work.project-sheet.applied")["effects"]["child_refs"][0]
+                .update(revision="rev-other")),
+            ("wrong-project-stream", lambda value: next(row for row in value["events"]
+                if row.get("event_type") == "work.project-sheet.applied").update(stream="work:other-project")),
+            ("no-instruction-change", lambda value: next(row for row in value["events"]
+                if row.get("event_type") == "work.project-sheet.applied")["effects"]["history_summary"]
+                ["facets"][0].update(changed_fields=["title"])),
+            ("early-C-dispatch", lambda value: next(row for row in value["events"]
+                if row.get("alias") == "C" and row.get("event_type") == "work.assignment.dispatched")
+                .update(recorded_at="2026-10-17T10:00:06.600000Z")),
+        )
+        for label, mutate in cases:
+            with self.subTest(label=label):
+                raw = clean_stage2_raw(self.tmp / label)
+                self.assertEqual(statuses(raw)["unadmitted-revision-refused"], "pass")
+                patch(raw, "stage2-store-events.json", mutate)
+                self.assertEqual(statuses(raw)["unadmitted-revision-refused"], "fail")
+
+    def test_stage_two_store_capture_keeps_project_sheet_child_and_changed_fields(self):
+        spec = importlib.util.spec_from_file_location("perch_stage2_evidence", BOOTSTRAP / "perch_stage2_evidence.py")
+        evidence = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evidence)
+        sys.path.insert(0, str(ROOT / "src"))
+        from herzchen.contracts import ResourceRef
+        from herzchen.kernel import Store
+        from otto.hostctl import owner as owner_module
+
+        task_ref = ResourceRef("owner", "work.task", "task-C", "rev-3")
+        task = SimpleNamespace(ref=task_ref, version=3,
+                               payload={"alias": "C", "instructions": "Canary dispatch C (post-admission edit)"})
+        sheet_event = SimpleNamespace(event_type="work.project-sheet.applied", stream="work:project-canary",
+            recorded_at="2026-10-17T10:00:00.200000Z",
+            subject=ResourceRef("owner", "work.project", "project-canary", "rev-5"),
+            effects={"child_refs": [task_ref], "history_summary": {"facets": [
+                {"subject": task_ref, "changed_fields": ["instructions"]}]}})
+
+        class StoreStub:
+            def consumer(self):
+                return self
+
+            def read_identity_page(self, *, kind, limit):
+                return {"records": [task] if kind == "work.task" else [],
+                        "next_cursor": None, "held": False}
+
+            def get_revision(self, _ref):
+                return task
+
+            def list_events(self):
+                return [sheet_event]
+
+            def close(self):
+                pass
+
+        with mock_patch.object(Store, "open", return_value=StoreStub()), \
+                mock_patch.object(owner_module, "host_domains", return_value=()):
+            receipt = evidence.capture(ROOT / "src", "unused.store", "owner")
+        self.assertEqual(len(receipt["events"]), 1)
+        captured = receipt["events"][0]
+        self.assertEqual(captured["event_type"], "work.project-sheet.applied")
+        self.assertEqual(captured["effects"]["child_refs"][0]["revision"], "rev-3")
+        self.assertEqual(captured["effects"]["history_summary"]["facets"][0]["changed_fields"],
+                         ["instructions"])
+
+    def test_stage_two_store_observation_runs_after_config_and_uses_matching_dispatches(self):
+        source = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        init = source.index('"$REPORT_PY" init --raw "$RAW"')
+        observe = source.index('"$REPORT_PY" stage2-observations --raw "$RAW"')
+        seed = source.index('"$REPORT_PY" seed --raw "$RAW"')
+        self.assertLess(init, observe)
+        self.assertLess(observe, seed)
+        raw = clean_stage2_raw(self.tmp / "store-observation-order")
+        for label in ("before", "after"):
+            (raw / ("stage2-store-" + label + ".json")).write_text(json.dumps({"integrity": "ok"}))
+        final = perch_report.stage2_observations(raw)["store_snapshots"][-1]
+        self.assertEqual(final["admitted_tasks"], ["A", "B", "C"])
+        self.assertEqual(final["dispatch_events"], 3)
+        perch_report.cmd_stage2_observations(Namespace(raw=str(raw)))
+        self.assertEqual(statuses(raw)["stage2-store-snapshots"], "pass")
+        patch(raw, "stage2-store-events.json", lambda value: value.update(events=[
+            row for row in value["events"] if not (row.get("alias") == "B"
+                                                    and row.get("event_type") == "work.assignment.dispatched")]))
+        self.assertEqual(perch_report.stage2_observations(raw)["store_snapshots"][-1]["dispatch_events"], 2)
+        perch_report.cmd_stage2_observations(Namespace(raw=str(raw)))
+        self.assertEqual(statuses(raw)["stage2-store-snapshots"], "fail")
+
     def test_stage_two_product_evidence_refuses_false_capacity_edit_and_metadata_claims(self):
         cases = (
             ("serialized-plan", "stage2-canary-valid", "stage2-plan-save.input.json",
@@ -1045,9 +1153,9 @@ class AssertionKindTests(unittest.TestCase):
             ("missing-lsof", "stage2-fds-before.txt", lambda _value: "",
              "owner-descriptors-bounded"),
             ("preexisting-owner-lab", "stage2-owner-labs-before.json",
-             lambda value: value["entries"].append("leftover"), "labs-left-behind"),
+             lambda value: value["labs"].append("branch-key/leftover"), "labs-left-behind"),
             ("remaining-owner-lab", "stage2-owner-labs-after.json",
-             lambda value: value["entries"].append("remaining"), "labs-left-behind"),
+             lambda value: value["labs"].append("branch-key/remaining"), "labs-left-behind"),
         ):
             with self.subTest(label=label):
                 raw = clean_stage2_raw(self.tmp / label)
@@ -1058,6 +1166,45 @@ class AssertionKindTests(unittest.TestCase):
                 else:
                     patch(raw, file, mutate)
                 self.assertEqual(statuses(raw)[assertion], "fail")
+
+    def test_stage_two_owner_lab_snapshot_lists_task_labs_and_retained_C_by_id(self):
+        raw = clean_stage2_raw(self.tmp / "owner-labs")
+        root = self.tmp / "owner-labs-tree" / "canon.otto-labs"
+        before = perch_report.stage2_owner_labs_snapshot(root)
+        namespace = root / "68006181e11fc5c4fd81"
+        namespace.mkdir(parents=True)
+        snapshot = raw / "owner-labs-cli.json"
+        subprocess.run([PY, "-I", str(BOOTSTRAP / "perch_report.py"), "stage2-owner-labs",
+                        "--root", str(root), "--out", str(snapshot)], check=True, capture_output=True)
+        empty = json.loads(snapshot.read_text(encoding="utf-8"))
+        self.assertEqual(empty["entries"], [namespace.name])
+        self.assertEqual(empty["labs"], [])
+        patch(raw, "stage2-repository-map.json", lambda value: value["repositories"].update(
+            toy=str(root).removesuffix(".otto-labs")))
+        (raw / "stage2-owner-labs-before.json").write_text(json.dumps(before))
+        (raw / "stage2-owner-labs-after.json").write_text(json.dumps(empty))
+        self.assertEqual(statuses(raw)["labs-left-behind"], "pass")
+        unexpected = namespace / "task-A"
+        unexpected.mkdir()
+        (raw / "stage2-owner-labs-after.json").write_text(json.dumps(perch_report.stage2_owner_labs_snapshot(root)))
+        detail = next(row["detail"] for row in perch_report.assertions(raw)
+                      if row["name"] == "labs-left-behind")
+        self.assertIn("task-A", detail)
+        self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
+        unexpected.rmdir()
+        retained = namespace / "task-C"
+        retained.mkdir()
+        (raw / "stage2-owner-labs-after.json").write_text(json.dumps(perch_report.stage2_owner_labs_snapshot(root)))
+        (raw / "stage2-killed-worker.json").write_text(json.dumps({
+            "pid": 101, "owner_pid": 202, "marker": str(retained / ".perch-worker-C.pid")}))
+        self.assertEqual(statuses(raw)["labs-left-behind"], "pass")
+        detail = next(row["detail"] for row in perch_report.assertions(raw)
+                      if row["name"] == "labs-left-behind")
+        self.assertIn("retained recovery lab C", detail)
+        self.assertIn("task-C", detail)
+        patch(raw, "stage2-dispatch-status.json", lambda value: next(task for task in value["tasks"]
+            if task["id"] == "C")["dispatch"].update(state="landed"))
+        self.assertEqual(statuses(raw)["labs-left-behind"], "fail")
 
 
 class FakePresenceLauncherTests(unittest.TestCase):

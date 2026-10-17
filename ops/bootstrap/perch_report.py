@@ -481,6 +481,34 @@ def cmd_stage2_observations(args):
         json.dumps(stage2_observations(args.raw), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def stage2_owner_labs_snapshot(root):
+    """List actual task labs below each owner branch namespace."""
+    root = Path(root)
+    result = {"root": str(root), "exists": root.exists(), "entries": [], "labs": [], "unexpected": []}
+    if not root.exists():
+        return result
+    if not root.is_dir():
+        result["unexpected"].append("root is not a directory")
+        return result
+    for namespace in sorted(root.iterdir()):
+        result["entries"].append(namespace.name)
+        if namespace.is_symlink() or not namespace.is_dir():
+            result["unexpected"].append(namespace.name)
+            continue
+        for child in sorted(namespace.iterdir()):
+            relative = str(child.relative_to(root))
+            if child.is_symlink() or not child.is_dir():
+                result["unexpected"].append(relative)
+            else:
+                result["labs"].append(relative)
+    return result
+
+
+def cmd_stage2_owner_labs(args):
+    Path(args.out).write_text(json.dumps(stage2_owner_labs_snapshot(args.root), sort_keys=True) + "\n",
+                              encoding="utf-8")
+
+
 def cmd_field(args):
     print(read_json(args.project)[args.key])
 
@@ -1372,8 +1400,16 @@ def stage2_event_time(row):
 
 def stage2_timeline_failures(raw, config):
     _data, events, failures = stage2_event_evidence(raw, config)
-    final_status = read_json(raw / "stage2-dispatch-status.json", {}) or {}
-    by_alias = {row.get("id"): row for row in final_status.get("tasks") or [] if isinstance(row, dict)}
+    final_status = read_json(raw / "stage2-dispatch-status.json", None)
+    status_tasks = final_status.get("tasks") if isinstance(final_status, dict) else None
+    if not isinstance(status_tasks, list):
+        completed = [alias for alias in config.get("stage2_expected_completed") or []
+                     if events.get((alias, "completion")) is not None]
+        failures.append("final product status snapshot missing; Store completion events retained for: "
+                        + (", ".join(completed) or "none"))
+        by_alias = None
+    else:
+        by_alias = {row.get("id"): row for row in status_tasks if isinstance(row, dict)}
     for alias in config.get("stage2_expected_completed") or []:
         dispatch, landing, completion = (events.get((alias, kind)) for kind in
                                          ("dispatch", "landing", "completion"))
@@ -1387,9 +1423,10 @@ def stage2_timeline_failures(raw, config):
                 failures.append(alias + " dispatch, landing observation and completion are not in event order")
             if landing.get("assignment_id") != dispatch.get("assignment_id"):
                 failures.append(alias + " landing observation belongs to another assignment")
-        status = by_alias.get(alias) or {}
-        if status.get("lifecycle") != "completed" or (status.get("dispatch") or {}).get("state") != "landed":
-            failures.append(alias + " has no landed and completed product status")
+        if by_alias is not None:
+            status = by_alias.get(alias) or {}
+            if status.get("lifecycle") != "completed" or (status.get("dispatch") or {}).get("state") != "landed":
+                failures.append(alias + " has no landed and completed product status")
     return failures
 
 
@@ -1518,6 +1555,7 @@ def stage2_failures(raw, config):
     no_launch = read_json(raw / "stage2-edited-C-no-launch.json", {}) or {}
     no_launch_owner = read_json(raw / "stage2-edited-C-owner.json", {}) or {}
     edited_ref = (edited.get("task_refs") or {}).get("C") or {}
+    edited_project_id = (edited.get("project_ref") or {}).get("id")
     original_ref = task_refs.get("C") or {}
     edited_task = next((row for row in edit_input.get("tasks") or [] if row.get("id") == "C"), {})
     c_before = next((row for row in no_launch.get("tasks") or [] if row.get("id") == "C"), {})
@@ -1528,8 +1566,25 @@ def stage2_failures(raw, config):
     initial_admission = [row for row in c_events if ((((row.get("effects") or {}).get("result_payload") or {})
                          .get("metadata_namespaces") or {}).get("work.admission") or {}).get("revision") ==
                          original_ref.get("revision")]
-    instruction_edit = [row for row in c_events if (((row.get("effects") or {}).get("result_payload") or {})
-                        .get("instructions") == edited_task.get("instructions"))]
+    readmission = [row for row in c_events if ((((row.get("effects") or {}).get("result_payload") or {})
+                   .get("metadata_namespaces") or {}).get("work.admission") or {}).get("revision") ==
+                   edited_ref.get("revision")]
+    edited_history = next((row for row in (store_events.get("revisions") or {}).get(edited_ref.get("id"), [])
+                           if isinstance(row, dict) and row.get("revision") == edited_ref.get("revision")), {})
+    instruction_edit = [row for row in stored_rows
+                        if row.get("event_type") == "work.project-sheet.applied"
+                        and edited_project_id and row.get("stream") == "work:" + edited_project_id
+                        and (row.get("subject") or {}).get("id") == edited_project_id
+                        and (row.get("subject") or {}).get("kind") == "work.project"
+                        and any(ref.get("kind") == "work.task" and ref.get("id") == edited_ref.get("id")
+                                and ref.get("revision") == edited_ref.get("revision")
+                                for ref in (row.get("effects") or {}).get("child_refs") or []
+                                if isinstance(ref, dict))
+                        and any((facet.get("subject") or {}).get("id") == edited_ref.get("id")
+                                and (facet.get("subject") or {}).get("revision") == edited_ref.get("revision")
+                                and "instructions" in (facet.get("changed_fields") or [])
+                                for facet in (((row.get("effects") or {}).get("history_summary") or {})
+                                              .get("facets") or []) if isinstance(facet, dict))]
     idle_at = stage2_event_time({"recorded_at": no_launch_owner.get("projection_at")})
     b_completion = task_events.get(("B", "completion"))
     c_dispatch = task_events.get(("C", "dispatch"))
@@ -1541,13 +1596,15 @@ def stage2_failures(raw, config):
             or c_before.get("lifecycle") == "completed"
             or (no_launch_owner.get("native_capacity") or {}).get("active_or_uncertain") != 0
             or (no_launch_owner.get("manager_turns") or {}).get("active") != 0
-            or len(initial_admission) != 1 or len(instruction_edit) != 1 or idle_at is None
+            or len(initial_admission) != 1 or len(instruction_edit) != 1 or len(readmission) != 1
+            or not edited_history or edited_history.get("admitted_revision") is not None or idle_at is None
             or b_completion is None or not stage2_event_time(b_completion)
             or not stage2_event_time(initial_admission[0]) or not stage2_event_time(instruction_edit[0])
             or not stage2_event_time(initial_admission[0]) < stage2_event_time(instruction_edit[0]) < idle_at
             or not stage2_event_time(b_completion) < idle_at
             or c_dispatch is None or not stage2_event_time(c_dispatch)
-            or stage2_event_time(c_dispatch) <= idle_at):
+            or not stage2_event_time(readmission[0])
+            or not idle_at < stage2_event_time(readmission[0]) < stage2_event_time(c_dispatch)):
         found["unadmitted-revision-refused"].append("C's edited instructions did not remain unlaunched after B completed")
     write = read_json(raw / "stage2-metadata-only-C.json", {}) or {}
     write_ref = write.get("task_ref") or {}
@@ -1704,13 +1761,48 @@ def assertions(raw):
     if config.get("stage") == "2":
         mapped = (read_json(raw / "stage2-repository-map.json", {}) or {}).get("repositories", {}).get("toy")
         expected_root = str(mapped) + ".otto-labs" if isinstance(mapped, str) and mapped else None
+        activation = read_json(raw / "stage2-activation.json", {}) or {}
+        c_task = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
+        c_task_id = (c_task.get("C") or {}).get("id")
+        killed_marker = (read_json(raw / "stage2-killed-worker.json", {}) or {}).get("marker")
+        final_status = read_json(raw / "stage2-dispatch-status.json", {}) or {}
+        c_status = next((task for task in final_status.get("tasks") or []
+                         if isinstance(task, dict) and task.get("id") == "C"), {})
+        retained_c = None
+        if (expected_root and c_task_id and isinstance(killed_marker, str)
+                and Path(killed_marker).name == ".perch-worker-C.pid"
+                and (c_status.get("dispatch") or {}).get("state") == "unknown"
+                and c_status.get("lifecycle") != "completed"):
+            try:
+                relative = Path(killed_marker).parent.relative_to(expected_root)
+                if (len(relative.parts) == 2 and relative.name == c_task_id
+                        and all(part not in {".", ".."} for part in relative.parts)):
+                    retained_c = str(relative)
+            except ValueError:
+                pass
+        retained = []
         for label in ("before", "after"):
             owner_labs = read_json(raw / ("stage2-owner-labs-" + label + ".json"), {}) or {}
-            if owner_labs.get("root") != expected_root or not isinstance(owner_labs.get("entries"), list):
+            if (owner_labs.get("root") != expected_root or not isinstance(owner_labs.get("entries"), list)
+                    or not isinstance(owner_labs.get("labs"), list)
+                    or not isinstance(owner_labs.get("unexpected"), list)):
                 left.append("owner %s lab-root listing missing or names another root" % label)
             else:
-                left.extend("owner %s lab-folder %s" % (label, name) for name in owner_labs["entries"])
-    add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")
+                left.extend("owner %s unexpected lab-root entry %s" % (label, name)
+                            for name in owner_labs["unexpected"])
+                for name in owner_labs["labs"]:
+                    if (not isinstance(name, str) or len(Path(name).parts) != 2
+                            or any(part in {".", ".."} for part in Path(name).parts)):
+                        left.append("owner %s invalid lab entry %r" % (label, name))
+                    elif label == "after" and name == retained_c:
+                        retained.append("C %s" % name)
+                    else:
+                        left.append("owner %s lab %s" % (label, name))
+        lab_detail = ("no unexpected owner labs; retained recovery lab " + ", ".join(retained)
+                      if retained else "no owner task labs left")
+    else:
+        lab_detail = "no lab, lab branch or lab folder left"
+    add("labs-left-behind", ["left: " + line for line in left], lab_detail)
 
     # Until stage 2 there is no product pool to read: this is the harness's own count of its fake workers.
     if config.get("stage") != "2":
@@ -2066,6 +2158,9 @@ def build_parser():
     p.set_defaults(fn=cmd_stage2_capacity_held)
     p = sub.add_parser("stage2-observations"); p.add_argument("--raw", required=True)
     p.set_defaults(fn=cmd_stage2_observations)
+    p = sub.add_parser("stage2-owner-labs")
+    p.add_argument("--root", required=True); p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_stage2_owner_labs)
     p = sub.add_parser("stage2-kill-check"); p.add_argument("--raw", required=True)
     p.set_defaults(fn=cmd_stage2_kill_check)
     p = sub.add_parser("field"); p.add_argument("--project", required=True); p.add_argument("--key", required=True)
