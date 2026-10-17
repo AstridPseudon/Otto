@@ -256,7 +256,7 @@ class Runner:
                     claim = _latch_claim(self._latch_path(run_id), self._capacity)
                     if claim is not None and claim[0] in records_by_id:
                         unresolved.add(claim[0])
-        unaccounted: set[str] = set()
+        unaccounted: dict[str, str] = {}
         for run_id in tuple(unresolved):
             current = run_id
             seen: set[str] = set()
@@ -266,16 +266,16 @@ class Runner:
                 parent_id = record.get("nested_in")
                 if parent_id is None:
                     if record["units"] <= 0:
-                        unaccounted.add(run_id)
+                        unaccounted[run_id] = current
                     break
                 if parent_id not in records_by_id:
-                    unaccounted.add(run_id)
+                    unaccounted[run_id] = parent_id
                     break
                 unresolved.add(parent_id)
                 current = parent_id
             else:
                 # An unmatched latch or a broken ancestry cannot establish its owner units.
-                unaccounted.add(run_id)
+                unaccounted[run_id] = run_id
         for record in records:
             if record["run_id"] not in unresolved:
                 continue
@@ -290,12 +290,13 @@ class Runner:
             self._leases[record["run_id"]] = lease
         claims: dict[str, tuple[int, str]] = {}
         legacy = False
+        without_claim: set[str] = set()
         for run_id in sorted(unaccounted):
             record = records_by_id.get(run_id)
             claim = (_claim_fields(record, self._capacity) if record is not None else
                      _latch_claim(self._latch_path(run_id), self._capacity))
             if claim is None:
-                legacy = True
+                without_claim.add(run_id)
                 continue
             claim_id, units = claim
             if claim_id in self._leases:
@@ -307,6 +308,9 @@ class Runner:
                 legacy = True
                 continue
             claims[claim_id] = (units, run_id)
+        legacy = legacy or any(unaccounted[run_id] not in claims
+                               and unaccounted[run_id] not in self._leases
+                               for run_id in without_claim)
         for claim_id, (units, run_id) in sorted(claims.items()):
             record = records_by_id.get(run_id, {"task": "unverified", "purpose": "unmatched custody latch"})
             self._restore_claim(run_id, units, record)

@@ -654,6 +654,9 @@ def test_restart_retains_nested_claim_without_verifiable_parent(harness, parent_
                              started_at=time.time()))
     latches = harness.state / "latches"
     latches.mkdir(exist_ok=True)
+    if parent_evidence == "invalid":
+        (latches / (parent_id + ".json")).write_text(
+            json.dumps({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}))
     latch = latches / (child_id + ".json")
     leader = Custody.launch(gate_cmd(harness.tmp / "child-gate"), latch_path=str(latch),
                             cwd=str(harness.cwd), stdin=subprocess.DEVNULL,
@@ -733,6 +736,20 @@ def test_restart_retains_unmatched_unresolved_latch_claim(harness):
         except OSError:
             pass
         leader.process.wait()
+
+
+def test_restart_legacy_nested_scope_without_claim_size_stays_conservative(harness):
+    store = harness.store
+    store.put(harness.record(store, "legacy-child", ["fake", "child"], "c1", "unknown",
+                             units=0, nested_in="missing-parent", custody="uncertain"))
+    latches = harness.state / "latches"
+    latches.mkdir(exist_ok=True)
+    (latches / "legacy-child.json").write_text(
+        json.dumps({"pgid": None, "leader_birth": None, "state": "launching", "members": {}}))
+    runner = harness.runner(store=harness.new_store())
+    assert runner.status()["used"] == 3
+    blocked = harness.submit(runner, QUICK, weight=1, request_id="behind-legacy")
+    assert store.get(blocked)["state"] == "queued"
 
 
 def test_restart_nested_scope_uses_verified_parent_claim(harness):
