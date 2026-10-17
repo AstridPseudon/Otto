@@ -24,48 +24,62 @@ class ProfileSelectionError(ValueError):
                    "then retry the command.")
 
 
+class ProfilePackRecoveryError(ProfileSelectionError):
+    """The exact managed profile pack cannot be trusted or interpreted."""
+
+    next_action = ("Restore or correct the expected exact managed otto-profiles pack source and pin, "
+                   "then retry the command.")
+
+
 def load_profile_pack() -> dict[str, Any]:
     """Read exact managed profile and host resources, retaining their source pin."""
-    from herzchen.packs.authoring import read_managed_pack
+    from herzchen.packs.authoring import PackAuthoringError, read_managed_pack
     from otto.hostctl.owner import _managed_source_state_path
 
     source_root = Path(__file__).resolve().parents[2]
-    pack = read_managed_pack("otto-profiles", project_root=source_root.parent,
-                             native_pack_root=source_root / "otto" / "packs",
-                             source_state_path=_managed_source_state_path())
+    try:
+        pack = read_managed_pack("otto-profiles", project_root=source_root.parent,
+                                 native_pack_root=source_root / "otto" / "packs",
+                                 source_state_path=_managed_source_state_path())
+    except PackAuthoringError as exc:
+        raise ProfilePackRecoveryError("Otto profile pack provenance is invalid: %s" % exc) from exc
     resources = {item.path: item for item in pack.resources}
     try:
         profiles = json.loads(resources["profiles.json"].content)
         hosts = json.loads(resources["hosts.json"].content)
     except (KeyError, UnicodeError, ValueError) as exc:
-        raise ValueError("Otto profile pack lacks valid profile/host resources") from exc
+        raise ProfilePackRecoveryError("Otto profile pack lacks valid profile/host resources") from exc
     if (not isinstance(profiles, dict) or profiles.get("schema") != "otto.model-profiles.v1"
             or not isinstance(hosts, dict) or hosts.get("schema") != "otto.host-definitions.v1"
             or not isinstance(profiles.get("profiles"), dict) or not isinstance(hosts.get("hosts"), dict)):
-        raise ValueError("Otto profile pack has an unsupported schema")
+        raise ProfilePackRecoveryError("Otto profile pack has an unsupported schema")
     names = profiles["profiles"]
     if profiles.get("default_profile") not in names:
-        raise ValueError("Otto profile pack lacks its default profile")
+        raise ProfilePackRecoveryError("Otto profile pack lacks its default profile")
     for name, value in names.items():
+        roles = value.get("roles") if isinstance(value, dict) else None
         if (not isinstance(name, str) or not isinstance(value, dict)
-                or set(value.get("roles", {})) != set(SLOTS)
+                or not isinstance(roles, dict) or set(roles) != set(SLOTS)
                 or not isinstance(value.get("host_kinds"), list)
                 or any(not isinstance(binding, dict)
                        or any(not isinstance(binding.get(key), str) or not binding[key]
                               for key in ("model", "reasoning"))
-                       for binding in value["roles"].values())):
-            raise ValueError("Otto profile pack has an invalid seven-slot profile")
+                       for binding in roles.values())):
+            raise ProfilePackRecoveryError("Otto profile pack has an invalid seven-slot profile")
     for kind, value in hosts["hosts"].items():
-        REGISTRY.get(kind)
+        try:
+            REGISTRY.get(kind)
+        except UnknownHostKind as exc:
+            raise ProfilePackRecoveryError("Otto profile pack declares an unsupported host kind") from exc
         selected = names.get(value.get("model_profile")) if isinstance(value, dict) else None
         if (not isinstance(selected, dict) or selected.get("adapter") != value.get("adapter")
                 or kind not in selected["host_kinds"]
                 or not isinstance(value.get("adapter_settings"), dict)
                 or not isinstance(value.get("launcher_qualification"), dict)):
-            raise ValueError("Otto profile pack host/profile qualification is invalid")
+            raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
         allowed = value["adapter_settings"].get("models")
         if allowed is not None and any(role["model"] not in allowed for role in selected["roles"].values()):
-            raise ValueError("Otto profile pack binds a model this host cannot serve")
+            raise ProfilePackRecoveryError("Otto profile pack binds a model this host cannot serve")
     pin = {"pack_id": pack.pack_id, "pack_version": pack.version,
            "source_revision": pack.source.source_revision,
            "source_inventory_identity": pack.source.source_inventory_identity,
