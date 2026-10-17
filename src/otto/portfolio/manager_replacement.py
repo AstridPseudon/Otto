@@ -14,6 +14,18 @@ from .manager_continuity import ManagerContinuity
 from .owner_readers import json_value
 
 
+_NEXT_ACTION = (
+    'Ask the owner to inspect the original retained intent and reconcile prior manager/native custody; '
+    'only submit a new accepted schedule after resolution. '
+    'Do not retry acquisition for this assignment generation and native session.'
+)
+
+
+def _held(reason: str, **fields: Any) -> dict[str, Any]:
+    return {'outcome': 'held', 'reason': reason, 'retry': False,
+            'next_action': _NEXT_ACTION, **fields}
+
+
 class OwnerManagerReplacement:
     def __init__(self, *, application: Any, report_reader: Callable[..., Any], acquire_session: Callable[..., Mapping[str, Any]],
                  context_builder: Callable[..., Mapping[str, Any]],
@@ -71,8 +83,7 @@ class OwnerManagerReplacement:
         if original is not None and original.get('pin') != pin:
             raise PermissionError('retained replacement intent differs')
         if original is not None and original.get('request_key') != request_key:
-            return {'outcome':'held','reason':'prior replacement intent owns this native acquisition',
-                    'provider_called':False,'retry':False}
+            return _held('prior replacement intent owns this native acquisition', provider_called=False)
         retained = records.get('acquired')
         if assignment.generation == prior.generation:
             if assignment.ref.to_dict() != prior.assignment_ref:
@@ -81,18 +92,19 @@ class OwnerManagerReplacement:
             if (prior.stop_state != 'completed' or prior.completion_state != 'succeeded'
                     or prior.in_flight_request is not None
                     or ((prior.host_evidence or {}).get('gateway_attempt') or {}).get('result', {}).get('outcome') != 'succeeded'):
-                return {'outcome':'held','reason':'prior manager custody is not terminal succeeded',
-                        'provider_called':False,'retry':False}
+                return _held('prior manager custody is not terminal succeeded', provider_called=False)
             if original is not None and retained is None:
-                return {'outcome':'held','reason':'session acquisition was admitted but has no verified retained result',
-                        'provider_called':False,'retry':False}
+                return _held('session acquisition was admitted but has no verified retained result',
+                             provider_called=False)
             if original is None:
                 claim = secrets.token_hex(16)
                 self._report(assignment, intent_key, {'schema':'otto.manager-native-replacement.v1',
                     'request_key':request_key,'stage':'intent','pin':pin,'claim':claim})
                 intent_id = "report-" + hashlib.sha256((assignment.id+":"+intent_key).encode()).hexdigest()[:28]
                 admitted = self.report_reader(ResourceRef(assignment.ref.authority, "wrk.report", intent_id))
-                admitted_value = admitted.payload.get('value') if admitted is not None else None
+                if admitted is None:
+                    return _held('retained native acquisition intent is unavailable', provider_called=False)
+                admitted_value = admitted.payload.get('value')
                 if (not isinstance(admitted_value, Mapping)
                         or admitted.payload.get('assignment') != prior.assignment_ref
                         or admitted.payload.get('generation') != prior.generation
@@ -101,11 +113,9 @@ class OwnerManagerReplacement:
                         or admitted_value.get('pin') != pin):
                     raise PermissionError('retained replacement intent cannot be verified')
                 if admitted_value.get('request_key') != request_key:
-                    return {'outcome':'held','reason':'prior replacement intent owns this native acquisition',
-                            'provider_called':False,'retry':False}
+                    return _held('prior replacement intent owns this native acquisition', provider_called=False)
                 if admitted_value.get('claim') != claim:
-                    return {'outcome':'held','reason':'another caller admitted this native acquisition',
-                            'provider_called':False,'retry':False}
+                    return _held('another caller admitted this native acquisition', provider_called=False)
                 result = dict(self.acquire_session(prior.to_dict()))
                 # The trusted host verifies the actual inert native receipt;
                 # the JSON caller cannot supply a session or verification bit.
@@ -115,7 +125,7 @@ class OwnerManagerReplacement:
                     self._report(assignment, request_key+':acquisition-unknown', {
                         'schema':'otto.manager-native-replacement.v1','request_key':request_key,
                         'stage':'acquisition-unknown','pin':pin,'result':result})
-                    return {'outcome':'held','reason':'new native acquisition is unresolved','retry':False}
+                    return _held('new native acquisition is unresolved')
                 retained = {'schema':'otto.manager-native-replacement.v1','request_key':request_key,
                     'stage':'acquired','pin':pin,'result':json_value(result)}
                 self._report(assignment,request_key+':acquired',retained)
