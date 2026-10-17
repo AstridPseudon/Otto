@@ -1272,6 +1272,40 @@ def test_launch_refuses_to_replace_an_unresolved_scope_record(tmp_path):
     assert latch.read_bytes() == original_bytes
 
 
+def test_failed_spawn_retires_intent_and_permits_retry(tmp_path):
+    latch = tmp_path / "retry.json"
+
+    def failed_start(_argv, **_kwargs):
+        assert json.loads(latch.read_text())["state"] == "launching"
+        raise OSError("executable missing")
+
+    with pytest.raises(OSError, match="executable missing"):
+        custody.Custody.launch(["missing"], latch_path=str(latch), popen=failed_start)
+    assert not latch.exists()
+
+    process = mock.Mock(pid=44201)
+    process.poll.return_value = None
+    leader = custody.Proc(process.pid, 1, process.pid, "birth")
+    owner = custody.Custody.launch(["replacement"], latch_path=str(latch),
+                                   popen=lambda *_args, **_kwargs: process,
+                                   census_fn=lambda: {process.pid: leader})
+    assert owner.pgid == process.pid
+    assert json.loads(latch.read_text())["state"] == "running"
+
+
+def test_census_gap_doubt_survives_latch_recovery(tmp_path):
+    latch = _write_latch(tmp_path / "gap.json", 44301, "birth", {44301: "birth"})
+    owner = custody.Custody.from_latch(latch, census_fn=lambda: None)
+    assert owner.observe() is None
+    assert owner.doubt is not None
+    assert json.loads(Path(latch).read_text())["doubt"] == owner.doubt
+
+    unrelated = custody.Proc(44302, 1, 44302, "unrelated")
+    recovered = custody.Custody.from_latch(latch, census_fn=lambda: {unrelated.pid: unrelated})
+    assert recovered.status().state == "uncertain"
+    assert Path(latch).exists()
+
+
 def test_cleanup_intent_remains_recorded_when_new_group_member_is_observed(tmp_path):
     latch = str(tmp_path / "cleanup.json")
     leader = custody.Proc(45001, 1, 45001, "leader")

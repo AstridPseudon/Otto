@@ -124,6 +124,8 @@ def _remove(path: str) -> None:
         os.unlink(path)
     except FileNotFoundError:
         pass
+    else:
+        _sync_parent(path)
 
 
 class Custody:
@@ -151,7 +153,13 @@ class Custody:
             # A crash between spawn and identity capture leaves an unresolved launch intent.
             _write_launch_intent(latch_path)
         kwargs["start_new_session"] = True
-        process = (subprocess.Popen if popen is None else popen)(argv, **kwargs)  # looked up now so patches apply
+        try:
+            process = (subprocess.Popen if popen is None else popen)(argv, **kwargs)  # patches apply
+        except Exception:
+            # Popen did not return a process handle, so this invocation owns no signallable group.
+            if latch_path is not None:
+                _remove(latch_path)
+            raise
         custody = cls(process, process.pid, None, {}, latch_path, census_fn)
         snap = custody._census()
         leader = snap.get(process.pid) if snap else None
@@ -171,7 +179,7 @@ class Custody:
                 record = json.load(handle)
             members = {int(pid): str(birth) for pid, birth in record["members"].items()}
             return cls(None, int(record["pgid"]), record.get("leader_birth"), members, latch_path,
-                       census_fn, state=record.get("state", "running"))
+                       census_fn, doubt=record.get("doubt"), state=record.get("state", "running"))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             return cls(None, -1, None, {}, latch_path, census_fn, doubt="latch unreadable: %s" % type(exc).__name__)
 
@@ -182,7 +190,8 @@ class Custody:
             state = "terminating"
         try:
             _write_latch(self.latch_path, {"pgid": self.pgid, "leader_birth": self.leader_birth, "state": state,
-                                           "members": {str(pid): birth for pid, birth in self.known.items()}})
+                                           "members": {str(pid): birth for pid, birth in self.known.items()},
+                                           "doubt": self.doubt})
             self.state = state
         except OSError:
             self.doubt = self.doubt or "cleanup latch could not be written"
@@ -216,6 +225,7 @@ class Custody:
         if snap is None:
             if any(True for _ in self.known) and self.doubt is None:
                 self.doubt = "census unavailable while tracked processes were live"
+                self._persist(self.state)
             return None
         before = len(self.known)
         if self._group_state(snap) == "ours":
