@@ -270,22 +270,32 @@ fi
 [ -n "${CHECK_FAILED:-}" ] || log "check passed: $CHECK"
 
 # a. Sweep
-CHANGED_SRC="$(gitl diff --name-only "$BASE...$BRANCH" -- src | grep '\.py$' || true)"
+CHANGED_CODE="$(gitl diff --name-only "$BASE...$BRANCH" -- src ops)"
 TESTS_TOUCHED="$(gitl diff --name-only --diff-filter=ACMR "$BASE...$BRANCH" -- 'tests/test_*.py' || true)"
 TESTS_ADDED="$(gitl diff --name-only --diff-filter=A "$BASE...$BRANCH" -- 'tests/test_*.py' || true)"
-SWEEP="$( { printf '%s\n' "$CHANGED_SRC" | "$PY" -I -c '
+SWEEP="$( { printf '%s\n' "$CHANGED_CODE" | "$PY" -I -c '
 import os, re, sys
 lab = sys.argv[1]
-mods = []
+src_mods = []
+ops_names = []
 for line in sys.stdin.read().split():
-    m = line[len("src/"):-3].replace("/", ".")
-    mods.append(m[:-9] if m.endswith(".__init__") else m)
+    if line.startswith("src/") and line.endswith(".py"):
+        m = line[len("src/"):-3].replace("/", ".")
+        src_mods.append(m[:-9] if m.endswith(".__init__") else m)
+    elif line.startswith("ops/"):
+        leaf = os.path.basename(line)
+        ops_names.append(leaf)
+        if leaf.endswith(".py"):
+            ops_names.append(leaf[:-3])
 pats = []
-for m in mods:
+for m in src_mods:
     parent, _, leaf = m.rpartition(".")
     pats.append(re.compile(r"^\s*(import\s+%s\b|from\s+%s\s+import\b)" % ((re.escape(m),) * 2), re.M))
     if parent:
         pats.append(re.compile(r"^\s*from\s+%s\s+import\b[^\n]*\b%s\b" % (re.escape(parent), re.escape(leaf)), re.M))
+for name in ops_names:
+    # Bootstrap tests often load scripts by filename or importlib module name rather than import.
+    pats.append(re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name)))
 td = os.path.join(lab, "tests")
 for f in sorted(os.listdir(td)):
     if f.startswith("test_") and f.endswith(".py"):
@@ -293,7 +303,7 @@ for f in sorted(os.listdir(td)):
         if any(p.search(text) for p in pats):
             print("tests/" + f)
 ' "$LAB"; printf '%s\n' "$TESTS_TOUCHED" tests/test_herzchen_boundary.py; } | grep . | sort -u)"
-log "sweep: $(echo "$SWEEP" | wc -l | tr -d ' ') test files from $(printf '%s\n' "$CHANGED_SRC" | grep -c . || true) changed modules"
+log "sweep: $(echo "$SWEEP" | wc -l | tr -d ' ') test files from $(printf '%s\n' "$CHANGED_CODE" | grep -c . || true) changed files"
 
 BASELINE_READY=""
 ensure_baseline() {
