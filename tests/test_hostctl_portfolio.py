@@ -28,6 +28,18 @@ class HostctlPortfolioTests(HostctlFixture):
             return session.owner.graph.create_gate(self.upstream, alias='contracts-frozen', logical_request_key='contracts-gate')
         self.gate = self._owner(seed)
 
+    def test_registering_the_same_folder_twice_is_refused(self):
+        code, result = self._ottoctl('project', 'register', '--bundle', self.bundle, '--worktree', self.worktree)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn('already registered', result['error']['message'])
+        path = Path(self.bundle) / 'run.json'
+        run = json.loads(path.read_text())
+        run['run_id'] = 'renamed-after-registration'
+        path.write_text(json.dumps(run))
+        code, renamed = self._ottoctl('project', 'register', '--bundle', self.bundle, '--worktree', self.worktree)
+        self.assertNotEqual(code, 0, renamed)
+        self.assertIn('folder is already registered', renamed['error']['message'])
+
     def _owner(self, callback):
         def run():
             config = host_config.load(Path(self.home))

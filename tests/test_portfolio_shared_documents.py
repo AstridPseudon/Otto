@@ -1,4 +1,4 @@
-"""Disposable DAT/WRK proofs for portfolio document scope and digest sync."""
+"""Shared portfolio reads follow canonical DAT document associations."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,8 +14,8 @@ from herzchen.kernel.store import Store
 from otto.hostctl.owner import host_domains
 from otto.portfolio.documents import ProjectDocumentReader
 from otto.portfolio.shared_documents import (
-    _association, _document_ref, _link, _write, portfolio_documents, project_shared_documents,
-    read_document_directory, remove_project_associations, sync_portfolio_documents,
+    _association, _document_ref, _link, _write, portfolio_documents,
+    project_shared_documents, remove_project_associations,
 )
 
 
@@ -41,25 +41,32 @@ class PortfolioSharedDocumentsTests(unittest.TestCase):
         return self.graph.create_project(title=key, logical_request_key=key,
             metadata={"otto_orchestrator": {"portfolio_ref": self.scope.to_dict()}})
 
-    def sync(self, files):
-        return sync_portfolio_documents(self.session, self.scope, {"files": files})
+    def attach(self, path, text, project=None, *, namespace=None):
+        project = project or self.projects[0]
+        ref = _document_ref(self.scope, path, root_namespace=namespace)
+        _write(self.owner, self.actor, self.scope, ref, text)
+        _link(self.owner, self.actor, _association(project.ref, path, ref, root_namespace=namespace))
+        return ref
 
-    def test_nested_archive_and_review_paths_round_trip_and_traversal_is_refused(self):
-        files = {'archive/single-project/plan.md': 'historical plan',
-                 'reviews/contracts/decision.md': 'accepted ruling'}
-        self.assertEqual(self.sync(files)['outcome'], 'synced')
-        for path, content in files.items():
-            self.assertEqual(project_shared_documents(self.owner, self.projects[0].ref,
-                operation='read', path=path)['content'], content)
-        self.assertEqual(self.sync(files)['outcome'], 'in_sync')
-        with self.assertRaises(ValueError):
-            self.sync({'../escape.md': 'invalid'})
+    def test_read_path_uses_document_associations_and_preserves_direct_edits(self):
+        ref = self.attach("spec.md", "Canonical content")
+        self.assertEqual(project_shared_documents(self.owner, self.projects[0].ref,
+            operation="read", path="spec.md")["content"], "Canonical content")
+        self.assertEqual(portfolio_documents(self.session, self.scope, operation="read", path="spec.md")["content"],
+                         "Canonical content")
+        _write(self.owner, self.actor, self.scope, ref, "Owner authored revision")
+        self.assertEqual(project_shared_documents(self.owner, self.projects[0].ref,
+            operation="read", path="spec.md")["content"], "Owner authored revision")
+        self.assertEqual(project_shared_documents(self.owner, self.outside.ref)["documents"], [])
+
+    def test_new_association_is_visible_without_a_manifest_copy(self):
+        self.attach("nested/archive/plan.md", "Existing DAT source")
+        listing = project_shared_documents(self.owner, self.projects[0].ref)
+        self.assertEqual([row["path"] for row in listing["documents"]], ["nested/archive/plan.md"])
+        self.assertEqual(portfolio_documents(self.session, self.scope)["documents"][0]["path"], "nested/archive/plan.md")
 
     def test_manager_worker_read_only_and_outside_project_hidden(self):
-        result = self.sync({"contract.md": "Contract frozen"})
-        self.assertEqual(result["outcome"], "synced")
-        self.assertEqual(len(result["attached"]), 3)
-        ref = _document_ref(self.scope, "contract.md")
+        ref = self.attach("contract.md", "Contract frozen", project=self.projects[2])
         for role in ("manager", "worker"):
             actor = AuthenticatedActor("test", role, "test-" + role)
             listed = self.reader.list_documents(self.projects[2].ref, actor=actor, roles=(role,))
@@ -71,59 +78,28 @@ class PortfolioSharedDocumentsTests(unittest.TestCase):
             edit = authoring.open_owned(ref, actor, request_id="worker-edit:" + role)
             self.assertEqual(edit.open_result.status, "ineligible")
             self.assertEqual(edit.projection.reason, "read_only_document")
-        self.assertEqual(project_shared_documents(self.owner, self.outside.ref)["documents"], [])
 
-    def test_conflicts_keep_otto_edits_and_enroll_later_project(self):
-        self.sync({"spec.md": "original"})
-        newcomer = self.project("later")
-        self.assertEqual(project_shared_documents(self.owner, newcomer.ref)["documents"], [])
-        result = self.sync({"spec.md": "original"})
-        self.assertEqual(len(result["attached"]), 1)
-        self.assertEqual(result["recorded"], [])
-        self.assertEqual(len(project_shared_documents(self.owner, newcomer.ref)["documents"]), 1)
-        self.assertEqual(self.sync({"spec.md": "new disk"})["recorded"], ["spec.md"])
-        _write(self.owner, self.actor, self.scope, _document_ref(self.scope, "spec.md"), "Otto edit")
-        held = self.sync({"spec.md": "new disk"})
-        self.assertEqual(held["documents"][0]["state"], "otto_newer")
-        conflict = self.sync({"spec.md": "disk edit too"})
-        self.assertEqual(conflict["documents"][0]["state"], "conflict")
-        self.assertEqual(conflict["recorded"], [])
-        read = portfolio_documents(self.session, self.scope, operation="read", path="spec.md")
-        self.assertEqual(read["content"], "Otto edit")
-        self.assertEqual(self.sync({})["documents"][0]["state"], "removed_from_run_dir")
-
-    def test_foreign_portfolio_and_non_orchestrator_cannot_sync(self):
-        self.session.host = {"principal": "worker", "portfolio_ref": self.scope.to_dict()}
-        self.session.root_assignment = lambda: SimpleNamespace(principal="worker", role="worker")
-        with self.assertRaises(PermissionError):
-            self.sync({"no.md": "no"})
-        with self.assertRaises(PermissionError):
-            portfolio_documents(self.session, ResourceRef("test", "wrk.portfolio", "other"))
-
-    def test_detach_unlinks_only_project_and_preserves_document(self):
-        self.sync({"spec.md": "frozen"})
-        external = _document_ref(self.scope, "extra.md")
-        _write(self.owner, self.actor, self.scope, external, "Added directly through DAT")
-        _link(self.owner, self.actor, _association(self.projects[0].ref, "extra.md", external))
+    def test_detach_unlinks_associations_but_preserves_document(self):
+        ref = self.attach("spec.md", "frozen")
         receipts = remove_project_associations(self.owner, self.projects[0].ref, self.scope, actor=self.actor)
-        self.assertEqual(len(receipts), 2)
+        self.assertEqual(len(receipts), 1)
         self.assertEqual(project_shared_documents(self.owner, self.projects[0].ref)["documents"], [])
         self.assertEqual(self.reader.list_documents(self.projects[0].ref, actor=self.actor)["documents"], [])
-        self.assertEqual(len(project_shared_documents(self.owner, self.projects[1].ref)["documents"]), 1)
-        self.assertEqual(portfolio_documents(self.session, self.scope, operation="read", path="spec.md")["content"], "frozen")
+        self.assertEqual(self.content.read(ref)["revision"]["content"], "frozen")
 
-    def test_sync_transaction_rolls_back_failed_associations(self):
-        from unittest.mock import patch
-        with patch("otto.portfolio.shared_documents._link", side_effect=RuntimeError("fail")):
-            with self.assertRaises(RuntimeError):
-                self.sync({"broken.md": "never committed"})
-        self.assertEqual(portfolio_documents(self.session, self.scope)["documents"], [])
-        self.assertFalse(self.content.read(_document_ref(self.scope, "broken.md")))
+    def test_namespaced_read_and_retire_unlink(self):
+        self.attach("plan.md", "Scoped", namespace="root-a")
+        self.assertEqual(portfolio_documents(self.session, self.scope, operation="read", path="plan.md",
+                                             root_namespace="root-a")["content"], "Scoped")
+        result = __import__("otto.portfolio.shared_documents", fromlist=["retire_portfolio_document"]).retire_portfolio_document(
+            self.session, self.scope, "plan.md", root_namespace="root-a")
+        self.assertEqual(result["outcome"], "retired")
+        self.assertEqual(project_shared_documents(self.owner, self.projects[0].ref)["documents"], [])
 
     def test_bound_manager_read_has_portfolio_section_and_unambiguous_path(self):
         from otto.hostctl.serve import HostOwnerService
         from otto.portfolio.manager_journey_service import _CALLER
-        self.sync({"spec.md": "Portfolio contract"})
+        self.attach("spec.md", "Portfolio contract", project=self.projects[2])
         server = SimpleNamespace(owner=self.owner,
             state={"project_ref": self.projects[2].ref.to_dict(), "manager": "p3-manager"},
             _documents=lambda ref: [{"path": "spec.md", "role": "notes", "revision_ref": {}, "text": "Project contract"}])
@@ -143,36 +119,11 @@ class PortfolioSharedDocumentsTests(unittest.TestCase):
         finally:
             _CALLER.reset(token)
 
-    def test_stale_assignment_cannot_write_and_current_orchestrator_can(self):
-        self.session.host = {"principal": "orchestrator", "portfolio_ref": self.scope.to_dict(), "root_generation": 1}
-        assignment = SimpleNamespace(principal="orchestrator", role="orchestrator", scope=self.scope,
-                                     generation=2, status="queued")
-        self.session.root_assignment = lambda: assignment
-        self.session.binding = SimpleNamespace(authenticated_actor=lambda value: AuthenticatedActor("test", value, "test-credential"))
+    def test_non_orchestrator_cannot_select_foreign_portfolio(self):
+        self.session.host = {"principal": "worker", "portfolio_ref": self.scope.to_dict()}
+        self.session.root_assignment = lambda: SimpleNamespace(principal="worker", role="worker")
         with self.assertRaises(PermissionError):
-            self.sync({"no.md": "no"})
-        assignment.generation = 1
-        self.assertEqual(self.sync({"spec.md": "allowed"})["recorded"], ["spec.md"])
-        assignment.status = "completed"
-        with self.assertRaises(PermissionError):
-            self.sync({"spec.md": "refused"})
-
-    def test_directory_utf8_depth_and_symlink_checks(self):
-        root = Path(self.temp.name) / "input"
-        root.mkdir()
-        nested = root / "a" / "b" / "c" / "d"
-        nested.mkdir(parents=True)
-        (nested / "spec.md").write_text("Unicode €", encoding="utf-8")
-        self.assertEqual(read_document_directory(root)["files"], {"a/b/c/d/spec.md": "Unicode €"})
-        (root / "link.md").symlink_to(nested / "spec.md")
-        with self.assertRaises(ValueError):
-            read_document_directory(root)
-        (root / "link.md").unlink()
-        (nested / "too-deep").mkdir()
-        with self.assertRaises(ValueError):
-            read_document_directory(root)
-        with self.assertRaises(ValueError):
-            self.sync({"../outside.md": "no"})
+            portfolio_documents(self.session, ResourceRef("test", "wrk.portfolio", "other"))
 
 
 if __name__ == "__main__":

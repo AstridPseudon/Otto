@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 from herzchen.domains.work.model import WorkValidationError
 from otto.hostctl.portfolio_detach import detach_project
-from otto.portfolio.shared_documents import sync_portfolio_documents, project_shared_documents
+from otto.portfolio.shared_documents import (
+    _association, _document_ref, _link, _write, project_shared_documents,
+)
 import test_portfolio_dependencies as fixture
 
 
@@ -21,11 +23,18 @@ class PortfolioDetachTests(unittest.TestCase):
                                               'root_generation': self.root.generation},
             host_principal=lambda: 'orchestrator', root_assignment=lambda: self.root)
 
+    def attach_shared_document(self, project, text):
+        ref = _document_ref(self.portfolio, 'contract.md')
+        actor = self.owner.owner_actor
+        _write(self.owner, actor, self.portfolio, ref, text)
+        _link(self.owner, actor, _association(project.ref, 'contract.md', ref))
+        return ref
+
     def test_detach_revokes_shared_documents_atomically_and_keeps_project(self):
         session = self.session()
         project = self.graph.current(self.projects[1].ref)
         digest = self.store.domain_descriptor_digest
-        sync_portfolio_documents(session, self.portfolio, {'files': {'contract.md': 'Frozen contract'}})
+        self.attach_shared_document(project, 'Frozen contract')
         self.assertEqual(project_shared_documents(self.owner, project.ref)['outcome'], 'listed')
         self.deps.change(self.projects[2], project, request_id='downstream')
         result = detach_project(session, project, SimpleNamespace())
@@ -41,7 +50,7 @@ class PortfolioDetachTests(unittest.TestCase):
     def test_in_flight_manager_refuses_before_unlink(self):
         session = self.session()
         project = self.graph.current(self.projects[1].ref)
-        sync_portfolio_documents(session, self.portfolio, {'files': {'contract.md': 'Frozen contract'}})
+        self.attach_shared_document(project, 'Frozen contract')
         manager = self.owner.assignments.assign(project.ref, role='manager', principal='manager', logical_request_key='manager')
         from otto.attention import DueRecord, issue_store_due_record_port, due_record_contribution
         due = DueRecord(schedule_id='manager-due', recipient='manager', instruction='coordinate', profile='manager',

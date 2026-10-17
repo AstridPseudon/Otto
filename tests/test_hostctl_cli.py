@@ -270,11 +270,13 @@ class HostctlCliTest(HostctlFixture):
         self.assertEqual(setup["outcome"], "applied", setup)
         self.assertIn("manager", setup["setup"]["roles"])
 
-    def test_register_and_activate_replay_change_nothing(self):
+    def test_register_refuses_duplicate_and_activate_replay_changes_nothing(self):
         self._ready()
         _, before = self._ottoctl("project", "status", "--project", "demo-run")
-        replay = self._register()
-        self.assertEqual(replay["project_ref"]["id"], before["project_ref"]["id"])
+        code, duplicate = self._ottoctl("project", "register", "--bundle", self.bundle,
+                                        "--worktree", self.worktree)
+        self.assertNotEqual(code, 0, duplicate)
+        self.assertIn("already registered", duplicate["error"]["message"])
         again = self._activate()
         self.assertEqual(again["activation"]["steps"]["tasks"]["outcome"], "replayed")
         self.assertEqual(again["operating_setup"]["outcome"], "replayed")
@@ -282,19 +284,21 @@ class HostctlCliTest(HostctlFixture):
         self.assertEqual(after, before)
 
     # -- 5. project status --------------------------------------------------
-    def test_project_status_matches_registered_bytes_and_roles(self):
+    def test_project_status_reads_stored_documents_and_roles(self):
         self._ready()
         code, out = self._ottoctl("project", "status", "--project", "demo-run")
         self.assertEqual(code, 0, out)
         self.assertEqual(out["outcome"], "read")
         self.assertIs(out["provider_called"], False)
 
-        # The onboarding route adds its own brief.md; the 7 run files match byte for byte.
-        run_files = [d for d in out["documents"] if d["registered_raw_sha256"] is not None]
-        self.assertEqual(len(run_files), 7)
-        for document in run_files:
-            self.assertIs(document["matches_registered_bytes"], True, document["path"])
-        self.assertIn("brief.md", {d["path"] for d in out["documents"]})
+        # The onboarding route adds its own brief.md; run file text is read from Otto's records.
+        paths = {d["path"] for d in out["documents"]}
+        self.assertEqual(paths - {"brief.md"}, {"agent_goal.md", "manager-brief.md", "northstar.md", "plan.md",
+                                                "run.json", "status.md", "tasklist.md"})
+        for document in out["documents"]:
+            self.assertNotIn("registered_raw_sha256", document)
+            self.assertNotIn("matches_registered_bytes", document)
+            self.assertEqual(len(document["stored_text_sha256"]), 64, document["path"])
 
         managers = [item for item in out["assignments"] if item["role"] == "manager"]
         self.assertEqual(len(managers), 1)
@@ -437,6 +441,7 @@ class OwnerServiceClientTests(HostctlFixture):
         self.assertEqual(status["registration"]["mode"], "history")
         self.assertIn("reviews/final.md", {row["path"] for row in status["documents"]})
         code, replay = self._ottoctl("project", "import-history", "--bundle", self.bundle, "--note", "x")
+        self.assertEqual(code, 0, replay)
         self.assertEqual(replay["project_ref"]["id"], imported["project_ref"]["id"])
 
     def test_nested_run_documents_are_registered_at_their_paths(self):
@@ -448,7 +453,7 @@ class OwnerServiceClientTests(HostctlFixture):
         code, status = self._ottoctl("project", "status", "--project", "demo-run")
         paths = {row["path"]: row for row in status["documents"]}
         self.assertIn("briefs/T1.md", paths)
-        self.assertIs(paths["briefs/T1.md"]["matches_registered_bytes"], True)
+        self.assertEqual(len(paths["briefs/T1.md"]["stored_text_sha256"]), 64)
         self.assertIn("spec.md", paths)
 
 
