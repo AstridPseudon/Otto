@@ -22,7 +22,7 @@ def test_queued_manager_generation_is_rechecked_at_final_admission():
     assert calls == [(due.assignment_ref, 1)]
 
 
-def test_failed_acquisition_cannot_restart_under_another_request_key():
+def _failed_acquisition_fixture():
     assignment_ref = {"authority": "owner", "kind": "wrk.assignment", "id": "manager"}
     project_ref = {"authority": "owner", "kind": "work.project", "id": "project"}
     task_ref = {"authority": "owner", "kind": "work.task", "id": "task"}
@@ -41,8 +41,8 @@ def test_failed_acquisition_cannot_restart_under_another_request_key():
     def append_report(_ref, value, *, expected_generation, logical_request_key, actor):
         from hashlib import sha256
         report_id = "report-" + sha256(("manager:" + logical_request_key).encode()).hexdigest()[:28]
-        reports[report_id] = SimpleNamespace(payload={"assignment": assignment_ref,
-            "generation": expected_generation, "value": value})
+        reports.setdefault(report_id, SimpleNamespace(payload={"assignment": assignment_ref,
+            "generation": expected_generation, "value": value}))
 
     app = SimpleNamespace(manager_actor="manager", _read=lambda _: prior,
                           _verify_native_binding=lambda *_: None,
@@ -54,6 +54,34 @@ def test_failed_acquisition_cannot_restart_under_another_request_key():
         report_reader=lambda ref: reports.get(ref.id),
         acquire_session=lambda _: acquisitions.append(1) or {"outcome": "error"},
         context_builder=lambda *_: {}, readiness=lambda *_: {})
+    return replacement, reports, acquisitions
+
+
+def test_failed_acquisition_cannot_restart_under_another_request_key():
+    replacement, _, acquisitions = _failed_acquisition_fixture()
     assert replacement.replace(schedule_id="old", request_key="first")["outcome"] == "held"
     assert replacement.replace(schedule_id="old", request_key="second")["outcome"] == "held"
+    assert acquisitions == [1]
+    with pytest.raises(PermissionError, match="intent differs"):
+        replacement.replace(schedule_id="another-completed-due", request_key="third")
+    assert acquisitions == [1]
+
+
+def test_concurrent_same_key_cannot_acquire_twice():
+    replacement, reports, acquisitions = _failed_acquisition_fixture()
+    # Both calls can read an absent intent before either append completes.
+    # The later caller must not acquire even when it replays the same key.
+    original_reader = replacement.report_reader
+    entered = False
+
+    def concurrent_reader(ref):
+        nonlocal entered
+        if not entered:
+            entered = True
+            assert replacement.replace(schedule_id="old", request_key="same")["outcome"] == "held"
+            return None  # outer call had already observed the absent intent
+        return original_reader(ref)
+
+    replacement.report_reader = concurrent_reader
+    assert replacement.replace(schedule_id="old", request_key="same")["outcome"] == "held"
     assert acquisitions == [1]

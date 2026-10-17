@@ -7,6 +7,7 @@ assignment CAS and role runtime own binding, generation, readiness and work.
 from __future__ import annotations
 import hashlib
 import json
+import secrets
 from typing import Any, Callable, Mapping
 from herzchen.contracts import ResourceRef
 from .manager_continuity import ManagerContinuity
@@ -42,10 +43,11 @@ class OwnerManagerReplacement:
                 or assignment.principal != self.app.manager_actor):
             raise PermissionError('replacement requires the exact accountable manager')
         records = {}
-        # The first admitted acquisition owns this prior occurrence, even if
-        # a caller later supplies another request key. A per-request intent
-        # would let an unresolved native start be attempted a second time.
-        intent_key = 'manager-native-replacement:' + schedule_id + ':intent'
+        # The first admitted acquisition owns this assignment generation and
+        # native session. Other completed DueRecords and request keys cannot
+        # bypass an unresolved acquisition by choosing another schedule.
+        intent_key = 'manager-native-replacement:' + hashlib.sha256(json.dumps(
+            [prior.generation, native], separators=(',', ':'), sort_keys=True).encode()).hexdigest()
         for stage, suffix in (("intent", "intent"), ("acquired", "acquired"),
                               ("acquisition-unknown", "acquisition-unknown")):
             report_key = intent_key if stage == 'intent' else request_key + ':' + suffix
@@ -85,8 +87,9 @@ class OwnerManagerReplacement:
                 return {'outcome':'held','reason':'session acquisition was admitted but has no verified retained result',
                         'provider_called':False,'retry':False}
             if original is None:
+                claim = secrets.token_hex(16)
                 self._report(assignment, intent_key, {'schema':'otto.manager-native-replacement.v1',
-                    'request_key':request_key,'stage':'intent','pin':pin})
+                    'request_key':request_key,'stage':'intent','pin':pin,'claim':claim})
                 intent_id = "report-" + hashlib.sha256((assignment.id+":"+intent_key).encode()).hexdigest()[:28]
                 admitted = self.report_reader(ResourceRef(assignment.ref.authority, "wrk.report", intent_id))
                 admitted_value = admitted.payload.get('value') if admitted is not None else None
@@ -99,6 +102,9 @@ class OwnerManagerReplacement:
                     raise PermissionError('retained replacement intent cannot be verified')
                 if admitted_value.get('request_key') != request_key:
                     return {'outcome':'held','reason':'prior replacement intent owns this native acquisition',
+                            'provider_called':False,'retry':False}
+                if admitted_value.get('claim') != claim:
+                    return {'outcome':'held','reason':'another caller admitted this native acquisition',
                             'provider_called':False,'retry':False}
                 result = dict(self.acquire_session(prior.to_dict()))
                 # The trusted host verifies the actual inert native receipt;
