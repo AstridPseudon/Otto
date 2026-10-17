@@ -4,6 +4,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 
 ## Log
 
+2026-10-17 20:16 UTC | SL2 refusal guidance follow-up | merged f0f7bc5 | +57/-20 | `tests/test_manager_replacement_unit.py` (5 passed) | held paths now direct owner reconciliation and prohibit acquisition retry under the same generation/native session; Astra found no defect.
 2026-10-17 20:13 UTC | SL0 ledger regression repair | merged b6f48f5 | +237/-21 | `tests/test_slim_ledger.py` (1 passed) | separates immutable base counts from current inventory; dynamically measures candidates; removed stale deleted candidates.
 2026-10-17 20:13 UTC | SL3/SL8 owner integration follow-up | merged f1b6a43 | +195/-4 | `tests/test_owner_observability_cli.py` (5 passed), `tests/test_cli_read_routes.py` (3 passed) | installed routes use the owner-issued finite project grant and actor; no owner started.
 2026-10-17 20:13 UTC | SL8 retained-history correction | merged 9ee11fd | +62/-4 | `tests/test_status_friction.py` (3 passed) | recognizes retained history shape and reports unproven category coverage as unavailable.
@@ -72,6 +73,8 @@ Socket-free regressions failed before the changes: queued manager generation was
 ### SL2 Astra review
 
 Astra reviewed the original SL2 diff and reproduced the cross-schedule reacquisition defect. The manager sent it to the same worker, which added the schedule-independent identity and concurrent-call regression. Astra rechecked the fix and found no remaining custody defect. It noted that the socket-free concurrency fixture uses permissive `setdefault`; production's retained writer rejects a changed payload under an existing logical key, so that collision also prevents duplicate acquisition. The manager accepts the fix; live route integration remains the question above.
+
+Astra later found that the new structured held replacement responses lacked `next_action` under PLAN §15.2. The follow-up adds owner reconciliation guidance and explicitly prohibits retrying in the same assignment generation/native session. The focused regression asserts the guidance and unchanged acquisition count; 5 passed. Astra reviewed the follow-up before merge and found no custody or retry defect.
 
 ## Remaining dependency blocks
 
