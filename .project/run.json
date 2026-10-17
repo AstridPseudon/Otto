@@ -50,7 +50,8 @@
     {
       "stage": "whole-project Astra final review",
       "status": "pending",
-      "owner": "manager"
+      "owner": "manager",
+      "notes": "First pass defects (PL4 census-gap persistence and PL5 transport-refusal next_action) were fixed in 4e195a1 and 7209c93; fresh final review is pending."
     },
     {
       "stage": "installed owner and external gates",
