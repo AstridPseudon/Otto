@@ -116,6 +116,33 @@ class InstallTests(unittest.TestCase):
         with open(os.path.join(self.dest, "ed1", "installation-megado.json"), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["files"], m["files"])
 
+    def test_megado_install_bytes_come_from_the_managed_pack(self):
+        repo = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+        manifest = skills.install_megado_skill_tree(
+            repo, self.dest, edition="ed1", installed_at="2026-01-01T00:00:00Z"
+        )
+        installed = os.path.join(self.dest, "ed1", "megado")
+        pack_root = os.path.join(repo, "src", "otto", "packs", "megado")
+        pack_manifest = json.load(open(os.path.join(pack_root, "pack.yaml"), encoding="utf-8"))
+        declared = {item["path"] for item in pack_manifest["resources"]}
+        skill_paths = {path.removeprefix("skill/") for path in declared if path.startswith("skill/")}
+        self.assertIn("SKILL.md", skill_paths)
+        self.assertEqual(set(manifest["files"]), skill_paths)
+        for relative in skill_paths - {"SKILL.md"}:
+            with open(os.path.join(installed, *relative.split("/")), "rb") as actual:
+                with open(os.path.join(pack_root, "skill", *relative.split("/")), "rb") as source:
+                    self.assertEqual(actual.read(), source.read(), relative)
+        with open(os.path.join(pack_root, "skill", "SKILL.md"), encoding="utf-8") as fh:
+            canonical_skill = fh.read()
+        source_sha = _sha(canonical_skill.encode("utf-8"))
+        with open(os.path.join(installed, "SKILL.md"), encoding="utf-8") as fh:
+            installed_skill = fh.read()
+        self.assertEqual(manifest["source_skill_sha256"], source_sha)
+        self.assertEqual(installed_skill, skills.stamp_skill_text(
+            canonical_skill, name="megado", edition="ed1", resolved_path=installed,
+            source_sha256=source_sha, installed_at="2026-01-01T00:00:00Z",
+        ))
+
     def test_rejects_symlink_in_source(self):
         src = _make_source(self.root)
         os.symlink(os.path.join(src, "SKILL.md"), os.path.join(src, "link.md"))

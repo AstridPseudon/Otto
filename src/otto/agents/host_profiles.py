@@ -22,7 +22,7 @@ SLOTS = ("coordinator", "worker_normal", "worker_xhard", "reviewer_normal", "rev
 # (pinned by test_host_neutral_defaults). Any host that IS named must be a known one.
 _UNSELECTED_HOST_KIND = "codex"
 
-# Unchanged edition defaults (policy-staging/megado/skill/templates/run.json).
+# Unchanged edition defaults (src/otto/packs/megado/skill/templates/run.json).
 # Claude mirrors the same seven slots with its own model family.
 PROFILES: Mapping[str, Mapping[str, Any]] = {
     "codex": {

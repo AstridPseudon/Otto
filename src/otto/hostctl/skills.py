@@ -301,6 +301,55 @@ def install_skill_tree(
     return result
 
 
+def install_megado_skill_tree(
+    source_root,
+    dest_root,
+    *,
+    edition: str,
+    source_commit: Optional[str] = None,
+    installed_at: Optional[str] = None,
+) -> dict:
+    """Install the skill closure declared by Otto's canonical Megado pack."""
+    from herzchen.packs.authoring import read_managed_pack
+    from .owner import _managed_source_state_path
+
+    root = Path(source_root).expanduser().resolve()
+    pack_root = root / "src" / "otto" / "packs"
+    try:
+        pack = read_managed_pack(
+            "megado", project_root=root, native_pack_root=pack_root,
+            source_state_path=_managed_source_state_path(),
+        )
+    except Exception as exc:
+        raise SkillInstallError("canonical Megado managed pack is unavailable or changed") from exc
+
+    skill_resources = {
+        item.path[len("skill/"):]: item.content
+        for item in pack.resources if item.path.startswith("skill/")
+    }
+    if "SKILL.md" not in skill_resources:
+        raise SkillInstallError("canonical Megado pack has no skill/SKILL.md")
+    _check_component("megado", "skill name")
+    with tempfile.TemporaryDirectory(prefix="otto-megado-skill-") as temporary:
+        staged = Path(temporary) / "megado"
+        staged.mkdir()
+        for relative, content in skill_resources.items():
+            candidate = staged.joinpath(*relative.split("/"))
+            try:
+                candidate.resolve().relative_to(staged.resolve())
+            except ValueError as exc:
+                raise SkillInstallError(f"Megado resource escapes skill root: {relative}") from exc
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_bytes(content)
+        source_skill_sha = _sha256_bytes(skill_resources["SKILL.md"])
+        return install_skill_tree(
+            staged, dest_root, name="megado", edition=edition,
+            source_commit=source_commit or pack.source.source_revision,
+            installed_at=installed_at, source_dir_label=str(pack_root / "megado" / "skill"),
+            source_skill_sha256=source_skill_sha,
+        )
+
+
 def _otto_link_token(raw: str) -> tuple[str, str]:
     """Split a Markdown destination from an optional title, preserving its suffix."""
     value = raw.strip()

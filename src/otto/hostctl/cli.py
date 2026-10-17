@@ -185,6 +185,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_source.add_argument("--source-root", help="Otto checkout root for self-contained export mode")
     install.add_argument("--otto-self-contained", action="store_true",
                          help="package Otto's maintained skill and local reference closure")
+    install.add_argument("--megado", action="store_true",
+                         help="package Megado's maintained skill from the canonical managed pack")
     install.add_argument("--name", help="required for generic --source installs; Otto mode uses 'otto'")
     install.add_argument("--edition", required=True)
     install.add_argument("--commit", help="source commit identity")
@@ -823,9 +825,17 @@ def cmd_skills_which(args: argparse.Namespace) -> Any:
 
 
 def cmd_skills_install(args: argparse.Namespace) -> Any:
-    from .skills import install_otto_skill_tree, install_skill_tree, link_skill
+    from .skills import install_megado_skill_tree, install_otto_skill_tree, install_skill_tree, link_skill
     home = _home(args)
-    if args.otto_self_contained:
+    if args.otto_self_contained and args.megado:
+        raise ValueError("choose only one self-contained skill mode")
+    if args.megado:
+        if not args.source_root or args.source or args.name:
+            raise ValueError("--megado requires --source-root and does not accept --source or --name")
+        name = "megado"
+        manifest = install_megado_skill_tree(args.source_root, str(home / "skills"), edition=args.edition,
+                                             source_commit=args.commit)
+    elif args.otto_self_contained:
         if not args.source_root or args.source or args.name:
             raise ValueError("--otto-self-contained requires --source-root and does not accept --source or --name")
         name = "otto"
