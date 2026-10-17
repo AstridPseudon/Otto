@@ -79,6 +79,45 @@ class ModelProfileTests(unittest.TestCase):
                 self.assertEqual(result["error"]["code"], "ValueError")
                 self.assertIn("restore or correct", result["next_action"].lower())
 
+    def test_malformed_profile_pack_types_have_recovery_action_in_service_and_cli(self):
+        from types import SimpleNamespace
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.service import _owner_exception_result
+
+        profile_path = ROOT / "src" / "otto" / "packs" / "otto-profiles" / "profiles.json"
+        hosts_path = ROOT / "src" / "otto" / "packs" / "otto-profiles" / "hosts.json"
+        fixtures = []
+        for label, target, field, malformed in (
+                ("default profile", "profiles", "default_profile", []),
+                ("host model profile", "hosts", "model_profile", []),
+                ("adapter models", "hosts", "models", 7)):
+            profiles = json.loads(profile_path.read_text())
+            hosts = json.loads(hosts_path.read_text())
+            if target == "profiles":
+                profiles[field] = malformed
+            elif field == "model_profile":
+                hosts["hosts"]["codex"][field] = malformed
+            else:
+                hosts["hosts"]["codex"]["adapter_settings"][field] = malformed
+            fixtures.append((label, json.dumps(profiles), json.dumps(hosts)))
+
+        for label, profiles_content, hosts_content in fixtures:
+            with self.subTest(field=label):
+                bad = SimpleNamespace(pack_id="otto-profiles", version="1.0.0",
+                                      source=SimpleNamespace(source_revision="a", source_inventory_identity="b"),
+                                      resources=(SimpleNamespace(path="profiles.json", content=profiles_content,
+                                                                 source_digest="c"),
+                                                 SimpleNamespace(path="hosts.json", content=hosts_content,
+                                                                 source_digest="d")))
+                with mock.patch("herzchen.packs.authoring.read_managed_pack", return_value=bad):
+                    with self.assertRaises(host_profiles.ProfilePackRecoveryError) as refused:
+                        host_profiles.load_profile_pack()
+                self.assertIsInstance(refused.exception, host_profiles.ProfileSelectionError)
+                for serialize in (_cli_exception_result, _owner_exception_result):
+                    result = serialize(refused.exception)
+                    self.assertEqual(result["error"]["code"], "ValueError")
+                    self.assertIn("restore or correct", result["next_action"].lower())
+
     def test_adopted_run_profile_wins_over_host_default_but_cannot_cross_hosts(self):
         selected = host_profiles.profile_for_run({"model_profile": "claude"}, host_kind="claude-code",
                                                  default_profile="codex")
