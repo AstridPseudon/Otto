@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from hashlib import sha256
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -228,8 +229,57 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
         commit = record.get("commit")
         if not isinstance(commit, str) or len(commit) not in {40, 64} or any(c not in "0123456789abcdef" for c in commit):
             raise LandingError("verified lab commit is not a canonical object id")
+        # Resolve the evidence from this exact sealed check. A runner record is
+        # not itself an assessment evidence ref; retain its receipt through the
+        # existing managed Evidence command path and bind that capture to the
+        # sealed receipt identity.
+        run_id = record.get("run_id")
+        try:
+            sealed = result_store.get(run_id)
+        except Exception as exc:
+            raise LandingError("sealed runner result cannot be resolved for evidence") from exc
+        try:
+            sealed_binding = ResultStore.binding(sealed["argv"], sealed["cwd"], commit) if isinstance(sealed, Mapping) else None
+        except (KeyError, TypeError, ValueError):
+            sealed_binding = None
+        if (not isinstance(sealed, Mapping) or dict(sealed) != dict(record)
+                or sealed.get("commit") != commit or sealed.get("exit_code") != 0
+                or sealed.get("state") != "settled" or sealed.get("outcome") != "exited"
+                or sealed.get("binding") != sealed_binding):
+            raise LandingError("assessment evidence is not tied to the exact passing sealed runner result")
+        evidence_bytes = json.dumps(dict(sealed), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        evidence_digest = sha256(evidence_bytes).hexdigest()
+        evidence_handler = getattr(project_owner, "evidence_payload_resolver", None)
+        capture_evidence = getattr(evidence_handler, "submit", None)
+        if not callable(capture_evidence):
+            raise LandingError("owner managed Evidence capture is unavailable for runner receipt")
+        runner = _runner_identity(sealed)
+        try:
+            captured = capture_evidence(evidence_bytes, actor=project_owner.binding.authenticated_actor(manager_actor),
+                logical_request_key="fleet-runner-evidence:" + sha256(
+                    (assignment_id + ":" + str(run_id) + ":" + str(sealed.get("binding"))).encode()).hexdigest(),
+                project_ref=project_ref, task_ref=task_ref,
+                original_creator=manager_actor, format="application/json",
+                source_digest=evidence_digest, source_length=len(evidence_bytes),
+                provenance={"runner": runner, "evidence_kind": "fleet-sealed-check-receipt"})
+            evidence_ref = _owner_ref(captured.get("revision_ref"), "runner evidence", "dat.content.document")
+            resolve_evidence = getattr(evidence_handler, "resolve", None)
+            if not callable(resolve_evidence):
+                raise LandingError("owner managed Evidence resolver is unavailable for runner receipt")
+            resolved = resolve_evidence(evidence_ref,
+                actor=project_owner.binding.authenticated_actor(manager_actor), verify_full=True)
+            if (not isinstance(resolved, Mapping)
+                    or resolved.get("availability") in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}
+                    or resolved.get("representation") != "managed"
+                    or resolved.get("verification") != "full-verified"
+                    or resolved.get("actual_digest") != evidence_digest
+                    or not isinstance(resolved.get("manifest"), Mapping)
+                    or resolved["manifest"].get("byte_digest") != evidence_digest
+                    or resolved["manifest"].get("byte_length") != len(evidence_bytes)):
+                raise LandingError("retained runner receipt cannot be fully verified")
+        except Exception as exc:
+            raise LandingError("owner could not retain the exact runner receipt as evidence: " + str(exc)) from exc
         admitted = getattr(dispatch, "admitted_revision", None)
-        runner = _runner_identity(record)
         repo_line = {"repo_name": repo_name, "line_ref": "refs/heads/" + branch,
                     "lab_name": task_id}
         candidate_key = "fleet-land:" + sha256((assignment_id + ":" + commit + ":" +
@@ -273,7 +323,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             scope_ref = scope.ref
             packet = execute("freeze-input", {"scope_ref": scope_ref.to_dict(),
                 "candidate_ref": candidate.to_dict(), "criterion_refs": [item.to_dict() for item in criteria],
-                "source_refs": [candidate.to_dict()], "evidence_refs": [],
+                "source_refs": [candidate.to_dict()], "evidence_refs": [evidence_ref.to_dict()],
                 "packet": {"admitted_revision": admitted, "lab_commit": commit,
                            "runner": runner, "line_ref": "refs/heads/" + branch}}, "input")
             packet_ref = ResourceRef.from_dict(packet["ref"])
@@ -281,7 +331,8 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             raise LandingError("owner could not freeze the committed lab assessment input: " + str(exc)) from exc
 
         assessment = _FleetAssessmentCommands(commands, candidate, criteria, packet_ref,
-                                               policy.pool_ref, manager_actor, execution_key)
+                                               policy.pool_ref, manager_actor, execution_key,
+                                               (evidence_ref,))
         return {"candidate": candidate, "criterion": criterion, "parent_obligation": task_ref,
                 "actor": project_owner.binding.authenticated_actor(manager_actor),
                 "criteria": criteria,
@@ -296,15 +347,25 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             raise LandingError("owner assessment criterion is stale")
         return current.ref
 
+    def completion_state(parent: Any, *, candidate: Any, gate_refs: Any, actor: Any) -> Mapping[str, Any]:
+        task_ref = _owner_ref(parent, "completion task", "work.task")
+        current = owner.graph.reader.get_identity(
+            ResourceRef(task_ref.authority, task_ref.kind, task_ref.id))
+        if current is None or current.ref != task_ref:
+            raise LandingError("completion task identity is stale")
+        from herzchen.domains.assessment.module import required_completion_blockers
+        return required_completion_blockers(
+            owner.assignments.reader, task_ref, candidate=candidate, gate_refs=gate_refs,
+            actor=actor, evidence_store=owner.store,
+            payload_resolver=owner.evidence_payload_resolver)
+
     def completion_blockers(parent: Any, *, candidate: Any, gate_refs: Any, actor: Any,
                             **_kwargs: Any) -> Mapping[str, Any]:
-        return owner.assignments.completion_blockers(parent, candidate=candidate,
-            gate_refs=gate_refs, actor=actor)
+        return completion_state(parent, candidate=candidate, gate_refs=gate_refs, actor=actor)
 
     def completion_gate(parent: Any, *, candidate: Any, gate_refs: Any, actor: Any,
                         **_kwargs: Any) -> Mapping[str, Any]:
-        state = owner.assignments.completion_blockers(parent, candidate=candidate,
-            gate_refs=gate_refs, actor=actor)
+        state = completion_state(parent, candidate=candidate, gate_refs=gate_refs, actor=actor)
         return {"clear": not state.get("blockers"), "blockers": state.get("blockers", ())}
 
     return LandingService(
@@ -343,9 +404,16 @@ class _FleetAssessmentCommands:
 
     def __init__(self, commands: Any,
                  candidate: ResourceRef, criteria: tuple[ResourceRef, ...], packet: ResourceRef,
-                 pool: ResourceRef, manager_actor: str, request_key: str) -> None:
+                 pool: ResourceRef, manager_actor: str, request_key: str,
+                 evidence_refs: tuple[ResourceRef, ...] = ()) -> None:
+        exact_evidence = tuple(evidence_refs)
+        if (not exact_evidence or any(not isinstance(ref, ResourceRef)
+                or ref.kind != "dat.content.document" or not ref.revision for ref in exact_evidence)
+                or len(set(exact_evidence)) != len(exact_evidence)):
+            raise LandingError("fleet assessment requires exact retained runner evidence refs")
         self.commands = commands
         self.candidate, self.criteria, self.packet, self.pool = candidate, criteria, packet, pool
+        self.evidence_refs = exact_evidence
         self.manager_actor = manager_actor
         self.request_key = request_key
 
@@ -358,17 +426,37 @@ class _FleetAssessmentCommands:
         scope_record = self.commands._scope(scope)
         self.commands._policy.require_pair(self.commands._task, criterion)
         self.commands._input(input_packet, scope_record, candidate, criterion)
+        self._require_packet_evidence(input_packet)
         self.commands._pool_guard()
-        return self.commands._assessment.assess(scope_record.ref, candidate=candidate,
+        assessed = self.commands._assessment.assess(scope_record.ref, candidate=candidate,
             criterion=criterion, input_packet=input_packet, verdict=verdict,
             protocol_result=dict(protocol_result), limit_pool=limit_pool, actor=actor,
+            evidence_refs=self.evidence_refs,
             role="fleet-check", logical_request_key=self.request_key + ":assess:" + criterion.id)
+        retained_ref = getattr(assessed, "ref", assessed)
+        retained = self.commands._assessment.get_result(retained_ref)
+        result_evidence = set(ResourceRef.from_dict(value) if isinstance(value, Mapping) else value
+                              for value in getattr(retained, "payload", {}).get("evidence_refs", ()))
+        checks = {
+            "ref": getattr(retained, "ref", None) == retained_ref,
+            "verdict": getattr(getattr(retained, "verdict", None), "value", getattr(retained, "verdict", None)) == "PASS",
+            "input": getattr(retained, "input_packet_ref", None) == input_packet,
+            "candidate": getattr(retained, "candidate_ref", None) == candidate,
+            "criterion": getattr(retained, "criterion_ref", None) == criterion,
+            "evidence": result_evidence == set(self.evidence_refs),
+        }
+        if not all(checks.values()):
+            raise LandingError("retained assessment result differs from the frozen fleet evidence and pins: " +
+                               ", ".join(key for key, passed in checks.items() if not passed))
+        return retained
 
     def accept(self, result: Any, *, candidate: Any, criterion: Any,
                rationale: str, actor: Any) -> Any:
         if (candidate != self.candidate or criterion not in self.criteria
                 or actor.actor != self.manager_actor):
             raise LandingError("acceptance request differs from the owner-frozen fleet pins")
+        result_ref = getattr(result, "ref", result)
+        result = self.commands._assessment.get_result(result_ref)
         payload = getattr(result, "payload", None)
         if not isinstance(payload, Mapping) or payload.get("role") != "fleet-check":
             raise LandingError("fleet acceptance requires a retained fleet-check result")
@@ -378,10 +466,26 @@ class _FleetAssessmentCommands:
         if (result.scope_ref != scope.ref or result.candidate_ref != candidate
                 or result.criterion_ref != criterion or result.verdict.value != "PASS"):
             raise LandingError("assessment result differs from the owner-frozen candidate and criterion")
+        result_evidence = set(ResourceRef.from_dict(value) if isinstance(value, Mapping) else value
+                              for value in payload.get("evidence_refs", ()))
+        if result_evidence != set(self.evidence_refs):
+            raise LandingError("assessment result does not cite the exact retained runner evidence refs")
         self.commands._input(result.input_packet_ref, scope, candidate, criterion)
+        self._require_packet_evidence(result.input_packet_ref)
         return self.commands._assessment.accept(result.ref, candidate=candidate, criterion=criterion,
-            rationale=rationale, evidence_refs=(), actor=actor,
+            rationale=rationale, evidence_refs=self.evidence_refs, actor=actor,
             logical_request_key=self.request_key + ":accept:" + criterion.id)
+
+    def _require_packet_evidence(self, packet_ref: Any) -> None:
+        packet = self.commands._assessment.get_input(packet_ref)
+        consumed = set(getattr(packet, "consumed_refs", ()))
+        payload = getattr(packet, "packet", {})
+        try:
+            evidence = {ResourceRef.from_dict(value) for value in payload.get("evidence_refs", ())}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            evidence = set()
+        if not set(self.evidence_refs).issubset(consumed) or evidence != set(self.evidence_refs):
+            raise LandingError("assessment packet does not freeze the exact retained runner evidence refs")
 
 
 def _runner_identity(record: Mapping[str, Any]) -> dict[str, Any]:

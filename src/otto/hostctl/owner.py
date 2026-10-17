@@ -26,6 +26,25 @@ from herzchen.contracts import ResourceRef
 _SERVICE_STORE: ContextVar[Any] = ContextVar("otto_service_store", default=None)
 
 
+class _LazyEvidencePayloadResolver:
+    """Load the managed Evidence pack only when an Evidence operation is used."""
+
+    def __init__(self, store: Any, payload_root: Path) -> None:
+        self._store = store
+        self._payload_root = payload_root
+        self._handler = None
+
+    def _load(self) -> Any:
+        if self._handler is None:
+            from herzchen.evidence.commands import EvidenceCommandHandler
+            self._handler = EvidenceCommandHandler(
+                self._store.domain_handler(host_domains()), self._payload_root)
+        return self._handler
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._load(), name)
+
+
 @contextmanager
 def service_store(store: Any) -> Iterator[None]:
     """Compose HostSessions over the service's open Store (owner service only)."""
@@ -177,6 +196,8 @@ class HostSession:
             grant = None
             if self.project_ids:
                 grant = ProjectReadGrant(self.actor, self.project_ids, "otto.host-owner.v1", "v1")
+            evidence_payloads = _LazyEvidencePayloadResolver(
+                self.store, Path(self.config["home"]) / "state" / "evidence" / authority)
             orchestration = {}
             if self.host is not None and self.host.get("root_assignment_ref"):
                 # The host's own portfolio: its principal creates and orchestrates
@@ -188,7 +209,8 @@ class HostSession:
                                  "privileged_actor_ids": (self.host["principal"],)}
             self.owner = PortfolioOwnerBootstrap(self.store, binding=self.binding, owner_actor=actor,
                 operator_actor=self.config["operator"]["actor"],
-                project_read_grant=grant, folder_transport_request_bytes=256 * 1024 * 1024, **orchestration)
+                project_read_grant=grant, evidence_payload_resolver=evidence_payloads,
+                folder_transport_request_bytes=256 * 1024 * 1024, **orchestration)
             # Transcripts are stored once, by digest; Due records and their events
             # carry a small reference (digest, bytes, media type) instead.
             from otto.agents.retained_native import RetainedNativeBodies
