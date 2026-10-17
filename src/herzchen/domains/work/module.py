@@ -533,8 +533,26 @@ class _WorkGraphEngine:
         if not isinstance(disposition, str) or disposition.lower() not in admission.APPROVED:
             raise admission.TaskNotAdmittedError("a revision is admitted only on an approving review")
         review = review_ref if isinstance(review_ref, ResourceRef) else ResourceRef.from_dict(review_ref) if isinstance(review_ref, Mapping) else None
-        if review is None or not review.revision or self.__writer.get_identity(ResourceRef(review.authority, review.kind, review.id)) is None:
+        if review is None or not review.revision:
             raise admission.TaskNotAdmittedError("an unreviewed revision cannot be admitted: the review must name an exact stored revision")
+        review_document = ResourceRef(review.authority, review.kind, review.id)
+        if review.kind == "dat.content.document":
+            from herzchen.content.model import revision_identity
+
+            stored_review = self.__writer.get_identity(revision_identity(review_document, review.revision))
+            stored_document = None if stored_review is None else stored_review.payload.get("document")
+            if isinstance(stored_document, Mapping):
+                stored_document = ResourceRef.from_dict(stored_document)
+            if (stored_review is None or stored_review.ref != revision_identity(review_document, review.revision)
+                    or stored_document != review_document
+                    or stored_review.payload.get("revision") != review.revision):
+                raise admission.TaskNotAdmittedError(
+                    "an unreviewed revision cannot be admitted: the review must name an exact stored revision")
+        else:
+            stored_review = self.__writer.get_revision(review)
+            if stored_review is None or stored_review.ref != review:
+                raise admission.TaskNotAdmittedError(
+                    "an unreviewed revision cannot be admitted: the review must name an exact stored revision")
         stamp = admission.stamp_of(record.payload)
         if stamp is not None and stamp["revision"] == revision and admission.admitted_revision(record.payload) == revision:
             return {"outcome": "already-admitted", "task_ref": record.ref, "admitted_revision": revision}

@@ -13,7 +13,8 @@ import types
 import unittest
 from collections.abc import Mapping
 
-from herzchen.contracts import AuthenticatedActor, ResourceRef
+from herzchen.contracts import AuthenticatedActor, ResourceRef, TransactionContext
+from herzchen.content import ContentCommandHandler, ContentDocument, ContentRevision, domain_contribution
 from herzchen.domains.assessment import AssessmentModule
 from herzchen.domains.work import WorkGraph, contributions
 from herzchen.domains.work.admission import AdmissionDiffError, TaskNotAdmittedError
@@ -109,6 +110,60 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(TaskNotAdmittedError):
             self.admit(revised.revision, key="a-unpinned-review", review=unpinned(self.review.ref))
         self.assertIsNone(self.graph.admission_state(self.task_ref())["admitted_revision"])
+
+    def test_admit_requires_stored_review_revision_after_review_advances(self):
+        task = self.agent_revise("Agent plan", "agent-plan")
+        retained_review = self.review.ref
+        later_review = self.graph.revise(
+            unpinned(retained_review), title="Review updated",
+            logical_request_key="review-updated", actor=USER)
+        self.assertNotEqual(later_review.revision, retained_review.revision)
+        self.assertEqual(self.store.get_revision(retained_review).ref, retained_review)
+
+        missing_review = ResourceRef(
+            retained_review.authority, retained_review.kind,
+            retained_review.id, "rev-999999")
+        self.assertIsNone(self.store.get_revision(missing_review))
+        before = self.graph.admission_state(self.task_ref())
+        self.assertIsNone(before["admitted_revision"])
+        writes = self.revised_event_ids()
+
+        with self.assertRaisesRegex(TaskNotAdmittedError, "exact stored revision"):
+            self.admit(task.revision, key="missing-review-revision",
+                       review=missing_review)
+
+        self.assertEqual(self.revised_event_ids(), writes)
+        self.assertEqual(self.graph.admission_state(self.task_ref()), before)
+        self.assertIsNone(self.store.get_receipt("missing-review-revision"))
+
+        admitted = self.admit(
+            task.revision, key="retained-review-revision",
+            review=retained_review)
+        self.assertEqual(admitted["outcome"], "admitted")
+        self.assertEqual(admitted["stamp"]["review_ref"],
+                         retained_review.to_dict())
+
+    def test_admit_accepts_retained_dat_review_revision(self):
+        self.store.register_domain_handler((domain_contribution(),))
+        content = ContentCommandHandler(self.store)
+        document = ContentDocument(
+            ResourceRef(AUTHORITY, "dat.content.document", "review-doc"),
+            "review", "private", "append", "user")
+        first = ContentRevision(document.ref, "rev-1", {"disposition": "approved"}, USER, initial=True)
+        content.execute(content.build_create_document(
+            TransactionContext(USER, "review-doc-create", "a" * 64), document, first))
+        retained_review = first.ref
+        second = ContentRevision(document.ref, "rev-2", {"disposition": "approved", "note": "updated"},
+                                 USER, parent_revision="rev-1")
+        content.execute(content.build_append_revision(
+            TransactionContext(USER, "review-doc-update", "b" * 64, expected_revision="rev-1"),
+            document, second))
+        self.assertEqual(content.read(retained_review)["content"], {"disposition": "approved"})
+
+        task = self.agent_revise("Agent plan", "agent-plan-dat")
+        admitted = self.admit(task.revision, key="retained-dat-review", review=retained_review)
+        self.assertEqual(admitted["outcome"], "admitted")
+        self.assertEqual(admitted["stamp"]["review_ref"], retained_review.to_dict())
 
     def test_user_edit_admitted_by_authoring(self):
         assignment = self.assign_task()
