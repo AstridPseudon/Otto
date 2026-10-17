@@ -306,6 +306,41 @@ for f in $SWEEP; do
     elif reproduces "$f" "$id"; then NEW_FAILS="$NEW_FAILS$id"$'\n'; fi
   done < "$G/lab.ids"
 done
+
+# A swept test can leave a service owner behind even when its temporary home has no pidfile.
+# Check visible temporary roots by process command line and report the PID plus its --home.
+ORPHANS="$($PY - "${TMPDIR:-/tmp}" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+roots = []
+for candidate in (sys.argv[1], "/tmp", "/private/tmp"):
+    if candidate:
+        root = os.path.realpath(candidate)
+        if root not in roots:
+            roots.append(root.rstrip(os.sep) + os.sep)
+try:
+    listing = subprocess.run(["ps", "-axo", "pid=,command="], check=True,
+                             text=True, capture_output=True).stdout
+except (OSError, subprocess.CalledProcessError) as exc:
+    print("cannot inspect processes: %s" % exc, file=sys.stderr)
+    raise SystemExit(2)
+for line in listing.splitlines():
+    match = re.match(r"\s*(\d+)\s+(.*)", line)
+    if not match or "service run" not in match.group(2):
+        continue
+    home_match = re.search(r"--home(?:=|\s+)(\S+)", match.group(2))
+    if not home_match:
+        continue
+    home = os.path.realpath(home_match.group(1))
+    if any(home.startswith(root) for root in roots):
+        print("orphan service run pid %s home %s" % (match.group(1), home))
+PY
+)" || fail "could not inspect temporary service owners"
+[ -z "$ORPHANS" ] || fail "orphan service run(s) after sweep: $ORPHANS"
+
 [ -z "$NEW_FAILS" ] || fail "new test failures: $(echo "$NEW_FAILS" | grep . | tr '\n' ' ')"
 
 # c. regression tests the task added should fail on BASE

@@ -41,10 +41,16 @@ class Scratch(unittest.TestCase):
         heavy = self.bin / "otto-heavy"
         heavy.write_text('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
         heavy.chmod(0o755)
+        self.ps_listing = self.tmp / "ps-listing"
+        self.ps_listing.write_text("")
+        ps_stub = self.bin / "ps"
+        ps_stub.write_text('#!/bin/sh\ncat "$OTTO_TEST_PS_LISTING"\n')
+        ps_stub.chmod(0o755)
         self.env = dict(
             os.environ, OTTO_REPO=str(self.repo), LABS_DIR=str(self.labs), OPS_DIR=str(self.ops),
             OTTO_HEAVY=str(heavy), BASELINE_LAB=str(self.baseline), OTTO_PYTHON=sys.executable,
             OTTO_REMOTE="github", PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+            OTTO_TEST_PS_LISTING=str(self.ps_listing),
             GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
         )
         sh(["git", "init", "-q", "-b", "canon/main", str(self.repo)])
@@ -133,6 +139,23 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "land.lock").exists())
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
+
+    def test_temporary_service_owner_orphan_is_named(self):
+        self.lab("T25", {"note.txt": "x\n"})
+        home = self.tmp / "orphan-home"
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60) # service run --home " + str(home)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.ps_listing.write_text("%d python service run --home %s\n" % (owner.pid, home))
+        try:
+            r = self.land("T25")
+            self.assertRefused(r, "T25", "orphan service run")
+            diagnostic = self.log("T25") + r.stdout + r.stderr
+            self.assertIn("pid %d" % owner.pid, diagnostic)
+            self.assertIn(str(home), diagnostic)
+        finally:
+            owner.terminate()
 
     def test_a_landing_stopped_by_a_signal_never_reports_landed(self):
         started = self.tmp / "check-started"
