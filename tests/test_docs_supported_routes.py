@@ -55,6 +55,21 @@ class SupportedDocumentationRoutes(unittest.TestCase):
                 self.assertNotIn("ottoctl overview", contents)
                 self.assertNotIn("ottoctl task ", contents)
 
+    def test_portfolio_apply_docs_do_not_promise_document_sync(self):
+        for relative in MAINTAINED_GUIDES:
+            contents = (ROOT / relative).read_text()
+            with self.subTest(path=relative):
+                self.assertNotIn("apply --root DIR` reconciles a file-mode portfolio and its shared root documents", contents)
+                self.assertNotIn("Apply reconciles all root files outside `projects/` as shared documents", contents)
+                self.assertNotIn("shared-document associations through portfolio apply", contents)
+                self.assertNotIn("accepts the root's shared documents", contents)
+
+        portfolio_docs = (ROOT / "docs/portfolio.md").read_text()
+        self.assertIn("portfolio-setup.json", portfolio_docs)
+        self.assertIn("It does not import changed", portfolio_docs)
+        self.assertIn("The `portfolio documents` and manager `project-documents` routes are read-only", portfolio_docs)
+        self.assertIn("timeline-platform-r4-portfolio", portfolio_docs)
+
 
 if __name__ == "__main__":
     unittest.main()

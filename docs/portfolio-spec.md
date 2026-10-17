@@ -51,7 +51,7 @@ One orchestrator runs a PORTFOLIO of related projects end to end. Each project h
 - **Visibility:** extend `_subject_allowed` (documents.py) so that a project's readers (its manager and workers) can READ documents associated with that project through the `portfolio.shared` namespace. Only the orchestrator principal (and the owner) can WRITE them.
 - **Commands:**
   - `ottoctl portfolio documents --operation list|read --path …` (orchestrator);
-  - current implementation: `ottoctl portfolio apply --root DIR` reconciles portfolio root files; `ottoctl portfolio documents --operation list|read` reads shared documents;
+  - current implementation: `ottoctl portfolio apply --root DIR` reads the manifest and declared project bundles to register new projects and reconcile gates/dependencies; it does not synchronize project-document updates or root-level shared documents. `ottoctl portfolio documents --operation list|read` reads shared documents;
   - the manager's `project-documents --operation list` shows them in a separate "portfolio" section, and `read` works for them.
 
 ### F3. Portfolio status

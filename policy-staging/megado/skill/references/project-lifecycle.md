@@ -30,8 +30,10 @@ existing title-and-brief onboarding create/find/reopen route and the proper
 blank/template project package, then supported document check-in and export.
 Use `ottoctl project register --bundle DIR` to import an existing external
 bundle. A bound manager can use the owner-backed `manager project-authoring`
-open/check-in/read operations for project.json; for file-mode portfolio roots
-and their shared documents, use `ottoctl portfolio apply --root DIR`. There is no
+open/check-in/read operations for project.json. For file-mode portfolio
+roots, use `ottoctl portfolio apply --root DIR` for new registrations and
+manifest metadata, gates and dependencies. It does not sync project document
+changes or root-level shared documents. There is no
 `project sync-docs` command. These migration routes do not replace
 new-project onboarding. A manager's
 execution route is the authenticated owner authoring path. If your host is not

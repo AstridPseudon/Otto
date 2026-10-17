@@ -53,23 +53,26 @@ It creates no tasks, roles, pools or schedules.
 ## 3. Edit through the supported owner route
 
 Registration imports the bundle's documents once. There is no
-`project sync-docs` command. For an existing portfolio rooted in files, use
-`portfolio apply` to reconcile its project bundles and shared root documents;
-review conflicts before editing either copy:
+`project sync-docs` command, and portfolio apply does not synchronize document
+edits. For a file-mode portfolio, apply reads a root with
+`portfolio-setup.json` and declared bundles under `projects/`; it registers
+new projects and reconciles manifest metadata, gates and dependencies. It does
+not update documents for projects already registered or import root-level
+shared documents:
 
 ```sh
-ottoctl portfolio apply --root /path/to/timeline-platform-r4 --dry-run
-ottoctl portfolio apply --root /path/to/timeline-platform-r4
+ottoctl portfolio apply --root /path/to/timeline-platform-r4-portfolio --dry-run
+ottoctl portfolio apply --root /path/to/timeline-platform-r4-portfolio
 ```
 
-For a bound manager's project.json, use its owner-backed
+For project.json, use the bound manager's owner-backed
 `ottoctl manager --project timeline-platform-r4 project-authoring` operations
 (`open`, `check-in`, and `read`). Project documents can be read with
 `ottoctl manager --project timeline-platform-r4 project-documents`. Shared
-portfolio documents are read with `ottoctl portfolio documents`; managers read
-associated shared files through `project-documents`. Keep decisions and status
-in the project's documents and check them in through the owning authoring
-operation.
+portfolio documents can be read with `ottoctl portfolio documents` or through
+the manager's project-bound `project-documents` view when already associated.
+These are read routes; the current hostctl surface does not provide a shared
+portfolio-document write command.
 
 ## 4. Activate (nothing starts yet)
 

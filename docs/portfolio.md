@@ -13,13 +13,14 @@ A–J for setup and evidence commands, while their canonical project run IDs are
 `timeline-platform-r4-J-extensions`. The manifest declares each project’s
 entry milestones and the gates that accept those milestones. Project folders
 are imported whole, including nested briefs, archive material, and reviews.
-Root files outside `projects/` become shared portfolio documents.
+The apply manifest describes projects, gates and dependencies. The current
+apply input does not include root-level shared documents.
 
 Preview first, then apply through the host’s admitted portfolio:
 
 ```sh
-ottoctl portfolio apply --root /path/to/timeline-platform-r4 --dry-run
-ottoctl portfolio apply --root /path/to/timeline-platform-r4 \
+ottoctl portfolio apply --root /path/to/timeline-platform-r4-portfolio --dry-run
+ottoctl portfolio apply --root /path/to/timeline-platform-r4-portfolio \
   --import-history /path/to/timeline-platform-r3
 ```
 
@@ -28,20 +29,22 @@ From the service home’s owner lane, select the admitted portfolio explicitly:
 ```sh
 ottoctl --home "$SERVICE_HOME" portfolio apply \
   --portfolio claude-code-portfolio \
-  --root /path/to/timeline-platform-r4 --dry-run
+  --root /path/to/timeline-platform-r4-portfolio --dry-run
 ottoctl --home "$SERVICE_HOME" portfolio apply \
   --portfolio claude-code-portfolio \
-  --root /path/to/timeline-platform-r4 \
+  --root /path/to/timeline-platform-r4-portfolio \
   --import-history /path/to/timeline-platform-r3
 ```
 
-The optional history import records the closed r3 bundle as withdrawn history;
-it does not enroll it as an active r4 project. A dry run reports planned
-registration, document sync, gates, dependencies, and readiness without Store
-writes. Repeating apply after a successful run should report `in_sync`. If a
-source document conflicts with an Otto edit, apply reports the conflict and
-holds before changing project or dependency state. Review the retained Otto
-version and source before reconciling it.
+The root has `portfolio-setup.json` and one bundle directory under
+`projects/` for every declared project. The optional history import records
+the closed r3 bundle as withdrawn history; it does not enroll it as an active
+r4 project. A dry run reports planned registrations, gates, dependencies and
+readiness without Store writes. Apply registers documents for new projects;
+for an already registered project it preserves the existing project and only
+reconciles managed portfolio metadata and edges. It does not import changed
+project documents or root-level shared documents. Review project changes
+through the supported project authoring route before activation.
 
 Apply creates pending project drafts. It preserves per-role model and adapter
 assignments, pending gates, finite oracle/review allowance limits, and source
@@ -156,8 +159,7 @@ its previous manifest snapshot; hand-authored edges remain separate.
 
 ## Shared documents and project lifecycle
 
-Apply reconciles all root files outside `projects/` as shared documents. The
-parser exposes these read routes:
+The current parser exposes these shared-document read routes:
 
 ```sh
 ottoctl portfolio documents --operation list
@@ -166,15 +168,13 @@ ottoctl manager project-documents --operation list
 ottoctl manager project-documents --operation read --path portfolio/portfolio.md
 ```
 
-`portfolio apply --root DIR` accepts the root's shared documents and reports
-conflicts without overwriting Otto edits. Newly attached projects receive
-shared-document associations through portfolio apply. There is no separate
-`sync-docs` command. The portfolio documents command is read-only; use apply
-to reconcile files from a registered portfolio root.
+The `portfolio documents` and manager `project-documents` routes are read-only.
+Portfolio apply does not collect or write shared documents, and there is no
+separate `sync-docs` command. Shared-document write support is not exposed by
+the current hostctl parser.
 Managers and workers can read shared documents through their project-bound
 document view. The `portfolio/` prefix distinguishes shared files from
-project-local paths. Only the current portfolio orchestrator or owner can
-apply a portfolio root.
+project-local paths.
 
 Detach retains a project while removing its supervision and shared-document
 links. It refuses active or queued manager work. A dependent project is then

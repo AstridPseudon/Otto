@@ -26,7 +26,7 @@ already in flight, first [adopt it](references/project-lifecycle.md#0-adopt-work
 - Otto is installed but your host is not admitted, or no service is running: ask the operator to admit your host (`ottoctl service admit-host`) or start the service (`ottoctl service run`). Continue planning in the existing project package or the conversation until the missing binding is supplied; do not create a parallel run directory. Never open the store, start a second owner or copy another host's controller.
 - Otto is not installed at all: say up front "file mode: Otto is not installed on this host, so this run will not be registered or queued in Otto" Reuse the proper blank/template project package for planning and keep its documents inside that package.
 
-**One project package from the start.** For new work use the installed title-and-brief onboarding route with the existing blank/template project; create or reopen that same package, edit its documents, check them in, and export/read back through supported operations. Keep planning, briefs, specs, reviews, decisions and status with that project. Runtime receipts and native logs stay in their established execution storage, referenced by the project. For an existing external run, `ottoctl project register --bundle` imports its documents; a bound manager can use owner-backed `manager project-authoring` operations for project.json, while `ottoctl portfolio apply --root DIR` reconciles a file-mode portfolio and its shared root documents. There is no `project sync-docs` command; preserve the existing project identity rather than creating a competing project.
+**One project package from the start.** For new work use the installed title-and-brief onboarding route with the existing blank/template project; create or reopen that same package, edit its documents, check them in, and export/read back through supported operations. Keep planning, briefs, specs, reviews, decisions and status with that project. Runtime receipts and native logs stay in their established execution storage, referenced by the project. For an existing external run, `ottoctl project register --bundle` imports its documents; a bound manager can use owner-backed `manager project-authoring` operations for project.json. `ottoctl portfolio apply --root DIR` registers newly declared project bundles and reconciles manifest metadata, gates and dependencies; it does not synchronize document changes for existing projects or root-level shared documents. There is no `project sync-docs` command; preserve the existing project identity rather than creating a competing project.
 
 For a new substantial delivery, include a final independent review by the
 profile's **final_reviewer slot** (its model binding is in the run template for
@@ -41,9 +41,10 @@ consumed budgets unless explicitly amended. User review overrides prevail.
 Use one orchestrator with a manager per project. Register related projects in
 that orchestrator's portfolio, and express contract-freeze milestones as
 project-to-gate dependencies (`ottoctl project depend --project B --on 'A#contracts-frozen'`).
-Keep contracts in shared portfolio documents reconciled through
-`ottoctl portfolio apply --root DIR`. Read them with `ottoctl portfolio
-documents` or, from a bound manager, `ottoctl manager project-documents`.
+Keep contracts in shared portfolio documents when they are available through
+the existing document authoring path. Read them with `ottoctl portfolio
+documents` or, from a bound manager, `ottoctl manager project-documents`. The
+current hostctl parser exposes no shared portfolio-document write command.
 Use `ottoctl portfolio status --json` for the hourly check-in and its
 `needs_orchestrator` list. Keep per-project testing light, prove a live walking
 skeleton early, and reserve one final integration project for the complete path.
