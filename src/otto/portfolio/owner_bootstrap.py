@@ -600,6 +600,7 @@ class PortfolioOwnerBootstrap:
 
     __slots__ = (
         "store",
+        "_limit_service",
         "binding",
         "owner_actor",
         "operator_actor",
@@ -670,6 +671,11 @@ class PortfolioOwnerBootstrap:
             raise ValueError("project read grant must bind the authenticated owner principal")
 
         self.store = store
+        # Keep this store-bound command facade for the lifetime of the owner.
+        # Constructing LimitService binds a local listener, so creating one in
+        # role calls would retain a pair of descriptors for every invocation.
+        from herzchen.kernel import LimitService
+        self._limit_service = LimitService(store)
         # These owner capabilities own command transports.  Keep one for the
         # lifetime of this bootstrap instead of binding a fresh listening
         # socket each time a manager asks for its direction surface.
@@ -1009,7 +1015,6 @@ class PortfolioOwnerBootstrap:
         from .assessment import OttoAssessment
         from .manager_assessment_command import ManagerAssessmentCommands
         from .local_assessment_policy import LocalAssessmentPolicy
-        from herzchen.kernel import LimitService
         if not isinstance(assessment_policy, LocalAssessmentPolicy):
             raise TypeError("trusted local assessment policy is required")
         project, task, assignment = (ResourceRef.from_dict(value) for value in
@@ -1037,7 +1042,7 @@ class PortfolioOwnerBootstrap:
                 raise PermissionError("manager assessment assignment is stale or out of scope")
 
         def pool_guard() -> None:
-            pool = LimitService(self.store).get_pool(assessment_policy.pool_ref)
+            pool = self._limit_service.get_pool(assessment_policy.pool_ref)
             if (pool is None or pool.capacity_units != assessment_policy.capacity_units
                     or pool.cumulative_allowance_units != assessment_policy.cumulative_allowance_units):
                 raise PermissionError("local assessment pool is missing or differs from the bound policy")
@@ -1073,14 +1078,14 @@ class PortfolioOwnerBootstrap:
                                        manager_actor: str, manager_generation: int,
                                        logical_request_key: str, assessment_policy: Any) -> Mapping[str, Any]:
         """Create only the pool authorized by trusted local controller policy."""
-        from herzchen.kernel import LimitService, VersionConflictError
+        from herzchen.kernel import VersionConflictError
         if not isinstance(logical_request_key, str) or not logical_request_key.strip():
             raise ValueError("logical request key is required")
         self.manager_assessment(project_ref=project_ref, task_ref=task_ref,
             manager_assignment_ref=manager_assignment_ref, manager_actor=manager_actor,
             manager_generation=manager_generation, assessment_policy=assessment_policy)
         actor = self.binding.authenticated_actor(manager_actor)
-        limits = LimitService(self.store)
+        limits = self._limit_service
         try:
             pool = limits.create_pool(
                 assessment_policy.pool_ref, capacity_units=assessment_policy.capacity_units,
@@ -1351,8 +1356,7 @@ class PortfolioOwnerBootstrap:
                     "expected_generation": manager["generation"]}))
             return {"required_scopes": scopes, "completed_task_readbacks": completed_readbacks, "allowance_created": False}
 
-        from herzchen.kernel import LimitService
-        limits = LimitService(self.store)
+        limits = self._limit_service
 
         def allowance_readiness(value: Mapping[str, Any]) -> None:
             from herzchen.contracts import ResourceRef
