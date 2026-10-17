@@ -227,35 +227,76 @@ stage2_wait_admission_boundary() {  # TASK DEADLINE
     fi
   done
   echo "owner admission boundary stayed open for $task within the 180-second poll budget; see stage2-admit-$task-boundary-status.json" >> "$RAW/stage2-setup-errors.txt"
+  if [ -f "$STAGE_ROOT/run/staging.log" ]; then
+    tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
+  fi
   return 1
 }
 
+stage2_submit_admission() {  # HOST TASK REF REVIEW_REF ATTEMPT
+  local host="$1" task="$2" ref="$3" review_ref="$4" attempt="$5" rc
+  local request_key="perch-stage2-admit-$task" receipt="$RAW/stage2-admit-$task-attempt-$attempt.json"
+  printf '%s\n' "$request_key" > "$RAW/stage2-admit-$task-attempt-$attempt.request-key"
+  if cold_client --host "$host" --wait-seconds 0 service admit --task-ref "$ref" \
+      --revision "$("$PY" -I -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<< "$ref")" \
+      --review-ref "$review_ref" --request-key "$request_key" \
+      > "$receipt" 2>> "$RAW/stage2-setup-errors.txt"; then
+    return 0
+  else
+    rc=$?
+  fi
+  [ ! -s "$receipt" ] || cp "$receipt" "$RAW/stage2-admit-$task.json"
+  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: owner service admit exited $rc"
+  return "$rc"
+}
+
 stage2_admit_tasks() {
-  local host task ref review_ref rc=0 attempt deadline receipt request_key
+  local host task ref review_ref attempt deadline receipt request_id next_request retained
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
   review_ref="$(cat "$RAW/stage2-review-ref.json")"
-  # Admit the activated tasks in order. A held receipt has no effects; read
-  # owner status until its boundary closes, then retry with the same key.
+  # Submit A, B and C in activation order before waiting for any result or
+  # observing dispatch. A pending admission retains its one owner-lane request.
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     # The operator command is the sole task admission route. It performs the
     # owner-local presence proof and verifies the selected exact revision.
-    request_key="perch-stage2-admit-$task"
+    printf '%s\n' "$(( $(date +%s) + 180 ))" > "$RAW/stage2-admit-$task-deadline"
+    stage2_submit_admission "$host" "$task" "$ref" "$review_ref" 1 || return $?
+    cp "$RAW/stage2-admit-$task-attempt-1.json" "$RAW/stage2-admit-$task.json"
+  done
+  for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
+    ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
+      "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     attempt=0
-    deadline=$(( $(date +%s) + 180 ))
+    deadline="$(cat "$RAW/stage2-admit-$task-deadline")"
     while :; do
       attempt=$(( attempt + 1 ))
       receipt="$RAW/stage2-admit-$task-attempt-$attempt.json"
-      printf '%s\n' "$request_key" > "$RAW/stage2-admit-$task-attempt-$attempt.request-key"
-      if cold_client --host "$host" service admit --task-ref "$ref" \
-          --revision "$("$PY" -I -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<< "$ref")" \
-          --review-ref "$review_ref" --request-key "$request_key" \
-          > "$receipt" 2>> "$RAW/stage2-setup-errors.txt"; then :; else
-        rc=$?
-        [ ! -s "$receipt" ] || cp "$receipt" "$RAW/stage2-admit-$task.json"
-        "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: owner service admit exited $rc"
-        return "$rc"
+      if ! request_id="$("$PY" -I "$REPORT_PY" stage2-admission-request \
+          --response "$receipt" 2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
+      if [ -n "$request_id" ]; then
+        retained="$RAW/stage2-admit-$task-retained-$attempt.json"
+      fi
+      while [ -n "$request_id" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+        sleep 0.5
+        if ! cold_client request-status --request-id "$request_id" \
+            > "$retained" 2>> "$RAW/stage2-setup-errors.txt"; then
+          echo "retained admission request $request_id failed for $task; see $(basename "$retained")" >> "$RAW/stage2-setup-errors.txt"
+          return 1
+        fi
+        if ! next_request="$("$PY" -I "$REPORT_PY" stage2-admission-request \
+            --response "$retained" --expected-request-id "$request_id" \
+            2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
+        request_id="$next_request"
+        if [ -z "$request_id" ]; then receipt="$retained"; fi
+      done
+      if [ -n "$request_id" ]; then
+        echo "retained admission request $request_id stayed pending for $task within the 180-second poll budget" >> "$RAW/stage2-setup-errors.txt"
+        if [ -f "$STAGE_ROOT/run/staging.log" ]; then
+          tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
+        fi
+        return 1
       fi
       cp "$receipt" "$RAW/stage2-admit-$task.json"
       if "$PY" -I "$REPORT_PY" stage2-admission-held --response "$receipt"; then
@@ -267,6 +308,7 @@ stage2_admit_tasks() {
           echo "owner admission boundary closed too late to retry $task within the 180-second poll budget" >> "$RAW/stage2-setup-errors.txt"
           return 1
         fi
+        stage2_submit_admission "$host" "$task" "$ref" "$review_ref" "$(( attempt + 1 ))" || return $?
         continue
       fi
       if ! "$PY" -I "$REPORT_PY" stage2-admission-check --response "$receipt" \

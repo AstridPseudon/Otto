@@ -828,8 +828,10 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                         "revision": "rev-" + alias} for alias in ("A", "B", "C")}
         shell = PERCH.read_text(encoding="utf-8")
         admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        submit = re.search(r"(?ms)^stage2_submit_admission\(\) \{[^\n]*\n.*?^\}\n", shell)
         boundary = re.search(r"(?ms)^stage2_wait_admission_boundary\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(admit)
+        self.assertIsNotNone(submit)
         self.assertIsNotNone(boundary)
 
         def run(seed_stuck=False):
@@ -881,6 +883,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 '  echo "wait-$2" >> "$RAW/trace"',
                 "}",
                 boundary.group(),
+                submit.group(),
                 admit.group(),
                 "stage2_admit_tasks",
             ))
@@ -926,6 +929,115 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             "native_capacity": {"active_or_uncertain": 0, "holds": ["task-A"]}}))
         self.assertFalse(perch_report.stage2_owner_boundary_closed({**closed,
             "native_capacity": {"active_or_uncertain": False, "holds": []}}))
+
+    def test_pending_operator_admission_reads_one_retained_request_without_resending(self):
+        import re
+        import shlex
+
+        root = Path(tempfile.mkdtemp(prefix="perch-stage2-admit-pending-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        refs = {alias: {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
+                        "revision": "rev-" + alias} for alias in ("A", "B", "C")}
+        request_id = "a0ebbb3fece74d328ad1d290385a13ae"
+        shell = PERCH.read_text(encoding="utf-8")
+        admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        submit = re.search(r"(?ms)^stage2_submit_admission\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(admit)
+        self.assertIsNotNone(submit)
+
+        def run(seed_bad_id=False, seed_stuck=False):
+            raw = root / ("bad-id" if seed_bad_id else "stuck" if seed_stuck else "terminal")
+            raw.mkdir()
+            (raw / "stage2-activation.json").write_text(json.dumps(
+                {"activation": {"steps": {"tasks": {"task_refs": refs}}}}), encoding="utf-8")
+            (raw / "stage2-review-ref.json").write_text(json.dumps(
+                {"authority": "owner", "kind": "dat.content.document",
+                 "id": "plan-review-document", "revision": "rev-review"}), encoding="utf-8")
+            script = "\n".join((
+                "set -uo pipefail",
+                "RAW=" + shlex.quote(str(raw)),
+                "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
+                "PY=" + shlex.quote(sys.executable),
+                "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+                "REQUEST_ID=" + shlex.quote(request_id),
+                "sleep() { :; }",
+                "date() {",
+                '  if [ "${SEED_PENDING_STUCK:-0}" != 1 ] || [ "$1" != +%s ]; then command date "$@"; return; fi',
+                '  n=$(cat "$RAW/date-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/date-calls"',
+                '  case "$n" in 1|2|3) echo 1000 ;; 4) echo 1001 ;; *) echo 1180 ;; esac',
+                "}",
+                "cold_client() {",
+                '  case "$*" in',
+                '    *"request-status --request-id $REQUEST_ID")',
+                '      echo request-status-B >> "$RAW/trace"',
+                '      if [ "${SEED_BAD_REQUEST_ID:-0}" = 1 ]; then',
+                '        printf \'%s\\n\' \'{"outcome":"pending","request_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","terminal":false}\'',
+                '      elif [ "${SEED_PENDING_STUCK:-0}" = 1 ]; then',
+                '        printf \'{"outcome":"pending","request_id":"%s","terminal":false}\\n\' "$REQUEST_ID"',
+                '      elif [ ! -f "$RAW/polled" ]; then',
+                '        : > "$RAW/polled"',
+                '        printf \'{"outcome":"pending","request_id":"%s","terminal":false}\\n\' "$REQUEST_ID"',
+                '      else',
+                '        printf \'%s\\n\' \'{"outcome":"admitted","admitted_revision":"rev-B"}\'',
+                '      fi; return 0 ;;',
+                '    *"--wait-seconds 0 service admit"*) ;;',
+                '    *) echo "unexpected command: $*" >&2; return 31 ;;',
+                '  esac',
+                '  local alias',
+                '  case "$*" in *task-A*) alias=A ;; *task-B*) alias=B ;; *task-C*) alias=C ;; *) return 32 ;; esac',
+                '  case "$*" in *plan-review-document*rev-review*) ;; *) return 33 ;; esac',
+                '  case "$*" in *"--request-key perch-stage2-admit-$alias"*) ;; *) return 34 ;; esac',
+                '  echo "admit-$alias" >> "$RAW/trace"',
+                '  if [ "$alias" = B ]; then',
+                '    printf \'{"outcome":"pending","request_id":"%s","terminal":false}\\n\' "$REQUEST_ID"',
+                '  else',
+                '    printf \'{"outcome":"admitted","admitted_revision":"rev-%s"}\\n\' "$alias"',
+                '  fi',
+                "}",
+                "stage2_wait_admission_boundary() { return 95; }",
+                "stage2_wait_worker() {",
+                '  for alias in A B C; do [ -f "$RAW/stage2-admit-$alias.json" ] || return 35; done',
+                '  echo "wait-$2" >> "$RAW/trace"',
+                "}",
+                submit.group(),
+                admit.group(),
+                "stage2_admit_tasks",
+            ))
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                    env={**os.environ, "SEED_BAD_REQUEST_ID": "1" if seed_bad_id else "0",
+                                         "SEED_PENDING_STUCK": "1" if seed_stuck else "0"},
+                                    timeout=30)
+            return raw, result
+
+        raw, result = run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
+                         ["admit-A", "admit-B", "admit-C", "request-status-B", "request-status-B",
+                          "wait-A", "wait-B", "wait-C"])
+        self.assertEqual(json.loads((raw / "stage2-admit-B-attempt-1.json").read_text())["outcome"], "pending")
+        self.assertEqual(json.loads((raw / "stage2-admit-B-retained-1.json").read_text())["outcome"], "admitted")
+        self.assertEqual(json.loads((raw / "stage2-admit-B.json").read_text())["admitted_revision"], "rev-B")
+        raw, result = run(seed_bad_id=True)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
+                         ["admit-A", "admit-B", "admit-C", "request-status-B"])
+        self.assertIn("changed its retained request id", (raw / "stage2-setup-errors.txt").read_text())
+        self.assertTrue((raw / "stage2-admit-C-attempt-1.json").exists())
+        raw, result = run(seed_stuck=True)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
+                         ["admit-A", "admit-B", "admit-C", "request-status-B"])
+        self.assertIn("stayed pending", (raw / "stage2-setup-errors.txt").read_text())
+        self.assertFalse((raw / "stage2-admit-B-attempt-2.json").exists())
+
+    def test_pending_admission_requires_a_valid_request_receipt(self):
+        pending = {"outcome": "pending", "request_id": "a" * 32, "terminal": False}
+        self.assertEqual(perch_report.stage2_admission_request_id(pending), "a" * 32)
+        self.assertIsNone(perch_report.stage2_admission_request_id({"outcome": "admitted"}))
+        with self.assertRaisesRegex(ValueError, "invalid pending request receipt"):
+            perch_report.stage2_admission_request_id({**pending, "terminal": True})
+        with self.assertRaisesRegex(ValueError, "changed its retained request id"):
+            perch_report.stage2_admission_request_id(pending, expected="b" * 32)
 
     def test_dispatch_poll_resolves_one_pending_request_before_read(self):
         import re
@@ -1201,6 +1313,12 @@ class RenderTests(unittest.TestCase):
     def test_stage_two_report_records_held_receipt_and_same_key_retry(self):
         raw = clean_raw(self.tmp / "raw")
         patch(raw, "config.json", lambda value: value.update(stage="2"))
+        (raw / "stage2-admit-B-attempt-1.json").write_text(json.dumps({
+            "outcome": "pending", "request_id": "a" * 32, "terminal": False}), encoding="utf-8")
+        (raw / "stage2-admit-B-attempt-1.request-key").write_text(
+            "perch-stage2-admit-B\n", encoding="utf-8")
+        (raw / "stage2-admit-B-retained-1.json").write_text(json.dumps({
+            "outcome": "admitted", "admitted_revision": "rev-B"}), encoding="utf-8")
         for number, response in ((1, {"outcome": "held", "reason":
                 "execution-changing operation requires a closed owner boundary"}),
                                  (2, {"outcome": "admitted", "admitted_revision": "rev-C"})):
@@ -1213,6 +1331,8 @@ class RenderTests(unittest.TestCase):
         perch_report.cmd_render(Namespace(raw=str(raw), out=str(out)))
         report = out.read_text(encoding="utf-8")
         self.assertIn("## Operator admission attempts", report)
+        self.assertIn("| B | 1 | perch-stage2-admit-B | pending |", report)
+        self.assertIn("| B | 1 retained | perch-stage2-admit-B | admitted |", report)
         self.assertIn("| C | 1 | perch-stage2-admit-C | held |", report)
         self.assertIn("| C | 2 | perch-stage2-admit-C | admitted |", report)
         self.assertIn("[raw receipt](raw/stage2-admit-C-attempt-1.json)", report)

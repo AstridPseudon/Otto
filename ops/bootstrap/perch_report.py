@@ -242,6 +242,27 @@ def cmd_stage2_admission_held(args):
     return 0 if stage2_admission_held(read_json(args.response, {}) or {}) else 1
 
 
+def stage2_admission_request_id(response, expected=None):
+    """Read one retained operator admission; a pending request is never resubmitted."""
+    if not isinstance(response, dict):
+        raise ValueError("operator admission request has no response object")
+    if response.get("outcome") == "pending":
+        request_id = response.get("request_id")
+        if (response.get("terminal") is not False or not isinstance(request_id, str)
+                or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id)):
+            raise ValueError("operator admission has an invalid pending request receipt: " + repr(response))
+        if expected is not None and request_id != expected:
+            raise ValueError("operator admission changed its retained request id")
+        return request_id
+    if response.get("outcome") not in {"admitted", "already-admitted", "held", "error", "rejected"}:
+        raise ValueError("operator admission request has no terminal result: " + repr(response))
+    return None
+
+
+def cmd_stage2_admission_request(args):
+    print(stage2_admission_request_id(read_json(args.response, {}) or {}, args.expected_request_id) or "")
+
+
 def stage2_owner_boundary_closed(status):
     if not isinstance(status, dict):
         return False
@@ -1620,17 +1641,21 @@ def stage2_admission_attempt_lines(raw):
         paths = sorted(raw.glob("stage2-admit-%s-attempt-*.json" % task),
                        key=lambda path: int(path.stem.rsplit("-", 1)[-1]))
         for path in paths:
-            try:
-                response = read_json(path, {}) or {}
-            except ValueError:
-                response = {"outcome": "unreadable receipt"}
-            if not isinstance(response, dict):
-                response = {"outcome": "unreadable receipt"}
+            number = path.stem.rsplit("-", 1)[-1]
             key_path = path.with_suffix(".request-key")
             request_key = key_path.read_text(encoding="utf-8").strip() if key_path.exists() else "missing"
-            rows.append([task, path.stem.rsplit("-", 1)[-1], request_key,
-                         response.get("outcome", "missing"), response.get("reason", ""),
-                         "[raw receipt](raw/%s)" % path.name])
+            retained = raw / ("stage2-admit-%s-retained-%s.json" % (task, number))
+            for label, receipt in ((number, path), (number + " retained", retained)):
+                if not receipt.exists():
+                    continue
+                try:
+                    response = read_json(receipt, {}) or {}
+                except ValueError:
+                    response = {"outcome": "unreadable receipt"}
+                if not isinstance(response, dict):
+                    response = {"outcome": "unreadable receipt"}
+                rows.append([task, label, request_key, response.get("outcome", "missing"),
+                             response.get("reason", ""), "[raw receipt](raw/%s)" % receipt.name])
     lines = table(["task", "attempt", "request key", "outcome", "reason", "evidence"], rows) if rows else ["(no admission attempts recorded)"]
     for task in ("A", "B", "C"):
         path = raw / ("stage2-admit-%s-boundary-status.json" % task)
@@ -1742,6 +1767,9 @@ def build_parser():
     p.set_defaults(fn=cmd_stage2_admission_check)
     p = sub.add_parser("stage2-admission-held")
     p.add_argument("--response", required=True); p.set_defaults(fn=cmd_stage2_admission_held)
+    p = sub.add_parser("stage2-admission-request")
+    p.add_argument("--response", required=True); p.add_argument("--expected-request-id")
+    p.set_defaults(fn=cmd_stage2_admission_request)
     p = sub.add_parser("stage2-boundary-closed")
     p.add_argument("--status", required=True); p.set_defaults(fn=cmd_stage2_boundary_closed)
     p = sub.add_parser("stage2-dispatch-check")
