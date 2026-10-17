@@ -763,7 +763,7 @@ class ExecutionHost:
             if (latch.exists() or (prior.get("scope_latch") == str(latch)
                     and prior.get("scope_disposition") != "gone") or
                     (prior.get("scope_latch") != str(latch)
-                     and self._group_state(prior) not in {"gone", "reused"})):
+                     and self._group_state(prior) != "gone")):
                 raise RuntimeError("prior process scope is unresolved")
         self._process_groups[schedule_id] = {"scope_latch": str(latch), "scope_disposition": "launching"}
         try:
@@ -830,14 +830,15 @@ class ExecutionHost:
 
     @staticmethod
     def _group_state(record: Mapping[str, Any]) -> str:
-        """gone | alive | reused | unproven. Only settled scopes free capacity.
+        """gone | alive | reused | unproven. Only gone frees capacity.
 
         For older rows without a PL1 latch, gone needs both an empty process
-        group and an absent pid. A pid that is
-        live with another start time is reused if the recorded group is empty
-        or the replacement PID itself leads that numeric group. A live group
-        with a changed leader in another group is unproven: it may still
-        contain the old worker's descendants. Live and unproven stay charged.
+        group and an absent pid. A pid live with another start time is reused
+        if the recorded group is empty
+        or the replacement PID itself leads that numeric group. Neither case
+        proves the recorded worker's scope has settled. A live group with a
+        changed leader in another group is unproven: it may still contain the
+        old worker's descendants. Every state except gone stays charged.
         """
         if record.get("scope_disposition") == "gone":
             return "gone"
@@ -884,7 +885,7 @@ class ExecutionHost:
 
     def _reconcile_hold(self, schedule_id: str) -> bool:
         record = self._process_groups.get(schedule_id)
-        if record is None or self._group_state(record) not in {"gone", "reused"}:
+        if record is None or self._group_state(record) != "gone":
             return False
         self._capacity_freed.add(schedule_id)
         return True
