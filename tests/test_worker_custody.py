@@ -34,7 +34,7 @@ class WorkerCustodyTests(unittest.TestCase):
             project_ref=result['project_ref'], task_ref=result['task_ref'],
             assignment_ref=due['assignment_ref'], generation=due['generation'])
         ledger = self.f.app.runtime.effect_ledger
-        started = ledger.begin(responsibility, attempt['request_fingerprint'])
+        started = ledger.begin(responsibility, 'f' * 64)
         ledger.finish(started, result)
         self.assertEqual(ledger.get(attempt['logical_request_key']).state, OperationState.UNKNOWN)
         self.release()

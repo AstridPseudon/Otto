@@ -1228,6 +1228,37 @@ class CanonicalRoleRuntime:
         receipt = attempt.get("delivery_admission_reconciliation")
         if (receipt and receipt.get("source_unknown_sha256") == expected_unknown_sha256
                 and prior.get("outcome") == "succeeded"):
+            reconciliation = attempt.get("reconciliation") or {}
+            source = receipt.get("source_unknown") or {}
+            if (due.get("role") != "manager" or due.get("execution_mode") != "fresh_manager"
+                    or attempt.get("state") != "result"
+                    or attempt.get("logical_request_key") != prior.get("logical_request_key")
+                    or receipt.get("schema") != "otto.owner-native-admission-reconciliation.v1"
+                    or receipt.get("resolver") != self.actor
+                    or receipt.get("effect") != "retained_completed_native_turn_no_provider_replay"
+                    or receipt.get("native_turn_started") is not True
+                    or source.get("operation") != "invoke" or source.get("outcome") != "unknown"
+                    or digest(source) != expected_unknown_sha256
+                    or receipt.get("physical_session_id") != prior.get("physical_session_id")
+                    or receipt.get("observed_turn_id") != prior.get("observed_turn_id")
+                    or receipt.get("task_bound_evidence_sha256") != digest(prior.get("task_bound_evidence"))
+                    or reconciliation.get("schema") != "otto.owner-result-reconciliation.v1"
+                    or reconciliation.get("resolver") != self.actor
+                    or reconciliation.get("effect") != "retained_evidence_reparsed_no_provider_replay"
+                    or reconciliation.get("source_unknown_sha256") != expected_unknown_sha256
+                    or reconciliation.get("trace_sha256") != receipt.get("trace_sha256")):
+                raise OwnerRoleRuntimeError("retained fresh-manager reconciliation proof changed")
+            _, _, capture = self._binding(role="manager", project_ref=prior["project_ref"],
+                task_ref=prior["task_ref"], assignment_ref=prior["assignment_ref"],
+                mandate_ref=due["target"]["mandate_ref"], schedule_id=schedule_id,
+                logical_request_key=prior["logical_request_key"], expected_generation=prior["generation"],
+                allow_settled_publication=True)
+            if not callable(capture.completed_scope_validator) or capture.completed_scope_validator():
+                raise OwnerRoleRuntimeError("current exact manager custody is required")
+            if not capture.settled_publication:
+                capture.validate_completed_manager_result(prior)
+            if not validate_only:
+                self._settle_reconciled_native_effect(schedule_id)
             return {"outcome": "reconciled", "replayed": True, "provider_called": False,
                     "admission_reconciliation": receipt}
         if (due.get("execution_mode") != "fresh_manager" or due.get("role") != "manager"

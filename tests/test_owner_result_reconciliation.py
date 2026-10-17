@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
+import hashlib
+import json
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.kernel import Store
@@ -9,7 +11,7 @@ from herzchen.kernel.operations import OperationState, UnknownOutcomeError
 from otto.agents.effect_ledger import NativeEffectLedger
 from otto.agents.gateway import Responsibility
 
-from otto.agents.owner_runtime import OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
+from otto.agents.owner_runtime import CanonicalRoleRuntime, OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
 
 
 ASSIGNMENT = {"authority": "owner", "kind": "wrk.assignment", "id": "a-1", "revision": "rev-2"}
@@ -74,6 +76,45 @@ class FixtureCapture(OwnerAuthorizedRoleCapture):
 
 
 class OwnerResultReconciliationTests(unittest.TestCase):
+    def test_fresh_manager_replay_finishes_held_effect_after_capture_crash(self):
+        source = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "unknown"}
+        digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        result = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "succeeded",
+                  "delivery_state": "done", "assignment_ref": ASSIGNMENT, "generation": 1,
+                  "project_ref": {"id": "project-1"}, "task_ref": {"id": "task-1"},
+                  "physical_session_id": "session-1", "observed_turn_id": "turn-native",
+                  "task_bound_evidence": {"verified": True}}
+        proof = {"schema": "otto.owner-native-admission-reconciliation.v1",
+                 "resolver": "owner-principal", "effect": "retained_completed_native_turn_no_provider_replay",
+                 "source_unknown": source, "source_unknown_sha256": digest(source),
+                 "native_turn_started": True, "trace_sha256": "b" * 64,
+                 "physical_session_id": "session-1", "observed_turn_id": "turn-native",
+                 "task_bound_evidence_sha256": digest(result["task_bound_evidence"])}
+        reconciliation = {"schema": "otto.owner-result-reconciliation.v1", "resolver": "owner-principal",
+                          "effect": "retained_evidence_reparsed_no_provider_replay",
+                          "source_unknown_sha256": digest(source), "trace_sha256": "b" * 64}
+        due = {"role": "manager", "execution_mode": "fresh_manager", "generation": 1,
+               "target": {"mandate_ref": {"id": "mandate-1"}},
+               "host_evidence": {"gateway_attempt": {"state": "result", "logical_request_key": "turn-1",
+                   "result": result, "delivery_admission_reconciliation": proof,
+                   "reconciliation": reconciliation}}}
+        checks, settlements = [], []
+        capture = SimpleNamespace(completed_scope_validator=lambda: None, settled_publication=False,
+            validate_completed_manager_result=lambda value: checks.append(value))
+        ledger = SimpleNamespace(get=lambda key: SimpleNamespace(state=OperationState.UNKNOWN),
+            settle_verified=lambda key, value: settlements.append((key, value)))
+        runtime = object.__new__(CanonicalRoleRuntime)
+        runtime.actor = "owner-principal"
+        runtime.due_port = SimpleNamespace(read_due=lambda schedule: due)
+        runtime.effect_ledger = ledger
+        runtime._binding = lambda **kwargs: (None, None, capture)
+        replay = runtime.reconcile_fresh_manager_result(schedule_id="schedule-1",
+            expected_unknown_sha256=digest(source))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(checks, [result])
+        self.assertEqual(settlements, [("turn-1", result)])
+
     def test_native_start_claim_survives_reconstruction_and_unknown_stays_held(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "effect.sqlite"
