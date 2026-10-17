@@ -29,6 +29,12 @@ from herzchen.contracts import ResourceRef, canonical_json
 from .bundle import parse_files, read_bundle
 
 REGISTRATION_SCHEMA = "otto.host-registration.v1"
+ROLE_PACK_PIN_FIELDS = frozenset({"pack_id", "pack_version", "source_revision",
+    "source_inventory_identity", "resource_path", "resource_digest"})
+
+
+def _is_exact_role_pack_pin(value: Any) -> bool:
+    return isinstance(value, Mapping) and set(value) == ROLE_PACK_PIN_FIELDS
 
 
 def _digest(value: Any) -> str:
@@ -73,6 +79,18 @@ def _interval(check: Mapping[str, Any]) -> Optional[int]:
     return None
 
 
+def _role_pack_pin(run: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve an exact role selection without changing an adopted configuration."""
+    from otto.portfolio.role_context import RoleContextError, _role_pack
+    if "role_pack" in run and run["role_pack"] is None:
+        raise ValueError("selected run role pack pin must be an exact object")
+    selection = {"content": {"role_pack": run["role_pack"]}} if "role_pack" in run else None
+    try:
+        return _role_pack(selection, "manager")[0]["pin"]
+    except RoleContextError as exc:
+        raise ValueError("selected run role pack pin is stale or inconsistent") from exc
+
+
 def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: str,
          worktree: str, tool_entrypoint: str) -> dict[str, Any]:
     """Pure: compute what registration and activation write.
@@ -99,6 +117,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
         from otto.agents.host_profiles import profile_pin_matches
         if not profile_pin_matches(run["profile_pack"], profile.get("pin") or {}):
             raise ValueError("selected run profile pack pin is stale or inconsistent")
+    role_pack_pin = _role_pack_pin(run)
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
     title = heading if heading.startswith(run_id) else (run_id + ": " + heading if heading else run_id)
@@ -152,6 +171,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                                               else "host profile " + profile["name"]}}
     configuration = {"schema": "otto.role-configuration.v1",
                      "profile_pack": profile.get("pin"),
+                     "role_pack": copy.deepcopy(role_pack_pin),
                      "model_profile": next(iter(profile_names)) if len(profile_names) == 1 else "mixed",
                      "roles": slot_bindings,
                      "role_bindings": {"manager": "coordinator", "orchestrator": "oracle"},
@@ -184,6 +204,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
         "review_stages": copy.deepcopy(profile.get("review_stages") or []),
         "scheduled_checks": copy.deepcopy(profile.get("scheduled_checks") or []),
         "pin": copy.deepcopy(profile.get("pin")),
+        "role_pack": copy.deepcopy(role_pack_pin),
         "resolved_roles": copy.deepcopy(slot_bindings),
         "run_file": bundle["run_file"], "run_sha256": bundle["raw_sha256"][bundle["run_file"]],
     }
@@ -215,6 +236,10 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     selection = facts.get("profile_selection")
     if not isinstance(selection, Mapping) or selection.get("schema") != "otto.profile-selection.v1":
         raise ValueError("registered profile selection is missing; re-register the pending run")
+    if "role_pack" not in selection:
+        raise ValueError("registered role pack pin is missing; migrate the inert pending selection")
+    if not _is_exact_role_pack_pin(selection["role_pack"]):
+        raise ValueError("registered role pack pin is malformed")
     if isinstance(bundle_source, (str, Path)):
         bundle = read_bundle(bundle_source)
     else:
@@ -251,6 +276,8 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
                         "pin": copy.deepcopy(selection["pin"])}
     computed = plan(bundle, profile=retained_profile, manager_principal=manager_principal,
                     worktree=worktree, tool_entrypoint=tool_entrypoint)
+    if selection["role_pack"] != computed["configuration"]["role_pack"]:
+        raise ValueError("registered role pack pin is stale or inconsistent")
     if computed["configuration"]["roles"] != selection.get("resolved_roles"):
         raise ValueError("registered run role bindings differ from retained selection")
     return computed
@@ -266,7 +293,10 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
     defaults after the first activation attempt.
     """
     facts = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-    if facts.get("profile_selection") is not None:
+    existing = facts.get("profile_selection")
+    if isinstance(existing, Mapping) and "role_pack" in existing:
+        if not _is_exact_role_pack_pin(existing["role_pack"]):
+            raise ValueError("registered role pack pin is malformed")
         return record, facts
     lifecycle = getattr(getattr(record, "lifecycle", None), "value", None)
     if (lifecycle != "pending" or record.payload.get("tasks")
@@ -276,6 +306,31 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
     original_digest = (facts.get("raw_sha256") or {}).get(run_file)
     if original_digest is not None and original_digest != bundle["raw_sha256"][run_file]:
         raise ValueError("registered run model choices changed before profile selection")
+    if existing is not None:
+        if (not isinstance(existing, Mapping) or existing.get("schema") != "otto.profile-selection.v1"
+                or existing.get("run_file") != run_file
+                or existing.get("run_sha256") != bundle["raw_sha256"][run_file]
+                or original_digest != existing.get("run_sha256")):
+            raise ValueError("registered run model choices changed after profile selection")
+        selected = {**existing, "role_pack": copy.deepcopy(_role_pack_pin(bundle["run"]))}
+        project = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
+        key = "legacy-role-pack-selection:" + record.ref.id + ":" + _digest(selected)[:20]
+
+        def retain_role_pin(draft: dict[str, Any]) -> None:
+            custom = dict(draft.get("custom") or {})
+            current_facts = dict(custom.get("otto_host_registration") or {})
+            if current_facts.get("profile_selection") not in (existing, selected):
+                raise ValueError("registered profile selection changed during role pack migration")
+            current_facts["profile_selection"] = copy.deepcopy(selected)
+            custom["otto_host_registration"] = current_facts
+            draft["custom"] = custom
+
+        _check_in(session, record.ref.to_dict(), session.host_principal(), key, retain_role_pin)
+        current = session.owner.graph.current(project)
+        retained = (current.payload.get("custom") or {}).get("otto_host_registration") or {}
+        if retained.get("profile_selection") != selected:
+            raise RuntimeError("role pack selection was not retained before activation")
+        return current, retained
     from otto.agents.host_profiles import profile_for_host, profile_for_run
     chosen = profile_for_run(bundle["run"], host_kind=host["kind"],
                              default_profile=host.get("model_profile") or profile_for_host(host["kind"]))

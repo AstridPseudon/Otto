@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import json
 import os
 import stat
@@ -824,10 +825,42 @@ def _classes_named(pattern_parts):
 
 
 class OneCodexBinding(unittest.TestCase):
+    def test_claude_adapter_requires_selected_reasoning(self):
+        from otto.agents.claude_adapter import ClaudeWorkerAdapter
+        self.assertIs(inspect.signature(ClaudeWorkerAdapter).parameters["requested_reasoning"].default,
+                      inspect.Parameter.empty)
+
+    def test_live_gateway_requires_resolved_model_and_reasoning(self):
+        from otto.agents.gateway import OttoGateway, Responsibility
+        adapter = mock.Mock()
+        gateway = OttoGateway(adapter=adapter)
+        missing = Responsibility("owner", "agent", "invoke", "digest")
+        self.assertEqual(gateway.preflight(missing)["code"], "missing_model_binding")
+        self.assertEqual(gateway.operation(missing, {})["error"]["code"], "missing_model_binding")
+        adapter.invoke.assert_not_called()
+        bound = Responsibility("owner", "agent", "invoke", "digest",
+            requested_model="selected-model", requested_reasoning="medium")
+        self.assertIsNone(gateway.preflight(bound))
+
+    def test_codex_adapter_requires_explicit_resolved_binding(self):
+        from otto.agents.herzchen_adapter import HerzchenAdapterError, HerzchenCodexAdapter
+        args = {"owner": "owner", "source": "/source", "worktree": "/worktree", "launcher": "/launcher"}
+        with self.assertRaisesRegex(HerzchenAdapterError, "requested_model"):
+            HerzchenCodexAdapter(**args)
+        with self.assertRaisesRegex(HerzchenAdapterError, "requested_reasoning"):
+            HerzchenCodexAdapter(**args, requested_model="selected-model")
+        adapter = HerzchenCodexAdapter(**args, requested_model="selected-model", requested_reasoning="medium")
+        self.assertEqual((adapter.requested_model, adapter.requested_reasoning), ("selected-model", "medium"))
+
     def test_live_profile_policy_has_no_python_model_table(self):
         # worker_import_map.py is frozen, digest-checked migration evidence;
         # historical/contract model literals outside these live locations stay intact.
         live = [SRC / "otto" / "agents" / "host_profiles.py",
+                SRC / "otto" / "agents" / "gateway.py",
+                SRC / "otto" / "agents" / "herzchen_adapter.py",
+                SRC / "otto" / "agents" / "claude_adapter.py",
+                SRC / "otto" / "agents" / "orchestrator_route.py",
+                SRC / "otto" / "agents" / "owner_runtime.py",
                 SRC / "otto" / "hostctl" / "config.py",
                 SRC / "otto" / "hostctl" / "service.py"]
         profiles = json.loads((SRC / "otto" / "packs" / "otto-profiles" / "profiles.json").read_text())
@@ -835,9 +868,20 @@ class OneCodexBinding(unittest.TestCase):
                      for role in item["roles"].values()}
         for path in live:
             source = path.read_text("utf-8")
-            self.assertNotIn("PROFILES: Mapping", source, str(path))
+            self.assertNotIn("\nPROFILES: Mapping", source, str(path))
             for model_id in model_ids:
                 self.assertNotIn(json.dumps(model_id), source, str(path))
+            tree = ast.parse(source, filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                defaults = [*zip(node.args.args[-len(node.args.defaults):], node.args.defaults)] if node.args.defaults else []
+                defaults += [(arg, default) for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                             if default is not None]
+                for arg, default in defaults:
+                    if arg.arg in {"requested_model", "requested_reasoning"}:
+                        self.assertFalse(isinstance(default, ast.Constant) and isinstance(default.value, str),
+                                         f"{path}: {node.name}.{arg.arg} has an executable literal default")
         protocol = json.loads((SRC / "otto" / "packs" / "megado" / "protocols" / "megado.json").read_text())
         self.assertNotIn("default_role_bindings", protocol)
         self.assertNotIn("oracle_calls", protocol["default_limits"])

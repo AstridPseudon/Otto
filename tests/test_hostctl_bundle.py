@@ -302,6 +302,93 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         self.assertEqual(selection["name"], selected["name"])
         self.assertEqual(selection["roles"], selected["roles"])
         self.assertEqual(selection["resolved_roles"], registration["configuration"]["roles"])
+        self.assertEqual(registration["configuration"]["role_pack"], selection["role_pack"])
+        self.assertEqual(set(selection["role_pack"]), {"pack_id", "pack_version", "source_revision",
+            "source_inventory_identity", "resource_path", "resource_digest"})
+
+    def test_registration_refuses_declared_or_retained_stale_role_pack(self):
+        from otto.agents import host_profiles
+        from otto.hostctl.register import plan, plan_retained
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        kwargs = {"manager_principal": "manager", "worktree": str(self.root), "tool_entrypoint": "ottoctl"}
+        registration = plan(bundle, profile=selected, **kwargs)
+        facts = registration["custom"]["otto_host_registration"]
+        bad_pin = {**registration["configuration"]["role_pack"], "resource_digest": "stale"}
+        declared = plan({**bundle, "run": {**bundle["run"],
+            "role_pack": registration["configuration"]["role_pack"]}}, profile=selected, **kwargs)
+        self.assertEqual(declared["configuration"]["role_pack"], registration["configuration"]["role_pack"])
+        with self.assertRaisesRegex(ValueError, "role pack pin"):
+            plan({**bundle, "run": {**bundle["run"], "role_pack": bad_pin}}, profile=selected, **kwargs)
+        changed_facts = {**facts, "profile_selection": {**facts["profile_selection"], "role_pack": bad_pin}}
+        host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        with self.assertRaisesRegex(ValueError, "role pack pin"):
+            plan_retained(bundle, facts=changed_facts, host=host, **kwargs)
+        with self.assertRaisesRegex(ValueError, "role pack pin"):
+            plan_retained(bundle, facts={**facts, "profile_selection": {
+                key: value for key, value in facts["profile_selection"].items() if key != "role_pack"}},
+                host=host, **kwargs)
+        with self.assertRaisesRegex(ValueError, "role pack pin"):
+            plan({**bundle, "run": {**bundle["run"], "role_pack": None}}, profile=selected, **kwargs)
+        from otto.portfolio import role_context
+        newer_pin = {**registration["configuration"]["role_pack"], "source_revision": "new-edition"}
+        with mock.patch.object(role_context, "_role_pack", return_value=({"pin": newer_pin}, {})):
+            with self.assertRaisesRegex(ValueError, "role pack pin"):
+                plan_retained(bundle, facts=facts, host=host, **kwargs)
+
+    def test_pending_pre_role_pin_selection_is_persisted_before_activation(self):
+        from otto.agents import host_profiles
+        from otto.hostctl import register as registration_module
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        kwargs = {"manager_principal": "manager", "worktree": str(self.root), "tool_entrypoint": "ottoctl"}
+        planned = registration_module.plan(bundle, profile=selected, **kwargs)
+        prior = {key: value for key, value in
+                 planned["custom"]["otto_host_registration"]["profile_selection"].items()
+                 if key != "role_pack"}
+        facts = {**planned["custom"]["otto_host_registration"], "profile_selection": prior}
+        project = mock.Mock()
+        project.ref = mock.Mock(authority="owner", kind="work.project", id="project", revision="rev-1")
+        project.ref.to_dict.return_value = {"authority": "owner", "kind": "work.project", "id": "project", "revision": "rev-1"}
+        project.lifecycle.value = "pending"
+        project.payload = {"custom": {"otto_host_registration": facts}}
+        graph = mock.Mock()
+        graph.current.return_value = project
+        session = mock.Mock()
+        session.owner.graph = graph
+        writes = []
+
+        def check_in(_session, _ref, _principal, _key, edit, **_kwargs):
+            draft = {"custom": {"otto_host_registration": dict(facts)}}
+            edit(draft)
+            writes.append(draft["custom"]["otto_host_registration"])
+            project.payload = {"custom": {"otto_host_registration": dict(writes[-1])}}
+            return {"outcome": "finished"}
+
+        host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        with mock.patch.object(registration_module, "_check_in", side_effect=check_in):
+            _project, retained = registration_module.ensure_profile_selection(
+                session, project, bundle, host=host, **kwargs)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(retained["profile_selection"]["role_pack"], planned["configuration"]["role_pack"])
+        self.assertEqual(registration_module.plan_retained(bundle, facts=retained, host=host,
+            **kwargs)["configuration"]["role_pack"], planned["configuration"]["role_pack"])
+        with mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not rewrite")):
+            registration_module.ensure_profile_selection(session, project, bundle, host=host, **kwargs)
+        project.payload = {"custom": {"otto_host_registration": facts}}
+        altered = {**bundle, "raw_sha256": {**bundle["raw_sha256"], bundle["run_file"]: "changed"}}
+        with mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not write")):
+            with self.assertRaisesRegex(ValueError, "changed"):
+                registration_module.ensure_profile_selection(session, project, altered, host=host, **kwargs)
+        for invalid in (None, "otto-roles", {"pack_id": "otto-roles"}):
+            project.payload = {"custom": {"otto_host_registration": {**facts,
+                "profile_selection": {**prior, "role_pack": invalid}}}}
+            with self.subTest(invalid=invalid), mock.patch.object(
+                    registration_module, "_check_in", side_effect=AssertionError("must not write")):
+                with self.assertRaisesRegex(ValueError, "role pack pin"):
+                    registration_module.ensure_profile_selection(session, project, bundle, host=host, **kwargs)
 
     def test_registration_accepts_template_resource_pin_and_retains_full_selection(self):
         from otto.agents import host_profiles

@@ -856,8 +856,11 @@ class CanonicalRoleRuntime:
             raise OwnerRoleRuntimeError("fresh logical worker requires owner-authorized invoke without a native session")
         if fresh_role and (role not in {"orchestrator", "project_advisor"} or operation != "invoke" or physical_session_id is not None or not authorized_direct):
             raise OwnerRoleRuntimeError("fresh bounded role requires owner-authorized invoke without a native session")
-        requested_model = target.get("requested_model", due.get("requested_model") or "gpt-5.6-luna")
-        requested_reasoning = target.get("requested_reasoning", due.get("requested_reasoning") or "high")
+        requested_model = target.get("requested_model") or due.get("requested_model")
+        requested_reasoning = target.get("requested_reasoning") or due.get("requested_reasoning")
+        if not (isinstance(requested_model, str) and requested_model.strip()
+                and isinstance(requested_reasoning, str) and requested_reasoning.strip()):
+            raise OwnerRoleRuntimeError("owner due target requires an explicit resolved model binding")
         requested_profile = target.get("requested_profile", due.get("profile", "default"))
         from otto.attention import native_target_identity
         target_session_id = native_target_identity(target)

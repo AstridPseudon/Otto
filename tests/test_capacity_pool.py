@@ -500,7 +500,8 @@ class WorkerPinTests(unittest.TestCase):
         executable = str(Path(sys.executable).resolve())
         pin = LauncherPin(executable, executable, file_digest(Path(executable)), VERSION)
         adapter = ClaudeWorkerAdapter(owner="w", source=str(self.root), worktree=str(self.root),
-            launcher_pin=pin, state_root=str(self.root), requested_model="gpt-test", transport=SimpleNamespace())
+            launcher_pin=pin, state_root=str(self.root), requested_model="gpt-test", requested_reasoning="high",
+            transport=SimpleNamespace())
         self.assertIsNone(adapter.process_pin, "the hook is absent until the owner installs it")
         self.assertIsNone(adapter.native_process_observer)
         marker = lambda process: None

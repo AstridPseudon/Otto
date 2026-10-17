@@ -922,7 +922,7 @@ def test_adapter_pins_follow_the_permission_mode(tmp_path):
     ws, state = _dirs(tmp_path)
     pin = LauncherPin("/x", "/x", "0", VERSION)
     common = dict(owner="o", source=ws, worktree=ws, launcher_pin=pin, state_root=state,
-                  requested_model="claude-sonnet-5-5", authentication="isolated")
+                  requested_model="claude-sonnet-5-5", requested_reasoning="high", authentication="isolated")
     granted = ClaudeWorkerAdapter(**common, worker_mcp=_otto_grant())
     assert granted.pins()["permission_mode"] == "dontAsk"
     bare = ClaudeWorkerAdapter(**common)

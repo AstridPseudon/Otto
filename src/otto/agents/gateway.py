@@ -25,8 +25,8 @@ class Responsibility:
     packet_digest: str
     route: str = "normal"
     physical_session_id: Optional[str] = None
-    requested_model: str = "gpt-5.6-luna"
-    requested_reasoning: str = "high"
+    requested_model: str | None = None
+    requested_reasoning: str | None = None
     requested_profile: str = "default"
     logical_request_key: Optional[str] = None
     project_ref: Any = None
@@ -1092,6 +1092,10 @@ class OttoGateway:
             return {"code": "missing_owner", "message": "owning responsibility is required"}
         if not responsibility.logical_agent_id:
             return {"code": "missing_logical_agent", "message": "logical agent identity is required"}
+        if responsibility.operation in {"invoke", "resume", "send"} and (
+                not _text(responsibility.requested_model)
+                or not _text(responsibility.requested_reasoning)):
+            return {"code": "missing_model_binding", "message": "a resolved model and reasoning are required"}
         if responsibility.operation in {"invoke", "resume", "send"} and not responsibility.packet_digest:
             return {"code": "missing_packet_digest", "message": "input packet digest is required"}
         if responsibility.operation in {"resume", "send", "cancel"} and not responsibility.physical_session_id:

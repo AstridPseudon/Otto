@@ -260,7 +260,7 @@ class ClaudeWorkerAdapter:
     leaf_only = True
 
     def __init__(self, *, owner: str, source: str, worktree: str, launcher_pin: LauncherPin,
-                 state_root: str, requested_model: str, requested_reasoning: str = 'high',
+                 state_root: str, requested_model: str, requested_reasoning: str,
                  transport: ClaudeCliTransport | None = None, authentication: str = 'existing-user',
                  roles: tuple = ('worker',), manager_transport: ClaudeCliTransport | None = None,
                  manager_write_roots: tuple = (), native_caller_socket: str | None = None,

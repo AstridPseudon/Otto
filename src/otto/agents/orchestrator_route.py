@@ -138,8 +138,8 @@ def invoke_assignment(
     required_resource_names: Sequence[str],
     expected_generation: int,
     physical_session_id: str | None = None,
-    requested_model: str = "gpt-5.6-luna",
-    requested_reasoning: str = "high",
+    requested_model: str | None = None,
+    requested_reasoning: str | None = None,
     requested_profile: str = "default",
 ) -> Any:
     """Prepare the exact role brief and invoke the existing gateway once."""
@@ -206,8 +206,8 @@ def compose_owner_resource_herzchen_adapter(
     native_trace_path: str | None = None,
     trusted_thread_reader: Callable[[str], Mapping[str, Any]] | None = None,
     trusted_sessions_root: str | None = None,
-    requested_model: str = "gpt-5.6-luna",
-    requested_reasoning: str = "high",
+    requested_model: str | None = None,
+    requested_reasoning: str | None = None,
 ) -> HerzchenCodexAdapter:
     """Compose the production bridge with a host-owned context capture.
 
@@ -427,7 +427,7 @@ def invoke_canonical_assignment(
     expected_generation: int, required_resource_names: Sequence[str] = (),
     task_reader: Callable[[Mapping[str, Any]], Any] | None = None,
     physical_session_id: str | None = None,
-    requested_model: str = "gpt-5.6-luna", requested_reasoning: str = "high",
+    requested_model: str | None = None, requested_reasoning: str | None = None,
     requested_profile: str = "default",
     direction_context_reader: Any = None,
     operating_context_reader: Callable[[], Mapping[str, Any] | None] | None = None,
