@@ -1,5 +1,10 @@
 import hashlib
+import builtins
+import importlib.util
+import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -13,8 +18,9 @@ from herzchen.evidence.model import (
     PublicationInterrupted,
     load_evidence_pack,
 )
-from herzchen.packs.authoring import PackProvenanceError, read_managed_pack
+from herzchen.packs.authoring import PackAuthoringError, PackProvenanceError, read_managed_pack
 from herzchen.kernel import Store
+from unittest.mock import patch
 
 
 def _public_pack_hooks():
@@ -75,6 +81,52 @@ def _public_managed_pack():
         discoverer=discover,
         loader=load,
     )
+
+
+def _copy_native_pack_tree(destination):
+    """Build the source-tree shape used by the native pack discoverer."""
+    source_root = Path(__file__).parents[1] / "src" / "herzchen"
+    target_root = Path(destination) / "src" / "herzchen"
+    (target_root / "packs").mkdir(parents=True)
+    import shutil
+    shutil.copy2(source_root / "packs" / "authoring.py", target_root / "packs" / "authoring.py")
+    shutil.copytree(source_root / "packs" / "evidence_resource_pack",
+                    target_root / "packs" / "evidence_resource_pack")
+    repo_root = Path(destination)
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    subprocess.run(["git", "remote", "add", "github", "https://example.invalid/packload.git"],
+                   cwd=repo_root, check=True)
+    subprocess.run(["git", "add", "src/herzchen/packs"], cwd=repo_root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=PACKLOAD tests", "-c", "user.email=packload@example.invalid",
+         "commit", "-qm", "fixture"],
+        cwd=repo_root,
+        check=True,
+    )
+    return target_root
+
+
+def _copy_installed_runtime_source(controller_root):
+    """Build an installed controller tree authenticated by runtime-manifest.json."""
+    import shutil
+
+    source_root = Path(__file__).parents[1] / "src" / "herzchen"
+    target_root = Path(controller_root) / "runtime-source" / "herzchen"
+    packs_root = target_root / "packs"
+    packs_root.mkdir(parents=True)
+    shutil.copy2(source_root / "packs" / "authoring.py", packs_root / "authoring.py")
+    shutil.copytree(source_root / "packs" / "evidence_resource_pack",
+                    packs_root / "evidence_resource_pack")
+    files = {}
+    for path in sorted(packs_root.rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(target_root.parent).as_posix()
+            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (Path(controller_root) / "runtime-manifest.json").write_text(json.dumps({
+        "source_commit": "f1cf6354767b4d46ec933725ef5ceafeecd5152c",
+        "files": files,
+    }), encoding="utf-8")
+    return target_root
 
 
 class EvidenceLifecycleTests(unittest.TestCase):
@@ -240,6 +292,120 @@ class EvidenceLifecycleTests(unittest.TestCase):
         incomplete = [item.to_dict() for item in pack.resources[:-1]]
         with self.assertRaises(EvidencePackError):
             pack.select(incomplete)
+
+    def test_native_evidence_load_does_not_import_astrid(self):
+        from herzchen.evidence.model import load_evidence_pack
+
+        real_import = builtins.__import__
+
+        def reject_astrid(name, *args, **kwargs):
+            if name == "astrid" or name.startswith("astrid."):
+                raise AssertionError("Herzchen attempted to import Astrid")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=reject_astrid):
+            pack = load_evidence_pack(project_root=Path(__file__).parents[1])
+        self.assertEqual(pack.pack_id, "evidence")
+        self.assertEqual(pack.source.source_kind, "managed")
+        self.assertEqual(len(pack.resources), 10)
+
+    def test_installed_runtime_source_loads_without_astrid_and_rejects_tampering(self):
+        from herzchen.evidence.model import load_evidence_pack
+        from herzchen.packs import authoring
+
+        with tempfile.TemporaryDirectory() as temporary:
+            controller_root = Path(temporary)
+            runtime_root = _copy_installed_runtime_source(controller_root)
+            copied_authoring = runtime_root / "packs" / "authoring.py"
+            resource = runtime_root / "packs" / "evidence_resource_pack" / "schemas" / "evidence.json"
+            real_import = builtins.__import__
+
+            def reject_astrid(name, *args, **kwargs):
+                if name == "astrid" or name.startswith("astrid."):
+                    raise AssertionError("Herzchen attempted to import Astrid")
+                return real_import(name, *args, **kwargs)
+
+            with patch.object(authoring, "__file__", str(copied_authoring)):
+                with patch("builtins.__import__", side_effect=reject_astrid):
+                    pack = load_evidence_pack(project_root=controller_root)
+                self.assertEqual(pack.pack_id, "evidence")
+                self.assertEqual(pack.source.source_revision, "f1cf6354767b4d46ec933725ef5ceafeecd5152c")
+
+                resource.write_bytes(resource.read_bytes() + b" ")
+                with self.assertRaises(EvidencePackError):
+                    load_evidence_pack(project_root=controller_root)
+
+    @unittest.skipUnless(importlib.util.find_spec("astrid") is not None,
+                         "Astrid is not installed in this test environment")
+    def test_native_source_provenance_matches_astrid_for_same_pack(self):
+        from astrid.core.pack.discovery import discover_canonical_pack_metadata
+        from astrid.core.pack.loader import load_pack_manifest
+        from astrid.core.pack.source_setup import _tree_digest
+        from herzchen.packs import authoring
+
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as state_temporary:
+            copied_herzchen = _copy_native_pack_tree(temporary)
+            repo_root = Path(temporary)
+            pack_root = copied_herzchen / "packs" / "evidence_resource_pack"
+            copied_authoring = copied_herzchen / "packs" / "authoring.py"
+            revision = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            tree_digest = _tree_digest(pack_root)
+            manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
+            state_path = Path(state_temporary) / "astrid-source-state.json"
+            state_path.write_text(json.dumps({
+                "version": 1,
+                "active": {
+                    "evidence": {
+                        "pack_id": "evidence",
+                        "pack_root": str(pack_root.resolve()),
+                        "repository": "https://example.invalid/packload.git",
+                        "revision": revision,
+                        "pack_subpath": pack_root.relative_to(repo_root).as_posix(),
+                        "manifest_sha256": manifest_digest,
+                        "tree_sha256": tree_digest,
+                        "source_kind": "managed",
+                    }
+                },
+                "cached": {},
+                "disabled": [],
+            }), encoding="utf-8")
+            with patch.dict(os.environ, {"ASTRID_SOURCE_STATE": str(state_path)}), \
+                    patch.object(authoring, "__file__", str(copied_authoring)):
+                astrid_items = discover_canonical_pack_metadata(project_root=repo_root)
+                matching = [item for item in astrid_items if item.id == "evidence"]
+                self.assertEqual(len(matching), 1)
+                self.assertEqual(matching[0].source_kind, "managed")
+                astrid_pack = read_managed_pack(
+                    "evidence", project_root=repo_root,
+                    discoverer=lambda *, project_root: matching,
+                    loader=load_pack_manifest,
+                )
+                native_pack = read_managed_pack("evidence", project_root=repo_root)
+        self.assertEqual(native_pack.source.to_dict(), astrid_pack.source.to_dict())
+
+    def test_native_loader_refuses_tampered_manifest_and_tree(self):
+        from herzchen.packs import authoring
+
+        with tempfile.TemporaryDirectory() as temporary:
+            copied_herzchen = _copy_native_pack_tree(temporary)
+            copied_pack = copied_herzchen / "packs" / "evidence_resource_pack"
+            copied_authoring = copied_herzchen / "packs" / "authoring.py"
+            with patch.object(authoring, "__file__", str(copied_authoring)):
+                manifest = copied_pack / "pack.yaml"
+                original = manifest.read_bytes()
+                manifest.write_bytes(original + b"\n# tampered\n")
+                with self.assertRaises(PackAuthoringError):
+                    read_managed_pack("evidence", project_root=Path(temporary))
+                manifest.write_bytes(original)
+
+                resource = copied_pack / "schemas" / "evidence.json"
+                original_resource = resource.read_bytes()
+                resource.write_bytes(original_resource + b" ")
+                with self.assertRaises(PackAuthoringError):
+                    read_managed_pack("evidence", project_root=Path(temporary))
 
 
 if __name__ == "__main__":

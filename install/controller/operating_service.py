@@ -64,6 +64,8 @@ def native_body_capability(state,owner,store):
  from herzchen.contracts import ResourceRef
  from herzchen.evidence.model import load_evidence_pack
  from herzchen.evidence.commands import EvidenceCommandHandler
+ from astrid.core.pack.discovery import discover_canonical_pack_metadata
+ from astrid.core.pack.loader import load_pack_manifest
  from otto.agents.retained_native import RetainedNativeBodies
  selected=owner.content.read(ResourceRef.from_dict(state['native_evidence_selection_ref']))['content']
  # This fixed host capability is issued only from the current adopted BASE.
@@ -74,7 +76,8 @@ def native_body_capability(state,owner,store):
  from herzchen.content.instructions import validate_instruction_content
  if not any(x['resource_ref']==state['guide_ref'] and x['content_digest']==validate_instruction_content(guide) and x['required'] is True for x in assignment.payload['resource_adoptions']):raise RuntimeError('native Evidence BASE is not currently adopted')
  if state['native_evidence_selection_ref'] not in guide['supporting_refs']:raise RuntimeError('native Evidence selection is not an adopted supporting resource')
- pack=load_evidence_pack(project_root=WORK)
+ pack=load_evidence_pack(project_root=WORK,discoverer=discover_canonical_pack_metadata,
+  loader=load_pack_manifest)
  if selected.get('schema')!='otto.owner.native-evidence-composition.v1' or selected.get('source')!=pack.source.to_dict() or selected.get('payload_root')!=str(NATIVE_EVIDENCE_ROOT) or selected.get('runtime_source_commit')!=verify_install().get('adopted_context_source_commit',verify_install()['source_commit']):raise RuntimeError('current native Evidence source selection differs')
  import stat
  for private in (NATIVE_EVIDENCE_ROOT.parent.parent,NATIVE_EVIDENCE_ROOT.parent,NATIVE_EVIDENCE_ROOT):

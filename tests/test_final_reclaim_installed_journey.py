@@ -71,7 +71,11 @@ class FinalCorrectionInstalledJourneyTests(unittest.TestCase):
         self.assertEqual(active["tree_sha256"], "328a1827feae8f8a0ed4fc5cf765773ca68defaa87e2d4ef95c47aca41d4e30f")
         self.assertEqual(active["manifest_sha256"], "abfffa505a45c22fb5d7e86146fc10c018cbd6e4cfccb75ba05ef6b24457e459")
 
-        pack = load_evidence_pack(project_root=PACK_ROOT)
+        from astrid.core.pack.discovery import discover_canonical_pack_metadata
+        from astrid.core.pack.loader import load_pack_manifest
+        pack = load_evidence_pack(project_root=PACK_ROOT,
+                                  discoverer=discover_canonical_pack_metadata,
+                                  loader=load_pack_manifest)
         actual_pins = {item.path: item.digest for item in pack.resources}
         self.assertEqual(actual_pins, EXPECTED_RESOURCE_PINS)
         selection = pack.select([item.to_dict() for item in pack.resources])

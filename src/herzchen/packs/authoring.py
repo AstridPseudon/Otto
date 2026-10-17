@@ -1,9 +1,9 @@
 """Managed pack compatibility and content-only authoring.
 
-The reader deliberately delegates pack admission to Astrid's public v2
-loader/discovery path.  The authoring handler only snapshots already-admitted
-resource bytes through the supplied FND store; it never interprets resource
-code, creates a database, or owns a second writer.
+Packs shipped in Herzchen's own source tree are admitted here without importing
+Astrid. Explicit discovery/loader adapters remain available for external packs.
+The authoring handler only snapshots admitted resource bytes through the
+supplied FND store; it never creates a database or owns a second writer.
 """
 
 from __future__ import annotations
@@ -11,7 +11,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
@@ -34,6 +36,25 @@ MANAGED_PACK_KIND = "managed_pack"
 MANAGED_PACK_STREAM = "managed-pack"
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
 _HEX = re.compile(r"^[0-9a-f]+$")
+_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _read_json_manifest(path: Path) -> dict[str, Any]:
+    value = json.loads(
+        path.read_text(encoding="utf-8"), object_pairs_hook=_json_object_without_duplicate_keys
+    )
+    if not isinstance(value, dict):
+        raise ValueError("pack manifest must be a JSON object")
+    return value
 
 
 def domain_contribution() -> DomainContribution:
@@ -248,15 +269,598 @@ def _validate_relative_path(path: Any) -> str:
     return path
 
 
-def _public_apis() -> tuple[PublicPackDiscoverer, PublicPackLoader]:
+def _validate_source_tree_path(path: Any) -> str:
+    if (not isinstance(path, str) or not _SAFE_PATH.fullmatch(path)
+            or any(part in {".", ".."} for part in path.split("/"))):
+        raise PackPathError("managed source tree paths must be safe POSIX-relative paths")
+    return path
+
+
+def _git(root: Path, *args: str) -> str:
     try:
-        from astrid.core.pack.discovery import discover_canonical_pack_metadata
-        from astrid.core.pack.loader import load_pack_manifest
-    except ImportError as exc:  # pragma: no cover - exercised by a missing product install
-        raise PackLoaderUnavailableError(
-            "Astrid public managed discovery and pack loader are required"
-        ) from exc
-    return discover_canonical_pack_metadata, load_pack_manifest
+        result = subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True,
+            check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PackProvenanceError("native managed packs require a verifiable Git source tree") from exc
+    if result.returncode:
+        raise PackProvenanceError("native managed packs require a verifiable Git source tree")
+    return result.stdout.strip()
+
+
+def _git_blob(root: Path, revision: str, name: str) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "show", f"{revision}:{name}"],
+            capture_output=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PackProvenanceError("native managed source Git object could not be verified") from exc
+    if result.returncode:
+        raise PackProvenanceError("native managed source Git object could not be verified")
+    return result.stdout
+
+
+def _native_repository(repo_root: Path) -> str:
+    """Choose the canonical upstream remote when present, then the checkout remote."""
+    remotes = _git(repo_root, "remote").splitlines()
+    for name in ("github", "origin", *remotes):
+        if name in remotes:
+            try:
+                value = _git(repo_root, "remote", "get-url", name)
+            except PackProvenanceError:
+                continue
+            if value:
+                return value
+    # A source archive or isolated fixture may have no configured remote. Keep
+    # the inventory field concrete and stable for that checkout.
+    return repo_root.resolve().as_uri()
+
+
+def _native_tree(repo_root: Path, pack_root: Path) -> tuple[str, str, str]:
+    """Verify the checkout against HEAD and return revision, tree digest, subpath."""
+    if pack_root.is_symlink() or not pack_root.is_dir():
+        raise PackProvenanceError("native managed pack root must be a real directory")
+    for path in pack_root.rglob("*"):
+        if path.is_symlink():
+            raise PackProvenanceError(f"native managed pack contains a symlink: {path.relative_to(pack_root)}")
+    revision = _git(repo_root, "rev-parse", "HEAD").lower()
+    if len(revision) not in {40, 64} or _HEX.fullmatch(revision) is None:
+        raise PackProvenanceError("native source revision is not a full Git object identity")
+    try:
+        subpath = pack_root.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise PackProvenanceError("native managed pack must be inside the Herzchen source tree") from exc
+    status = _git(repo_root, "status", "--porcelain=v1", "--untracked-files=all", "--", subpath)
+    if status:
+        raise PackProvenanceError(f"native managed source tree has uncommitted changes: {subpath}")
+
+    tracked = _git(repo_root, "ls-files", "-z", "--", subpath).split("\0")
+    digest = hashlib.sha256()
+    files = 0
+    root = pack_root.resolve()
+    for name in sorted(item for item in tracked if item):
+        path = repo_root / name
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise PackProvenanceError(f"native pack contains a non-regular file: {relative}")
+        data = path.read_bytes()
+        # Read the immutable Git object too. This catches tampering even if a
+        # file's status is hidden by unusual index or worktree configuration.
+        if _git_blob(repo_root, revision, name) != data:
+            raise PackProvenanceError(f"native managed source differs from Git HEAD: {relative}")
+        encoded = relative.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+        files += 1
+    if files == 0:
+        raise PackProvenanceError("native managed pack has no tracked source files")
+    return revision, digest.hexdigest(), subpath
+
+
+def _astrid_recorded_tree_digest(pack_root: Path) -> str:
+    """Reproduce Astrid's source_setup._tree_digest path selection exactly.
+
+    `_native_tree` separately validates the complete tracked tree against Git
+    object bytes and a clean checkout, so the compatibility calculation can
+    preserve even the reference's nested-root path behavior without weakening
+    tamper refusal.
+    """
+    root = pack_root.resolve()
+    try:
+        git_root = Path(_git(root, "rev-parse", "--show-toplevel")).resolve()
+        tracked = _git(root, "ls-files", "-z").split("\0")
+        paths: list[tuple[str, Path]] = []
+        for item in tracked:
+            if not item:
+                continue
+            path = git_root / item
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if path.is_file():
+                paths.append((relative.as_posix(), path))
+    except PackProvenanceError:
+        paths = [
+            (path.relative_to(root).as_posix(), path)
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and ".git" not in path.parts
+        ]
+    digest = hashlib.sha256()
+    for relative_name, path in sorted(paths):
+        relative = relative_name.encode()
+        data = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def _runtime_manifest_context(module_pack_root: Path) -> tuple[Path, Path, dict[str, Any]] | None:
+    controller_root = module_pack_root.parents[2]
+    source_root = controller_root / "runtime-source"
+    if source_root.is_symlink():
+        raise PackProvenanceError("installed runtime-source root must not be a symlink")
+    if module_pack_root.resolve() != (source_root / "herzchen" / "packs").resolve():
+        return None
+    manifest_path = controller_root / "runtime-manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise PackProvenanceError("installed Herzchen packs require a pinned runtime-manifest.json")
+    try:
+        manifest = _read_json_manifest(manifest_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PackProvenanceError("installed runtime manifest is invalid") from exc
+    revision = manifest.get("source_commit")
+    pins = manifest.get("files")
+    if (not isinstance(revision, str) or len(revision) not in {40, 64}
+            or _HEX.fullmatch(revision.lower()) is None or not isinstance(pins, dict)):
+        raise PackProvenanceError("installed runtime manifest has no full source pin")
+    return controller_root, source_root, manifest
+
+
+def _runtime_tree(
+    source_root: Path, pack_root: Path, manifest: Mapping[str, Any]
+) -> tuple[str, str, str]:
+    revision = str(manifest["source_commit"]).lower()
+    pins = manifest["files"]
+    if not isinstance(pins, Mapping):
+        raise PackProvenanceError("installed runtime manifest file pins are invalid")
+    try:
+        pack_relative = pack_root.resolve().relative_to(source_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise PackProvenanceError("installed managed pack escapes runtime-source") from exc
+    prefix = pack_relative + "/"
+    if pack_root.is_symlink() or not pack_root.is_dir():
+        raise PackProvenanceError("installed managed pack root is unavailable or symlinked")
+    for path in pack_root.rglob("*"):
+        if path.is_symlink():
+            raise PackProvenanceError(f"installed managed pack contains a symlink: {path.relative_to(pack_root)}")
+    files: dict[str, bytes] = {}
+    for raw_name, raw_digest in pins.items():
+        if not isinstance(raw_name, str) or not raw_name.startswith(prefix):
+            continue
+        relative = raw_name[len(prefix):]
+        _validate_source_tree_path(relative)
+        if (not isinstance(raw_digest, str) or len(raw_digest) != 64
+                or _HEX.fullmatch(raw_digest.lower()) is None):
+            raise PackProvenanceError(f"installed runtime manifest has an invalid file pin: {raw_name}")
+        path = source_root / raw_name
+        if path.is_symlink() or not path.is_file():
+            raise PackProvenanceError(f"installed managed source file is unavailable: {raw_name}")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != raw_digest.lower():
+            raise PackProvenanceError(f"installed managed source differs from runtime pin: {raw_name}")
+        files[relative] = data
+    actual_files = {
+        path.relative_to(pack_root).as_posix()
+        for path in pack_root.rglob("*") if path.is_file()
+    }
+    if actual_files != set(files):
+        raise PackProvenanceError("installed managed pack files do not match the runtime manifest inventory")
+    if not files:
+        raise PackProvenanceError("installed runtime manifest does not pin this managed pack")
+    digest = hashlib.sha256()
+    for relative, data in sorted(files.items()):
+        encoded = relative.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return revision, digest.hexdigest(), pack_relative
+
+
+def _runtime_pack_is_fully_pinned(source_root: Path, pack_root: Path, manifest: Mapping[str, Any]) -> bool:
+    try:
+        pack_relative = pack_root.resolve().relative_to(source_root.resolve()).as_posix()
+    except ValueError:
+        return False
+    pins = manifest.get("files")
+    if not isinstance(pins, Mapping):
+        return False
+    prefix = pack_relative + "/"
+    pinned = {name[len(prefix):] for name in pins if isinstance(name, str) and name.startswith(prefix)}
+    actual = {
+        path.relative_to(pack_root).as_posix()
+        for path in pack_root.rglob("*") if path.is_file() and not path.is_symlink()
+    }
+    return bool(actual) and actual == pinned
+
+
+def _runtime_source_record(
+    pack_id: str, pack_root: Path, manifest_digest: str,
+    context: tuple[Path, Path, dict[str, Any]],
+) -> ManagedSourceIdentity:
+    controller_root, source_root, runtime_manifest = context
+    revision, tree_digest, subpath = _runtime_tree(source_root, pack_root, runtime_manifest)
+    module_path = Path(__file__).resolve()
+    try:
+        module_relative = module_path.relative_to(source_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise PackProvenanceError("installed authoring module escapes runtime-source") from exc
+    module_pin = runtime_manifest["files"].get(module_relative)
+    if not isinstance(module_pin, str) or hashlib.sha256(module_path.read_bytes()).hexdigest() != module_pin.lower():
+        raise PackProvenanceError("installed authoring module differs from runtime manifest pin")
+    repository = "runtime-manifest:" + str(runtime_manifest["source_commit"])
+    entries: list[dict[str, str]] = []
+    for candidate in sorted(Path(__file__).resolve().parent.iterdir(), key=lambda item: item.name):
+        candidate_manifest = candidate / "pack.yaml"
+        if (candidate.is_symlink() or not candidate.is_dir() or not candidate_manifest.is_file()
+                or not _runtime_pack_is_fully_pinned(source_root, candidate, runtime_manifest)):
+            continue
+        try:
+            data = _read_json_manifest(candidate_manifest)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise PackProvenanceError(f"installed pack manifest is invalid: {candidate}") from exc
+        candidate_id = data.get("id")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            raise PackProvenanceError(f"installed pack has no valid ID: {candidate}")
+        candidate_revision, candidate_tree, candidate_subpath = _runtime_tree(source_root, candidate, runtime_manifest)
+        candidate_digest = hashlib.sha256(candidate_manifest.read_bytes()).hexdigest()
+        entries.append({
+            "pack_id": candidate_id,
+            "pack_root": str(candidate.resolve()),
+            "repository": repository,
+            "revision": candidate_revision,
+            "pack_subpath": candidate_subpath,
+            "manifest_sha256": candidate_digest,
+            "tree_sha256": candidate_tree,
+            "source_kind": "managed",
+        })
+        if candidate.resolve() == pack_root.resolve() and (
+            candidate_id != pack_id or candidate_digest != manifest_digest or candidate_tree != tree_digest
+        ):
+            raise PackProvenanceError("installed managed pack changed during source inventory")
+    if not any(item["pack_id"] == pack_id and item["pack_root"] == str(pack_root.resolve()) for item in entries):
+        raise PackProvenanceError(f"installed runtime manifest does not pin managed pack {pack_id!r}")
+    if len({item["pack_id"] for item in entries}) != len(entries):
+        raise PackProvenanceError("installed managed pack inventory contains duplicate IDs")
+    inventory_identity = hashlib.sha256(
+        json.dumps(sorted(entries, key=lambda item: item["pack_id"]), sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return ManagedSourceIdentity(
+        pack_id=pack_id,
+        source_kind="managed",
+        source_revision=revision,
+        source_tree_sha256=tree_digest,
+        source_manifest_sha256=manifest_digest,
+        source_inventory_identity=inventory_identity,
+        pack_root=str(pack_root.resolve()),
+        manifest_path=str((pack_root / "pack.yaml").resolve()),
+    )
+
+
+def _native_source_record(pack_id: str, pack_root: Path, manifest_digest: str) -> ManagedSourceIdentity:
+    module_pack_root = Path(__file__).resolve().parent
+    repo_root = module_pack_root.parents[2]
+    runtime_context = _runtime_manifest_context(module_pack_root)
+    if runtime_context is not None:
+        return _runtime_source_record(pack_id, pack_root, manifest_digest, runtime_context)
+    expected_source_packs = repo_root / "src" / "herzchen" / "packs"
+    if module_pack_root != expected_source_packs.resolve():
+        raise PackProvenanceError("native pack loader is not running from Herzchen's source tree")
+    revision, verified_tree_digest, _ = _native_tree(repo_root, pack_root)
+    tree_digest = _astrid_recorded_tree_digest(pack_root)
+    repository = _native_repository(repo_root)
+    source_entries: list[dict[str, str]] = []
+    matching_ids: set[str] = set()
+    for candidate in sorted(module_pack_root.iterdir(), key=lambda item: item.name):
+        candidate_manifest = candidate / "pack.yaml"
+        if candidate.is_symlink() or not candidate.is_dir() or not candidate_manifest.is_file():
+            continue
+        try:
+            candidate_data = _read_json_manifest(candidate_manifest)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise PackProvenanceError(f"native pack inventory contains an invalid manifest: {candidate}") from exc
+        candidate_id = candidate_data.get("id") if isinstance(candidate_data, dict) else None
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            raise PackProvenanceError(f"native pack inventory contains a manifest without an ID: {candidate}")
+        candidate_revision, candidate_verified_tree, candidate_subpath = _native_tree(repo_root, candidate)
+        candidate_tree = _astrid_recorded_tree_digest(candidate)
+        if candidate_revision != revision:
+            raise PackProvenanceError("native packs resolved to different source revisions")
+        candidate_manifest_digest = hashlib.sha256(candidate_manifest.read_bytes()).hexdigest()
+        source_entries.append({
+            "pack_id": candidate_id,
+            "pack_root": str(candidate.resolve()),
+            "repository": repository,
+            "revision": candidate_revision,
+            "pack_subpath": candidate_subpath,
+            "manifest_sha256": candidate_manifest_digest,
+            "tree_sha256": candidate_tree,
+            "source_kind": "managed",
+        })
+        if candidate_id == pack_id and candidate.resolve() == pack_root.resolve():
+            matching_ids.add(candidate_id)
+            if candidate_manifest_digest != manifest_digest or candidate_verified_tree != verified_tree_digest:
+                raise PackProvenanceError("native pack changed while its source inventory was built")
+    if matching_ids != {pack_id} or len({item["pack_id"] for item in source_entries}) != len(source_entries):
+        raise PackProvenanceError("native pack inventory has missing or duplicate pack identities")
+    inventory_identity = _configured_inventory_identity(
+        pack_id, pack_root, revision, tree_digest, manifest_digest, source_entries
+    )
+    return ManagedSourceIdentity(
+        pack_id=pack_id,
+        source_kind="managed",
+        source_revision=revision,
+        source_tree_sha256=tree_digest,
+        source_manifest_sha256=manifest_digest,
+        source_inventory_identity=inventory_identity,
+        pack_root=str(pack_root.resolve()),
+        manifest_path=str((pack_root / "pack.yaml").resolve()),
+    )
+
+
+def _configured_inventory_identity(
+    pack_id: str,
+    pack_root: Path,
+    revision: str,
+    tree_digest: str,
+    manifest_digest: str,
+    fallback_entries: list[dict[str, str]],
+) -> str:
+    """Use a configured Astrid inventory only when it names this exact root.
+
+    This reads only an explicitly configured state path. It does not probe the
+    user's default Astrid state location, and the native loader itself never
+    imports Astrid.
+    """
+    raw_state_path = os.environ.get("ASTRID_SOURCE_STATE", "").strip()
+    if not raw_state_path:
+        entries = sorted(fallback_entries, key=lambda item: item["pack_id"])
+        payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+    state_candidate = Path(raw_state_path).expanduser()
+    if state_candidate.is_symlink():
+        raise PackProvenanceError("configured managed-source state must not be a symlink")
+    state_path = state_candidate.resolve()
+    if not state_path.is_file():
+        raise PackProvenanceError("configured managed-source state is unavailable")
+    try:
+        state = _read_json_manifest(state_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PackProvenanceError("configured managed-source state is invalid") from exc
+    if (type(state.get("version")) is not int or state["version"] != 1
+            or not isinstance(state.get("active"), dict)
+            or not isinstance(state.get("disabled", []), list)):
+        raise PackProvenanceError("configured managed-source state has an invalid shape")
+    disabled = {str(item) for item in state.get("disabled", [])}
+    records: list[dict[str, str]] = []
+    target: dict[str, str] | None = None
+    for key, value in sorted(state["active"].items()):
+        if key in disabled:
+            continue
+        required = ("pack_id", "pack_root", "repository", "revision", "pack_subpath",
+                    "manifest_sha256", "tree_sha256")
+        if (not isinstance(value, dict)
+                or any(not isinstance(value.get(field), str) or not value[field] for field in required)):
+            raise PackProvenanceError("configured managed-source record is incomplete")
+        pack_root_value = Path(value["pack_root"]).expanduser()
+        if not pack_root_value.is_absolute() or pack_root_value.is_symlink():
+            raise PackProvenanceError("configured managed-source pack root must not be a symlink")
+        pack_id_value = value["pack_id"].strip()
+        revision_value = value["revision"].strip().lower()
+        manifest_value = value["manifest_sha256"].strip().lower()
+        tree_value = value["tree_sha256"].strip().lower()
+        if (not pack_id_value or "/" in pack_id_value or "\\" in pack_id_value
+                or pack_id_value.startswith(".") or len(revision_value) not in {40, 64}
+                or _HEX.fullmatch(revision_value) is None
+                or len(manifest_value) != 64 or _HEX.fullmatch(manifest_value) is None
+                or len(tree_value) != 64 or _HEX.fullmatch(tree_value) is None):
+            raise PackProvenanceError("configured managed-source record has invalid immutable identities")
+        subpath_value = value["pack_subpath"].strip() or "."
+        if (subpath_value != "." and (subpath_value.startswith("/") or "\\" in subpath_value
+                                        or any(part in {"", ".", ".."} for part in subpath_value.split("/")))):
+            raise PackProvenanceError("configured managed-source record has an unsafe pack_subpath")
+        record = {
+            "pack_id": pack_id_value,
+            "pack_root": str(pack_root_value.resolve()),
+            "repository": value["repository"].strip(),
+            "revision": revision_value,
+            "pack_subpath": subpath_value,
+            "manifest_sha256": manifest_value,
+            "tree_sha256": tree_value,
+        }
+        if not record["repository"]:
+            raise PackProvenanceError("configured managed-source repository is blank")
+        record["source_kind"] = "managed"
+        if value["pack_id"] != key:
+            raise PackProvenanceError("configured managed-source key does not match its pack ID")
+        records.append(record)
+        if (record["pack_id"] == pack_id
+                and Path(record["pack_root"]).expanduser().resolve() == pack_root.resolve()):
+            target = record
+    if target is None:
+        entries = sorted(fallback_entries, key=lambda item: item["pack_id"])
+        payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+    for record in records:
+        _verify_configured_source_record(record)
+    expected = {
+        "revision": revision,
+        "manifest_sha256": manifest_digest,
+        "tree_sha256": tree_digest,
+        "source_kind": "managed",
+    }
+    if any(target[field] != expected_value for field, expected_value in expected.items()):
+        raise PackProvenanceError("configured managed-source record does not match native pack bytes")
+    payload = json.dumps(sorted(records, key=lambda item: item["pack_id"]),
+                         sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _verify_configured_source_record(record: Mapping[str, str]) -> None:
+    """Verify one configured active source exactly as far as its record allows."""
+    pack_root = Path(record["pack_root"])
+    subpath = record["pack_subpath"]
+    checkout = pack_root
+    if subpath != ".":
+        for _ in subpath.split("/"):
+            checkout = checkout.parent
+    if checkout.is_symlink() or not checkout.is_dir() or pack_root.is_symlink() or not pack_root.is_dir():
+        raise PackProvenanceError("configured managed-source checkout is unavailable or symlinked")
+    expected_root = checkout if subpath == "." else checkout.joinpath(*subpath.split("/"))
+    if expected_root.resolve() != pack_root.resolve():
+        raise PackProvenanceError("configured managed-source subpath does not resolve to its pack root")
+    if _git(checkout, "rev-parse", "HEAD").lower() != record["revision"]:
+        raise PackProvenanceError("configured managed-source revision differs from its checkout")
+    if _git(checkout, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise PackProvenanceError("configured managed-source checkout has uncommitted changes")
+    manifest_path = pack_root / "pack.yaml"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise PackProvenanceError("configured managed-source manifest is unavailable or symlinked")
+    manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    revision, _verified_tree_digest, actual_subpath = _native_tree(checkout, pack_root)
+    tree_digest = _astrid_recorded_tree_digest(pack_root)
+    if (revision != record["revision"] or actual_subpath != record["pack_subpath"]
+            or manifest_digest != record["manifest_sha256"]
+            or tree_digest != record["tree_sha256"]):
+        raise PackProvenanceError("configured managed-source digests do not match its checkout")
+
+
+def _native_manifest(pack_root: Path, expected_pack_id: str) -> tuple[dict[str, Any], tuple[tuple[str, str, Path], ...]]:
+    manifest_path = pack_root / "pack.yaml"
+    if pack_root.is_symlink() or manifest_path.is_symlink() or not manifest_path.is_file():
+        raise PackProvenanceError("native managed pack requires a regular pack.yaml")
+    try:
+        manifest = _read_json_manifest(manifest_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PackAuthoringError(f"native pack manifest is not valid JSON: {exc}") from exc
+    if type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 2:
+        raise PackAuthoringError("native loader requires a v2 pack manifest")
+    if "database" in manifest:
+        raise PackAuthoringError("database contributions are forbidden in managed packs")
+    if manifest.get("id") != expected_pack_id:
+        raise PackAuthoringError("native pack manifest ID does not match the requested pack")
+    if not isinstance(manifest.get("name"), str) or not manifest["name"].strip():
+        raise PackAuthoringError("native pack manifest requires a non-blank name")
+    if not isinstance(manifest.get("version"), str) or not _VERSION.fullmatch(manifest["version"]):
+        raise PackAuthoringError("native pack manifest requires a major.minor.patch version")
+    declarations = manifest.get("resources")
+    if not isinstance(declarations, list) or not declarations:
+        raise PackContentError("native managed pack declares no resources")
+    result: list[tuple[str, str, Path]] = []
+    seen: set[str] = set()
+    for declaration in declarations:
+        if not isinstance(declaration, dict):
+            raise PackAuthoringError("native resource declaration must be an object")
+        path = _validate_relative_path(declaration.get("path"))
+        kind = declaration.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            raise PackAuthoringError(f"native resource kind is invalid for {path}")
+        if path in seen:
+            raise PackContentError(f"duplicate resource path: {path}")
+        seen.add(path)
+        resolved = pack_root / path
+        component = resolved
+        while component == pack_root or pack_root in component.parents:
+            if component.is_symlink():
+                raise PackPathError(f"resource path contains a symlink: {path}")
+            if component == pack_root:
+                break
+            component = component.parent
+        if not resolved.is_file():
+            raise PackPathError(f"resource is not a regular non-symlink file: {path}")
+        try:
+            resolved.resolve().relative_to(pack_root.resolve())
+        except ValueError as exc:
+            raise PackPathError(f"resource escapes the native pack root: {path}") from exc
+        result.append((path, kind, resolved))
+    return manifest, tuple(result)
+
+
+def _read_native_managed_pack(pack_id: str, project_root: str | Path) -> ManagedPack:
+    module_pack_root = Path(__file__).resolve().parent
+    repo_root = module_pack_root.parents[2]
+    supplied_root = Path(project_root).expanduser().resolve()
+    if supplied_root != repo_root.resolve():
+        raise PackProvenanceError("native managed packs are available only from this Herzchen checkout")
+    candidates: list[Path] = []
+    for child in sorted(module_pack_root.iterdir(), key=lambda item: item.name):
+        if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+            continue
+        manifest_path = child / "pack.yaml"
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            continue
+        try:
+            value = _read_json_manifest(manifest_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise PackAuthoringError(f"native pack manifest is invalid: {manifest_path}") from exc
+        if isinstance(value, dict) and value.get("id") == pack_id:
+            candidates.append(child)
+    if len(candidates) != 1:
+        raise PackProvenanceError(f"expected one native managed source for {pack_id!r}, found {len(candidates)}")
+    pack_root = candidates[0]
+    manifest, declarations = _native_manifest(pack_root, pack_id)
+    manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
+    source = _native_source_record(pack_id, pack_root, manifest_digest)
+    runtime_context = _runtime_manifest_context(module_pack_root)
+    # Re-read admission after provenance calculation so a concurrent edit is
+    # refused before any resource bytes enter the returned pack.
+    current_manifest, current_declarations = _native_manifest(pack_root, pack_id)
+    if current_manifest != manifest or current_declarations != declarations:
+        raise PackProvenanceError("native managed pack changed during admission")
+    resources: list[ManagedResource] = []
+    for path, kind, resolved in declarations:
+        content = resolved.read_bytes()
+        if runtime_context is not None:
+            _controller_root, source_root, runtime_manifest = runtime_context
+            relative_to_source = resolved.resolve().relative_to(source_root.resolve()).as_posix()
+            expected_digest = runtime_manifest["files"].get(relative_to_source)
+            if not isinstance(expected_digest, str) or hashlib.sha256(content).hexdigest() != expected_digest.lower():
+                raise PackProvenanceError(f"native managed resource differs from runtime manifest: {path}")
+        else:
+            relative_to_repo = resolved.resolve().relative_to(repo_root.resolve()).as_posix()
+            if _git_blob(repo_root, source.source_revision, relative_to_repo) != content:
+                raise PackProvenanceError(f"native managed resource differs from Git HEAD: {path}")
+        resources.append(ManagedResource(
+            path, kind, content, hashlib.sha256(content).hexdigest(),
+            ResourceRef("astrid-managed", MANAGED_PACK_KIND, pack_id, source.source_revision),
+        ))
+    manifest_after_read = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
+    source_after_read = _native_source_record(pack_id, pack_root, manifest_after_read)
+    if (source_after_read.source_revision != source.source_revision
+            or source_after_read.source_tree_sha256 != source.source_tree_sha256
+            or source_after_read.source_manifest_sha256 != source.source_manifest_sha256
+            or source_after_read.source_inventory_identity != source.source_inventory_identity):
+        raise PackProvenanceError("native managed source changed while resource bytes were read")
+    return ManagedPack(
+        pack_id,
+        manifest["version"],
+        source,
+        manifest,
+        tuple(sorted(resources, key=lambda item: item.path)),
+        _execution_pins(pack_id, source, resources),
+        _review_profiles(manifest, resources),
+    )
 
 
 def _source_from_discovered(item: Any) -> ManagedSourceIdentity:
@@ -299,7 +903,7 @@ def read_managed_pack(
     discoverer: PublicPackDiscoverer | None = None,
     loader: PublicPackLoader | None = None,
 ) -> ManagedPack:
-    """Read one pack through the real Astrid managed-source discovery route."""
+    """Read a bundled Herzchen pack, or an injected external managed source."""
     if not isinstance(pack_id, str) or not pack_id.strip():
         raise PackAuthoringError("pack_id must be non-blank")
     if (discoverer is None) != (loader is None):
@@ -307,9 +911,8 @@ def read_managed_pack(
             "discoverer and loader must be supplied together; do not mix an admission adapter with the Astrid default"
         )
     if discoverer is None:
-        discover, load = _public_apis()
-    else:
-        discover, load = discoverer, loader
+        return _read_native_managed_pack(pack_id, project_root)
+    discover, load = discoverer, loader
     try:
         discovered = tuple(discover(project_root=project_root))
     except Exception as exc:  # normalize public-loader failures at this boundary
