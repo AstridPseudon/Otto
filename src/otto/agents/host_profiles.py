@@ -68,13 +68,13 @@ def load_profile_pack() -> dict[str, Any]:
                               for key in ("model", "reasoning"))
                        for binding in roles.values())):
             raise ProfilePackRecoveryError("Otto profile pack has an invalid seven-slot profile")
-        oracle = value.get("oracle", {})
+        oracle = value.get("oracle")
         if (not isinstance(oracle, dict)
                 or ("max_calls" in oracle and (not isinstance(oracle["max_calls"], int)
                                                or isinstance(oracle["max_calls"], bool)
                                                or oracle["max_calls"] < 0))):
             raise ProfilePackRecoveryError("Otto profile pack has an invalid oracle policy")
-        stages = value.get("review_stages", [])
+        stages = value.get("review_stages")
         if (not isinstance(stages, list)
                 or any(not isinstance(stage, dict)
                        or not isinstance(stage.get("id"), str) or not stage["id"]
@@ -85,7 +85,7 @@ def load_profile_pack() -> dict[str, Any]:
                               for key in ("scope", "reviewer", "trigger"))
                        for stage in stages)):
             raise ProfilePackRecoveryError("Otto profile pack has invalid review stages")
-        checks = value.get("scheduled_checks", [])
+        checks = value.get("scheduled_checks")
         if (not isinstance(checks, list)
                 or any(not isinstance(check, dict)
                        or not isinstance(check.get("id"), str) or not check["id"]
@@ -97,6 +97,9 @@ def load_profile_pack() -> dict[str, Any]:
                               for key in ("cadence", "who", "purpose"))
                        for check in checks)):
             raise ProfilePackRecoveryError("Otto profile pack has invalid scheduled checks")
+        assurance = value.get("assurance_selection")
+        if not isinstance(assurance, str) or not assurance.strip():
+            raise ProfilePackRecoveryError("Otto profile pack has invalid assurance selection")
     for kind, value in hosts["hosts"].items():
         if not isinstance(kind, str) or not isinstance(value, dict):
             raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
@@ -111,6 +114,24 @@ def load_profile_pack() -> dict[str, Any]:
         if (not isinstance(model_profile, str) or not isinstance(adapter, str)
                 or not isinstance(settings, dict) or not isinstance(qualification, dict)):
             raise ProfilePackRecoveryError("Otto profile pack host/profile qualification is invalid")
+        if (not isinstance(qualification.get("version"), str) or not qualification["version"].strip()
+                or (kind == "claude-code" and
+                    (not isinstance(qualification.get("parser_schema"), str)
+                     or not qualification["parser_schema"].strip()))
+                or any(not isinstance(item, str) for item in qualification.values())):
+            raise ProfilePackRecoveryError("Otto profile pack launcher qualification is invalid")
+        for key in ("roles", "profiles"):
+            values = settings.get(key)
+            if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
+                raise ProfilePackRecoveryError("Otto profile pack host adapter %s list is invalid" % key)
+        for key in ("efforts", "models"):
+            values = settings.get(key)
+            if values is not None and (not isinstance(values, list)
+                                       or any(not isinstance(item, str) for item in values)):
+                raise ProfilePackRecoveryError("Otto profile pack host adapter %s list is invalid" % key)
+        authentication = settings.get("authentication")
+        if authentication is not None and not isinstance(authentication, str):
+            raise ProfilePackRecoveryError("Otto profile pack host adapter authentication is invalid")
         selected = names.get(model_profile)
         if (not isinstance(selected, dict) or selected.get("adapter") != adapter
                 or kind not in selected["host_kinds"]):

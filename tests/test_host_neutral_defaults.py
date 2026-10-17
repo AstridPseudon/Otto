@@ -101,6 +101,17 @@ class ModelProfileTests(unittest.TestCase):
                 hosts["hosts"]["codex"]["adapter_settings"][field] = malformed
             fixtures.append((label, json.dumps(profiles), json.dumps(hosts)))
 
+        for field, malformed in (("roles", [1]), ("profiles", "workspace-write"),
+                                 ("efforts", [None])):
+            profiles = json.loads(profile_path.read_text())
+            hosts = json.loads(hosts_path.read_text())
+            hosts["hosts"]["claude-code"]["adapter_settings"][field] = malformed
+            fixtures.append(("adapter " + field, json.dumps(profiles), json.dumps(hosts)))
+        profiles = json.loads(profile_path.read_text())
+        hosts = json.loads(hosts_path.read_text())
+        hosts["hosts"]["codex"]["launcher_qualification"].pop("version")
+        fixtures.append(("missing launcher version", json.dumps(profiles), json.dumps(hosts)))
+
         for label, profiles_content, hosts_content in fixtures:
             with self.subTest(field=label):
                 bad = SimpleNamespace(pack_id="otto-profiles", version="1.0.0",
@@ -155,6 +166,10 @@ class ModelProfileTests(unittest.TestCase):
         profile_path = ROOT / "src" / "otto" / "packs" / "otto-profiles" / "profiles.json"
         hosts_path = ROOT / "src" / "otto" / "packs" / "otto-profiles" / "hosts.json"
         cases = (
+            ("missing oracle", "oracle", None),
+            ("missing review stages", "review_stages", None),
+            ("missing scheduled checks", "scheduled_checks", None),
+            ("missing assurance selection", "assurance_selection", None),
             ("oracle mapping", "oracle", [1]),
             ("oracle allowance", "oracle", {"max_calls": "many"}),
             ("review list", "review_stages", [1]),
@@ -170,7 +185,10 @@ class ModelProfileTests(unittest.TestCase):
             with self.subTest(policy=label):
                 profiles = json.loads(profile_path.read_text())
                 hosts = json.loads(hosts_path.read_text())
-                profiles["profiles"]["codex"][field] = malformed
+                if malformed is None:
+                    profiles["profiles"]["codex"].pop(field)
+                else:
+                    profiles["profiles"]["codex"][field] = malformed
                 bad = SimpleNamespace(
                     pack_id="otto-profiles", version="1.0.0",
                     source=SimpleNamespace(source_revision="a", source_inventory_identity="b"),
