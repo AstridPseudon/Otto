@@ -67,7 +67,9 @@ def complete_landed_canary(context, landing):
         raise RuntimeError("stage-2 landing assessment has no managed evidence")
     evidence_hashes = {}
     for evidence_ref in evidence_refs:
-        resolved = owner.evidence_payload_resolver.resolve(evidence_ref, verify_full=True)
+        # As the landing does (fleet_landing.py): the resolver reads as the authenticated manager.
+        resolved = owner.evidence_payload_resolver.resolve(
+            evidence_ref, actor=owner.binding.authenticated_actor(server.state["manager"]), verify_full=True)
         manifest = resolved.get("manifest") if isinstance(resolved, dict) else None
         digest = manifest.get("byte_digest") if isinstance(manifest, dict) else None
         if (not isinstance(resolved, dict)
