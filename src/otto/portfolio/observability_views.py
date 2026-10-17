@@ -253,6 +253,82 @@ def _project_identity(value: Any) -> tuple[str, str]:
     raise ObservabilityViewError("project scope must contain canonical project refs")
 
 
+def friction_from_rows(rows: Sequence[Mapping[str, Any]], *, complete: bool) -> dict[str, Any]:
+    """Summarize only explicit retained friction evidence from one bounded page."""
+    names = ("questions", "refusals", "next_actions", "reworks", "unknown_effects", "answer_waits")
+    counts = {name: 0 for name in names}
+    heavy_seconds = 0.0
+    heavy_known = False
+    accepted_tasks = set()
+    task_tokens = {}
+
+    def evidence(row):
+        summary = _mapping(row.get("summary"))
+        detail = _mapping(row.get("detail"))
+        fields = _mapping(_mapping(summary.get("after")).get("fields"))
+        return {**summary, **fields, **detail}
+
+    for row in rows:
+        data = evidence(row)
+        outcome = str(row.get("outcome", data.get("outcome", ""))).lower()
+        subject = _mapping(row.get("subject_ref"))
+        task_id = subject.get("id") if subject.get("kind") == "work.task" else None
+        if (data.get("question") is not None or data.get("question_ref") is not None
+                or data.get("record_type") == "question"
+                or (data.get("schema") in {"otto.issue.v1", "otto.issue.response.v1"}
+                    and data.get("awaiting") == "orchestrator")):
+            counts["questions"] += 1
+        if outcome in {"refused", "rejected", "denied"} or data.get("refusal") is True:
+            counts["refusals"] += 1
+        if data.get("next_action"):
+            counts["next_actions"] += 1
+        if outcome == "rework" or str(data.get("disposition", "")).lower() == "rework":
+            counts["reworks"] += 1
+        native_result = data.get("native_result")
+        if (data.get("unknown_effect") is True or data.get("effect_state") == "unknown"
+                or data.get("unknown_effects") is True or native_result == "unknown"
+                or isinstance(native_result, Mapping) and native_result.get("state") == "unknown"):
+            counts["unknown_effects"] += 1
+        if (data.get("awaiting_answer") is True or data.get("answer_wait_seconds") is not None
+                or data.get("answer_wait") is True or data.get("awaiting") == "answer"):
+            counts["answer_waits"] += 1
+        seconds = data.get("heavy_seconds")
+        if seconds is None:
+            seconds = _mapping(_mapping(data.get("usage")).get("metrics")).get("heavy_seconds")
+        if seconds is None and data.get("heavy") is True:
+            seconds = data.get("duration_seconds")
+        if type(seconds) in (int, float) and seconds >= 0:
+            heavy_seconds += seconds
+            heavy_known = True
+        acceptance = data.get("task_acceptance", data.get("acceptance"))
+        accepted = acceptance is True or acceptance == "accepted" or (
+            isinstance(acceptance, Mapping) and acceptance.get("disposition") in {"accepted", "passed"})
+        if task_id and accepted:
+            accepted_tasks.add(task_id)
+        usage = _mapping(data.get("usage"))
+        metrics = _mapping(usage.get("metrics"))
+        tokens = metrics.get("tokens", data.get("tokens"))
+        if task_id and type(tokens) is int and tokens >= 0:
+            task_tokens[task_id] = task_tokens.get(task_id, 0) + tokens
+
+    availability = "known" if complete else "unavailable"
+    return {
+        "schema": "otto.status.friction.v1",
+        "window_days": 30,
+        "coverage": "complete" if complete else "partial-or-inaccessible",
+        "counts": {name: {"state": availability, "value": count if complete else None}
+                   for name, count in counts.items()},
+        "heavy_seconds": {"state": "known" if complete and heavy_known else "unavailable",
+                          "value": heavy_seconds if complete and heavy_known else None},
+        "tokens_per_accepted_task": {
+            "state": "known" if complete and accepted_tasks and accepted_tasks <= task_tokens.keys() else "unavailable",
+            "value": sum(task_tokens[task] for task in accepted_tasks) / len(accepted_tasks)
+                     if complete and accepted_tasks and accepted_tasks <= task_tokens.keys() else None,
+            "accepted_tasks": len(accepted_tasks) if complete else None,
+        },
+    }
+
+
 class ObservabilityViews:
     """The seven D04 presets over one injected authenticated reader."""
 

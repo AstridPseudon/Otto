@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 import json
 import os
@@ -192,6 +193,7 @@ def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParse
 
     status = sub.add_parser("status", help="portfolio status: projects, tasks, pool, managers, lab count and slot kinds")
     status.add_argument("--portfolio-ref", help="canonical portfolio ResourceRef as JSON (default: this host's portfolio)")
+    status.add_argument("--friction", action="store_true", help="include a generated 30-day friction summary from authorized retained events")
     _add_format(status)
 
     create = sub.add_parser("create-pending", help="create an inert pending project (legacy command)")
@@ -1269,7 +1271,7 @@ def main(
         elif args.command == "admit":
             result = _admit_command(args, status_session)
         elif args.command == "status":
-            result = _status_command(args, status_session, labs)
+            result = _status_command(args, status_session, labs, observability_views, observability_grant)
         elif args.command == "create-pending":
             try:
                 edit = json.loads(args.edit_json)
@@ -1414,7 +1416,8 @@ def _release_command(args: argparse.Namespace, editor_host: Any) -> dict[str, An
         return _request_error(str(exc), code="session_not_open")
 
 
-def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[str, Any]:
+def _status_command(args: argparse.Namespace, session: Any, labs: Any,
+                    observability_views: Any = None, observability_grant: Any = None) -> dict[str, Any]:
     if session is None:
         return _surface_unavailable(
             "otto.portfolio-status.v1", "status_session_unavailable",
@@ -1422,7 +1425,30 @@ def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[s
         )
     from .status import portfolio_status
     selected = _parse_ref(args.portfolio_ref, "portfolio_ref") if args.portfolio_ref else None
-    return portfolio_status(session, selected, labs=labs)
+    result = portfolio_status(session, selected, labs=labs)
+    if not args.friction:
+        return result
+    from .observability_views import friction_from_rows
+    if observability_views is None or observability_grant is None or result.get("outcome") not in {None, "read"}:
+        result["friction"] = friction_from_rows((), complete=False)
+        return result
+    end = datetime.now(timezone.utc)
+    refs = [row["project_ref"] for row in result.get("projects", ()) if isinstance(row.get("project_ref"), Mapping)]
+    try:
+        events = observability_views.read(
+            "overview", projects=refs,
+            from_at=(end - timedelta(days=30)).isoformat(), to_at=end.isoformat(),
+            limit=200, grant=observability_grant,
+        )
+        coverage = events.get("coverage", {})
+        complete = (events.get("outcome") == "read" and not events.get("continuation", {}).get("has_more")
+                    and not events.get("continuation", {}).get("partial")
+                    and coverage.get("lag") == 0)
+        result["friction"] = friction_from_rows(events.get("rows", ()), complete=complete)
+        result["friction"]["coverage"] = "complete" if complete else "partial-or-inaccessible"
+    except (PermissionError, ValueError, OSError):
+        result["friction"] = friction_from_rows((), complete=False)
+    return result
 
 
 def _admit_command(args: argparse.Namespace, session: Any) -> dict[str, Any]:
