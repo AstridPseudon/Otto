@@ -392,9 +392,10 @@ class ExecutionHost:
                 released = True
             except (ValueError, KeyError, TypeError, OSError, PermissionError):
                 pass  # Exact source/authorization/prior-settlement mismatch holds.
-        if not released and (due.host_evidence or {}).get("gone_unknown_worker_disposition"):
+        if not released and any((due.host_evidence or {}).get(name) for name in
+                ("gone_unknown_worker_disposition", "gone_failed_worker_disposition")):
             try:
-                self._retained_gone_unknown_worker_disposition(app, due)
+                self._retained_gone_worker_disposition(app, due)
                 released = True
             except (ValueError, KeyError, TypeError, OSError, PermissionError):
                 pass  # Missing or changed manager disposition keeps custody.
@@ -416,20 +417,36 @@ class ExecutionHost:
                 self.capacity.settle_turn(due.schedule_id)  # a disposition ends custody of used capacity
             self._forget_process_group(due.schedule_id)
 
-    def _retained_gone_unknown_worker_disposition(self, app: Any, due: Any) -> Mapping[str, Any]:
+    @staticmethod
+    def _gone_worker_profile(outcome: str) -> tuple[str, str, str, str]:
+        if outcome == "unknown":
+            return ("gone_unknown_worker_disposition", "otto.worker-gone-unknown-disposition.v1",
+                    "unknown_result_sha256", "historical_unknown_preserved")
+        if outcome == "failed":
+            return ("gone_failed_worker_disposition", "otto.worker-gone-failed-disposition.v1",
+                    "result_sha256", "historical_result_preserved")
+        raise ValueError("unsupported gone worker outcome")
+
+    def _retained_gone_worker_disposition(self, app: Any, due: Any) -> Mapping[str, Any]:
         """Verify the durable manager disposition before restoring custody."""
         from .execution import _digest
         from .execution_operations import OccurrencePreparationError
         from herzchen.contracts import ResourceRef
         from dataclasses import replace
 
-        marker = (due.host_evidence or {}).get("gone_unknown_worker_disposition") or {}
+        evidence = due.host_evidence or {}
+        if evidence.get("gone_unknown_worker_disposition") and evidence.get("gone_failed_worker_disposition"):
+            raise OccurrencePreparationError("conflicting gone worker dispositions")
+        outcome = "failed" if evidence.get("gone_failed_worker_disposition") else "unknown"
+        marker_name, schema, digest_name, preserved_name = self._gone_worker_profile(outcome)
+        marker = evidence.get(marker_name) or {}
         def require(condition: bool, message: str) -> None:
             if not condition:
                 raise OccurrencePreparationError(message)
-        require(marker.get("schema") == "otto.worker-gone-unknown-disposition.v1"
+        require(isinstance(marker, Mapping), "manager disposition marker is malformed")
+        require(marker.get("schema") == schema
                 and due.role == "worker" and due.stop_state == "stopped"
-                and due.completion_state == "unknown" and due.in_flight_request is None,
+                and due.completion_state == outcome and due.in_flight_request is None,
                 "manager disposition marker or settled occurrence differs")
         rows = app.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref), kind="report")
         report = next((row for row in rows if row.ref.to_dict() == marker.get("disposition_ref")), None)
@@ -444,9 +461,9 @@ class ExecutionHost:
         require(body.get("schema") == marker["schema"]
                 and body.get("request_key") == marker.get("request_key")
                 and body.get("due_sha256") == marker.get("due_sha256")
-                and body.get("unknown_result_sha256") == marker.get("unknown_result_sha256")
+                and body.get(digest_name) == marker.get(digest_name)
                 and body.get("reason") == marker.get("reason")
-                and body.get("historical_unknown_preserved") is True
+                and body.get(preserved_name) is True
                 and body.get("provider_retry_allowed") is False
                 and body.get("assignment_ref") == due.assignment_ref
                 and body.get("generation") == due.generation
@@ -460,18 +477,19 @@ class ExecutionHost:
                     "recorded process group is live, reused or differs from the disposition")
         attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
         result = attempt.get("result") or {}
-        require(_digest(result) == marker["unknown_result_sha256"]
-                and result.get("outcome") == "unknown",
-                "historical UNKNOWN result changed")
+        require(isinstance(result, Mapping), "historical worker result is malformed")
+        require(_digest(result) == marker[digest_name]
+                and result.get("outcome") == outcome,
+                "historical worker result changed")
         original_host = dict(due.host_evidence or {})
-        original_host.pop("gone_unknown_worker_disposition", None)
+        original_host.pop(marker_name, None)
         original = replace(due, stop_state=body["before"]["stop_state"],
             completion_state=body["before"]["completion_state"],
             in_flight_request=body["before"]["in_flight_request"],
             version=body["due_version"], host_evidence=original_host)
         require(_digest(original.to_dict()) == marker["due_sha256"]
-                and _digest(result) == body["unknown_result_sha256"],
-                "settled occurrence or historical UNKNOWN digest differs")
+                and _digest(result) == body[digest_name],
+                "settled occurrence or historical worker digest differs")
         if not (app.actor == due.lifecycle_owner == due.owner == due.manager_ref):
             raise OccurrencePreparationError("manager disposition actor is no longer lifecycle owner")
         if not ExecutionHost._gone_unknown_assignment_matches(app, due):
@@ -513,10 +531,20 @@ class ExecutionHost:
                                     expected_due_sha256: str,
                                     expected_unknown_result_sha256: str,
                                     reason: str) -> Mapping[str, Any]:
-        """Manager disposition for an UNKNOWN worker whose recorded group is gone.
+        """Preserve the existing UNKNOWN request shape and retained schema."""
+        return self.recover_gone_worker(app, schedule_id=schedule_id, request_key=request_key,
+            expected_due_sha256=expected_due_sha256,
+            expected_unknown_result_sha256=expected_unknown_result_sha256, reason=reason)
+
+    def recover_gone_worker(self, app: Any, *, schedule_id: str, request_key: str,
+                            expected_due_sha256: str,
+                            expected_result_sha256: str | None = None,
+                            expected_unknown_result_sha256: str | None = None,
+                            reason: str) -> Mapping[str, Any]:
+        """Manager disposition for a retained UNKNOWN or FAILED worker group.
 
         The process-group observation is only the prerequisite for an explicit
-        manager settlement. It never settles the UNKNOWN automatically.
+        manager settlement. It never settles the worker automatically.
         """
         from .execution import _digest
         from .execution_operations import OccurrencePreparationError
@@ -524,20 +552,31 @@ class ExecutionHost:
         from herzchen.contracts import ResourceRef
 
         due = app._read(schedule_id)
-        marker = (due.host_evidence or {}).get("gone_unknown_worker_disposition")
+        evidence = due.host_evidence or {}
+        attempt = evidence.get("gateway_attempt") or {}
+        result = attempt.get("result") or {}
+        outcome = result.get("outcome") if isinstance(result, Mapping) else None
+        if outcome not in {"unknown", "failed"}:
+            return {"outcome": "refused", "cause": "occurrence_not_recoverable_worker", "provider_called": False}
+        marker_name, schema, digest_name, preserved_name = self._gone_worker_profile(outcome)
+        marker = evidence.get(marker_name)
+        expected_result = expected_unknown_result_sha256 if outcome == "unknown" else expected_result_sha256
+        if (expected_result is None or (outcome == "unknown" and expected_result_sha256 is not None)
+                or (outcome == "failed" and expected_unknown_result_sha256 is not None)):
+            return {"outcome": "refused", "cause": "result_pin_wrong_for_outcome", "provider_called": False}
         if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 240:
             return {"outcome": "refused", "cause": "missing_or_invalid_reason", "provider_called": False}
         if not isinstance(request_key, str) or not request_key.strip() or len(request_key) > 160:
             return {"outcome": "refused", "cause": "missing_or_invalid_request_key", "provider_called": False}
         if marker:
             try:
-                body = self._retained_gone_unknown_worker_disposition(app, due)
+                body = self._retained_gone_worker_disposition(app, due)
             except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
                 return {"outcome": "refused", "cause": "retained_disposition_invalid", "reason": str(exc),
                         "provider_called": False}
             if (marker.get("request_key") != request_key
                     or marker.get("due_sha256") != expected_due_sha256
-                    or marker.get("unknown_result_sha256") != expected_unknown_result_sha256
+                    or marker.get(digest_name) != expected_result
                     or marker.get("reason") != reason):
                 return {"outcome": "refused", "cause": "stale_pins_or_request", "provider_called": False}
             self.restore_execution(app, due)
@@ -546,31 +585,28 @@ class ExecutionHost:
                         "provider_called": False}
             return {"outcome": "replayed", "schedule_id": schedule_id,
                     "disposition_ref": marker["disposition_ref"], "provider_called": False,
-                    "historical_unknown_preserved": True}
+                    preserved_name: True, "retry": False}
 
-        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
-        result = attempt.get("result") or {}
         if (due.role != "worker" or due.stop_state != "active" or due.completion_state not in {"none", "unknown"}
                 or not due.in_flight_request or attempt.get("state") != "result"
-                or not isinstance(result, Mapping) or result.get("outcome") != "unknown"):
-            return {"outcome": "refused", "cause": "occurrence_not_unknown_worker", "provider_called": False}
+                or not isinstance(result, Mapping) or result.get("outcome") != outcome):
+            return {"outcome": "refused", "cause": "occurrence_not_recoverable_worker", "provider_called": False}
         if not (app.actor == due.lifecycle_owner == due.owner == due.manager_ref):
             return {"outcome": "refused", "cause": "manager_is_not_lifecycle_owner", "provider_called": False}
         project = (due.target or {}).get("project_ref")
         if not self._gone_unknown_assignment_matches(app, due):
             return {"outcome": "refused", "cause": "assignment_or_project_pin_stale", "provider_called": False}
         if (_digest(due.to_dict()) != expected_due_sha256
-                or _digest(result) != expected_unknown_result_sha256):
+                or _digest(result) != expected_result):
             return {"outcome": "refused", "cause": "stale_pins", "provider_called": False}
-        if request_key == due.in_flight_request:
-            return {"outcome": "refused", "cause": "request_key_matches_unknown_attempt", "provider_called": False}
-        schema = "otto.worker-gone-unknown-disposition.v1"
+        if request_key == due.in_flight_request or request_key == attempt.get("logical_request_key"):
+            return {"outcome": "refused", "cause": "request_key_matches_worker_attempt", "provider_called": False}
         body = {"schema": schema, "request_key": request_key,
                 "due_sha256": expected_due_sha256,
-                "unknown_result_sha256": expected_unknown_result_sha256,
+                digest_name: expected_result,
                 "reason": reason.strip(), "project_ref": project,
                 "assignment_ref": due.assignment_ref, "generation": due.generation,
-                "historical_unknown_preserved": True, "provider_retry_allowed": False,
+                preserved_name: True, "provider_retry_allowed": False,
                 "due_version": due.version,
                 "before": {"stop_state": due.stop_state,
                            "completion_state": due.completion_state,
@@ -618,14 +654,14 @@ class ExecutionHost:
                     expected_generation=due.generation, logical_request_key=request_key,
                     actor=app.binding.authenticated_actor(app.actor))
             if _digest(app._read(schedule_id).to_dict()) != expected_due_sha256:
-                raise OccurrencePreparationError("owner occurrence changed before UNKNOWN disposition")
+                raise OccurrencePreparationError("owner occurrence changed before worker disposition")
             marker = {"schema": schema, "disposition_ref": report.ref.to_dict(),
                       "request_key": request_key, "due_sha256": expected_due_sha256,
-                      "unknown_result_sha256": expected_unknown_result_sha256,
+                      digest_name: expected_result,
                       "reason": reason.strip()}
             stopped = replace(
-                due, stop_state="stopped", completion_state="unknown", in_flight_request=None,
-                host_evidence={**due.host_evidence, "gone_unknown_worker_disposition": marker})
+                due, stop_state="stopped", completion_state=outcome, in_flight_request=None,
+                host_evidence={**due.host_evidence, marker_name: marker})
             saved = app.due_port.save_due(schedule_id, stopped.to_dict(),
                 request_id=request_key + ":stop", expected_version=due.version)
         except (ValueError, KeyError, TypeError, OSError, PermissionError, OccurrencePreparationError) as exc:
@@ -639,8 +675,8 @@ class ExecutionHost:
                     "provider_called": False}
         return {"outcome": "settled", "schedule_id": schedule_id,
                 "due_version": saved["version"], "disposition_ref": report.ref.to_dict(),
-                "provider_called": False, "historical_unknown_preserved": True,
-                "provider_retry_allowed": False}
+                "provider_called": False, preserved_name: True,
+                "provider_retry_allowed": False, "retry": False}
 
     def recover_capacity_failed_worker(self, app: Any, *, schedule_id: str) -> Mapping[str, Any] | None:
         """Settle one manager-qualified terminal worker UNKNOWN and clear its fence.
