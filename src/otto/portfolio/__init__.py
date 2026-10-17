@@ -62,7 +62,6 @@ from .advisor_pairing import (
     introductions,
     validate_recipient,
 )
-from .advisor_context import AdvisorContextError, build_advisor_context, choose_advisor_direction
 from .advisor_delivery import (
     AdvisorDeliveryError,
     AdvisorDeliveryLoop,
@@ -149,9 +148,6 @@ __all__ = [
     "establish_pairing",
     "introductions",
     "validate_recipient",
-    "AdvisorContextError",
-    "build_advisor_context",
-    "choose_advisor_direction",
     "AdvisorDeliveryError",
     "AdvisorDeliveryLoop",
     "AdvisorDeliveryPorts",
