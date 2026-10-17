@@ -183,7 +183,7 @@ class OwnerTests(unittest.TestCase):
         self.state=tempfile.TemporaryDirectory(prefix='otto-d03-native-state-');self.addCleanup(self.state.cleanup)
         self.t=local_transport(self.root,str(Path(self.state.name).resolve()))
         self.adapter=ClaudeWorkerAdapter(owner='worker',source=self.root,worktree=self.root,
-            launcher_pin=self.t.pin,state_root=self.state.name,requested_model='gpt-test',transport=self.t)
+            launcher_pin=self.t.pin,state_root=self.state.name,requested_model='gpt-test',requested_reasoning='high',transport=self.t)
         self.app=self.f.owner.execution_application(due_port=self.f.port,adapter=self.adapter,
             clock=lambda: __import__('test_execution_application').NOW,native_result_verifier=ClaudeNativeResultVerifier())
         self.request=self.f.request();self.request['instruction_contract']['read_targets']=[self.root]
