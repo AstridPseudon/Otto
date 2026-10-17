@@ -839,7 +839,17 @@ class ManagerJourneyCommands:
                     "retry_provider": False,
                     "next_action": "settle this retained native occurrence without resending; repeat this exact finish request"}
         if self.due_port is not None:
-            active = [due for due in self.due_port.list_due({"project_ref": manifest["project_ref"]["id"]})
+            from inspect import Parameter, signature
+            list_due = self.due_port.list_due
+            try:
+                parameters = signature(list_due).parameters.values()
+                accepts_filter = any(parameter.kind in (Parameter.POSITIONAL_ONLY,
+                    Parameter.POSITIONAL_OR_KEYWORD, Parameter.VAR_POSITIONAL) for parameter in parameters)
+            except (TypeError, ValueError):
+                accepts_filter = True
+            rows = (list_due({"project_ref": manifest["project_ref"]["id"]})
+                    if accepts_filter else list_due())
+            active = [due for due in rows
                 if due.get("role") in {"manager", "worker"} and due.get("stop_state") == "active"
                 and due.get("in_flight_request") is not None
                 and ((due.get("host_evidence") or {}).get("gateway_attempt")) is not None

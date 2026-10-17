@@ -103,16 +103,23 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
             except FileNotFoundError:
                 pass
             size = response.stat().st_size
-            if size > 65536:
+            # Pre-projection receipts still need a useful bounded status view.
+            # Parse moderate historical artifacts; larger files stay detail-only.
+            legacy_summary_limit = 4 * 1024 * 1024
+            if size > legacy_summary_limit:
                 return {"outcome": "unknown", "terminal": True, "request_id": request_id,
                     "response_path": str(response), "response_utf8_bytes": size,
                     "response_sha256": None, "verification": "legacy-detail-required", "retry": False,
                     "io_work": {"payload_bytes_read": 0, "payload_bytes_parsed": 0, "payload_bytes_hashed": 0},
                     "next_action": "Historical response is retained; explicit detail capture is required. Do not replay."}
             with response.open("rb") as stream:
-                raw = stream.read(65537)
-            if len(raw) > 65536:
-                raise ValueError("legacy response changed beyond its bounded read")
+                raw = stream.read(legacy_summary_limit + 1)
+            if len(raw) > legacy_summary_limit:
+                return {"outcome": "unknown", "terminal": True, "request_id": request_id,
+                    "response_path": str(response), "response_utf8_bytes": response.stat().st_size,
+                    "response_sha256": None, "verification": "legacy-detail-required", "retry": False,
+                    "io_work": {"payload_bytes_read": 0, "payload_bytes_parsed": 0, "payload_bytes_hashed": 0},
+                    "next_action": "Historical response is retained; explicit detail capture is required. Do not replay."}
             value = json.loads(raw)
             timing = value.get("receipt_timing") if isinstance(value, dict) else None
             correlation_id = stable_correlation_id(value, fallback=request_id)
@@ -122,7 +129,7 @@ def read_command_status(directory: str | Path, request_id: str, *, pending_only:
                     "response_utf8_bytes": len(raw), "retry": False,
                     "correlation_id": correlation_id,
                     "receipt_timing": timing if isinstance(timing, dict) else timing_from_receipt(value, fallback_correlation_id=request_id),
-                    "summary": command_result_summary(value),
+                    "summary": command_result_summary(value), "verification": "legacy-bounded-read",
                     "io_work": {"payload_bytes_read": len(raw), "payload_bytes_parsed": len(raw), "payload_bytes_hashed": len(raw)},
                     "next_action": "Inspect the retained response artifact for full evidence; do not resend this terminal request."}
     except FileNotFoundError:

@@ -300,6 +300,19 @@ def import_history(session: Any, registration: Mapping[str, Any], *, note: str,
     """
     run_id = registration["run_id"]
     key = key or "history:" + run_id + ":v1"
+    existing = _registered_project(session, run_id)
+    existing_facts = ((existing.payload.get("custom") or {}).get("otto_host_registration") or {}) if existing else {}
+    if existing_facts.get("mode") == "history":
+        current = session.owner.graph.current(ResourceRef(existing.ref.authority, existing.ref.kind, existing.ref.id))
+        if current.lifecycle.value != "withdrawn":
+            raise PermissionError("registered history is no longer withdrawn")
+        # The stable history key represents one immutable import. A replay must
+        # not try to revise a terminal project (or replace its original note).
+        return {"schema": "otto.host-history-import.v1", "outcome": "replayed",
+                "run_id": run_id, "request_key": key, "project_ref": current.ref.to_dict(),
+                "lifecycle": current.lifecycle.value, "provider_called": False, "dispatch": False,
+                "steps": {"registration": {"mode": "history", "outcome": "replayed",
+                    "project_ref": current.ref.to_dict()}}}
     custom = dict(registration["custom"])
     facts = dict(custom["otto_host_registration"])
     facts.update(mode="history", activation_trigger=None,

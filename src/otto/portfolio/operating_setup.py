@@ -7,7 +7,7 @@ the gateway admits a new effect. Retained attempts keep their original pins.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from herzchen.contracts import ResourceRef
 from .owner_readers import json_value, owner_ref
@@ -102,7 +102,8 @@ def validate_execution_contract(prepared: Mapping[str, Any], profile: str, *, ex
         raise OperatingSetupError(role + " cannot use a workspace-write execution contract")
 
 
-def authenticated_adoption_ancestor(assignment: Mapping[str, Any], prior_ref: Mapping[str, Any], reader: Any) -> bool:
+def authenticated_adoption_ancestor(assignment: Mapping[str, Any], prior_ref: Mapping[str, Any], reader: Any,
+                                    *, authorized_adopters: Sequence[str] = ()) -> bool:
     """Verify consecutive unchanged-generation resource adoptions in owner history."""
     current = ResourceRef.from_dict(assignment["ref"])
     prior = ResourceRef.from_dict(prior_ref)
@@ -128,7 +129,7 @@ def authenticated_adoption_ancestor(assignment: Mapping[str, Any], prior_ref: Ma
         base = body.get("resource_adoption_base_ref")
         if (event.operation != "work.assignment.adopt-resources"
                 or event.actor.authority != current.authority
-                or event.actor.actor != (payload.get("manager") or assignment["principal"])
+                or event.actor.actor not in {(payload.get("manager") or assignment["principal"]), *authorized_adopters}
                 or body.get("generation") != assignment["generation"]
                 or body.get("principal") != assignment["principal"] or body.get("role") != assignment["role"]
                 or any(body.get(k) != payload.get(k) for k in ("scope", "manager", "session", "parent", "launcher", "reporter", "agent"))
