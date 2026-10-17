@@ -4,7 +4,7 @@ import tempfile,unittest
 from pathlib import Path
 from herzchen.contracts import AuthenticatedActor,ResourceRef,CommandReceipt,ReceiptStatus
 from herzchen.kernel import Store
-from herzchen.kernel.operations import OperationManager,OperationRequest,OperationState,UnknownOutcomeError
+from herzchen.kernel.operations import OperationManager,OperationRequest,OperationState,UnknownOutcomeError,request_digest
 from herzchen.kernel.store import OperationOwnerCapability,RuntimeOperationOwner,RuntimeOperationReader
 
 class ReceiptLineageTests(unittest.TestCase):
@@ -36,6 +36,68 @@ class ReceiptLineageTests(unittest.TestCase):
  def test_legacy_no_result_ref_uses_exact_target_and_keeps_durable_order(self):
   first=self.manager.prepare(self.request('first'));self.manager.record_outcome(first,OperationState.COMMITTED,{},transition_key='first-done');one=self.store.get_receipt('first');two=self.store.get_receipt('first-done');receipt=replace(one,result_ref=None,event_ids=two.event_ids+one.event_ids)
   events=self.store.issue_operation_owner().event_lineage(receipt);self.assertEqual(tuple(x.event_id for x in events),one.event_ids+two.event_ids)
+ def test_legacy_prepared_payload_replays_and_can_be_claimed_once(self):
+  request=self.request('legacy-prepared');target=ResourceRef('owner','operation','legacy-prepared');request=request.canonicalized(target)
+  # Retained pre-EF1 Store envelope and event effects: neither carries
+  # effect_ref, which is now derived from the operation identity.
+  payload={
+   'record_type':'operation','operation':request.operation,'schema_revision':request.schema_revision,
+   'adapter_ref':request.adapter_ref.to_dict(),'request_actor':request.actor.to_dict(),
+   'logical_request_key':request.logical_request_key,'request_digest':request.request_digest,
+   'request_payload':dict(request.payload),'physical_invocation_ref':None,'external_owner_ref':None,
+   'expected_revision':None,'expected_version':None,'edit_token':None,'correlation_id':None,
+   'causation_id':None,'state':'prepared','result':{},
+  }
+  envelope=request.envelope(target,expected_revision=None,expected_version=0,edit_token=None,payload=payload)
+  legacy_effects={
+   'state':'prepared','result':{},'adapter_ref':request.adapter_ref.to_dict(),
+   'request_actor':request.actor.to_dict(),'physical_invocation_ref':None,'external_owner_ref':None,
+   'request_payload':dict(request.payload),'request_digest':request.request_digest,
+   'expected_revision':None,'expected_version':None,'edit_token':None,'correlation_id':None,
+   'causation_id':None,'version':1,
+  }
+  retained=self.store.mutate(envelope,event_type='operation.prepared',
+   result_ref=ResourceRef('owner','operation','legacy-prepared','rev-1'),effects=legacy_effects,stream='operations')
+  replayed=self.manager.prepare(self.request('legacy-prepared'))
+  self.assertEqual(replayed.operation_ref,retained.result_ref)
+  self.assertEqual(replayed.state,OperationState.PREPARED)
+  self.assertEqual(replayed.effect_ref,ResourceRef('owner','effect','legacy-prepared'))
+  self.assertTrue(replayed.receipt.replayed)
+  started=self.manager.claim_start(replayed,transition_key='legacy-prepared-start')
+  self.assertEqual(started.state,OperationState.STARTED)
+  with self.assertRaises(UnknownOutcomeError):
+   self.manager.claim_start(replayed,transition_key='legacy-prepared-second-start')
+ def test_legacy_outcome_effects_replay(self):
+  prepared=self.manager.prepare(self.request('legacy-outcome'))
+  result={'verified':True}
+  old_payload=dict(self.store.get_identity(prepared.operation_ref).payload)
+  old_payload.pop('effect_ref',None)
+  old_payload.update(state='committed',result=result)
+  old_request=OperationRequest(
+   'operation.outcome',prepared.request.schema_revision,prepared.request.adapter_ref,prepared.request.actor,
+   'legacy-outcome-done',request_digest({'operation':'legacy-outcome','state':'committed','result':result}),
+   {'original_request_payload':dict(prepared.request.payload),'state':'committed','result':result},
+   prepared.request.physical_invocation_ref,prepared.request.external_owner_ref,
+   prepared.request.expected_revision,prepared.request.expected_version,prepared.request.edit_token,
+   prepared.request.correlation_id,prepared.request.causation_id,
+  )
+  old_envelope=old_request.envelope(prepared.operation_ref,
+   expected_revision=prepared.operation_ref.revision,expected_version=prepared.version,edit_token=None,
+   payload=old_payload)
+  old_effects={
+   'state':'committed','result':result,'adapter_ref':prepared.request.adapter_ref.to_dict(),
+   'request_actor':prepared.request.actor.to_dict(),'physical_invocation_ref':None,
+   'external_owner_ref':None,'request_payload':dict(prepared.request.payload),
+   'request_digest':prepared.request.request_digest,'expected_revision':None,'expected_version':None,
+   'edit_token':None,'correlation_id':None,'causation_id':None,'version':2,
+  }
+  retained=self.store.mutate(old_envelope,event_type='operation.outcome',
+   result_ref=ResourceRef('owner','operation','legacy-outcome','rev-2'),
+   effects=old_effects,stream='operations')
+  # Replay must match the receipt created with the pre-EF1 envelope shape.
+  replay=self.manager.record_outcome(prepared,OperationState.COMMITTED,{'verified':True},transition_key='legacy-outcome-done')
+  self.assertEqual(replay.operation_ref,retained.result_ref)
+  self.assertEqual(replay.state,OperationState.COMMITTED)
  def test_runtime_owner_existing_lineage_contract_is_preserved(self):
   self.manager.prepare(self.request('first'));receipt=self.store.get_receipt('first');store=self.store;calls=[]
   class Reader(RuntimeOperationReader):

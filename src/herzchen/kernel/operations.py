@@ -310,7 +310,6 @@ class _OperationManagerEngine:
     def _payload(self, request: OperationRequest, state: OperationState, result: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "record_type": OPERATION_KIND,
-            "effect_ref": ResourceRef(self.__owner.authority, "effect", request.logical_request_key).to_dict(),
             "operation": request.operation,
             "schema_revision": request.schema_revision,
             "adapter_ref": request.adapter_ref.to_dict(),
@@ -454,7 +453,7 @@ class _OperationManagerEngine:
             raise UnknownOutcomeError("effect is already started or held")
         if self._request_from_identity(identity.payload) != record.request:
             raise OperationError("start claim does not match the prepared effect")
-        if identity.payload.get("effect_ref") != record.effect_ref.to_dict():
+        if identity.payload.get("effect_ref", record.effect_ref.to_dict()) != record.effect_ref.to_dict():
             raise OperationError("prepared effect identity does not match its operation")
         start_request = OperationRequest(
             "operation.start", record.request.schema_revision, record.request.adapter_ref,
@@ -465,6 +464,7 @@ class _OperationManagerEngine:
             record.request.edit_token, record.request.correlation_id, record.request.causation_id,
         )
         payload = self._payload(record.request, OperationState.STARTED, {})
+        payload["effect_ref"] = record.effect_ref.to_dict()
         envelope = start_request.envelope(
             target, expected_revision=target.revision, expected_version=record.version,
             edit_token=None, payload=payload,
