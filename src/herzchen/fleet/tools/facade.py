@@ -216,6 +216,12 @@ class ToolFacade:
                 "result": result,
             }
         except Exception as exc:
+            code = getattr(exc, "code", type(exc).__name__)
+            message = getattr(exc, "message", None)
+            if not isinstance(message, str) or not message:
+                message = str(exc)
+            if isinstance(code, str) and code and isinstance(message, str) and message:
+                return {"ok": False, "error": code, "detail": message}
             return {"ok": False, "error": "owner_unavailable", "detail": type(exc).__name__}
 
     def _allowed(self, role: str, tool: object) -> ToolSpec | None:

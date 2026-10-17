@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
@@ -180,8 +181,16 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
             policy = LocalAssessmentPolicy.from_run_config(config, state=policy_state)
             policy.validate_binding(project_ref, task_ref, owner.graph.reader)
-            criteria = tuple(criterion for member, criterion in policy.task_criterion_pairs
-                             if member == task_ref)
+            # Admission and other metadata writes can advance the task after
+            # activation. Validation above proves its current content still
+            # matches the retained policy pin; bind the issued command to the
+            # current exact refs so its own revision fences remain effective.
+            task_identity = (task_ref.authority, task_ref.kind, task_ref.id)
+            pairs = tuple((task_ref if (member.authority, member.kind, member.id) == task_identity
+                           else member, criterion)
+                          for member, criterion in policy.task_criterion_pairs)
+            policy = replace(policy, scope_project_ref=project_ref, task_criterion_pairs=pairs)
+            criteria = tuple(criterion for member, criterion in pairs if member == task_ref)
         except Exception as exc:
             raise LandingError("owner assessment policy does not bind this task: " + str(exc)) from exc
         if not criteria:

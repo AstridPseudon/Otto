@@ -270,7 +270,7 @@ def test_owner_registry_binds_lab_and_line_to_dispatch_record_and_reuses_repo_br
 
 
 def test_owner_registry_allows_project_revision_advance_only_while_task_is_still_linked(monkeypatch, tmp_path):
-    registry, task, _record, _token, _repository = _fleet_registry_fixture(
+    registry, task, record, _token, _repository = _fleet_registry_fixture(
         monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"},
         current_project_revision="project-r2")
     project = registry.owner.graph.current(ResourceRef("fixture", "work.project", "project-owned"))
@@ -279,6 +279,7 @@ def test_owner_registry_allows_project_revision_advance_only_while_task_is_still
     # changing its task. The current project still owns that task's lab.
     assert task.payload["project_ref"]["revision"] == "project-r1"
     assert registry.prepare_worker_lab(project.ref, task.ref)["lab_name"] == task.ref.id
+    assert registry.assignment_lookup(record.assignment)["project_ref"] == project.ref.to_dict()
 
     project.payload["tasks"] = []
     with pytest.raises(PermissionError, match="not linked"):
@@ -373,7 +374,8 @@ def test_worker_facade_refuses_foreign_assignment_token(monkeypatch, tmp_path):
     refused = facade.call(foreign, "check")
 
     assert refused["ok"] is False
-    assert refused["error"] == "owner_unavailable"
+    assert refused["error"] == "LookupError"
+    assert refused["detail"] == "assignment has no active dispatch record"
     assert record.assignment == "assignment-owned-by-worker"
     assert _run(line, "rev-parse", "refs/heads/main") == base, "foreign token advanced the project's line"
 
@@ -429,10 +431,24 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
 
     class Reader:
         authority = "owner"
+        def __init__(self):
+            self.current = {}
+            self.revisions = {}
+
         def get_identity(self, ref):
-            known = {item.kind: item for item in (project, task, criterion)}
-            exact = known.get(ref.kind)
-            return SimpleNamespace(ref=exact) if exact is not None and exact.id == ref.id else None
+            return self.current.get((ref.kind, ref.id))
+
+        def get_revision(self, ref):
+            return self.revisions.get(ref)
+
+        def put(self, ref, payload):
+            record = SimpleNamespace(ref=ref, payload=payload)
+            self.current[(ref.kind, ref.id)] = record
+            self.revisions[ref] = record
+
+    reader = Reader()
+    reader.put(project, {"kind": "project", "id": project.id, "title": "Project"})
+    reader.put(criterion, {"kind": "criterion", "id": criterion.id})
 
     scope = SimpleNamespace(ref=scope_ref, criterion_refs=(criterion,), protocol="check-accepted",
         review_required=False, allow_no_review=True,
@@ -457,7 +473,7 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
             return SimpleNamespace(ref=candidate_ref, value=value)
 
     owner = SimpleNamespace(
-        graph=SimpleNamespace(reader=Reader()), owner_actor=AuthenticatedActor("owner", "host", "host"),
+        graph=SimpleNamespace(reader=reader), owner_actor=AuthenticatedActor("owner", "host", "host"),
         assignments=Assignments(), binding=SimpleNamespace(authenticated_actor=lambda _name: actor),
         manager_assessment=lambda **kwargs: commands,
         create_manager_assessment_pool=lambda **_kwargs: None)
@@ -477,10 +493,11 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
     runner_record = {"run_id": "run-1", "commit": "a" * 40, "binding": "b" * 64,
         "argv": ["pytest", "-q"], "cwd": "/repo/lab", "exit_code": 0}
     from herzchen.domains.work.admission import authoring_stamp
-    payload = {"kind": "task", "title": "Task", "project_ref": project.to_dict(),
+    payload = {"kind": "task", "id": task.id, "title": "Task", "project_ref": project.to_dict(),
         "fields": {"check": {"argv": ["pytest", "-q"]}}, "dependencies": [],
         "metadata_namespaces": {}}
     payload["metadata_namespaces"]["work.admission"] = authoring_stamp("task-r1", payload, "reviewer")
+    reader.put(task, payload)
     admitted_task = {"id": task.id, "payload": payload}
 
     policy_changed[0] = True
@@ -519,8 +536,56 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
     assert context["candidate"] == candidate_ref and context["criterion"] == criterion
     assert context["parent_obligation"] == task and context["actor"] == actor
 
+    # Activation retained r1. Admission and owner metadata writes advanced
+    # the project and task before the dispatched worker called done.
+    current_project = ResourceRef("owner", "work.project", project.id, "project-r2")
+    current_task = ResourceRef("owner", "work.task", task.id, "task-r2")
+    reader.put(current_project, {**reader.get_revision(project).payload,
+                                 "lifecycle": "active"})
+    reader.put(current_task, {**payload, "lifecycle": "admitted"})
+    binding["project_ref"] = current_project.to_dict()
+    binding["task_ref"] = current_task.to_dict()
+    binding["task"] = SimpleNamespace(ref=current_task)
+    admitted_task = {"id": task.id, "payload": reader.get_identity(current_task).payload}
+    context = service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
+    assert context["parent_obligation"] == current_task
+    assert context["criterion"] == criterion
+    assert candidate_rows[-1][1]["task_ref"] == current_task.to_dict()
+
+    before = len(candidate_rows)
+    edited_project = ResourceRef("owner", "work.project", project.id, "project-r3")
+    reader.put(edited_project, {"kind": "project", "id": project.id,
+                                "title": "Changed project"})
+    binding["project_ref"] = edited_project.to_dict()
+    with pytest.raises(LandingError, match="project content is stale"):
+        service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
+    assert len(candidate_rows) == before
+    reader.current[(project.kind, project.id)] = reader.get_revision(current_project)
+    binding["project_ref"] = current_project.to_dict()
+
+    # A later authored edit changes the retained task content, so the same
+    # dispatch can no longer create an assessment candidate.
+    before = len(candidate_rows)
+    edited_task = ResourceRef("owner", "work.task", task.id, "task-r3")
+    reader.put(edited_task, {**payload, "title": "Edited task"})
+    binding["task_ref"] = edited_task.to_dict()
+    binding["task"] = SimpleNamespace(ref=edited_task)
+    with pytest.raises(LandingError, match="task content is stale"):
+        service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
+    assert len(candidate_rows) == before
+
     # An existing review-required scope stays separate from fleet check
     # acceptance, even when the controller policy permits check-accepted.
+    reader.current[(task.kind, task.id)] = reader.get_revision(current_task)
+    binding["task_ref"] = current_task.to_dict()
+    binding["task"] = SimpleNamespace(ref=current_task)
+
+    revised_criterion = ResourceRef("owner", "assessment.criterion", criterion.id, "criterion-r2")
+    reader.put(revised_criterion, {"kind": "criterion", "id": criterion.id})
+    with pytest.raises(LandingError, match="criterion is stale"):
+        service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
+    assert len(candidate_rows) == before
+    reader.current[(criterion.kind, criterion.id)] = reader.get_revision(criterion)
     scope.review_required = True
     with pytest.raises(LandingError, match="separate review"):
         service.assessment_context(runner_record, admitted_task, assignment_id="dispatch-1")
