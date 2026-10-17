@@ -180,6 +180,54 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'unavailable')
         self.assertEqual(len(list(lanes.requests(owner_lane(service.home)))), 0)
 
+    def test_read_status_rejects_damaged_schema_and_accepts_live_status(self):
+        from datetime import datetime, timezone
+        import os
+        from otto.hostctl.service import STATUS_SCHEMA
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            live = {
+                "schema": STATUS_SCHEMA,
+                "state": "serving",
+                "holder": {"pid": os.getpid(), "owner_actor": "owner"},
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_seconds": 1.0,
+                "manager_turn_active": False,
+                "in_flight": {
+                    "lane_requests": [{"token": "a" * 32}],
+                    "relays": [],
+                    "manager_lane_queued": {},
+                },
+            }
+            cases = (
+                ("string holder", {"holder": "owner"}, "holder"),
+                ("invalid PID", {"holder": {"pid": "unknown"}}, "holder.pid"),
+                ("invalid actor", {"holder": {"pid": os.getpid(),
+                                                 "owner_actor": 7}}, "holder.owner_actor"),
+                ("invalid in_flight", {"in_flight": "busy"}, "in_flight"),
+                ("invalid requests", {"in_flight": {
+                    "lane_requests": "busy", "relays": []}}, "in_flight.lane_requests"),
+                ("invalid interval", {"heartbeat_seconds": "often"}, "heartbeat_seconds"),
+                ("invalid heartbeat type", {"heartbeat_at": []}, "heartbeat_at"),
+                ("wrong schema", {"schema": "other"}, "schema"),
+            )
+            for label, changes, field in cases:
+                with self.subTest(label=label):
+                    lanes.atomic_json(path, {**live, **changes})
+                    result = read_status(path)
+                    self.assertEqual(result["outcome"], "unavailable", result)
+                    self.assertIn("invalid status schema:", result["reason"])
+                    self.assertIn(field, result["reason"])
+                    self.assertIs(result["provider_called"], False)
+                    self.assertNotIn("holder", result)
+
+            lanes.atomic_json(path, live)
+            result = read_status(path)
+            self.assertEqual(result["outcome"], "running", result)
+            self.assertIs(result["holder_alive"], True)
+            self.assertIs(result["busy"], True)
+
     def test_two_phase_shutdown_keeps_admitted_capture_live_until_host_and_store_release(self):
         service, host = self.make_service()
         service.start_heartbeat()

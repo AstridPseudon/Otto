@@ -2,14 +2,16 @@
 import argparse
 import contextlib
 import io
+import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from otto.hostctl import lanes
 from otto.hostctl.portfolio import prepare_portfolio_request
 from otto.hostctl.cli import _await
-from otto.hostctl.service import OwnerService
+from otto.hostctl.service import STATUS_SCHEMA, OwnerService
 
 
 def config(home):
@@ -22,8 +24,11 @@ class OwnerSafeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             lane = lanes.private_dir(Path(directory) / "client-lane")
             lanes.atomic_json(lane / lanes.STATUS_FILE, {
+                "schema": STATUS_SCHEMA,
                 "state": "closed", "service_home": "/srv/otto",
-                "holder": {"owner_actor": "Ada"},
+                "holder": {"pid": os.getpid(), "owner_actor": "Ada"},
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_seconds": 1.0,
                 "closure": {"reason": "planned upgrade", "expected_return": "10 minutes"},
             })
             result = _await(lane, {"command": "whoami"}, 10, owner_actor="Ada")
