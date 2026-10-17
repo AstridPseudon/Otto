@@ -1,17 +1,17 @@
 # Cold worker UX trace
 
-Trace time: about 4 minutes, from reading the worker-facing facade and tool schemas through mapping the successful path and refusal recovery.
+Trace time: about 4 minutes of code/schema inspection by a fresh agent. No worker, owner, or MCP call was executed, so the steps below are inferred from the facade and tests rather than observed at runtime.
 
 ## Available verbs and successful path
 
 This `ToolFacade` exposes three worker verbs: `task`, `check`, and `done`. Its token-scoped `listing` operation exposes each tool's name, kind, description, and declared argument names. The assignment is carried by the token; it is not a worker argument.
 
-1. Call `tools/list` with the assigned token and choose an available tool.
-2. Call `task` with a JSON object containing only declared arguments to perform the work.
-3. Call `check` with its declared arguments to get feedback. A successful check is recorded in the feedback ledger and explicitly reports `accepted: false`.
-4. Address feedback, then call `done` to submit. A successful `done` reports `submitted: true` and `accepted: false`.
+1. Inferred: call `tools/list` with the assigned token and choose an available tool.
+2. Inferred: call `task` with a JSON object containing only declared arguments to perform the work.
+3. Inferred: call `check` with its declared arguments to get feedback. A successful check is recorded in the feedback ledger and explicitly reports `accepted: false`.
+4. Inferred: address feedback, then call `done` to submit. A successful `done` reports `submitted: true` and `accepted: false`.
 
-The trace used four calls (list, task, check, done). The project plan describes the worker surface as `task`, `check`, `ask`, `done`, but `src/herzchen/fleet/tools/rules.py:52` allows only task/check/done kinds and this package has no ask verb. TP6 leaves this scope question to the orchestrator; it only adds guidance to refusal replies.
+The inferred journey has four calls (list, task, check, done); it was not executed. The project plan describes the worker surface as `task`, `check`, `ask`, `done`, but `src/herzchen/fleet/tools/rules.py:52` allows only task/check/done kinds and this package has no ask verb. TP6 leaves this scope question to the orchestrator; it only adds guidance to refusal replies. Runtime worker-journey UX remains unmeasured because starting an Otto owner is prohibited for this project run.
 
 ## Refusal recovery, before and after
 

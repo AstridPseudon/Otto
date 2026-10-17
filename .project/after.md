@@ -26,14 +26,17 @@ No sealed runner records or accepted-task runs are available in the supplied his
 |---|---:|---|
 | TP1 | +126/-0 | Added the historical log parser and baseline. |
 | TP3 | +100/-0 | Changed feedback `check` to select focused tests. The broad feedback-selection behavior is superseded, but TP3 removed no physical source lines. |
-| TP6 | +114/-8 | Made worker refusal responses actionable and recorded the cold-agent UX pass. |
+| TP3 review fix | +105/-9 | Included committed work and broad pytest targets; preserved option values and filtered deleted or old rename paths. No physical source deletion. |
+| TP3 option fix | +6/-1 | Preserved bare `tests` values for unsupported options such as `--pyargs` and `--cov`. No physical source deletion. |
+| TP3 pyargs fix | +4/-0 | Kept collection argv unchanged whenever `--pyargs` is present. No physical source deletion. |
+| TP6 | +114/-8 | Made worker refusal responses actionable and recorded a four-minute fresh-agent code/schema trace. The task/check/done steps were inferred, not executed; runtime journey UX remains unmeasured. |
 
 These are task diffs recorded by their landed commits, not the cumulative project diff. No additional cold feedback path is provably unused by callers: the feedback operation remains directly called through the landing owner port and test adapters. No source deletion is justified. The deletion budget used is zero physical lines; TP3 only superseded broad selection behavior.
 
 ## Checks and limits
 
 - `tests/test_throughput_report.py`: 2 passed (TP1 parser and runner-summary checks).
-- `tests/test_landing.py`: 16 passed (TP3 selection checks).
+- `tests/test_landing.py`: 16 passed (initial TP3 selection checks); 18 passed after Astra review fixes.
 - `tests/test_worker_refusal_next_action.py`: 3 passed (TP6 refusal checks).
 - TP3 worker-reported checks: `tests/test_fleet_custody.py` 15 passed / 14 sandbox failures, and `tests/test_tools.py` 22 passed / 7 environment failures. These require the gate environment.
 - TP2 is blocked: only repeated D19 sweeps are evidenced, and those must not be cached; no sealed runner records establish a separate eligible repeat.
