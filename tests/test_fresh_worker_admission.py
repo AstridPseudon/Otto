@@ -9,7 +9,8 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 import unittest
-from herzchen.contracts import ResourceRef
+from herzchen.contracts import ResourceRef, TransactionContext
+from herzchen.content import ContentDocument, ContentRevision
 from herzchen.domains.work import WorkGraph, contributions, admission
 from herzchen.domains.work.admission import TaskNotAdmittedError
 from herzchen.domains.work.assignments import ResponsibilityAssignments
@@ -21,6 +22,96 @@ from otto.agents.gateway import OwnerDueRecordAttemptCapture
 from otto.agents.herzchen_adapter import HerzchenCodexAdapter
 from otto.portfolio.identity_context import HostCallerBinding
 from tests import test_execution_application as application
+
+
+class WorkerOwnerScopeSettlementTests(unittest.TestCase):
+ def fixture(self):
+  f=application.ExecutionApplicationTests();f.setUp();self.addCleanup(f.doCleanups)
+  prepared=f.app.assign_worker(**f.request())
+  self.assertEqual(prepared['outcome'],'committed',prepared)
+  return f,prepared['schedule_id']
+
+ def run_after_native_work(self,change):
+  f,schedule=self.fixture()
+  original=application.ProviderBinding.execute
+  changes=[]
+  def execute(binding,request):
+   result=original(binding,request)
+   if binding.options.get('delivered_brief'):
+    changes.append(change(f,schedule))
+   return result
+  with patch.object(application.ProviderBinding,'execute',execute):
+   settled=f.app.start(schedule_id=schedule)
+  self.assertEqual(len(f.provider.calls),1)
+  self.assertEqual(len(changes),1,'owner mutation did not run after native work')
+  return f,schedule,settled
+
+ def test_worker_landing_and_completion_settle_completed(self):
+  def complete(f,_schedule):
+   graph=WorkGraph(f.store,actor=f.actor)
+   graph.set_lifecycle(f.task.ref,Lifecycle.ACTIVE,
+                       logical_request_key='worker-landed-task')
+   graph.set_lifecycle(f.project.ref,Lifecycle.ACTIVE,
+                       logical_request_key='worker-landed-project')
+   graph.set_lifecycle(f.task.ref,Lifecycle.COMPLETED,
+                       logical_request_key='worker-completed-task')
+  f,schedule,settled=self.run_after_native_work(complete)
+  self.assertEqual(settled['outcome'],'succeeded',
+                   (settled.get('result') or {}).get('error') or settled.get('error'))
+  due=f.port.read_due(schedule)
+  self.assertEqual(due['stop_state'],'completed')
+  self.assertEqual(due['completion_state'],'succeeded')
+  self.assertTrue(due['host_evidence']['gateway_attempt']['manager_acceptance']['accepted'])
+  graph=WorkGraph(f.store)
+  task=graph.current(f.task.ref)
+  self.assertEqual(task.payload['lifecycle'],'completed')
+  self.assertNotEqual(task.revision,f.task.revision)
+  self.assertNotEqual(graph.current(f.project.ref).revision,f.project.revision)
+  self.assertTrue(admission.task_content_matches(f.store,f.task.ref,task.payload,current_ref=task.ref))
+
+ def test_assignment_change_after_worker_delivery_settles_unknown(self):
+  def reassign(f,schedule):
+   due=f.app._read(schedule)
+   f.app.assignments.reassign(ResourceRef.from_dict(due.assignment_ref),
+       principal='replacement-worker',expected_generation=due.generation,
+       logical_request_key='external-reassignment',actor=f.actor)
+  f,schedule,settled=self.run_after_native_work(reassign)
+  self.assertEqual(settled['outcome'],'unknown',settled)
+  self.assertEqual(settled['error']['code'],'StateConflictError')
+  self.assertIn('assignment changed before owner CAS',settled['error']['message'])
+  self.assertNotEqual(f.port.read_due(schedule)['stop_state'],'completed')
+
+ def test_mandate_change_after_worker_delivery_settles_unknown(self):
+  def change_mandate(f,schedule):
+   due=f.app._read(schedule)
+   ref=ResourceRef.from_dict(due.target['mandate_ref'])
+   current=f.owner.content.read(ResourceRef(ref.authority,ref.kind,ref.id))
+   document=ContentDocument.from_dict(current['document'])
+   content=dict(current['revision']['content'])
+   content['brief']={'role':'worker','mandate':'Changed task'}
+   revision=ContentRevision(document.ref,'rev-2',content,f.actor,
+                            parent_revision=ref.revision)
+   context=TransactionContext(f.actor,'external-mandate-change','a'*64,
+                              expected_revision=ref.revision)
+   return f.owner.content.execute(f.owner.content.build_append_revision(
+       context,document,revision))
+  f,schedule,settled=self.run_after_native_work(change_mandate)
+  self.assertEqual(settled['outcome'],'unknown',settled)
+  self.assertEqual(settled['result']['error']['code'],'authorized_result_unverified')
+  self.assertIn('canonical',settled['result']['error']['message'])
+  self.assertNotEqual(f.port.read_due(schedule)['stop_state'],'completed')
+
+ def test_external_task_content_edit_after_worker_delivery_settles_unknown(self):
+  def edit_task(f,_schedule):
+   WorkGraph(f.store,actor=f.actor).revise(f.task.ref,title='Externally changed task',
+       logical_request_key='external-task-edit')
+  f,schedule,settled=self.run_after_native_work(edit_task)
+  self.assertEqual(settled['outcome'],'unknown',settled)
+  self.assertEqual(settled['result']['error']['code'],'authorized_result_unverified')
+  self.assertIn('canonical task changed',settled['result']['error']['message'])
+  self.assertNotEqual(f.port.read_due(schedule)['stop_state'],'completed')
+  task=WorkGraph(f.store).current(f.task.ref)
+  self.assertFalse(admission.task_content_matches(f.store,f.task.ref,task.payload,current_ref=task.ref))
 
 class FreshWorkerAdmissionTests(unittest.TestCase):
  def fixture(self):
