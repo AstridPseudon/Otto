@@ -44,7 +44,12 @@ class Scratch(unittest.TestCase):
         self.ps_listing = self.tmp / "ps-listing"
         self.ps_listing.write_text("")
         ps_stub = self.bin / "ps"
-        ps_stub.write_text('#!/bin/sh\ncat "$OTTO_TEST_PS_LISTING"\n')
+        # The gate lists processes before the check and after the sweep: the stub answers the first call
+        # from ps-listing.before (empty unless a test sets it) and later calls from ps-listing.
+        (self.tmp / "ps-listing.before").write_text("")
+        ps_stub.write_text('#!/bin/sh\nc="$OTTO_TEST_PS_LISTING.calls"; n=$(($(cat "$c" 2>/dev/null || echo 0) + 1)); '
+                           'echo "$n" > "$c"\nif [ "$n" = 1 ]; then cat "$OTTO_TEST_PS_LISTING.before"; '
+                           'else cat "$OTTO_TEST_PS_LISTING"; fi\n')
         ps_stub.chmod(0o755)
         self.env = dict(
             os.environ, OTTO_REPO=str(self.repo), LABS_DIR=str(self.labs), OPS_DIR=str(self.ops),
@@ -139,6 +144,16 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "land.lock").exists())
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
+
+    def test_temporary_service_owner_left_before_the_landing_is_logged_not_refused(self):
+        self.lab("T26", {"note.txt": "x\n"})
+        home = self.tmp / "older-orphan-home"
+        line = "424242 python service run --home %s\n" % home
+        (self.tmp / "ps-listing.before").write_text(line)
+        self.ps_listing.write_text(line)
+        r = self.land("T26")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("left before this landing (not its own)", self.log("T26"))
 
     def test_temporary_service_owner_orphan_is_named(self):
         self.lab("T25", {"note.txt": "x\n"})

@@ -165,6 +165,41 @@ fi
 # ---- gate ----
 G="$RUN/.gate"; rm -rf "$G"; mkdir -p "$G"  # dot-folders: portfolio applies skip scratch
 
+# Staging owners (`service run`) whose home is under a temporary root, one "pid home" per line.
+# A swept test can leave one behind even when its temporary home has no pidfile (TOOLING21, 17 Oct).
+temp_owners() {
+  "$PY" - "${TMPDIR:-/tmp}" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+roots = []
+for candidate in (sys.argv[1], "/tmp", "/private/tmp"):
+    if candidate:
+        root = os.path.realpath(candidate)
+        if root not in roots:
+            roots.append(root.rstrip(os.sep) + os.sep)
+try:
+    listing = subprocess.run(["ps", "-axo", "pid=,command="], check=True,
+                             text=True, capture_output=True).stdout
+except (OSError, subprocess.CalledProcessError) as exc:
+    print("cannot inspect processes: %s" % exc, file=sys.stderr)
+    raise SystemExit(2)
+for line in listing.splitlines():
+    match = re.match(r"\s*(\d+)\s+(.*)", line)
+    if not match or "service run" not in match.group(2):
+        continue
+    home_match = re.search(r"--home(?:=|\s+)(\S+)", match.group(2))
+    if not home_match:
+        continue
+    home = os.path.realpath(home_match.group(1))
+    if any(home.startswith(root) for root in roots):
+        print("%s %s" % (match.group(1), home))
+PY
+}
+temp_owners > "$G/owners.before" || fail "could not inspect temporary service owners"
+
 # Run one test file in DIR with output to OUT; the last line records pytest's exit status.
 run_pytest() {  # DIR FILE OUT
   local rc=0
@@ -307,39 +342,13 @@ for f in $SWEEP; do
   done < "$G/lab.ids"
 done
 
-# A swept test can leave a service owner behind even when its temporary home has no pidfile.
-# Check visible temporary roots by process command line and report the PID plus its --home.
-ORPHANS="$($PY - "${TMPDIR:-/tmp}" <<'PY'
-import os
-import re
-import subprocess
-import sys
-
-roots = []
-for candidate in (sys.argv[1], "/tmp", "/private/tmp"):
-    if candidate:
-        root = os.path.realpath(candidate)
-        if root not in roots:
-            roots.append(root.rstrip(os.sep) + os.sep)
-try:
-    listing = subprocess.run(["ps", "-axo", "pid=,command="], check=True,
-                             text=True, capture_output=True).stdout
-except (OSError, subprocess.CalledProcessError) as exc:
-    print("cannot inspect processes: %s" % exc, file=sys.stderr)
-    raise SystemExit(2)
-for line in listing.splitlines():
-    match = re.match(r"\s*(\d+)\s+(.*)", line)
-    if not match or "service run" not in match.group(2):
-        continue
-    home_match = re.search(r"--home(?:=|\s+)(\S+)", match.group(2))
-    if not home_match:
-        continue
-    home = os.path.realpath(home_match.group(1))
-    if any(home.startswith(root) for root in roots):
-        print("orphan service run pid %s home %s" % (match.group(1), home))
-PY
-)" || fail "could not inspect temporary service owners"
-[ -z "$ORPHANS" ] || fail "orphan service run(s) after sweep: $ORPHANS"
+# Only an owner that appeared during this landing is its own: one left by something else (another
+# session, an earlier run) is logged, not held against this task.
+temp_owners > "$G/owners.after" || fail "could not inspect temporary service owners"
+NEW_OWNERS="$(grep -vxF -f "$G/owners.before" "$G/owners.after" || true)"
+OLD_OWNERS="$(grep -xF -f "$G/owners.before" "$G/owners.after" || true)"
+[ -z "$OLD_OWNERS" ] || log "staging owner(s) under a temporary root left before this landing (not its own): $(echo $OLD_OWNERS)"
+[ -z "$NEW_OWNERS" ] || fail "orphan service run(s) after sweep: $(echo "$NEW_OWNERS" | sed 's/^/pid /; s/ \// home \//' | tr '\n' ' ')"
 
 [ -z "$NEW_FAILS" ] || fail "new test failures: $(echo "$NEW_FAILS" | grep . | tr '\n' ' ')"
 
