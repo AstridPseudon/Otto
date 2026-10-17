@@ -1106,11 +1106,7 @@ class ManagerJourneyService:
                 # The worker's original parent remains immutable historical evidence.
                 # Resource adoption may advance that parent's assignment pins;
                 # synchronize only the fixed view's current manager entrance.
-                # A manager that submitted this worker already named its exact
-                # authenticated occurrence. The service head can still point at
-                # the preceding settled turn while that callback is live.
-                manager_schedule = (worker.get("manager_schedule_id")
-                    or self._current_manager_schedule())
+                manager_schedule = self._current_manager_schedule()
                 sync = getattr(app, "synchronize_manual_manager_occurrence", None)
                 if callable(sync):
                     sync(schedule_id=manager_schedule)
