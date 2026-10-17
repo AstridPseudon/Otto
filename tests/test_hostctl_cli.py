@@ -27,6 +27,7 @@ from otto.hostctl import config as host_config
 
 FAKE_VERSION = "2.1.293 (Claude Code)"
 DRIFTED_VERSION = "2.1.296 (Claude Code)"
+OPERATOR = "otto-test-operator"
 SANDBOX_SKIP = "admission dry-run runs the macOS sandbox-exec preflight"
 
 TASKLIST = """# Tasklist: demo-run
@@ -123,7 +124,8 @@ class HostctlFixture(unittest.TestCase):
         """One Otto: install a disposable Store, run its ONE owner service, and have
         the owner admit Claude Code as its own principal (the host is then a client)."""
         code, out = self._ottoctl("install", "--store", self._store_path(), "--authority", "otto-test-owner-v1",
-                                  "--owner", "otto-test-owner", "--credential-ref", "otto-test-owner-credential",
+                                  "--owner", "otto-test-owner", "--operator", OPERATOR,
+                                  "--credential-ref", "otto-test-owner-credential",
                                   "--create")
         self.assertEqual(code, 0, out)
         self._start_service()
@@ -186,7 +188,8 @@ class HostctlCliTest(HostctlFixture):
         self.assertEqual(os.stat(self.home).st_mode & 0o777, 0o700)
         before = _sha256(self._store_path())
         code, out = self._ottoctl("install", "--store", self._store_path(), "--authority", "otto-test-owner-v1",
-                                  "--owner", "otto-test-owner", "--credential-ref", "x", "--create")
+                                  "--owner", "otto-test-owner", "--operator", OPERATOR,
+                                  "--credential-ref", "x", "--create")
         self.assertNotEqual(code, 0)
         self.assertEqual(out["outcome"], "unavailable")
         self.assertEqual(_sha256(self._store_path()), before, "a second install must not touch the Store")
@@ -382,7 +385,8 @@ class OwnerServiceClientTests(HostctlFixture):
 
     def test_a_separate_client_home_names_no_store_and_works_only_through_the_service(self):
         code, out = self._ottoctl("install", "--store", self._store_path(), "--authority", "otto-test-owner-v1",
-                                  "--owner", "otto-test-owner", "--credential-ref", "otto-test-owner-credential",
+                                  "--owner", "otto-test-owner", "--operator", OPERATOR,
+                                  "--credential-ref", "otto-test-owner-credential",
                                   "--create")
         self.assertEqual(code, 0, out)
         client = os.path.join(os.path.dirname(self.home), "claude-client")

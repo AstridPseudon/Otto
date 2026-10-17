@@ -175,6 +175,7 @@ class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
     """Owner-only composition over the accepted ProjectSheet and EDT services."""
 
     def __init__(self, store: Any, *, sheet: Any, authoring: Any, materializer: Any = None,
+                 operator_actor: Any = None,
                  folder_transport_request_bytes: int = 16 * 1024) -> None:
         from .project_folder import MAX_OPERATION_BYTES, MEASURED_LIVE_REQUEST_BYTES
         if type(folder_transport_request_bytes) is not int or not MEASURED_LIVE_REQUEST_BYTES <= folder_transport_request_bytes <= MAX_OPERATION_BYTES:
@@ -183,6 +184,7 @@ class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
         self.reader = store.consumer()
         self.authority = store.authority
         self.sheet = sheet
+        self.operator_actor = operator_actor
         self.authoring = authoring
         self.materializer = materializer
         from herzchen.content import ContentCommandHandler
@@ -456,7 +458,7 @@ class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
             created = self.sheet.create_pending(
                 title=title,
                 outcome=outcome,
-                creator=actor,
+                creator=self.operator_actor or actor,
                 curator=actor,
                 metadata=dict(metadata),
                 logical_request_key=project_key,
@@ -582,6 +584,7 @@ class PortfolioOwnerBootstrap:
         "store",
         "binding",
         "owner_actor",
+        "operator_actor",
         "graph",
         "sheet",
         "content",
@@ -609,6 +612,7 @@ class PortfolioOwnerBootstrap:
         *,
         binding: HerzchenBindingConfig,
         owner_actor: str,
+        operator_actor: Optional[str] = None,
         materializer: Any = None,
         portfolio_ref: Any = None,
         main_assignment_ref: Any = None,
@@ -634,6 +638,7 @@ class PortfolioOwnerBootstrap:
         if not isinstance(binding, HerzchenBindingConfig):
             raise TypeError("binding must be HerzchenBindingConfig")
         authenticated = binding.authenticated_actor(owner_actor)
+        operator = binding.authenticated_actor(operator_actor or owner_actor)
         if authenticated.authority != store.authority:
             raise ValueError("binding authority does not belong to the supplied store")
         if project_read_grant is not None and (
@@ -650,6 +655,7 @@ class PortfolioOwnerBootstrap:
         self.evidence_payload_resolver = evidence_payload_resolver
         self.binding = binding
         self.owner_actor = authenticated
+        self.operator_actor = operator
         self.project_read_grant = project_read_grant
         self.graph = WorkGraph(store, actor=authenticated)
         # Assignment instruction adoption is an optional late-registered
@@ -674,6 +680,7 @@ class PortfolioOwnerBootstrap:
             orchestration = Orchestration(
                 store,
                 actor=authenticated,
+                operator_actor=operator,
                 portfolio_ref=portfolio_ref,
                 main_assignment_ref=main_assignment_ref,
                 allowed_creator_ids=allowed_creator_ids,
@@ -699,6 +706,7 @@ class PortfolioOwnerBootstrap:
             sheet=self.sheet,
             authoring=self.authoring,
             materializer=materializer,
+            operator_actor=operator,
             folder_transport_request_bytes=folder_transport_request_bytes,
         )
 
@@ -732,6 +740,7 @@ class PortfolioOwnerBootstrap:
             reader=self.graph.reader,
             binding=self.binding,
             dependency_owner_actor=self.owner_actor,
+            operator_actor=self.operator_actor,
             sheet_port=self.sheet.command_port,
             content_port=self.content.command_port,
             assignments_port=self.assignments.command_port,

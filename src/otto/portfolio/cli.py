@@ -34,7 +34,7 @@ def _add_format(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=("json", "text"), default="json", help="structured JSON or readable text with the full canonical response")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m otto.portfolio.cli",
         description="manager entry over injected canonical Otto and Herzchen ports",
@@ -144,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--request-key", required=True)
     _add_format(release_parser)
 
-    admit = sub.add_parser("admit",help="pin the exact task revision a reviewer approved; an unreviewed agent revision or a changed sheet is refused (your own edits need no admit)")
+    admit = sub.add_parser("admit", help="unavailable here; the owner service admits after local operator presence")
     admit.add_argument("--task-ref", required=True, help="canonical work.task ResourceRef as JSON")
     admit.add_argument("--revision", required=True, help="the exact revision id that was reviewed, e.g. rev-3")
     admit.add_argument("--review-ref", required=True, help="the approving review's ResourceRef as JSON, pinned to its revision")
@@ -438,6 +438,18 @@ def build_parser() -> argparse.ArgumentParser:
     direction_overview.add_argument("--limit", type=int, default=50)
     direction_overview.add_argument("--cursor")
     _add_format(direction_overview)
+    if bound_actor is not None:
+        # Every --actor option is required for standalone callers. A host-bound
+        # invocation supplies the authenticated actor as its parser default.
+        pending = [parser]
+        while pending:
+            current = pending.pop()
+            for action in current._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    pending.extend(action.choices.values())
+                elif action.dest == "actor" and "--actor" in action.option_strings:
+                    action.required = False
+                    action.default = bound_actor
     return parser
 
 
@@ -1071,14 +1083,14 @@ def main(
     labs: Any = None,
     editor_host: Any = None,
 ) -> int:
-    parser = build_parser()
+    if bound_actor is not None and (not isinstance(bound_actor, str) or not bound_actor.strip()):
+        raise ValueError("bound_actor must be non-blank text")
+    parser = build_parser(bound_actor=bound_actor)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 0
     if bound_actor is not None:
-        if not isinstance(bound_actor, str) or not bound_actor.strip():
-            raise ValueError("bound_actor must be non-blank text")
         actor_selector = getattr(args, "actor", None)
         if actor_selector is not None and actor_selector != bound_actor:
             result = {
@@ -1090,6 +1102,8 @@ def main(
             }
             _emit(result, getattr(args, "format", "json"))
             return _exit_code(result)
+        if actor_selector is not None:
+            args.actor = bound_actor
     portfolio_injected = portfolio is not None
     if portfolio is None:
         portfolio = OttoPortfolio()
@@ -1431,17 +1445,9 @@ def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[s
 
 
 def _admit_command(args: argparse.Namespace, session: Any) -> dict[str, Any]:
-    if session is None:
-        return _surface_unavailable(
-            "otto.admit.v1", "owner_session_unavailable",
-            "Inject the owner session at cli.main(..., status_session=...).",
-        )
-    from .admit import admit_task
-    task_ref = _parse_ref(args.task_ref, "task_ref")
-    if task_ref.get("kind") != "work.task":
-        return _request_error("admit requires a work.task ref")
-    return admit_task(session, task_ref=task_ref, revision=args.revision,
-                      review_ref=_parse_ref(args.review_ref, "review_ref", pinned=True), request_key=args.request_key)
+    return {"outcome": "denied", "schema": "otto.admit.v1", "dispatch": False,
+            "error": {"code": "owner_presence_required",
+                      "message": "admission requires the dedicated owner service admit command"}}
 
 
 def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[str, Any]:
@@ -1653,7 +1659,8 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
     out = StringIO()
     try:
         with redirect_stdout(out):
-            code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session)
+            code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session,
+                        bound_actor=session.owner.owner_actor.actor)
     except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
         return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
     text = out.getvalue()

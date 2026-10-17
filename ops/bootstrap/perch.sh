@@ -151,7 +151,7 @@ save_step() {  # NAME REF_FROM
   if [ -z "$ADMITTED" ]; then echo '{"outcome": "unavailable"}' > "$RAW/save-$name.json"; return 0; fi
   [ -z "$ref" ] || args+=(--ref-from "$ref")
   if "$PY" -I "$REPORT_PY" save-doc --project "$CANARY/project.json" --stage "$SAVE_STAGE" "${args[@]}" --out "$doc" \
-      && cold_client portfolio --portfolio "$SAVE_PORTFOLIO" save "$doc" --actor owner > "$RAW/save-$name.json" 2>> "$RAW/save-errors.txt"; then
+      && cold_client portfolio --portfolio "$SAVE_PORTFOLIO" save "$doc" > "$RAW/save-$name.json" 2>> "$RAW/save-errors.txt"; then
     return 0
   fi
   echo '{"outcome": "unavailable"}' > "$RAW/save-$name.json"

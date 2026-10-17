@@ -195,6 +195,7 @@ class FiniteWorkOperations:
         orchestration_port: Any = None,
         orchestration_portfolio: Any = None,
         dependency_owner_actor: Any = None,
+        operator_actor: Any = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
         content_command_guard: Any = None,
         direction_context_reader: Any = None,
@@ -216,6 +217,7 @@ class FiniteWorkOperations:
         self.project_read_grant = project_read_grant
         self.binding = binding
         self.dependency_owner_actor = dependency_owner_actor
+        self.operator_actor = operator_actor
         self.sheet_port = sheet_port
         self.content_port = content_port
         self.content_command_guard = content_command_guard
@@ -462,7 +464,7 @@ class FiniteWorkOperations:
                 outcome=edit.get("outcome", ""),
                 logical_request_key=request_id,
                 actor=actor_value,
-                creator=actor_value,
+                creator=self.operator_actor or actor_value,
                 curator=actor_value,
                 metadata=self._metadata(payload, request_id, payload.get("template", "blank")),
             )
@@ -1070,7 +1072,7 @@ class FiniteWorkOperations:
                 outcome=outcome,
                 logical_request_key=request_id,
                 actor=actor_value,
-                creator=actor_value,
+                creator=self.operator_actor or actor_value,
                 curator=actor_value,
                 metadata=metadata,
             )
@@ -1562,7 +1564,7 @@ class FiniteWorkOperations:
                 outcome=edit.get("outcome", ""),
                 logical_request_key=request_id + "-project",
                 actor=self._actor(actor),
-                creator=self._actor(actor),
+                creator=self.operator_actor or self._actor(actor),
                 curator=self._actor(actor),
                 metadata=self._metadata(payload, request_id, payload["template"]),
             )
@@ -2342,6 +2344,7 @@ class FiniteWorkOperations:
                 created = self.sheet_port.create_pending(
                     title=project_values.get("title"), outcome=project_values.get("outcome", ""),
                     sheet=sheet, logical_request_key=request_id, actor=actor_value,
+                    creator=self.operator_actor or actor_value, curator=actor_value,
                 )
                 return {"outcome": "replayed" if before is not None else "saved",
                         "project_ref": _json_value(created.project.ref),

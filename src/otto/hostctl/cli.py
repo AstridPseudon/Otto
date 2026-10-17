@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--store", required=True, help="the Store file (an existing owner's, or a new one with --create)")
     install.add_argument("--authority", required=True, help="the Store authority namespace")
     install.add_argument("--owner", required=True, help="the owner service principal that holds the Store")
+    install.add_argument("--operator", required=True, help="the human operator principal, distinct from owner and hosts")
     install.add_argument("--credential-ref", required=True, help="the owner binding's credential label (no secret)")
     install.add_argument("--create", action="store_true", help="create a NEW Store (fresh machine or tests only)")
     host = sub.add_parser("host", help="inspect a joined host")
@@ -144,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     admit.add_argument("--qualify-version", action="append", default=[],
                        help="additional exact launcher --version string qualified for the parser schema")
     admit.add_argument("--conversation", help="the orchestrator's native session id (default: a receipt mailbox)")
+    revision_admit = service_sub.add_parser("admit", help="OPERATOR: admit one reviewed task revision after the owner checks local presence")
+    revision_admit.add_argument("--task-ref", required=True, help="canonical work.task ResourceRef as JSON")
+    revision_admit.add_argument("--revision", required=True, help="exact reviewed task revision")
+    revision_admit.add_argument("--review-ref", required=True, help="exact approving review ResourceRef as JSON")
+    revision_admit.add_argument("--request-key", required=True, help="stable admission request key")
     service_sub.add_parser("status", help="is the owner busy? holder, generation, heartbeat, attached project, "
                            "manager turn and in-flight requests (reads the published status only)")
     stop = service_sub.add_parser("stop", help="OPERATOR: ask the service to drain and close (writes its stop marker)")
@@ -213,7 +219,8 @@ def cmd_install(args: argparse.Namespace) -> Any:
     if host_config.config_path(home).exists():
         raise host_config.HostConfigError("Otto is already installed at " + str(home))
     config = host_config.new_installation(home, store_path=args.store, authority=args.authority,
-        owner_actor=args.owner, credential_ref=args.credential_ref, python=str(Path(sys.executable).absolute()))
+        owner_actor=args.owner, credential_ref=args.credential_ref, python=str(Path(sys.executable).absolute()),
+        operator_actor=args.operator)
     config = create_store(config) if args.create else attach_store(config)
     host_config.write(home, config)
     _receipt(home, "install", {"installation": config})
@@ -325,7 +332,9 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
         out, err = io.StringIO(), io.StringIO()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio)
+                code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio,
+                                          bound_actor=(session.owner.owner_actor.actor if getattr(args, "owner_authorized", False)
+                                                       else session.host_principal()))
         except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
             return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code,
                     "message": (out.getvalue() + err.getvalue()).strip()}, "provider_called": False}
@@ -788,6 +797,17 @@ def cmd_service_admit(args: argparse.Namespace) -> Any:
     return _await(owner_lane(home), request, args.wait_seconds)
 
 
+def cmd_service_admit_revision(args: argparse.Namespace) -> Any:
+    """Forward only revision selectors; the owner chooses the actor and proves presence."""
+    from .service import owner_lane
+    home = _home(args)
+    host_config.load(home)
+    request = {"command": "admit", "args": {
+        "task_ref": json.loads(args.task_ref), "revision": args.revision,
+        "review_ref": json.loads(args.review_ref), "request_key": args.request_key}}
+    return _await(owner_lane(home), request, args.wait_seconds)
+
+
 def cmd_service_status(args: argparse.Namespace) -> Any:
     """Is the owner busy? Read the status the service publishes (no Store access)."""
     from .service import read_status, status_path, with_lane_advice
@@ -952,6 +972,7 @@ HOST_OPERATIONS = {
 LOCAL_COMMANDS = {
     ("install", None): cmd_install,
     ("service", "run"): cmd_service_run, ("service", "admit-host"): cmd_service_admit,
+    ("service", "admit"): cmd_service_admit_revision,
     ("service", "status"): cmd_service_status, ("service", "stop"): cmd_service_stop,
     ("service", "drain"): cmd_service_drain,
     ("request-status", None): cmd_request_status,
@@ -1027,7 +1048,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if (key == ("service", "run") and outcome == "closed"
             and result.get("owner_exit_requested") is not True):
         return EXIT_ERROR
-    return EXIT_UNAVAILABLE if outcome == "unavailable" else EXIT_ERROR if outcome in {"error", "blocked"} else EXIT_OK
+    return EXIT_UNAVAILABLE if outcome == "unavailable" else EXIT_ERROR if outcome in {
+        "error", "blocked", "denied", "rejected"} else EXIT_OK
 
 
 if __name__ == "__main__":
