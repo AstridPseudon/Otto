@@ -173,6 +173,7 @@ class WorkerCustodyTests(unittest.TestCase):
         host = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
         host._process_groups['worker'] = {'pid': process.pid, 'pgid': process.pid,
                                           'birth': _process_start_identity(process.pid)['birth']}
+        host.start()
         host.close()
         self.assertLess(process.wait(timeout=2), 0, 'forced owner close left its fake worker alive')
 
@@ -285,6 +286,28 @@ class WorkerCustodyTests(unittest.TestCase):
 
 
 class RestartProcessScopeTests(unittest.TestCase):
+    def test_rejected_contender_close_cannot_resume_active_owners_latch(self):
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-contender-') as root:
+            owner = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            owner.start()
+            try:
+                latch = str(owner._scope_latch_path('work'))
+                Path(latch).write_text(json.dumps({'pgid': 999, 'leader_birth': 'birth',
+                    'state': 'running', 'members': {'999': 'birth'}}))
+                (Path(root) / 'capacity-process-groups.json').write_text(json.dumps({'work': {
+                    'scope_latch': latch, 'scope_disposition': 'running'}}))
+                contender = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+                with mock.patch('herzchen.fleet.custody.resume_cleanup') as resume:
+                    with self.assertRaisesRegex(RuntimeError, 'another execution host owns'):
+                        contender.start()
+                    contender.close()
+                    resume.assert_not_called()
+                    self.assertTrue(Path(latch).exists())
+            finally:
+                with mock.patch.object(owner, '_terminate_recorded_process_groups'):
+                    owner.close()
+
     def test_claude_transport_passes_prepared_latch_to_custody_before_spawn(self):
         from herzchen.fleet.hosts import McpGrant
         from otto.agents import claude_cli as cli

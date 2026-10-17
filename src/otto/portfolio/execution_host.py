@@ -703,6 +703,8 @@ class ExecutionHost:
 
     def _terminate_recorded_process_groups(self) -> dict[str, bool]:
         """Resume exact PL1 latches, or birth-fence older recorded groups."""
+        if not self._owns_owner_file:
+            return {}
         from otto.agents.claude_cli import terminate_recorded_process_group
         from herzchen.fleet.custody import resume_cleanup
         results = {}
@@ -1212,6 +1214,7 @@ class ExecutionHost:
             except Exception:
                 server.close()
                 self.owner_path.unlink(missing_ok=True)
+                self._owns_owner_file = False
                 self._owns_owner_file = False
                 raise
         for status in (False, True):
@@ -2162,7 +2165,8 @@ class ExecutionHost:
         # thread retains it without a healthy-work duration cap.
         if self._threads:
             self._threads[0].join()
-        self._terminate_recorded_process_groups()
+        if self._owns_owner_file:
+            self._terminate_recorded_process_groups()
         if self._socket is not None:
             self._threads[-1].join()
         self._stop.set()
