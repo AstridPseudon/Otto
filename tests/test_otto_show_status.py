@@ -114,6 +114,57 @@ class ShowTests(unittest.TestCase):
         self.assertEqual(shown["project"]["retirement"]["reason"], "superseded")
         self.assertEqual(shown["project"]["retirement"]["by"]["id"], successor.id)
 
+    def test_show_project_preserves_task_page_and_continuation_cursor(self):
+        expected = self.portfolio.list_work(actor="owner", view="all", project_ref=self.project_ref, limit=1)
+        self.assertTrue(expected["pagination"]["has_more"], expected)
+        code, out = self._show("show", "project", "--project-ref", json.dumps(self.project_ref),
+                               "--actor", "owner", "--limit", "1", kind="codex")
+        self.assertEqual(code, 0, out)
+        page = json.loads(out)
+        self.assertEqual([row["ref"] for row in page["tasks"]], [row["ref"] for row in expected["items"]])
+        self.assertEqual(page["pagination"], expected["pagination"])
+        code, out = self._show("show", "project", "--project-ref", json.dumps(self.project_ref),
+                               "--actor", "owner", "--limit", "1", "--cursor",
+                               expected["pagination"]["cursor"], kind="codex")
+        self.assertEqual(code, 0, out)
+        continued = json.loads(out)
+        next_page = self.portfolio.list_work(actor="owner", view="all", project_ref=self.project_ref,
+                                             limit=1, cursor=expected["pagination"]["cursor"])
+        self.assertEqual([row["ref"] for row in continued["tasks"]], [row["ref"] for row in next_page["items"]])
+        self.assertEqual(continued["pagination"], next_page["pagination"])
+
+    def test_show_tasks_uses_the_owner_page_for_the_requested_scope(self):
+        expected = self.portfolio.list_work(actor="owner", view="all", project_ref=self.project_ref, limit=1)
+        code, out = self._show("show", "tasks", "--project-ref", json.dumps(self.project_ref),
+                               "--actor", "owner", "--limit", "1", kind="codex")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out), expected)
+
+    def test_show_history_keeps_the_bounded_authorized_facade(self):
+        class Views:
+            def __init__(self):
+                self.received = None
+
+            def read(self, view, **kwargs):
+                self.received = (view, kwargs)
+                return {"outcome": "listed", "view": view, "scope": kwargs["projects"][0].to_dict(),
+                        "actor": kwargs["actor"], "cursor": kwargs["cursor"]}
+
+        grant = object()
+        views = Views()
+        out = StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["show", "history", "overview", "--actor", "owner",
+                             "--project-ref", json.dumps(self.project_ref), "--limit", "1",
+                             "--cursor", "page-cursor"], portfolio=self.portfolio,
+                            observability_views=views, observability_grant=grant)
+        self.assertEqual(code, 0, out.getvalue())
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["scope"], self.project_ref)
+        self.assertEqual(result["actor"], "owner")
+        self.assertEqual(result["cursor"], "page-cursor")
+        self.assertIs(views.received[1]["grant"], grant)
+
 
 class HostServiceExitTests(unittest.TestCase):
     def test_unrequested_closed_service_run_has_nonzero_exit_status(self):

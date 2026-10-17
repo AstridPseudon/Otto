@@ -29,9 +29,10 @@ SHOW_PROJECT_SCHEMA = "otto.show.project.v1"
 OPEN_OPERATIONS = {"start": "open", "autosave": "save", "finish": "finish", "release": "discard"}
 
 
-def show_project(portfolio: Any, *, actor: str, project_ref: Mapping[str, Any], limit: int) -> dict[str, Any]:
+def show_project(portfolio: Any, *, actor: str, project_ref: Mapping[str, Any], limit: int,
+                 view: str = "all", cursor: Optional[str] = None) -> dict[str, Any]:
     """One project's row and its task rows, from the owner's work read."""
-    listed = portfolio.list_work(actor=actor, view="all", project_ref=dict(project_ref), limit=limit)
+    listed = portfolio.list_work(actor=actor, view=view, project_ref=dict(project_ref), cursor=cursor, limit=limit)
     if listed.get("outcome") not in {"listed", "partial"}:
         return listed
     rows = [row for row in listed.get("projects", ())
