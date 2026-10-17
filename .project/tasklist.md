@@ -25,6 +25,8 @@ Every worker first adds a focused check that fails on its task branch before imp
 | PK3R-UX11 | normal | 0.05 | PK3 | Require each profile resource to declare a valid adapter, including nondefault profiles. | Add a nondefault profile lacking adapter and assert recovery-aware refusal through service/CLI envelopes. | None. | — | merged |
 | PK3R-UX12 | normal | 0.05 | PK3 | Refuse non-string explicit run `model_profile` values with recovery guidance instead of a TypeError or silent default. | Add list/object/empty-list input checks and assert service/CLI envelopes; new tests fail before change. | None. | — | merged |
 | PK3R-UX13 | normal | 0.10 | PK3 | Require all profile fields used by run templates and validate host launcher qualification and adapter capability lists before returning a pinned pack. | Add missing/malformed consumed-field cases and assert recovery-aware refusals; new tests fail before implementation. | None. | — | merged |
+| PK3R-UX14 | normal | 0.10 | PK1 | Require manager role guidance and manager_actions used by effective-context rendering; refuse incomplete but pinned role resources with RoleContextError. | Add socket-free loader tests for missing guidance/help and manager_actions. | None. | — | planned |
+| PK3R-UX15 | normal | 0.10 | PK2 | Preserve a concrete recovery action for Megado skill installation when the canonical managed source is unavailable/changed or lacks the required skill resource. | Add socket-free installer and serialized envelope checks for source/provenance refusal. | None. | — | planned |
 
 Deletion and scope notes:
 

@@ -55,6 +55,8 @@ Astra's ninth pass found a truthy non-string run `model_profile` raised TypeErro
 
 Astra's tenth pass found profile fields consumed directly by run templates and host admission were still optional/loosely typed. PK3R-UX13 now validates oracle/review/scheduled/assurance fields, launcher version/parser qualification and adapter capability lists before consumers use them. Its tests cover missing and malformed values through both envelopes.
 
+Astra's eleventh pass found two further §15.2 gaps: role-pack validation permits manager fields that rendering indexes directly, and Megado skill install's managed-source refusal has no recovery action. PK3R-UX14 and PK3R-UX15 will close these separately. The named profile-pack validations and other recovery families remain intact.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
