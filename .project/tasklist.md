@@ -20,6 +20,7 @@ Every worker first adds a focused check that fails on its task branch before imp
 | PK3R-UX6 | normal | 0.10 | PK3R | Preserve a concrete recovery action when retained run bytes, role bindings, or migration integrity no longer match the adopted profile selection. | Extend changed-run, retained-binding and migration-conflict checks to assert both service/CLI refusal envelopes. | None. | — | merged |
 | PK3R-UX7 | normal | 0.05 | PK3 | Update host-onboarding guidance to put profiles and host qualification in the managed `otto-profiles` pack resources rather than the removed Python table. | Focused documentation check or source assertion confirms the old code path is gone and the resource paths are named. | None. | — | merged |
 | PK3R-UX8 | normal | 0.10 | PK3 | Preserve a concrete recovery action when the managed profile pack is unavailable, fails provenance verification, or contains invalid profile/host resources. | Add focused loader refusal and serializer checks that fail before implementation. | None. | — | merged |
+| PK3R-UX9 | normal | 0.10 | PK3 | Refuse malformed managed profile JSON field types through the recovery-aware pack error, including default profile, host profile selection, and allowed model list. | Add focused malformed-type cases and assert service/CLI recovery guidance; checks fail before implementation. | None. | — | planned |
 
 Deletion and scope notes:
 

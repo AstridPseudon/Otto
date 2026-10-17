@@ -40,6 +40,8 @@ Astra's fourth pass found two remaining defects: retained run/binding/migration 
 
 Astra's fifth pass found one remaining new-path refusal: missing, changed or structurally invalid `otto-profiles` sources failed closed but returned no `next_action`. PK3R-UX8 retains the PackAuthoringError and schema/qualification checks while making the recovery path explicit. Its socket-free test covers provenance failure, malformed schema and a missing default profile through both error envelopes.
 
+Astra's sixth pass found malformed JSON field types that can raise TypeError before the recovery-aware checks (for example, non-string defaults/host profile names and a non-list allowed-model field). PK3R-UX9 will validate these resource shapes explicitly and route them through the same fail-closed recovery refusal.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
