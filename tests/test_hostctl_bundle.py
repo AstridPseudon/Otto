@@ -321,6 +321,65 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
                                      tool_entrypoint="ottoctl")
         self.assertEqual(retained["configuration"]["roles"], registration["configuration"]["roles"])
 
+    def test_legacy_pending_registration_persists_reselection_before_retry(self):
+        """A pre-selection draft is upgraded from its stored run exactly once."""
+        from otto.agents import host_profiles
+        from otto.hostctl import register as registration_module
+        from otto.hostctl.bundle import parse_files
+
+        bundle = read_bundle(self.root)
+        # A run-level coordinator override must survive profile reselection.
+        files = dict(bundle["files"])
+        run = {**bundle["run"], "roles": {"coordinator": {
+            "model": "gpt-6-astra", "reasoning": "high"}}}
+        files[bundle["run_file"]] = json.dumps(run)
+        bundle = {**bundle, **parse_files(files), "root": bundle["root"]}
+        legacy_facts = {"run_id": "test-run", "mode": "setup_not_activated"}
+        project = mock.Mock()
+        project.ref = mock.Mock(authority="owner", kind="work.project", id="project", revision="rev-1")
+        project.lifecycle.value = "pending"
+        project.payload = {"custom": {"otto_host_registration": legacy_facts}}
+        graph = mock.Mock()
+        graph.current.return_value = project
+        session = mock.Mock()
+        session.owner.graph = graph
+
+        persisted = {}
+        def check_in(_session, _ref, _principal, _key, edit, **_kwargs):
+            draft = {"custom": {"otto_host_registration": dict(legacy_facts)}}
+            edit(draft)
+            persisted.update(draft["custom"]["otto_host_registration"])
+            project.payload = {"custom": {"otto_host_registration": dict(persisted)}}
+            return {"outcome": "finished"}
+
+        host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        restricted = {"kind": "codex", "adapters": {"codex": {"models": ["gpt-5.6-luna"]}}}
+        with mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not persist")):
+            with self.assertRaisesRegex(ValueError, "manager model is unsupported"):
+                registration_module.ensure_profile_selection(
+                    session, project, bundle, host=restricted, manager_principal="manager",
+                    worktree=str(self.root), tool_entrypoint="ottoctl")
+        with mock.patch.object(registration_module, "_check_in", side_effect=check_in):
+            updated, facts = registration_module.ensure_profile_selection(
+                session, project, bundle, host=host, manager_principal="manager",
+                worktree=str(self.root), tool_entrypoint="ottoctl")
+
+        self.assertIs(updated, project)
+        self.assertIn("profile_selection", persisted)
+        self.assertEqual(facts["profile_selection"], persisted["profile_selection"])
+        self.assertEqual(facts["profile_selection"]["resolved_roles"]["coordinator"]["model"], "gpt-6-astra")
+        self.assertEqual(bundle["files"], files)
+
+        # A retry reads the saved choice, even after the pack's defaults change.
+        changed_pack = json.loads(json.dumps(host_profiles.load_profile_pack()))
+        changed_pack["profiles"]["codex"]["roles"]["coordinator"]["model"] = "gpt-6-luna"
+        with mock.patch.object(host_profiles, "load_profile_pack", return_value=changed_pack), \
+             mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not rewrite")):
+            _same_project, retry_facts = registration_module.ensure_profile_selection(
+                session, project, bundle, host=host, manager_principal="manager",
+                worktree=str(self.root), tool_entrypoint="ottoctl")
+        self.assertEqual(retry_facts["profile_selection"], facts["profile_selection"])
+
     def test_changed_stored_run_or_stale_source_pin_is_refused(self):
         from otto.agents import host_profiles
         from otto.hostctl.register import plan, plan_retained

@@ -135,6 +135,45 @@ class RunConfigLoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must be JSON"):
                 read_run_config(root)
 
+    def test_raw_megado_template_resolves_roles_from_its_pinned_profile(self):
+        from otto.portfolio.run_config import resolved_run_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = json.loads((SKILL / "templates" / "run.json").read_text())
+            selected = host_profiles.profile(raw["model_profile"])
+            raw["profile_pack"] = selected["pin"]
+            (root / "run.json").write_text(json.dumps(raw))
+            resolved = resolved_run_config(root)
+        self.assertEqual(set(resolved["roles"]), set(SLOTS))
+        self.assertEqual(resolved["roles"], selected["roles"])
+        self.assertEqual(resolved["profile_pack"], selected["pin"])
+
+    def test_run_role_override_wins_over_resolved_template_default(self):
+        from otto.portfolio.run_config import resolved_run_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = json.loads((SKILL / "templates" / "run.json").read_text())
+            selected = host_profiles.profile(raw["model_profile"])
+            raw["profile_pack"] = selected["pin"]
+            raw["roles"] = {"coordinator": {"model": "gpt-6-astra", "reasoning": "high"}}
+            (root / "run.json").write_text(json.dumps(raw))
+            resolved = resolved_run_config(root)
+        self.assertEqual(resolved["roles"]["coordinator"], raw["roles"]["coordinator"])
+        self.assertEqual(set(resolved["roles"]), set(SLOTS))
+
+    def test_resolved_template_rejects_stale_profile_pack_pin(self):
+        from otto.portfolio.run_config import resolved_run_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = json.loads((SKILL / "templates" / "run.json").read_text())
+            raw["profile_pack"] = {"resource_digests": {"profiles.json": "stale"}}
+            (root / "run.json").write_text(json.dumps(raw))
+            with self.assertRaisesRegex(ValueError, "pin|profile pack|stale"):
+                resolved_run_config(root)
+
 
 if __name__ == "__main__":
     unittest.main()

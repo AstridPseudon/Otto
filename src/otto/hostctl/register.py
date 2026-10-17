@@ -252,6 +252,59 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     return computed
 
 
+def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any], *,
+                             host: Mapping[str, Any], manager_principal: str,
+                             worktree: str, tool_entrypoint: str) -> tuple[Any, Mapping[str, Any]]:
+    """Upgrade an inert pre-PK3 registration before activation has any effects.
+
+    The old registration's stored run file remains the authority. Persist its
+    resolved choice in owner facts first, so a retry cannot select new pack
+    defaults after the first activation attempt.
+    """
+    facts = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
+    if facts.get("profile_selection") is not None:
+        return record, facts
+    lifecycle = getattr(getattr(record, "lifecycle", None), "value", None)
+    if (lifecycle != "pending" or record.payload.get("tasks")
+            or facts.get("mode") == "history" or not facts.get("run_id")):
+        raise ValueError("only an inert pending registration can select a legacy profile")
+    run_file = bundle["run_file"]
+    original_digest = (facts.get("raw_sha256") or {}).get(run_file)
+    if original_digest is not None and original_digest != bundle["raw_sha256"][run_file]:
+        raise ValueError("registered run model choices changed before profile selection")
+    from otto.agents.host_profiles import profile_for_host, profile_for_run
+    chosen = profile_for_run(bundle["run"], host_kind=host["kind"],
+                             default_profile=host.get("model_profile") or profile_for_host(host["kind"]))
+    computed = plan(bundle, profile=chosen, manager_principal=manager_principal,
+                    worktree=worktree, tool_entrypoint=tool_entrypoint)
+    binding = computed["manager"]["binding"]
+    adapter_settings = (host.get("adapters") or {}).get(binding["adapter"])
+    if not isinstance(adapter_settings, Mapping):
+        raise ValueError("registered manager adapter is unavailable on this host")
+    allowed_models = adapter_settings.get("models")
+    if allowed_models is not None and binding["model"] not in allowed_models:
+        raise ValueError("registered manager model is unsupported by this host")
+    selected = computed["custom"]["otto_host_registration"]["profile_selection"]
+    project = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
+    key = "legacy-profile-selection:" + record.ref.id + ":" + _digest(selected)[:20]
+
+    def retain(draft: dict[str, Any]) -> None:
+        custom = dict(draft.get("custom") or {})
+        current_facts = dict(custom.get("otto_host_registration") or {})
+        if current_facts.get("profile_selection") not in (None, selected):
+            raise ValueError("registered profile selection changed during migration")
+        current_facts["profile_selection"] = copy.deepcopy(selected)
+        custom["otto_host_registration"] = current_facts
+        draft["custom"] = custom
+
+    _check_in(session, record.ref.to_dict(), session.host_principal(), key, retain)
+    current = session.owner.graph.current(project)
+    retained = (current.payload.get("custom") or {}).get("otto_host_registration") or {}
+    if retained.get("profile_selection") != selected:
+        raise RuntimeError("profile selection was not retained before activation")
+    return current, retained
+
+
 def plan_history(bundle_source: Any) -> dict[str, Any]:
     """Prepare a document-only withdrawn import without qualifying old agents."""
     if isinstance(bundle_source, (str, Path)):

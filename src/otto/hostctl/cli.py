@@ -458,7 +458,7 @@ def _client_bundle(args: argparse.Namespace) -> dict:
 
 def cmd_activate(args: argparse.Namespace) -> Any:
     """Materialize from Otto's stored documents, then adopt the operating setup (prepared, not started)."""
-    from .register import materialize, plan_retained, stored_bundle
+    from .register import ensure_profile_selection, materialize, plan_retained, stored_bundle
     home = _home(args)
     config = host_config.load(home)
     entry = _host(args, config)
@@ -466,6 +466,10 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=entry, project_ids=(record.ref.id,)) as session:
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
+        bundle = stored_bundle(session, record)
+        run_id = registration.get("run_id") or record.ref.id
+        worktree = args.worktree or str(Path(bundle["run"].get("control_root") or home).resolve().parents[2])
         from .portfolio import dependency_service
         readiness = dependency_service(session, args).activation_check(
             record.ref, override=getattr(args, "override_readiness", False),
@@ -474,10 +478,10 @@ def cmd_activate(args: argparse.Namespace) -> Any:
         if readiness.get("outcome") in {"blocked", "error"}:
             return readiness
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
-        registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-        bundle = stored_bundle(session, record)
-        run_id = registration.get("run_id") or record.ref.id
-        worktree = args.worktree or str(Path(bundle["run"].get("control_root") or home).resolve().parents[2])
+        record, registration = ensure_profile_selection(
+            session, record, bundle, host=entry,
+            manager_principal=args.manager_principal or run_id + "-manager",
+            worktree=worktree, tool_entrypoint=str(home / "bin" / "ottoctl"))
         computed = plan_retained(bundle, facts=registration, host=entry,
                                  manager_principal=args.manager_principal or run_id + "-manager",
                                  worktree=worktree, tool_entrypoint=str(home / "bin" / "ottoctl"))

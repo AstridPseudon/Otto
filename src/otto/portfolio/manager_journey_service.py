@@ -2248,9 +2248,9 @@ class ManagerJourneyService:
                         "next_action": "read the retained worker occurrence; do not send a second worker"}
         if automatic and (not isinstance(automatic_revision, str) or not automatic_revision):
             raise ValueError("automatic worker requires its admitted task revision")
-        from .run_config import read_run_config
+        from .run_config import resolved_run_config
         try:
-            config = read_run_config(self.run_path)
+            config = resolved_run_config(self.run_path)
         except (ValueError, OSError) as exc:
             # This exact read is before lookup/preparation/allowance effects.
             # An arbitrary later exception must retain UNKNOWN semantics.
