@@ -574,6 +574,33 @@ class FakeHarness(Workspace):
         Path(self.exe).write_text(FAKE_CLI.replace("@PYTHON@", sys.executable))
         os.chmod(self.exe, os.stat(self.exe).st_mode | stat.S_IXUSR)
 
+    def test_run_turn_requires_recoverable_scope_before_spawn(self):
+        from herzchen.fleet.custody import Custody
+        H = hosts()
+        spec = H.TurnSpec(executable=self.exe, workspace=self.root, prompt='p', model='m',
+                          reasoning='low', profile='workspace-write')
+        with mock.patch.object(Custody, 'launch') as launch:
+            with self.assertRaisesRegex(H.HostContractError, 'durable custody latch'):
+                H.run_turn(fake_host_class()(), spec)
+            launch.assert_not_called()
+
+    def test_recover_turn_scope_does_not_replay_retained_effect(self):
+        from herzchen.fleet.custody import Custody, Disposition
+        H = hosts()
+        latch = str(Path(self.root, 'prior-scope.json'))
+        Path(latch).write_text('{}')
+        spec = H.TurnSpec(executable=self.exe, workspace=self.root, prompt='p', model='m',
+                          reasoning='low', profile='workspace-write')
+        with mock.patch.object(Custody, 'launch') as launch:
+            with self.assertRaisesRegex(H.HostContractError, 'prior custody latch is unresolved'):
+                H.run_turn(fake_host_class()(), spec, latch_path=latch)
+            launch.assert_not_called()
+        with mock.patch('herzchen.fleet.hosts.contract.resume_cleanup',
+                        return_value=Disposition('uncertain', 'live child')) as resume:
+            self.assertFalse(H.recover_turn_scope(latch).gone)
+            resume.assert_called_once_with(latch)
+        self.assertTrue(Path(latch).exists())
+
     def test_fake_harness_runs_full_loop(self):
         H = hosts()
         registry = H.HostRegistry(H.CodexHost(), H.ClaudeHost(), fake_host_class()())
@@ -589,7 +616,7 @@ class FakeHarness(Workspace):
         spec = H.TurnSpec(executable=self.exe, workspace=self.root, prompt="hello", model=host.normal.model,
                           reasoning=host.normal.reasoning, profile="workspace-write",
                           writable_roots=(self.extra,), mcp=grant)
-        first = H.run_turn(host, spec)
+        first = H.run_turn(host, spec, latch_path=str(Path(self.root, 'first-scope.json')))
 
         # parse the output stream into events and usage
         self.assertEqual([e.kind for e in first.events], ["session", "turn", "other", "other", "done"])
@@ -605,7 +632,8 @@ class FakeHarness(Workspace):
         # resume the session the host reported
         again = H.run_turn(host, H.TurnSpec(executable=self.exe, workspace=self.root, prompt="more",
                                             model=host.xhard.model, reasoning=host.xhard.reasoning,
-                                            profile="workspace-write", session=first.session_id))
+                                            profile="workspace-write", session=first.session_id),
+                           latch_path=str(Path(self.root, 'next-scope.json')))
         self.assertEqual(again.session_id, first.session_id)
         self.assertEqual(again.outcome, "succeeded")
         self.assertIn("--resume", again.plan.argv)
@@ -617,7 +645,8 @@ class FakeHarness(Workspace):
         os.chmod(script, 0o755)
         spec = H.TurnSpec(executable=str(script), workspace=self.root, prompt="p", model="m", reasoning="low",
                           profile="workspace-write")
-        result = H.run_turn(fake_host_class()(), spec)
+        result = H.run_turn(fake_host_class()(), spec,
+                            latch_path=str(Path(self.root, 'failed-scope.json')))
         self.assertEqual(result.outcome, "failed")
         self.assertEqual(result.exit_status, 3)
 
@@ -627,7 +656,8 @@ class FakeHarness(Workspace):
         spec = H.TurnSpec(executable=self.exe, workspace=self.root, prompt="p", model="m", reasoning="low",
                           profile="workspace-write")
         with mock.patch.object(Custody, "release", return_value=Disposition("uncertain", "census unavailable")):
-            result = H.run_turn(fake_host_class()(), spec)
+            result = H.run_turn(fake_host_class()(), spec,
+                                latch_path=str(Path(self.root, 'uncertain-scope.json')))
         self.assertEqual(result.outcome, "unknown")
         self.assertIn("census unavailable", result.error)
         self.assertEqual(result.session_id, "fake-session-1")
@@ -724,9 +754,11 @@ class ContinuationContract(Workspace):
             return object()
         with mock.patch("herzchen.fleet.hosts.contract.run_turn", fake_run_turn):
             result = C.run_continuation(H.ClaudeHost(), spec, request,
-                                        authorize=lambda r: authorized.append(r.attempt_id) or True)
+                                        authorize=lambda r: authorized.append(r.attempt_id) or True,
+                                        latch_path=str(Path(self.root, 'continuation-scope.json')))
         self.assertIsNotNone(result)
         self.assertEqual(authorized, ["attempt-1"])
+        self.assertEqual(captured['spec'].session, request.session_id)
         plan = captured["plan"]
         self.assertEqual(plan.cwd, self.root)
         self.assertEqual(plan.session, "native-parked")
@@ -752,9 +784,11 @@ class ContinuationContract(Workspace):
             launches.append(1)
             return object()
         with mock.patch("herzchen.fleet.hosts.contract.run_turn", fake_run_turn):
-            C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize)
+            C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize,
+                               latch_path=str(Path(self.root, 'continuation-scope.json')))
             with self.assertRaises(H.HostContractError):
-                C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize)
+                C.run_continuation(H.ClaudeHost(), spec, req, authorize=authorize,
+                                   latch_path=str(Path(self.root, 'continuation-scope.json')))
         self.assertEqual(calls, ["attempt", "attempt"])
         self.assertEqual(launches, [1])
 
@@ -768,13 +802,16 @@ class ContinuationContract(Workspace):
         authorize = mock.Mock(return_value=True)
         with self.assertRaises(H.HostContractError):
             C.run_continuation(H.ClaudeHost(), spec, C.ContinuationRequest(
-                "s", self.root, "a", "log", False, "failed"), authorize=authorize)
+                "s", self.root, "a", "log", False, "failed"), authorize=authorize,
+                latch_path=str(Path(self.root, 'continuation-scope.json')))
         with self.assertRaises(H.HostContractError):
             C.run_continuation(H.ClaudeHost(), spec, C.ContinuationRequest(
-                "other", self.root, "a", "log", True, "failed"), authorize=authorize)
+                "other", self.root, "a", "log", True, "failed"), authorize=authorize,
+                latch_path=str(Path(self.root, 'continuation-scope.json')))
         with self.assertRaises(H.HostContractError):
             C.run_continuation(H.ClaudeHost(), spec, C.ContinuationRequest(
-                "s", self.extra, "a", "log", True, "failed"), authorize=authorize)
+                "s", self.extra, "a", "log", True, "failed"), authorize=authorize,
+                latch_path=str(Path(self.root, 'continuation-scope.json')))
         self.assertEqual(authorize.call_count, 0)
 
     def test_claude_continuation_refuses_command_capable_specs(self):
@@ -788,7 +825,8 @@ class ContinuationContract(Workspace):
         request = C.ContinuationRequest("s", self.root, "a", "failed log", True, "failed")
         authorize = mock.Mock(return_value=True)
         with self.assertRaises(H.HostContractError):
-            C.run_continuation(H.ClaudeHost(), spec, request, authorize=authorize)
+            C.run_continuation(H.ClaudeHost(), spec, request, authorize=authorize,
+                               latch_path=str(Path(self.root, 'continuation-scope.json')))
         self.assertEqual(authorize.call_count, 0)
 
 

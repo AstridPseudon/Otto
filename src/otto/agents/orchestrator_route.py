@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from otto.portfolio.resource_sync import (
@@ -206,6 +207,7 @@ def compose_owner_resource_herzchen_adapter(
     native_trace_path: str | None = None,
     trusted_thread_reader: Callable[[str], Mapping[str, Any]] | None = None,
     trusted_sessions_root: str | None = None,
+    reader_scope_latch_path: str | None = None,
     requested_model: str = "gpt-5.6-luna",
     requested_reasoning: str = "high",
 ) -> HerzchenCodexAdapter:
@@ -217,11 +219,17 @@ def compose_owner_resource_herzchen_adapter(
     host-attested.
     """
 
-    if not isinstance(host_context_path, str) or not host_context_path.strip():
-        raise OrchestratorRouteError("host_context_path is required for the owner-resource host path")
+    if (not isinstance(host_context_path, str) or not Path(host_context_path).is_absolute()
+            or ".." in Path(host_context_path).parts):
+        raise OrchestratorRouteError("absolute host_context_path is required for the owner-resource host path")
     if trusted_thread_reader is None:
+        if (not isinstance(reader_scope_latch_path, str)
+                or not Path(reader_scope_latch_path).is_absolute()
+                or ".." in Path(reader_scope_latch_path).parts):
+            raise OrchestratorRouteError("absolute owner reader scope latch path is required")
         trusted_thread_reader = CodexAppServerThreadReader(
             launcher=launcher, sessions_root=trusted_sessions_root,
+            scope_latch_path=reader_scope_latch_path,
         )
     return HerzchenCodexAdapter(
         owner=owner,

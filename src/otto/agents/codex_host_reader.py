@@ -6,19 +6,21 @@ No session search, transcript read, provider invocation, or raw observation logg
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+import errno
+import fcntl
 import json
 import math
 import os
 from pathlib import Path
 import selectors
-import signal
 import stat
 import subprocess
 import sys
 import time
 from typing import Any
 
-from herzchen.fleet.custody import Custody
+from herzchen.fleet.custody import Custody, resume_cleanup
 
 # Independently qualified initialize/thread-read stdio implementations. A new
 # version/path alone does not admit a binary; its exact digest must be qualified.
@@ -151,22 +153,6 @@ class _StdioRPC:
             return item["result"]
 
 
-def _reap_app_server(process: Any) -> None:
-    """Bound teardown separately from the already exhausted RPC deadline."""
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=1.0)
-
-
 class CodexAppServerThreadReader:
     """Trusted composition callback. The sole call input is the issued session ID.
 
@@ -174,16 +160,65 @@ class CodexAppServerThreadReader:
     another binary requires a separately qualified adapter update. Root/cwd are
     trusted composition settings, never parameters from a task request.
     """
-    def __init__(self, *, launcher: str, sessions_root: str | None = None,
-                 timeout_seconds: float = 15.0) -> None:
+    def __init__(self, *, launcher: str, scope_latch_path: str,
+                 sessions_root: str | None = None, timeout_seconds: float = 15.0) -> None:
         if not isinstance(launcher, str) or not Path(launcher).is_absolute():
             _fail("launcher_must_be_absolute")
         root = Path(sessions_root) if sessions_root is not None else Path.home() / ".codex" / "sessions"
         if not root.is_absolute() or ".." in root.parts:
             _fail("sessions_root_must_be_absolute")
+        latch = Path(scope_latch_path) if isinstance(scope_latch_path, str) else Path()
+        if not latch.is_absolute() or ".." in latch.parts:
+            _fail("scope_latch_path_must_be_absolute")
         if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (float, int)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30:
             _fail("invalid_finite_timeout")
         self.launcher, self.sessions_root, self.timeout_seconds = launcher, root, timeout_seconds
+        self.scope_latch_path = str(latch)
+
+    @contextmanager
+    def _scope_lock(self, deadline: float):
+        """Serialize lookups and recovery across owner processes; death drops the OS lock."""
+        lock_path = self.scope_latch_path + ".lock"
+        try:
+            parent = Path(self.scope_latch_path).parent
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory = parent.lstat()
+            if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+                    or stat.S_IMODE(directory.st_mode) != 0o700):
+                _fail("app_server_scope_unavailable")
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK |
+                                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+            lock = os.fstat(descriptor)
+            if (not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid()
+                    or stat.S_IMODE(lock.st_mode) != 0o600):
+                os.close(descriptor)
+                _fail("app_server_scope_unavailable")
+        except OSError:
+            _fail("app_server_scope_unavailable")
+        try:
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        _fail("app_server_scope_unavailable")
+                    if time.monotonic() >= deadline:
+                        _fail("app_server_timeout")
+                    time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+            yield
+        finally:
+            os.close(descriptor)
+
+    def _recover_scope(self) -> None:
+        if not os.path.exists(self.scope_latch_path):
+            return
+        try:
+            disposition = resume_cleanup(self.scope_latch_path)
+        except (OSError, ValueError, TypeError):
+            _fail("app_server_cleanup_unresolved")
+        if not disposition.gone or os.path.exists(self.scope_latch_path):
+            _fail("app_server_cleanup_unresolved")
 
     def read_with_deadline(self, issued_session: str, deadline: float) -> dict[str, Any]:
         if isinstance(deadline, bool) or not isinstance(deadline, (float, int)) or not math.isfinite(deadline) or deadline <= time.monotonic():
@@ -193,10 +228,15 @@ class CodexAppServerThreadReader:
     def __call__(self, issued_session: str, *, _deadline: float | None = None) -> dict[str, Any]:
         if not isinstance(issued_session, str) or not issued_session or len(issued_session) > 256 or any(c.isspace() or ord(c) < 32 for c in issued_session):
             _fail("issued_session_missing_or_malformed")
-        process = None
-        custody = None
         deadline = time.monotonic() + self.timeout_seconds
         if _deadline is not None: deadline = min(deadline, _deadline)
+        with self._scope_lock(deadline):
+            self._recover_scope()
+            return self._read_locked(issued_session, deadline)
+
+    def _read_locked(self, issued_session: str, deadline: float) -> dict[str, Any]:
+        process = None
+        custody = None
         try:
             # Bounded binary hashing; no credential or session file is opened.
             digest = hashlib.sha256()
@@ -214,6 +254,7 @@ class CodexAppServerThreadReader:
             if digest.hexdigest() not in SUPPORTED_CLI_SHA256:
                 _fail("unsupported_cli_identity")
             custody = Custody.launch([self.launcher, "app-server", "--listen", "stdio://"],
+                latch_path=self.scope_latch_path,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd="/private/tmp", close_fds=True, bufsize=0)
             process = custody.process
@@ -239,24 +280,17 @@ class CodexAppServerThreadReader:
             raise HostThreadReadError("host_metadata_lookup_failed") from None
         finally:
             if process is not None:
-                # One process group per call; teardown never leaves a reusable
-                # app-server session or unbounded wait behind.
+                # Custody does the bounded TERM/KILL/reap with exact birth and
+                # group evidence. A bare process.pid is not signal authority.
                 lookup_failed = sys.exc_info()[0] is not None
                 cleanup_failed = False
                 try:
-                    _reap_app_server(process)
-                except (OSError, subprocess.SubprocessError):
+                    disposition = custody.release()
+                    if not disposition.gone:
+                        cleanup_failed = True
+                except Exception:
                     cleanup_failed = True
                 finally:
-                    if custody is not None:
-                        # Sweep leftovers after the reap. Unknown custody cannot
-                        # make otherwise valid metadata a successful lookup.
-                        try:
-                            disposition = custody.release()
-                            if not disposition.gone:
-                                cleanup_failed = True
-                        except Exception:
-                            cleanup_failed = True
                     process.stdin.close()
                     process.stdout.close()
                 if cleanup_failed and not lookup_failed:
