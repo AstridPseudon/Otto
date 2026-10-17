@@ -60,14 +60,6 @@ def _same(left: Any, right: Any) -> bool:
     return (a.authority, a.kind, a.id) == (b.authority, b.kind, b.id)
 
 
-def _pinned_equal(left: Any, right: Any) -> bool:
-    try:
-        a, b = _ref(left, "left", pinned=False), _ref(right, "right", pinned=False)
-    except ValueError:
-        return False
-    return a == b
-
-
 class ReviewedActivationError(ValueError):
     """A reviewed activation input is not admissible."""
 
@@ -177,26 +169,40 @@ class ReviewedPlanActivation:
         return ref, content, observed
 
     @staticmethod
-    def _extract_plan_ref(value: Any) -> Any:
+    def _plan_ref_aliases(value: Any, names: tuple[str, ...] = (
+            "plan_ref", "plan", "reviewed_plan_ref", "reviewed_plan")) -> tuple[list[tuple[str, Any, ResourceRef]], dict[str, Any]]:
+        aliases: list[tuple[str, Any, ResourceRef]] = []
+        invalid: dict[str, Any] = {}
         if not isinstance(value, Mapping):
-            return None
-        for key in ("plan_ref", "plan", "reviewed_plan_ref", "reviewed_plan"):
-            candidate = value.get(key)
-            if isinstance(candidate, Mapping) and "ref" in candidate:
-                candidate = candidate["ref"]
-            if candidate is not None:
-                return candidate
-        return None
+            return aliases, invalid
+        for name in names:
+            if name not in value:
+                continue
+            supplied = value[name]
+            candidate = supplied.get("ref") if isinstance(supplied, Mapping) and "ref" in supplied else supplied
+            try:
+                ref = _ref(candidate, name)
+            except ValueError:
+                invalid[name] = _json(supplied)
+                continue
+            aliases.append((name, _json(supplied), ref))
+        return aliases, invalid
 
     @staticmethod
-    def _extract_plan_digest(value: Any) -> str | None:
+    def _plan_digest_aliases(value: Any) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+        aliases: list[tuple[str, str]] = []
+        invalid: dict[str, Any] = {}
         if not isinstance(value, Mapping):
-            return None
-        for key in ("plan_digest", "reviewed_plan_digest", "digest"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and candidate:
-                return candidate
-        return None
+            return aliases, invalid
+        for name in ("plan_digest", "reviewed_plan_digest", "digest"):
+            if name not in value:
+                continue
+            supplied = value[name]
+            if not isinstance(supplied, str) or not supplied:
+                invalid[name] = _json(supplied)
+                continue
+            aliases.append((name, supplied))
+        return aliases, invalid
 
     @staticmethod
     def _task_specs(plan: Any, policy: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -258,15 +264,42 @@ class ReviewedPlanActivation:
         policy, policy_binding = self._policy(project, owner_policy)
         plan, plan_content, _ = self._read_pin(plan_ref, "plan_ref")
         review, review_content, _ = self._read_pin(review_ref, "review_ref")
-        linked_plan = self._extract_plan_ref(review_content)
-        applicable = linked_plan is not None and _pinned_equal(linked_plan, plan)
+        review_plan_aliases, invalid_review_plans = self._plan_ref_aliases(review_content)
+        review_digest_aliases, invalid_review_digests = self._plan_digest_aliases(review_content)
         plan_digest = _digest(plan_content)
-        review_digest = self._extract_plan_digest(review_content)
-        if review_digest is not None and review_digest != plan_digest:
-            applicable = False
-        policy_plan = policy.get("plan_ref") or policy.get("required_plan_ref")
-        if policy_plan is not None and not _pinned_equal(policy_plan, plan):
-            applicable = False
+        policy_plan_aliases, invalid_policy_plans = self._plan_ref_aliases(
+            policy, ("plan_ref", "required_plan_ref"))
+        policy_plan = policy_plan_aliases[0][1] if policy_plan_aliases else next(iter(invalid_policy_plans.values()), None)
+        blockers = []
+        review_plan_values = {name: value for name, value, _ref_value in review_plan_aliases}
+        if len({ref_value for _name, _value, ref_value in review_plan_aliases}) > 1:
+            blockers.append({"code": "ambiguous_plan_pin", "source": "review",
+                             "values": review_plan_values})
+        policy_plan_values = {name: value for name, value, _ref_value in policy_plan_aliases}
+        if len({ref_value for _name, _value, ref_value in policy_plan_aliases}) > 1:
+            blockers.append({"code": "ambiguous_plan_pin", "source": "owner_policy",
+                             "values": policy_plan_values})
+        review_digest_values = {name: value for name, value in review_digest_aliases}
+        if len({value for _name, value in review_digest_aliases}) > 1:
+            blockers.append({"code": "ambiguous_plan_digest", "source": "review",
+                             "values": review_digest_values})
+        if invalid_review_plans:
+            blockers.append({"code": "invalid_plan_pin", "source": "review",
+                             "values": invalid_review_plans})
+        if invalid_policy_plans:
+            blockers.append({"code": "invalid_plan_pin", "source": "owner_policy",
+                             "values": invalid_policy_plans})
+        if invalid_review_digests:
+            blockers.append({"code": "invalid_plan_digest", "source": "review",
+                             "values": invalid_review_digests})
+        review_plan_matches = bool(review_plan_aliases) and all(
+            ref_value == plan for _name, _value, ref_value in review_plan_aliases)
+        policy_plan_matches = all(ref_value == plan for _name, _value, ref_value in policy_plan_aliases)
+        review_digest_matches = all(value == plan_digest for _name, value in review_digest_aliases)
+        applicable = bool(review_plan_matches and policy_plan_matches and review_digest_matches
+                          and not invalid_review_plans and not invalid_policy_plans
+                          and not invalid_review_digests
+                          and not any(item["code"].startswith("ambiguous_plan") for item in blockers))
         disposition = review_content.get("disposition", review_content.get("status")) if isinstance(review_content, Mapping) else None
         approved = str(disposition).lower() in {"approved", "accept", "accepted", "pass", "passed"}
         predecessor = self._predecessor(predecessor_ref, project)
@@ -276,7 +309,6 @@ class ReviewedPlanActivation:
         activation = project.payload.get("fields", {}).get("reviewed_activation")
         active = project.payload.get("lifecycle") == "active"
         ready = bool(approved and applicable and predecessor["eligible"] and not active)
-        blockers = []
         if not approved:
             blockers.append({"code": "review_not_approved"})
         if not applicable:

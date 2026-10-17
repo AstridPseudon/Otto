@@ -62,6 +62,111 @@ class ReviewedActivationTests(unittest.TestCase):
         self.assertEqual(len(self.f.owner.graph.list(project=result["project_ref"], kind="task")), 6)
         self.assertEqual(len(self.f.provider.calls), 0)
 
+    def test_conflicting_review_and_policy_plan_aliases_hold_before_activation(self):
+        plan_a, clean_review = self._documents()
+        other = self.portfolio.create_document(
+            self.f.project.ref.to_dict(), actor="manager",
+            request_id="d04-other-plan", role="plan",
+            content={"schema": "otto.plan.v1",
+                     "deliverables": [{"id": "other", "title": "Other"}]})
+        plan_b = dict(other["document_ref"])
+        plan_b["revision"] = "rev-1"
+
+        conflicting = self.portfolio.create_document(
+            self.f.project.ref.to_dict(), actor="manager",
+            request_id="d04-conflicting-review", role="review",
+            content={"plan_ref": plan_a, "reviewed_plan_ref": plan_b,
+                     "disposition": "approved"})
+        conflicting_review = dict(conflicting["document_ref"])
+        conflicting_review["revision"] = "rev-1"
+
+        specs = {"task_specs": [{"id": "one", "title": "First"}]}
+        cases = (
+            ("review", conflicting_review, specs,
+             {"plan_ref": plan_a, "reviewed_plan_ref": plan_b}),
+            ("owner_policy", clean_review,
+             {**specs, "plan_ref": plan_a, "required_plan_ref": plan_b},
+             {"plan_ref": plan_a, "required_plan_ref": plan_b}),
+        )
+        for source, review_ref, policy, values in cases:
+            with self.subTest(source=source):
+                activation = self.f.owner.reviewed_plan_activation(
+                    owner_policy=policy)
+                arguments = dict(project_ref=self.f.project.ref.to_dict(),
+                                 plan_ref=plan_a, review_ref=review_ref,
+                                 owner_policy=policy)
+                readiness = activation.read(**arguments)
+                self.assertFalse(readiness["ready"], readiness)
+                self.assertEqual(readiness["state"], "held")
+                conflicts = [
+                    item for item in readiness["blockers"]
+                    if item.get("code") == "ambiguous_plan_pin"
+                    and item.get("source") == source
+                ]
+                self.assertEqual(len(conflicts), 1, readiness)
+                self.assertEqual(conflicts[0]["values"], values)
+                result = activation.activate(
+                    **arguments, request_key="d04-conflict-" + source)
+                self.assertEqual(result["outcome"], "held", result)
+                self.assertFalse(result["effects_started"])
+                self.assertEqual(
+                    len(self.f.owner.graph.list(
+                        project=self.f.project.ref, kind="task")), 1)
+                self.assertEqual(len(self.f.provider.calls), 0)
+
+        consistent = self.portfolio.create_document(
+            self.f.project.ref.to_dict(), actor="manager",
+            request_id="d04-consistent-review", role="review",
+            content={"plan_ref": plan_a,
+                     "reviewed_plan_ref": {"ref": plan_a},
+                     "disposition": "approved"})
+        consistent_review = dict(consistent["document_ref"])
+        consistent_review["revision"] = "rev-1"
+        policy = {**specs, "plan_ref": plan_a, "required_plan_ref": plan_a}
+        activation = self.f.owner.reviewed_plan_activation(owner_policy=policy)
+        self.assertTrue(activation.read(
+            project_ref=self.f.project.ref.to_dict(), plan_ref=plan_a,
+            review_ref=consistent_review, owner_policy=policy)["ready"])
+
+    def test_malformed_plan_alias_does_not_fall_through_to_valid_alias(self):
+        plan_ref, _review_ref = self._documents()
+        malformed_review = self.portfolio.create_document(
+            self.f.project.ref.to_dict(), actor="manager",
+            request_id="d04-malformed-review", role="review",
+            content={"plan_ref": None, "reviewed_plan_ref": plan_ref,
+                     "disposition": "approved"})
+        review_ref = dict(malformed_review["document_ref"])
+        review_ref["revision"] = "rev-1"
+        policy = {"task_specs": [{"id": "one", "title": "First"}]}
+        activation = self.f.owner.reviewed_plan_activation(owner_policy=policy)
+        readiness = activation.read(
+            project_ref=self.f.project.ref.to_dict(), plan_ref=plan_ref,
+            review_ref=review_ref, owner_policy=policy)
+        self.assertFalse(readiness["ready"], readiness)
+        self.assertIn({"code": "invalid_plan_pin", "source": "review",
+                       "values": {"plan_ref": None}}, readiness["blockers"])
+
+    def test_conflicting_review_digest_aliases_hold_readiness(self):
+        plan_ref, _review_ref = self._documents()
+        review = self.portfolio.create_document(
+            self.f.project.ref.to_dict(), actor="manager",
+            request_id="d04-conflicting-digest", role="review",
+            content={"plan_ref": plan_ref, "plan_digest": "first",
+                     "reviewed_plan_digest": "second",
+                     "disposition": "approved"})
+        review_ref = dict(review["document_ref"])
+        review_ref["revision"] = "rev-1"
+        policy = {"task_specs": [{"id": "one", "title": "First"}]}
+        activation = self.f.owner.reviewed_plan_activation(owner_policy=policy)
+        readiness = activation.read(
+            project_ref=self.f.project.ref.to_dict(), plan_ref=plan_ref,
+            review_ref=review_ref, owner_policy=policy)
+        self.assertFalse(readiness["ready"], readiness)
+        self.assertIn({"code": "ambiguous_plan_digest", "source": "review",
+                       "values": {"plan_digest": "first",
+                                  "reviewed_plan_digest": "second"}},
+                      readiness["blockers"])
+
     def test_nonterminal_predecessor_holds_without_work_effects(self):
         plan_ref, review_ref = self._documents()
         predecessor = self.f.owner.graph.create_project(title="Predecessor", logical_request_key="d04-predecessor")

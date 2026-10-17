@@ -377,14 +377,16 @@ class AuthenticatedActor(ContractRecord):
         _text(self.authority, "authority")
         _text(self.actor, "actor")
         _text(self.credential_ref, "credential_ref")
-        if not self.authenticated:
+        if self.authenticated is not True:
             raise ContractError("command actors must be authenticated")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "AuthenticatedActor":
         value = _mapping(value, "actor")
         _keys(value, {"authority", "actor", "credential_ref", "authenticated"})
-        return cls(value["authority"], value["actor"], value["credential_ref"], bool(value.get("authenticated", True)))
+        if "authenticated" not in value:
+            raise ContractError("actor authenticated must be explicitly true")
+        return cls(value["authority"], value["actor"], value["credential_ref"], value["authenticated"])
 
 
 @dataclass(frozen=True)
