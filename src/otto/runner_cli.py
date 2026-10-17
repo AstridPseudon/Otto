@@ -93,7 +93,8 @@ def _submit(args: argparse.Namespace, client: RunnerClient) -> int:
         response = client.call(request)
     except RunnerUnavailable as exc:
         return _emit({"ok": False, "error": "runner_unavailable", "detail": str(exc),
-                      "request_id": request["request_id"]}, EXIT_UNREACHABLE)
+                      "request_id": request["request_id"],
+                      "next_action": "Retry this exact submit with the same request_id to recover its retained outcome; do not mint a new key."}, EXIT_UNREACHABLE)
     response.setdefault("request_id", request["request_id"])
     if not response.get("ok") or not args.wait:
         return _emit_ok(response)
