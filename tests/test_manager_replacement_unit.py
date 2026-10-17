@@ -54,21 +54,32 @@ def _failed_acquisition_fixture():
         report_reader=lambda ref: reports.get(ref.id),
         acquire_session=lambda _: acquisitions.append(1) or {"outcome": "error"},
         context_builder=lambda *_: {}, readiness=lambda *_: {})
-    return replacement, reports, acquisitions
+    return replacement, reports, acquisitions, prior
+
+
+def _assert_held_guidance(result):
+    assert result["outcome"] == "held"
+    assert result["retry"] is False
+    action = result["next_action"].lower()
+    assert "owner" in action and "reconcile" in action
+    assert "new accepted schedule" in action
+    assert "do not retry acquisition" in action
 
 
 def test_failed_acquisition_cannot_restart_under_another_request_key():
-    replacement, _, acquisitions = _failed_acquisition_fixture()
-    assert replacement.replace(schedule_id="old", request_key="first")["outcome"] == "held"
-    assert replacement.replace(schedule_id="old", request_key="second")["outcome"] == "held"
+    replacement, _, acquisitions, _ = _failed_acquisition_fixture()
+    _assert_held_guidance(replacement.replace(schedule_id="old", request_key="first"))
+    _assert_held_guidance(replacement.replace(schedule_id="old", request_key="first"))
+    _assert_held_guidance(replacement.replace(schedule_id="old", request_key="second"))
     assert acquisitions == [1]
     with pytest.raises(PermissionError, match="intent differs"):
         replacement.replace(schedule_id="another-completed-due", request_key="third")
     assert acquisitions == [1]
 
 
-def test_concurrent_same_key_cannot_acquire_twice():
-    replacement, reports, acquisitions = _failed_acquisition_fixture()
+@pytest.mark.parametrize("rival_key", ["same", "rival"])
+def test_concurrent_intents_cannot_acquire_twice(rival_key):
+    replacement, _, acquisitions, _ = _failed_acquisition_fixture()
     # Both calls can read an absent intent before either append completes.
     # The later caller must not acquire even when it replays the same key.
     original_reader = replacement.report_reader
@@ -78,10 +89,20 @@ def test_concurrent_same_key_cannot_acquire_twice():
         nonlocal entered
         if not entered:
             entered = True
-            assert replacement.replace(schedule_id="old", request_key="same")["outcome"] == "held"
+            _assert_held_guidance(replacement.replace(schedule_id="old", request_key=rival_key))
             return None  # outer call had already observed the absent intent
         return original_reader(ref)
 
     replacement.report_reader = concurrent_reader
-    assert replacement.replace(schedule_id="old", request_key="same")["outcome"] == "held"
+    _assert_held_guidance(replacement.replace(schedule_id="old", request_key="same"))
     assert acquisitions == [1]
+
+
+def test_unavailable_intent_readback_and_prior_custody_give_safe_guidance():
+    replacement, _, acquisitions, prior = _failed_acquisition_fixture()
+    prior.completion_state = "unknown"
+    _assert_held_guidance(replacement.replace(schedule_id="old", request_key="pending"))
+    prior.completion_state = "succeeded"
+    replacement.report_reader = lambda _: None
+    _assert_held_guidance(replacement.replace(schedule_id="old", request_key="unavailable"))
+    assert acquisitions == []
