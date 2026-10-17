@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,10 +16,68 @@ from otto.hostctl.product_service import bind_automatic_dispatch
 from otto.hostctl.project_service import ProjectOwnerService
 from otto.hostctl.service import OwnerService
 from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.owner_completion import OwnerCompletion
 from otto.portfolio.project_services import ProjectServices
 
 
 class ManagerTurnQueueTests(unittest.TestCase):
+    def test_real_owner_start_manager_unwraps_completion_while_worker_is_admitted(self):
+        """A bounded real-owner start queues cleanly behind an admitted worker."""
+        from otto.hostctl.serve import HostOwnerService
+        from tests.test_execution_application import ExecutionApplicationTests
+
+        fixture = ExecutionApplicationTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        app = fixture.app
+        worker = app.assign_worker(**fixture.request())
+        self.assertIn(worker["outcome"], {"committed", "prepared"}, worker)
+        worker_due = app._read(worker["schedule_id"])
+
+        manager_assignment, guide, mandate = fixture.role_handles("manager", "manager", "manager-session-2")
+        manager = app.prepare_role(role="manager", project_ref=fixture.project.ref.to_dict(),
+            task_ref=fixture.task.ref.to_dict(), assignment_ref=manager_assignment.ref.to_dict(), generation=1,
+            mandate_ref=mandate, context_refs=(guide, mandate), request_key="deferred-manager-start",
+            instruction="Inspect current project", model="gpt-test", reasoning="high",
+            profile="workspace-write", native_session_id="manager-session-2")
+        state = {"manager": "manager", "project_ref": fixture.project.ref.to_dict(),
+            "task_refs": {"J01": fixture.task.ref.to_dict()}, "assignment_ref": manager_assignment.ref.to_dict(),
+            "manager_generation": 1, "schedule_id": manager["schedule_id"],
+            "manager_continuation": {"schedule_id": manager["schedule_id"]},
+            "requested_model": "gpt-test", "requested_reasoning": "high"}
+        service = HostOwnerService.__new__(HostOwnerService)
+        service.state, service.portfolio, service.due_port = state, app.portfolio, fixture.port
+        service._execution = lambda **_options: app
+        service._save_state = lambda: None
+
+        host = ExecutionHost(directory=Path(fixture.temporary.name) / "manager-ipc",
+            handler=lambda _request: {}, bounded_transports=True)
+        worker_completion = OwnerCompletion()
+        admitted = host._owned(lambda: host.admit_execution(app, worker_due, lambda: worker_completion))
+        host._owned(host._start_ready_executions)
+        self.assertIn(worker_due.schedule_id, host._executions,
+                      {"completion_error": str(admitted.error), "failures": host.failures})
+        self.assertTrue(host._executions[worker_due.schedule_id]["running"])
+
+        fixture.provider.work_started = threading.Event()
+        fixture.provider.work_release = threading.Event()
+        fixture.provider.work_release.set()
+        with patch("otto.portfolio.operating_setup.read_setup",
+                   return_value={"roles": {"manager": manager["schedule_id"]}}):
+            response = host._owned(lambda: service._start_manager({"command": "start-manager",
+                "schedule_id": manager["schedule_id"]}))
+        self.assertIsInstance(response, OwnerCompletion)
+
+        worker_completion.resolve({"outcome": "succeeded", "provider_called": False})
+        host._owned(host._start_ready_executions)
+        deadline = time.monotonic() + 10
+        while not response.done and time.monotonic() < deadline:
+            threading.Event().wait(0.01)
+        self.assertTrue(response.done, "manager start did not settle after worker admission released")
+        self.assertIsNone(response.error)
+        self.assertIsInstance(response.value, dict)
+        self.assertIn("outcome", response.value)
+
     def test_capacity_fence_does_not_block_activation_of_another_project(self):
         host = SimpleNamespace(_threads=[], bounded_transports=True, _executions={},
                                _capacity_holds={"worker-a": {"project": "project-a",
