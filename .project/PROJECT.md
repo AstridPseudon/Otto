@@ -134,3 +134,12 @@ The manager's manifest check prompted a baseline comparison with `install/build_
 
 
 2026-10-17 20:27 UTC | SL9A | merged a7feacf | +22/-557 | retirement 1 passed; execution operations 25 passed (one subtest needs the gate); manager lifecycle selected check needs the gate; diff check clean | Astra found no defect; historic manifest snapshots retained.
+### SL9B paused advisor host prototype retirement
+
+- Deleted `src/otto/portfolio/advisor_host_command.py` (115 lines) and its only importing test, `tests/test_manager_advisor_paused_host.py` (190 lines), for 305 gross lines removed. Before deletion, `git grep` across `src`, `tests`, `ops`, and `install` found only the dedicated test import outside runtime manifests; no production or ops caller existed. External imports were not verifiable in this clone.
+- `install/README.md` identifies `install/runtime-manifest.json` as a byte-for-byte 15 Oct 2026 snapshot of the live controller, with S0 responsible for reproducible builds. Preserved its pinned digest entry and the prepared antecedent manifest unchanged; neither is a maintained current manifest for selective edits.
+- Added `tests/test_advisor_host_retirement.py` with a focused absence assertion. `advisor_delivery` and `DueRecord` were not changed; their maintained behavior tests remain intact.
+- Changed files: `.project/PROJECT.md`, `src/otto/portfolio/advisor_host_command.py` (deleted), `tests/test_manager_advisor_paused_host.py` (deleted), `tests/test_advisor_host_retirement.py`.
+- Focused validation: `tests/test_advisor_host_retirement.py` (1 passed). `tests/test_project_advisor_delivery.py` ran 28 passed and 1 failed at owner-service AF_UNIX bind (`PermissionError`); this case needs the gate. No assertions were weakened.
+
+- Follow-up: restored the 15 Oct pinned runtime manifest unchanged after verifying its provenance in `install/README.md`; the snapshot remains historical evidence and its candidate path is not a live caller.
