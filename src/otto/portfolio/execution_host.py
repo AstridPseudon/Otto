@@ -30,6 +30,7 @@ from .owner_completion import OwnerCompletion, after_owner
 from .ipc_retention import prune_answered_responses
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 from herzchen.fleet.draining import QueuedAdmissionDrain
+from herzchen.fleet.file_ipc_receipts import FileReceiptFence
 
 
 def retained_pre_input_registration_failure(due: Any) -> bool:
@@ -277,8 +278,6 @@ class ExecutionHost:
         self._owner_calls = queue.Queue()
         self._external_waiting = 0
         self._active_files: set[str] = set()
-        # Settled values survive a response write failure for this host's next scan.
-        self._settled_file_receipts: dict[str, dict[str, Any]] = {}
         self._closing = False
         self._dispatch_held = False
         self._startup_report: dict[str, Any] | None = None
@@ -286,6 +285,9 @@ class ExecutionHost:
         self._owns_owner_file = False
         self._threads: list[threading.Thread] = []
         self.failures: dict[str, dict[str, str]] = {}
+        self._file_receipts = FileReceiptFence(lock=self._lock, active=self._active_files,
+            failures=self.failures, write_json=_atomic_json,
+            legacy_claim_reasons=frozenset({"retained execution is queued or awaiting its original transport"}))
         if type(bounded_transports) is not bool:
             raise TypeError("bounded_transports must be an explicit owner choice")
         if capacity_policy is not None and not isinstance(capacity_policy, CapacityPolicy):
@@ -1650,38 +1652,6 @@ class ExecutionHost:
         except OSError as exc:
             self.failures["response-retention"] = {"code": type(exc).__name__, "message": str(exc)}
 
-    @staticmethod
-    def _terminal_file_response(response: Path) -> bool:
-        if not response.is_file():
-            return False
-        value = json.loads(response.read_bytes())
-        if not isinstance(value, Mapping) or not isinstance(value.get("outcome"), str):
-            raise ValueError("terminal response is not a valid receipt")
-        return True
-
-    def _publish_file_receipt(self, token: str, request_digest: str, receipt: Any,
-                              path: Path, pending: Path, response: Path) -> None:
-        # The settled value and release of the active token share the same lock.
-        # A concurrent scan can therefore see either active work or its receipt.
-        with self._lock:
-            self._settled_file_receipts[token] = {"request_sha256": request_digest, "receipt": receipt}
-        published = False
-        try:
-            if not self._terminal_file_response(response):
-                _atomic_json(response, receipt)
-            pending.unlink(missing_ok=True)
-            path.unlink(missing_ok=True)
-            published = True
-        except Exception as exc:
-            with self._lock:
-                self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
-        finally:
-            with self._lock:
-                if published:
-                    self._settled_file_receipts.pop(token, None)
-                    self.failures.pop(token, None)
-                self._active_files.discard(token)
-
     def _serve_files(self, status: bool, *, allowed: frozenset[str] | None = None) -> None:
         if not status:
             self._prune_answered_responses()
@@ -1714,60 +1684,31 @@ class ExecutionHost:
             claimed = False
             deferred = False
             try:
-                request_bytes = path.read_bytes()
-                request_digest = hashlib.sha256(request_bytes).hexdigest()
-                request = json.loads(request_bytes)
+                request, request_digest = self._file_receipts.read_request(path)
                 command = request.get("command")
                 if (command == "status") != status:
                     continue
                 pending = self.directory / ("pending-" + token + ".json")
-                with self._lock:
-                    if token in self._active_files:
-                        continue
-                    self._active_files.add(token)
-                    claimed = True
+                if not self._file_receipts.reserve(token):
+                    continue
+                claimed = True
                 # A durable terminal response wins even when its status
                 # projection or the request cleanup failed afterward.
-                if self._terminal_file_response(response):
-                    pending.unlink(missing_ok=True)
-                    path.unlink(missing_ok=True)
-                    with self._lock:
-                        self._settled_file_receipts.pop(token, None)
-                        self.failures.pop(token, None)
+                inspection = self._file_receipts.inspect(token, request_digest, pending, response)
+                if inspection.state == "terminal":
+                    self._file_receipts.finish_terminal(token, path, pending)
                     continue
-                pending_state = json.loads(pending.read_bytes()) if pending.exists() else None
-                if pending_state is not None and (not isinstance(pending_state, Mapping)
-                        or pending_state.get("request_id") != token
-                        or pending_state.get("response_path") != str(response)):
-                    raise ValueError("pending receipt differs from the exact request handle")
-                if pending_state is not None:
-                    recorded_digest = pending_state.get("request_sha256")
-                    if recorded_digest is not None and recorded_digest != request_digest:
-                        raise ValueError("pending request bytes changed")
-                    if ("dispatch_claimed" in pending_state
-                            and type(pending_state["dispatch_claimed"]) is not bool):
-                        raise ValueError("pending dispatch claim is not boolean")
-                dispatch_claimed = (pending_state is not None and
-                    (pending_state.get("dispatch_claimed") is True
-                     or "dispatch_claimed" not in pending_state
-                     and (pending_state.get("request_state") == "processing"
-                          or pending_state.get("reason") == "retained execution is queued or awaiting its original transport")))
-                if dispatch_claimed:
-                    with self._lock:
-                        settled = self._settled_file_receipts.get(token)
+                pending_state = inspection.pending
+                if inspection.state == "claimed":
+                    settled = self._file_receipts.settled_receipt(token, request_digest)
                     if settled is not None:
-                        if settled["request_sha256"] != request_digest:
-                            raise ValueError("settled receipt belongs to different request bytes")
-                        receipt = settled["receipt"]
+                        receipt = settled
                     else:
                         timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
                         timing.observe("queued").observe("processing")
                         timing.absent("native", reason="original_dispatch_settlement_unavailable")
-                        receipt = _timed_receipt({"outcome": "unknown", "request_id": token,
-                            "request_dispatched": True, "retry": False,
-                            "reason": "claimed dispatch has no durable terminal response after owner restart",
-                            "next_action": "Reconcile the original effect before any new explicit intent; do not resend this request."}, timing)
-                    self._publish_file_receipt(token, request_digest, receipt, path, pending, response)
+                        receipt = _timed_receipt(self._file_receipts.unknown_after_claim(token), timing)
+                    self._file_receipts.publish(token, request_digest, receipt, path, pending, response)
                     continue
                 if self._dispatch_held and command != "status":
                     continue
@@ -1786,10 +1727,8 @@ class ExecutionHost:
                         timing.observe("queued").absent("processing", reason="owner_lane_retained")
                         timing.absent("native", reason="native_phase_not_started")
                         timing.absent("terminal", reason="terminal_response_not_yet_observed")
-                        _atomic_json(pending, {"outcome": "pending", "request_id": token,
-                            "dispatch_claimed": False, "request_sha256": request_digest,
-                            "request_retained": True, "provider_called": False, "effects_started": False,
-                            "retry": False, "response_path": str(response),
+                        self._file_receipts.write_pending(token, request_digest, pending, response,
+                            claimed=False, details={"provider_called": False, "effects_started": False,
                             "reason": "another native manager turn owns the command lane",
                             "correlation_id": timing.correlation_id,
                             "receipt_timing": timing.as_dict(),
@@ -1814,11 +1753,9 @@ class ExecutionHost:
                 timing.absent("native", reason="command_transport_has_no_native_phase")
                 # A durable claim precedes handler entry for every admitted
                 # file request, including synchronous reentrant commands.
-                _atomic_json(pending, {"outcome": "pending", "terminal": False,
-                    "request_id": token, "request_retained": True,
-                    "request_state": "processing", "dispatch_claimed": True,
-                    "request_sha256": request_digest, "response_path": str(response),
-                    "retry": False, "correlation_id": timing.correlation_id,
+                self._file_receipts.write_pending(token, request_digest, pending, response,
+                    claimed=True, details={"terminal": False, "request_state": "processing",
+                    "correlation_id": timing.correlation_id,
                     "receipt_timing": timing.as_dict(),
                     "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
                 if capability == "held":
@@ -1839,34 +1776,32 @@ class ExecutionHost:
                             value = {"outcome": "error", "error": type(error).__name__,
                                 "message": str(error), "retry": False,
                                 "next_action": "reconcile the original occurrence before replay"}
-                        self._publish_file_receipt(token, request_digest, _timed_receipt(value, timing),
-                                                   path, pending, response)
+                        self._file_receipts.publish(token, request_digest, _timed_receipt(value, timing),
+                                                    path, pending, response)
                     after_owner(result, complete,
                         lambda error, complete=complete: complete(error=error))
                     continue
                 if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result", "answer-session-result"} and result.get("outcome") == "pending"
                         and result.get("provider_called") is False and result.get("effects_started") is False):
                     retained = _timed_receipt(result, timing)
-                    value = {**retained, "request_id": token, "request_retained": True,
-                        "dispatch_claimed": False, "request_sha256": request_digest,
-                        "response_path": str(response),
+                    value = {**retained,
                         "next_action": ("The owner retains this exact answer continuation and rechecks its asking Due until settlement; do not resend it."
                             if command == "answer-session-result" else
                             "The owner retains this observed worker result until the same manager settles; do not resend it.")}
                     if command == "answer-session-result":
                         value["retry_after"] = time.time() + 0.5
-                    _atomic_json(pending, value)
+                    self._file_receipts.write_pending(token, request_digest, pending, response,
+                        claimed=False, details=value)
                     continue
-                self._publish_file_receipt(token, request_digest, _timed_receipt(result, timing),
-                                           path, pending, response)
+                self._file_receipts.publish(token, request_digest, _timed_receipt(result, timing),
+                                            path, pending, response)
             except FileNotFoundError:
                 continue
             except Exception as exc:
                 self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
             finally:
                 if claimed and not deferred:
-                    with self._lock:
-                        self._active_files.discard(token)
+                    self._file_receipts.release(token)
                 if acquired:
                     self._command_lock.release()
 
