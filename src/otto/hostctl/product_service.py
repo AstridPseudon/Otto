@@ -833,7 +833,7 @@ class OwnerFleetRegistry:
             raise PermissionError("owner Python executable is not configured")
         tools = tuple(spec.name for spec in __import__("otto.agents.claude_cli", fromlist=["TOOL_SPECS"]).TOOL_SPECS)
         return McpGrant(servers=(McpServer(name="otto", command=python,
-                                            args=("-m", "herzchen.fleet.tools.stdio_server", "--socket",
+                                            args=("-I", "-m", "herzchen.fleet.tools.stdio_server", "--socket",
                                                   str(self.facade_socket), "--token-env", "OTTO_WORKER_TOKEN"),
                                             tools=tools),),
                         token_env="OTTO_WORKER_TOKEN", token=record.token,
