@@ -5,6 +5,7 @@ each (only that assertion fails). The end-to-end test runs ops/bootstrap/perch.s
 with the lab's committed HEAD as the commit under test; it starts a real staging Otto and stops it.
 """
 import importlib.util
+import contextlib
 import hashlib
 import json
 import os
@@ -113,6 +114,15 @@ def clean_stage2_raw(root):
                   "id": "plan-review-document", "revision": "rev-review"}
     documents = [{"path": "reviews/plan-review.md", "revision_ref": review_ref,
                   "stored_text_sha256": hashlib.sha256(perch_report.STAGE2_REVIEW_TEXT.encode()).hexdigest()}]
+    plan_tasks = [{"id": name, "fields": {"check": {"argv": ["/usr/bin/true"]}},
+                   "metadata_namespace": {"otto.plan": {"repo": "toy", "branch": "canon/main", "route": "normal"}}}
+                  for name in tasks]
+    criteria = {name: {"authority": "owner", "kind": "assessment.criterion",
+                       "id": "criterion-" + name, "revision": "rev-1"} for name in tasks}
+    scopes = {name: {"task_ref": {**task_refs[name], "revision": "rev-admitted-" + name},
+                     "scope_ref": {"authority": "owner", "kind": "assessment.scope",
+                                   "id": "scope-" + name, "revision": "rev-1"},
+                     "criterion_ref": criteria[name]} for name in tasks}
     values = {
         "config.json": {"stage": "2", "scenarios": ["admit-and-dispatch"], "staging_restart": 0,
                         "tasks": [], "pool_limit": 2, "manager_reserve": 1,
@@ -121,7 +131,13 @@ def clean_stage2_raw(root):
                         "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}},
         "notes.json": {"admit-and-dispatch": "ran"},
         "stage2-project-status.json": {"documents": documents},
-        "stage2-activation.json": {"activation": {"steps": {"tasks": {"task_refs": task_refs}}}},
+        "stage2-plan-save.input.json": {"tasks": plan_tasks},
+        "stage2-plan-save.json": {"outcome": "saved", "task_refs": task_refs},
+        "stage2-activation.json": {"activation": {"steps": {"tasks": {"task_refs": task_refs}}},
+                                   "bootstrap_assessment": {"policy_scope_ref": {
+                                       "authority": "owner", "kind": "assessment.scope",
+                                       "id": "policy-scope", "revision": "rev-1"},
+                                       "criterion_refs": criteria}},
         "stage2-review-ref.json": review_ref,
         "stage2-observations.json": {
             "dispatch": {"dispatched": list(tasks), "records": [
@@ -138,6 +154,10 @@ def clean_stage2_raw(root):
     }
     for name, value in values.items():
         (raw / name).write_text(json.dumps(value), encoding="utf-8")
+    for name in tasks:
+        (raw / ("stage2-admit-" + name + ".json")).write_text(json.dumps({
+            "outcome": "admitted", "admitted_revision": task_refs[name]["revision"],
+            "bootstrap_assessment": scopes[name]}), encoding="utf-8")
     log = [{"task": task_refs[name]["id"], "revision": task_refs[name]["revision"],
             "review": review_ref["id"], "prover_result": "approved", "outcome": "admitted"} for name in tasks]
     (raw / "stage2-operator-admission.jsonl").write_text(
@@ -321,6 +341,285 @@ class AssertionKindTests(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("exact stored document revision", rejected.stderr)
 
+    def test_stage_two_plan_save_carries_typed_checks_and_dispatch_metadata(self):
+        registration = self.tmp / "registration.json"
+        registration.write_text(json.dumps({"project_ref": {"authority": "owner", "kind": "work.project",
+                              "id": "perch-stage2", "revision": "rev-3"}}), encoding="utf-8")
+        out = self.tmp / "plan-save.json"
+        perch_report.cmd_stage2_plan_save(Namespace(project=str(BOOTSTRAP / "canary" / "project.json"),
+                                                    registration=str(registration), out=str(out)))
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual([task["id"] for task in saved["tasks"]], ["A", "B", "C"])
+        self.assertEqual([task["dependencies"] for task in saved["tasks"]], [[], ["A"], ["B"]])
+        self.assertTrue(all(task["fields"]["check"]["argv"] == ["/usr/bin/true"] for task in saved["tasks"]))
+        self.assertTrue(all(task["metadata_namespace"]["otto.plan"] ==
+                            {"repo": "toy", "branch": "canon/main", "route": "normal"}
+                            for task in saved["tasks"]))
+        raw = clean_stage2_raw(self.tmp / "stage2-plan-fault")
+        self.assertEqual(statuses(raw)["stage2-canary-valid"], "pass")
+        patch(raw, "stage2-plan-save.input.json", lambda value: value["tasks"][0]["fields"].pop("check"))
+        self.assertEqual(statuses(raw)["stage2-canary-valid"], "fail")
+
+    def test_stage_two_scope_must_pin_the_post_admission_task_revision(self):
+        raw = clean_stage2_raw(self.tmp / "stage2-scope-fault")
+        self.assertEqual(statuses(raw)["stage2-canary-valid"], "pass")
+        activated = json.loads((raw / "stage2-activation.json").read_text(encoding="utf-8"))
+        old = activated["activation"]["steps"]["tasks"]["task_refs"]["A"]["revision"]
+        patch(raw, "stage2-admit-A.json", lambda value: value["bootstrap_assessment"]["task_ref"].update(
+            revision=old))
+        self.assertEqual(statuses(raw)["stage2-canary-valid"], "fail")
+
+    def test_stage_two_host_commands_use_the_admitted_client_home(self):
+        """A cold host project call must select the admitted client, not owner home."""
+        import re
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        match = re.search(r"(?ms)^stage2_host_client\(\) \{\n.*?^\}\n", shell)
+        self.assertIsNotNone(match)
+        fake_python = self.tmp / "python-stub"
+        fake_python.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+        base = "STAGE_ROOT=/staging; CANARY_DIR=/staging/perch-canary/test; PY=" + str(fake_python) + "\n"
+
+        def home_argument(function):
+            script = base + function + '\nstage2_host_client --host claude-code project status --project perch-stage2\n'
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+            args = result.stdout.splitlines()
+            return args[args.index("--home") + 1]
+
+        self.assertEqual(home_argument(match.group()), "/staging/perch-canary/test/client")
+        # Seed the gate's original bug into this one function: the same
+        # assertion must turn red when project commands target owner home.
+        seeded = match.group().replace('"$CANARY_DIR/client"', '"$STAGE_ROOT/home"')
+        self.assertNotEqual(home_argument(seeded), "/staging/perch-canary/test/client")
+
+    def test_stage_two_repo_is_mapped_before_owner_composition(self):
+        source = (BOOTSTRAP / "staging.sh").read_text(encoding="utf-8")
+        begin = source.index('  if [ -n "${OTTO_STAGING_CANARY_REPO:-}" ]; then')
+        end = source.index('  fi\n', begin) + len('  fi\n')
+        mapping = source[begin:end]
+        root = self.tmp / "staging"
+        repo = root / "perch-canary" / "2-run" / "canon"
+        (repo / ".git").mkdir(parents=True)
+        log = self.tmp / "map.log"
+        script = ("STAGE_ROOT=" + str(root) + "\nOTTO_STAGING_CANARY_REPO=" + str(repo)
+                  + "\nLOG=" + str(log) + "\nottoctl() { printf '%s\\n' \"$*\" >> \"$LOG\"; }\n"
+                  + "die() { exit 1; }\n" + mapping)
+        self.assertEqual(subprocess.run(["bash", "-c", script], capture_output=True).returncode, 0)
+        self.assertEqual(log.read_text(encoding="utf-8").strip(), "repo map --name toy --path " + str(repo))
+        self.assertLess(source.index('ottoctl repo map --name toy'), source.index('  cd "$TREE"\n'))
+        perch = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        run = perch[perch.index("run_stage() {"):]
+        self.assertLess(run.index('make_canon; phase canary-setup'), run.index('restart_staging "$stage"'))
+
+    def test_fake_claude_launcher_emits_worker_artifact_only_in_its_lab(self):
+        launcher = BOOTSTRAP / "perch_fake_claude.py"
+        self.assertEqual(subprocess.run([str(launcher), "--version"], capture_output=True,
+                                        text=True, check=True).stdout.strip(),
+                         "2.1.293 (Claude Code)")
+        lab = self.tmp / "worker-lab"
+        lab.mkdir()
+        frame = {"message": {"content": [{"text": "Canary dispatch A"}]}}
+        result = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", "Read,Write"],
+                                input=json.dumps(frame) + "\n", cwd=lab, capture_output=True,
+                                text=True, check=True)
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([event["type"] for event in events],
+                         ["system", "user", "assistant", "user", "result"])
+        artifact = next(lab.glob("perch-worker-*.txt"))
+        self.assertIn("worker artifact", artifact.read_text(encoding="utf-8"))
+
+    def test_fake_claude_c_worker_exposes_exact_kill_target_in_its_lab(self):
+        import contextlib
+        import io
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        lab = self.tmp / "c-worker-lab"
+        lab.mkdir()
+
+        def stop_at_pause():
+            raise RuntimeError("held for owner worker kill")
+
+        frame = {"message": {"content": [{"text": "Canary dispatch C"}]}}
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(lab)
+            with mock_patch.object(sys, "argv", ["perch-fake-claude", "--model", "claude-haiku-5-5",
+                                                 "--tools", "Read,Write"]), \
+                    mock_patch.object(sys, "stdin", io.StringIO(json.dumps(frame) + "\n")), \
+                    mock_patch.object(launcher.signal, "pause", stop_at_pause), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "held for owner worker kill"):
+                    launcher.main()
+        finally:
+            os.chdir(original_cwd)
+        self.assertEqual((lab / ".perch-worker-C.pid").read_text(encoding="utf-8").strip(),
+                         str(os.getpid()))
+
+    def test_fake_claude_initializer_is_inert_and_useful_turn_submits_done(self):
+        import contextlib
+        import io
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        lab = self.tmp / "worker-stream-lab"
+        lab.mkdir()
+        args = ["perch-fake-claude", "--model", "claude-haiku-5-5", "--tools", "Read,Write",
+                "--permission-mode", "dontAsk", "--mcp-config",
+                json.dumps({"mcpServers": {"otto": {"command": PY, "args": []}}}),
+                "--allowedTools", "Read", "Write", "mcp__otto__task", "mcp__otto__check", "mcp__otto__done"]
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(lab)
+            def turn(prompt, done):
+                frame = {"message": {"content": [{"text": prompt}]}}
+                output = io.StringIO()
+                with mock_patch.object(sys, "argv", args), mock_patch.object(sys, "stdin", io.StringIO(json.dumps(frame) + "\n")), \
+                        mock_patch.object(launcher, "done_tool", done), contextlib.redirect_stdout(output):
+                    rc = launcher.main()
+                return rc, [json.loads(line) for line in output.getvalue().splitlines()]
+
+            rc, events = turn("Initialize this session only. Do not use tools or do task work. Return READY.",
+                              lambda _: self.fail("initializer called done"))
+            self.assertEqual(rc, 0)
+            self.assertEqual(events[-1]["result"], "READY")
+            self.assertEqual([event["type"] for event in events], ["system", "user", "result"])
+            rc, events = turn("Canary dispatch A", lambda _: {"ok": True, "result": {"landed": True}})
+            self.assertEqual(rc, 0)
+            self.assertEqual(events[0]["permissionMode"], "dontAsk")
+            self.assertEqual(events[0]["mcp_servers"], ["otto"])
+            self.assertIn("mcp__otto__done", events[0]["tools"])
+            self.assertEqual([block["name"] for event in events if event["type"] == "assistant"
+                              for block in event["message"]["content"]], ["Write", "mcp__otto__done"])
+            self.assertTrue(any(lab.glob("perch-worker-*.txt")))
+            def red(_):
+                raise RuntimeError("seeded done refusal")
+            with contextlib.redirect_stderr(io.StringIO()):
+                rc, events = turn("Canary dispatch B", red)
+            self.assertEqual(rc, 1)
+            self.assertEqual(events[-1]["subtype"], "error_during_execution")
+        finally:
+            os.chdir(original_cwd)
+
+    def test_fake_claude_done_uses_the_owner_granted_socket_and_token(self):
+        import io
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        sent = []
+
+        class SocketStub:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def connect(self, value):
+                self.address = value
+
+            def sendall(self, value):
+                sent.append(json.loads(value))
+
+            def makefile(self, *args, **kwargs):
+                return io.StringIO('{"ok":true,"result":{"landed":true}}\n')
+
+        sock = SocketStub()
+        config = {"mcpServers": {"otto": {"args": ["-m", "herzchen.fleet.tools.stdio_server",
+                                                   "--socket", "/tmp/canary.sock",
+                                                   "--token-env", "OTTO_WORKER_TOKEN"]}}}
+        with mock_patch.object(launcher.socket, "socket", return_value=sock), \
+                mock_patch.dict(os.environ, {"OTTO_WORKER_TOKEN": "exact-worker-token"}):
+            result = launcher.done_tool(["--mcp-config", json.dumps(config)])
+        self.assertEqual(sock.address, "/tmp/canary.sock")
+        self.assertEqual(sock.timeout, 90)
+        self.assertEqual(sent, [{"op": "call", "token": "exact-worker-token", "tool": "done",
+                                 "args": {"summary": "PERCH stage-2 canary worker finished"}}])
+        self.assertTrue(result["result"]["landed"])
+
+    def test_stage_two_dispatch_projection_uses_retained_owner_reads(self):
+        raw = clean_stage2_raw(self.tmp / "stage2-dispatch-reads")
+        (raw / "stage2-observations.json").unlink()
+        refs = json.loads((raw / "stage2-activation.json").read_text(encoding="utf-8"))[
+            "activation"]["steps"]["tasks"]["task_refs"]
+        for alias in ("A", "B", "C"):
+            assignment = {"authority": "owner", "kind": "assignment", "id": "assignment-" + alias,
+                          "revision": "rev-1"}
+            (raw / ("stage2-admit-" + alias + ".json")).write_text(json.dumps(
+                {"outcome": "admitted", "admitted_revision": refs[alias]["revision"]}), encoding="utf-8")
+            (raw / ("stage2-dispatch-" + alias + ".json")).write_text(json.dumps({"workers": {
+                alias: {"automatic": True, "automatic_revision": refs[alias]["revision"],
+                        "assignment_ref": assignment, "schedule_id": "schedule-" + alias}}}), encoding="utf-8")
+            lifecycle = {"A": "completed" if alias != "A" else "active",
+                         "B": "completed" if alias == "C" else "active", "C": "active"}
+            (raw / ("stage2-dispatch-" + alias + "-project.json")).write_text(json.dumps(
+                {"tasks": [{"id": name, "lifecycle": state} for name, state in lifecycle.items()]}), encoding="utf-8")
+            (raw / ("stage2-owner-" + alias + ".json")).write_text(json.dumps({
+                "native_capacity": {"active_or_uncertain": 1},
+                "manager_turns": {"active": 0, "limit": 6}}), encoding="utf-8")
+        (raw / "stage2-unadmitted-request.json").write_text(json.dumps({
+            "task_ref": {key: refs["C"][key] for key in ("authority", "kind", "id")},
+            "revision": "rev-unadmitted"}), encoding="utf-8")
+        (raw / "stage2-unadmitted-response.json").write_text(json.dumps({
+            "outcome": "rejected", "error": {"code": "sheet_changed",
+                                        "message": "reviewed revision rev-unadmitted is superseded"}}), encoding="utf-8")
+        patch(raw, "notes.json", lambda value: value.update({"stage2-unadmitted-exit": 1}))
+        for name in ("before", "after"):
+            (raw / ("stage2-store-" + name + ".json")).write_text(json.dumps({
+                "integrity": "ok", "rows": {"events": 6}}), encoding="utf-8")
+        (raw / "timeline.json").write_text(json.dumps({
+            "tasks": [{"task_id": "assignment-" + alias,
+                       "events": [{"stream": "dispatch:assignment-" + alias,
+                                   "event_type": "work.assignment.dispatched"}]}
+                      for alias in ("A", "B", "C")],
+            "work_tasks": [{"alias": alias, "admitted_revision": refs[alias]["revision"]}
+                           for alias in ("A", "B", "C")]}), encoding="utf-8")
+        projected = perch_report.stage2_observations(raw)
+        self.assertEqual(projected["dispatch"]["dispatched"], ["A", "B", "C"])
+        self.assertTrue(all(row["ready"] for row in projected["dispatch"]["records"]))
+        self.assertEqual(projected["store_snapshots"][-1]["dispatch_events"], 3)
+        self.assertEqual(projected["unadmitted_refusal"]["reason"], "unadmitted_revision")
+        patch(raw, "stage2-dispatch-B.json", lambda value: value["workers"]["B"].update(automatic=False))
+        red = perch_report.stage2_observations(raw)
+        self.assertEqual(red["dispatch"]["dispatched"], ["A", "C"])
+        self.assertLess(red["store_snapshots"][-1]["dispatch_events"], 3)
+
+    def test_stage_two_kill_evidence_requires_slot_release_and_owner_survival(self):
+        raw = self.tmp / "stage2-kill"
+        raw.mkdir()
+        (raw / "stage2-killed-worker.json").write_text(json.dumps({"pid": 101, "owner_pid": 202}), encoding="utf-8")
+        (raw / "stage2-capacity-before-kill.json").write_text(json.dumps(
+            {"native_capacity": {"active_or_uncertain": 2}}), encoding="utf-8")
+        (raw / "stage2-capacity-after-kill.json").write_text(json.dumps(
+            {"native_capacity": {"active_or_uncertain": 1}}), encoding="utf-8")
+        (raw / "stage2-census-before-kill.txt").write_text("101 202 worker\n202 202 owner\n", encoding="utf-8")
+        (raw / "stage2-census-after-kill.txt").write_text("202 202 owner\n", encoding="utf-8")
+        state = perch_report.stage2_kill_state(raw)
+        self.assertTrue(all(state[key] for key in
+                            ("slot_released", "killed_worker_absent", "unrelated_processes_alive")))
+        patch(raw, "stage2-capacity-after-kill.json", lambda value: value["native_capacity"].update(
+            active_or_uncertain=2))
+        self.assertFalse(perch_report.stage2_kill_state(raw)["slot_released"])
+
+    def test_stage_two_store_requires_three_admitted_work_tasks_under_seeded_fault(self):
+        raw = clean_stage2_raw(self.tmp / "stage2-store")
+        stage = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))["stages"]["2"]
+        patch(raw, "config.json", lambda value: value.update(store=stage["store"]))
+        (raw / "timeline.json").write_text(json.dumps({
+            "error": None, "store_events": 47,
+            "tasks": [{"task_id": "assignment-" + alias, "complete": True, "gaps": []}
+                      for alias in ("A", "B", "C")],
+            "work_tasks": [{"alias": alias, "admitted_revision": "rev-" + alias}
+                           for alias in ("A", "B", "C")]}), encoding="utf-8")
+        (raw / "store-at-rest.json").write_text(json.dumps({"error": None, "bytes": 700000}), encoding="utf-8")
+        (raw / "stage2-store-before.json").write_text(json.dumps({"bytes": 569344}), encoding="utf-8")
+        self.assertEqual(statuses(raw)["store-matches-stage"], "pass")
+        perch_report.seed(raw, "store")
+        self.assertEqual(statuses(raw)["store-matches-stage"], "fail")
+
     def test_composefleet_detection_uses_landed_modules_not_a_marker_string(self):
         stage_root = self.tmp / "staging"
         self.assertFalse(perch_report.composefleet_landed(stage_root))
@@ -411,6 +710,329 @@ class FakePresenceLauncherTests(unittest.TestCase):
         with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root), "OTTO_STAGING_FAKE_PRESENCE": "0"}):
             with self.assertRaises(SystemExit):
                 launcher.main(args)
+
+
+class Stage2OwnerBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("perch_stage2_owner", BOOTSTRAP / "perch_stage2_owner.py")
+        self.launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.launcher)
+
+    def test_staging_scopes_are_declared_for_exact_tasks(self):
+        calls = []
+
+        class Ref:
+            def __init__(self, value, kind=None, ident=None, revision=None):
+                self.value = value if isinstance(value, dict) else {
+                    "authority": value, "kind": kind, "id": ident, "revision": revision}
+                self.authority = self.value.get("authority")
+                self.kind = self.value["kind"]
+                self.id = self.value.get("id")
+                self.revision = self.value.get("revision")
+
+            @classmethod
+            def from_dict(cls, value):
+                return cls(value)
+
+            def to_dict(self):
+                return self.value
+
+        class Session:
+            store = object()
+            owner = SimpleNamespace(owner_actor=SimpleNamespace(actor="owner", authority="owner"),
+                                    evidence_payload_resolver=object())
+
+            class Graph:
+                def current(self, ref):
+                    if ref.kind == "work.task":
+                        return SimpleNamespace(ref=Ref({"authority": "owner", "kind": "work.task",
+                                                        "id": ref.id, "revision": "rev-admitted"}),
+                                               payload={"alias": ref.id.split("-")[-1],
+                                                        "project_ref": {"authority": "owner", "kind": "work.project",
+                                                                        "id": "project", "revision": "rev-4"}})
+                    return SimpleNamespace(ref=Ref({"authority": "owner", "kind": "work.project",
+                                                    "id": "project", "revision": "rev-4"}),
+                                           payload={"custom": {"otto_host_registration": {"run_id": "perch-stage2"}}})
+
+            owner.graph = Graph()
+
+            def __init__(self, config, host=None):
+                self.host = host
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        class Assessment:
+            def __init__(self, store, **kwargs):
+                pass
+
+            def declare_scope(self, key, **kwargs):
+                calls.append((key, kwargs))
+                aliases = ("A", "B", "C") if key == "perch-stage2-policy-criteria" else (key.rsplit("-", 1)[-1],)
+                return SimpleNamespace(ref=Ref({"kind": "assessment.scope", "id": key, "revision": "rev-1"}),
+                                       criterion_refs=[Ref({"kind": "assessment.criterion",
+                                                            "id": "C-" + alias, "revision": "rev-1"})
+                                                       for alias in aliases])
+
+            def get_scope(self, ref):
+                return SimpleNamespace(criterion_refs=[Ref({"kind": "assessment.criterion",
+                                                          "id": "C-" + alias, "revision": "rev-1"})
+                                                       for alias in ("A", "B", "C")])
+
+        modules = {
+            "herzchen": ModuleType("herzchen"),
+            "herzchen.contracts": ModuleType("herzchen.contracts"),
+            "herzchen.domains": ModuleType("herzchen.domains"),
+            "herzchen.domains.assessment": ModuleType("herzchen.domains.assessment"),
+            "otto": ModuleType("otto"),
+            "otto.hostctl": ModuleType("otto.hostctl"),
+            "otto.hostctl.owner": ModuleType("otto.hostctl.owner"),
+        }
+        modules["herzchen.contracts"].ResourceRef = Ref
+        modules["herzchen.domains.assessment"].AssessmentModule = Assessment
+        modules["otto.hostctl.owner"].HostSession = Session
+        modules["otto.hostctl.owner"].service_store = lambda store: contextlib.nullcontext()
+        refs = {name: {"authority": "owner", "kind": "work.task", "id": "task-" + name, "revision": "rev-1"}
+                for name in ("A", "B", "C")}
+        service = SimpleNamespace(config={"hosts": {"claude-code": {"principal": "canary"}}}, store=object())
+        with mock_patch.dict(sys.modules, modules):
+            result = self.launcher._seed_scopes(service, refs)
+            self.assertEqual(set(result["criterion_refs"]), {"A", "B", "C"})
+            self.assertEqual([row["source_alias"] for row in calls[0][1]["criteria"]],
+                             ["C-A", "C-B", "C-C"])
+            scoped = self.launcher._seed_admitted_scope(service, refs["A"])
+            self.assertEqual(scoped["task_ref"]["revision"], "rev-admitted")
+            self.assertEqual(scoped["criterion_ref"]["id"], "C-A")
+            self.assertEqual(calls[1][1]["protocol"], "check-accepted")
+            self.assertEqual(calls[1][1]["designated_approver"], "perch-stage2-manager")
+            self.assertTrue(calls[1][1]["allow_no_review"])
+            with self.assertRaisesRegex(RuntimeError, "exactly A, B and C"):
+                self.launcher._seed_scopes(service, {"A": refs["A"]})
+
+    def test_scope_setup_runs_between_activation_and_composed_view(self):
+        order = []
+        refs = {name: {"kind": "work.task", "id": "task-" + name, "revision": "rev-1"}
+                for name in ("A", "B", "C")}
+
+        class OwnerService:
+            def _run_operation(self, handler, namespace, operation):
+                order.append("activate")
+                return {"outcome": "prepared", "activation": {"steps": {"tasks": {"task_refs": refs}}}}
+
+            def _admit_revision(self, args):
+                order.append("admit")
+                return {"outcome": "admitted", "task_ref": args["task_ref"]}
+
+        class ProjectOwnerService(OwnerService):
+            def _run_operation(self, handler, namespace, operation):
+                order.append("original")
+                return {"outcome": "original"}
+
+        project = ModuleType("otto.hostctl.project_service")
+        project.ProjectOwnerService = ProjectOwnerService
+        service = ModuleType("otto.hostctl.service")
+        service.OwnerService = OwnerService
+        modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
+                   "otto.hostctl.project_service": project, "otto.hostctl.service": service}
+        with mock_patch.dict(sys.modules, modules), mock_patch.object(self.launcher, "_seed_scopes",
+                  side_effect=lambda _, value: order.append("scopes") or {"criterion_refs": {}}), \
+                mock_patch.object(self.launcher, "_seed_admitted_scope",
+                  side_effect=lambda _, value: order.append("task_scope") or {"task_ref": value}):
+            self.launcher.install_scope_setup()
+            owner = ProjectOwnerService()
+            owner._build_activated_view = lambda name: order.append("view")
+            result = owner._run_operation(None, SimpleNamespace(project="perch-stage2"), ("project", "activate"))
+            self.assertEqual(order, ["activate", "scopes", "view"])
+            self.assertIn("bootstrap_assessment", result)
+            admitted = owner._admit_revision({"task_ref": refs["A"]})
+            self.assertEqual(order, ["activate", "scopes", "view", "admit", "task_scope"])
+            self.assertEqual(admitted["bootstrap_assessment"]["task_ref"], refs["A"])
+            self.assertEqual(owner._run_operation(None, SimpleNamespace(project="other"),
+                                                  ("project", "activate"))["outcome"], "original")
+
+    def test_real_stage_two_keeps_real_prover_and_fake_uses_stub(self):
+        root = Path(tempfile.mkdtemp(prefix="perch-stage2-owner-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        calls = []
+        cli = ModuleType("otto.hostctl.cli")
+        cli.main = lambda argv: calls.append(("real", argv)) or 0
+        fake = ModuleType("perch_fake_presence")
+        fake.main = lambda argv: calls.append(("fake", argv)) or 0
+        modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
+                   "otto.hostctl.cli": cli, "perch_fake_presence": fake}
+        args = ["--home", str(root / "home"), "service", "run"]
+        with mock_patch.dict(sys.modules, modules), mock_patch.object(self.launcher, "install_scope_setup") as setup, \
+                mock_patch.object(self.launcher, "defer_fake_lab_cleanup") as defer, \
+                mock_patch.object(self.launcher, "install_fake_completion") as complete:
+            for mode in ("0", "1"):
+                with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root),
+                         "OTTO_STAGING_STAGE2_SETUP": "1", "OTTO_STAGING_FAKE_PRESENCE": mode}):
+                    self.assertEqual(self.launcher.main(args), 0)
+            self.assertEqual([item[0] for item in calls], ["real", "fake"])
+            self.assertEqual(setup.call_count, 2)
+            self.assertEqual(defer.call_count, 1)
+            self.assertEqual(complete.call_count, 1)
+            with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root),
+                     "OTTO_STAGING_STAGE2_SETUP": "0", "OTTO_STAGING_FAKE_PRESENCE": "1"}):
+                with self.assertRaises(SystemExit):
+                    self.launcher.main(args)
+
+    def test_fake_lab_cleanup_is_deferred_only_after_a_landing(self):
+        root = Path(tempfile.mkdtemp(prefix="perch-stage2-lab-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        canary_repo = root / "perch-canary" / "2-test" / "canon"
+        other_repo = root / "other" / "canon"
+        canary_repo.mkdir(parents=True)
+        other_repo.mkdir(parents=True)
+        calls = []
+
+        class LabRefused(RuntimeError):
+            pass
+
+        class LabFleet:
+            def __init__(self, repo):
+                self.repo = repo
+
+            def remove(self, name, merged_into=None, before_unlink=None):
+                calls.append((name, merged_into))
+                return "removed"
+
+        labs = ModuleType("herzchen.fleet.labs")
+        labs.LabFleet = LabFleet
+        labs.LabRefused = LabRefused
+        modules = {"herzchen": ModuleType("herzchen"), "herzchen.fleet": ModuleType("herzchen.fleet"),
+                   "herzchen.fleet.labs": labs}
+        with mock_patch.dict(sys.modules, modules):
+            self.launcher.defer_fake_lab_cleanup(root)
+            fleet = LabFleet(canary_repo)
+            with self.assertRaisesRegex(LabRefused, "artifact capture"):
+                fleet.remove("task-opaque-id", merged_into="commit")
+            with self.assertRaisesRegex(LabRefused, "artifact capture"):
+                fleet.remove("another-task", merged_into="commit")
+            self.assertEqual(LabFleet(other_repo).remove("A", merged_into="commit"), "removed")
+            self.assertEqual(fleet.remove("A"), "removed")
+        self.assertEqual(calls, [("A", "commit"), ("A", None)])
+
+    def test_fake_manager_completes_only_landed_canary_with_stored_acceptance(self):
+        calls = []
+
+        class Ref:
+            def __init__(self, authority, kind, ident, revision=None):
+                self.authority, self.kind, self.id, self.revision = authority, kind, ident, revision
+
+            @classmethod
+            def from_dict(cls, value):
+                return cls(value["authority"], value["kind"], value["id"], value.get("revision"))
+
+            def to_dict(self):
+                return dict(authority=self.authority, kind=self.kind, id=self.id, revision=self.revision)
+
+        candidate = Ref("owner", "wrk.result", "candidate-A", "rev-1")
+        task_ref = Ref("owner", "work.task", "task-A", "rev-admitted")
+        project_ref = Ref("owner", "work.project", "project", "rev-4")
+        manager_ref = Ref("owner", "wrk.assignment", "manager", "rev-2")
+
+        class Graph:
+            def __init__(self):
+                self.reader = self
+
+            def get_identity(self, ref):
+                if ref.kind == "wrk.result":
+                    return SimpleNamespace(ref=candidate, payload={"value": {"sealed_run": "run-A"}})
+                return self.current(ref)
+
+            def current(self, ref):
+                return SimpleNamespace(ref=task_ref if ref.kind == "work.task" else project_ref)
+
+        class Assessment:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_result(self, ref):
+                self_ref = ref.to_dict()
+                if self_ref["kind"] != "assessment.result":
+                    raise ValueError("wrong result")
+                return SimpleNamespace(candidate_ref=candidate)
+
+        class Portfolio:
+            outcome = "completed"
+
+            def complete_task(self, project, task, manager, **kwargs):
+                calls.append((project, task, manager, kwargs))
+                return {"outcome": self.outcome, "task_ref": task}
+
+        portfolio = Portfolio()
+        owner = SimpleNamespace(graph=Graph(), owner_actor=object(), evidence_payload_resolver=object(),
+                                assignments=SimpleNamespace(get=lambda ref: SimpleNamespace(ref=manager_ref)))
+        server = SimpleNamespace(run_id="perch-stage2", owner=owner, store=object(), portfolio=portfolio,
+                                 state={"assignment_ref": manager_ref.to_dict(), "manager": "perch-stage2-manager",
+                                        "manager_generation": 1})
+        view = SimpleNamespace(server=server, _refresh_refs=lambda: calls.append("refresh"))
+        context = {"view": view, "task": SimpleNamespace(ref=task_ref, payload={"alias": "A"}),
+                   "project_ref": project_ref.to_dict()}
+        landing = {"landed": True,
+                   "assessment_results": [Ref("owner", "assessment.result", "result-A", "rev-1").to_dict()],
+                   "acceptances": [Ref("owner", "assessment.decision", "decision-A", "rev-1").to_dict()]}
+        modules = {"herzchen": ModuleType("herzchen"), "herzchen.contracts": ModuleType("herzchen.contracts"),
+                   "herzchen.domains": ModuleType("herzchen.domains"),
+                   "herzchen.domains.assessment": ModuleType("herzchen.domains.assessment")}
+        modules["herzchen.contracts"].ResourceRef = Ref
+        modules["herzchen.domains.assessment"].AssessmentModule = Assessment
+        with mock_patch.dict(sys.modules, modules):
+            result = self.launcher.complete_landed_canary(context, landing)
+            self.assertEqual(result["outcome"], "completed")
+            self.assertEqual(calls[0][3]["gate_refs"], landing["acceptances"])
+            self.assertEqual(calls[0][3]["candidate_ref"], candidate.to_dict())
+            self.assertEqual(calls[0][3]["evidence_refs"], [candidate.to_dict()])
+            self.assertEqual(calls[0][3]["actor"], "perch-stage2-manager")
+            self.assertEqual(calls[1], "refresh")
+            # Seed a refused owner completion. The fake manager must turn red.
+            portfolio.outcome = "held"
+            with self.assertRaisesRegex(RuntimeError, "manager completion refused"):
+                self.launcher.complete_landed_canary(context, landing)
+            self.assertEqual(len(calls), 3)
+            context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "C"})
+            self.assertIsNone(self.launcher.complete_landed_canary(context, landing))
+            self.assertEqual(len(calls), 3)
+
+    def test_task_lifecycle_wait_is_red_until_owner_completes(self):
+        status = {"tasks": [{"id": "A", "lifecycle": "completed"}]}
+        owner = {"native_capacity": {"active_or_uncertain": 0}}
+        self.assertTrue(perch_report.stage2_task_complete(status, owner, "A"))
+        status["tasks"][0]["lifecycle"] = "active"
+        self.assertFalse(perch_report.stage2_task_complete(status, owner, "A"))
+
+    def test_fake_completion_hook_runs_after_real_landing_and_preserves_refusal(self):
+        order = []
+        context = {"task": SimpleNamespace(payload={"alias": "A"})}
+
+        class Port:
+            def __init__(self):
+                self.inner = SimpleNamespace(_assignment_context=lambda assignment: context)
+                self.executor = lambda: lambda operation: operation()
+
+            def call(self, operation, assignment, args, *, feedback):
+                order.append("landing")
+                return {"landed": args["landed"]}
+
+        module = ModuleType("otto.hostctl.product_service")
+        module._OwnerExecutorPort = Port
+        modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
+                   "otto.hostctl.product_service": module}
+        with mock_patch.dict(sys.modules, modules), mock_patch.object(
+                self.launcher, "complete_landed_canary", side_effect=lambda ctx, landing:
+                order.append("completion") or {"outcome": "completed"}):
+            self.launcher.install_fake_completion()
+            port = Port()
+            landed = port.call("worker-done", "assignment", {"landed": True}, feedback=False)
+            self.assertEqual(landed["bootstrap_completion"]["outcome"], "completed")
+            self.assertEqual(order, ["landing", "completion"])
+            refused = port.call("worker-done", "assignment", {"landed": False}, feedback=False)
+            self.assertEqual(refused, {"landed": False})
+            self.assertEqual(order, ["landing", "completion", "landing"])
 
 
 class RenderTests(unittest.TestCase):

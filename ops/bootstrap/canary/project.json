@@ -49,7 +49,8 @@
       "branch": "canon/main",
       "pool_limit": 2,
       "manager_reserve": 1,
-      "store": {"store_events": 6, "store_tasks": 3, "store_bytes_max": 262144},
+      "store": {"store_events_min": 6, "store_work_tasks": ["A", "B", "C"],
+                "store_assignment_tasks_min": 3, "store_growth_max": 2097152},
       "scenarios": ["admit-and-dispatch"],
       "run_policy": {
         "assessment_accounting": {

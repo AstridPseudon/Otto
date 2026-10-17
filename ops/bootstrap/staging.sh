@@ -200,12 +200,25 @@ up() {
       --owner otto-staging-owner --operator otto-staging-operator --credential-ref otto-staging-credential-v1 >>"$LOG" 2>&1 \
       || die "up: could not create the staging installation; see $LOG"
   fi
+  # PERCH stage 2's disposable repo must be in the installation before owner
+  # composition: the dispatch registry retains this map at service startup.
+  if [ -n "${OTTO_STAGING_CANARY_REPO:-}" ]; then
+    case "$OTTO_STAGING_CANARY_REPO" in
+      "$STAGE_ROOT"/perch-canary/*/canon) ;;
+      *) die "up: canary repo must be inside this staging root" ;;
+    esac
+    [ -d "$OTTO_STAGING_CANARY_REPO/.git" ] || die "up: canary repo is not a git checkout"
+    ottoctl repo map --name toy --path "$OTTO_STAGING_CANARY_REPO" >>"$LOG" 2>&1 \
+      || die "up: could not map the staging canary repo; see $LOG"
+  fi
   before="$(wc -l < "$LOG" | tr -d ' ')"
   cd "$TREE"
   # The Otto itself is started, not through the ottoctl function: a function in the background forks a wrapper
   # shell, so $! would name the wrapper and not the holder that status reports. env execs the Python process.
   local owner_entry=(-c "$CLI_ENTRY")
-  if [ "${OTTO_STAGING_FAKE_PRESENCE:-0}" = 1 ]; then
+  if [ "${OTTO_STAGING_STAGE2_SETUP:-0}" = 1 ]; then
+    owner_entry=("$HERE/perch_stage2_owner.py")
+  elif [ "${OTTO_STAGING_FAKE_PRESENCE:-0}" = 1 ]; then
     owner_entry=("$HERE/perch_fake_presence.py")
   fi
   set -m
