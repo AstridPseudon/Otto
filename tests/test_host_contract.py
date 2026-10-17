@@ -836,6 +836,7 @@ class OneCodexBinding(unittest.TestCase):
         gateway = OttoGateway(adapter=adapter)
         missing = Responsibility("owner", "agent", "invoke", "digest")
         self.assertEqual(gateway.preflight(missing)["code"], "missing_model_binding")
+        self.assertIn("selected project role configuration", gateway.preflight(missing)["next_action"])
         self.assertEqual(gateway.operation(missing, {})["error"]["code"], "missing_model_binding")
         adapter.invoke.assert_not_called()
         bound = Responsibility("owner", "agent", "invoke", "digest",

@@ -1095,7 +1095,8 @@ class OttoGateway:
         if responsibility.operation in {"invoke", "resume", "send"} and (
                 not _text(responsibility.requested_model)
                 or not _text(responsibility.requested_reasoning)):
-            return {"code": "missing_model_binding", "message": "a resolved model and reasoning are required"}
+            return {"code": "missing_model_binding", "message": "a resolved model and reasoning are required",
+                    "next_action": "Read the selected project role configuration, pass its exact model and reasoning binding, then retry."}
         if responsibility.operation in {"invoke", "resume", "send"} and not responsibility.packet_digest:
             return {"code": "missing_packet_digest", "message": "input packet digest is required"}
         if responsibility.operation in {"resume", "send", "cancel"} and not responsibility.physical_session_id:
