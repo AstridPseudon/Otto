@@ -233,6 +233,9 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
             "project_ref": project["ref"],
             "assignment_ref": snapshot.get("assignment_ref"),
             "generation": snapshot.get("generation"),
+            # This is the same exact scope/assignment adoption resolved for
+            # the canonical role packet. Never select DAT's newer draft head.
+            "direction_context": result["directive_context"],
             "base_manager_brief": {
                 **BASE_MANAGER_BRIEF,
                 "content_sha256": hashlib.sha256(json.dumps(BASE_MANAGER_BRIEF, sort_keys=True,

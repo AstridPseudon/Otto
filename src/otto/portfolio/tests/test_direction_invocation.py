@@ -10,7 +10,7 @@ from herzchen.contracts import ResourceRef
 from herzchen.kernel.limits import LimitService
 from otto.agents.orchestrator_route import prepare_canonical_assignment_role_brief
 from otto.portfolio.direction import owner_direction_subject
-from . import test_role_context as role_fixtures
+from otto.portfolio.tests import test_role_context as role_fixtures
 
 
 class DirectionInvocationTests(unittest.TestCase):
@@ -190,6 +190,11 @@ class DirectionInvocationTests(unittest.TestCase):
 
     def test_replacement_preserves_responsibility_direction_and_rejects_old_generation(self):
         assignment, pins, request = self.directed_role()
+        # A newer draft and another assignment's adopted direction must not
+        # change the replacement manager's canonical effective brief.
+        self.c.revise(pins[1], {"text": "Unadopted replacement draft"})
+        other, _, _ = self.f.role_handles("worker", "worker", "other-assignment-session")
+        self.direction(ResourceRef.from_dict(other.payload["responsibility_ref"]), "Foreign assignment priority")
         replacement = self.f.app.assignments.reassign(assignment.ref, principal="replacement", session="replacement-session",
             expected_generation=1, logical_request_key="replace-direction-manager", actor=self.f.actor)
         old = self.f.owner.content.read(ResourceRef.from_dict(request["mandate_ref"]))["content"]
@@ -201,6 +206,28 @@ class DirectionInvocationTests(unittest.TestCase):
         self.assertEqual(self.f.app.start(schedule_id=prepared["schedule_id"])["outcome"], "succeeded")
         self.assertEqual([x["effective_ref"] for x in self.packet()["context"]["direction_context"]], pins)
         self.assertEqual(self.packet()["operating_core"]["introduction"]["principal"], "replacement")
+
+        # The replacement's next effective manager brief must carry the exact
+        # adopted revisions, including their authored content.
+        from otto.portfolio.operating_brief import prepare_canonical_operating_brief
+        from otto.portfolio.owner_readers import assignment_reader, mandate_reader, project_reader, task_reader
+        from otto.portfolio.role_context import effective_context_projection
+        operations = self.f.app.portfolio.operations
+        canonical = prepare_canonical_operating_brief(role="manager", project_ref=request["project_ref"],
+            task_ref=request["task_ref"], assignment_ref=replacement.ref.to_dict(), mandate_ref=mandate,
+            expected_generation=2, project_reader=project_reader(operations, request["project_ref"]),
+            task_reader=task_reader(operations, request["project_ref"], request["task_ref"]),
+            assignment_reader=assignment_reader(operations, replacement.ref.to_dict()),
+            mandate_reader=mandate_reader(operations, request["project_ref"], mandate),
+            resource_reader=operations.content_port, direction_context_reader=operations.direction_context_reader,
+            as_of=self.f.app._now())
+        effective = effective_context_projection(canonical, tool_entrypoint="manager")
+        manager_brief = effective["effective_manager_brief"]
+        self.assertEqual([x["effective_ref"] for x in manager_brief["direction_context"]], pins)
+        self.assertEqual([x["inputs"][0]["content"]["text"] for x in manager_brief["direction_context"]],
+            ["Overall owner priority", "Specific enduring priority"])
+        self.assertNotIn("Unadopted replacement draft", str(manager_brief["direction_context"]))
+        self.assertNotIn("Foreign assignment priority", str(manager_brief["direction_context"]))
         with self.assertRaisesRegex(ValueError, "stale"):
             self.f.app.prepare_role(**dict(request, request_key="old-session"))
 

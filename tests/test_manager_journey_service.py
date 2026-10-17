@@ -48,6 +48,24 @@ def test_effective_manager_brief_composes_base_project_and_manager_notes():
     assert "Wake for judgment events" in brief["base_manager_brief"]["constraints"][-1]
 
 
+def test_effective_manager_brief_projects_only_canonical_adopted_direction():
+    from otto.portfolio.role_context import effective_context_projection
+    project = {"authority": "owner", "kind": "work.project", "id": "project-current"}
+    assignment = {"authority": "owner", "kind": "wrk.assignment", "id": "manager-replacement", "revision": "a2"}
+    adopted = {"authority": "owner", "kind": "dat.content.document", "id": "standing", "revision": "rev-1"}
+    scope = {"subject_ref": {"authority": "owner", "kind": "wrk.responsibility", "id": "manager"},
+             "effective_ref": adopted, "scope_adopted_ref": adopted,
+             "assignment_adopted_ref": adopted,
+             "inputs": [{"ref": adopted, "content": {"text": "Retained standing instruction"}}]}
+    canonical = {"role": "manager", "base_resource": {}, "supporting_context": [],
+        "direction_context": [scope], "render": {
+            "project_state": {"project": {"ref": project, "payload": {}}, "task": None},
+            "snapshot": {"assignment_ref": assignment, "generation": 2}, "brief": {"mandate": "Continue"}}}
+    brief = effective_context_projection(canonical, tool_entrypoint="manager")["effective_manager_brief"]
+    assert brief["assignment_ref"] == assignment
+    assert brief["direction_context"] == [scope]
+
+
 class ManagerJourneyServiceTests(unittest.TestCase):
     reports = continuation.ManagerServiceContinuationTests.reports
 
