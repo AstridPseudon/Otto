@@ -459,8 +459,12 @@ def _feedback_argv(repo: Path, argv: list[str], base_ref: str = "HEAD") -> list[
                 tests.add("tests/" + path.name)
     if not tests:
         return argv
-    valued_options = {"-c", "-k", "-m", "--basetemp", "--confcutdir", "--deselect", "--ignore",
+    valued_options = {"-c", "-k", "-m", "-p", "--basetemp", "--confcutdir", "--deselect", "--ignore",
                       "--ignore-glob", "--override-ini", "--rootdir"}
+    flag_options = {"-q", "-v", "-x", "-s", "-l", "-rfE", "--collect-only", "--continue-on-collection-errors",
+                    "--exitfirst", "--failed-first", "--last-failed", "--last-failed-no-failures",
+                    "--new-first", "--no-header", "--no-summary", "--setup-show", "--strict-config",
+                    "--strict-markers", "--verbose", "--quiet"}
     test_indexes, skip_next = [], False
     for index, arg in enumerate(argv):
         if skip_next:
@@ -469,6 +473,10 @@ def _feedback_argv(repo: Path, argv: list[str], base_ref: str = "HEAD") -> list[
         if arg in valued_options:
             skip_next = True
             continue
+        if (arg.startswith("-") and arg not in flag_options and "=" not in arg and index + 1 < len(argv)
+                and argv[index + 1].startswith(("tests/", "tests\\"))):
+            # Unknown options may consume their next token; do not reinterpret it as a test target.
+            return argv
         if arg == "--":
             test_indexes.extend(i for i in range(index + 1, len(argv))
                                 if argv[i] == "tests" or argv[i].startswith(("tests/", "tests\\")))

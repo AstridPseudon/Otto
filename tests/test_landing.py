@@ -387,6 +387,12 @@ def test_feedback_selection_includes_commits_and_rewrites_broad_targets_safely(t
     selected = _feedback_argv(tmp_path, prefix + ["--ignore", "tests/test_skip.py", "tests"], "main")
     assert selected[selected.index("--ignore") + 1] == "tests/test_skip.py"
     assert "tests/test_importer.py" in selected and "tests" not in selected
+    plugin_argv = prefix + ["-p", "no:cacheprovider", "tests"]
+    selected = _feedback_argv(tmp_path, plugin_argv, "main")
+    assert "-p" in selected and "no:cacheprovider" in selected
+    assert "tests/test_importer.py" in selected and "tests" not in selected
+    unknown_option_argv = prefix + ["--junitxml", "tests/report.xml", "tests"]
+    assert _feedback_argv(tmp_path, unknown_option_argv, "main") == unknown_option_argv
     selected = _feedback_argv(tmp_path, prefix, "main")
     assert "tests/test_importer.py" in selected and "tests/test_slow.py" not in selected
 
