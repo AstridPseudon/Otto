@@ -7,6 +7,7 @@ assignment CAS and role runtime own binding, generation, readiness and work.
 from __future__ import annotations
 import hashlib
 import json
+import secrets
 from typing import Any, Callable, Mapping
 from herzchen.contracts import ResourceRef
 from .manager_continuity import ManagerContinuity
@@ -42,9 +43,15 @@ class OwnerManagerReplacement:
                 or assignment.principal != self.app.manager_actor):
             raise PermissionError('replacement requires the exact accountable manager')
         records = {}
+        # The first admitted acquisition owns this assignment generation and
+        # native session. Other completed DueRecords and request keys cannot
+        # bypass an unresolved acquisition by choosing another schedule.
+        intent_key = 'manager-native-replacement:' + hashlib.sha256(json.dumps(
+            [prior.generation, native], separators=(',', ':'), sort_keys=True).encode()).hexdigest()
         for stage, suffix in (("intent", "intent"), ("acquired", "acquired"),
                               ("acquisition-unknown", "acquisition-unknown")):
-            identifier = "report-" + hashlib.sha256((assignment.id+":"+request_key+":"+suffix).encode()).hexdigest()[:28]
+            report_key = intent_key if stage == 'intent' else request_key + ':' + suffix
+            identifier = "report-" + hashlib.sha256((assignment.id+":"+report_key).encode()).hexdigest()[:28]
             record = self.report_reader(
                 ResourceRef(assignment.ref.authority, "wrk.report", identifier))
             if record is None:
@@ -53,7 +60,8 @@ class OwnerManagerReplacement:
             value = payload.get("value")
             if (payload.get("assignment") != prior.assignment_ref or payload.get("generation") != prior.generation
                     or not isinstance(value, Mapping) or value.get("schema") != "otto.manager-native-replacement.v1"
-                    or value.get("request_key") != request_key or value.get("stage") != stage):
+                    or (stage != 'intent' and value.get("request_key") != request_key)
+                    or value.get("stage") != stage):
                 raise PermissionError("retained native replacement report attribution differs")
             records[stage] = value
         original = records.get('intent')
@@ -62,6 +70,9 @@ class OwnerManagerReplacement:
                'project_ref': target['project_ref'], 'task_ref': target['task_ref']}
         if original is not None and original.get('pin') != pin:
             raise PermissionError('retained replacement intent differs')
+        if original is not None and original.get('request_key') != request_key:
+            return {'outcome':'held','reason':'prior replacement intent owns this native acquisition',
+                    'provider_called':False,'retry':False}
         retained = records.get('acquired')
         if assignment.generation == prior.generation:
             if assignment.ref.to_dict() != prior.assignment_ref:
@@ -76,8 +87,25 @@ class OwnerManagerReplacement:
                 return {'outcome':'held','reason':'session acquisition was admitted but has no verified retained result',
                         'provider_called':False,'retry':False}
             if original is None:
-                self._report(assignment, request_key+':intent', {'schema':'otto.manager-native-replacement.v1',
-                    'request_key':request_key,'stage':'intent','pin':pin})
+                claim = secrets.token_hex(16)
+                self._report(assignment, intent_key, {'schema':'otto.manager-native-replacement.v1',
+                    'request_key':request_key,'stage':'intent','pin':pin,'claim':claim})
+                intent_id = "report-" + hashlib.sha256((assignment.id+":"+intent_key).encode()).hexdigest()[:28]
+                admitted = self.report_reader(ResourceRef(assignment.ref.authority, "wrk.report", intent_id))
+                admitted_value = admitted.payload.get('value') if admitted is not None else None
+                if (not isinstance(admitted_value, Mapping)
+                        or admitted.payload.get('assignment') != prior.assignment_ref
+                        or admitted.payload.get('generation') != prior.generation
+                        or admitted_value.get('schema') != 'otto.manager-native-replacement.v1'
+                        or admitted_value.get('stage') != 'intent'
+                        or admitted_value.get('pin') != pin):
+                    raise PermissionError('retained replacement intent cannot be verified')
+                if admitted_value.get('request_key') != request_key:
+                    return {'outcome':'held','reason':'prior replacement intent owns this native acquisition',
+                            'provider_called':False,'retry':False}
+                if admitted_value.get('claim') != claim:
+                    return {'outcome':'held','reason':'another caller admitted this native acquisition',
+                            'provider_called':False,'retry':False}
                 result = dict(self.acquire_session(prior.to_dict()))
                 # The trusted host verifies the actual inert native receipt;
                 # the JSON caller cannot supply a session or verification bit.

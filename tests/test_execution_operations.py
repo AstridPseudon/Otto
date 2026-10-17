@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 from otto.attention import DueRecord
 
@@ -216,8 +217,12 @@ class Tests(unittest.TestCase):
             self.assertEqual(host.capacity.snapshot()["pool"]["cumulative_used_units"], used_before)
 
     def test_final_admission_gate_does_not_apply_worker_task_rules_to_managers(self):
-        due = SimpleNamespace(role="manager", schedule_id="manager-due")
-        self.assertEqual(recheck_execution_admission(None, due)["worker_readiness"], "not_applicable")
+        due = SimpleNamespace(role="manager", schedule_id="manager-due",
+                              assignment_ref={"id": "manager"}, generation=2)
+        current = Mock()
+        self.assertEqual(recheck_execution_admission(
+            SimpleNamespace(_current=current), due)["worker_readiness"], "not_applicable")
+        current.assert_called_once_with(due.assignment_ref, 2)
 
     def test_worker_done_reaches_its_own_assignment(self):
         from herzchen.fleet.tools import CHECK, DONE, FeedbackLedger, TokenBook, ToolSpec
