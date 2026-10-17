@@ -192,6 +192,42 @@ class ReceiptLineageTests(unittest.TestCase):
   self.assertEqual(manager.get('gone-effect').state,OperationState.UNKNOWN)
 
   retain_proof('valid-proof')
+  original_identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  altered_custody=replace(unknown.request,external_owner_ref=ResourceRef('owner','external-owner','forged'))
+  forged_custody=replace(unknown,request=altered_custody)
+  self.assertEqual(forged_custody.effect_ref,unknown.effect_ref)
+  self.assertEqual(forged_custody.version,unknown.version)
+  with self.assertRaises(UnknownOutcomeError):
+   manager.resolve_unknown(forged_custody,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='valid-proof',transition_key='gone-effect-forged-custody')
+  retained=manager.get('gone-effect')
+  retained_identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  self.assertEqual(retained.state,OperationState.UNKNOWN)
+  self.assertEqual(retained.request.external_owner_ref,unknown.request.external_owner_ref)
+  self.assertEqual(retained_identity.version,original_identity.version)
+  self.assertEqual(retained_identity.payload['external_owner_ref'],original_identity.payload['external_owner_ref'])
+  altered_payload=replace(unknown.request,payload={'task':'forged'})
+  forged_payload=replace(unknown,request=altered_payload)
+  self.assertEqual(forged_payload.effect_ref,unknown.effect_ref)
+  self.assertEqual(forged_payload.version,unknown.version)
+  with self.assertRaises(UnknownOutcomeError):
+   manager.resolve_unknown(forged_payload,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='valid-proof',transition_key='gone-effect-forged-payload')
+  retained=manager.get('gone-effect')
+  retained_identity=self.store.get_identity(ResourceRef('owner','operation','gone-effect'))
+  self.assertEqual(retained.state,OperationState.UNKNOWN)
+  self.assertEqual(retained.request.external_owner_ref,unknown.request.external_owner_ref)
+  self.assertEqual(retained.request.payload,unknown.request.payload)
+  self.assertEqual(retained_identity.ref,original_identity.ref)
+  self.assertEqual(retained_identity.version,original_identity.version)
+  self.assertEqual(retained_identity.payload['external_owner_ref'],original_identity.payload['external_owner_ref'])
+  self.assertEqual(retained_identity.payload['request_payload'],original_identity.payload['request_payload'])
+  retain_proof('bool-int-proof',result_value={'verified':1,'output':'artifact-1'})
+  with self.assertRaises(UnknownOutcomeError):
+   manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
+    evidence_key='bool-int-proof',transition_key='gone-effect-bool-int')
+  self.assertEqual(manager.get('gone-effect').state,OperationState.UNKNOWN)
+
   reconciled=manager.resolve_unknown(unknown,OperationState.COMMITTED,result,resolver=self.actor,
    evidence_key='valid-proof',transition_key='gone-effect-resolve')
   self.assertEqual(reconciled.state,OperationState.COMMITTED)

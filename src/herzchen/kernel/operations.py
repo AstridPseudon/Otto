@@ -560,6 +560,12 @@ class _OperationManagerEngine:
         if prior is not None:
             event_effects = self._event_for_receipt(prior)
             return self._record_from_event(prior, event_effects, record.request, prior.result_ref or target, int(event_effects.get("version", record.version + 1)))
+        if allow_unknown_resolution:
+            current = self.__owner.get_identity(self._target(record.request.logical_request_key))
+            if (current is None or current.ref != target or current.version != record.version
+                    or current.payload.get("state") not in (
+                        OperationState.STARTED.value, OperationState.UNKNOWN.value, OperationState.UNCERTAIN.value)):
+                raise UnknownOutcomeError("held effect was already reconciled or changed")
         if record.state in (OperationState.UNKNOWN, OperationState.UNCERTAIN) and not allow_unknown_resolution:
             raise UnknownOutcomeError("unknown operation outcome requires explicit resolution")
         if record.state not in (OperationState.PREPARED, OperationState.STARTED, OperationState.UNKNOWN, OperationState.UNCERTAIN):
@@ -615,6 +621,18 @@ class _OperationManagerEngine:
         """
         if not isinstance(record, OperationRecord) or record.state not in (OperationState.UNKNOWN, OperationState.UNCERTAIN):
             raise UnknownOutcomeError("only a held effect can be reconciled")
+        target = self._target(record.request.logical_request_key)
+        identity = self.__owner.get_identity(target)
+        if (identity is None
+                or (identity.ref.authority, identity.ref.kind, identity.ref.id) !=
+                    (record.operation_ref.authority, record.operation_ref.kind, record.operation_ref.id)
+                or identity.payload.get("record_type") != OPERATION_KIND
+                or identity.payload.get("effect_ref", record.effect_ref.to_dict()) != record.effect_ref.to_dict()):
+            raise UnknownOutcomeError("held effect does not match its retained operation")
+        retained_request = self._request_from_identity(identity.payload)
+        if (canonical_json(self._payload(retained_request, OperationState.PREPARED, {})) !=
+                canonical_json(self._payload(record.request, OperationState.PREPARED, {}))):
+            raise UnknownOutcomeError("held effect custody or request does not match its retained operation")
         if state not in (OperationState.COMMITTED, OperationState.FAILED):
             raise OperationError("unknown resolution must be committed or failed")
         if not isinstance(resolver, AuthenticatedActor):
@@ -642,7 +660,7 @@ class _OperationManagerEngine:
                 or event.event_type != "effect.terminal"
                 or event.effects.get("effect_ref") != record.effect_ref.to_dict()
                 or event.effects.get("state") != state.value
-                or event.effects.get("result") != claimed_result):
+                or canonical_json(event.effects.get("result")) != canonical_json(claimed_result)):
             raise UnknownOutcomeError("terminal proof does not match the held effect and claim")
         evidence = {"evidence_key": evidence_key, "event_id": event.event_id, "request_digest": receipt.request_digest}
         return self._transition(record, state, claimed_result, transaction=transaction, transition_key=transition_key, transition_digest=transition_digest, physical_invocation_ref=physical_invocation_ref, external_owner_ref=external_owner_ref, allow_unknown_resolution=True, transition_actor=resolver, resolution_evidence=evidence)
